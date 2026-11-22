@@ -130,7 +130,7 @@ RUN case "$(dpkg --print-architecture)" in \
     && curl -fsSLo /usr/local/bin/squawk "https://github.com/sbdchd/squawk/releases/download/v2.72.0/$file" && echo "$a  /usr/local/bin/squawk" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/squawk && squawk --version | grep -q 2.72.0
 # ---- end of the code review tools ----
-# Code review lenses, lane R2: the review options that run an upstream skill, plugin or scanner as shipped (modules/code-review,
+# Code review options, lane R2: the review options that run an upstream skill, plugin or scanner as shipped (modules/code-review,
 # recipe/engines.ts `skill:<option>` and recipe/deepsec.ts). Everything here is pinned to a commit or version published on or before
 # 2026-11-14 (the 7-day rule at 2026-11-22); a bump moves the pin and the catalog's version together. Nothing is loaded by default:
 # a review run links only the selected skill or plugin into its own throwaway home (resolveSkill).

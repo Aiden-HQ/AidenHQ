@@ -43,9 +43,47 @@ export interface Card {
   crew?: CrewMember[];
   /** The kernel's state of the task. */
   state?: ShownState | null;
+  /** Ids the filters match. */
+  labelIds: string[];
+  projectId: string | null;
 }
 
-export type CrewState = "needs" | "failed" | "working" | "queued" | "done";
+/** An Agent work card (services/board/src/board.ts WorkCard): one issue, never folded, in its kernel lane. */
+export interface WorkCard extends Card {
+  state: ShownState | null;
+  /** The delegating task's identifier, for a sub-task. */
+  parent: string | null;
+  /** The agents working in its sub-tasks (agent ids). */
+  crewIds: string[];
+  closedAt: string | null;
+}
+
+/** A saved board (services/board/src/views.ts): its filters and layout, ids never names; `rev` guards every write. */
+export type Layout = "day" | "work";
+export interface Filters {
+  /** Agent ids, "me" (You) or "none" (Unassigned). */
+  agent?: string[];
+  state?: Lane[];
+  label?: string[];
+  priority?: ("critical" | "high" | "medium" | "low")[];
+  /** Project ids, or "none". */
+  project?: string[];
+  updated?: "today" | "7d" | "30d" | null;
+  text?: string;
+}
+export interface ViewSpec {
+  layout: Layout;
+  groupBy: "none" | "agent";
+  filters: Filters;
+}
+export interface SavedView {
+  id: string;
+  name: string;
+  spec: ViewSpec;
+  rev: number;
+}
+
+export type CrewState = "needs" | "failed" | "working" | "queued" | "waiting" | "done";
 
 export interface CrewMember {
   agent: string;
@@ -191,6 +229,14 @@ export interface RecurringView {
 export type SpendNow = { day: { spent: number; cap: number }; month: { spent: number; cap: number } };
 export interface Board {
   buckets: Record<Bucket, Card[]>;
+  /** Agent work: every open issue and those the kernel saw close in the last 48 hours, each its own card. */
+  work: WorkCard[];
+  /** The kernel snapshot's time: every lane is as of then. */
+  asOf: string;
+  /** A Paperclip list hit its bound: the board shows only the newest tasks. */
+  incomplete: boolean;
+  /** The company's projects; null when the catalog couldn't be read (the Project filter is unavailable). */
+  projects: { id: string; name: string }[] | null;
   brief: { id: string; identifier: string; title: string; description: string } | null;
   done: Card[];
   recurring: Card[];
@@ -481,7 +527,9 @@ export type TaskKind = "done" | "working" | "waiting" | "idle";
 export type TaskReason =
   | "closed" | "cancelled" | "job_running" | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
   | "blocked" | "agent_wait" | "module_wait" | "owner_task" | "scheduled" | "chat_turn" | "backlog" | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string };
+/** The board's column (Agent work): the kernel sets it from all of a task's obligations; the board never derives it. */
+export type Lane = "needs_you" | "working" | "waiting" | "blocked" | "idle" | "done";
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string; since?: string };
 export interface ShownState {
   task: string;
   identifier: string | null;
@@ -491,6 +539,9 @@ export interface ShownState {
   since: string;
   holder: string | null;
   attention: Attention[];
+  lane: Lane;
+  /** An open blocker (`task:<id>`), whatever the representative reason. */
+  blocker?: string;
   stage?: string;
   grade?: "pass" | "fail";
   question?: string;
@@ -500,6 +551,11 @@ export interface ShownState {
   wait_since?: string;
   /** What `ref` names, in a few words: a card's sentence, a blocker's identifier, how a job ended. */
   refLabel?: string;
+  /** The same for each attention entry's ref and the blocker's, by ref. */
+  refs?: Record<string, string>;
+  /** A holder Paperclip reports removed: its name. */
+  holder_name?: string;
+  holder_gone?: true;
 }
 export interface ChatRow {
   identifier: string;

@@ -23,12 +23,12 @@
 // Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
-// its own. Everything here is off until settings.code_review.lenses is on.
+// its own.
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
-import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
-import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread } from "./seams.ts";
+import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, openOnly, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
+import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
 import { detect, toolSpec, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { SETUP_PATH } from "./adapters.ts";
@@ -74,6 +74,8 @@ export type RunRow = {
   batch: string; recheck: number;
   /** Its combo was mandatory when queued: its review counts toward the head's coverage and its important findings gate merges. */
   mandatory: number;
+  /** It only rechecks the PR's open and answered findings: no finders, no new findings (a claim recheck). */
+  recheck_only: number;
   /** The moment it was queued for. */
   moment: Moment | null;
   /** 1 once its review is stored whole (no important finding withheld); what coverage reads, never its post's fate. */
@@ -205,7 +207,7 @@ export function createEngine(d: EngineDeps) {
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["findings", "claimed_at", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
-    ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
+    ["runs", "recheck_only", "INTEGER NOT NULL DEFAULT 0"], ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
   if (version === 1) {
@@ -325,7 +327,7 @@ export function createEngine(d: EngineDeps) {
    * the PR's queued automatic runs (the push they were for is superseded); the same ask twice (two comments, a double click) is
    * the batch already waiting or running on that head.
    */
-  function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null; moment?: Moment; asker?: Asker } = {}): RunRow[] {
+  function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null; moment?: Moment; asker?: Asker; recheckOnly?: boolean } = {}): RunRow[] {
     const due = o.due ?? now();
     mirrorDue = true;
     if (kind === "auto") {
@@ -341,13 +343,13 @@ export function createEngine(d: EngineDeps) {
       if (kind !== "auto") {
         // The same ask is the same run only when it asks the same question: a different focus (or none) is its own run, so a
         // one-off asked with a focus never reuses a queued run of another ask and drop that ask's focus.
-        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null);
+        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND recheck_only = ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null, o.recheckOnly ? 1 : 0);
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
-      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, focus, full, due, created, author, batch, recheck, mandatory, moment)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind,
-        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0, o.moment ?? "open");
+      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, focus, full, due, created, author, batch, recheck, mandatory, moment, recheck_only)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind,
+        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0, o.moment ?? "open", o.recheckOnly ? 1 : 0);
       return runRow(id)!;
     });
     // Who asked, and the runs this request was answered with (its run set): the same ask twice by two askers shares those runs,
@@ -430,6 +432,21 @@ export function createEngine(d: EngineDeps) {
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); });
   };
 
+  /** What the verdict waits on at a head: the mandatory reviewers that reviewed it (reviewers()). On a repo with no mandatory on_push
+   * combo (openOnly), the PR's opening review stands for every later head: its latest mandatory opening run per combo, at any head,
+   * with the mandatory runs at the head itself (a claim's recheck) and any mandatory run of the PR on its first post (a recheck at
+   * an earlier head whose findings aren't posted yet; one still running there is superseded and never posts). */
+  const gateRuns = (cfg: Repo, repo: string, n: number, head: string) => {
+    const at = reviewers(repo, n, head);
+    if (!openOnly(cfg)) return at;
+    const seen = new Set<string>();
+    const opening = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' ORDER BY created DESC", repo, n)
+      .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}`; return !seen.has(k) && !!seen.add(k); });
+    const pending = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND status = 'done' AND posted = 'pending' AND post_tries = 0 ORDER BY created DESC", repo, n);
+    const out = [...opening];
+    for (const r of [...at, ...pending]) if (!out.some((o) => o.id === r.id)) out.push(r);
+    return out;
+  };
   /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
   type Open = { id: string; severity: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; pending: number; run: string };
@@ -442,7 +459,7 @@ export function createEngine(d: EngineDeps) {
   /** For an open finding carrying an agent's `fixed` claim that the PR's latest mandatory recheck called still there: what that says,
    * so the agent can tell whether to fix more or dispute (otherwise the finding just stays open with no reason). */
   const stillNote = (repo: string, n: number, head: string) => {
-    const v = one<{ head: string; json: string }>("SELECT r.head, v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.head = ? AND r.mandatory = 1 AND r.recheck = 1 AND r.status = 'done' ORDER BY r.ended DESC LIMIT 1", repo, n, head);
+    const v = one<{ head: string; json: string }>("SELECT r.head, v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.head = ? AND r.mandatory = 1 AND r.recheck = 1 ORDER BY r.ended DESC LIMIT 1", repo, n, head); // a stored review, whether or not its post was accepted
     const list = v ? (JSON.parse(v.json) as { still?: unknown }).still : undefined;
     const still = new Set<unknown>(Array.isArray(list) ? list : []);
     return (f: { id: string; pending: number }) => f.pending && still.has(f.id) ? `the recheck at ${v!.head.slice(0, 7)} says it is still there: fix it or answer disputed with the reason` : undefined;
@@ -501,7 +518,7 @@ export function createEngine(d: EngineDeps) {
       const pr = await d.source.get(r.repo, r.number);
       const intent = pr.fork ? "" : [pr.title, pr.body].filter(Boolean).join("\n\n");
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus, intent,
-        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, recheck_only: !!r.recheck_only, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed. One GitHub or the kernel couldn't answer now (a kernel restart, a 5xx)
@@ -663,29 +680,92 @@ export function createEngine(d: EngineDeps) {
     const stale = !!gh && gh.open && gh.head !== r.head;
     // A claim the mandatory recheck found unsafe opens again (below) and goes in this run's post, saying so, so GitHub shows why
     // it came back (its row links its earlier thread), at the severity it gates at (a mandatory run's important row first).
-    const unsafe = r.mandatory && !stale ? [...new Set((review.unsafe ?? []).filter((x) => typeof x === "string"))] : [];
+    // Only an entry that names why the answer is unsafe and the defect still there reopens a finding: an id alone is silence.
+    // A result whose unsafe isn't a list is no list (never a throw that leaves the run stuck on the same result).
+    const listed: unknown[] = Array.isArray(review.unsafe) ? review.unsafe : [];
+    const named = listed.filter((x): x is Unsafe => !!x && typeof x === "object" && "id" in x && typeof x.id === "string" && "why" in x && typeof x.why === "string" && !!x.why.trim());
+    const unsafe: Unsafe[] = r.mandatory && !stale ? [...new Map(named.map((x) => [x.id, x])).values()] : [];
+    // The entries that really reopen (a reason the finding's own note already records is no new defect, so it never gets here).
+    const reopening: Unsafe[] = [];
     // Reopened findings this run only carries for its post: never stored as this run's own row, so each reopens at the severity
     // and gating its own rows have (an advisory combo's finding stays advice).
     const carried = new Set<string>();
-    for (const id of unsafe) {
-      const f = one<Omit<Finding, "fix_brief">>(`SELECT f.id, f.severity, f.path, f.line, f.title, COALESCE(f.why, '') AS why, COALESCE(f.evidence, '') AS evidence FROM findings f
-        JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.claim IS NOT NULL ORDER BY (f.severity = 'important' AND x.mandatory = 1) DESC, f.rowid DESC LIMIT 1`, r.repo, r.number, id);
+    // What each reopen writes to the finding's own row, so the next recheck reads the reason as its current note.
+    const reopenedRows = new Map<string, { run: string; option: string; why: string; line: number }>();
+    // A finding this run reports again keeps the report's own note in its new row: the reopen note is written below, only when
+    // the claim it reopens is really updated, so a reopen the timestamp guard suppresses leaves no history behind.
+    const original = new Map<string, { why: string; line: number; title: string }>();
+    for (const u of unsafe) {
+      const f = one<Omit<Finding, "fix_brief"> & { run: string; option: string }>(`SELECT f.id, f.run, f.option, f.severity, f.path, f.line, f.title, COALESCE(f.why, '') AS why, COALESCE(f.evidence, '') AS evidence FROM findings f
+        JOIN runs x ON x.id = f.run WHERE f.repo = ? AND f.number = ? AND f.id = ? AND f.claim IS NOT NULL ORDER BY (f.severity = 'important' AND x.mandatory = 1) DESC, f.rowid DESC LIMIT 1`, r.repo, r.number, u.id);
       if (!f) continue;
-      const at = review.findings.findIndex((x) => x.id === id), was = at >= 0 ? review.findings[at]! : { ...f, fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." };
-      const reopened = { ...was, title: `${REOPENED.title}${was.title.replace(REOPENED.title, "")}`.slice(0, 200), why: `${REOPENED.why}${was.why.replace(REOPENED.why, "")}`.slice(0, 3000) };
-      if (at >= 0) { review.findings[at] = reopened; continue; }
+      // An answer recorded after this run started (a correction made while it ran) stands: this result can't reopen the finding,
+      // and its post must not say it did.
+      if (r.started && one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at > ?", r.repo, r.number, u.id, r.started)) continue;
+      const at = review.findings.findIndex((x) => x.id === u.id);
+      // The finding as the post carries it: its own row's report fields, never the row's run or option columns (a post schema takes
+      // neither).
+      const was = at >= 0 ? review.findings[at]! : { id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title, why: f.why, evidence: f.evidence, fix_brief: "Fix it and push, or answer on its thread again with a reason that holds." };
+      // The same defect named again is no new defect: a reason the finding's own current note already records, case-insensitive
+      // and contained either way, at the same line when the entry gives one, never reopens it twice. Each reopen's reason sits
+      // ahead of the note it replaced, separated by a blank line, so the segments are reasons and the last one is the original
+      // report, which records no reopen and never suppresses a new reason. The history is read from the newest row that carries a
+      // reopen, whatever row the post shows (a later report's row has none).
+      const norm = (t: string) => t.trim().toLowerCase().replace(/\s+/g, " ");
+      const prior = one<{ why: string; line: number }>("SELECT why, line FROM findings WHERE repo = ? AND number = ? AND id = ? AND why LIKE ? ORDER BY rowid DESC LIMIT 1", r.repo, r.number, u.id, `${REOPENED.why}%`);
+      const parts = prior ? prior.why.slice(REOPENED.why.length).split("\n\n") : [];
+      const reasons = (parts.length > 1 ? parts.slice(0, -1) : parts).map(norm).filter(Boolean);
+      const said = norm(u.why);
+      const same = (t: string) => !!said && !!t && (t.includes(said) || said.includes(t));
+      if (same(reasons[0] ?? "") && (u.line === undefined || u.line === prior!.line)) continue;
+      if (reasons.slice(1).some(same)) continue;
+      // Kept only once the reopen is real: a restatement (or a duplicate) keeps the report's own note in its row.
+      if (at >= 0) original.set(u.id, { why: was.why, line: was.line, title: was.title });
+      // The reason leads the reopened note (the original note after it), so GitHub shows what came back and why; the entry's line is
+      // where the defect is now.
+      const line = Number.isInteger(u.line) && (u.line as number) >= 1 ? u.line! : was.line;
+      // A finding with an earlier thread is listed in the post by its title and link only, so the reason goes in the title too (as
+      // much as the post schema's 200 leaves): that is how the author sees why it came back. The original title is cut to 40 so the
+      // reason gets the rest of the row: the reason is what the author has not seen, so it gets the room.
+      const head = `${REOPENED.title}${was.title.replace(REOPENED.title, "").slice(0, 40)}`.slice(0, 80);
+      // The summary renderer cuts a row's title at 160, so the whole title stays inside that: the reason is never cut away there.
+      const titleRoom = 160 - head.length - 3;
+      const short = titleRoom > 20 ? u.why.trim().replace(/\s+/g, " ").slice(0, titleRoom) : "";
+      const shown = String(was.why ?? "");
+      const body = shown.startsWith(REOPENED.why) ? shown.slice(REOPENED.why.length) : shown;
+      // The reason (then a blank line, then the note the finding already had) is what the no-loop check reads back, so the
+      // original note gives way first: the reason is never cut by the row's 1500 or the post's 3000 cap.
+      const reason = u.why.trim().slice(0, 800);
+      const kept = body.trim().slice(0, Math.max(0, 1500 - REOPENED.why.length - 2 - reason.length));
+      const reopened = { ...was, line, ...(line !== was.line ? { end_line: undefined } : {}), title: `${head}${short ? ` — ${short}` : ""}`.slice(0, 200), why: `${REOPENED.why}${reason}${kept ? `\n\n${kept}` : ""}`.slice(0, 3000) };
+      // The finding's own row keeps what it came back for: the next recheck reads it there and the same defect never reopens it twice.
+      reopenedRows.set(u.id, { run: f.run, option: f.option, why: reopened.why, line: reopened.line });
+      if (at >= 0) { review.findings[at] = reopened; reopening.push(u); continue; }
       // At the post's 200, the lowest-ranked advice makes room (withheld): a reopened finding always says why on GitHub.
       const cut = review.findings.length >= 200 ? review.findings.findLastIndex((x) => x.severity !== "important") : -1;
       if (cut >= 0) review.withheld[review.findings.splice(cut, 1)[0]!.severity]++;
-      if (review.findings.length < 200) { review.findings.push(reopened); carried.add(id); }
+      // A reopen only counts when its post carries it: one the post can't hold (200 important ones already) stays closed, since
+      // a merge blocked by a finding GitHub never showed, with no reason there, is the reasonless reopen this change removes. It
+      // is counted as withheld, so the post says something was left out.
+      if (review.findings.length >= 200) { review.withheld.important++; continue; }
+      review.findings.push(reopened);
+      carried.add(u.id);
+      reopening.push(u);
     }
+    // An eviction at the post's 200 can drop a reopen added earlier: only those the final post carries reopen their findings.
+    const shown = new Set(review.findings.map((x) => x.id));
+    const reopens = reopening.filter((u) => shown.has(u.id));
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
       run("UPDATE runs SET cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, incremental_from = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ? WHERE id = ?",
         cost, iso(), count("important"), count("nit"), count("pre_existing"), review.incremental_from, t("input"), t("cached"), t("output"), stale ? null : review.withheld.important === 0 && !review.coverage?.incomplete ? 1 : 0, r.id);
       if (stale) return;
-      for (const f of review.findings) {
-        if (carried.has(f.id)) continue;
+      for (const found of review.findings) {
+        if (carried.has(found.id)) continue;
+        // A reopened finding goes in as the report had it: its reopen note is written below, only when its claim really reopens.
+        // A finding this run reports again without reopening it keeps the report's own note: the reopen history is read from the
+        // newest row that carries a reopen (below), never from the newest row, so a restatement cannot hide it or move its line.
+        const o = original.get(found.id), f = o ? { ...found, why: o.why, line: o.line, title: o.title } : found;
         // Reported again: a finding a recheck found fixed opens again; one its author answered (a claim) stays closed: only a
         // recheck that flags the claim unsafe reopens it.
         const claimed = one<{ outcome: string; claim: string; outcome_at: string }>("SELECT outcome, claim, outcome_at FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id);
@@ -695,8 +775,14 @@ export function createEngine(d: EngineDeps) {
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed?.outcome_at ?? null, claimed?.claim ?? null);
       }
       // A claim the mandatory recheck found unsafe or malicious (it hides the problem, or the fix adds one): open again.
-      for (const id of unsafe) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at <= ?", r.repo, r.number, id, r.started ?? "").changes)
-        dispose([id], r, "open", "the recheck found the answer's fix or reason unsafe", `run:${r.id}`);
+      for (const u of reopens) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at <= ?", r.repo, r.number, u.id, r.started ?? "").changes) {
+        dispose([u.id], r, "open", "the recheck found the answer's fix or reason unsafe", `run:${r.id}`);
+        // The finding's own newest row keeps the reason and the line it named, so the next recheck reads them as its current note:
+        // the row this run stored for it when it reported the finding again, else the row it already had.
+        const row = reopenedRows.get(u.id);
+        if (row) run("UPDATE findings SET why = ?, line = ? WHERE repo = ? AND number = ? AND id = ? AND rowid = (SELECT MAX(rowid) FROM findings WHERE repo = ? AND number = ? AND id = ?)",
+          row.why.slice(0, 1500), row.line, r.repo, r.number, u.id, r.repo, r.number, u.id);
+      }
       // What the recheck confirmed gone at this head: fixed, wherever it was found (and not found again by this run). A gating
       // finding is closed only by a mandatory run's recheck.
       const again = new Set(review.findings.map((f) => f.id));
@@ -711,12 +797,12 @@ export function createEngine(d: EngineDeps) {
         // Never at a head the finding was reported or reopened at: a claim stands only once a fix was pushed.
         const trusted = all<{ id: string }>(`SELECT DISTINCT f.id FROM findings f WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL AND f.claim LIKE 'fixed:%'
           AND NOT EXISTS (SELECT 1 FROM findings g JOIN runs y ON y.id = g.run WHERE g.repo = f.repo AND g.number = f.number AND g.id = f.id AND y.head = ?)
-          AND NOT EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?)`, r.repo, r.number, r.head, r.head).map((x) => x.id).filter((id) => cleared.has(id) && !unsafe.includes(id));
+          AND NOT EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?)`, r.repo, r.number, r.head, r.head).map((x) => x.id).filter((id) => cleared.has(id) && !reopens.some((u) => u.id === id));
         for (const id of trusted) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
         dispose(trusted, r, "fixed", "its fixed claim stood: the recheck did not find it still there", `run:${r.id}`);
       }
     });
-    if (!stale) cover(r);
+    if (!stale && !r.recheck_only) cover(r); // a claim recheck settles findings; it never stands for a review of the range
     // A run that posts says nothing here: afterPost writes its state, its reason and (when it is filed again) its retry deadline
     // together, once the post's outcome is known.
     const done = (status: Status, why: string | null) => {
@@ -1244,6 +1330,8 @@ export function createEngine(d: EngineDeps) {
     // post as the owner can write a command, so no command lessens what gates a merge.
     if (row.mode === "stop") list = list.filter((c) => c.mandatory);
     if (row.mode === "always" && !list.length) list = cfg.on_push.length ? cfg.on_push : cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_push;
+    // With no mandatory on_push, a push's review is advice: `always` never adds a gate.
+    if (which === "push" && openOnly(cfg)) list = list.map((c) => ({ ...c, mandatory: false }));
     if (!list.length) return;
     if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
     if (p.fork && cfg.forks === "manual") {
@@ -1350,6 +1438,18 @@ export function createEngine(d: EngineDeps) {
    * the next head. */
   function missing(cfg: Repo, p: PullRequest) {
     const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
+    // No mandatory on_push: a later head needs no review of its own, only a PR never reviewed by a mandatory combo gets one.
+    if (openOnly(cfg)) {
+      // Its opening review lacks a mandatory run (a push superseded one): the newest head gets each such combo (as a batch of its
+      // own, so the push's queued advice stays); none at all yet (a PR open when its repo became gated): every mandatory combo. One
+      // such batch still queued for an older head is superseded first.
+      for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head != ? AND mandatory = 1 AND kind = 'command' AND COALESCE(moment, 'open') = 'open' AND status = 'queued'", p.repo, p.number, p.head)) skipQueued(q.id, "superseded: a newer push");
+      if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND status IN ('queued', 'running')", p.repo, p.number)) return;
+      const opening = gateRuns(cfg, p.repo, p.number, p.head).filter((r) => (r.moment ?? "open") === "open");
+      const lacking: Combo[] = opening.length ? opening.filter((r) => r.status === "skipped").map((r) => ({ engine: r.engine as Combo["engine"], model: r.model, effort: r.effort, mandatory: true })) : cfg.on_open.filter((c) => c.mandatory);
+      if (lacking.length) queue(p, lacking, "command", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open" });
+      return;
+    }
     if (!mandatory(p.head)) trigger(cfg, p, pushed(p) && mandatory() ? "push" : "open");
   }
   const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
@@ -1455,11 +1555,12 @@ export function createEngine(d: EngineDeps) {
     // A pass with a mandatory reviewer it needs whose latest run at the head failed past its retries (no review stored) says so: it
     // passes without that review, never looks reviewed.
     const cfg = repoCfg(repo);
-    const failed = !v.reasons.length && !!cfg && reviewers(repo, n, head).some((r) => r.status === "failed" && !one("SELECT 1 FROM reviews WHERE run = ?", r.id));
+    const failed = !v.reasons.length && !!cfg && gateRuns(cfg, repo, n, head).some((r) => r.status === "failed" && !one("SELECT 1 FROM reviews WHERE run = ?", r.id));
     const code = v.reasons[0]?.code ?? (failed ? "failed" : "pass");
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     // Partial coverage (a file no finder read whole, a withheld finding, an unchecked recheck) is information: shown, never waited on.
-    const partial = !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
+    const partial = cfg && openOnly(cfg) ? gateRuns(cfg, repo, n, head).some((r) => r.complete === 0)
+      : !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
     return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
   }
   /** Status writes GitHub or the kernel refused, by repo and head: tried again after STATUS_RETRY or once the verdict changes. */
@@ -1656,9 +1757,12 @@ export function createEngine(d: EngineDeps) {
       const at = one<{ at: string | null }>(`SELECT MAX(claimed_at) at FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND claim LIKE 'fixed:%' AND id IN (${ids.map(() => "?").join(",")})`, cfg.repo, p.number, ...ids)?.at;
       // Not while a mandatory run of the head is still queued or running: it settles first (the verdict keeps one run per combo, and it may still report).
       if (!at || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND status IN ('queued', 'running')", cfg.repo, p.number, p.head)) continue;
-      const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", cfg.repo, p.number, p.head);
+      // A repo with no mandatory on_push has no run at a pushed head: its claim is rechecked by the first mandatory on_open combo.
+      const must = cfg.on_open.find((c) => c.mandatory);
+      const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", cfg.repo, p.number, p.head)
+        ?? (openOnly(cfg) && must ? { engine: must.engine, model: must.model } : undefined);
       if (!last || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' AND (created >= ? OR started >= ?)", cfg.repo, p.number, p.head, Date.parse(at), at)) continue;
-      queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push" });
+      queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push", recheckOnly: true });
     }
   }
 
@@ -1682,7 +1786,7 @@ export function createEngine(d: EngineDeps) {
     const reasons: Reason[] = [];
     // Each mandatory reviewer that reviewed the head (reviewers()) has a run there that is done (whole or partial: a partial review
     // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the next poll starts it.
-    const latest = reviewers(repo, n, head);
+    const latest = gateRuns(cfg, repo, n, head);
     const busy = latest.filter((r) => r.status === "queued" || r.status === "running");
     // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A
     // post refused once (filed again in the background) holds nothing: its findings are pending, never blocking.
@@ -1693,8 +1797,11 @@ export function createEngine(d: EngineDeps) {
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n), note = stillNote(repo, n, head);
-    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}${open.filter((f) => note(f)).map((f) => `; ${note(f)} (id ${f.id})`).join("")}`,
+    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
       unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+    // Its own reason, so the merge gate's cut of the findings list never drops it.
+    const noted = open.filter((f) => note(f));
+    if (noted.length) reasons.push({ code: "findings", text: `${noted.slice(0, 5).map((f) => `id ${f.id}`).join(", ")}: ${note(noted[0]!)}`, unblock: "fix and push, or answer disputed with the reason through code_review_resolve" });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 
@@ -1717,26 +1824,36 @@ export function createEngine(d: EngineDeps) {
 
   // ---- the API's reads and one-offs -----------------------------------------------------------------------------------------
 
-  const lensesOn = () => { if (!d.config().lenses) throw new RequestError("repo reviews are off: they turn on with settings.code_review.lenses (the owner's)"); };
   /** A repo at a commit (none: its default branch's head) through the code host's snapshot: the commit it resolved and its paths. */
   /**
-   * A repo's snapshot listing, read once and kept for two minutes. A cold read of a big repo can outlast the board's deadline: the
-   * request then says so and the read goes on, so asking again a moment later finds it ready (nothing is queued before it is).
+   * A repo's snapshot listing, read once and kept for two minutes under its commit. A default-branch read is shared only while it is
+   * in flight and its commit is not yet resolved: once it finishes it is kept under the commit it resolved, and a new ask for the head reads afresh. A cold read of a
+   * big repo can outlast the board's deadline: the request then names the commit (known as soon as the code host answers) so the
+   * board asks again for that commit, which finds the same read; before the commit is known, asking again joins the read.
    */
-  const treeReads = new Map<string, { p: Promise<{ sha: string; paths: string[] }>; at: number }>();
+  type TreeRead = { p: Promise<{ sha: string; paths: string[] }>; at: number; sha?: string };
+  const treeReads = new Map<string, TreeRead>();
+  const usable = (e: TreeRead | undefined): e is TreeRead => e !== undefined && now() - e.at <= 120_000;
   async function treeOf(repo: string, ref: string) {
     const key = `${repo}@${ref}`;
     let e = treeReads.get(key);
-    if (!e || now() - e.at > 120_000) {
-      const p = d.codehost.tree(repo, ref);
-      e = { p, at: now() };
-      treeReads.set(key, e);
-      p.catch(() => { if (treeReads.get(key)?.p === p) treeReads.delete(key); });
+    // A head read whose commit is already resolved was started for an earlier ask, and the branch may have moved since: only one
+    // not yet resolved is joined.
+    if (!usable(e) || (ref === "HEAD" && e.sha)) {
+      // `at` is when the read settled: one still under way never expires.
+      const entry: TreeRead = { p: undefined as never, at: Infinity };
+      entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD" && !usable(treeReads.get(`${repo}@${entry.sha}`))) treeReads.set(`${repo}@${entry.sha}`, entry); });
+      e = entry;
+      treeReads.set(key, entry);
+      entry.p.then((t) => {
+        entry.at = now();
+        if (ref === "HEAD") { if (treeReads.get(key) === entry) treeReads.delete(key); treeReads.set(`${repo}@${t.sha.toLowerCase()}`, entry); }
+      }, () => { for (const [k, v] of treeReads) if (v === entry) treeReads.delete(k); });
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const slow = new Promise<"slow">((r) => { timer = setTimeout(() => r("slow"), TREE_WAIT_MS); });
     const t = await Promise.race([e.p, slow]).finally(() => clearTimeout(timer));
-    if (t === "slow") throw new Error("it is still being read: ask again in a minute");
+    if (t === "slow") throw new Error(`it is still being read: ask again${e.sha ? ` for commit ${e.sha}` : " in a few seconds"}`);
     return t;
   }
   async function readTree(repoIn: unknown, commit: unknown) {
@@ -1816,7 +1933,7 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      return { day_spent_usd: round(spent()), errors: c.errors, lenses: c.lenses,
+      return { day_spent_usd: round(spent()), errors: c.errors,
         repos: c.repos.map((r) => {
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;
@@ -1831,7 +1948,6 @@ export function createEngine(d: EngineDeps) {
     engines() { return ENGINES; },
     /** The options a repo's tree fits at a commit (default: its default branch's head, resolved now), and the commit. */
     async catalogFor(q: { repo?: unknown; commit?: unknown }) {
-      lensesOn();
       const { repo, tree } = await readTree(q.repo, q.commit);
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
       return { repo, sha: tree.sha, recommended, options: available.map((o) => ({ id: o.id, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source })) };
@@ -1841,7 +1957,6 @@ export function createEngine(d: EngineDeps) {
      * (default: the recommended ones the tree fits), and the combo for the model options.
      */
     async repoReview(b: { target?: unknown; options?: unknown; combo?: unknown; author?: unknown }) {
-      lensesOn();
       const t = (b.target ?? {}) as { repo?: unknown; commit?: unknown };
       const c = (b.combo ?? {}) as { model?: unknown; effort?: unknown };
       const combo = { model: c.model ?? DEFAULT_MODEL, effort: c.effort ?? "medium" };

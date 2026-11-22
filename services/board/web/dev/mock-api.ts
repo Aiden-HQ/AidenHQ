@@ -12,10 +12,11 @@ const mock = { welcome: false, empty: false, slow: 0 };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
-const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null as string | null, kind, reason, since: ago(30), holder: null, attention: [], ...o });
+const LANE: Record<string, string> = { owner_wait: "needs_you", card_owner: "needs_you", handback: "needs_you", job_running: "working", failed: "blocked", blocked: "blocked", unknown: "blocked", orphaned: "blocked", history_expired: "blocked", unpolled: "blocked", scheduled: "idle", backlog: "idle", owner_task: "idle", chat_turn: "idle", closed: "done", cancelled: "done" };
+const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null as string | null, kind, reason, since: ago(30), holder: null, attention: [] as unknown[], lane: LANE[reason] ?? "waiting", ...o });
 const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", attention: [A("owner", "owner_wait", "wait:t")] });
 const CARD = st("waiting", "card_owner", { since: ago(9), ref: "record:ap1", refLabel: "Deploy the invoices app at 4e1a9c2", attention: [A("owner", "card", "record:ap1")] });
-const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", attention: [A("owner", "card", "record:ap2")] });
+const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", lane: "needs_you", attention: [A("owner", "card", "record:ap2")] });
 const FAILED = st("idle", "failed", { since: ago(8), ref: "job:j-1", refLabel: "timed out", attention: [A("agent", "failed", "job:j-1")] });
 const UNKNOWN = st("idle", "unknown", { since: ago(25), attention: [A("agent", "unknown", "task:t")] });
 const EXPIRED = st("idle", "history_expired", { since: ago(900), attention: [A("agent", "history_expired", "task:t")] });
@@ -29,7 +30,7 @@ const STATES = {
   blocked: st("waiting", "blocked", { since: ago(40), ref: "task:id-901", refLabel: "WOR-901" }),
   agentWait: st("waiting", "agent_wait", { since: ago(20) }),
   moduleWait: st("waiting", "module_wait", { since: ago(50), ref: "checks", note: "CI is running on the PR" }),
-  stalled: st("waiting", "module_wait", { since: ago(400), ref: "design_review", attention: [A("agent", "stalled_wait", "design_review")] }),
+  stalled: st("waiting", "module_wait", { since: ago(400), ref: "design_review", lane: "blocked", attention: [A("agent", "stalled_wait", "design_review")] }),
   scheduled: st("waiting", "scheduled", { since: ago(60) }),
   chatTurn: st("waiting", "chat_turn", { since: ago(700) }),
   backlog: st("waiting", "backlog", { since: ago(2000) }),
@@ -53,7 +54,54 @@ const roster = [
 ];
 
 const CARD_STATES: Record<number, ReturnType<typeof st>> = { 812: STATES.orphaned, 815: ASK, 790: WORKING_CARD, 801: STATES.queued, 802: FAILED, 770: STATES.scheduled, 700: STATES.agentWait, 705: UNKNOWN, 600: STATES.backlog };
-const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), state: CARD_STATES[n] ? named(`WOR-${n}`, CARD_STATES[n]) : null, ...extra });
+// Agent work (the mockup's sample, docs/design/agent-work-board.html): every issue its own card in its kernel lane.
+const PROJECTS = [{ id: "p-launch", name: "Launch" }, { id: "p-infra", name: "Infra" }];
+const LABELS = [{ id: "l-code", name: "engineer", color: "#3b82f6" }, { id: "l-review", name: "needs-review", color: "#f59e0b" }];
+const w = (n: number, title: string, who: string | null, state: Record<string, unknown> | null, o: Record<string, unknown> = {}) => ({
+  ...card(n, title, { assignee: who, state: state && named(`WOR-${n}`, { ...state, task: `id-${n}` }), activityAt: ago(o.age as number ?? 30) }),
+  parent: null, crewIds: [], closedAt: null, ...o,
+});
+const WORK = () => [
+  w(7812, "Pick the payments vendor for the refund API", "aiden", st("waiting", "owner_wait", { question: "Stripe or Adyen? Adyen is cheaper at our volume but needs a 3-week review.", since: ago(120), attention: [A("owner", "owner_wait", "wait:t")] }), { priority: "high", projectId: "p-launch", age: 120 }),
+  w(7820, "Approve push: release 0.9 notes", "engineer", st("waiting", "card_owner", { ref: "record:k-1", since: ago(25), attention: [A("owner", "card", "record:k-1")], refs: { "record:k-1": "push to docs/release-0.9" } }), { projectId: "p-launch", age: 25 }),
+  w(7790, "Fix the flaky checkout test on CI", "engineer", st("working", "job_running", { ref: "job:j-e101000000000001", stage: "Testing", since: ago(3.2) }), { priority: "high", projectId: "p-launch", labelIds: ["l-code"], age: 40 }),
+  w(7791, "Add retry to the checkout flow", "platform-engineer", st("working", "job_running", { ref: "job:j-e102000000000002", stage: "Coding", since: ago(8) }), { projectId: "p-launch", parent: "WOR-7790", age: 20 }),
+  w(7795, "Weekly fleet digest", "aiden", st("working", "job_running", { ref: "job:j-77fa000000000003", stage: "Digest", since: ago(1) }), { age: 6 }),
+  w(7801, "Migrate the warehouse ingest to the new schema, including backfill of 2023 and the long tail of partner tables", "platform-engineer", st("working", "job_running", { ref: "job:j-0b3c000000000004", stage: "Migrating", since: ago(12.6) }), { projectId: "p-infra", crewIds: ["engineer"], age: 60 }),
+  w(7788, "Release 0.9 candidate", "engineer", st("waiting", "card_review", { ref: "record:k-2", refLabel: "reviewer is reading the diff", since: ago(18) }), { projectId: "p-launch", labelIds: ["l-review"], age: 18 }),
+  w(7765, "Ask legal about the data-retention clause", "aiden", st("waiting", "delegator_wait", { since: ago(180), attention: [A("agent", "delegator_wait", "wait:t")] }), { age: 180 }),
+  w(7770, "Deploy marketing site", "platform-engineer", st("waiting", "module_wait", { ref: "checks", since: ago(50) }), { projectId: "p-infra", age: 50 }),
+  w(7744, "Refund API: wire up the webhook handler", "engineer", st("idle", "failed", { ref: "job:j-d002000000000005", since: ago(300), attention: [A("agent", "failed", "job:j-d002000000000005")], refs: { "job:j-d002000000000005": "the job timed out after 120 min" } }), { priority: "critical", projectId: "p-launch", age: 300 }),
+  w(7751, "Backfill invoices", "platform-engineer", st("waiting", "job_queued", { since: ago(300), blocker: "task:id-7744", lane: "blocked", note: "Waits for the webhook handler.", refs: { "task:id-7744": "WOR-7744" } }), { projectId: "p-infra", age: 300 }),
+  w(7756, "Answer the partner's API question", "open-loops", st("idle", "failed", { ref: "no_reply", since: ago(90), attention: [A("agent", "failed", "no_reply")] }), { age: 90 }),
+  w(7702, "Tidy the Notion roadmap", "aiden", st("waiting", "backlog", { since: ago(5760) }), { age: 5760 }),
+  w(7733, "Prepare Thursday's board pre-read", "aiden", st("waiting", "scheduled", { since: ago(1440) }), { age: 1440 }),
+  w(7690, "Review vendor security questionnaire", "me", st("waiting", "owner_task", { since: ago(2880) }), { age: 2880 }),
+  w(7686, "Old import task", null, null, { age: 9000 }),
+  w(7781, "Rotate the staging database credentials", "platform-engineer", st("done", "closed", { grade: "pass", since: ago(180) }), { status: "done", closedAt: ago(180), age: 180 }),
+  w(7776, "Summarise the Monday leads call", "aiden", st("done", "closed", { grade: "pass", since: ago(540) }), { status: "done", closedAt: ago(540), age: 540 }),
+  w(7760, "Stale PR cleanup", "engineer", st("done", "cancelled", { since: ago(1440) }), { status: "cancelled", closedAt: ago(1440), age: 1440 }),
+  // A long Idle lane: 25 cards, then "Show N more".
+  ...Array.from({ length: 32 }, (_, i) => w(6900 + i, i === 1 ? "A very long title that should clamp to two lines and never push the card wider, with https://example.com/a/very/long/path/that/keeps/going" : `Archive the Q${(i % 4) + 1} vendor threads`, "aiden", st("waiting", "backlog", { since: ago(9000 + i) }), { age: 9000 + i })),
+];
+// Saved boards (GET/POST/PUT/DELETE /api/views): in memory, revisioned like the board's.
+let views = [
+  { id: "00000000-0000-4000-8000-0000000000a1", name: "Needs review", rev: 1, spec: { layout: "work", groupBy: "none", filters: { label: ["l-review"] } } },
+  { id: "00000000-0000-4000-8000-0000000000a2", name: "Engineering", rev: 1, spec: { layout: "work", groupBy: "none", filters: { agent: ["engineer", "aiden", "platform-engineer"], updated: "7d" } } },
+];
+function viewRoute(method: string, url: URL, body: any): [number, unknown] | undefined {
+  const id = /^\/api\/views\/([0-9a-f-]{36})$/.exec(url.pathname)?.[1];
+  if (url.pathname === "/api/views" && method === "GET") return [200, { views: mock.empty ? [] : views }];
+  if (url.pathname === "/api/views" && method === "POST") { const v = { id: crypto.randomUUID(), name: body.name, spec: body.spec, rev: 1 }; views.push(v); return [200, v]; }
+  if (!id) return undefined;
+  const v = views.find((x) => x.id === id);
+  const rev = method === "DELETE" ? Number(url.searchParams.get("rev")) : body.rev;
+  if (!v || v.rev !== rev) return [409, { error: "conflict", current: v ?? null }];
+  if (method === "DELETE") return (views = views.filter((x) => x !== v), [200, { ok: true }]);
+  Object.assign(v, body.name ? { name: body.name } : {}, body.spec ? { spec: body.spec } : {}, { rev: v.rev + 1 });
+  return [200, v];
+}
+const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], labelIds: [] as string[], projectId: null as string | null, assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), state: CARD_STATES[n] ? named(`WOR-${n}`, CARD_STATES[n]) : null, ...extra });
 const board = () => ({
   buckets: mock.empty ? { triage: [], today: [], tomorrow: [], later: [], backlog: [] } : {
     triage: [card(812, "Reply to Acme's renewal question", { unread: true, assignee: "open-loops" }), card(815, "Weekly metrics digest looks off", { priority: "high", assignee: "me" })],
@@ -63,8 +111,9 @@ const board = () => ({
     backlog: [card(600, "Someday: voice notes into tasks")],
   },
   brief: null, done: [], recurring: [],
+  work: mock.empty ? [] : WORK(), asOf: new Date().toISOString(), incomplete: false, projects: mock.empty ? [] : PROJECTS,
   assignees: [{ key: "me", kind: "me", name: "Me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, avatar: a.avatar }))],
-  labels: [], prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: "Monday", rollsTomorrow: true, agentsActive: 4,
+  labels: mock.empty ? [] : LABELS, prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: "Monday", rollsTomorrow: true, agentsActive: 4,
   spend: { day: { spent: 3.42, cap: 50 }, month: { spent: 61.2, cap: 1000 } }, google: null, signIns: [],
 });
 
@@ -217,9 +266,9 @@ function route(method: string, url: URL): [number, unknown] {
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
   const m = (re: RegExp) => re.exec(p);
   switch (p) {
-    case "/api/reviews/setup": return [200, { module: true, github: { configured: true, connected: true, state: "ok" }, config: { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ ...REVIEW_COMBO, effort: "low" }] }], day_usd: 200, lenses: true }, problems: [] }];
+    case "/api/reviews/setup": return [200, { module: true, github: { configured: true, connected: true, state: "ok" }, config: { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ ...REVIEW_COMBO, effort: "low" }] }], day_usd: 200 }, problems: [] }];
     case "/api/reviews": return [200, { runs: reviewRuns(), batches: reviewBatches() }];
-    case "/api/reviews/repos": return [200, { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [], day_usd: 200, day_spent_usd: 3.2 }], day_usd: 200, day_spent_usd: 3.2, lenses: true }];
+    case "/api/reviews/repos": return [200, { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [], day_usd: 200, day_spent_usd: 3.2 }], day_usd: 200, day_spent_usd: 3.2 }];
     case "/api/reviews/engines": return [200, { engines: { codex: { label: "Codex", efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high"], models: ["~anthropic/claude-haiku-latest"], run_usd: 5 }, codegenie: { label: "Codegenie", efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", efforts: ["low", "medium"], models: ["~openai/gpt-sol-latest"], run_usd: 5 } } }];
     case "/api/reviews/available": return [200, { repos: [{ repo: "acme/payments", private: true }, { repo: "acme/web", private: true }, { repo: "acme/docs", private: false }] }];
     case "/api/reviews/catalog": return [200, catalog()];
@@ -307,7 +356,10 @@ createServer((req, res) => {
     const t = setInterval(() => res.write("event: ping\ndata: {}\n\n"), 20_000);
     return req.on("close", () => clearInterval(t));
   }
-  req.resume();
-  const [status, body] = route(req.method!, url);
-  setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), mock.slow);
+  let text = "";
+  req.on("data", (c) => (text += c));
+  req.on("end", () => {
+    const [status, body] = viewRoute(req.method!, url, text ? JSON.parse(text) : {}) ?? route(req.method!, url);
+    setTimeout(() => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)), mock.slow);
+  });
 }).listen(port, "127.0.0.1", () => console.log(`board mock API on :${port}`));

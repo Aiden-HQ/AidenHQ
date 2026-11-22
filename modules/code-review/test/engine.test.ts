@@ -1540,7 +1540,7 @@ test("a corrected answer closes a finding that carries a fixed claim, and a rech
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   w.later(1000);
   assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "by design", reason: "the caller holds the lock" }), { resolved: "f1" });
-  w.finish(1, { findings: [], unsafe: ["f1"], fixed: ["f1"] }); await w.tick();
+  w.finish(1, { findings: [], unsafe: [{ id: "f1", why: "the caller does not hold the lock: refund() takes it in pay.ts:10" }], fixed: ["f1"] }); await w.tick();
   assert.deepEqual(w.engine.verdict(REPO, 2, sha("3")).reasons, [], "the answer given while the review ran stands");
   assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "by design: the caller holds the lock");
   // The same when that review reports the finding again: the correction made while it ran stands.
@@ -1563,7 +1563,7 @@ test("a pending fixed the latest recheck called still there says so in the wait 
   assert.doesNotMatch(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /still there/, "no recheck yet: nothing to say");
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   w.finish(1, { findings: [], still: ["f1"] }); await w.tick();
-  assert.match(w.engine.verdict(REPO, 2, sha("3")).reasons[0].text, /the recheck at 3333333 says it is still there: fix it or answer disputed with the reason/);
+  assert.match(w.engine.verdict(REPO, 2, sha("3")).reasons.at(-1).text, /id f1: the recheck at 3333333 says it is still there: fix it or answer disputed with the reason/);
   assert.match(w.engine.openFindings(REPO, 2)[0].note, /still there/);
 });
 
@@ -1613,11 +1613,112 @@ test("an answer on a gating finding's thread closes it: fixed, disputed, by desi
   assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "reported again, still answered");
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   const rows = () => w.db.prepare("SELECT count(*) n FROM findings WHERE id = 'f1'").get().n, before = rows();
-  w.finish(2, { findings: [], unsafe: ["f1"] }); await w.tick();
+  const why = "the lock is not held by the caller: refund() takes it in pay.ts:10";
+  w.finish(2, { findings: [], unsafe: [{ id: "f1", why }] }); await w.tick();
   assert.equal(rows(), before, "reopened through its own rows (their severity and gating), never stored again as this run's");
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["findings"], "the recheck found the answer unsafe: open again");
-  assert.deepEqual(w.posted.at(-1).review.findings.map((f) => [f.id, f.title]), [["f1", "Reopened, its answer found unsafe: t"]], "its post shows why it came back");
+  assert.deepEqual(w.posted.at(-1).review.findings.map((f) => f.id), ["f1"], "its post shows the finding came back");
+  assert.match(w.posted.at(-1).review.findings[0].title, /^Reopened, its answer found unsafe: t — the lock is not held by the caller/, "the title names why it came back (a threaded finding is listed by title)");
+  assert.match(w.posted.at(-1).review.findings[0].why, /the lock is not held by the caller: refund\(\) takes it in pay\.ts:10/, "the post carries the reason it came back");
 });
+test("a claim reopens only with a reason naming the defect: a bare id or an entry with no why is silence, and the same reason at the same evidence never reopens twice", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.outcomes.set("k-1", { state: "posted", comments: [41] }); await w.tick({ github: false });
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 50, author: "bob", body: "disputed: debian:stable-slim ships the same suite" }] }]);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "the answer closed it");
+  // A recheck that only lists the id (or an entry without a why) never reopens it.
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, { findings: [], unsafe: ["f1"] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "a bare id is silence");
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(2, { findings: [], unsafe: [{ id: "f1", why: "   " }, null] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass", "an entry with no why is silence too");
+  // A reason reopens it, and the posted finding's why carries it.
+  w.pr(2, sha("5")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  const why = "the alias resolves to trixie while the image pins bookworm at src/pins.ts:98";
+  w.finish(3, { findings: [], unsafe: [{ id: "f1", why, line: 98 }] }); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("5"))), ["findings"], "the reason reopened it");
+  const post = w.posted.at(-1).review.findings.find((f) => f.id === "f1");
+  assert.equal(post.line, 98, "the defect's line at this head");
+  assert.match(post.why, /the alias resolves to trixie while the image pins bookworm at src\/pins\.ts:98/);
+  // The same reason at the same evidence is no new defect: it stays closed.
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 50, author: "bob", body: "disputed: debian:stable-slim ships the same suite" }, { id: 51, author: "bob", body: "disputed: the image really pins bookworm" }] }]);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("5")).verdict, "pass", "answered again");
+  w.pr(2, sha("6")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(4, { findings: [], unsafe: [{ id: "f1", why, line: 98 }] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("6")).verdict, "pass", "the same reason at the same line never reopens it twice");
+});
+
+test("a later reopen with a different reason reopens it, and the same reason again at its own line stays closed", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.outcomes.set("k-1", { state: "posted", comments: [41] }); await w.tick({ github: false });
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 50, author: "bob", body: "disputed: the suite is the same" }] }]);
+  await w.tick();
+  const first = "the caller does not hold the lock: refund() takes it in pay.ts:10";
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, { findings: [], unsafe: [{ id: "f1", why: first }] }); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the first reason reopens it");
+  // Answered again, then a recheck names a different defect: a new reason is a new defect, so it reopens.
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 50, author: "bob", body: "disputed: the suite is the same" }, { id: 51, author: "bob", body: "disputed: and the lock is taken by the caller" }] }]);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "answered again");
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(2, { findings: [], unsafe: [{ id: "f1", why: "a timeout now commits a partial refund at pay.ts:20", line: 20 }] }); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["findings"], "a different reason is a new defect");
+  // Answered again, and the next recheck restates the finding (no unsafe): its ordinary report row must not hide the reason it
+  // came back for.
+  const second = "a timeout now commits a partial refund at pay.ts:20";
+  const answers = [{ id: 50, author: "bob", body: "disputed: the suite is the same" }, { id: 51, author: "bob", body: "disputed: and the lock is taken by the caller" }, { id: 52, author: "bob", body: "disputed: the timeout is handled" }];
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: answers }]);
+  await w.tick();
+  w.pr(2, sha("5")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(3, { findings: [{ ...w.posted.at(-1).review.findings.find((f) => f.id === "f1"), title: "t", why: "the refund still commits on a timeout", evidence: "e" }] }); await w.tick();
+  // Answered again, and the same reason comes back at its own line: the finding already came back for it, so it stays closed.
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [...answers, { id: 53, author: "bob", body: "disputed: the timeout is retried" }] }]);
+  await w.tick();
+  w.pr(2, sha("6")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(4, { findings: [], unsafe: [{ id: "f1", why: second, line: 20 }] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("6")).verdict, "pass", "the reason the finding already came back for is no new defect, even after a restatement");
+});
+
+test("a reason a reopen recorded while its run was in flight never suppresses a later, genuine reopen", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.outcomes.set("k-1", { state: "posted", comments: [41] }); await w.tick({ github: false });
+  // A `fixed` claim leaves the finding open, so a later correction can still be recorded while a recheck runs.
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 50, author: "bob", body: "fixed: moved the lock into the caller" }] }]);
+  await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  // A correction lands while the recheck runs: its result can't reopen the finding, so it leaves no reopen history behind either.
+  w.later(1000);
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "disputed", reason: "the lock is taken by the caller, see pay.ts:10" });
+  const why = "the caller does not hold the lock: refund() takes it in pay.ts:10";
+  w.finish(1, { findings: [], unsafe: [{ id: "f1", why }] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "the correction made while it ran stands");
+  const opens = w.db.prepare("SELECT count(*) n FROM dispositions WHERE finding = 'f1' AND state = 'open' AND head = ?").get(sha("3")).n;
+  assert.equal(opens, 0, "a suppressed reopen records nothing");
+});
+
+test("an unsafe value that isn't a list is silence, not a run stuck on its own result", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.outcomes.set("k-1", { state: "posted", comments: [41] }); await w.tick({ github: false });
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 50, author: "bob", body: "disputed: the suite is the same release" }] }]);
+  await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, { findings: [], unsafe: { id: "f1", why: "the alias still moves at src/pins.ts:98" } }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "not a list: the finding stays closed, and the run settles");
+  assert.equal(w.db.prepare("SELECT status FROM runs WHERE id = ?").get(w.started[1].run ?? "")?.status ?? "done", "done", "the run isn't left running on the same result");
+});
+
 test("a second answer on a thread, left unread while the first closed the finding, can't close it again after a recheck reopens it", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));
@@ -1628,7 +1729,7 @@ test("a second answer on a thread, left unread while the first closed the findin
   await w.tick();
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "the first reply closed it");
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  w.finish(1, { findings: [], unsafe: ["f1"] }); await w.tick();
+  w.finish(1, { findings: [], unsafe: [{ id: "f1", why: "the caller does not hold the lock: refund() takes it in pay.ts:10" }] }); await w.tick();
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the recheck reopened it");
   await w.tick();
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the second reply was consumed while it was closed: still open");
@@ -1795,4 +1896,43 @@ test("a reply on a finding's thread posted before the service recorded its threa
   await w.tick();
   assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "fixed: moved the check into pay()", "bob's answer counts; mallory (no write access) still doesn't");
   assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"], "a thread reply's fixed is a claim too");
+});
+
+test("a gated repo with no mandatory on_push: a push needs no review of its own, so the PR merges once nothing is open; a fixed claim is still rechecked at the pushed head", async () => {
+  assert.deepEqual(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] })).errors, []);
+  assert.match(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [MUST_PUSH] }] })).errors[0], /needs a mandatory on_open one/);
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick(); // f1 open, gating
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 1, "no review of the push");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the opening review stands; its open finding still holds the merge");
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" });
+  await w.tick();
+  assert.deepEqual(w.started.slice(1).map((s) => [s.head, label(s)]), [[sha("3"), "codex/low"]], "the claim's recheck, on the on_open mandatory combo at low effort");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running", "findings"]);
+  w.finish(1, { findings: [], cleared: ["f1"] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 2, "a later push runs nothing");
+  assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
+  assert.deepEqual([w.statuses.at(-1).head, w.statuses.at(-1).reason], [sha("4"), "pass"]);
+});
+
+test("no mandatory on_push: a mandatory opening run a push superseded is run again at the newest head; `always` adds no gate", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [CLAUDE, MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick(); // the advice finished first
+  w.pr(2, sha("3")); await w.tick();
+  w.finish(1, NONE); await w.tick(); await w.tick(); // the mandatory run ends on the old head: superseded
+  assert.deepEqual(w.started.slice(2).filter((s) => s.mandatory).map((s) => [s.head, label(s)]), [[sha("3"), "codex/medium"]]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
+  for (let i = 2; i < w.started.length; i++) w.finish(i, NONE);
+  await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  w.later(1000); w.say(2, "alice", "aiden review always"); await w.tick();
+  const n = w.started.length;
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.ok(w.started.length > n && w.started.slice(n).every((s) => !s.mandatory), "the push is reviewed, as advice");
+  assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
 });

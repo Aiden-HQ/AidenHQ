@@ -62,9 +62,9 @@ settings:
   # id), effort (the engine's: codex and codex-native minimal-xhigh, the others low-max), mandatory (default false) }; each moment runs every combo it lists (at most 4, each its
   # own review), [] none. A mandatory combo's review gates the repo's merges: the github module's merge queue merges a PR only
   # once the mandatory combos reviewed its head and none of their important findings is open (fixed, answered on its thread by the
-  # PR's author or a writer, or by an agent's code_review_resolve call: fixed, disputed, by design or won't fix with a reason, or dismissed by the owner on the board); a gated repo has one at both moments, and its mandatory runs are never
+  # PR's author or a writer, or by an agent's code_review_resolve call: fixed, disputed, by design or won't fix with a reason, or dismissed by the owner on the board); a gated repo has one in on_open, and on_push's is optional (without one, the PR's opening review stands for every later head: open findings and claim rechecks still decide); its mandatory runs are never
   # skipped and review forks by themselves. ai_review_code's unless_code_review_mandatory reads the same repos. on_push reviews only the new changes. Read by the service
-  # (service/src/config.ts). lenses (default false): repo reviews and the option catalog, off until their security review is done.
+  # (service/src/config.ts).
   code_review:
     type: object
     writers: [ reviewer-manager ]
@@ -74,7 +74,6 @@ settings:
     # repo, gone), or a repo's ignore globs (what would quietly weaken reviews). Turning a combo mandatory is its to do: it only
     # adds a gate.
     owner:
-      - { path: lenses, to: true, default: false }
       - { path: "repos.*.forks", to: auto, default: manual }
       - { path: "repos.*.drafts", to: true, default: false }
       - { path: "repos.*.repo", new: true, before: "/" }
@@ -90,7 +89,6 @@ settings:
       - { path: "repos.*.ignore", change: true, default: [] }
     default:
       repos: []
-      lenses: false
   # Seconds between the service's looks at the watched repos.
   code_review_poll_seconds: { default: 60 }
 # The Reviewer Manager (agents/reviewer-manager/AGENTS.md): conversation only. It reads strangers' review threads, so it holds no

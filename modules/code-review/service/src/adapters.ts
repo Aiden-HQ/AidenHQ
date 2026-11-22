@@ -74,7 +74,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
     option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
-    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
+    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory, ...(s.recheck_only ? { recheck_only: true } : {}) }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
     previous: JSON.stringify({ findings: s.previous }),
@@ -276,12 +276,13 @@ const SETUP_BODY = "deepsec's own set-up files (`.deepsec/`), written by `deepse
 export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: KernelClient, fetcher: typeof fetch = fetch): CodeHost {
   const op = (name: string, body: unknown) => fetcher(`${kernelUrl.replace(/\/+$/, "")}/v1/codehost/${name}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10 * 60_000) });
   /** The snapshot of repo@ref through `tar args`; undefined when the code host has no such ref (404). */
-  const snapshot = async <T>(repo: string, ref: string, args: string[], read: (out: string) => T): Promise<{ sha: string; value: T } | undefined> => {
+  const snapshot = async <T>(repo: string, ref: string, args: string[], read: (out: string) => T, onCommit?: (sha: string) => void): Promise<{ sha: string; value: T } | undefined> => {
     const r = await op("snapshot", { repo, ref });
     if (r.status === 404) return undefined;
     if (!r.ok || !r.body) throw Object.assign(new Error(`the snapshot of ${repo}@${ref.slice(0, 40)}: ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`), { status: r.status });
     const sha = r.headers.get("x-aidenhq-commit") ?? "";
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`the snapshot of ${repo} named no commit`);
+    onCommit?.(sha);
     const out = await new Promise<string>((resolve, reject) => {
       // Bytes, decoded once (a multi-byte character can straddle two chunks); more than the cap is an error, never a silent cut.
       const chunks: Buffer[] = [];
@@ -303,12 +304,12 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
     return { sha, value: read(out) };
   };
   return {
-    async tree(repo, ref) {
+    async tree(repo, ref, onCommit) {
       const s = await snapshot(repo, ref, ["-tzf", "-"], (out) => {
         const paths = out.split("\n").filter((l) => l && !l.endsWith("/")).map((l) => l.replace(/^\.\//, ""));
         if (paths.length > 200_000) throw new Error(`${repo} has more than 200,000 files: a review reads at most that many`);
         return paths;
-      });
+      }, onCommit);
       if (!s) throw Object.assign(new Error(`${repo} has no ${ref.slice(0, 40)}`), { status: 404 });
       return { sha: s.sha, paths: s.value };
     },

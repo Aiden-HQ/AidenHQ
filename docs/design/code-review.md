@@ -41,7 +41,7 @@ code_review:
 ```
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
-claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one at both moments, else it is refused (the service, the board and the compile all say so); a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
+claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service, the board and the compile all say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge and a `fixed` claim is still rechecked, at the pushed head, by the first mandatory `on_open` combo at low effort; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
 short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
 price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
@@ -237,10 +237,12 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply
   still works. Any other reply is conversation.
   The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds
-  the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one); unsure, still present or silent never reopens one,
-  and a finding answered and reported again stays answered. A reopened finding goes in that run's post, titled as reopened,
-  its row linking its earlier thread. Answers are rechecked at every new head, one that changes only lockfiles or ignored
-  files included. There is no judge.
+  the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one). Each `unsafe` entry carries the finding's id, the
+  reason the answer is unsafe and the defect still present at the head (and, when given, its line there); an id alone or an entry
+  without a reason is silence, so unsure, still present or silent never reopens one, and a finding answered and reported again stays
+  answered. A reopened finding's `why` leads with that reason (the original note after it), and the same reason at the same evidence
+  never reopens it twice. It goes in that run's post, titled as reopened, its row linking its earlier thread. Answers are rechecked
+  at every new head, one that changes only lockfiles or ignored files included. There is no judge.
 - **Verdict.** `GET /v1/verdict?repo=&pr=&head=` (only the github module's own token, which the service checks with the kernel's
   `/v1/whoami`: no shared secret): `pass` once each mandatory reviewer that reviewed the head has a run there that is done
   (whole, partial or carried) or failed past its retries, and no gating finding is open; else `wait` with each reason and how it unblocks

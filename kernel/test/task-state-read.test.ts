@@ -40,6 +40,17 @@ test("open lists every open task once, closed ones not", (t) => {
   assert.equal(r.as_of, iso(30));
 });
 
+test("open with closed_since adds the tasks closed since then, by their close fact", (t) => {
+  const { add, task, reader } = setup(t);
+  task("t1", "WOR-1");
+  task("t2", "WOR-2");
+  add("task.status_changed", "t2", 5, { from: "todo", to: "done" });
+  task("t3", "WOR-3");
+  add("task.status_changed", "t3", 20, { from: "todo", to: "cancelled" });
+  const r = reader.read({ open: true, closed_since: iso(10) });
+  assert.deepEqual(r.tasks.map((x) => [x.identifier, x.lane]).sort(), [["WOR-1", "blocked"], ["WOR-3", "done"]]);
+});
+
 const A1 = "11111111-1111-4111-8111-111111111111";
 const A2 = "22222222-2222-4222-8222-222222222222";
 test("a holder Paperclip reports terminated is named and marked gone; a failed agent read leaves the rows as they are", async (t) => {

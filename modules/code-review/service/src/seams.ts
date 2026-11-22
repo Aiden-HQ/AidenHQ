@@ -22,8 +22,9 @@ export type Review = {
   tokens?: { input: number; cached: number; output: number };
   /** Earlier findings (the PR's open ones, by id) a recheck found gone at this head: their threads are resolved. */
   fixed?: string[];
-  /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again. */
-  unsafe?: string[];
+  /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again.
+   * Each names the part of the answer that is unsafe and the defect still there at the head (`line`: where it is now). */
+  unsafe?: Unsafe[];
   /** Open findings the recheck was asked about and didn't call still there. */
   cleared?: string[];
   /** Open findings the recheck was asked about, looked at and called still there. */
@@ -101,6 +102,8 @@ export type ReviewSpec = {
   previous: { id: string; severity: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean; claim?: string }[];
   /** Its combo is mandatory (a new important finding of it may restate only a gating one). */
   mandatory: boolean;
+  /** A claim recheck: only the previous findings are rechecked, no finders and no new findings. */
+  recheck_only?: boolean;
   ignore: string[]; max_nits: number;
 };
 /** `box_at`: when its check job got its box (ISO; queueing before it is not the run's work), once it has one. `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
@@ -132,6 +135,9 @@ export type Ack = {
 export type Status = { repo: string; number: number; head: string; reason: string; important: number; running: { model: string; effort: string }[]; partial?: true };
 /** A typed need an infrastructure refusal carried (github-mcp's review route, needs_owner): the cause and what fixes it. */
 export type PostNeed = { cause: string; org?: string; url?: string; scope?: string };
+/** An answered finding the recheck found unsafe: why the answer is unsafe and the defect still there at the head. */
+export type Unsafe = { id: string; why: string; line?: number };
+
 /** A posted review's outcome: posted, waiting on the AI reviewer's decision (a Tier 1 write), or refused. */
 export type Posted = {
   state: "posted" | "pending" | "refused"; why?: string; /** its kernel write record */ write?: string;
@@ -169,8 +175,8 @@ export interface Poster {
 
 /** The code host through the kernel (/v1/codehost/:op, this module's grant). */
 export interface CodeHost {
-  /** A repo at a ref (snapshot): the commit it resolved (`HEAD`: the default branch's head) and the tree's file paths. */
-  tree(repo: string, ref: string): Promise<{ sha: string; paths: string[] }>;
+  /** A repo at a ref (snapshot): the commit it resolved (`HEAD`: the default branch's head) and the tree's file paths; `onCommit` hears the commit as soon as it is known, before the listing is read. */
+  tree(repo: string, ref: string, onCommit?: (sha: string) => void): Promise<{ sha: string; paths: string[] }>;
   /** The files of a deepsec setup PR's branch (the one `setup` answered); undefined when that branch is gone. */
   setupBranch(repo: string, branch: string): Promise<{ tip: string; files: Record<string, string> } | undefined>;
   /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, on a new branch off the default branch's head, and closes an earlier setup PR. */

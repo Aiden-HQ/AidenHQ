@@ -439,6 +439,9 @@ export async function presentNow(deliverable: any, deps: any) {
       if (!records) return { present: false, unknown: true, facts: ["the runner's own merge records for this task could not be read just now"] };
       prs = byRef(records.rows, deliverable.ref);
     }
+    const named = findPrs(deliverable.ref).filter((p) => !p.url.startsWith("codehost:"));
+    const byName = !prs.length && named.length > 0;
+    if (byName) prs = named;
     let merged: { repo: string; sha: string } | undefined;
     for (const p of prs.slice(0, 5)) {
       // A read that throws is no answer (unknown, wait); GitHub answering that the repository or the PR is gone is an answer,
@@ -463,18 +466,20 @@ export async function presentNow(deliverable: any, deps: any) {
       // The stored number is this task's change only while the identifiers the task keeps say so (identityOf). When it names
       // another change, or proves nothing, that change's state is not this task's: the fact is the merge commit the task's own
       // record holds, and it is never "present", so the row escalates with what the record does hold instead.
-      const ids = await idsWithRecord(p, deps);
-      // The record that would tell this PR's own branch, head or merge could not be read and the row alone proves nothing: that
-      // is a failed read, not "this number is not the task's change", so the close waits and asks again.
-      if (ids.unread) {
-        unknown = true;
-        facts.push(`${p.url} could not be read just now`);
-        continue;
-      }
-      const who = identityOf(ids, pr);
-      if (who.state !== "ok") {
-        facts.push(who.state === "unknown" ? unverifiable(p.url) : staleFact(p.url, who.why, ids.merges));
-        continue;
+      if (!byName) {
+        const ids = await idsWithRecord(p, deps);
+        // The record that would tell this PR's own branch, head or merge could not be read and the row alone proves nothing: that
+        // is a failed read, not "this number is not the task's change", so the close waits and asks again.
+        if (ids.unread) {
+          unknown = true;
+          facts.push(`${p.url} could not be read just now`);
+          continue;
+        }
+        const who = identityOf(ids, pr);
+        if (who.state !== "ok") {
+          facts.push(who.state === "unknown" ? unverifiable(p.url) : staleFact(p.url, who.why, ids.merges));
+          continue;
+        }
       }
       if (pr.state !== "MERGED") {
         const running = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup).filter((c: any) => c.pending).map((c: any) => c.name);
@@ -552,8 +557,8 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   // No branch row names one: the runner's own records for the task (its merge queue and the merge cards it filed) still say
   // which PR delivered it, so they are read rather than reporting "no pull request yet" for a merge whose row a cleanup, a
   // prune or a state reset took away. Never a comment: its runner marker is text any writer can copy, so it proves nothing.
-  const byRecord = !prs.length && Boolean(deps.taskMerged);
-  if (byRecord) {
+  const lookup = !prs.length && Boolean(deps.taskMerged);
+  if (lookup) {
     // A records read that failed is evidence that could not be read, not "no pull request yet": the latter is a missing
     // deliverable that closes the task after MISSING_WAIT_MS, so a 502 on the kernel's own records would close a task whose
     // merge is exactly what those records hold.
@@ -561,6 +566,13 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     if (!records) return { awaiting: "the runner's own merge records for this task could not be read just now" };
     prs = byRef(records.rows, ref);
   }
+  const byRecord = lookup && prs.length > 0;
+  // Neither a branch row nor a merge record of this task holds the PR the ref names (another task opened or merged it): the
+  // ref is that PR's identity, so it is read directly, graded by the same criteria as the task's own, and waits while unmerged.
+  // A named change on this server's own code host has no read here (the kernel serves none), so it stays unnamed as before.
+  const named = findPrs(ref).filter((p) => !p.url.startsWith("codehost:"));
+  const byName = !prs.length && named.length > 0;
+  if (byName) prs = named;
   if (!prs.length) return { awaiting: "no pull request yet", missing: true };
   const facts: string[] = (prs as any).elsewhere ? [(prs as any).elsewhere] : [];
   const versions: string[] = [];
@@ -574,13 +586,26 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
   // `pr` task's deliverable, and when the task's own records name a merged PR in the same repo beside the superseded branch it
   // replaced, the merged PR is what landed the work and the closed one is not read at all.
   const states = new Map<string, any>();
+  const absent = new Set<string>();
   for (const p of candidates) {
-    const pr = (await deps.pr(p.repo, p.number))?.repository?.pullRequest;
+    const answer = await deps.pr(p.repo, p.number);
+    const pr = answer?.repository?.pullRequest;
+    // GitHub answering that a named PR does not exist is an answer, not an unread one: that PR is left out, and the deliverable is
+    // missing only when none of those named exists.
+    if (byName && (answer?.repository === null || pr === null)) {
+      absent.add(key(p));
+      continue;
+    }
     if (!pr) return { awaiting: `${p.url} can't be read yet` };
     states.set(key(p), pr);
   }
-  const landed = new Set(candidates.filter((p) => states.get(key(p)).state === "MERGED").map((p) => String(p.repo).toLowerCase()));
-  const graded = candidates.filter((p) => states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase()));
+  const landed = new Set(candidates.filter((p) => states.get(key(p))?.state === "MERGED").map((p) => String(p.repo).toLowerCase()));
+  if (byName && absent.size === candidates.length) return { awaiting: `no pull request at ${candidates.map((p) => p.url).join(", ")}`, missing: true };
+  // A ref naming several PRs ("replaces #3, delivered in #7") is delivered by the one that merged: an absent one is left out,
+  // and an open one in the repository where another merged is that merge's predecessor, so it does not hold the grade (an open
+  // one in another repository is its own deliverable and still waits).
+  const mergedIn = new Set(candidates.filter((p) => states.get(key(p))?.state === "MERGED").map((p) => String(p.repo).toLowerCase()));
+  const graded = candidates.filter((p) => states.has(key(p)) && (states.get(key(p)).state !== "CLOSED" || !landed.has(String(p.repo).toLowerCase())) && !(byName && mergedIn.has(String(p.repo).toLowerCase()) && states.get(key(p)).state !== "MERGED"));
   for (const p of graded) {
     // Closed without merging is not a merge, not "still running", and not a branch a revision request can still reach: its head
     // is fixed, so its checks and diff are not read as the task's deliverable. The row holds for evidence instead.
@@ -589,12 +614,14 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // repository restarts numbering, and the number can then name an unrelated change. That change's diff and description are
     // not this task's, so nothing of it is read or graded; the wait says so, and names the merge commit the record holds.
     // A record that proves nothing is not graded either: the wait says the number can't be checked, rather than trusting it.
-    const ids = await idsWithRecord(p, deps);
-    if (ids.unread) return { awaiting: `${p.url}: the runner's record for this task could not be read just now` };
-    const who = identityOf(ids, pr);
-    if (who.state !== "ok") {
-      if (who.state === "unknown") return { awaiting: unverifiable(p.url) };
-      return { awaiting: `${staleFact(p.url, who.why, ids.merges)}, so this task's change cannot be read by its stored number` };
+    if (!byName) {
+      const ids = await idsWithRecord(p, deps);
+      if (ids.unread) return { awaiting: `${p.url}: the runner's record for this task could not be read just now` };
+      const who = identityOf(ids, pr);
+      if (who.state !== "ok") {
+        if (who.state === "unknown") return { awaiting: unverifiable(p.url) };
+        return { awaiting: `${staleFact(p.url, who.why, ids.merges)}, so this task's change cannot be read by its stored number` };
+      }
     }
     if (pr.state === "CLOSED") return { awaiting: `${p.url} was closed without merging` };
     const checks = namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);
@@ -606,7 +633,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // Outside the agents org and the product repo the runner can't merge and the owner doesn't: someone else merges it.
     if (pr.state === "OPEN" && deps.ownRepo && !deps.ownRepo(p.repo)) return { awaiting: `${p.url} is not merged yet` };
     // The runner's record names the PR; GitHub says what became of it, and a closed one was held above whatever named it.
-    if (byRecord && pr.state !== "MERGED") return { awaiting: `${p.url} is not merged yet` };
+    if ((byRecord || byName) && pr.state !== "MERGED") return { awaiting: `${p.url} is not merged yet` };
     const merged = pr.state === "MERGED";
     const sha = merged ? (pr.mergeCommit?.oid ?? pr.headRefOid) : pr.headRefOid;
     const head = `### ${p.url}\n`;
@@ -624,7 +651,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     prs_.push({ repo: p.repo, number: p.number, merge: merged ? (pr.mergeCommit?.oid ?? "") : "", mergedAt: pr.mergedAt ?? "", shows });
     // The base commit (baseCommitOf): the base ref's commit recorded on the PR, never the base branch's moving tip or the git
     // merge base. "not established" is missing evidence rather than a guess.
-    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the recorded base ref commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}`);
+    facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the recorded base ref commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}${byName ? "; named by the deliverable's own ref" : ""}`);
     // The command facts this change adds: one line per green suite job on this head (see `commandFacts`).
     facts.push(...(await commandFacts(pr, p.repo, deps)));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.

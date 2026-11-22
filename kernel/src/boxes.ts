@@ -8,7 +8,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { mcpBlock } from "../../services/computer/lib.ts";
+import { mcpBlock, unemittedServers } from "../../services/computer/lib.ts";
 import type { Admitted } from "./admission.ts";
 import { mintToken } from "./gateway/token.ts";
 import type { Whoami } from "./identity.ts";
@@ -75,7 +75,7 @@ export type Attachments = {
 /** A launcher that can't answer now (a 5xx, a timeout, unreachable): the launch is deferred to the next tick, never failed. */
 const unavailable = (e: Error): never => { throw new JobError(503, "launcher-unavailable", `the computer launcher can't answer now (${String(e.message).slice(0, 200)})`); };
 
-export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, attachments, once, log, boxExec = dockerExec, now = Date.now, stopping = () => false, stateNeed }: {
+export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, declaredServers, handbook, cleanup, clones, identity, attachments, once, log, boxExec = dockerExec, now = Date.now, stopping = () => false, stateNeed }: {
   db: DatabaseSync; attachments: Attachments; once: Once; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
   /** Who the agent's commits are authored as: its name and its own address (never the owner's). */
   identity: (agent: string) => Promise<{ name: string; email: string; agent?: string }>;
@@ -87,6 +87,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   cleanup: (job: string) => boolean;
   /** config/computers.json `connections`: each connection's tool timeout, for the box's Codex config. */
   connections: () => Record<string, { tool_timeout_sec?: number }>;
+  /** The MCP servers the agent's compiled config declares (config/paperclip.yaml, by its Paperclip id): undefined skips the check. */
+  declaredServers?: (agentId: string) => string[] | undefined;
   /** The agent's compiled handbook (setup writes config/handbooks/<agent id>.md), or undefined. */
   handbook: (agent: string) => string | undefined;
   log: (msg: string, fields?: Record<string, unknown>) => void;
@@ -109,7 +111,13 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     writeFileSync(join(state, "AGENTS.md"), book, { mode: 0o600 });
     const token = mintToken(secret("gateway_job_secret"), { kind: "job", job: job.id, agentId: job.agent, issueId: job.task, ttlMs: (cfg.timeout_minutes + 60) * 60_000 }, now());
     // The box's connections: exactly what this job's token resolves to (its frozen authority), never the grants table.
-    const mcp = mcpBlock((await whoami(token)).tools, connections(), cfg.boxGatewayUrl);
+    const tools = (await whoami(token)).tools;
+    const conns = connections();
+    // A declared server the frozen authority or the connections don't emit would start the run silently without it: refuse
+    // instead, before the launcher is called. A check job's authority deliberately has no tools, so it is exempt.
+    const missing = a.profile === "check" ? [] : unemittedServers([...new Set(declaredServers?.(job.agent) ?? [])], tools, conns);
+    if (missing.length) throw new JobError(500, "mcp-server-missing", `declares MCP server(s) ${missing.join(", ")} but this job's frozen authority has no tools for them; refusing to start a run without them`);
+    const mcp = mcpBlock(tools, conns, cfg.boxGatewayUrl);
     // The task's last box goes first (the launcher keeps one per task); while it is still going, the job waits a tick.
     for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND released IS NULL AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await release(r.id).catch(unavailable);
     // After that release: a cleanup it does removes the last job's workspace, never this one's.
@@ -166,10 +174,13 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
    * The session to resume: the one of this agent's last finished job on this task with this engine, when that job's engine ran
    * (it wrote events). A resume that died at start (no events: its session isn't in the engine home) starts the next job
    * fresh, so one lost session never fails every later job; a job the kernel didn't admit (before the engine home was per agent
-   * and task) is never resumed.
+   * and task) is never resumed. A row that recorded no session and read no engine events never ran (an MCP preflight
+   * refusal, no engine home, no handbook, a clone that couldn't finish, a box whose exec never started the engine), so it is
+   * not the session's newest word: skip it. A row that did resume but died before any event keeps its session and still
+   * starts the next job fresh, as before.
    */
   const lastSession = (agent: string, task: string, engine: string) => {
-    const r = db.prepare("SELECT session, offset FROM jobs WHERE agent = ? AND task = ? AND engine = ? AND authority IS NOT NULL AND state NOT IN ('admitted', 'running') ORDER BY at DESC LIMIT 1").get(agent, task, engine) as { session: string | null; offset: number } | undefined;
+    const r = db.prepare("SELECT session, offset FROM jobs WHERE agent = ? AND task = ? AND engine = ? AND authority IS NOT NULL AND NOT (offset = 0 AND session IS NULL) AND state NOT IN ('admitted', 'running') ORDER BY at DESC LIMIT 1").get(agent, task, engine) as { session: string | null; offset: number } | undefined;
     return r && r.offset > 0 ? r.session ?? undefined : undefined;
   };
 

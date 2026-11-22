@@ -3,7 +3,7 @@
 import type { Assignee } from "./board.js";
 import type { Issue } from "./paperclip.js";
 
-export type CrewState = "needs" | "failed" | "working" | "queued" | "done";
+export type CrewState = "needs" | "failed" | "working" | "queued" | "waiting" | "done";
 
 /** One agent on a task: its state, and the issues it works in (one, or a fan-out's many). */
 export interface CrewMember {
@@ -16,15 +16,15 @@ export interface CrewMember {
 }
 
 /** What needs the user most, first: an agent waiting on them, then one that's stuck, then one to approve. */
-const URGENCY: CrewState[] = ["needs", "failed", "working", "queued", "done"];
+const URGENCY: CrewState[] = ["needs", "failed", "working", "queued", "waiting", "done"];
 export const mostUrgent = (states: CrewState[]): CrewState => URGENCY.find((s) => states.includes(s)) ?? "done";
 
 export interface CrewInput {
   assignees: Assignee[];
-  /** Read markers per issue, and the default for issues never opened. */
-  seen: (issueId: string) => string;
   /** Agents working on or queued for an issue, by identifier (activity.ts). */
   working: Map<string, { since: string | null; queued: boolean }>;
+  /** The kernel's state of an issue, by id: what a part's line says. */
+  state?: (issueId: string) => { kind: string; reason: string; attention: { who: string; why: string }[] } | undefined;
 }
 
 const crewAgent = (i: Issue, list: Assignee[]) => list.find((a) => a.kind !== "me" && a.key === i.assigneeAgentId);
@@ -78,18 +78,19 @@ export async function partsToClose(
   return out;
 }
 
-/** Where one issue stands for its agent. */
-export function issueState(i: Issue, agent: Assignee, input: CrewInput): CrewState {
+/** Where one issue stands for its agent: the kernel's state of it (never unread activity alone). */
+export function issueState(i: Issue, input: CrewInput): CrewState {
+  const s = input.state?.(i.id);
+  if (s?.attention.some((a) => a.who === "owner")) return "needs";
   const w = input.working.get(i.identifier);
   if (w) return w.queued ? "queued" : "working";
-  const closed = i.status === "done" || i.status === "cancelled";
-  // Something new to read is the user's turn, even on a part that's closed.
-  const activityAt = i.lastActivityAt ?? i.updatedAt;
-  if (activityAt > input.seen(i.id)) return "needs";
-  // Assigned and not picked up yet (nothing happened since it was made): Paperclip wakes the agent.
-  if (!closed && i.status === "todo" && Date.parse(activityAt) - Date.parse(i.createdAt) < 60_000) return "queued";
-  return "done";
+  if (s?.attention.some((a) => a.why === "failed")) return "failed";
+  if (s?.kind === "working") return "working";
+  if (s?.reason === "job_queued" || s?.reason === "job_held") return "queued";
+  return closedIssue(i) || s?.kind === "done" ? "done" : "waiting";
 }
+/** Paperclip has it done or cancelled. */
+export const closedIssue = (i: Pick<Issue, "status">) => i.status === "done" || i.status === "cancelled";
 
 /**
  * The crew of one card: the card's own agent when it's assigned to one (older tasks), then
@@ -105,13 +106,13 @@ export function crewOf(card: Issue, children: Issue[], input: CrewInput): CrewMe
     groups.set(agent.key, g);
   }
   const members = [...groups.values()].map(({ agent, issues }): CrewMember => {
-    const states = issues.map((i) => ({ id: i.id, identifier: i.identifier, title: i.title, state: issueState(i, agent, input) }));
+    const states = issues.map((i) => ({ id: i.id, identifier: i.identifier, title: i.title, state: issueState(i, input), closed: closedIssue(i) }));
     const since = issues.map((i) => input.working.get(i.identifier)?.since).find((s) => s !== undefined);
     return {
       agent: agent.key,
       state: mostUrgent(states.map((s) => s.state)),
-      issues: states,
-      ...(states.length > 1 ? { finished: states.filter((s) => s.state === "done" || s.state === "needs").length } : {}),
+      issues: states.map(({ closed: _, ...s }) => s),
+      ...(states.length > 1 ? { finished: states.filter((s) => s.closed).length } : {}),
       ...(since !== undefined ? { since } : {}),
     };
   });

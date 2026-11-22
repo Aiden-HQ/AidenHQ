@@ -68,7 +68,12 @@ async function host(t) {
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}`;
   const grants = { "agent-1": { key: "acme-crew", roles: ["notes"], max_parallel: 2, engine: "wait", engines: ["wait", "wait2"], model: "acme/m1", models: ["acme/m1", "acme/m2"], tools: { slack: ["search"], tasks: ["create"] } } };
+  // The compiled declaration (config/paperclip.yaml) and the connections the box may use, both mutable per test.
+  const declared = { "agent-1": ["slack", "tasks"] };
+  const conns = { slack: {}, tasks: {} };
   const db = new DatabaseSync(":memory:");
+  // The wakes table admission's facts read (a real kernel's inbox; this host's wakes are fakes).
+  db.exec("CREATE TABLE IF NOT EXISTS wakes (key TEXT PRIMARY KEY, task TEXT NOT NULL, agent TEXT NOT NULL, state TEXT NOT NULL, at INTEGER NOT NULL, job TEXT, until INTEGER)");
   const secret = (name) => (name === "launcher_kernel_key" ? "kernel-key" : (existsSync(join(cfg.secretsDir, name)) ? readFileSync(join(cfg.secretsDir, name), "utf8") : ""));
   const whoami = createIdentity({ grants: () => grants, connections: () => ({}), jobcaps: () => ({}), secret, job: (id) => admittedJob(db, id) });
   let boxes;
@@ -95,7 +100,7 @@ async function host(t) {
   const attachments = { list: async () => attached.map((a) => ({ originalFilename: a.name, byteSize: a.data.length })), add: async (task, name, type, data) => void attached.push({ task, name, type, data }) };
   const once = createOnce(db);
   const draining = { on: false };
-  const make = (now) => createBoxes({ stopping: () => draining.on, db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, boxExec, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => ({ slack: {}, tasks: {} }), identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
+  const make = (now) => createBoxes({ stopping: () => draining.on, db, cfg, jobs, attachments, once, cleanup: jobTools.cleanup, clones, boxExec, call: launcherClient(url, () => secret("launcher_kernel_key")), secret, whoami, connections: () => conns, declaredServers: (id) => declared[id], identity: (a) => ({ name: "Kai", email: `${grants[a].key}@acme.aidenhq.ai` }), handbook: (a) => (existsSync(join(dir, "config/handbooks", `${a}.md`)) ? readFileSync(join(dir, "config/handbooks", `${a}.md`), "utf8") : undefined), log: () => {}, ...(now ? { now } : {}) });
   boxes = make();
   const wakes = new Map();
   const admission = createAdmission({
@@ -108,7 +113,7 @@ async function host(t) {
   });
   const admit = (task, { full } = {}) => { wakes.set(task, { task, agent: "agent-1" }); return admission.admit("acme-dispatch", { wake: task, prompt: "hello", ...(full ? { full_prompt: full } : {}) }); };
   const release = () => writeFileSync(join(cfg.logsDir, "release"), "");
-  return { attached, dir, cfg, db, grants, calls, whoami, admit, release, make, jobTools, cloned, codehostDown, launcher, draining };
+  return { attached, dir, cfg, db, grants, conns, declared, calls, whoami, admit, release, make, jobTools, cloned, codehostDown, launcher, draining };
 }
 
 test("admit → box → run: the kernel's key, the job token as the box's credential, the frozen tools in its config, the handbook home", async (t) => {
@@ -145,10 +150,51 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   assert.ok(other.id);
 });
 
+/**
+ * A declared MCP server the frozen authority or the connections don't emit never starts the run: the job fails naming the
+ * server, and the launcher's /job is never called (no box is made).
+ */
+test("a declared MCP server missing from the frozen tools fails the job by name, before the launcher", async (t) => {
+  const h = await host(t);
+  h.declared["agent-1"] = ["slack", "github", "tasks"];
+  await assert.rejects(h.admit("task-1"), (e) => e.status === 500 && /github/.test(e.message) && /frozen authority has no tools/.test(e.message));
+  const rows = h.db.prepare("SELECT state, final FROM jobs").all();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, "failed");
+  assert.match(rows[0].final, /github/);
+  assert.match(rows[0].final, /frozen authority has no tools/);
+  assert.equal(h.calls.filter((c) => c.route === "/job").length, 0); // never reached
+  // A server in the frozen tools but absent from the connections is the same refusal.
+  h.declared["agent-1"] = ["slack", "tasks"];
+  delete h.conns.slack;
+  await assert.rejects(h.admit("task-1"), (e) => e.status === 500 && /slack/.test(e.message));
+  assert.match(h.db.prepare("SELECT final FROM jobs ORDER BY rowid DESC LIMIT 1").get().final, /slack/);
+  assert.equal(h.calls.filter((c) => c.route === "/job").length, 0);
+});
+
+test("a check-profile job is exempt: its authority has no tools by design", async (t) => {
+  const h = await host(t);
+  h.grants["agent-1"].profile = "check";
+  h.declared["agent-1"] = ["slack", "tasks"];
+  const job = await h.admit("task-1");
+  const boxed = h.calls.some((c) => c.route === "/job");
+  // The fake engine waits for the release file: let it finish even when an assertion below fails, or the file hangs to the timeout.
+  // Only wait for a box that was actually launched, so cleanup never replaces the assertion that named the regression.
+  try {
+    assert.equal(job.state, "running");
+    assert.equal(h.calls.filter((c) => c.route === "/job").length, 1);
+    assert.doesNotMatch(h.calls.find((c) => c.route === "/job").body.mcp, /\[mcp_servers\./);
+  } finally {
+    h.release();
+    if (boxed) await until("the box released", () => h.db.prepare("SELECT released FROM jobs WHERE id = ?").get(job.id).released > 0);
+  }
+});
+
 test("a job resumes only a session its engine ran in: never one from before the kernel admitted jobs, never one whose resume died at start", async (t) => {
   const h = await host(t);
   const session = (job) => JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8")).session;
-  const row = (id, at, sessionId, offset, authority) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 0, '', '', ?, '[]', 0, 0, ?, ?, ?, ?, 1)").run(id, at, authority ? "failed" : "done", authority, sessionId, offset);
+  // `pid > 0`: these rows are jobs whose engine was spawned (a row with pid 0 never reached one).
+  const row = (id, at, sessionId, offset, authority) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', 7, '', '', ?, '[]', 0, 0, ?, ?, ?, ?, 1, '{\"container\":\"c\"}')").run(id, at, authority ? "failed" : "done", authority, sessionId, offset);
   row("j-old", 1, "s-old", 500, null); // the old executor's job: its session is in another engine home
   const first = await h.admit("task-1");
   assert.equal(session(first), undefined);
@@ -157,6 +203,45 @@ test("a job resumes only a session its engine ran in: never one from before the 
   row("j-dead", Date.now() + 1000, "s-1", 0, "{}"); // resumed s-1, died before writing anything
   const second = await h.admit("task-1");
   assert.equal(session(second), undefined); // fresh, not s-1 again
+});
+
+/**
+ * A launch that never ran the engine (an MCP preflight refusal here) must not become the session's newest word: the job after
+ * it resumes the session the engine actually ran.
+ */
+test("a launch that never ran the engine does not erase the session a real run left", async (t) => {
+  const h = await host(t);
+  const session = (job) => JSON.parse(readFileSync(join(h.db.prepare("SELECT dir FROM jobs WHERE id = ?").get(job.id).dir, "job.json"), "utf8")).session;
+  const first = await h.admit("task-1");
+  h.release();
+  await until("the first job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(first.id).state === "done");
+  // The run left a resumable session; the next launch is refused before a box.
+  h.db.prepare("UPDATE jobs SET session = 's-real', offset = 900 WHERE id = ?").run(first.id);
+  h.declared["agent-1"] = ["slack", "github", "tasks"];
+  await assert.rejects(h.admit("task-1"), (e) => e.status === 500 && /github/.test(e.message));
+  const refused = h.db.prepare("SELECT state, pid FROM jobs ORDER BY rowid DESC LIMIT 1").get();
+  assert.equal(refused.state, "failed");
+  assert.equal(refused.pid, 0); // no engine was spawned, so it never ran
+  // The refusal alone, with nothing else newer, must not turn the resume into a fresh start.
+  h.declared["agent-1"] = ["slack", "tasks"];
+  const afterRefusal = await h.admit("task-1");
+  try {
+    assert.equal(session(afterRefusal), "s-real");
+  } finally {
+    // The fake engine waits for the release file: let it finish even when the assertion fails.
+    h.release();
+    await until("the job after the refusal ends", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(afterRefusal.id).state === "done");
+  }
+  // A box whose exec never started the engine records no session and reads no events: it never ran, so it must be skipped
+  // for the session before it to come back. (The refusal above is the no-box case.)
+  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES ('j-exec-failed', 'acme-dispatch', 'agent-1', 'task-1', 'wait', 7, '', '', ?, '[]', 0, 0, 'failed', '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(Date.now() + 1000);
+  const boxed = await h.admit("task-1");
+  try {
+    assert.ok(session(boxed), "a box whose engine never ran must not mask the session before it");
+  } finally {
+    h.release();
+    await until("the boxed job's end", () => h.db.prepare("SELECT state FROM jobs WHERE id = ?").get(boxed.id).state === "done");
+  }
 });
 
 test("a job's .aidenhq/out files are attached to its task when it ends: regular files only (a link is refused, never read), at most 20, once", async (t) => {

@@ -31,8 +31,7 @@ export type Repo = {
   forks: "manual" | "auto";
   ignore: string[]; max_nits: number;
 };
-/** `lenses`: repo reviews and the option catalog are on (off by default until their security review is done). */
-export type Config = { repos: Repo[]; lenses: boolean; errors: string[] };
+export type Config = { repos: Repo[]; errors: string[] };
 
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
@@ -41,6 +40,8 @@ export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
   drafts: false, forks: "manual", ignore: [], max_nits: 5,
 };
 /** A repo is gated (its merges wait for code review) when any of its combos is mandatory. */
+/** A gated repo whose on_push has no mandatory combo: the PR's opening review stands for every later head (engine.ts gateRuns). */
+export const openOnly = (r: Pick<Repo, "on_open" | "on_push">) => r.on_open.some((c) => c.mandatory) && !r.on_push.some((c) => c.mandatory);
 export const gated = (r: Pick<Repo, "on_open" | "on_push">) => [...r.on_open, ...r.on_push].some((c) => c.mandatory);
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
@@ -91,8 +92,9 @@ function repo(raw: unknown): Repo | { error: string } {
     out[k] = c;
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
-  // A gated repo has a mandatory combo at both moments: a PR's first head is covered by on_open's, each later one by on_push's.
-  if (out.on_open.some((c) => c.mandatory) !== out.on_push.some((c) => c.mandatory)) return { error: "a mandatory combo goes in both on_open and on_push (a PR's first head is reviewed by on_open's, each push by on_push's)" };
+  // A mandatory on_push combo needs one in on_open (a PR's first head is reviewed by on_open's). on_push without one is fine: the
+  // opening review then stands for every later head, and open findings and claim rechecks still decide.
+  if (out.on_push.some((c) => c.mandatory) && !out.on_open.some((c) => c.mandatory)) return { error: "a mandatory on_push combo needs a mandatory on_open one (a PR's first head is reviewed by on_open's)" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
   if (Number.isNaN(num(out.max_nits, 0))) return { error: "max_nits is a number" };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };
@@ -117,6 +119,5 @@ export function readConfig(text: string | undefined): Config {
     else if (twice.has(v.repo)) errors.push(`repos[${i}]: ${v.repo} is listed more than once`);
     else repos.push(v);
   }
-  if (raw.lenses !== undefined && typeof raw.lenses !== "boolean") errors.push("lenses is true or false");
-  return { repos, lenses: raw.lenses === true, errors };
+  return { repos, errors };
 }

@@ -16,6 +16,7 @@
 //      task.created left (pruned), idle · history_expired
 //   6. attention, across every obligation whatever the kind: open cards, owner and delegator waits, a handback, a failure,
 //      and unpolled, orphaned or unknown idle past 15 minutes
+//   7. lane, the board's column, from every obligation at once (`laneOf`), never from the representative reason alone
 // An owner wait ends only at the owner's comment newer than it (never a job starting, never an agent's comment); a
 // delegator wait at a newer comment by anyone but the holder and the kernel; an agent wait at its time, the next job start or
 // a newer wait. Children never make a task wait: only a named blocker does.
@@ -30,9 +31,14 @@ export type Reason =
   | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback" | "owner_task"
   | "blocked" | "agent_wait" | "module_wait" | "scheduled" | "chat_turn" | "backlog"
   | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string };
+export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string; /** When what it names began (the board orders asks by it). */ since: string };
+/** The board's column for a task (its Agent work layout): one per task, from all its obligations (laneOf). */
+export type Lane = "needs_you" | "working" | "waiting" | "blocked" | "idle" | "done";
 export type TaskState = {
   kind: Kind; reason: Reason; ref?: string; since: string; holder: string | null; attention: Attention[];
+  lane: Lane;
+  /** An open blocker (`task:<id>`), whatever the representative reason: a queued job or a wait can outrank it. */
+  blocker?: string;
   /** A module stage's label, only while working or waiting. */
   stage?: string;
   /** The final attempt's grade, only when done. */
@@ -59,6 +65,25 @@ const CLOSED = new Set(["done", "cancelled"]);
 const FAILED = new Set(["failed", "timeout", "lost"]);
 /** Waiting reasons, highest first: the representative reason is the highest open one (the oldest of it on a tie). */
 const ORDER: Reason[] = ["job_queued", "job_held", "card_review", "card_owner", "owner_wait", "delegator_wait", "handback", "owner_task", "blocked", "agent_wait", "module_wait", "scheduled", "chat_turn", "backlog"];
+
+/** Agent attention that puts a task in Blocked: each raised only after its own grace (above). */
+const STUCK = new Set<Attention["why"]>(["failed", "stalled_wait", "unpolled", "orphaned", "unknown", "history_expired"]);
+const QUIET = new Set<Reason>(["scheduled", "backlog", "owner_task", "chat_turn"]);
+
+/**
+ * The lane, first match wins: done; anything waiting on the owner (a running task can carry one); a running job; a blocker,
+ * a failure or an agent's stuck attention; a quiet reason or idle; else waiting (queued, held, a review, another's answer, a
+ * module's step).
+ */
+export function laneOf(s: Omit<TaskState, "lane">): Lane {
+  if (s.kind === "done") return "done";
+  if (s.attention.some((a) => a.who === "owner")) return "needs_you";
+  if (s.kind === "working") return "working";
+  if (s.blocker || s.attention.some((a) => a.who === "agent" && STUCK.has(a.why))) return "blocked";
+  if (s.kind === "idle" || QUIET.has(s.reason)) return "idle";
+  return "waiting";
+}
+const laned = (s: Omit<TaskState, "lane">): TaskState => ({ ...s, lane: laneOf(s) });
 
 const ms = (s: string) => Date.parse(s);
 const iso = (n: number) => new Date(n).toISOString();
@@ -87,11 +112,11 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
 
   // 1. closed
   if (status && CLOSED.has(String(status.data.to))) {
-    return { kind: "done", reason: status.data.to === "cancelled" ? "cancelled" : "closed", since: status.at, holder, attention: [], ...(grade ? { grade } : {}) };
+    return laned({ kind: "done", reason: status.data.to === "cancelled" ? "cancelled" : "closed", since: status.at, holder, attention: [], ...(grade ? { grade } : {}) });
   }
   if (!created) {
     const first = own[0];
-    return { kind: "idle", reason: "history_expired", since: first?.at ?? iso(now), holder, attention: [{ who: "agent", why: "history_expired", ref: self }] };
+    return laned({ kind: "idle", reason: "history_expired", since: first?.at ?? iso(now), holder, attention: [{ who: "agent", why: "history_expired", ref: self, since: first?.at ?? iso(now) }] });
   }
 
   // The current open stretch: everything after the latest reopen (a status leaving done or cancelled).
@@ -219,15 +244,15 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   // Attention, across every obligation.
   const attention: Attention[] = [];
   for (const o of open) {
-    if (o.reason === "card_owner" || o.reason === "card_review") attention.push({ who: o.reason === "card_owner" ? "owner" : "reviewer", why: "card", ref: o.ref! });
+    if (o.reason === "card_owner" || o.reason === "card_review") attention.push({ who: o.reason === "card_owner" ? "owner" : "reviewer", why: "card", ref: o.ref!, since: iso(o.since) });
   }
   for (const o of open) {
-    if (o.reason === "owner_wait") attention.push({ who: "owner", why: "owner_wait", ref: o.ref! });
-    if (o.reason === "delegator_wait") attention.push({ who: "agent", why: "delegator_wait", ref: o.ref! });
-    if (o.reason === "handback") attention.push({ who: "owner", why: "handback", ref: o.ref! });
+    if (o.reason === "owner_wait") attention.push({ who: "owner", why: "owner_wait", ref: o.ref!, since: iso(o.since) });
+    if (o.reason === "delegator_wait") attention.push({ who: "agent", why: "delegator_wait", ref: o.ref!, since: iso(o.since) });
+    if (o.reason === "handback") attention.push({ who: "owner", why: "handback", ref: o.ref!, since: iso(o.since) });
   }
-  if (fail) attention.push({ who: "agent", why: "failed", ref: fail.ref });
-  for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref! });
+  if (fail) attention.push({ who: "agent", why: "failed", ref: fail.ref, since: fail.at });
+  for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref!, since: iso(o.since) });
 
   // The open wait's question, whichever recipient answers it: the ask gate (escalate.ts) reads this, so a questionless wait
   // can't pass for an unanswered ask.
@@ -235,7 +260,8 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const judging = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? wait.f.at : undefined;
   const openNote = wait && open.some((o) => o.ref === wait!.f.subject) ? str(wait.f.data.note) : undefined;
   const openUntil = waitQuestion ? str(wait!.f.data.until) : undefined;
-  const extra = { ...(waitQuestion ? { question: waitQuestion } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
+  const blocker = open.find((o) => o.reason === "blocked")?.ref;
+  const extra = { ...(blocker ? { blocker } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);
@@ -244,12 +270,12 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const pick = (os: Open[]) => [...os].sort((a, b) => ORDER.indexOf(a.reason) - ORDER.indexOf(b.reason) || a.since - b.since)[0]!;
 
   const running = open.filter((o) => o.reason === "job_running").sort((a, b) => a.since - b.since)[0];
-  if (running) return { kind: "working", reason: "job_running", ref: running.ref, since: iso(running.since), holder, attention, ...extra, ...hint() };
+  if (running) return laned({ kind: "working", reason: "job_running", ref: running.ref, since: iso(running.since), holder, attention, ...extra, ...hint() });
   if (open.length) {
     const top = pick(open);
-    return { kind: "waiting", reason: top.reason, ...(top.ref ? { ref: top.ref } : {}), since: iso(top.since), holder, attention, ...extra, ...hint() };
+    return laned({ kind: "waiting", reason: top.reason, ...(top.ref ? { ref: top.ref } : {}), since: iso(top.since), holder, attention, ...extra, ...hint() });
   }
-  if (fail) return { kind: "idle", reason: "failed", ref: fail.ref, since: fail.at, holder, attention };
+  if (fail) return laned({ kind: "idle", reason: "failed", ref: fail.ref, since: fail.at, holder, attention });
   // Nothing open: unpolled when no enabled dispatcher runs the holder (nothing will ever take a wake for it, so `orphaned`
   // would misname it, and so would `unknown`: the wake went nowhere because nobody reads them); unknown when the last thing was a
   // wake nothing took (someone holds the task); else orphaned.
@@ -257,8 +283,8 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const unpolled = Boolean(holder && holder !== "owner" && polled && !polled(holder));
   const reason: Reason = unpolled ? "unpolled" : unknown ? "unknown" : "orphaned";
   const since = unknown ? agedOut!.at : quiet;
-  if (now - since >= ATTENTION_AFTER_MS) attention.push({ who: "agent", why: reason, ref: self });
-  return { kind: "idle", reason, since: iso(since), holder, attention };
+  if (now - since >= ATTENTION_AFTER_MS) attention.push({ who: "agent", why: reason, ref: self, since: iso(since) });
+  return laned({ kind: "idle", reason, since: iso(since), holder, attention });
 }
 
 /** The final attempt's verdict (grading's `grade.verdict`, attempt in data). */

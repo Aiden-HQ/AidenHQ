@@ -100,8 +100,6 @@ export interface RepoRow {
 }
 export interface ReposView {
   repos: RepoRow[];
-  /** Repo reviews and the option catalog are on (settings.code_review.lenses); the service refuses both while off. */
-  lenses?: boolean;
   day_spent_usd: number;
   errors?: string[];
 }
@@ -198,14 +196,12 @@ export const RepoSchema = z
   })
   .strict()
   .superRefine((r, ctx) => {
-    if (r.on_open.some((c) => c.mandatory) !== r.on_push.some((c) => c.mandatory)) ctx.addIssue({ code: "custom", path: ["on_push"], message: "a mandatory reviewer goes in both moments (a PR's first review and each push)" });
+    if (r.on_push.some((c) => c.mandatory) && !r.on_open.some((c) => c.mandatory)) ctx.addIssue({ code: "custom", path: ["on_open"], message: "a mandatory reviewer on each push needs one when a PR opens" });
   });
 export type RepoConfig = z.infer<typeof RepoSchema>;
 export const CodeReviewSchema = z
   .object({
     repos: z.array(RepoSchema).max(100),
-    /** Repo reviews and the option catalog are on (the service refuses both while this is off). */
-    lenses: z.boolean().optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -236,7 +232,7 @@ export function upgradeConfig(raw: unknown): CodeReview | null {
     const use = ok.success ? ok : fallback;
     if (use.success && !repos.some((x) => x.repo.toLowerCase() === use.data.repo.toLowerCase())) repos.push(use.data);
   }
-  return { repos, ...(typeof v.lenses === "boolean" ? { lenses: v.lenses } : {}) };
+  return { repos };
 }
 /** A combo's short label: "Codex · deepseek-flash-latest · medium". */
 export const comboLabel = (c: Pick<Combo, "engine" | "model" | "effort">, catalog?: EngineCatalog) =>

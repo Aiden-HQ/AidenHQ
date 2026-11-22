@@ -1,35 +1,17 @@
 ---
 name: knowledge-daily
-description: The daily knowledge pass - check new notes for duplicates, contradictions and missing provenance, confirm obvious identity links, and record the findings.
+description: "Checks new notes and confirms obvious identity links. Use on a \"Librarian daily pass\" run."
 ---
 
 # Knowledge daily pass
 
-## Tools
+Tools: `obsidian_*`, `knowledge_*`, `warehouse_query`, `person_identity_decide`, `handbook_list`/`handbook_read`,
+`task_*` (a rule fix for another agent goes to Aiden: `task_create` `assignee: chief-of-staff`). The one note write is `meeting_note_correct`; any other fix goes in the
+weekly report under "Needs a tool". Without the notes tools, skip step 1.
 
-- **Notes vault:** `obsidian_search`, `obsidian_read`, `obsidian_read_document_map` (the owner's notes), `knowledge_list`,
-  `knowledge_index`, `knowledge_search`, `knowledge_read`, and one write: `meeting_note_correct` (fix a meeting note).
-- **Warehouse:** `warehouse_query` (read-only SQL): `src_meta.people_identities` and the `src_<source>.users` views.
-  `person_identity_decide(source, source_user_id, decision: confirm|reject, reason)` decides one proposed link.
-- **Rules:** `handbook_list`, `handbook_read(agent_key)` (read-only); a rule fix for another agent goes to Aiden as a
-  `task_create` (`assignee: chief-of-staff`), who hands it to that agent.
-
-No tool edits a knowledge page, an Obsidian note (other than `meeting_note_correct` on meeting notes) or a handbook.
-Never look for a way around that: a fix that needs one goes in the weekly report under "Needs a tool".
-
-## Steps
-
-Without the notes tools (no meetings module on), skip step 1.
-
-1. **Notes.** Notes and meetings new or changed since yesterday. Check each for a duplicate of an existing note, a fact
-   that contradicts an older one, and a fact with no source and date.
-   - A wrong fact in a meeting note: fix it with `meeting_note_correct`, only when the meeting's own transcript or a
-     second dated source settles it.
-   - Everything else is recorded for the weekly report: page, what is wrong, the evidence, the exact fix.
-2. **People.** `warehouse_query` on `src_meta.people_identities` where `status = 'proposed'`. A proposal is obvious when
-   the same email is on every linked source user and the display names agree: confirm it (`person_identity_decide`,
-   decision `confirm`, the evidence as the reason). Doubtful ones (different names, a shared or role mailbox, a second
-   account, an email linked to two people) stay proposed, with the reason in the findings; reject one only when the
-   evidence shows it is wrong (a bot, a shared mailbox). Names alone never settle it.
-3. One `task_comment` on your run task with the findings list, then `task_finish` with a count summary, e.g. "12 notes
-   checked, 1 fixed, 4 findings; 3 proposals obvious, 1 doubtful".
+1. **Notes** new or changed since yesterday: duplicates, contradictions, facts with no source and date. Fix a meeting note with
+   `meeting_note_correct` only when its own transcript or a second dated source settles it; record the rest for the weekly report.
+2. **People:** `src_meta.people_identities` with `status = 'proposed'`. Confirm (`person_identity_decide`, evidence as
+   reason) when the same email is on every linked source user and display names agree. Doubtful (different names, shared or role
+   mailbox, second account, email on two people) stays proposed with the reason; reject only on evidence (a bot, a shared mailbox).
+3. Comment the findings on your run task; `task_finish` with counts.

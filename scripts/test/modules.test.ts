@@ -459,11 +459,11 @@ test("teams: any module agent becomes a team record over named members (template
   assert.throws(bad({}, { overrides: { agents: { assistant: { max_parallel: 2 } } } }), /assistant is team research's record/);
 });
 
-test("code review gates a repo with a mandatory combo at both moments; one at a single moment, or a repo-level flag, fails the compile", () => {
+test("code review gates a repo with a mandatory combo in on_open (on_push's optional); one only in on_push, or a repo-level flag, fails the compile", () => {
   const c = (mandatory?: boolean) => ({ engine: "codex", model: "~a/b", effort: "low", ...(mandatory ? { mandatory } : {}) });
   assert.deepEqual(codeReviewGated({ repos: [{ repo: "Acme/App", on_open: [c(true)], on_push: [c(), c(true)] }, { repo: "acme/lib" }] }), ["acme/app"]);
-  assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)], on_push: [] }] }), /mandatory combo goes in both on_open and on_push/);
-  assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)] }] }), /both on_open and on_push/);
+  assert.deepEqual(codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)], on_push: [] }] }), ["acme/app"], "on_push's mandatory combo is optional");
+  assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c()], on_push: [c(true)] }] }), /needs a mandatory on_open one/);
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", mandatory: true }] }), /a repo's mandatory is gone/);
 });
 

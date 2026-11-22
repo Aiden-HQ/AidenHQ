@@ -1291,8 +1291,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
 }
 
 /**
- * The repos settings.code_review gates: those with a mandatory combo, which then has one at both moments (a PR's first head is
- * reviewed by on_open's, each push by on_push's). A gated repo whose setting can't gate is refused here, never dropped quietly.
+ * The repos settings.code_review gates: those with a mandatory combo, which then has one in on_open (a PR's first head is reviewed
+ * by on_open's; on_push's is optional). A gated repo whose setting can't gate is refused here, never dropped quietly.
  */
 export function codeReviewGated(cr: unknown): string[] {
   const out: string[] = [];
@@ -1300,7 +1300,7 @@ export function codeReviewGated(cr: unknown): string[] {
     if (e && typeof e === "object" && "mandatory" in e) fail(`settings.code_review.repos[${i}]: a repo's mandatory is gone: mark the combos whose review gates merges \`mandatory: true\``);
     const has = (k: string) => [e?.[k] ?? []].flat().some((c: Obj) => c?.mandatory === true);
     if (!has("on_open") && !has("on_push")) continue;
-    if (!has("on_open") || !has("on_push")) fail(`settings.code_review.repos[${i}] (${e?.repo}): a mandatory combo goes in both on_open and on_push`);
+    if (!has("on_open")) fail(`settings.code_review.repos[${i}] (${e?.repo}): a mandatory on_push combo needs a mandatory on_open one`);
     out.push(String(e.repo).toLowerCase());
   }
   return out;

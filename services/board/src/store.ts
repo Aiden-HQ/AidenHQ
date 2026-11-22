@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -176,6 +177,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS authored (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, at TEXT NOT NULL);
       -- Finished chats and tasks the owner settled out of the active lists (a snapshot, for the searchable Settled view).
       CREATE TABLE IF NOT EXISTS settled (issue_id TEXT PRIMARY KEY, identifier TEXT NOT NULL, title TEXT NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL);
+      -- Saved boards (views.ts): an account's named filters for the Tasks page; rev is bumped on every write (a stale write is refused).
+      CREATE TABLE IF NOT EXISTS views (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL, spec TEXT NOT NULL, rev INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     `);
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
@@ -460,6 +463,26 @@ export class Store {
         this.unschedule(id);
       }
     });
+  }
+
+  /** An account's saved boards, oldest first; `spec` is the stored JSON (views.ts reads it). */
+  views(accountId: string): { id: string; name: string; spec: string; rev: number }[] {
+    return this.db.prepare("SELECT id, name, spec, rev FROM views WHERE account_id = ? ORDER BY created_at, id").all(accountId) as unknown as { id: string; name: string; spec: string; rev: number }[];
+  }
+
+  addView(accountId: string, name: string, spec: string): { id: string; name: string; spec: string; rev: number } {
+    const id = randomUUID(), at = new Date().toISOString();
+    this.db.prepare("INSERT INTO views (id, account_id, name, spec, rev, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)").run(id, accountId, name, spec, at, at);
+    return { id, name, spec, rev: 1 };
+  }
+
+  /** One statement, only at `rev`: false when the row changed or is gone (the caller's 409). */
+  updateView(accountId: string, id: string, rev: number, change: { name?: string; spec?: string }): boolean {
+    return this.db.prepare("UPDATE views SET name = coalesce(?, name), spec = coalesce(?, spec), rev = rev + 1, updated_at = ? WHERE account_id = ? AND id = ? AND rev = ?").run(change.name ?? null, change.spec ?? null, new Date().toISOString(), accountId, id, rev).changes > 0;
+  }
+
+  deleteView(accountId: string, id: string, rev: number): boolean {
+    return this.db.prepare("DELETE FROM views WHERE account_id = ? AND id = ? AND rev = ?").run(accountId, id, rev).changes > 0;
   }
 
   settle(r: Omit<Settled, "at">, at = new Date().toISOString()): void {

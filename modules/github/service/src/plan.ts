@@ -249,7 +249,9 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : action === "publish_module" ? { [`${state.repo} ${state.ref}`]: { repo: state.repo, ref: state.ref, commit: state.base } }
-    : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null }]));
+    // `base_branch` is the destination the plan read: a publish's open-PR lookup and its new PR's base both use it, so a
+    // default-branch switch after approval makes the record stale rather than editing the PR into the new base.
+    : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null, base_branch: b.defaultBranch ?? null }]));
   const items = action === "push" || action === "pr" ? state.branches : action === "merge" ? state.prs : undefined;
   const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));
   return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier as 1 | 2, reason: top.reason, rule: top.rule } } : {}) };

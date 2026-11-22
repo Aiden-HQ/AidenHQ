@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { listOwners } from "../src/adapter.js";
+import { expect, it, vi } from "vitest";
+import { ownersPage } from "../src/adapter.js";
 import { selected, syncObject, syncReference } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 
@@ -18,7 +18,7 @@ function fakeStore() {
 }
 const json = (o: unknown) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
 // HubSpot's search answer as seen live: numeric ids, `total`, and `offset` = where the next page starts.
-const answer = (results: unknown[], offset = results.length, total = results.length) => json({ results, total, offset });
+const answer = (results: unknown[], offset = results.length, total = results.length) => json({ results, total, offset, urlTemplate: "https://app.hubspot.com/contacts/1234567/record/0-3/{id}?utm_source=mcp" });
 const deal = (id: string, updated: string, extra: Record<string, unknown> = {}) => ({
   id, properties: { dealname: "Acme renewal", pipeline: "default", dealstage: "contractsent", amount: "12000.50", hubspot_owner_id: "77", hs_lastmodifieddate: updated, ...extra },
 });
@@ -36,7 +36,7 @@ it("deals: the first pass is baseline from history_days, later passes from the c
   };
   await syncObject(store, call, "deals", opts());
   expect(Number(sinceSeen)).toBe(NOW - 30 * 86_400_000);
-  expect(writes[0]).toMatchObject({ table: "deal", baseline: true, row: { deal_id: "1", name: "Acme renewal", stage: "contractsent", amount: 12000.5, owner_id: "77", company_ids: [], contact_ids: [] } });
+  expect(writes[0]).toMatchObject({ table: "deal", baseline: true, row: { deal_id: "1", name: "Acme renewal", stage: "contractsent", amount: 12000.5, owner_id: "77", company_ids: [], contact_ids: [], url: "https://app.hubspot.com/contacts/1234567/record/0-3/1" } });
   expect(scopes.get("deals")).toEqual({ baselined: true, cursor: "2026-11-10T10:00:00.000Z" });
 
   writes.length = 0;
@@ -132,26 +132,46 @@ it("activities: one table keyed by type and id, body capped, the setting selects
   expect(() => selected(["deals", "tickets"])).toThrow(/unknown tickets/);
 });
 
-it("owners: every page of search_owners, active or not, by owner id (HubSpot sends no email)", async () => {
+it("owners: every page of search_owners, active or not, by owner id, checkpointed a page at a time (HubSpot sends no email)", async () => {
   const pages: Record<string, unknown> = {
     "": { owners: [{ ownerId: 11, name: "Ada Lovelace", isActive: false }, { ownerId: 12, name: " ", isActive: true }], hasMore: true, offset: 20 },
     "20": { owners: [{ ownerId: 20, name: "Grace Hopper", isActive: true }], hasMore: false, offset: 21 },
+    "12": { owners: [{ ownerId: 12, name: " ", isActive: true }], hasMore: true, offset: 20 },
   };
   const seen: unknown[] = [];
   const call = async (tool: string, args: Record<string, any>) => (expect(tool).toBe("search_owners"), seen.push(args.offset), json(pages[String(args.offset ?? "")]));
-  expect(await listOwners(call)).toEqual({ owners: [{ id: "11", name: "Ada Lovelace" }, { id: "12", name: null }, { id: "20", name: "Grace Hopper" }] });
-  expect(seen).toEqual([undefined, 20]);
-
+  expect(await ownersPage(call)).toEqual({ owners: [{ id: "11", name: "Ada Lovelace" }, { id: "12", name: null }], next: 20 });
+  expect(await ownersPage(call, 20)).toEqual({ owners: [{ id: "20", name: "Grace Hopper" }] });
   seen.length = 0;
-  const part = await listOwners(call, Date.now() - 1); // a spent budget stops after the page in hand and says where to resume
-  expect(part.owners.length).toBe(2);
-  expect(part.next).toBe(20);
-  expect((await listOwners(call, Infinity, 20)).owners.map((o) => o.id)).toEqual(["20"]);
 
   const { store, writes } = fakeStore();
-  await syncReference(store, call, ["contacts"], Date.now() - 1); // budget spent after page one: the offset is kept
+  const spent = fakeStore();
+  await syncReference(spent.store, call, ["contacts"], Date.now() - 1); // a spent budget stops the writes too: nothing is written
+  expect(spent.writes).toEqual([]);
+  expect((await spent.store.scope("owners")).cursor).toBe("11"); // and the next pass starts at the first owner not written
+  let clock = 1000; // a controlled clock: each write takes 20 ms
+  const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+  const slowStore = { ...store, upsert: async (...a: Parameters<typeof store.upsert>) => ((clock += 20), store.upsert(...a)) } as unknown as SourceStore;
+  await syncReference(slowStore, call, ["contacts"], 1030); // the budget runs out after page one: its offset is kept
+  now.mockRestore();
   expect(writes.map((w) => w.row.user_id)).toEqual(["11", "12"]);
   expect((await store.scope("owners")).cursor).toBe("20");
+  // ...and one that runs out inside a page keeps the id of the first owner not written, which is where the next pass starts.
+  const mid = fakeStore();
+  clock = 1000;
+  const now2 = vi.spyOn(Date, "now").mockImplementation(() => clock);
+  const slowMid = { ...mid.store, upsert: async (...a: Parameters<typeof store.upsert>) => ((clock += 20), mid.store.upsert(...a)) } as unknown as SourceStore;
+  await syncReference(slowMid, call, ["contacts"], 1010);
+  now2.mockRestore();
+  expect(mid.writes.map((w) => w.row.user_id)).toEqual(["11"]);
+  expect((await mid.store.scope("owners")).cursor).toBe("12");
+  seen.length = 0;
+  mid.writes.length = 0;
+  await syncReference(mid.store, call, ["contacts"]); // resumes at 12 (not page one), writes the rest, clears the cursor
+  expect(seen).toEqual([12, 20]);
+  expect(mid.writes.map((w) => w.row.user_id)).toEqual(["12", "20"]);
+  expect((await mid.store.scope("owners")).cursor).toBe("");
+  writes.length = 0;
   seen.length = 0;
   await syncReference(store, call, ["contacts"]); // the next pass resumes there and, reaching the end, clears it
   expect(seen).toEqual([20]);
@@ -179,4 +199,11 @@ it("a bulk edit that is recent when its id scan finishes is read again next pass
   scopes.set("contacts", { baselined: true, cursor: T });
   await syncObject(store, searchOver(data, contact), "contacts", opts());
   expect(scopes.get("contacts")?.cursor).toBe(T); // not T + 1 ms: the lookback is clamped to where the pass began
+});
+
+it("an out-of-range headcount is stored as null and the type goes on", async () => {
+  const { store, writes } = fakeStore();
+  const company = (id: string, employees: string) => ({ id, properties: { name: id, numberofemployees: employees, hs_lastmodifieddate: "2026-11-16T00:00:00.000Z" } });
+  await syncObject(store, async () => answer([company("1", "3000000000"), company("2", "250")]), "companies", opts());
+  expect(writes.map((w) => w.row.employees)).toEqual([null, 250]);
 });

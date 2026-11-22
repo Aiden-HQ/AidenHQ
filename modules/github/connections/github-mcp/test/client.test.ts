@@ -522,3 +522,57 @@ it("a call that works marks the sign-in ok (its state starts unknown after a res
   await createAccess({ auth: a, fetchImpl: async () => answer(200, {}) }).rest("GET", "/repos/acme/api");
   expect(marked).toEqual(["ok"]);
 });
+
+const forbidden = (extensions: Record<string, unknown>, message: string) => answer(200, { data: { organization: { projectsV2: { nodes: [null] } } }, errors: [{ type: "FORBIDDEN", path: ["organization", "projectsV2", "nodes", 0], extensions, message }] });
+
+it("maps a GraphQL FORBIDDEN from an OAuth-restricted org to a restricted need that keeps GitHub's full words", async () => {
+  const message = `Although you appear to have the correct authorization credentials, the \`acme\` organization has enabled OAuth App access restrictions, meaning that data access to third-parties is limited. ${"x".repeat(300)}`;
+  const access = createAccess({ auth: auth(), clientId: "cid", fetchImpl: async () => forbidden({ saml_failure: false, ip_allow_list_failure: false }, message) });
+  const err = await access.graphql("query", { org: "acme" }, { background: true }).catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid", message });
+  expect(err.message).toContain(message);
+  expect(access.status().problems).toEqual([{ org: "acme", cause: "restricted", url: "https://github.com/settings/connections/applications/cid", message }]);
+});
+
+it("maps a GraphQL FORBIDDEN flagged saml_failure to an sso need, and leaves an IP allow list failure an ordinary error", async () => {
+  const sso = createAccess({ auth: auth(), fetchImpl: async () => forbidden({ saml_failure: true }, "Resource protected by organization SAML enforcement.") });
+  expect((await sso.graphql("q", { org: "acme" }).catch((e) => e)).need).toMatchObject({ cause: "sso", org: "acme", url: "https://github.com/orgs/acme/sso" });
+  const ip = createAccess({ auth: auth(), fetchImpl: async () => forbidden({ ip_allow_list_failure: true }, "Although you appear to have the correct authorization credentials, the org has an IP allow list") });
+  const body = await ip.graphql("q", { org: "acme" });
+  expect(body.errors).toHaveLength(1);
+  expect(ip.status().problems).toEqual([]);
+});
+
+it("attributes a restriction to the org GitHub names, keeps a refusal inside one item's content non-fatal, and rejects a failed answer", async () => {
+  const msg = "Although you appear to have the correct authorization credentials, the `other` organization has enabled OAuth App access restrictions.";
+  const inContent = answer(200, { data: { organization: { projectV2: { items: { nodes: [{ id: "1", content: null }] } } } }, errors: [{ type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 0, "content"], extensions: { saml_failure: false }, message: msg }] });
+  const a = createAccess({ auth: auth(), clientId: "cid", fetchImpl: async () => inContent });
+  const body = await a.graphql("items", { org: "acme" });
+  expect(body.data.organization.projectV2.items.nodes).toHaveLength(1);
+  expect(a.status().problems).toMatchObject([{ org: "other", cause: "restricted" }]);
+  expect(a.status().lines.find((l) => l.label === "other")?.value).toContain("the `other` organization");
+  const bad = createAccess({ auth: auth(), fetchImpl: async () => new Response("<html>", { status: 502 }) });
+  await expect(bad.graphql("q", { org: "acme" })).rejects.toThrow(/answered 502/);
+});
+
+it("a GraphQL refusal's warning stays while refusals keep coming and expires two hours after the last", async () => {
+  const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
+  const t = fakeTime();
+  let refuse = true;
+  const a = createAccess({ auth: auth(), now: t.now, sleep: (ms) => t.sleep(ms), timer: t.timer, fetchImpl: async () => (refuse ? forbidden({ saml_failure: false }, msg) : answer(200, { data: { ok: 1 } })) });
+  await a.graphql("q", { org: "acme" }).catch(() => undefined);
+  expect(a.status().problems).toHaveLength(1);
+  refuse = false;
+  await t.sleep(119 * 60_000);
+  await a.graphql("q", { org: "acme" });
+  expect(a.status().problems).toHaveLength(1);
+  await t.sleep(2 * 60_000);
+  expect(a.status().problems).toHaveLength(0);
+  refuse = true;
+  await a.graphql("q", { org: "acme" }).catch(() => undefined);
+  await t.sleep(60 * 60_000);
+  await a.graphql("q", { org: "acme" }).catch(() => undefined); // another refusal restarts the clock
+  await t.sleep(60 * 60_000);
+  expect(a.status().problems).toHaveLength(1);
+});

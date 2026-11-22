@@ -91,8 +91,6 @@ describe("the Reviews page's routes", () => {
     expect(await call("POST", "/api/reviews/config", { value })).toMatchObject({ status: 200, body: { identifier: "WOR-9" } });
     expect(records.settings).toEqual([{ task: "i1", changes: [{ kind: "setting", key: "code_review", value }] }]);
     expect(created[0]!.title).toBe("Settings: code_review updated");
-    expect(await call("POST", "/api/reviews/config", { value: { ...value, lenses: true } })).toMatchObject({ status: 200 });
-    expect((await call("POST", "/api/reviews/config", { value: { ...value, lenses: "yes" } })).status).toBe(400);
   });
 
   it("counts the period's reviews, spend and auto-resolved findings", () => {
@@ -104,9 +102,10 @@ describe("the Reviews page's routes", () => {
   });
 });
 
-it("a combo may be mandatory, at both moments (the module's shape)", () => {
+it("a combo may be mandatory; on_push's is optional (the module's shape)", () => {
   const c = { engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "medium" };
   expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [{ ...c, mandatory: true }] }] })).toEqual([]);
-  expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [] }] })).toEqual(["repos.0.on_push: a mandatory reviewer goes in both moments (a PR's first review and each push)"]);
+  expect(configProblems({ repos: [{ repo: "a/b", on_open: [{ ...c, mandatory: true }], on_push: [] }] })).toEqual([]);
+  expect(configProblems({ repos: [{ repo: "a/b", on_open: [c], on_push: [{ ...c, mandatory: true }] }] })).toEqual(["repos.0.on_open: a mandatory reviewer on each push needs one when a PR opens"]);
   expect(configProblems({ repos: [{ repo: "a/b", on_open: [c], on_push: [], mandatory: true }] })[0]).toMatch(/mandatory/);
 });

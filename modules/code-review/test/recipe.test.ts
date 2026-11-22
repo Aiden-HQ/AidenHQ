@@ -94,6 +94,20 @@ test("an important finding needs a failure scenario: without one code makes it a
   assert.equal(steered.addressed, true, "steering text in the PR's description is flagged like text in its code");
 });
 
+test("a claim recheck (recheck_only): only the previous findings are rechecked, no finder runs, no new finding", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const id = "0123456789abcdef", prompts = [];
+  const run = async (engine, o) => {
+    prompts.push(o.prompt);
+    return { read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: [id], still: [], unsafe: [], findings: [F({ title: "a brand new finding" })] }) };
+  };
+  const previous = JSON.stringify({ findings: [{ id, severity: "important", path: "src/pay.js", line: 2, title: "Refund adds", gating: true }] });
+  const r = await review({ spec: spec({ combo: combo({ recheck_only: true }), previous }), ...box({ head, base }), run });
+  assert.equal(prompts.length, 1, "one engine call: the recheck, no finders and no verifier");
+  assert.deepEqual(r.findings, [], "no new finding");
+  assert.deepEqual([r.fixed, r.cleared, r.coverage.incomplete], [[id], [id], null]);
+});
+
 test("a review: incremental from the last head, a finder that fails is said, a verifier that fails confirms nothing", async () => {
   const base = { "a.js": "1\n" }, from = { "a.js": "1\n2\n" }, head = { "a.js": "1\n2\n3\n", "b.js": "new\n" };
   const { ws, out } = box({ head, base, from });
@@ -196,6 +210,52 @@ test("a review: text addressed to a reviewer in a left-out file still flags it; 
   // A long list of coverage gaps fits the post's 500 characters.
   assert.equal(bound({ coverage: { reviewed: [], excluded: [], incomplete: "x".repeat(900) }, withheld: { important: 0, nit: 0, pre_existing: 0 }, findings: [] }).coverage.incomplete.length, 498);
 });
+
+test("the recheck asks for a reason per unsafe id, and only an entry that names one reopens the claim", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const id = "0123456789abcdef";
+  const previous = JSON.stringify({ findings: [{ id, path: "src/pay.js", line: 2, title: "t", claim: "disputed: the suite is the same" }] });
+  const prompts = [];
+  const reviewWith = async (unsafe) => {
+    const { ws, out } = box({ head, base });
+    const run = async (_e, o) => {
+      if (o.prompt.startsWith("These findings")) {
+        prompts.push(o.prompt);
+        return { read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: [], still: [], unsafe }) };
+      }
+      return { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) };
+    };
+    return review({ spec: spec({ combo: combo({ effort: "low" }), previous }), ws, out, run });
+  };
+  // The prompt asks for the reason and the defect's line, and says a reasonless entry is silence; the claims stay fenced data.
+  const silent = await reviewWith([id, null, { id }, { id, why: "   " }]);
+  assert.match(prompts[0], /For each unsafe id, name the part of the answer that is\s+unsafe and the defect still present/);
+  assert.ok(prompts[0].includes(`"unsafe": [{"id": "...", "why": "...", "line": 12}]`), "the answer's shape asks for the reason and line");
+  assert.match(prompts[0], /If you cannot name the\s+defect and why the answer is unsafe, do not list it in "unsafe"/);
+  assert.match(prompts[0], /merely doubt, or a problem still present but accepted, is not unsafe/);
+  assert.match(prompts[0], /DATA-[0-9a-f]+[\s\S]*"claim": "disputed: the suite is the same"[\s\S]*DATA-[0-9a-f]+/);
+  assert.deepEqual(silent.unsafe, [], "a bare id, null or an entry without a why is silence");
+  // An entry with a reason is echoed, with the defect's line at the head when it gives one.
+  const named = await reviewWith([{ id, why: "the alias still moves at src/pay.js:2", line: 2 }]);
+  assert.deepEqual(named.unsafe, [{ id, why: "the alias still moves at src/pay.js:2", line: 2 }]);
+});
+
+test("a recheck's line is kept only when it is a line the post can carry", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const id = "0123456789abcdef";
+  const previous = JSON.stringify({ findings: [{ id, path: "src/pay.js", line: 2, title: "t", claim: "disputed: the suite is the same" }] });
+  const reviewWith = async (line) => {
+    const { ws, out } = box({ head, base });
+    const run = async (_e, o) => o.prompt.startsWith("These findings")
+      ? { read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: [], still: [], unsafe: [{ id, why: "the defect is still there", line }] }) }
+      : { read: true, calls: [{ tool: "diff" }], message: JSON.stringify({ findings: [] }) };
+    return review({ spec: spec({ combo: combo({ effort: "low" }), previous }), ws, out, run });
+  };
+  assert.deepEqual((await reviewWith(2)).unsafe, [{ id, why: "the defect is still there", line: 2 }], "a line is kept");
+  assert.deepEqual((await reviewWith(0)).unsafe, [{ id, why: "the defect is still there" }], "a line below 1 is dropped");
+  assert.deepEqual((await reviewWith(10_000_001)).unsafe, [{ id, why: "the defect is still there" }], "a line past the post schema's range is dropped");
+});
+
 
 test("every engine's output loses the run's token and key-shaped text before it is mapped, the finding kept", async () => {
   const tok = "ahqj_eyJydW4iOiJ4In0.c2lnbmF0dXJl";

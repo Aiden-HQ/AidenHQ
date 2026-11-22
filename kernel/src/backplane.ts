@@ -61,9 +61,9 @@
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
 //   GET  /v1/flow?task=|?item=|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
-//   GET  /v1/tasks/state?ids=|?open=1  (the board, or a module with role kernel.flow-read) each task's one state, computed from
-//                              its facts (task-state.ts): `ids` (≤ 200, ids or identifiers, closures included) or every open task,
-//                              in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
+//   GET  /v1/tasks/state?ids=|?open=1[&closed_since=<iso>]  (the board, or a module with role kernel.flow-read) each task's one
+//                              state, computed from its facts (task-state.ts): `ids` (≤ 200, ids or identifiers, closures included) or
+//                              every open task (and every task closed since `closed_since`, no id limit), in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
 //                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?}: posted on the job's
@@ -727,7 +727,9 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read task state (role kernel.flow-read)`); }
         if (!taskStates) throw fail(503, "unavailable", "task state reads are off");
         const p = new URLSearchParams(q ?? ""), ids = p.get("ids")?.split(",").map((s) => s.trim()).filter(Boolean);
-        if (p.get("open") === "1") return send(res, 200, await taskStates.named(taskStates.read({ open: true })));
+        const since = p.get("closed_since");
+        if (since !== null && (p.get("open") !== "1" || !Number.isFinite(Date.parse(since)))) throw fail(400, "bad_request", "closed_since is an ISO instant, with ?open=1");
+        if (p.get("open") === "1") return send(res, 200, await taskStates.named(taskStates.read({ open: true, ...(since ? { closed_since: new Date(since).toISOString() } : {}) })));
         if (!ids?.length || ids.length > 200 || ids.some((s) => s.length > 100)) throw fail(400, "bad_request", "send ?open=1 or ?ids= (1 to 200 task ids or identifiers, comma-separated)");
         return send(res, 200, await taskStates.named(taskStates.read({ ids })));
       }

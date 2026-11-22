@@ -51,7 +51,8 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   const sha = git("rev-parse", "HEAD");
   writeFileSync(join(ws, "body.md"), "Why.");
   const env = { PATH: process.env.PATH, AIDENHQ_GATEWAY_URL: `http://127.0.0.1:${kernel.address().port}`, AIDENHQ_RUN_TOKEN: "ahqj_job", AIDENHQ_TASK_WORKTREE: ws };
-  const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env })).stdout;
+  // Run from the test's own workspace, so a relative path the CLI reads (even one starting with `--`) is the fixture's.
+  const aidenhq = async (...args) => (await run(process.execPath, [CLI, ...args], { env, cwd: ws })).stdout;
 
   // Publish needs a self-review record for the head (any outcome); with none, or one for an older head, nothing is filed.
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login"), (e) => e.code === 2 && /no self-review.*self-review\.ts <base-branch> fix-login/.test(e.stderr));
@@ -66,6 +67,38 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   writeFileSync(join(ws, "ev.md"), "Why. Closes acme/app#7.\n\n## Evidence\n- ran it");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "ev.md"), "--fixes", "acme/app#7", "--fixes", "acme/app#8");
   assert.equal(seen.at(-1).body.args.text.body, "Why. Closes acme/app#7.\n\nFixes acme/app#8\n\n## Evidence\n- ran it");
+  // No --body-file and no --fixes: the args carry no `body` at all, so a republish never blanks an existing description.
+  await aidenhq("publish", "acme/app", "fix-login");
+  assert.deepEqual(seen.at(-1).body.args.text, { title: "fix(login): stop the loop" });
+  assert.equal("body" in seen.at(-1).body.args.text, false);
+  // A flag with no value is refused instead of silently taking the next flag or nothing.
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--title", "fix(login): x"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
+  // A value that merely starts with `--` is still a value: only the next option (or none) counts as missing.
+  writeFileSync(join(ws, "--notes.md"), "A file named like a flag.");
+  await aidenhq("publish", "acme/app", "fix-login", "--body-file", "--notes.md");
+  assert.equal(seen.at(-1).body.args.text.body, "A file named like a flag.");
+  // A value spelled exactly like this CLI's help flag is still a value with `=`, never a request for help.
+  writeFileSync(join(ws, "--help"), "A help-named body.");
+  await aidenhq("publish", "acme/app", "fix-login", "--body-file=--help");
+  assert.equal(seen.at(-1).body.args.text.body, "A help-named body.");
+  // `-h` after a command is still help. A help token where a value belongs is exit 2 with the `=` hint, not a silent
+  // success and not a read of a file named --help.
+  assert.match(await aidenhq("publish", "acme/app", "fix-login", "-h"), /^usage: aidenhq publish/);
+  const filed = seen.length;
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--help"), (e) => e.code === 2 && /--body-file needs a value \(name a file called --help as --body-file=--help\)/.test(e.stderr));
+  assert.equal(seen.length, filed, "nothing is filed");
+  // An explicitly empty body file is refused too: it would leave a stale description behind a new head.
+  writeFileSync(join(ws, "empty.md"), " \n");
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "empty.md")), (e) => e.code === 2 && /is empty/.test(e.stderr));
+  // `--opt=value` in the value position is still a missing value, and an option another command owns is refused here.
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--title=fix(login): x"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--file=body.md"), (e) => e.code === 2 && /--file isn't an option of aidenhq publish/.test(e.stderr));
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file="), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
+  // --fixes without --body-file would send a generated-line-only body as the whole description: refused, and nothing is filed.
+  const before = seen.length;
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--fixes", "acme/app#8"), (e) => e.code === 2 && /--fixes needs --body-file/.test(e.stderr));
+  assert.equal(seen.length, before, "nothing was filed");
   // A republish after a repair commit keeps the title: the branch's own pushed commits still count as its first.
   git("update-ref", "refs/remotes/origin/fix-login", sha);
   git("commit", "-q", "--allow-empty", "-m", "address the failing check");
@@ -90,7 +123,8 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // The tool proxy, as the box's own MCP config calls it: the token as X-Agent-Key.
   assert.deepEqual([seen.at(-1).path, seen.at(-1).key, seen.at(-1).auth], ["/c/paperclip_tasks/mcp", "ahqj_job", undefined]);
   assert.match(await aidenhq("reset"), /fresh session/);
-  // Outside a job's computer, nothing is sent.
+  // Outside a job's computer, nothing is sent, but help still works.
   await assert.rejects(run(process.execPath, [CLI, "reset"], { env: { PATH: process.env.PATH } }), /only available inside a job's computer/);
+  assert.match((await run(process.execPath, [CLI, "publish", "--help"], { env: { PATH: process.env.PATH } })).stdout, /^usage: aidenhq publish/);
 });
 

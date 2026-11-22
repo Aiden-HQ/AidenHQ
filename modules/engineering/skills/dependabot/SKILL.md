@@ -1,18 +1,33 @@
 ---
 name: dependabot
-description: Handling Dependabot PRs on the product repo and every maintained repo with dependabot on - a task per PR once its checks finish, or a sweep of stragglers. Major jumps are closed, red checks fixed, green pin-only PRs merged, young ones waited for. Load when a task's marker starts with `dependabot:`.
+description: "Handles Dependabot PRs on the product repo and every maintained repo with Dependabot on, one task per PR (marker `dependabot:<repo>/<number>`) or a sweep of stragglers (`dependabot:<date>`). Use when a task's marker starts with `dependabot:`."
 ---
 
-## Dependabot PRs (every maintained repo with dependabot on)
+# Dependabot PRs
 
-You own the open Dependabot PRs of the product repo and of every repo the owner lists with `dependabot` on. The code host gives you a task for each new one once its checks have finished, or at once when the repo has no checks (marker `dependabot:<repo>/<number>`, the PR's link in the description, so its repo is in your workspace): handle that one PR. The Fleet Steward's weekly review hands you a sweep of the stragglers (marker `dependabot:<date>`); the owner may ask for one too: then list them for each such repo (`gh pr list -R <repo> --author app/dependabot --json number,title,headRefName,statusCheckRollup`) and handle each. For each PR:
+A task per PR arrives once its checks finish (its link is in the description; the repo is in your workspace). A sweep lists
+them with `github_search_issues` (`is:pr is:open author:app/dependabot`, per repo). Read a PR and its `check_runs` with
+`github_issue_read` and a job's log with `github_job_log`. Per PR:
 
-1. **A major-version jump, or a group that includes one** (e.g. node 24 → 26, a library's 3.x → 4.x): a planned migration, never a routine bump. Don't merge it; a group's other bumps you take alone on your own branch, as in 2. Close it: `aidenhq close <PR link>` (Dependabot's PRs are the only PRs there you can close; the owner can reopen it), and say on your task why: "major jump: a planned migration, not a routine bump". List it as "closed: major jump".
-2. **Checks red:** read the failing log (`gh run view <run> --log-failed`). Make the same version changes plus the smallest fix on your own branch from the default branch (`fleet/deps-<slug>`), `aidenhq publish <repo> <branch>`; once it is green its merge is filed for your task; Dependabot closes its PR once `main` has those versions. A red supply-chain check on a security update needs its `.github/supply-chain-exceptions.yaml` entry first (its own PR, the owner's tap). A fix that is real migration work: list it with the reason instead.
-3. **Green, pins only** (lockfiles, Dockerfile `FROM`, compose image pins, action SHAs) with every named check green, the supply-chain check included: `aidenhq merge <PR link> <head sha>` (its head, from the PR). Whether it is pins only is the AI reviewer's judgment of the card (policy 07), not a code check: you read the diff and say so in the request. Anything more (your own commit on its branch, a `run:` line, a new dependency) is the owner's.
-4. **Too young** (the repo's dependency age rule, e.g. a version under 7 days old, fails the age check): the PR is not wrong, only early. Find the date it becomes eligible (the version's release date plus the minimum age), `task_wait` until then, and on waking rerun the age check and handle the PR as 1-3. A major jump is still closed now, whatever its age.
-5. **Couldn't establish the age** (the check can't date the version): a failure to fix, not a wait. Fix the cause (the dating source, the pin or the exception entry) on your own branch as in 2, or list it with the reason.
-6. **Checks still running** (a sweep only): leave it; its own task comes once they finish.
+1. **Major jump** (or a group including one): a planned migration; never merge the group's PR (step 5 is for PRs without
+   one). Take each other bump through steps 2-4 on its own terms: a bump that cannot go yet (undated, or too young) is posted
+   on the task now as "undated" or "too young, not taken". Publish the eligible ones together on your own branch
+   (`fleet/deps-<slug>`, `aidenhq publish`; a security fix takes its exception entry) and keep the group's PR open until that
+   PR has merged (its Done notice wakes you; in a repo without agent-PR merge notices, request the merge with `aidenhq merge`
+   once its checks pass). Then `aidenhq close <PR link>` and confirm it reads closed before `task_finish`. With nothing
+   eligible, close now. Say "major jump: a planned migration, not a routine bump".
+2. **Version can't be dated** (no publish date: the age check fails with a lookup error or, even with every check green, logs "could not be dated"; a known date under the minimum age is step 3; read the supply-chain check's log with `github_job_log` before any merge): fix the dating source, pin or exception entry on your own branch as in 4, or list it with the reason; never merge it.
+3. **Too young** (fails the age check, even as the only red check). A security fix goes to its exception entry as in 4; any
+   other: `task_wait` until the earlier of eligibility (the release date plus the minimum age) and 7 days ahead, and at
+   least 16 minutes ahead (the tool's limits). On waking, if it is still young wait again; once eligible, publish the same
+   versions on your own branch as in 4 (a fresh head runs the age check anew) and Dependabot closes its PR.
+4. **Other red checks** (an age failure is step 2 or 3): read the failed job's `github_job_log`; make the same version changes plus the smallest fix on
+   `fleet/deps-<slug>` and `aidenhq publish <repo> <branch>`; Dependabot closes its PR once `main` has those versions. A red
+   supply-chain check on a security update needs its `.github/supply-chain-exceptions.yaml` entry first (own PR, the owner's
+   tap). Real migration work: list it with the reason.
+5. **Green, pins only** (lockfiles, Dockerfile `FROM`, compose image pins, action SHAs; every check green, supply-chain
+   included): `aidenhq merge <PR link> <head sha>`, saying in the request that you read the diff and it is pins only (the
+   AI reviewer judges that). Anything more (your commit on its branch, a `run:` line, a new dependency) is the owner's.
+6. **Checks running** (sweep): leave it; its own task comes when they finish.
 
-Reply with one line per PR (number, what you did, the card or your PR) and end; no open Dependabot PRs is one line.
-
+Reply one line per PR (number, what you did, the card or your PR); no open PRs is one line.

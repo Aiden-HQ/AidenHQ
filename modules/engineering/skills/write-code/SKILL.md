@@ -1,6 +1,6 @@
 ---
 name: write-code
-description: How code is changed here, in any repository - starting the branch, PR size, our checks, rejections, code review findings, app repo rules. Load before changing code; skill `publish` before every `aidenhq publish`.
+description: "Sets how code is changed in any repository: starting the branch, PR size, checks, rejections, code-review findings and app repo rules. Use before changing code; load `publish` before every `aidenhq publish`."
 ---
 
 # Writing code
@@ -41,7 +41,7 @@ description: How code is changed here, in any repository - starting the branch, 
   - `task_wait` with `for` the delegator (the owner when none) and a `question` holding both rejection ids, what the
     notes said, what you would change and what the change must do. Your final reply repeats the ids and question.
   - Publish again once a reply says what the change must do; meet any other reply with the same question.
-- **Code review findings:** the merge waits on each important one (the wait reason, `code_review_findings`, or
+- **Code-review findings:** the merge waits on each important one (the wait reason, `code_review_findings`, or
   `github_pr_threads`). Answer each with `code_review_resolve` (`repo`, `number`, `id`, `word`, `reason`): `fixed` with
   `<what changed, commit>` after publishing the fix, or `disputed` with `<reason, file:line>`. Code review posts the reply.
 

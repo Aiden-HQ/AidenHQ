@@ -390,8 +390,8 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
   );
 }
 
-const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "stuck", working: "working", queued: "queued", done: "done" };
-const CREW_TONE: Record<CrewState, StatusTone> = { needs: "needs", failed: "failed", working: "working", queued: "idle", done: "done" };
+const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "stuck", working: "working", queued: "queued", waiting: "waiting", done: "done" };
+const CREW_TONE: Record<CrewState, StatusTone> = { needs: "needs", failed: "failed", working: "working", queued: "idle", waiting: "idle", done: "done" };
 const ENGINE_NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", openrouter: "OpenRouter" };
 
 /** One agent's part of the task: who they are, where they stand, and a direct chat with them. */

@@ -6,6 +6,10 @@ import { withFooter } from "./aidenhq-sdk/attribution.js";
 import { scrubProblems, scrubText } from "./scrub.js";
 
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
+/** A GraphQL error that refuses one item's content (an issue of an org the sign-in can't read); the client records that need. */
+export const isContentRefusal = (e: any): boolean => e?.type === "FORBIDDEN" && Array.isArray(e.path) && e.path.at(-1) === "content";
+/** The errors of a GraphQL answer that lose the read: all but a content refusal. */
+const fatalErrors = (errors: any): any[] => (Array.isArray(errors) ? errors : []).filter((e) => !isContentRefusal(e));
 
 const QUERY = `query($org:String!,$number:Int!,$first:Int!,$after:String){organization(login:$org){projectV2(number:$number){
   title url closed
@@ -171,7 +175,8 @@ export class Projects {
     if (path === "/graphql") {
       const b = body as { query: string; variables?: Record<string, unknown> };
       const json = await this.access.graphql(b.query, b.variables ?? {}, { background: true });
-      if (json?.errors?.length) throw new Error(`GitHub GraphQL failed: ${JSON.stringify(json.errors).slice(0, 250)}`);
+      const bad = fatalErrors(json?.errors);
+      if (bad.length) throw new Error(`GitHub GraphQL failed: ${JSON.stringify(bad).slice(0, 500)}`);
       return json;
     }
     const r = await this.access.rest(method, path, body, { background: true });
@@ -183,7 +188,8 @@ export class Projects {
     if (!NAME.test(a.org)) throw new Error("invalid org");
     const gql = async (after: string | null) => {
       const r = await this.access.graphql(QUERY, { org: a.org, number: a.number, first: 100, after });
-      if (r?.errors?.length) throw new Error(`GitHub GraphQL failed: ${JSON.stringify(r.errors).slice(0, 250)}`);
+      const bad = fatalErrors(r?.errors);
+      if (bad.length) throw new Error(`GitHub GraphQL failed: ${JSON.stringify(bad).slice(0, 500)}`);
       const p = r?.data?.organization?.projectV2;
       if (!p) throw new Error(`project ${a.number} not found in ${a.org} (or your account can't read it)`);
       return p;

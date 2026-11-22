@@ -80,6 +80,15 @@ test("local-only: create a repo, publish a change request, merge it at its head 
   assert.deepEqual([pr.kind, pr.tier, pr.state, pr.rule], ["codehost-local.pr", 0, "done", null]);
   assert.equal(pr.args.workspace, "TASK-1", "the job's own workspace, stamped by the kernel");
   assert.match(pr.outcome.text, /codehost:local\/hello\/change\/1/);
+  // A republish with no --body-file names no body (`text: { title }`): the change keeps its description, as on GitHub.
+  const again = await file({ kind: "codehost.pr", args: { only: [{ repo: "local/hello", branch: "greet", sha: head }], text: { title: "Say hi" } } });
+  assert.equal(again.state, "done", again.outcome?.text);
+  const meta = JSON.parse(git(dir, "--git-dir", host.bare("local/hello"), "cat-file", "-p", "refs/changes/1/meta"));
+  assert.deepEqual([meta.title, meta.body], ["Say hi", "Why."], "a title-only republish keeps the body");
+  // Whitespace-only text is blank too, and never replaces the description.
+  await file({ kind: "codehost.pr", args: { only: [{ repo: "local/hello", branch: "greet", sha: head }], text: { title: "Say hi", body: " \n\t" } } });
+  const same = JSON.parse(git(dir, "--git-dir", host.bare("local/hello"), "cat-file", "-p", "refs/changes/1/meta"));
+  assert.deepEqual([same.title, same.body], ["Say hi", "Why."], "a blank republish keeps the body");
 
   // A head that isn't the change's is refused by code; the real one is local-merge, the AI reviewer's, with the diff on its card.
   await assert.rejects(writes.request(job, { kind: "codehost.merge", args: { prs: [{ repo: "local/hello", number: 1, head: "f".repeat(40) }] } }), /moved since it was asked for/);
@@ -164,6 +173,45 @@ test("local-only: create a repo, publish a change request, merge it at its head 
 
   // Repos on two code hosts in one write are refused before anything is filed.
   await assert.rejects(writes.request(job, { kind: "codehost.close", args: { prs: [{ repo: "local/hello", number: 1 }, { repo: "acme/app", number: 2 }] } }), /more than one code host/);
+});
+
+// A repo whose default branch has no commit yet: the first publish records no base ref, and a republish (which would try to
+// move `base` to an empty object id) must still succeed.
+test("a republish of a local change works before the default branch has its first commit", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "codehost-local-empty-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const tasks = join(dir, "tasks");
+  for (const d of [join(tasks, "TASK-1"), join(dir, "scratch")]) mkdirSync(d, { recursive: true });
+  const host = localHost({ root: join(dir, "codehost"), tasksDir: tasks, scratchDir: join(dir, "scratch"), checks: async () => [] });
+  // An empty bare repo with `main` as its HEAD, as the host's own create leaves one before its README commit exists.
+  const bareRepo = join(dir, "codehost", "local", "empty.git");
+  mkdirSync(join(dir, "codehost", "local"), { recursive: true });
+  git(dir, "init", "--quiet", "--bare", "-b", "main", bareRepo);
+  const ws = join(tasks, "TASK-1", "empty");
+  git(dir, "init", "--quiet", "-b", "feat", ws);
+  writeFileSync(join(ws, "a.txt"), "one\n"); git(ws, "add", "."); git(ws, "commit", "--quiet", "-m", "a");
+  const bundle = (sha) => (mkdirSync(join(tasks, "TASK-1", ".aidenhq", "bundles"), { recursive: true }), git(ws, "update-ref", `refs/aidenhq/publish/${sha}`, sha), git(ws, "bundle", "create", "--quiet", join(tasks, "TASK-1", ".aidenhq", "bundles", `${sha}.bundle`), `refs/aidenhq/publish/${sha}`));
+  const first = git(ws, "rev-parse", "HEAD");
+  bundle(first);
+  const pr = (sha) => host.executor.execute({ id: `k-${sha.slice(0, 8)}`, kind: "codehost-local.pr", args: { workspace: "TASK-1", only: [{ repo: "local/empty", branch: "feat", sha }], text: { title: "a", body: "b" } } });
+  assert.equal((await pr(first)).ok, true);
+  writeFileSync(join(ws, "a.txt"), "two\n"); git(ws, "commit", "--quiet", "-am", "b");
+  const second = git(ws, "rev-parse", "HEAD");
+  bundle(second);
+  const again = await pr(second);
+  assert.equal(again.ok, true, again.text);
+  assert.equal(git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/head"), second);
+  assert.throws(() => git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/base"), "no base ref exists yet, and nothing tried to move one");
+  // `main` then gets its first commit elsewhere, sharing no history with the change: a further republish still lands its head
+  // instead of failing on a merge base that doesn't exist.
+  const root = git(dir, "--git-dir", bareRepo, "commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "main's own first commit");
+  git(dir, "--git-dir", bareRepo, "update-ref", "refs/heads/main", root);
+  writeFileSync(join(ws, "a.txt"), "three\n"); git(ws, "commit", "--quiet", "-am", "c");
+  const third = git(ws, "rev-parse", "HEAD");
+  bundle(third);
+  const onceMore = await pr(third);
+  assert.equal(onceMore.ok, true, onceMore.text);
+  assert.equal(git(dir, "--git-dir", bareRepo, "rev-parse", "refs/changes/1/head"), third);
 });
 
 test("a local merge's refusals, through the real host: a moved head, a check missing or not green on that head, and a base that conflicts", async (t) => {

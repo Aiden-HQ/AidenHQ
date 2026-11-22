@@ -110,7 +110,7 @@ function toolMarkup(args: Json) {
 }
 
 const paperclip = paperclipClient({ url: KERNEL, token: SERVICE_KEY, lane: "agent", headers: () => ({ "x-aidenhq-caller": cx().assertion }) });
-const api = (method: string, path: string, body?: Json) => paperclip.request(method, path, body);
+const api = (method: string, path: string, body?: Json, o?: { timeoutMs?: number }) => paperclip.request(method, path, body, o);
 
 /** The kernel records a wait on the caller's own task (POST /v1/wait, kernel idle.ts): its reason, and when it resumes. */
 async function kernelWait(body: Json) {
@@ -124,10 +124,10 @@ async function kernelWait(body: Json) {
  * The kernel's one state of each task (GET /v1/tasks/state, role kernel.flow-read), by task id: one read per call, at most 200
  * ids each. A task the kernel has no facts for has no row.
  */
-async function stateRows(ids: string[]) {
+async function stateRows(ids: string[], ms = 20_000) {
   const rows = new Map<string, Json>();
   for (let n = 0; n < ids.length; n += 200) {
-    const res = await fetch(`${KERNEL}/v1/tasks/state?ids=${encodeURIComponent(ids.slice(n, n + 200).join(","))}`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(`${KERNEL}/v1/tasks/state?ids=${encodeURIComponent(ids.slice(n, n + 200).join(","))}`, { headers: { authorization: `Bearer ${SERVICE_KEY}` }, signal: AbortSignal.timeout(Math.max(1_000, Math.min(20_000, ms))) });
     const text = await res.text();
     if (!res.ok) throw new Error(`the kernel refused the task state read (${res.status}): ${text.slice(0, 300)}`);
     for (const r of JSON.parse(text).tasks) rows.set(r.task, r);
@@ -798,15 +798,131 @@ const STATE_PROPS = {
   state: { type: "string", description: `comma-separated kinds (${KINDS.join(", ")}); default: every task but done and cancelled ones` },
   attention: { type: "string", enum: ATTENTION, description: "only tasks someone must act on: any, or this one (the owner, an agent, a reviewer)" },
 };
-/** Paperclip statuses to ask for, given the state filter: done only when asked. */
-const statusesFor = (state: unknown) => (String(state ?? "").split(",").includes("done") ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES);
-/** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`; a task with no row passes only without a filter. */
+/** The kinds a `state` argument names, trimmed. */
+const stateKinds = (state: unknown) => String(state ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+const ALL_STATUSES = `${OPEN_STATUSES},done,cancelled`;
+/**
+ * Paperclip statuses to ask for, given the state filter: these are only the candidate superset, the kernel kind is the filter.
+ * An idle row includes `history_expired` (its `task.created` fact pruned), whose Paperclip status can be any, done and
+ * cancelled included; a waiting row's can be any open one. So either asks for every status, and so does `done`. Without one
+ * of them the list stays on open rows, as it always has: a default or `attention`-only query does not want closed tasks.
+ */
+const statusesFor = (state: unknown) => (stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
+/** The kinds a list returns when it names none: every task but the done and cancelled ones, as the tool documents. */
+const DEFAULT_KINDS = ["working", "waiting", "idle"];
+/** A `state`/`attention` argument as the kind list and the one attention, validated. */
+function stateFilter(state: unknown, attention: unknown) {
+  const named = stateKinds(state);
+  const bad = named.filter((k) => !KINDS.includes(k));
+  const one = attention ? String(attention) : "";
+  if (bad.length || (one && !ATTENTION.includes(one))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
+  // A query that names no kind keeps the documented default: every task but the done and cancelled ones. That holds for an
+  // attention-only query too (its wider candidate statuses must not put a closed task in), and the kernel row is what decides,
+  // so a task just reopened in Paperclip whose kernel state is still done is left out as well.
+  return { kinds: named.length ? named : DEFAULT_KINDS, attention: one, byDefault: !named.length };
+}
+/**
+ * Whether a kernel row passes the filter. `byDefault` is the kind list the tool applies when none was named: a row with a
+ * kernel state must match it, but a task the kernel has no state for is still listed (it always was). An explicit `state`
+ * needs a row, as does `attention`.
+ */
+const matchesState = (s: Json | undefined, kinds: string[], attention: string, byDefault = false) =>
+  (!s ? !kinds.length || byDefault : !kinds.length || kinds.includes(s.kind)) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention)));
+/** `list` paired with its kernel rows that pass the filter, in Paperclip's order. */
+async function matchingStates(list: Json[], kinds: string[], attention: string, ms?: number, byDefault = false) {
+  if (!list.length) return [] as (readonly [Json, Json])[];
+  const rows = await stateRows(list.map((i) => i.id), ms);
+  return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => matchesState(s, kinds, attention, byDefault)) as (readonly [Json, Json])[];
+}
+/** The issues paired with their kernel rows, kept when the row matches `state` (kinds) and `attention`. */
 async function withStates(list: Json[], state: unknown, attention: unknown) {
-  const kinds = String(state ?? "").split(",").map((k) => k.trim()).filter(Boolean);
-  const bad = kinds.filter((k) => !KINDS.includes(k));
-  if (bad.length || (attention && !ATTENTION.includes(String(attention)))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
-  const rows = await stateRows(list.map((i) => i.id));
-  return list.map((i) => [i, rows.get(i.id)] as const).filter(([, s]) => (!kinds.length || (s && kinds.includes(s.kind))) && (!attention || (s && s.attention.some((a: Json) => attention === "any" || a.who === attention))));
+  const { kinds, attention: one, byDefault } = stateFilter(state, attention);
+  return matchingStates(list, kinds, one, undefined, byDefault);
+}
+/** The most rows one Paperclip page (and one kernel state read) spans. */
+const PAGE = 200;
+/** A whole task_list scan's wall-clock budget: past it the list says so instead of running into the tool timeout. */
+const SCAN_MS = 120_000;
+/** Rows of one page whose `prepare` reads run at once (a truncated chat is read again): enough to keep a page quick, few enough
+ * that a page of them cannot open a burst of requests or wait on all of them before the first row can be answered. */
+const PREPARE_AT_ONCE = 8;
+/**
+ * A company's issues, newest first, one page at a time: Paperclip's `offset` paging, as scripts/modules.ts and the board
+ * read it. Yields rows not seen yet.
+ *
+ * The list moves under the read, and the offset is not a stable cursor: a task inserted ahead of it repeats a row (dropped
+ * by `seen`), and one removed or leaving the status set pulls every later row up, which a plain next-page offset would skip.
+ * Pages therefore overlap by half a page, so a shift of up to that many rows is re-read rather than skipped. It stops at an
+ * empty page, or at repeated pages (a server that ignores `offset`, reported as stalled).
+ */
+async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean; expired?: boolean; moved?: boolean } = {}, ms?: () => number) {
+  const seen = new Set<string>();
+  let repeats = 0, last = "", asked: Json[] = [], previousStep = 0;
+  for (let offset = 0; ; ) {
+    // A page that adds nothing new does not yield, so the caller cannot check the clock: check it here too.
+    if (ms && ms() <= 0) {
+      progress.expired = true;
+      return;
+    }
+    const p = new URLSearchParams(q);
+    p.set("limit", String(PAGE));
+    p.set("offset", String(offset));
+    const left = ms ? ms() : 20_000;
+    const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, left)) });
+    if (!Array.isArray(page)) return;
+    if (!page.length) {
+      // After a short page this is simply the end. After a full one the offset was inside the list a moment ago, so anything
+      // beyond it now was still unread: the list shrank by more than the overlap, and the scan cannot vouch for what it saw.
+      if (asked.length >= PAGE) progress.moved = true;
+      return;
+    }
+    // Advance by half of what came back, not by what was asked: a server capping its page size would otherwise leave a gap.
+    const step = Math.max(1, Math.floor(page.length / 2));
+    offset += step;
+    // A page whose ids are exactly the previous page's is a repeated page: the end, or a server ignoring `offset`. Overlapping
+    // tail pages share rows but never all of them, so they are not mistaken for it.
+    const ids = page.map((i: Json) => i.id).join(",");
+    if (ids === last) {
+      // A same page twice is the list's end only when it is the whole list; with rows still ahead it is a server that ignores
+      // `offset`, which must be reported as a stall rather than taken for the tail.
+      if (++repeats > 1) {
+        progress.stalled = true;
+        return;
+      }
+    } else repeats = 0;
+    last = ids;
+    // The next page starts inside this one, exactly `step` rows in. If it starts anywhere else — a row the scan has never
+    // seen, or the tail at a different position — the list moved between the reads: a task can have been inserted above the
+    // offset (or pulled up into the rows already passed), so a matching row may have slipped by. Say so rather than claim a
+    // complete scan; rows merely inserted above the offset are new and unread too.
+    const previous = asked;
+    asked = page;
+    if (previous.length) {
+      const j = previous.findIndex((i: Json) => i.id === page[0].id);
+      if (j !== previousStep) progress.moved = true;
+      else {
+        const shared = Math.min(previous.length - j, page.length);
+        if (page.slice(0, shared).some((i: Json, n: number) => i.id !== previous[j + n].id)) progress.moved = true;
+      }
+    }
+    // The step this page itself will advance by, used by the next page's overlap check.
+    previousStep = step;
+    const fresh = page.filter((i: Json) => !seen.has(i.id));
+    // A short page with nothing new is the list's tail read again: the endpoint returned fewer rows than it was asked for, so
+    // there is nothing behind it. Reading on would only repeat the last rows, one round trip at a time. A page identical to
+    // the one just read (a server capping its page size and ignoring `offset`) is not the tail: that is a stall.
+    if (!fresh.length) {
+      if (page.length < PAGE) {
+        if (previous.length === page.length && page.every((i: Json, n: number) => i.id === previous[n].id)) progress.stalled = true;
+        return;
+      }
+      continue;
+    }
+    for (const i of fresh) seen.add(i.id);
+    yield fresh;
+    // A page shorter than asked for may be the list's end, or a server capping its page size: the next read decides (an
+    // empty page ends it, a repeated one is caught as stalled above).
+  }
 }
 
 interface Tool { description: string; inputSchema: Json; annotations: Json; run: (args: Args) => Promise<Json> | Json }
@@ -848,10 +964,46 @@ const TOOLS: Record<string, Tool> = {
       onlyArgs("task_search", args);
       const { query, state, attention, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
-      const q = new URLSearchParams({ q: String(query).slice(0, 200), limit: String(Math.min(Number(limit) || 10, 25)), excludeRoutineExecutions: "true" });
+      const { kinds, attention: one, byDefault } = stateFilter(state, attention);
+      const max = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 25));
+      const q = new URLSearchParams({ q: String(query).slice(0, 200), excludeRoutineExecutions: "true" });
       q.set("status", statusesFor(state));
-      const list = await withStates(await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`), state, attention);
-      return { tasks: await Promise.all(list.map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))) };
+      // As with task_list, the kernel kind/attention filter runs per page over the shared pager (so both tools get the same
+      // overlap, stall and shift handling), until `limit` matches are collected or the ranked hits run out: a filtered-out
+      // closed hit cannot consume a matching result's slot.
+      const deadline = Date.now() + SCAN_MS;
+      const progress: { stalled?: boolean; expired?: boolean; moved?: boolean } = {};
+      const list: (readonly [Json, Json])[] = [];
+      const pages = issuePages(q, progress, () => deadline - Date.now())[Symbol.asyncIterator]();
+      while (list.length < max) {
+        const step = await pages.next().catch((err) => {
+          if (Date.now() < deadline) throw err;
+          progress.expired = true;
+          return { done: true as const, value: undefined };
+        });
+        if (step.done) break;
+        if (Date.now() > deadline) {
+          progress.expired = true;
+          break;
+        }
+        try {
+          list.push(...(await matchingStates(step.value as Json[], kinds, one, deadline - Date.now(), byDefault)));
+        } catch (err) {
+          if (Date.now() < deadline) throw err;
+          progress.expired = true;
+          break;
+        }
+      }
+      return {
+        tasks: await Promise.all(list.slice(0, max).map(async ([i, s]) => ({ ...(await brief(i, s)), snippet: clip(String(i.description ?? "").replace(/<!--[\s\S]*?-->/g, "").trim(), SNIPPET_MAX, "task_get for the rest") }))),
+        ...(progress.stalled
+          ? { incomplete: "the search stopped advancing through its pages; some hits were not read" }
+          : progress.moved
+            ? { incomplete: "the search results shifted between pages faster than the scan can follow; some hits may have been missed" }
+            : progress.expired
+              ? { incomplete: "the scan ran past its time budget; some hits were not read" }
+              : {}),
+      };
     },
   },
   task_list: {
@@ -872,29 +1024,243 @@ const TOOLS: Record<string, Tool> = {
       onlyArgs("task_list", args);
       const { mine, state, attention, label, updated_since, limit } = args;
       if (!COMPANY()) throw new Error("no company for this agent");
-      const q = new URLSearchParams({ status: statusesFor(state), limit: String(Math.min(Number(limit) || 100, 200)) });
+      const { kinds, attention: one, byDefault } = stateFilter(state, attention);
+      const max = Math.max(1, Math.min(Math.floor(Number(limit) || 100), 200));
+      const q = new URLSearchParams({ status: statusesFor(state) });
       const me = mine ? grant().id : "";
       if (me) q.set("assigneeAgentId", me);
       else q.set("excludeRoutineExecutions", "true");
       if (label) q.set("labelId", (await labelIds([String(label)]))[0]);
       if (updated_since) q.set("updatedSince", String(updated_since));
-      let list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-      if (me) {
+      // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; a walk
+      // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
+      // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
+      const deadline = Date.now() + SCAN_MS;
+      const progress: { stalled?: boolean; expired?: boolean; moved?: boolean } = {};
+      let complete = true;
+      // Reads at the budget's edge are abandoned, not failed: a slow page or kernel read leaves the matches collected so far
+      // with `incomplete`, and anything that fails before the deadline still surfaces.
+      const atEdge = async <T>(fn: () => Promise<T>, onEdge: () => T, until = deadline): Promise<T> => {
+        try {
+          return await fn();
+        } catch (err) {
+          if (Date.now() < until) throw err;
+          complete = false;
+          return onEdge();
+        }
+      };
+      /**
+       * One source's matching rows, page by page, in the issues list's order. Each page reports its last row in that order
+       * (`tail`), matches or not, so a merge can tell whether anything behind it can still come first.
+       */
+      type Page = { rows: (readonly [Json, Json])[]; tail: Json };
+      const pagesOf = async function* (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline) {
+        const pages = issuePages(query, progress, () => until - Date.now())[Symbol.asyncIterator]();
+        for (;;) {
+          if (Date.now() > until) {
+            complete = false;
+            return;
+          }
+          const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }), until);
+          if (step.done) return;
+          const raw = step.value as Json[];
+          // A page's rows are prepared a few at a time: a `prepare` that reads a task again must not fire a whole page of
+          // requests at once, and one slow read must not hold up every other row's answer.
+          const ready: Json[] = [];
+          for (let n = 0; n < raw.length; n += PREPARE_AT_ONCE) {
+            // A chunk that ran out the clock ends the page's preparation: no further batch starts past the budget.
+            if (Date.now() > until) {
+              complete = false;
+              break;
+            }
+            const chunk = raw.slice(n, n + PREPARE_AT_ONCE);
+            ready.push(...((await atEdge(() => Promise.all(chunk.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[]));
+          }
+          const rows = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now(), byDefault), () => [] as (readonly [Json, Json])[], until);
+          // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
+          if (Date.now() > until) complete = false;
+          // The page's last row, as the list is served: anything behind it ranks at or after it, never before.
+          const tail = raw.reduce((last: Json, i: Json) => (cmp(i, last) > 0 ? i : last));
+          yield { rows, tail } as Page;
+          if (Date.now() > until) return;
+        }
+      };
+      /**
+       * The issues list's order (`issueListOrderBy` in Paperclip's issue service): priority, then the latest activity, then
+       * `updatedAt`, then the id, each newest/highest first. Negative when `a` is served before `b`. A row that is not in this
+       * order is not comparable, so a merge over such a page only claims what it can prove.
+       */
+      const rank = (i: Json) => {
+        const n = PRIORITIES.indexOf(String(i?.priority ?? ""));
+        return n < 0 ? PRIORITIES.length : n;
+      };
+      // Timestamps are compared as the raw strings Paperclip served, not as millisecond values: two rows inside one
+      // millisecond differ in the database and the list is ordered on that, so rounding them to a tie would decide by UUID.
+      const stamp = (v: Json) => String(v ?? "");
+      const activity = (i: Json) => stamp(i?.lastActivityAt ?? i?.updatedAt);
+      function cmp(a: Json, b: Json) {
+        if (rank(a) !== rank(b)) return rank(a) - rank(b);
+        const act = activity(b).localeCompare(activity(a));
+        if (act) return act;
+        const upd = stamp(b?.updatedAt).localeCompare(stamp(a?.updatedAt));
+        if (upd) return upd;
+        return String(b?.id ?? "").localeCompare(String(a?.id ?? ""));
+      }
+      const at = (row: readonly [Json, Json]) => row[0];
+      /**
+       * Two sources as one stream in the list's order, each task once. Both sources' first pages are read together, and a
+       * later page only when its own rows are used up, so a match in either source is returned in order and the limit is
+       * applied to the merged, deduped stream (a chat handed back between the scans cannot leave a slot unfilled).
+       */
+      const mergeNewest = async function* (a: AsyncIterable<Page>, b: AsyncIterable<Page>, keepA: (row: readonly [Json, Json], rest: (readonly [Json, Json])[]) => Promise<boolean> = async () => true) {
+        const left = a[Symbol.asyncIterator](), right = b[Symbol.asyncIterator]();
+        let [pa, pb] = await Promise.all([left.next(), right.next()]);
+        let ia = 0, ib = 0;
+        const seen = new Set<string>();
+        for (;;) {
+          if (pa.done && pb.done) return;
+          const headA = pa.done ? undefined : pa.value.rows[ia];
+          const headB = pb.done ? undefined : pb.value.rows[ib];
+          let row: readonly [Json, Json];
+          let fromA: boolean;
+          if (headA && headB) {
+            // A tie keeps the assigned (b) snapshot, the one read last.
+            fromA = cmp(at(headA), at(headB)) < 0;
+            row = fromA ? headA : headB;
+            if (fromA) ia++; else ib++;
+          } else if (headA) {
+            // The other source has no match on its page. The page does not end the source: its tail ranks at or after every
+            // row still unread, so this head comes first only when it ranks at or before that tail; else that source is read on.
+            if (!pb.done && cmp(at(headA), pb.value.tail) > 0) {
+              pb = await right.next();
+              ib = 0;
+              continue;
+            }
+            fromA = true;
+            row = headA;
+            ia++;
+          } else if (headB) {
+            if (!pa.done && cmp(at(headB), pa.value.tail) > 0) {
+              pa = await left.next();
+              ia = 0;
+              continue;
+            }
+            fromA = false;
+            row = headB;
+            ib++;
+          } else {
+            // Neither page holds a match: read on in whichever source still has pages, without touching one it proves nothing
+            // about beyond its own tail (a page read at all can fail, so only read what can change the answer).
+            // The source whose page ends earlier is read first, then the heads are compared again: the source that has not
+            // been read may already have a match, and reading it blindly could cost a request nothing needs.
+            if (!pa.done && (pb.done || cmp(pa.value.tail, pb.value.tail) <= 0)) {
+              pa = await left.next();
+              ia = 0;
+            } else if (!pb.done) {
+              pb = await right.next();
+              ib = 0;
+            }
+            continue;
+          }
+          if (seen.has(row[0].id)) continue;
+          // The owner source's rows are only candidates until their detail is read: that read happens when the row is reached,
+          // so a page of them costs nothing while a match from the other source is already known to come first.
+          // The rest of the row's own page, from it on: a check that reads each row in full can start a bounded batch of those
+          // reads together, instead of one request after another through a page of them.
+          if (fromA && !(await keepA(row, pa.done ? [] : pa.value.rows.slice(ia - 1)))) continue;
+          seen.add(row[0].id);
+          // Yielded before either source is read past it: a caller that stops at `limit` never reads on.
+          yield row;
+        }
+      };
+      const take = async (rows: AsyncIterable<readonly [Json, Json]>) => {
+        const out: (readonly [Json, Json])[] = [];
+        for await (const row of rows) {
+          out.push(row);
+          if (out.length >= max) break;
+        }
+        return out;
+      };
+      let out: (readonly [Json, Json])[];
+      // The plain list has one source: its rows, page by page, without the merge's bookkeeping.
+      const rowsOf = async function* (pages: AsyncIterable<Page>) {
+        for await (const p of pages) yield* p.rows;
+      };
+      if (!me) out = await take(rowsOf(pagesOf(q)));
+      else {
         // Heartbeat runs are the scan itself, never work to catch up on.
         // Nor setup's log tasks it holds (review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
-        list = list.filter((i: Json) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i));
+        const mineOnly = async (i: Json) => (i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i) ? i : null);
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
+        // Only the cheap checks run while paging; the marker (and a truncated description's full read) waits until the row is
+        // the next one to return, so owner history that a newer assigned task already outranks is never fetched.
         const owner = await ownerUserId();
+        const chatUntil = Math.min(deadline, Date.now() + SCAN_MS / 2);
+        let theirs: URLSearchParams | undefined;
+        let isChat: (row: readonly [Json, Json], rest: (readonly [Json, Json])[]) => Promise<boolean> = async () => false;
+        // Full reads already asked for, by task id, so a batch started for one row is reused by the next instead of repeated.
+        const detail = new Map<string, Promise<Json | null>>();
+        const readFull = (row: Json, until: number) => {
+          let p = detail.get(row.id);
+          if (!p) {
+            if (Date.now() > until) {
+              complete = false;
+              return Promise.resolve(null);
+            }
+            p = atEdge(() => api("GET", `/api/issues/${encodeURIComponent(row.id)}`, undefined, { timeoutMs: Math.max(1_000, Math.min(20_000, until - Date.now())) }).catch((err) => { if (err?.status === 404) return null; throw err; }), () => null, until);
+            detail.set(row.id, p);
+          }
+          return p;
+        };
         if (owner) {
-          q.delete("assigneeAgentId");
-          q.set("assigneeUserId", owner);
-          q.set("excludeRoutineExecutions", "true");
-          const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          const theirs = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
-          list.push(...theirs.filter((i: Json) => !i.assigneeAgentId && mark.test(i.description ?? "")));
+          theirs = new URLSearchParams(q);
+          theirs.delete("assigneeAgentId");
+          theirs.set("assigneeUserId", owner);
+          theirs.set("excludeRoutineExecutions", "true");
+          const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
+          isChat = async ([row], rest) => {
+            if (row.assigneeAgentId) return false;
+            // Only starting a detail read is bounded by the chat budget. A description the list returned, or one already
+            // fetched for this row (prefetched earlier in the merge), is in hand and is still checked after the cutoff.
+            if (row.descriptionTruncated && !detail.has(row.id) && Date.now() > chatUntil) {
+              complete = false;
+              return false;
+            }
+            // The rows that can be reached next are read together, a bounded batch at a time, so a page of truncated chats costs
+            // whole batches rather than one round trip each. A prefetch nobody reaches is drained: its failure is kept for the
+            // row that is reached, and an unread one must not leave a rejected promise to take the process down.
+            for (const [r] of rest.slice(0, PREPARE_AT_ONCE)) {
+              if (!r.descriptionTruncated || r.assigneeAgentId || detail.has(r.id)) continue;
+              // A prefetch only starts while fewer than a batch of reads are still open: rows reached before they settle do not
+              // open another window of requests on top of them.
+              if (detail.size >= PREPARE_AT_ONCE) break;
+              readFull(r, chatUntil).catch(() => {});
+            }
+            // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
+            // any other failure still surfaces rather than silently omitting the chat.
+            const full = row.descriptionTruncated ? await readFull(row, chatUntil) : row;
+            detail.delete(row.id);
+            // The full read also decides ownership again: a chat reassigned away since the list row is not ours.
+            if (!full || full.assigneeAgentId || full.assigneeUserId !== owner) return false;
+            return mark.test(full.description ?? "");
+          };
         }
+        const cheap = async (i: Json) => (i.assigneeUserId === owner && !i.assigneeAgentId ? i : null);
+        const chats: AsyncIterable<Page> = theirs ? pagesOf(theirs, cheap, chatUntil) : (async function* () {})();
+        out = await take(mergeNewest(chats, pagesOf(q, mineOnly), isChat));
       }
-      return { tasks: await Promise.all((await withStates(list, state, attention)).map(([i, s]) => brief(i, s))) };
+      return {
+        tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
+        ...(complete && !progress.stalled && !progress.expired && !progress.moved
+          ? {}
+          : {
+              incomplete: progress.stalled
+                ? "the issues list stopped advancing through its pages; some tasks were not read"
+                : progress.moved
+                  ? "the issues list shifted further between pages than the scan can follow; some tasks may have been missed"
+                  : "the scan ran past its time budget; some older tasks were not read",
+            }),
+      };
     },
   },
   task_approvals: {
