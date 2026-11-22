@@ -39,7 +39,9 @@ export interface Pin { kind: string; name: string; package: string; version?: st
 // APT loads is `files` or `entries`' key, so a file written empty is neither. A stage extending another inherits the
 // files it still has, never one the parent rewrote or removed.
 interface State { files: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
-const sources = (s: State) => [...s.entries.values()].flat();
+// Each repository once, in the order its file first held it: two source files naming the same repository (a `mv -n`
+// that keeps both) are one place to date a pin from.
+const sources = (s: State) => [...new Set([...s.entries.values()].flat())];
 // A fresh filesystem: no source files, no repository.
 const emptyState = (): State => ({ files: new Set(), entries: new Map(), added: false, releases: new Set() });
 // A deep copy, so one stage's later writes never reach another's (a stage inherits a snapshot, not a live view).
@@ -265,10 +267,51 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // The last fd-0 (`<`, `0<`) redirect after a position overrides the pipe, and its filename ends at an unquoted shell
   // operator, so a redirect with no whitespace before it is still one: `f < /tmp/x</dev/null` reads /dev/null (the shell
   // applies `< /dev/null` last), not `/tmp/x</dev/null`. `2<` is another descriptor and `<<`/`<<<` are not `<`.
-  const stdinOf = (text: string) => [...text.matchAll(/(?<![0-9<])(?:0<|<)(?![<&])\s*([^\s<>&|;]+)/g)].map((n) => n[1]!).at(-1);
+  const stdinOf = (text: string) => [...text.matchAll(/(?<![0-9<])(?:0<|<)(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g)].map((n) => n[1]!).at(-1);
   // The command whose stdout reaches this element: the last of a `&&` chain (`a && b | tee f` pipes b's stdout, and
   // `echo x > log && cat | tee f` reads from `cat`, not the earlier command's redirect).
   const lastCommand = (part: string) => part.split(/&&|\|\|/).filter((x) => x.trim()).at(-1) ?? "";
+  // A `cat` (or other copier) whose own fd 0 is a redirect (`cat </dev/null`, `dd if=/dev/null` aside) copies that file
+  // rather than its pipe: /dev/null is known-empty, any other file is content we can't read. `<` ends at an unquoted
+  // shell operator, so `cat </tmp/x</dev/null` reads /dev/null (the last one applies).
+  // What a `cat` command reads, with everything that is not an input dropped: its stdout redirects (`> f`, `>| f`,
+  // `2>&1` name where it writes, so `cat > f` fed by a pipe still reads the pipe) and its own name.
+  const catRest = (piece: string) => piece
+    // An output redirect and its descriptor go together: `cat /dev/null 2>/tmp/log > f` reads /dev/null, and `2` is
+    // not a file. A bare `>` with no descriptor is still one.
+    .replace(/\d*>&\d+|(?<![0-9>])\d*(?:>>?\|?|&>>?)\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
+    // Its stdin redirects name an input, not an operand: `cat 0</dev/null` has no file operand, and `0` is the descriptor.
+    .replace(/(?<![0-9<])\d*<(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
+    .replace(/^\s*(?:RUN\s+)?cat\b/i, " ");
+  const catInput = (piece: string): Pick<Written, "content"> | undefined => {
+    // Its input files: any `<`-redirect and its positional operands (`cat /tmp/x`, `cat </tmp/x`), with flags dropped
+    // (`cat -n f`, `cat -- -x`: a lone `--` ends the options, and `-` names stdin).
+    const REDIR = /(?<![0-9<])(?:0<|<)(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g;
+    // Only the final stdin redirect applies (a later `<` replaces an earlier one), so `cat </tmp/in </dev/null` reads
+    // /dev/null, not both.
+    const redirects = [...piece.matchAll(REDIR)].map((n) => unmask(strip(n[1]!)));
+    // Only the command's own operands: a `>`/`>>` names where `cat` writes, so it ends the operand list (`cat > f` reads
+    // the pipe, and the `>>` in `cat </dev/null >> f` is not a file).
+    const operands = (catRest(piece).split(/&&|\|\||[;|]|(?<![0-9])>>?/).at(0) ?? "").match(/(?:"[^"]*"|'[^']*'|[^\s<>&]+)/g) ?? [];
+    let endOfOptions = false;
+    // Read with quotes back first: `cat "-"` names stdin exactly as `cat -` does, and `"-n"` is still an option.
+    const positional = operands.map((a) => unmask(strip(a)))
+      .filter((a) => { if (endOfOptions) return true; if (a === "--") { endOfOptions = true; return false; } return !a.startsWith("-") || a === "-"; });
+    // `cat` reads its file operands and, when it names no file (`cat`, `cat -`), its stdin; a bare `cat` with no file at
+    // all takes the pipe. A `<`-redirect only sets what stdin holds, and a file operand does not make stdin unread.
+    const files = positional.filter((a) => a !== "-");
+    const stdin = positional.length === 0 || positional.includes("-");
+    const stdinFile = redirects.at(-1);
+    // Its output is known empty only when every input it reads is: each file operand, and stdin when read (a redirect to
+    // `/dev/null`, else the pipe — which a bare `cat` passes on by returning nothing here).
+    const inputs = [...files, ...(stdin && stdinFile !== undefined ? [stdinFile] : [])];
+    // A file operand or a `<`-redirect to anything but `/dev/null` is content we can't read, whatever the pipe holds.
+    if (inputs.some((f) => f !== "/dev/null")) return { content: "unknown" };
+    // Only `/dev/null` was read. A `-` operand (or no operand at all) reads stdin as well: when nothing overrides stdin
+    // (`cat </dev/null` does), the piped bytes are still its output, so the caller passes them through — a bare list
+    // beside them adds nothing. Otherwise the output is known empty: `cat /dev/null > f` truncates f to nothing.
+    return stdin && stdinFile === undefined ? undefined : { content: "empty" };
+  };
   // What reaches pipeline element i's stdout: nothing when its own last command redirects it, known content from a
   // here-document, and otherwise the pipeline's earlier command — or, when that is a pass-through (`cat`, `tee`), what
   // feeds it. A redirect deeper in the pipeline therefore empties the file `tee` is actually fed by.
@@ -287,13 +330,17 @@ function writtenFiles(segment: string, body?: string): Written[] {
       const input = stdinOf(piece.slice(tee.index + 4));
       return input ? (unmask(strip(input)) === "/dev/null" ? { content: "empty" } : { content: "unknown" }) : flow(i - 1);
     }
-    // `cat` copies its stdin to its stdout, so an fd-0 redirect overrides the pipe: `echo … | cat </dev/null > f` writes
-    // nothing to f. A bare `cat` passes the pipeline's bytes through, and anything else is a command whose own output the
-    // next element reads (its own stdout redirect, if any, is checked above), so what it writes is a `deb` line.
-    if (/^\s*cat(?:\s|$)/.test(piece)) {
-      const input = stdinOf(piece);
-      if (input) return { content: unmask(strip(input)) === "/dev/null" ? "empty" : "unknown" };
-      if (/^\s*cat\s*$/.test(piece)) return flow(i - 1);
+    // A pass-through copies its stdin (or the files it names) to its stdout; anything else is a command whose own
+    // output the next element reads, so what it writes is a `deb` line. A `cat` reads its own file operands and, when it
+    // names no file, its stdin: `/dev/null` alone writes nothing, any other input is content we can't read, and a bare
+    // `cat` passes on what the pipe feeds it.
+    // A redirect may touch the name (`cat</dev/null`), which is still `cat` reading /dev/null.
+    if (/^\s*cat(?=[\s<]|$)/.test(piece)) {
+      // Its own input decides: `cat</dev/null > f` truncates f where the pipe fed it, so its empty output is reported
+      // rather than the upstream `deb` line's. Only a cat with nothing to read takes the pipe.
+      const input = catInput(piece);
+      if (input) return input;
+      return flow(i - 1);
     }
     return { content: "deb", text: expand(piece) };
   };
@@ -320,25 +367,26 @@ function writtenFiles(segment: string, body?: string): Written[] {
     const [cStart, cEnd] = commandSpan(part, m.index!);
     const finalTarget = stdoutTarget(code.slice(cStart, cEnd));
     const takes = finalTarget !== "pipe" && cStart + finalTarget === m.index!;
+    // The command text before this redirect, with a Dockerfile `RUN` keyword dropped so its first word is the command.
+    const before = lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0))).replace(/^\s*RUN\s+/i, "");
     // A pass-through (`cat > f`) writes what its pipeline element receives, so a producer that sent its own stdout
     // elsewhere leaves f empty rather than holding a `deb` line.
-    const passThrough = /^\s*cat(?:\s|$)/.test(lastCommand((parts[part]?.text ?? clean).slice(0, m.index! - (parts[part]?.start ?? 0))));
+    const passThrough = /^\s*cat(?=[\s<]|$)/.test(before);
     // A command that writes its own `deb` line gives the file only that line: another command on the same line writing
     // to a log must not have its repository credited here too (`echo a > /tmp/log ; echo b > vendor.list`).
-    const own = takes && !passThrough ? writtenKind(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) : undefined;
-    // A `cat` reading a file other than the pipe writes that file's content, which we can't read, or nothing for
-    // /dev/null — the same rule `tee` follows above. Its fd 0 is looked up over the whole command, not just the text
-    // before this redirect: `cat > f </dev/null` names the stdin override after the write.
+    // A command with no output at all (`:` or `true`) leaves the file it truncates empty.
+    const silent = /^\s*(?::|true)\s*$/.test(before);
+    // Read with its quoted content back: `echo "deb …" > f` writes a `deb` line, not a masked one.
+    const own = takes && !passThrough && !silent ? writtenKind(expand(before)) : undefined;
+    // A `cat` reads its own file operands and its stdin only when it names no file, so `cat > f </dev/null` names the
+    // override after the write and its inputs are read over the whole command: `/dev/null` alone writes nothing, any
+    // other input is content we can't read, and a bare `cat` (or `cat -`, which names that same stdin) passes what the
+    // pipe feeds it — `catInput` answers nothing only for that pass-through case.
     const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
-    const catInput = passThrough ? stdinOf(catText) : undefined;
-    // A bare `cat` with a file operand reads that file, not the pipe: `echo a | cat /tmp/v.list > vendor.list` copies
-    // /tmp/v.list, so the upstream `a` does not reach vendor.list.
-    const catOperand = passThrough && !catInput ? /^\s*cat\s+([^\s<>|;&]+)/.exec(catText)?.[1] : undefined;
+    const catRead = passThrough ? catInput(catText) : undefined;
     const through: Pick<Written, "content" | "text"> | undefined = passThrough
-      ? catOperand ? { content: unmask(strip(catOperand)) === "/dev/null" ? "empty" : "unknown" }
-        : catInput ? { content: unmask(strip(catInput)) === "/dev/null" ? "empty" : "unknown" }
-        : flow(part - 1)
-      : own?.content === "deb" || own?.content === "unknown" ? { ...own, text: own.text ?? expand(lastCommand(code.slice(cStart, cEnd))) } : undefined;
+      ? catRead ?? flow(part - 1)
+      : own?.content === "deb" || own?.content === "unknown" ? own : undefined;
     const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? through;
     // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with
     // `2> f 1>&2` the `2>` names f and `1>&2` moves stdout there, so f holds the line. When stdout goes elsewhere the
@@ -346,7 +394,7 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // still be written by the command's stderr or that descriptor, which we can't read: keep it as unknown rather than
     // claiming it holds nothing.
     const stdoutFd = m[1] === "" || m[1] === "1";
-    add(unmask(strip(m[3]!)), append, takes ? fed ?? { content: "deb" } : { content: stdoutFd ? (append ? "none" : "empty") : "unknown" });
+    add(unmask(strip(m[3]!)), append, takes ? fed ?? { content: silent ? "empty" : "deb" } : { content: stdoutFd ? (append ? "none" : "empty") : "unknown" });
   });
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
@@ -458,7 +506,43 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     return () => {};
   };
   let chain = 0;
-  const pending: { index: number; chain: number; certain: boolean; undo: () => void }[] = [];
+  // `final` is a change that certainly ran with no condition that could have failed: it stands at the end of its chain.
+  const pending: { index: number; chain: number; certain: boolean; final: boolean; undo: () => void }[] = [];
+  // Whether a command at segment i runs certainly: it is the line's first command, after a `;`, or every operator between
+  // its chain's start and it is `&&` (so it runs only where its conditions did).
+  const branch = (i: number) => {
+    if (i === 0 || opBefore(i) === ";") return "certain" as const;
+    const start = parts.slice(0, i).reduce((acc, q, j) => (q === ";" ? j : acc), 0);
+    return parts.slice(start + 1, i).every((q, j) => (start + 1 + j) % 2 === 0 || q === "&&") ? "certain" as const : "conditional" as const;
+  };
+  // Whether a command certainly runs, not only certainly-if-its-conditions-did: every operator from its chain's start is
+  // `&&` and every condition on the way always succeeds (`true`, `:`). Such a command's write is final at the end of its
+  // chain — `true && cat /dev/null > f; apt-get install curl` installs with f empty — while one behind a `test` may have
+  // been skipped and is put back.
+  const alwaysRuns = (i: number) => {
+    if (i === 0 || opBefore(i) === ";") return true;
+    const start = parts.slice(0, i).reduce((acc, q, j) => (q === ";" ? j + 1 : acc), 0);
+    return parts.slice(start, i).every((q, j) => (start + j) % 2 === 1 ? q === "&&" : /^\s*(?:RUN\s+)?(?::|true)\s*$/.test(q ?? ""));
+  };
+  // A truncation or other write behind a condition may itself be skipped (`test -f m && : > f || true` leaves f as it
+  // was), so it is applied as a change with an undo, settled at each later install exactly like a removal.
+  const change = (i: number, undo: () => void) => {
+    if (i === 0 || opBefore(i) === ";") return;
+    const certain = branch(i) === "certain";
+    pending.push({ index: i, chain, certain, final: alwaysRuns(i), undo });
+  };
+  // The repositories a file holds now, to put them back when a guarded change is undone (merged with whatever a later
+  // command on the line wrote, so neither is lost).
+  const snapshot = (...names: (string | undefined)[]) => {
+    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n)] as const);
+    return () => {
+      for (const [n, entries, held] of before) {
+        if (entries) state.entries.set(n, [...new Set([...(state.entries.get(n) ?? []), ...entries])]);
+        if (held && n !== undefined) state.files.add(n);
+      }
+      state.added = hasRepo(state);
+    };
+  };
   // A later chain cannot rely on a conditional removal, and inside a chain a `||` before this command is a path that
   // skipped it: both put the file back before this command's installs are checked. A removal that itself may have been
   // skipped (`a || rm x && install` runs the install with x intact) never applies. A later install may also have been
@@ -466,12 +550,15 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   const settle = (i: number) => {
     for (let r = pending.length - 1; r >= 0; r--) {
       const rm = pending[r]!;
-      if (rm.chain !== chain || !rm.certain || parts.slice(rm.index + 1, i).some((q) => q === "||")) { rm.undo(); pending.splice(r, 1); }
+      if (rm.chain !== chain || (!rm.certain && !rm.final) || parts.slice(rm.index + 1, i).some((q) => q === "||")) { rm.undo(); pending.splice(r, 1); }
     }
   };
   for (let i = 0; i < parts.length; i += 2) {
     const segment = parts[i]!;
-    if (i > 0 && opBefore(i) === ";") { chain++; pending.splice(0).forEach((rm) => rm.undo()); }
+    // A `;` starts a chain that cannot rely on a change it may have skipped (`a && rm x; b`). One that certainly ran has
+    // already completed, though, so it is kept rather than undone: `true && cat /dev/null > f; apt-get install curl`
+    // installs with f empty.
+    if (i > 0 && opBefore(i) === ";") { chain++; pending.splice(0).forEach((rm) => { if (!rm.final) rm.undo(); }); }
     settle(i);
     const debs = debLines(segment);
     // A removal is a command that runs `rm`/`unlink` on a sources.list.d name, not a quoted message mentioning one.
@@ -489,22 +576,22 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       const undo = removeFiles(named);
       // Unconditional (`;`) removals survive the line; a conditional one is undone at line end. A removal runs
       // certainly only when everything from its chain's start to it is `&&`.
-      if (!(i === 0 || opBefore(i) === ";")) {
-        const start = parts.slice(0, i).reduce((acc, q, j) => (q === ";" ? j : acc), 0);
-        // Only the operators matter: every `&&` between the chain's start and this removal makes the commands in between
-        // its conditions (`test -f m && rm a && rm b` certainly removes both).
-        const certain = parts.slice(start + 1, i).every((q, j) => (start + 1 + j) % 2 === 0 || q === "&&");
-        pending.push({ index: i, chain, certain, undo });
-      }
+      if (i > 0 && opBefore(i) !== ";") pending.push({ index: i, chain, certain: branch(i) === "certain", final: false, undo });
     } else if (loaded.length) {
       // `>>` and `tee -a` add to the file they name; a plain `>` or `tee` replaces what it held, and each destination has
       // its own mode. A file counts as added when its content was written or copied rather than known to be empty — a
       // Deb822 `.sources` holds a repository its Types/URIs fields spell out even with no parseable `deb` line — but a
       // file written empty (`< /dev/null`, a producer whose `>` bypassed the pipe) adds none and dates none.
+      // A guarded write (`test -f m && : > f || true`) is put back at the line's end like a removal, so a later line still
+      // sees what the file held.
+      if (loaded.some((w) => w.content !== "none")) change(i, snapshot(...loaded.map((w) => w.file)));
       for (const w of loaded) {
         if (w.content === "none") continue;
         // A here-document's body is what it writes: its `deb` lines and its Deb822 stanzas.
         const written = w.content === "deb" ? (w.text === undefined ? debs : repoEntries(w.text).repos) : [];
+        // `>>` to an empty stream (`cat </dev/null >> f`, `tee -a f </dev/null`) leaves the file as it was on disk,
+        // entries and presence alike; only a truncating write (`> f`, a plain `tee`) removes it.
+        if (w.append && w.content === "empty") continue;
         state.entries.set(w.file!, w.append ? [...(state.entries.get(w.file!) ?? []), ...written] : written);
         if (w.content === "empty") state.files.delete(w.file!);
         else state.files.add(w.file!);
@@ -518,16 +605,33 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       const verb = m[1]!.toLowerCase() as "cp" | "mv";
       const op = copyOperands(segment.slice(m.index!), verb);
       if (!op || !/sources\.list\.d\//.test(segment.slice(m.index!) + " " + op.srcs.join(" ") + " " + op.dest)) continue;
+      // What the source held is read before `mv` drops its old name: the destination carries those repositories when the
+      // stage wrote them, and is unknown otherwise.
+      const held = new Map<string, string[]>();
+      for (const src of op.srcs) {
+        const name = sourceName(src);
+        if (name && state.files.has(name)) held.set(src, state.entries.get(name) ?? []);
+      }
       // `mv` renames the file away, so the source name it no longer holds stops being loaded (a move onto a name APT
       // ignores still drops the original): `mv vendor.list vendor.list.disabled` leaves no repository behind.
-      if (verb === "mv") for (const src of op.srcs) {
-        const name = sourceName(src);
-        if (name && !(op.srcs.length === 1 && !op.dest.endsWith("/") && sourceName(op.dest) === name)) { state.files.delete(name); state.entries.delete(name); }
+      // `mv -n` (or `cp -n`) never replaces an existing target, and whether one exists is past what the scanner can
+      // see: the source may still be there or the destination may hold its content. Both repositories are therefore
+      // kept — the source keeps its own, and the destination gains the source's beside whatever it already held.
+      const noClobber = /(?:^|\s)(?:-[a-zA-Z]*n[a-zA-Z]*|--no-clobber)(?=\s|$)/.test(segment.slice(m.index!));
+      const read = (src: string) => (held.has(src) ? { entries: held.get(src)! } : "unknown");
+      if (noClobber) {
+        for (const t of copyTargets(op, read)) {
+          state.files.add(t.name);
+          state.entries.set(t.name, [...new Set([...(state.entries.get(t.name) ?? []), ...(t.unknown ? [] : t.entries)])]);
+        }
+        state.added = hasRepo(state);
+      } else {
+        if (verb === "mv") for (const src of op.srcs) {
+          const name = sourceName(src);
+          if (name && !(op.srcs.length === 1 && !op.dest.endsWith("/") && sourceName(op.dest) === name)) { state.files.delete(name); state.entries.delete(name); }
+        }
+        applyCopy(state, copyTargets(op, read));
       }
-      applyCopy(state, copyTargets(op, (src) => {
-        const name = sourceName(src);
-        return name && state.files.has(name) ? { entries: state.entries.get(name) ?? [] } : "unknown";
-      }));
     }
     // The argument list runs to the next `&`/`|`/`;`, but `2>&1` is a redirect, not the end of the command.
     for (const m of segment.replace(/\d*>&\d+/g, " ").matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
@@ -544,8 +648,10 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       }
     }
   }
-  // A removal that may have been skipped is undone at the line's end: a later line can still see the file.
-  pending.splice(0).forEach((rm) => rm.undo());
+  // A removal or guarded change that may have been skipped is undone at the line's end: a later line can still see the
+  // file. A change that certainly ran with a condition that can't fail (`true && cat /dev/null > f`) is the exception —
+  // it stands, since nothing could have skipped it.
+  pending.splice(0).forEach((rm) => { if (!rm.final) rm.undo(); });
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
     pins.push({ kind: "github-release", name: m[1]!, package: m[1]!, version: m[2], at });
   }
@@ -583,26 +689,73 @@ const sourceName = (p: string) => /^\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.
  * The operands of a `COPY` (Dockerfile), `cp` or `mv` (a RUN line): its paths and any `--from` stage. Dockerfile COPY's
  * JSON form (`["/a", "/b/"]`) is read as the same paths, and flags (`--chown=…`, `-r`, `-f`) are dropped.
  */
-function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; dest: string; from?: string } | undefined {
+function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; dest: string; from?: string; parents?: boolean; targetDir?: string } | undefined {
   let rest = l.replace(new RegExp(`^\\s*${verb}\\s+`, "i"), "").trim();
-  let from: string | undefined;
-  // Flags: `--from=<stage>` (COPY, before or after the JSON array), then any other `--flag=…`/`--flag value` and `cp`/`mv`
-  // short flags (`-r`, `-f`, `-t dir`). A `--` ends the flags.
-  rest = rest.replace(/--from=(\S+)\s*/i, (_m: string, f: string) => { from = f; return ""; });
-  if (verb === "COPY") rest = rest.replace(/^--\S+(?:=|\s+)\S*\s*/g, "");
-  else rest = rest.replace(/^(?:-\S+\s+)*/, "");
+  let from: string | undefined, parents = false, targetDir: string | undefined;
+  // Every leading flag is consumed before the operands are read, whichever form they take: `--from=<stage>`, a valued
+  // `--flag=value`/`--flag value` (`--chmod`, `--chown`, `--exclude`) and a valueless `--flag` (`--link`, `--parents`,
+  // `--follow-link`), plus `cp`/`mv` short flags (`-r`, `-t dir`). A flag never takes the JSON array or the first source
+  // path as its value.
+  // Each pass consumes exactly one leading flag — the first rule that matches wins, so a later rule never edits the tail
+  // of a flag an earlier one already recognised.
+  const rules: [RegExp, (m: RegExpMatchArray) => void][] = verb === "COPY"
+    ? [
+        [/^--from=(\S+)\s*/i, (m) => { from = m[1]; }],
+        [/^--(?:chmod|chown|exclude)=\S+\s*/i, () => {}],
+        [/^--(?:chmod|chown|exclude)\s+\S+\s*/i, () => {}],
+        [/^--(parents|follow-link|link)(?=\s|$)\s*/i, (m) => { if (m[1]!.toLowerCase() === "parents") parents = true; }],
+        [/^-[a-zA-Z]+(?=\s|$)\s*/, () => {}],
+        [/^--[\w-]+(?=\s|$)\s*/, () => {}],
+      ]
+    : [
+        [/^--from=(\S+)\s*/i, (m) => { from = m[1]; }],
+        // Only `-t`/`-S` (and their long forms) take an operand: `-f`, `-i`, `-n`, `-v`, `-T` and the rest are valueless,
+        // so `mv -f src dest` keeps both paths rather than reading dest as `-f`'s argument.
+        [/^--target-directory=("[^"]*"|'[^']*'|\S+)\s*/i, (m) => { targetDir = strip(m[1]!); }],
+        [/^--target-directory\s+("[^"]*"|'[^']*'|\S+)\s*/i, (m) => { targetDir = strip(m[1]!); }],
+        [/^--suffix=("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
+        [/^--suffix\s+("[^"]*"|'[^']*'|\S+)\s*/i, () => {}],
+        // `-t` may be glued to its directory (`cp -t/etc/apt/sources.list.d/ f`) or followed by it (`cp -rt dir f`).
+        [/^-[a-zA-Z]*t(=?\S+)\s*/, (m) => { targetDir = strip(m[1]!.replace(/^=/, "")); }],
+        [/^-[a-zA-Z]*t\s+("[^"]*"|'[^']*'|\S+)\s*/, (m) => { targetDir = strip(m[1]!); }],
+        // `-S` also takes its suffix glued (`-S.bak`), and it is one flag in a cluster: `cp -fS.bak -t dir f` → dir f,
+        // so its cluster stops there and the next word is an operand, not another flag.
+        [/^-[a-zA-Z]*S("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
+        [/^-[a-zA-Z]*S\s+("[^"]*"|'[^']*'|\S+)\s*/, () => {}],
+        [/^-[a-zA-Z]+(?=\s|$)\s*/, () => {}],
+        [/^--[\w-]+(?=\s|$)\s*/, () => {}],
+      ];
+  for (;;) {
+    const hit = rules.find(([re]) => re.test(rest));
+    if (!hit) break;
+    rest = rest.replace(hit[0], (m: string, ...g: string[]) => { hit[1]([m, ...g] as unknown as RegExpMatchArray); return ""; });
+  }
   // Dockerfile COPY's JSON form: paths as an array, one per operand (the same paths as the shell form).
   if (rest.startsWith("[")) {
     try {
       const j = JSON.parse(rest);
       if (!Array.isArray(j) || !j.every((x) => typeof x === "string") || j.length < 2) return undefined;
-      return { srcs: j.slice(0, -1) as string[], dest: j.at(-1)!, ...(from ? { from } : {}) };
+      return { srcs: j.slice(0, -1) as string[], dest: j.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}) };
     } catch { return undefined; }
   }
   // Quoted operands are single paths: `"my file.list"` is one, not two.
   const args = [...rest.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]!);
+  // `cp`/`mv -t dir` (or `--target-directory dir`) names the destination as an option: every operand is a source, even
+  // a lone one, and the directory is taken as ending with a slash.
+  if (targetDir && args.length >= 1) return { srcs: args, dest: targetDir.endsWith("/") ? targetDir : `${targetDir}/`, ...(targetDir ? { targetDir } : {}) };
   if (args.length < 2) return undefined;
-  return { srcs: args.slice(0, -1), dest: args.at(-1)!, ...(from ? { from } : {}) };
+  return { srcs: args.slice(0, -1), dest: args.at(-1)!, ...(from ? { from } : {}), ...(parents ? { parents } : {}), ...(targetDir ? { targetDir } : {}) };
+}
+/**
+ * The path `COPY --parents` keeps for a source: its parents relative to the last `./` pivot (`./x/a.txt` keeps `x/a.txt`,
+ * `/out/./x/a.txt` keeps `x/a.txt`), or with its leading slashes dropped when it has none (`/etc/apt/x.list` keeps
+ * `etc/apt/x.list`). Undefined when nothing is left to keep.
+ */
+function parentsPath(src: string): string | undefined {
+  const p = src.replace(/^(\.\/)+/, "");
+  const pivot = p.lastIndexOf("/./");
+  const rel = (pivot >= 0 ? p.slice(pivot + 3) : p).replace(/^\/+|\/+$/g, "");
+  return rel || undefined;
 }
 /**
  * The files a copy puts in sources.list.d, each under the name the destination gives it: `{ name, entries }` when the
@@ -610,7 +763,27 @@ function copyOperands(l: string, verb: "COPY" | "cp" | "mv"): { srcs: string[]; 
  * source the copy can't resolve or a destination APT doesn't load (`/tmp/`, `vendor.list.disabled`). `read` answers what
  * the source path holds: a tracked stage's file, `unknown`, or nothing.
  */
-function copyTargets(op: { srcs: string[]; dest: string }, read: (src: string) => { entries: string[] } | "unknown" | undefined): { name: string; entries: string[]; unknown: boolean }[] {
+function copyTargets(op: { srcs: string[]; dest: string; parents?: boolean }, read: (src: string) => { entries: string[] } | "unknown" | undefined): { name: string; entries: string[]; unknown: boolean }[] {
+  // `COPY --parents` keeps each source's parent directories under the destination: `vendor.list` lands directly in
+  // `/etc/apt/sources.list.d/`, where APT loads it, while `/etc/apt/sources.list.d/vendor.list` keeps its whole path
+  // (`dest/etc/apt/sources.list.d/vendor.list`), where APT does not. Only a source whose kept path is a bare file name
+  // is a source file APT reads; what it holds is whatever `read` answers.
+  if (op.parents) {
+    const base = op.dest.endsWith("/") ? op.dest : `${op.dest}/`; // Docker requires a directory destination for --parents
+    const kept: { name: string; entries: string[]; unknown: boolean }[] = [];
+    for (const src of op.srcs) {
+      const path = parentsPath(src);
+      if (!path) continue;
+      // What APT loads is the file the copy forms, destination and kept path together: `vendor.list` into
+      // `/  → /etc/apt/sources.list.d/` loads it, while `etc/apt/sources.list.d/vendor.list` into `/tmp/` does not.
+      const name = sourceName(`${base}${path}`);
+      // Only a name APT loads is a repository: a kept `vendor.list.disabled` sits in the directory but APT skips it.
+      if (!name || !APT_FILE.test(name)) continue;
+      const held = read(src);
+      kept.push(held && held !== "unknown" ? { name, entries: held.entries, unknown: false } : { name, entries: [], unknown: true });
+    }
+    return kept;
+  }
   const destDir = op.srcs.length > 1 || op.dest.endsWith("/") || op.dest === "/etc/apt/sources.list.d";
   if (destDir ? !/^\/etc\/apt\/sources\.list\.d\/?$/.test(op.dest) : !sourceName(op.dest)) return [];
   const out: { name: string; entries: string[]; unknown: boolean }[] = [];
@@ -676,7 +849,13 @@ export function scanFile(path: string, text: string): { pins: Pin[]; problems: s
           : [src]);
         applyCopy(state, copyTargets({ ...copyOp, srcs }, (src) => {
           const name = sourceName(src);
-          if (!built || !name || !built.files.has(name)) return undefined;
+          if (!built) {
+            // From the build context the file's content is past what the scanner reads: whatever it is called in the
+            // context (`vendor.conf`), the destination name is what makes APT load it, so a copy that lands as a source
+            // file is kept as a repository the scanner can't read rather than dropped.
+            return "unknown";
+          }
+          if (!name || !built.files.has(name)) return undefined;
           return APT_FILE.test(name) ? { entries: built.entries.get(name) ?? [] } : undefined;
         }));
       }
