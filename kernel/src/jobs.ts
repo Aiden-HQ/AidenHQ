@@ -260,7 +260,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         } catch { return false; }
       })();
       // quiet: a routine run that only closed or parked its task (quiet.ts); written here and nowhere else.
-      extra = { ...sum, model, acted, quiet: quietRun(db, { id: r.id, task: r.task, at: r.at, routine: r.routine, state: String(data.state), requester: r.agent }) };
+      extra = { ...sum, model, acted, quiet: (() => { try { return quietRun(db, { id: r.id, task: r.task, at: r.at, routine: r.routine, state: String(data.state), requester: r.agent }); } catch { return false; } })() };
     }
     strictFact(facts)({ type, subject: `job:${r.id}`, version: type === "job.started" ? "started" : "ended", at: iso(at), actor: `agent:${agentKey(r.agent)}`, task: r.task, data: { ...data, ...extra } });
   };

@@ -105,10 +105,11 @@ export function createEvents(o: {
       const t = now();
       let queued = 0;
       for (const [routine] of targets) {
+        // A repeated source id for this routine is dropped (its row is kept 7 days), before it could open an empty batch.
+        if (db.prepare("SELECT 1 FROM event_queue WHERE routine = ? AND id = ?").get(routine, ev.id)) continue;
         let b = db.prepare("SELECT * FROM event_batches WHERE routine = ? AND state = 'open'").get(routine) as Batch | undefined;
         if (!b) { const id = randomUUID(); db.prepare("INSERT INTO event_batches (id, routine, state, opened_at) VALUES (?, ?, 'open', ?)").run(id, routine, t); b = get(id)!; }
-        // A repeated source id for this routine is dropped (UNIQUE): kept for 7 days.
-        if (!db.prepare("INSERT OR IGNORE INTO event_queue (routine, id, batch, body, at) VALUES (?, ?, ?, ?, ?)").run(routine, ev.id, b.id, JSON.stringify(body), t).changes) continue;
+        db.prepare("INSERT INTO event_queue (routine, id, batch, body, at) VALUES (?, ?, ?, ?, ?)").run(routine, ev.id, b.id, JSON.stringify(body), t);
         queued++;
         db.prepare(`UPDATE event_batches SET count = count + 1${b.count + 1 >= BATCH_MAX ? ", state = 'sealed', sealed_at = ?" : ""} WHERE id = ?`).run(...(b.count + 1 >= BATCH_MAX ? [t, b.id] : [b.id]));
       }

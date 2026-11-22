@@ -238,13 +238,14 @@ test("a job's last message is written even when its logs folder was deleted, and
 
 test("only-closing routine job is quiet; a write or a created task is not; quiet is in job.ended only", () => {
   const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE records (kind TEXT, args TEXT, requester TEXT, created_at TEXT); CREATE TABLE facts (type TEXT, at TEXT, data TEXT)");
+  db.exec("CREATE TABLE records (kind TEXT, args TEXT, requester TEXT, task TEXT, created_at TEXT); CREATE TABLE facts (type TEXT, at TEXT, data TEXT)");
   const at = Date.parse("2026-11-23T10:00:00Z");
-  const file = (kind: string, args: object, agent = "agent-1", when = "2026-11-23T10:01:00.000Z") => db.prepare("INSERT INTO records VALUES (?, ?, ?, ?)").run(kind, JSON.stringify(args), JSON.stringify({ agent }), when);
+  const file = (kind: string, args: object, agent = "agent-1", when = "2026-11-23T10:01:00.000Z", task = "task-1") => db.prepare("INSERT INTO records VALUES (?, ?, ?, ?, ?)").run(kind, JSON.stringify(args), JSON.stringify({ agent }), task, when);
   const job = { id: "j-1", task: "task-1", at, routine: "slack-triage", state: "done", requester: "agent-1" };
   file("conn.tool", { connection: "paperclip_tasks", tool: "task_finish", arguments: {} });
   file("conn.tool", { connection: "slack", tool: "slack_send_message", arguments: {} }, "agent-2"); // another agent's
   file("github.pr", {}, "agent-1", "2026-11-23T09:00:00.000Z"); // before the job started
+  file("github.pr", {}, "agent-1", "2026-11-23T10:01:00.000Z", "task-2"); // a parallel job's, on its own task
   assert.equal(quietRun(db, job), true);
   assert.equal(quietRun(db, { ...job, routine: null }), false, "not a routine run");
   assert.equal(quietRun(db, { ...job, state: "failed" }), false, "didn't end done");

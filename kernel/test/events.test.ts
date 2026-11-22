@@ -110,6 +110,13 @@ test("drain, caps, gates and binding", async () => {
   assert.equal(await refused(() => events.batch(job, b1)), 403);
   r.grants.agents.a1.tools = { slack: ["slack_read_channel"] };
 
+  // An id seen before (its batch long fired) opens no empty batch: no run.
+  r.runs.length = 0;
+  assert.deepEqual(events.ingest("slack", ev("e1")), { queued: 0 });
+  r.tick(60_000);
+  await events.drain();
+  assert.equal(r.runs.length, 0);
+
   // Caps count dispatch times: R1 has 4 runs this hour; 8 more reach 12, the 13th is dropped; an hour on, it runs again.
   r.runs.length = 0;
   for (let i = 0; i < 9; i++) { events.ingest("slack", ev(`c${i}`)); r.tick(60_000); await events.drain(); }
