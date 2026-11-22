@@ -163,6 +163,21 @@ test("the docker prune check passes when both steps run this checkout, through t
   assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's step wrapper$/m, r.out);
 });
 
+test("a timeout-wrapped container step still resolves to the applied checkout", { skip: NOT_LINUX }, async () => {
+  // prune-docker.service runs `timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh`: the check must
+  // follow timeout to the command it runs, not report the unit runs /usr/bin/timeout.
+  const dir = checkout({ name: "prune-docker-containers", service: "prune-docker.service", timerUnit: "prune-docker.timer" });
+  writeFileSync(join(dir, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
+  writeFileSync(join(dir, "ops/prune-docker-step.sh"), "#!/usr/bin/env bash\n");
+  writeFileSync(join(dir, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${dir}\n`);
+  writeFileSync(join(dir, "execstart"), [
+    `{ path=/usr/bin/timeout ; argv[]=/usr/bin/timeout 5m /usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-containers.sh ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-verify.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  ].join("\n") + "\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  ok    docker prune timer runs the applied checkout's container step$/m, r.out);
+});
+
 test("the image step's wrapper and the docker command it runs are both applied-checkout paths", { skip: NOT_LINUX }, async () => {
   // The image prune is an `env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune ...`: the
   // check must resolve the script after env and after splitting, not the trailing docker words as a script name.

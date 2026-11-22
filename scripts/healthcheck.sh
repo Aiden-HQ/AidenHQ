@@ -260,6 +260,25 @@ unit_runs_applied() { # service, name [env]
     || { echo "the unit starts $executable, but its argv names $program: $line"; return 1; }
   program="$executable"
   i=1
+  # `timeout`, when the unit bounds a step: it runs the command that follows its own options. Unwrap it first, so the
+  # `env`/shell handling below sees the command it runs (`timeout 5m /usr/bin/env bash .../ops/x.sh` -> ops/x.sh).
+  # Skip its options: `-s/--signal`, `-k/--kill-after`, `--foreground`, `-v/--verbose`, `--preserve-status`, the duration
+  # (the first operand), and a leading `--`.
+  if [ "$(basename "$program")" = timeout ]; then
+    duration=""
+    while [ "$i" -lt "${#argv[@]}" ]; do
+      case "${argv[i]}" in
+        --) i=$((i + 1)); program="${argv[i]:-}"; i=$((i + 1)); break ;;
+        -s|--signal|-k|--kill-after) i=$((i + 2)) ;;
+        --signal=*|--kill-after=*|-s?*|-k?*) i=$((i + 1)) ;;
+        --foreground|--preserve-status|-v|--verbose) i=$((i + 1)) ;;
+        --*|-*) echo "cannot resolve the command from timeout option ${argv[i]}: $line"; return 1 ;;
+        *) if [ -z "$duration" ]; then duration=1; i=$((i + 1)); continue; fi
+           program="${argv[i]}"; i=$((i + 1)); break ;;
+      esac
+    done
+    [ -n "$duration" ] && [ -n "$program" ] || { echo "the unit's ExecStart names no command after timeout: $line"; return 1; }
+  fi
   if [ "$(basename "$program")" = env ]; then
     while [ "$i" -lt "${#argv[@]}" ]; do
       case "${argv[i]}" in
