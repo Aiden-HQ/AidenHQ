@@ -36,7 +36,7 @@ test("the compiled handbook carries the repair-loop rule and leaves its steps to
   assert.notEqual(start, -1, "the handbook has the repair-loop rule");
   const end = text.indexOf("\n\n", start);
   const rule = text.slice(start, end === -1 ? text.length : end);
-  assert.match(rule, /names nothing still wrong with the current head/, "the stop is judged against the current head");
+  assert.match(rule, /AI reviewer's second rejection[\s\S]*names nothing still wrong with the current head/, "the stop is judged against the current head");
   assert.match(rule, /asks whoever delegated the task to clarify/, "the delegator is asked to clarify");
   assert.match(rule, /`write-code` holds the steps/, "the steps are the skill's, not the handbook's");
   assert.match(rule, /A rejection that names a defect still present is work to fix/, "a real defect is still fixed");
@@ -51,6 +51,9 @@ test("the write-code skill holds the stop steps, including the wait for the dele
   assert.match(steps, /`task_wait`s with `for` the delegator \(the owner when nobody delegated the task\)/, "the run waits on the delegator, or the owner when there is none");
   assert.match(steps, /both rejection ids, what the two notes said, what it would change, and what the change must do/, "the question carries the ids and the clarification");
   assert.match(steps, /the final reply repeats the two ids and the question onto the task/, "the reply records the ids, since the Engineer cannot comment");
-  assert.match(steps, /publishes the next head once the\s+answer arrives/, "no third head before the answer");
+  assert.match(steps, /publishes the next head only once a reply resolves the\s+question/, "no third head before a resolving answer");
+  assert.match(steps, /an answer that asks something back, declines, or names no requirement is met\s+with the same question again/, "a non-answer gets the question, not a new head");
+  assert.match(steps, /Only the AI reviewer's own rejection of the change counts toward the stop/, "only AI reviewer rejections count");
+  assert.match(steps, /even though the rejection's own notice still ends "Fix that and file it\s+again": that tail states the\s+general case/, "the live notice is reconciled with the stop");
   assert.doesNotMatch(steps, /accept it as it stands/, "the delegator is asked to clarify, not to accept the change as it is");
 });
