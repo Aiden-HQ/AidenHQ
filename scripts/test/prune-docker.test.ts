@@ -6,7 +6,7 @@
 // `docker system df` without serving stale numbers (or failing the metrics timer) when Docker cannot answer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -56,9 +56,15 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   // keeps a failure from skipping the next step, and the record is how it still fails the unit.
   assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
   assert.ok(execs.some((e) => e === "-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh"), `one-off reclaim: ${execs.join(" | ")}`);
-  // The cache right after the builder prunes is snapshotted by its own prefixed step, so the verification judges the result
-  // of pruning rather than a later read a concurrent build may have grown past the cap.
+  // The cache is snapshotted by its own prefixed step, immediately after the two builder prunes and before the image and
+  // container prunes (which take minutes on a large host): a build adding cache while those run does not get into the
+  // snapshot.
   assert.ok(execs.slice(0, -1).some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh build-cache /usr/bin/timeout 30 /usr/bin/docker system df --format '{{json .}}'"), `cache snapshot: ${execs.join(" | ")}`);
+  const cacheAt = execs.findIndex((e) => /prune-docker-step\.sh build-cache/.test(e));
+  const lastBuilder = execs.map((e) => /docker builder prune/.test(e)).lastIndexOf(true);
+  const firstLater = execs.findIndex((e) => /docker image prune|prune-docker-containers\.sh/.test(e));
+  assert.ok(cacheAt === lastBuilder + 1, `the snapshot must directly follow the builder prunes: ${execs.join(" | ")}`);
+  assert.ok(cacheAt < firstLater, `the snapshot must precede the image and container prunes: ${execs.join(" | ")}`);
   assert.match(service, /^Environment=AIDENHQ_DIR=/m);
   assert.match(service, /^EnvironmentFile=-%h\/\.config\/aidenhq-prune-docker\.env$/m, "the applied checkout wins over the one setup recorded");
   // Enabling is not starting: on a fresh host a prune run can fail (a cold `docker system df` past its cap) and must not
@@ -70,6 +76,17 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   assert.match(setup, /systemctl --user enable prune-docker\.service$/m);
   // No volume or data deletion: the unit never takes --volumes or prunes volumes.
   assert.doesNotMatch(service, /system prune|--volumes|volume prune/);
+});
+
+test("applying a product without the Docker disk collector removes the stale docker.prom", () => {
+  // A rollback to a product version from before docker.prom would otherwise leave the last file the newer collector wrote
+  // in node-exporter's textfile directory: it would serve those bytes and collect_ok 1 as current, and HostMetricsStale
+  // would page on a mtime no running collector can refresh. The apply removes the file and its read cache when the product
+  // it applies has no writer for it.
+  assert.match(commands(apply), /! grep -q 'write docker\.prom' ops\/host-metrics\.sh/);
+  assert.match(commands(apply), /rm -f "\$docker_prom_dir\/docker\.prom" "\$docker_prom_dir\/docker-df\.json"/);
+  // And nothing legitimate: while the applied product does write it, the apply leaves both alone.
+  assert.match(readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"), /} \| write docker\.prom/);
 });
 
 test("the container step removes only one-offs stopped over a day, and the verification is what fails the unit", () => {
@@ -123,7 +140,7 @@ test("the apply-time prunes are independent too, and keep the same retention", (
 function fakeDocker({
   containers = [], cache = "10.52GB", daemonUp = true, cacheRow = true, imagePruneFails = false,
   uninspectable = [], vanishOnRm = [], vanishOnInspect = [], relistFails = false, systemDfFails = false,
-  restartedBeforeRm = [], reclaimable = "",
+  restartedBeforeRm = [], reclaimable = "", sizeMissing = false,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "prune-docker-"));
   const bin = join(dir, "bin");
@@ -193,7 +210,7 @@ case "$1 $2" in
   "system df")
     ${systemDfFails ? `echo "Cannot connect to the Docker daemon" >&2; exit 1 ;;` : ""}
     ${cacheRow
-      ? `printf '{"Size":"%s","Reclaimable":"%s","Type":"Build Cache"}\\n' "${cache}" "${reclaimable}"`
+      ? `printf '{"Size":"%s","Reclaimable":"%s","Type":"Build Cache"}\\n' "${sizeMissing ? "" : cache}" "${reclaimable}"`
       : `printf '{"Size":"25.15GB","Type":"Images"}\\n'`}
     exit 0 ;;
   "image prune") exit ${imagePruneFails ? 1 : 0} ;;
@@ -286,6 +303,28 @@ test("the verification fails the unit when the daemon is down, the cache is over
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /still reclaimable after the prune/);
+  // A Build Cache row with no size is not an absent row: Docker says something is cached and how big it is cannot be
+  // read, so the cap cannot be confirmed and the unit fails.
+  d = fakeDocker({ sizeMissing: true });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Build Cache row with no readable size/);
+  // The tolerance on the cap is the precision Docker printed the size with, not a fixed gigabyte: 20.0GB (one decimal)
+  // can be 20.05 GB, so it passes; 20.9GB cannot be at or under 20 GB however it was rounded, so it fails.
+  d = fakeDocker({ cache: "20.0GB", reclaimable: "0B" });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 0, r.out);
+  d = fakeDocker({ cache: "20.9GB", reclaimable: "2GB" });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /still reclaimable after the prune/);
+  d = fakeDocker({ cache: "20.01GB", reclaimable: "1GB" });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 1, r.out);
+  // A whole-unit size has a wider display step, and it is still only half of that unit: 20GB is within it, 21GB is not.
+  d = fakeDocker({ cache: "20GB", reclaimable: "0B" });
+  r = d.run("ops/prune-docker-verify.sh");
+  assert.equal(r.status, 0, r.out);
   // Over the cap with an unreadable reclaimable size: the cap cannot be confirmed either way.
   d = fakeDocker({ cache: "104.2GB", reclaimable: "" });
   r = d.run("ops/prune-docker-verify.sh");
@@ -314,7 +353,7 @@ test("the verification reads an absent Build Cache row and a failed image prune 
   // its status for the verification, which reads it — and does NOT run the 48 h prune again.
   const state = mkdtempSync(join(tmpdir(), "prune-state-"));
   mkdirSync(join(state, "prune-docker"));
-  writeFileSync(join(state, "prune-docker/images.status"), "inv-1 1\n");
+  writeFileSync(join(state, "prune-docker/images"), "inv-1 1\n");
   d = fakeDocker({ imagePruneFails: true });
   r = d.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-1" });
   assert.equal(r.status, 1, r.out);
@@ -429,10 +468,35 @@ test("the step wrapper runs the prune once and records its status for the verifi
   const step = join(repo, "ops/prune-docker-step.sh");
   let r = spawnSync("bash", [step, "images", "bash", "-c", "exit 0"], { env: { PATH: "/usr/bin:/bin", AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-a" }, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(readFileSync(join(state, "prune-docker/images.status"), "utf8").trim(), "inv-a 0");
+  assert.equal(readFileSync(join(state, "prune-docker/images"), "utf8").trim(), "inv-a 0");
   r = spawnSync("bash", [step, "images", "bash", "-c", "exit 7"], { env: { PATH: "/usr/bin:/bin", AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-b" }, encoding: "utf8" });
   assert.equal(r.status, 7, "the step's own status still reaches the prefixed ExecStart");
-  assert.equal(readFileSync(join(state, "prune-docker/images.status"), "utf8").trim(), "inv-b 7");
+  assert.equal(readFileSync(join(state, "prune-docker/images"), "utf8").trim(), "inv-b 7");
+});
+
+test("the cache snapshot and its status are one record, so a stale snapshot cannot pass as the new run's", () => {
+  const state = mkdtempSync(join(tmpdir(), "prune-record-"));
+  const step = join(repo, "ops/prune-docker-step.sh");
+  const run = (d, inv) => spawnSync("bash", [step, "build-cache", "docker", "system", "df", "--format", "{{json .}}"],
+    { env: { PATH: `${d.bin}:/usr/bin:/bin`, AIDENHQ_STATE_DIR: state, INVOCATION_ID: inv }, encoding: "utf8" });
+  const run0 = run(fakeDocker({ cache: "10.52GB" }), "inv-first");
+  assert.equal(run0.status, 0);
+  // One file holds the invocation, the status and the rows: a reader either gets that run's whole result or nothing new.
+  const rec = readFileSync(join(state, "prune-docker/build-cache"), "utf8");
+  assert.match(rec, /^inv-first 0\n/);
+  assert.match(rec, /10\.52GB/);
+  assert.doesNotMatch(readdirSync(join(state, "prune-docker")).join(" "), /build-cache\.(df|status)/, "no second file can disagree");
+  // This run's builder prunes failed and the cache is over the cap: the record says so and the verification fails, rather
+  // than reading the earlier run's under-cap rows.
+  const over = fakeDocker({ cache: "30GB", reclaimable: "5GB" });
+  assert.equal(run(over, "inv-second").status, 0, "system df itself succeeded");
+  const r = over.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-second", DOCKER: join(over.bin, "docker") });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /still reclaimable after the prune/);
+  // A record from another run is not this run's result either.
+  const r2 = over.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-third", DOCKER: join(over.bin, "docker") });
+  assert.equal(r2.status, 1, r2.out);
+  assert.match(r2.out, /record is from another run/);
 });
 
 test("the cap is judged on the cache right after pruning, not on a later read a build has grown", () => {
@@ -445,8 +509,8 @@ test("the cap is judged on the cache right after pruning, not on a later read a 
   assert.equal(step(pruned0, "images", "docker", "image", "prune", "-af").status, 0);
   // The builder prunes finished at 10.52 GB: the step right after them records exactly that.
   const pruned = fakeDocker({ cache: "10.52GB" });
-  assert.equal(step(pruned).status, 0);
-  assert.match(readFileSync(join(state, "prune-docker/build-cache.df"), "utf8"), /10\.52GB/);
+  assert.equal(step(pruned, "build-cache", "docker", "system", "df", "--format", "{{json .}}").status, 0);
+  assert.match(readFileSync(join(state, "prune-docker/build-cache"), "utf8"), /10\.52GB/);
   // A build has since added 5 GB of reclaimable cache: a fresh `docker system df` would show 30 GB, over the cap. The
   // prune did cap the cache, so the verification judges the snapshot and does not call this a failed prune.
   const later = fakeDocker({ cache: "30GB", reclaimable: "5GB" });
@@ -456,7 +520,7 @@ test("the cap is judged on the cache right after pruning, not on a later read a 
   assert.doesNotMatch(r.calls, /^system df$/m, "the verification reads the snapshot, not a second disk walk");
   // A snapshot step that could not read the cache is not "nothing cached": the cap is unknown, so the unit fails.
   const down = fakeDocker({ systemDfFails: true });
-  assert.notEqual(step(down).status, 0, "the snapshot step reports a failed read");
+  assert.notEqual(step(down, "build-cache", "docker", "system", "df", "--format", "{{json .}}").status, 0, "the snapshot step reports a failed read");
   const r2 = later.run("ops/prune-docker-verify.sh", { AIDENHQ_STATE_DIR: state, INVOCATION_ID: "inv-run", DOCKER: join(later.bin, "docker") });
   assert.equal(r2.status, 1, r2.out);
   assert.match(r2.out, /could not read the cache/);

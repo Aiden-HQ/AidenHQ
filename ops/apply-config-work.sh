@@ -765,6 +765,17 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-host-metrics.timer
     rm -f "$units/aidenhq-host-metrics.service" "$units/aidenhq-host-metrics.timer" "$HOME/.config/aidenhq-host-metrics.env" && systemctl --user daemon-reload && echo "host metrics timer removed (monitoring off)"
   fi
+  # docker.prom is written by this product's collector (ops/host-metrics.sh). A product version that does not write it — a
+  # rollback to one from before it — would leave the file the newer collector last wrote in the textfile directory, and
+  # node-exporter would keep serving those bytes and `collect_ok 1` as if they were current, with HostMetricsStale paging on
+  # a mtime no running collector can refresh. Applying such a version removes the file and the read cache it came from; a
+  # version that writes it leaves them alone (its first run rewrites both). `ops/rollback.sh` runs a full apply, so a
+  # rollback takes this path too.
+  local docker_prom_dir="${AIDENHQ_DATA_DIR:-$product_dir/data}/modules/monitoring"
+  case "$docker_prom_dir" in /*) ;; *) docker_prom_dir="$product_dir/$docker_prom_dir" ;; esac
+  if [ -e "$docker_prom_dir/docker.prom" ] && ! grep -q 'write docker.prom' ops/host-metrics.sh 2>/dev/null; then
+    rm -f "$docker_prom_dir/docker.prom" "$docker_prom_dir/docker-df.json" && echo "docker.prom removed (this product version has no Docker disk collector)"
+  fi
   # The security module's daily SBOM batch (ops/security-sbom.sh): its timer runs while the module's security-scanner service
   # is in the compiled compose, and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
   # applied, written every apply: an unchanged unit would otherwise keep running whatever ~/.config/aidenhq-checkout.env

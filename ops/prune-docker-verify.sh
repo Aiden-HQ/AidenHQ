@@ -7,9 +7,10 @@
 #
 # It checks these, each one a way the reclaim can silently not happen:
 #   1. the daemon answers (`docker info`);
-#   2. the build cache was under the 20 GB cap (with 1 GB of slack for `docker system df`'s rounded sizes) right after the
-#      builder prunes — the snapshot the `build-cache` step took then, not a `docker system df` taken here, which a build
-#      started since could have grown past 20 GB (that growth is not a failed prune);
+#   2. the build cache was under the 20 GB cap right after the builder prunes — the snapshot the `build-cache` step took
+#      then, not a `docker system df` taken here, which a build started since could have grown past 20 GB (that growth is
+#      not a failed prune). A displayed size carries only the precision Docker printed it with, so the size is allowed to
+#      be up to half of its last printed digit over the cap and no more: `20.9GB` (one decimal) is over, `20.0GB` is not;
 #   3. no labelled one-off container is still there after having been stopped for over a day (ops/prune-docker-containers.sh
 #      should have removed it), and every container it lists can be read (an unreadable one is a cleanup it could not do,
 #      not a clean run);
@@ -19,7 +20,7 @@
 set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
-CAP_BYTES=$((21 * 1000 * 1000 * 1000)) # 20 GB cap + 1 GB of rounding in `docker system df`
+CAP_BYTES=$((20 * 1000 * 1000 * 1000)) # the cap itself; the tolerance is the display precision of the size, below
 STOPPED_SECS=86400
 LABEL=aidenhq.oneoff=1
 
@@ -36,8 +37,8 @@ echo "prune-docker: verify"
 # expected to fail with `unknown flag` on a CLI that lacks the other — so their status is not read; the cache size is what
 # says whether the cap held.
 state="${AIDENHQ_STATE_DIR:-${HOME:-/nonexistent}/.local/state/aidenhq}/prune-docker"
-step_status() { # name -> the status of this invocation's step, or nothing
-  local f="$state/$1.status" run rc
+step_status() { # name -> the status of this invocation's step, or nothing (the step's one record: `<run> <rc>`, then rows)
+  local f="$state/$1" run rc
   [ -f "$f" ] || return 0
   read -r run rc < "$f" || return 0
   [ "$run" = "${INVOCATION_ID:-manual-$$}" ] && printf '%s' "$rc"
@@ -54,79 +55,102 @@ for name in images; do
   esac
 done
 
-# The cache: the rows the `build-cache` step saved right after the builder prunes (invoked as
-# `prune-docker-step.sh build-cache .../docker system df --format '{{json .}}'`), parsed by key (the JSON's field order is
-# not a contract). Judging that snapshot instead of running `docker system df` again here is what keeps a build that grew
-# the cache after the prune from reading as a prune that capped nothing. Run by hand (no INVOCATION_ID) no step ran and
-# there is no snapshot, so it reads the cache now, which is the same result when nothing else is building.
-df_file="$state/build-cache.df"
+# The cache: the record the `build-cache` step wrote right after the two builder prunes (`<invocation> <status>` on its
+# first line, then the `docker system df` rows), parsed by key (the JSON's field order is not a contract). Judging that
+# snapshot instead of running `docker system df` again here is what keeps a build that grew the cache after the prune from
+# reading as a prune that capped nothing. The three are one record, so a run can only be judged on its own status and its
+# own snapshot. Run by hand (no INVOCATION_ID) no step ran and there is no record, so it reads the cache now, which is the
+# same result when nothing else is building.
+df_file="$state/build-cache"
 df_out=""
 # df_ok says the snapshot (or the read made in its place) is there to judge: a read that failed is reported, and the
 # `case "$cache"` below must not then read an empty reading as "nothing cached".
 df_ok=1
-if [ -n "$(step_status build-cache)" ] || [ -n "${INVOCATION_ID:-}" ]; then
-  case "$(step_status build-cache)" in
-    "") bad+=("the build-cache step left no status, so the snapshot the cap is judged on is unknown"); df_ok="" ;;
-    0) if [ -f "$df_file" ]; then df_out="$(cat "$df_file" 2>/dev/null)"; else
-         bad+=("the build-cache step saved no snapshot, so the 20 GB cap cannot be confirmed"); df_ok=""
-       fi ;;
-    *) bad+=("the build-cache step could not read the cache (exit $(step_status build-cache)), so the 20 GB cap cannot be confirmed"); df_ok="" ;;
-  esac
+if [ -f "$df_file" ] && [ -n "${INVOCATION_ID:-}" ]; then
+  read -r run rc < "$df_file" || { run=""; rc=""; }
+  df_out="$(tail -n +2 "$df_file" 2>/dev/null)"
+  if [ "$run" != "$INVOCATION_ID" ]; then
+    bad+=("the build-cache record is from another run ($run, not $INVOCATION_ID), so the snapshot the cap is judged on is unknown"); df_ok=""
+  else
+    case "$rc" in
+      0) ;;
+      "") bad+=("the build-cache record has no status, so the snapshot the cap is judged on is unknown"); df_ok="" ;;
+      *) bad+=("the build-cache step could not read the cache (exit $rc), so the 20 GB cap cannot be confirmed"); df_ok="" ;;
+    esac
+  fi
+elif [ -n "${INVOCATION_ID:-}" ]; then
+  bad+=("the build-cache step left no record, so the snapshot the cap is judged on is unknown"); df_ok=""
 elif ! df_out="$(timeout 30 "$DOCKER" system df --format '{{json .}}' 2>/dev/null)"; then
   bad+=("docker system df failed, so the build-cache cap cannot be confirmed"); df_ok=""; df_out=""
 fi
-rows="$(
-  printf '%s\n' "$df_out" | awk '
-    function field(key,  re, s) {
-      re = "\"" key "\":\"([^\"]*)\""
-      if (!match($0, re)) return ""
-      s = substr($0, RSTART, RLENGTH)
-      sub("^\"" key "\":\"", "", s); sub("\"$", "", s)
-      return s
-    }
-    field("Type") == "Build Cache" { print field("Size") "\t" field("Reclaimable"); exit }'
-)"
-cache="${rows%%"	"*}"
+# One record per key, so an absent row, a row with no size and a row with a size are told apart instead of collapsing into
+# one empty string.
+size=""; reclaim=""; have_row=0
+while IFS=$'\t' read -r key value; do
+  case "$key" in
+    none) ;;
+    row) have_row=1 ;;
+    size) size="$value" ;;
+    reclaim) reclaim="$value" ;;
+  esac
+done < <(printf '%s\n' "$df_out" | awk '
+  function field(key,  re, s) {
+    re = "\"" key "\":\"([^\"]*)\""
+    if (!match($0, re)) return ""
+    s = substr($0, RSTART, RLENGTH)
+    sub("^\"" key "\":\"", "", s); sub("\"$", "", s)
+    return s
+  }
+  field("Type") == "Build Cache" { print "row"; print "size\t" field("Size"); print "reclaim\t" field("Reclaimable"); found = 1; exit }
+  END { if (!found) print "none" }')
+
+# Bytes in a size `docker system df` prints (`20.9GB`, `0B`, `1.2 kB`), and how precise that display is: half the last
+# printed digit is as far as the true value can be from what is shown, which is the only tolerance the cap may take.
+to_bytes() { # size -> bytes
+  awk -v s="$1" 'BEGIN {
+    sub(/[[:space:]].*$/, "", s)
+    if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
+    n = substr(s, 1, RLENGTH) + 0; u = substr(s, RLENGTH + 1)
+    if (u == "TB") n *= 1000000000000; else if (u == "GB") n *= 1000000000; else if (u == "MB") n *= 1000000
+    else if (u == "kB") n *= 1000; else if (u != "B" && u != "") exit
+    printf "%.0f", n }'
+}
+display_slack() { # size -> half of its last printed digit, in bytes
+  awk -v s="$1" 'BEGIN {
+    sub(/[[:space:]].*$/, "", s)
+    if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
+    num = substr(s, 1, RLENGTH); u = substr(s, RLENGTH + 1)
+    u = (u == "TB") ? 1000000000000 : (u == "GB") ? 1000000000 : (u == "MB") ? 1000000 : (u == "kB") ? 1000 : 1
+    # The last printed digit: the decimal places that were shown, or the units digit when there is no point.
+    d = index(num, "."); decimals = (d ? length(num) - d : 0)
+    printf "%.0f", u / 2 / (10 ^ decimals) }'
+}
+
 # `docker system df` prints a Build Cache row even when the cache is empty ("0B"). Some stores leave the row out entirely
 # when there is no build cache at all: with nothing cached the 20 GB cap holds by definition, so the absence is not a
-# failure. A read that FAILED is a different thing (above), and so is a row whose size is unreadable. The check is only
-# reached with a successful read.
-case "$cache" in
-  "") [ -n "$df_ok" ] && echo "prune-docker: no Build Cache row: nothing cached, so the 20 GB cap holds" ;;
-  *)
-    bytes="$(awk -v s="$cache" 'BEGIN {
-      sub(/[[:space:]].*$/, "", s)
-      if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
-      n = substr(s, 1, RLENGTH) + 0; u = substr(s, RLENGTH + 1)
-      if (u == "TB") n *= 1000000000000; else if (u == "GB") n *= 1000000000; else if (u == "MB") n *= 1000000
-      else if (u == "kB") n *= 1000; else if (u != "B" && u != "") exit
-      printf "%.0f", n }')"
-    [ -n "$bytes" ] || bad+=("the build cache size ($cache) is unreadable, so the 20 GB cap cannot be confirmed")
-    if [ -n "$bytes" ] && [ "$bytes" -gt "$CAP_BYTES" ]; then
-      # A concurrent build can hold more than the cap in cache that is in use: the prune then did all it could, and
-      # `docker system df` still reports the full Size. Reclaimable is the part a prune could still remove; only when it
-      # is exactly zero is the cap holding as far as it can. Any nonzero reclaimable means the prune left bytes it could
-      # have freed, which fails: no tolerance, since a tolerance would hide a partly failed prune.
-      reclaim="${rows#*"	"}"
-      reclaim_bytes="$(awk -v s="$reclaim" 'BEGIN {
-        sub(/[[:space:]].*$/, "", s)
-        if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
-        n = substr(s, 1, RLENGTH) + 0; u = substr(s, RLENGTH + 1)
-        if (u == "TB") n *= 1000000000000; else if (u == "GB") n *= 1000000000; else if (u == "MB") n *= 1000000
-        else if (u == "kB") n *= 1000; else if (u != "B" && u != "") exit
-        printf "%.0f", n }')"
-      if [ -z "$reclaim_bytes" ]; then
-        bad+=("the build cache is $cache, over the 20 GB cap, and its reclaimable size ($reclaim) is unreadable: whether the cap held cannot be confirmed")
-      elif [ "$reclaim_bytes" -gt 0 ]; then
-        # Any reclaimable cache at all is cache a prune could have freed: if one was, the cap did not hold. Only zero (a
-        # build holding the whole cache in use) makes an over-cap Size legitimate, so there is no silent tolerance here.
-        bad+=("the build cache is $cache with $reclaim still reclaimable after the prune: neither builder flag form capped it")
-      else
-        echo "prune-docker: build cache is $cache but nothing is reclaimable: a build holds that cache in use, so the cap holds"
-      fi
+# failure. A read that FAILED is a different thing (above), and so is a row whose size is unreadable: the row is there,
+# so something is cached, and what it is cannot be confirmed.
+if [ "$have_row" = 0 ]; then
+  [ -n "$df_ok" ] && echo "prune-docker: no Build Cache row: nothing cached, so the 20 GB cap holds"
+elif [ -z "$size" ]; then
+  [ -n "$df_ok" ] && bad+=("docker system df reported a Build Cache row with no readable size, so the 20 GB cap cannot be confirmed")
+else
+  bytes="$(to_bytes "$size")"
+  slack="$(display_slack "$size")"
+  [ -n "$bytes" ] || bad+=("the build cache size ($size) is unreadable, so the 20 GB cap cannot be confirmed")
+  if [ -n "$bytes" ] && [ -n "$slack" ] && [ "$bytes" -gt $((CAP_BYTES + slack)) ]; then
+    reclaim_bytes="$(to_bytes "$reclaim")"
+    if [ -z "$reclaim_bytes" ]; then
+      bad+=("the build cache is $size, over the 20 GB cap, and its reclaimable size ($reclaim) is unreadable: whether the cap held cannot be confirmed")
+    elif [ "$reclaim_bytes" -gt 0 ]; then
+      # Any reclaimable cache at all is cache a prune could have freed: if one was, the cap did not hold. Only zero (a
+      # build holding the whole cache in use) makes an over-cap size legitimate, so there is no tolerance on it here.
+      bad+=("the build cache is $size with $reclaim still reclaimable after the prune: neither builder flag form capped it")
+    else
+      echo "prune-docker: build cache is $size but nothing is reclaimable: a build holds that cache in use, so the cap holds"
     fi
-    ;;
-esac
+  fi
+fi
 
 # One-offs: what ops/prune-docker-containers.sh should have removed, and did not. A container that vanished between the
 # listing and its inspect is gone, which is the result we wanted, not a failure — but a re-list that *failed* is not a

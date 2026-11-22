@@ -216,11 +216,12 @@ that was restarted in between is kept rather than deleted on a stale reading. No
 `-v`). That step is `ops/prune-docker-containers.sh`. Apply installs changed prune units and runs the same steps after its
 rebuilds. Each prune command has its own `timeout` under the unit's `TimeoutStartSec`, so one that hangs cannot stop
 systemd reaching the later steps and the verification; the apply-time steps are bounded the same way, since `|| true`
-only helps once the command exits. The verification judges the cache on a snapshot taken right after the two builder
-prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker system df`), so a build that grows the cache
-past 20 GB while the image and container prunes run does not read as a prune that capped nothing; in that snapshot, over
-20 GB with nothing reclaimable is a build holding that cache in use (the cap holds), while any reclaimable bytes at all
-mean the cap did not hold.
+only helps once the command exits. The verification judges the cache on a snapshot taken immediately after the two builder
+prunes and before the image and container prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker
+system df`), so a build that grows the cache past 20 GB while later steps run does not read as a prune that capped nothing;
+in that snapshot, over 20 GB with nothing reclaimable is a build holding that cache in use (the cap holds), while any
+reclaimable bytes at all mean the cap did not hold. The snapshot, its status and its invocation are one record, so a run
+is only ever judged on its own result, and the cap's only tolerance is the precision Docker printed the size with.
 
 The image and container steps run through `ops/prune-docker-step.sh`, which records the step's exit status for the
 verification: the `-` prefix keeps a failure from skipping the next step, and the verification reads the record, so a

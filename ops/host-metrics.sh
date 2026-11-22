@@ -217,3 +217,6 @@ fi
     printf '%s\n' "$gauges"
   fi
 } | write docker.prom
+# A product version whose collector does not write this file (a rollback to one from before it) leaves the last file here,
+# and node-exporter would serve those bytes and `collect_ok 1` as if current: ops/apply-config-work.sh removes it when it
+# applies such a version, so nothing has to happen in this script.
