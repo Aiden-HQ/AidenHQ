@@ -2,12 +2,13 @@
 // through, with the owner's sign-in. One rate limiter: a call issued interactively (from a tool) fails at once as a typed
 // `rate_limited` need when a limit blocks it, because a tool call can't sleep past its timeout; a background call (a job) waits
 // while REST or GraphQL is below a 20% reserve. Content-creating writes go one at a time, at least a second apart, and wait out
-// GitHub's secondary limit, as its guidance asks, but only inside the write's budget: every content-creating call fixes a
-// 240 s budget when it starts (below the kernel's 300 s allowance), and a write that cannot start in it fails at once,
-// `rate_limited` (with its `until`) or `write_busy` for a queue that is too deep.
+// GitHub's secondary limit, as its guidance asks, but only inside the write's budget: the writes of one tool invocation share
+// one 240 s budget, fixed when its first write starts (below the kernel's 300 s allowance), and a write that cannot start in
+// what is left fails at once, `rate_limited` (with its `until`) or `write_busy` for a queue that is too deep.
 // Typed needs name the cause and the one fix: a refusal the owner can fix (connect, reconnect, a scope, an org's SSO or app
 // restriction) is needs_owner (vendor/needs.ts), which the kernel routes to the owner or the digest. The token never leaves this
 // process: token() is for git children here only, and no answer carries it.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { needsOwner } from "./vendor/needs.js";
 import type { Auth } from "./vendor/oauth.js";
 
@@ -35,7 +36,7 @@ export function needText(n: Need): string {
     case "restricted": return `The ${n.org} organization restricts OAuth apps: open ${n.url} and press Grant next to ${n.org} (anyone but an owner of ${n.org} presses Request and an owner approves)`;
     case "unreachable": return `${n.repo} isn't reachable with your GitHub account`;
     case "rate_limited": return `GitHub's rate limit is used up until ${n.until}`;
-    case "write_busy": return "GitHub's writes are backed up right now: try again in a minute";
+    case "write_busy": return "This GitHub write can't finish in time right now: run the call again in a minute";
   }
 }
 
@@ -116,6 +117,14 @@ const ATTEMPT_TIMEOUT_MS = 30_000;
  * allowance, so this is the conservative constant, fixed against that 300 s default. */
 const WRITE_BUDGET_MS = 240_000;
 const SECONDARY = /secondary rate limit|abuse detection|submitted too quickly/i;
+/** One tool invocation's writes share one budget: the store holds the deadline once its first write fixes it. */
+const invocation = new AsyncLocalStorage<{ deadline?: number }>();
+
+/** Runs `fn` as one tool invocation (main.ts's tool wrapper): every write it makes shares one 240 s budget, fixed when the
+ * invocation's first write starts, so a second write never starts a fresh one and no write is sent after that deadline. */
+export function withWriteBudget<T>(fn: () => Promise<T>): Promise<T> {
+  return invocation.run({}, fn);
+}
 /** Whether a request creates content: any non-read method, except a GraphQL query. */
 const createsContent = (method: string, path: string, body: unknown) =>
   !["GET", "HEAD", "OPTIONS"].includes(method) && (path !== "/graphql" || /^\s*mutation\b/.test(String((body as { query?: unknown } | undefined)?.query ?? "")));
@@ -238,8 +247,11 @@ export function createAccess(o: {
 
   function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string) {
     if (!createsContent(method, path, body)) return attempt(method, path, body, resource, background, accept);
-    // The budget is fixed here, before the queue: a write that waited behind others has already spent that wait.
-    const deadline = now() + WRITE_BUDGET_MS;
+    // One budget for the tool invocation this write belongs to, fixed at its first write (before the queue: a write that
+    // waited behind others has already spent that wait); outside a tool call, each write gets its own.
+    const budget = invocation.getStore();
+    if (budget && budget.deadline === undefined) budget.deadline = now() + WRITE_BUDGET_MS;
+    const deadline = budget?.deadline ?? now() + WRITE_BUDGET_MS;
     return queued(deadline, () => paced(deadline, () => attempt(method, path, body, resource, background, accept, deadline)));
   }
 

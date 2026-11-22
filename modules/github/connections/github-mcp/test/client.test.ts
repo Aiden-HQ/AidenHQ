@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createAccess, GitHubNeed, needResult } from "../src/client.js";
+import { createAccess, GitHubNeed, needResult, withWriteBudget } from "../src/client.js";
 import { readNeed } from "../src/vendor/needs.js";
 import type { Auth } from "../src/vendor/oauth.js";
 
@@ -82,7 +82,7 @@ it("a refused token is an expired need; the client sends nothing to the owner it
 it("rate_limited and write_busy stay plain errors with their codes", () => {
   const busy = needResult(new GitHubNeed({ cause: "write_busy" }));
   expect(busy.isError).toBe(true);
-  expect(JSON.parse(busy.content[0]!.text)).toEqual({ error: "github_write_busy", need: { cause: "write_busy" }, detail: "GitHub's writes are backed up right now: try again in a minute" });
+  expect(JSON.parse(busy.content[0]!.text)).toEqual({ error: "github_write_busy", need: { cause: "write_busy" }, detail: "This GitHub write can't finish in time right now: run the call again in a minute" });
   expect("structuredContent" in busy).toBe(false);
   const r = needResult(new GitHubNeed({ cause: "rate_limited", until: "2026-11-20T10:00:00Z" }));
   expect(r).toMatchObject({ isError: true });
@@ -312,6 +312,76 @@ it("a write retried inside the budget that meets the budget edge fails there as 
   // Two sends, never a third: the second refusal's until is past the budget.
   expect(calls).toBe(2);
   expect(clock).toBeLessThan(1_000_000 + 240_000);
+});
+
+it("two writes in one tool invocation share one budget: the second fails fast at the shared deadline, unsent", async () => {
+  let clock = 1_000_000;
+  const sent: string[] = [];
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (u, init) => {
+      sent.push(`${String(init?.method)} ${new URL(String(u)).pathname}`);
+      // The note spends most of the shared budget; the close then has no room for its 30 s attempt.
+      clock += 215_000;
+      return answer(201, {});
+    },
+  });
+  const start = clock;
+  const err = await withWriteBudget(async () => {
+    await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "note" });
+    return access.rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" }).catch((e) => e);
+  });
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "write_busy" });
+  // Only the note was sent; the close never reached fetch and nothing ran past the shared budget.
+  expect(sent).toEqual(["POST /repos/acme/api/issues/1/comments"]);
+  expect(clock - start).toBeLessThanOrEqual(240_000);
+});
+
+it("a tool invocation's later writes never start a fresh budget beyond the first", async () => {
+  let clock = 1_000_000;
+  const sent: { at: number; method: string }[] = [];
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (_u, init) => {
+      sent.push({ at: clock, method: String(init?.method) });
+      clock += 110_000;
+      return answer(200, {});
+    },
+  });
+  const start = clock;
+  const err = await withWriteBudget(async () => {
+    await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
+    await access.rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" });
+    return access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "b" }).catch((e) => e);
+  });
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need).toEqual({ cause: "write_busy" });
+  // Under a fresh per-write budget the third write would have started at 222 s and sent; the shared one refuses it.
+  expect(sent.map((s) => s.method)).toEqual(["POST", "PATCH"]);
+  expect(clock - start).toBeLessThanOrEqual(240_000);
+});
+
+it("outside a tool invocation each write still gets its own budget", async () => {
+  let clock = 1_000_000;
+  let calls = 0;
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async () => {
+      calls++;
+      clock += 150_000;
+      return answer(200, {});
+    },
+  });
+  await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
+  await access.rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" });
+  expect(calls).toBe(2);
 });
 
 it("a call that works marks the sign-in ok (its state starts unknown after a restart)", async () => {
