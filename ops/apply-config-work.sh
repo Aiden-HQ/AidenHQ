@@ -776,19 +776,20 @@ switchOver() {
     systemctl --user disable --now --quiet aidenhq-security-sbom.timer
     rm -f "$units/aidenhq-security-sbom.service" "$units/aidenhq-security-sbom.timer" "$HOME/.config/aidenhq-security-sbom.env" && systemctl --user daemon-reload && echo "security sbom timer removed (security off)"
   fi
+  # The data dir the runner's backoff marker goes under, from the apply's own .env: the unit starts ops/ci-runner.sh, which
+  # reads no settings file of its own (ops/lib/data-dir.sh takes the environment only). The template's last EnvironmentFile=
+  # is this file, so the marker and the exporter's read are the same path. Written every apply, even before the runner units
+  # are enabled (ops/setup.sh enables them after this apply on a fresh host), so the first start already has the host's dir.
+  local runner_env="$HOME/.config/aidenhq-ci-runner.env"
+  mkdir -p "$(dirname "$runner_env")"
+  local runner_data="${AIDENHQ_DATA_DIR:-$product_dir/data}"
+  case "$runner_data" in /*) ;; *) runner_data="$product_dir/$runner_data" ;; esac
+  printf 'AIDENHQ_DATA_DIR=%s\n' "$runner_data" > "$runner_env.tmp" && mv -f "$runner_env.tmp" "$runner_env"
   # The runner template the enabled units run (ops/setup.sh installs it on a fresh host): an apply keeps it in step with the
   # checkout, so a rollout lands the ExecStartPre backoff with the scripts it calls and a rollback (or a checkout without the
   # new helper) never leaves a unit whose ExecStartPre names a file that isn't there; the next start picks it up. Only while
   # the instance declares runner units, so a host without them keeps nothing.
   if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then
-    # The data dir the runner's backoff marker goes under, from the apply's own .env: the unit starts ops/ci-runner.sh, which
-    # reads no settings file of its own (ops/lib/data-dir.sh takes the environment only). The template's last
-    # EnvironmentFile= is this file, so the marker and the exporter's read are the same path.
-    local runner_env="$HOME/.config/aidenhq-ci-runner.env"
-    mkdir -p "$(dirname "$runner_env")"
-    local runner_data="${AIDENHQ_DATA_DIR:-$product_dir/data}"
-    case "$runner_data" in /*) ;; *) runner_data="$product_dir/$runner_data" ;; esac
-    printf 'AIDENHQ_DATA_DIR=%s\n' "$runner_data" > "$runner_env.tmp" && mv -f "$runner_env.tmp" "$runner_env"
     if ! cmp -s ops/units/aidenhq-ci-runner@.service "$units/aidenhq-ci-runner@.service"; then
       cp ops/units/aidenhq-ci-runner@.service "$units/"
       systemctl --user daemon-reload && echo "ci runner unit template installed/updated"
