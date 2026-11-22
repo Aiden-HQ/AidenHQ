@@ -197,10 +197,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * Undefined when a target isn't an object or lacks a bound field: a plan that names nothing it binds to is stale, never valid.
    */
   function boundOf(targets: Record<string, unknown>, fields: readonly string[]): string | undefined {
-    const out: Record<string, Record<string, unknown>> = {};
+    // No prototype: a planner can key a target `__proto__`, and a plain object would take that assignment as its prototype
+    // instead of an own property, dropping that target from the comparison and letting the record run on a changed commit.
+    const out: Record<string, Record<string, unknown>> = Object.create(null);
     for (const [key, t] of Object.entries(targets)) {
       if (!t || typeof t !== "object" || Array.isArray(t)) return undefined;
-      const pick: Record<string, unknown> = {};
+      const pick: Record<string, unknown> = Object.create(null);
       for (const f of fields) {
         const v = (t as Record<string, unknown>)[f];
         if (v === undefined || v === null || v === "") return undefined;

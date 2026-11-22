@@ -256,6 +256,48 @@ describe("posting", () => {
     expect(out.comments).toHaveLength(120);
   });
 
+  it("keeps the inline comment ids of the pages it read before one failed, instead of losing them all", async () => {
+    // GitHub lists a review's comments a page at a time: page 1 arrives and page 2 fails (a 502), every attempt. Those 100 ids are
+    // the service's record of which threads are Aiden's own; a page that did arrive is never dropped because a later one didn't,
+    // and the thread fallback adding nothing leaves them as the record rather than an empty one.
+    const w = world();
+    const broken = (async (u: URL | string, i?: RequestInit) => {
+      const url = new URL(String(u));
+      if ((i?.method ?? "GET") === "GET" && /\/pulls\/12\/reviews\/\d+\/comments$/.test(url.pathname) && url.searchParams.get("page") === "2") return new Response("boom", { status: 502 });
+      // The review is on the PR now, so the threads fallback is the only other way to the ids: it fails too.
+      if (url.pathname === "/graphql" && w.state.reviews.length) return new Response("boom", { status: 502 });
+      return w.impl(u, i);
+    }) as typeof fetch;
+    const access = accessFor((u, i) => broken(u, i));
+    const p = new ReviewPoster(new GitHub(access, broken), access);
+    const out = JSON.parse((await p.execute("post", postArgs(review(Array.from({ length: 120 }, (_, i) => finding(`f_paged_${100 + i}`, "src/pay.ts", 2)))))).text);
+    expect(out.comments).toEqual(Array.from({ length: 100 }, (_, i) => 501 + i));
+    expect(out.problems ?? []).not.toContain(expect.stringMatching(/reading the review's comments/));
+    expect(w.state.reviews).toHaveLength(1);
+    expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))).toHaveLength(1);
+  });
+
+  it("names a review that is already on the PR before it reads anything else, so a failing threads or diff read never reports it as not posted", async () => {
+    // The review was made by a create whose answer was lost. A retry reads the reviews first: it finds the review there, so what it
+    // reads next (its threads, the diff for its remaining comments) is best-effort. Both failing leaves them in the outcome's
+    // problems; the review is still reported, and no second one is created.
+    const w = world();
+    w.state.reviews.push({ id: 9, body: `<!-- aidenhq-review-run: run-1 -->\nposted before the reply was lost`, comments: [], user: { login: "owner1" }, html_url: "https://github.com/acme/payments/pull/12#pullrequestreview-1" });
+    const broken = (async (u: URL | string, i?: RequestInit) => {
+      const path = new URL(String(u)).pathname;
+      if (path === "/graphql") return new Response("boom", { status: 502 });
+      if ((i?.method ?? "GET") === "GET" && path === "/repos/acme/payments/pulls/12/files") return new Response("boom", { status: 502 });
+      return w.impl(u, i);
+    }) as typeof fetch;
+    const access = accessFor((u, i) => broken(u, i));
+    const p = new ReviewPoster(new GitHub(access, broken), access);
+    const out = JSON.parse((await p.execute("post", postArgs(review([finding("f_known_1", "src/pay.ts", 2)])))).text);
+    expect(out.review).toBe("https://github.com/acme/payments/pull/12#pullrequestreview-1");
+    expect(out.problems).toEqual(expect.arrayContaining([expect.stringMatching(/reading the review's threads/), expect.stringMatching(/reading the diff/)]));
+    expect(w.calls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls/12/reviews"))).toHaveLength(0);
+    expect(w.state.reviews).toHaveLength(1);
+  });
+
   it("a review already on the pull request is kept and reported as made when reading its comments fails", async () => {
     // The review is created, then GitHub keeps failing to read it back: the record must still name the review, so a refused
     // post's notice ("was not posted") never contradicts a review readers can already see.

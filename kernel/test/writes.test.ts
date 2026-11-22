@@ -261,6 +261,23 @@ test("a head-bound kind stays valid when its executor revision or base moves; ev
   assert.equal(fx.executes.filter((e) => e.id === based.approval).length, 0);
 });
 
+test("a head-bound kind compares a target keyed __proto__ too: a changed commit under it stales the record", async (t) => {
+  // A plan's targets are a JSON object, so a planner can key one `__proto__` (a branch or ref name it echoed). Built into a plain
+  // object that key becomes the object's prototype and vanishes from Object.keys, so the comparison would drop that target and let
+  // the record run against a head that moved. Every key a plan names is compared.
+  const { k, fx, tool, pending, review } = await twin(t, { binds: ["repo", "ref", "commit"] });
+  const verdict = { decision: "approve", reason: "ok", model: "~acme/model-a" };
+  const targets = (commit) => JSON.parse(`{"acme/x#1":{"repo":"acme/x","ref":"pull/1","commit":"h1"},"__proto__":{"repo":"acme/y","ref":"pull/2","commit":"${commit}"}}`);
+  fx.headTargets = targets("h9");
+  assert.equal(Object.hasOwn(fx.headTargets, "__proto__"), true);
+  const filed = await pending(await tool("head_post"));
+  fx.headTargets = targets("h10");
+  await review(filed.approval, verdict);
+  await until(() => k.records.get(filed.approval).state === "stale");
+  assert.equal(k.records.get(filed.approval).state, "stale");
+  assert.equal(fx.executes.filter((e) => e.id === filed.approval).length, 0);
+});
+
 test("a head-bound kind keeps its approval requirements, and a plan that names no head is refused before it is filed", async (t) => {
   const { k, fx, tool, pending, review, redeploy } = await twin(t, { binds: ["repo", "ref", "commit"] });
   const verdict = { decision: "approve", reason: "ok", model: "~acme/model-a" };
