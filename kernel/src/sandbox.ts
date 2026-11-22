@@ -2,8 +2,8 @@
 // `docker exec` line; jobs.ts runs it). No repo code runs on the host: a repo's checks are check jobs (checkjobs.ts). The engine
 // registry (config/engines.json), an engine's state folder and the job credentials are here too.
 import { createHash } from "node:crypto";
-import { accessSync, chmodSync, constants, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { accessSync, chmodSync, closeSync, constants, cpSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, normalize, relative, resolve, sep } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 
@@ -89,8 +89,7 @@ const because = (e: unknown) => { const err = e as NodeJS.ErrnoException; return
  */
 const stateNeeds = new Map<string, string>();
 let episodes = 0;
-function reportNeed(p: string, err: Error, report?: (e: Error, episode: string) => void) {
-  const key = resolve(p);
+function reportNeed(key: string, err: Error, report?: (e: Error, episode: string) => void) {
   if (!report || stateNeeds.get(key) === err.message) return;
   const episode = `${key}:${++episodes}`;
   // A notice the kernel couldn't queue (the store busy) is not recorded: the next job reports the same outage again, and the
@@ -116,29 +115,99 @@ function ensureStateDir(p: string) {
       if ((st.mode & 0o300) !== 0o300) throw new Error("it is not owner-writable and owner-searchable (mode has no 0300)");
       accessSync(p, constants.W_OK | constants.X_OK);
     } else mkdirSync(p, { recursive: true, mode: 0o700 });
-    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. The path is
-    // re-checked after the chmod: a directory swapped for a symlink in between is refused, never written through.
-    chmodSync(p, 0o700);
-    if (symlinkOnPath(p) || !lstatSync(p).isDirectory()) throw new Error("it became a symlink or a non-directory while being set up");
+    // The process umask can only narrow the create mode: set it after, so the state root and logs are always 0700. Everything
+    // here is descriptor-anchored, never a second lookup of the name: `O_NOFOLLOW | O_DIRECTORY` refuses a path that became a
+    // symlink or a non-directory, and the mode is set on the directory this very open resolved.
+    const st2 = setStateMode(p);
+    // The descriptor was repaired, but the name is what `jobs.ts` goes on to use. Re-read it: a symlink anywhere on the path, or
+    // a different directory now wearing the name, is refused, so a swap in the window above can't hand a caller a path outside
+    // the state tree.
+    if (symlinkOnPath(p)) throw new Error("it became a symlink while it was being set up");
+    const named = lstatSync(p, { throwIfNoEntry: false });
+    if (!named || !named.isDirectory() || named.dev !== st2.dev || named.ino !== st2.ino) throw new Error("it no longer names the directory that was set up");
   } catch (e) {
     throw stateRootFailure(p, because(e), e);
   }
 }
 
+/** `O_PATH` (Linux): a descriptor naming a file for use as a handle — no read permission needed, so a directory at mode 0300 can
+ * still be repaired — with `O_NOFOLLOW | O_DIRECTORY` refusing a symlink or a non-directory. Not in Node's constants. */
+const O_PATH = 0o10000000;
+
+/**
+ * `<p>` set to 0700 through a descriptor, never by a second lookup of its name: the directory is opened (`O_PATH` needs no read
+ * permission, so one we own but can't read — 0300, or a umask that masked the create mode — is repaired like any other),
+ * `fstat` confirms it is a directory, and the chmod goes through `/proc/self/fd/<fd>`, which the kernel resolves to that
+ * descriptor's inode. A path swapped for a symlink or another directory in the window is refused (`ELOOP`/`ENOTDIR`) rather
+ * than written. Returns the `dev`/`ino` repaired, so the caller can confirm the name still means it.
+ */
+function setStateMode(p: string): { dev: number; ino: number } {
+  let fd: number;
+  try { fd = openSync(p, O_PATH | constants.O_NOFOLLOW | constants.O_DIRECTORY); } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // No `O_PATH` on this platform: a plain descriptor is the fallback, still descriptor-anchored. Every other failure (a
+    // symlink or non-directory at the name, no search permission) is the caller's to report, not something to work around.
+    if (code !== "EINVAL" && code !== "EPERM" && code !== "ENOENT") throw e;
+    const plain = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+    try {
+      const st = fstatSync(plain);
+      if (!st.isDirectory()) throw new Error("it became a non-directory while being set up");
+      fchmodSync(plain, 0o700);
+      return { dev: st.dev, ino: st.ino };
+    } finally { closeSync(plain); }
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isDirectory()) throw new Error("it became a non-directory while being set up");
+    try { chmodSync(`/proc/self/fd/${fd}`, 0o700); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return chmodByName(p);
+      throw e;
+    }
+    return { dev: st.dev, ino: st.ino };
+  } finally { closeSync(fd); }
+}
+
+/** The fallback where no descriptor route exists: set the mode by name, but only on the inode just `lstat`ed, then confirm the
+ * reopened name is still that inode. */
+function chmodByName(p: string) {
+  const before = lstatSync(p);
+  if (!before.isDirectory()) throw new Error("it is not a directory");
+  chmodSync(p, 0o700);
+  const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+  try {
+    const after = fstatSync(fd);
+    if (after.dev !== before.dev || after.ino !== before.ino) throw new Error("it was replaced while its mode was being repaired");
+    fchmodSync(fd, 0o700);
+    return { dev: after.dev, ino: after.ino };
+  } finally { closeSync(fd); }
+}
+
 /**
  * The engine state root and its logs dir, healed 0700 before any job folder. A disk reclaim that removed them (or a root
  * another user made) must not turn every launch into the same EACCES: a missing root is recreated, and one still unusable is
- * reported as one need per episode (`report`, with the episode's key) before it throws. The root keeps the form it was
- * configured in (a relative `state_dir` stays relative): the launcher compares it to `path.join(computers.json state_dir, …)`.
+ * reported as one need per episode (`report`, with the episode's key) before it throws. The root is normalized but not made
+ * absolute, so it matches the launcher's `path.join(computers.json state_dir, …)` comparison: a relative `state_dir` stays
+ * relative, with its `.`/`..` segments collapsed.
  */
 export function ensureStateDirs(stateDir: string, report?: (e: Error, episode: string) => void) {
-  const root = stateDir, logs = join(root, "logs");
+  // One form for validation, filesystem calls and the launcher's path comparison: `normalize` collapses `a/../b` lexically (as
+  // `path.join` does at the launcher), so a `..` after a symlink can't make the checked path differ from the one written. It is
+  // not made absolute, so a relative `state_dir` still matches the launcher's exact comparison.
+  // An empty `state_dir` is a misconfiguration, not this directory: `normalize("")` is `.`, which would have us take the kernel's
+  // working directory as the state root (and chmod it 0700). Reject it before normalizing, as the old `mkdir("")` did.
+  if (!stateDir.trim()) {
+    const who = typeof process.getuid === "function" ? `uid=${process.getuid()} gid=${process.getgid?.()}` : "an unknown uid";
+    const err = new Error(`runner state directory is not set: state_dir is empty, which must name a path (the kernel runs as ${who})`);
+    reportNeed("state_dir:<empty>", err, report);
+    throw err;
+  }
+  const root = normalize(stateDir), logs = join(root, "logs");
   try {
     ensureStateDir(root);
     ensureStateDir(logs);
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
-    reportNeed(root, err, report);
+    reportNeed(resolve(root), err, report);
     throw err;
   }
   stateNeeds.delete(resolve(root));
