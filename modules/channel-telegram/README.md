@@ -21,5 +21,5 @@ No tools: owner messages go through owner-channel's `notify`, and the connection
 ## New installs
 
 Always installed (core requires it), but Telegram itself is optional. Until paired, the board and Slack are the
-channels: a private message to the bot is answered once (at most every 10 minutes per chat) with how to pair it, and
-nothing from it reaches your agents.
+channels: a private text message to the bot is answered once (at most every 10 minutes per chat, and no more than four
+notices out at a time) with how to pair it, and nothing from it reaches your agents.
