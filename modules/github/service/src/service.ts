@@ -332,7 +332,7 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
-      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, readAskers()[askerKey(rec.kind, rec.args)]?.task);
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task);
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -344,7 +344,7 @@ export function createService(o: Options) {
     },
   };
   /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
-  async function run1(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+  async function run1(rec: { id: string; kind: string; args: any; task?: string }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     {
       const a = rec.args ?? {};
       const objects: string[] = [];
@@ -387,7 +387,7 @@ export function createService(o: Options) {
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
-      if (action === "merge") return merges.enqueue(rec.id, a, readAskers()[askerKey(rec.kind, rec.args)]?.task);
+      if (action === "merge") return merges.enqueue(rec.id, a, rec.task);
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);

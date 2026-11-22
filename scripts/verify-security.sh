@@ -786,8 +786,9 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
 [ "$(grep -c 'd\.gh(' "$rq")" = 2 ] && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
   && grep -qF 'const r = await d.gh("PUT", `/repos/${repo}/pulls/${number}/merge`, { merge_method: method, sha, ...message });' "$rq" \
   && grep -qF 'mergedAt mergedBy { login } mergeCommit { oid message }' "$rm_" \
-  && grep -qF 'return mergeCommit?.oid === sha && hasTrailer(String(mergeCommit?.message ?? "")) ? sha : undefined;' "$rq" \
-  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, String(pull?.body ?? ""));' "$rq" \
+  && grep -qF 'const same = Boolean(message) && createHash("sha256").update(message).digest("hex") === call.proof;' "$rq" \
+  && grep -qF 'p.mergeCall = { proof: createHash("sha256").update(withTrailer(body.trim(), "merge queue")).digest("hex"), at: now().toISOString() };' "$rq" \
+  && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, body);' "$rq" \
   && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
   && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
   && grep -qF 'const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \

@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { askerKey, createService } from "../service/src/service.ts";
+import { createService } from "../service/src/service.ts";
 import { createMerges } from "../service/src/merges.ts";
 import { decide } from "../service/src/merge-gate.ts";
 import { createReviewGate } from "../service/src/review-gate.ts";
@@ -101,15 +101,9 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     const r = await fetch(`${svc.url}${path}`, { method: "POST", headers: { authorization: "Bearer ch-key", "content-type": "application/json" }, body: JSON.stringify(body) });
     return r.json();
   };
-  // The asker of a planned write (service.ts plan's noteAsker), which execute carries none of: the queue's record task comes from it.
-  const merge = (id, prsArgs, task = "WOR-9") => {
-    const args = { prs: prsArgs };
-    const file = join(cacheDir, "askers.json");
-    const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-    all[askerKey("github.merge", args)] = { requester: { agent: "eng", key: "eng", name: "Eng", roles: ["platform-engineer"], kind: "run", task }, task };
-    writeFileSync(file, JSON.stringify(all));
-    return call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args, digest: "d", idempotency_key: id });
-  };
+  // The kernel's execute call: the record's own task goes with it (executor@1), so the queue's evidence is bound to it, never to
+  // a cache keyed by kind and args (two tasks naming one PR must not take each other's linkage).
+  const merge = (id, prsArgs, task = "WOR-9") => call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id, ...(task ? { task } : {}) });
   const settle = async () => { for (let i = 0; i < 100 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
   return { handle, github, outcomes, call, merge, settle, cacheDir, clock };
 }
@@ -340,6 +334,29 @@ test("an owner's merge at the bound head after an unanswered merge call stays sk
   // what the already-merged path is for); what must not happen is the queue claiming the commit as its own.
   assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: "f".repeat(40) }], "the owner's merge commit, listed as evidence");
   assert.equal(outcomes[0].objects, undefined, "no object of the owner's merge is named as made here");
+});
+
+test("a squash merge someone else made is never the queue's, even when its commit message carries an AidenHQ trailer", async (t) => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-foreign-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  // The PR's own commit already carries an agent's trailer, and the owner squash-merges with GitHub's default message, which keeps
+  // the commit body: an AidenHQ trailer is in the merge commit, but it is not the commit_message this queue's merge call sends.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", message: `Fix the widget\n\nCo-authored-by: AidenHQ tomas <noreply@aidenhq.ai>` } };
+  let timeouts = 1;
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir, putFails: () => timeouts-- > 0 });
+  await merge("k-00000000000000c8", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges(); // the PUT went unanswered
+
+  prs["acme-agents/widget"].state = "MERGED";
+  prs["acme-agents/widget"].merged = "a1".repeat(20);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/, "someone else's squash merge is not this queue's");
+  assert.doesNotMatch(outcomes[0].text, /Merged https:/);
+  assert.equal(outcomes[0].objects, undefined, "its commit names no object as made here");
+  // Still the task's own evidence at the bound head: the grader credits what landed the task, whoever merged it.
+  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: "a1".repeat(20) }]);
 });
 
 test("a maximum-size mixed batch keeps the whole evidence line: the queue's merges and linked already-merged PRs, whole JSON under the kernel's cap", async (t) => {

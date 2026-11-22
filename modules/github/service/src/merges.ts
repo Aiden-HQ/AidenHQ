@@ -10,11 +10,12 @@
 // terminal state (closed, head moved, red checks on the head, changes requested).
 // A UI head in the agents org that waits on its design review gets the UI Reviewer's task for it (design-review.ts), once per
 // head, beside its checks; with no verdict in time it is asked once more, then the design review is advisory for that head.
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
-import { hasTrailer, mergeable, withTrailer } from "./git-auth.ts";
+import { mergeable, withTrailer } from "./git-auth.ts";
 import { DESIGN_REVIEW, PR_QUERY, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
@@ -22,7 +23,7 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; unanswered?: boolean; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** The merge call this poll may be looking at: a digest of the commit_message it sent (what an unanswered PUT may have made). */ mergeCall?: { proof: string; at: string }; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -78,17 +79,20 @@ export function createMerges(d: {
     return r.body?.sha;
   }
   /**
-   * What this poll proves about who merged the PR: its sha when the merge commit is the one this queue's own merge call would make.
-   * A squash or merge commit carries the queue's trailer (mergePut's commit_message), so a PR merged by the owner or GitHub's
-   * auto-merge has a commit without it. A rebase merge makes no commit of its own (the PR's commits land as they are), so there
-   * nothing tells this queue's merge from anyone else's and it is never counted as ours. `unanswered` (a PUT that timed out) says
-   * only that a merge call *may* have landed, never that the commit was its own: it gets the same check, so an owner's merge after
-   * a timed-out call stays skipped, and only a confirmed one is the queue's.
+   * What this poll proves about who merged the PR: its sha only when the merge commit is exactly the one this queue's own merge
+   * call would make. A rebase merge makes no commit of its own (the PR's commits land as they are), so nothing tells this queue's
+   * merge from anyone else's and it is never counted as ours. For a squash or merge commit the message must be the whole
+   * commit_message this call sent (mergePut's own body with the queue's trailer): an owner's or auto-merge is not ours, and neither
+   * is a commit that merely carries an AidenHQ trailer from the PR's own commits. `call` (a PUT that went unanswered, kept while
+   * the poll may still see it) is the only source of that message, so what is proved is this call's, never another writer's.
    */
-  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, method: string, sha: string, unanswered: boolean): string | undefined {
-    if (!unanswered || method === "rebase") return undefined;
-    // The one PR_QUERY read already says what the commit message is: no second GitHub call, so the queue's writes stay its two.
-    return mergeCommit?.oid === sha && hasTrailer(String(mergeCommit?.message ?? "")) ? sha : undefined;
+  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, method: string, sha: string, call: { proof: string } | undefined): string | undefined {
+    if (!call || method === "rebase") return undefined;
+    // The queue's own merge this poll may see: only the commit_message this call sent, so a PR that happened to carry an AidenHQ
+    // trailer from its own commits (someone else's squash merge after our PUT timed out) is still no commit this queue made.
+    const message = String(mergeCommit?.message ?? "").trim();
+    const same = Boolean(message) && createHash("sha256").update(message).digest("hex") === call.proof;
+    return same ? sha : undefined;
   }
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
@@ -115,6 +119,7 @@ export function createMerges(d: {
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
       delete p.wait;
+      delete p.mergeCall;
       q.said.push(`**Not merged:** ${p.url}: ${why}.`);
     };
     const wait = (key: string) => {
@@ -134,8 +139,8 @@ export function createMerges(d: {
       let v = decide(data, p.head, { uiReview, designAdvisory: p.reviewExpired === p.head });
       const pull = data.repository.pullRequest;
       // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Never let the
-      // flag outlive the poll that answers it, or a later owner merge at the bound head would be credited to this queue.
-      if (v.do !== "done") delete p.unanswered;
+      // call outlive the poll that answers it, or a later owner merge at the bound head would be credited to this queue.
+      if (v.do !== "done") delete p.mergeCall;
       // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
       const named = namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup);
       if (p.checked !== p.head && pull?.headRefOid === p.head && named.length && named.every((c) => !c.pending)) {
@@ -145,15 +150,15 @@ export function createMerges(d: {
       // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks.
       if (v.do === "wait" && uiReview && p.reviewAsked !== p.head && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
-        // Merged at the bound head. It is this queue's merge only when a merge call of ours went unanswered and the merge commit
-        // is the one such a call would make (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge commit
-        // at the bound head is evidence; finish() emits it for grading when the PR links to the task the record is for.
+        // Merged at the bound head. It is this queue's merge only when an unanswered merge call of ours is still pending and the
+        // merge commit is exactly that call's (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge
+        // commit at the bound head is evidence; finish() emits it for grading when the PR links to the task the record is for.
         const sha = String(pull?.mergeCommit?.oid ?? "");
-        const ours = sha ? mergedBy(pull?.mergeCommit, mergeMethod(data.repository) ?? "", sha, Boolean(p.unanswered)) : undefined;
-        if (sha && !ours && p.unanswered) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
+        const ours = sha ? mergedBy(pull?.mergeCommit, mergeMethod(data.repository) ?? "", sha, p.mergeCall) : undefined;
+        if (sha && !ours && p.mergeCall) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
         if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
         else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
-        delete p.unanswered;
+        delete p.mergeCall;
         delete p.wait;
         if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
         if (ours) { bypassed(p); merged.add(p.repo.toLowerCase()); }
@@ -185,8 +190,12 @@ export function createMerges(d: {
       }
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
+      // What this queue's merge call sends, kept before the call: a PUT that times out may have merged, and the next poll tells
+      // its commit from anyone else's by exactly this message (mergedBy).
+      const body = String(pull?.body ?? "");
+      p.mergeCall = { proof: createHash("sha256").update(withTrailer(body.trim(), "merge queue")).digest("hex"), at: now().toISOString() };
       try {
-        p.sha = await mergePut(p.repo, p.number, p.head, method, String(pull?.body ?? ""));
+        p.sha = await mergePut(p.repo, p.number, p.head, method, body);
       } catch (e) {
         // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does.
         if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry");
@@ -194,11 +203,11 @@ export function createMerges(d: {
         const status = (e as { status?: number }).status ?? 0;
         if (status >= 400 && status < 500) return fail(`GitHub refused the merge: ${says(e)}`);
         log("merge call unanswered", { pr: p.url, err: says(e) });
-        p.unanswered = true;
         return wait("put");
       }
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
+      delete p.mergeCall;
       bypassed(p);
       d.flow?.merged(p.repo, p.number, p.head, String(p.sha ?? ""), mergedAt, String(pull?.title ?? ""), String(pull?.body ?? ""));
       delete p.wait;
