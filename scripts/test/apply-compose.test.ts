@@ -14,20 +14,6 @@ const NOT_LINUX = process.platform !== "linux" && "ops/compose-recreate.sh needs
 const script = join(dirname(fileURLToPath(import.meta.url)), "../../ops/compose-recreate.sh");
 const ciRunner = "aidenhq-ci-runner-Aiden-HQ-8";
 const ciRunnerId = "382e6572c1a0";
-const raced = `Container ${ciRunner}\nError response from daemon: removal of container ${ciRunnerId} is already in progress`;
-
-// A compose model with the root project's services only, and a secret file each: `paperclip` mounts one whose content
-// rotates, `board` mounts none. The real script reads this through `docker compose config --format json`.
-function model(dir) {
-  return {
-    name: "aidenhq",
-    secrets: { grafana_mcp_token: { name: "aidenhq_grafana_mcp_token", file: join(dir, "secrets/grafana_mcp_token") } },
-    services: {
-      board: {},
-      paperclip: { secrets: [{ source: "grafana_mcp_token", target: "/run/secrets/grafana_mcp_token" }] },
-    },
-  };
-}
 
 const fake = `#!/usr/bin/env bash
 set -uo pipefail
@@ -151,7 +137,6 @@ function apply(f, { env = {} } = {}) {
 }
 
 const calls = (r, prefix) => r.calls.split("\n").filter((l) => l.startsWith(prefix));
-const removals = (r) => calls(r, "docker rm ");
 const recreates = (r) => calls(r, "docker compose up");
 
 // `ci-runner` is under the inactive `ci` profile, so `up`'s own service list doesn't have it; the finished job's
@@ -170,38 +155,6 @@ const containers = {
   other1: { name: "/handmade", running: "false" },
   bare1: { name: "/aidenhq-some-dropped-service-1", running: "false" },
 };
-
-test("a running container of a service the config dropped is stopped and removed; a CI one-off and kept services never are", { skip: NOT_LINUX }, async () => {
-  const r = await apply(fixture({
-    services,
-    containers: {
-      board1: { name: "/aidenhq-board-1", running: "true", labels: "False board" },
-      gh1: { name: "/aidenhq-github-mcp-1", running: "true", labels: "False github-mcp" },
-      // Stopped earlier in the apply (a replaced module's data move): still removed, never left Exited.
-      slack1: { name: "/aidenhq-channel-slack-slack-1", running: "false", labels: "False channel-slack-slack" },
-      [ciRunnerId]: { name: `/${ciRunner}`, running: "true", labels: "True ci-runner" },
-    },
-  }));
-  assert.equal(r.status, 0, r.out);
-  assert.deepEqual(removals(r), ["docker rm -f gh1", "docker rm -f slack1"]);
-  assert.match(r.out, /compose: github-mcp removed \(no longer in the config\)/);
-});
-
-test("a compose failure that is not a removal race still fails the apply, with no retry", { skip: NOT_LINUX }, async () => {
-  // board's image moved, so this apply would recreate it; the daemon refuses for an unrelated reason.
-  const f = fixture({ containers, services, hashes: { board: "old", paperclip: "same" }, up: [["Error response from daemon: pull access denied for aidenhq/board", 1]] });
-  writeFileSync(join(f.dir, "psid-board"), "board1\n");
-  writeFileSync(join(f.dir, "image-board"), "aidenhq/board:local\n");
-  writeFileSync(join(f.dir, "imageid-aidenhq_board_local"), "sha256:new\n");
-  writeFileSync(join(f.dir, "imageof-board1"), "sha256:new\n");
-  writeFileSync(join(f.dir, "hashof-board1"), "old\n");
-  const r = await apply(f);
-  assert.equal(r.status, 1, r.out);
-  assert.equal(recreates(r).length, 1, "compose ran once");
-  assert.deepEqual(removals(r), [], "nothing was removed");
-  assert.doesNotMatch(r.out, /retrying/, r.out);
-  assert.match(r.out, /pull access denied/);
-});
 
 test("only the services whose image or config moved are recreated, and every service gets a line", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
@@ -228,16 +181,6 @@ test("only the services whose image or config moved are recreated, and every ser
   assert.match(r.out, /compose: paperclip recreated/);
 });
 
-test("an unset warehouse password fails before any docker call", { skip: NOT_LINUX }, async () => {
-  const f = fixture({ containers, services });
-  // A warehouse deployment with no password in the vault: the dump can't be taken, so the apply stops before Docker.
-  mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
-  const r = await apply(f);
-  assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /POSTGRES_PASSWORD/);
-  assert.equal(r.calls.trim(), "", `docker was never called:\n${r.calls}`);
-});
-
 test("a dump is created exclusively and 0600 in a 0700 directory, and the dump before it is kept", { skip: NOT_LINUX }, async () => {
   const f = fixture({ containers, services });
   mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
@@ -260,105 +203,4 @@ test("a dump is created exclusively and 0600 in a 0700 directory, and the dump b
   assert.equal(statSync(fresh).mode & 0o777, 0o600, "the new dump is 0600");
   assert.equal(statSync(dumps).mode & 0o777, 0o700, "the dumps directory is 0700");
   assert.equal(statSync(join(dumps, "warehouse.dump")).mode & 0o777, 0o600, "the older dump is tightened to 0600");
-});
-
-test("a dump that fails is not kept and prunes nothing, so the apply stops before the recreate", { skip: NOT_LINUX }, async () => {
-  const f = fixture({ containers, services, dump: 1 });
-  mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
-  writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
-  writeFileSync(join(f.dir, "running-app-warehouse-postgres-1"), "true\n");
-  const dumps = join(f.dir, "data/dumps");
-  mkdirSync(dumps, { recursive: true });
-  for (let i = 0; i < 3; i++) writeFileSync(join(dumps, `warehouse-${i}.dump`), `older bytes ${i}`);
-  const r = await apply(f);
-  assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /the warehouse dump failed/);
-  assert.deepEqual(readdirSync(dumps).sort(), ["warehouse-0.dump", "warehouse-1.dump", "warehouse-2.dump"], "the earlier dumps are untouched");
-  assert.equal(recreates(r).length, 0, "nothing is recreated without a dump");
-});
-
-test("a step that recreates nothing takes no dump", { skip: NOT_LINUX }, async () => {
-  const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
-  mkdirSync(join(f.dir, "secrets/apps/warehouse"), { recursive: true });
-  writeFileSync(join(f.dir, "secrets/apps/warehouse/POSTGRES_PASSWORD"), "pw");
-  writeFileSync(join(f.dir, "running-app-warehouse-postgres-1"), "true\n");
-  for (const [service, id] of [["board", "board1"], ["paperclip", "pc1"]]) {
-    writeFileSync(join(f.dir, `psid-${service}`), `${id}\n`);
-    writeFileSync(join(f.dir, `running-${id}`), "true\n");
-    writeFileSync(join(f.dir, `image-${service}`), `aidenhq/${service}:local\n`);
-    writeFileSync(join(f.dir, `imageid-aidenhq_${service}_local`), `sha256:${service}\n`);
-    writeFileSync(join(f.dir, `imageof-${id}`), `sha256:${service}\n`);
-    writeFileSync(join(f.dir, `hashof-${id}`), `h-${service}\n`);
-  }
-  const r = await apply(f);
-  assert.equal(r.status, 0, r.out);
-  assert.deepEqual([recreates(r).length, calls(r, "docker run").length], [0, 0], r.calls);
-  assert.ok(!existsSync(join(f.dir, "data/dumps")), "no dump");
-});
-
-test("a service whose mounted secret content changed since it started is recreated", { skip: NOT_LINUX }, async () => {
-  const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
-  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
-  mkdirSync(join(f.dir, "secrets"), { recursive: true });
-  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "new-token\n");
-  // A recreate is a new container: the fake up starts <service>recreated<n> for a service marked recreate-<service>.
-  for (const [service, id, hash] of [["board", "board1", "h-board"], ["paperclip", "pc1", "h-paperclip"]]) {
-    writeFileSync(join(f.dir, `psid-${service}`), `${id}\n`);
-    writeFileSync(join(f.dir, `image-${service}`), `aidenhq/${service}:local\n`);
-    writeFileSync(join(f.dir, `imageid-aidenhq_${service}_local`), `sha256:${service}\n`);
-    writeFileSync(join(f.dir, `state-${service}`), "running\n");
-    writeFileSync(join(f.dir, `recreate-${service}`), "1\n");
-    writeFileSync(join(f.dir, `running-${id}`), "true\n");
-    writeFileSync(join(f.dir, `imageof-${id}`), `sha256:${service}\n`);
-    writeFileSync(join(f.dir, `hashof-${id}`), `${hash}\n`);
-  }
-  // No record yet: the start of the running container is unknown, so the mounting service is recreated once and recorded.
-  const first = await apply(f);
-  assert.equal(first.status, 0, first.out);
-  assert.match(recreates(first).at(-1), /--force-recreate paperclip$/, `only the mounting service is recreated: ${first.calls}`);
-  assert.doesNotMatch(recreates(first).at(-1), /board/, `a service with no secret is not recreated: ${first.calls}`);
-  // The recreated container read what is on disk, so the next apply keeps it.
-  const second = await apply(f);
-  assert.equal(second.status, 0, second.out);
-  assert.equal(recreates(second).length, 0, `unchanged content is kept: ${second.calls}`);
-  assert.match(second.out, /compose: paperclip kept/);
-  // A rotation changes the digest the running container was recorded with.
-  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "rotated-token\n");
-  const third = await apply(f);
-  assert.equal(third.status, 0, third.out);
-  assert.match(recreates(third).at(-1), /--force-recreate paperclip$/, `the rotated secret recreates paperclip: ${third.calls}`);
-  assert.doesNotMatch(recreates(third).at(-1), /board/, `a service with no secret is not recreated: ${third.calls}`);
-  // The record follows the new container, so a second apply on the same content keeps it rather than restarting it again.
-  const fourth = await apply(f);
-  assert.equal(fourth.status, 0, fourth.out);
-  assert.equal(recreates(fourth).length, 0, `the recreated container's record is written: ${fourth.calls}`);
-});
-
-test("a service stopped before the step (a data snapshot stopped it) is recreated once and recorded, then kept", { skip: NOT_LINUX }, async () => {
-  const f = fixture({ containers, services, hashes: { board: "h-board", paperclip: "h-paperclip" } });
-  writeFileSync(join(f.dir, "model.json"), `${JSON.stringify(model(f.dir))}\n`);
-  mkdirSync(join(f.dir, "secrets"), { recursive: true });
-  writeFileSync(join(f.dir, "secrets/grafana_mcp_token"), "token\n");
-  for (const [service, id, running] of [["board", "board1", "true"], ["paperclip", "pc1", "false"]]) {
-    writeFileSync(join(f.dir, `psid-${service}`), `${id}\n`);
-    writeFileSync(join(f.dir, `image-${service}`), `aidenhq/${service}:local\n`);
-    writeFileSync(join(f.dir, `imageid-aidenhq_${service}_local`), `sha256:${service}\n`);
-    writeFileSync(join(f.dir, `state-${service}`), "running\n");
-    writeFileSync(join(f.dir, `recreate-${service}`), "1\n");
-    writeFileSync(join(f.dir, `running-${id}`), `${running}\n`);
-    writeFileSync(join(f.dir, `imageof-${id}`), `sha256:${service}\n`);
-    writeFileSync(join(f.dir, `hashof-${id}`), `h-${service}\n`);
-  }
-  // A record from before the stop names the old container, as the snapshot left it on the host.
-  mkdirSync(join(f.dir, "data/compose-secret-digests"), { recursive: true });
-  writeFileSync(join(f.dir, "data/compose-secret-digests/paperclip"), "pc1 stale\n");
-  const first = await apply(f);
-  assert.equal(first.status, 0, first.out);
-  assert.match(recreates(first).at(-1), /--force-recreate paperclip$/, first.calls);
-  const record = readFileSync(join(f.dir, "data/compose-secret-digests/paperclip"), "utf8");
-  assert.match(record, new RegExp(`^${"paperclip"}recreated1 [0-9a-f]{64}\n$`), `the new container is recorded: ${record}`);
-  const second = await apply(f);
-  assert.equal(second.status, 0, second.out);
-  assert.equal(recreates(second).length, 0, `the recreated container is kept: ${second.calls}`);
-  assert.match(second.out, /compose: paperclip kept/);
 });

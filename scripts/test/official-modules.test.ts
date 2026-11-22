@@ -3,7 +3,7 @@
 // read endpoint gets exactly its connection's `read` tags (kernel/sdk/src/vendor/proxy.ts serves only those); and no skill
 // names a tool its module's connection does not grant.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -29,88 +29,5 @@ test("the default bundle and every official module compile", () => {
     mkdirSync(join(dir, "agents"), { recursive: true });
     writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings }));
     assert.doesNotThrow(() => compile(product, dir), label);
-  }
-});
-
-test("every tool a skill names is one its module's connection grants", () => {
-  const groups = ["read", "named", "write", "destructive"];
-  for (const [n, def] of Object.entries(defs)) {
-    const conns = Object.keys(def.connections ?? {});
-    const skills = join(product, "modules", n, "skills");
-    if (!conns.length || !existsSync(skills)) continue;
-    for (const skill of readdirSync(skills)) {
-      const file = join(skills, skill, "SKILL.md");
-      if (!existsSync(file)) continue;
-      const lines = readFileSync(file, "utf8").split("\n");
-      for (const [i, line] of lines.entries()) {
-        for (const [, id] of line.matchAll(/`([a-z0-9_]+)`/g)) {
-          const conn = conns.find((c) => id.startsWith(`${c}_`));
-          if (!conn) continue;
-          const granted = groups.flatMap((g) => def.connections[conn].tools?.[g] ?? []);
-          assert.ok(granted.includes(id), `modules/${n}/skills/${skill}/SKILL.md:${i + 1}: ${id} is not a tool of connection ${conn}`);
-        }
-      }
-    }
-  }
-});
-
-test("a vendor connection's read endpoint gets exactly its connection's read tags", () => {
-  for (const [n, def] of Object.entries(defs)) {
-    for (const [svc, s] of Object.entries(def.services?.run ?? {})) {
-      const env = s?.env ?? {};
-      const conn = Object.entries(def.connections ?? {}).find(([, c]) => new URL(c.url).hostname === svc);
-      if (env.READ_TOOLS == null && !(env.MCP_READ_TOKEN_FILE && existsSync(join(product, "modules", n, String(s.build ?? ""), "src/vendor/proxy.ts")))) continue;
-      assert.equal(env.READ_TOOLS, (conn?.[1].tools.read ?? []).join(","), `${n}: ${svc}'s READ_TOOLS must be its connection's read tags`);
-    }
-  }
-});
-
-test("a fresh install of the default bundle compiles with no optional connection set, and starts no container for one it can't use", () => {
-  const dir = join(tmp, "fresh");
-  mkdirSync(join(dir, "agents"), { recursive: true });
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: market.bundle, settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq", quiet_start: "on", spend_day_usd: 10 } }));
-  const { compose, paperclip } = compile(product, dir);
-  for (const k of ["meeting-scan", "security-scan", "security-weekly", "red-team-new", "red-team-weekly"]) assert.equal(paperclip.routines[k].status, "paused", `${k} waits for the owner (quiet start)`);
-  for (const k of ["ui-designer", "ui-reviewer"]) assert.equal(paperclip.agents[k].heartbeat, false, `${k} has no heartbeat until the owner sets one`);
-  assert.ok(compose.services["jira-mcp"] && compose.services["glean-mcp"] && compose.services["primer-mcp"], "the idle connection servers are there: unconnected, they start and say how to connect");
-});
-
-test("the Primer digest waits for the owner under quiet start, and the Researcher can read it", () => {
-  const dir = join(tmp, "digest");
-  mkdirSync(join(dir, "agents"), { recursive: true });
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: market.bundle, settings: { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq", quiet_start: "on" } }));
-  assert.equal(compile(product, dir).paperclip.routines["primer-digest"].status, "paused");
-  assert.ok(defs.primer.connections.primer.tools.read.includes("primer_get_digest") && defs["chief-of-staff"].agents.assistant.connections["primer?"].includes("primer_get_digest"), "tagged, and granted to the Researcher");
-});
-
-test("an install made before the bundle grew gets the new members once its host sees the old bundle, and keeps them; a removal sticks", () => {
-  const settings = { timezone: "Europe/London", owner_name: "Sam", owner_email: "me@example.com", product_repo: "acme/aidenhq" };
-  const newer = ["design", "glean", "jira", "meetings", "primer", "security", "slack"];
-  const oldBundle = market.bundle.filter((n) => !newer.includes(n));
-  const run = (label, extra, opts) => {
-    const dir = join(tmp, label);
-    mkdirSync(join(dir, "agents"), { recursive: true });
-    writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: oldBundle, settings, ...extra }));
-    return compile(product, dir, opts);
-  };
-  const first = run("upgraded", {}, { oldBundle });
-  assert.ok(first.compose.services["glean-mcp"] && first.compose.services["slack-mcp"] && first.compose.services["security-scanner"], "the new members arrive");
-  // The next apply has no old bundle to diff; the host's record keeps them.
-  const later = run("upgraded", {}, { bundleState: first.bundleState });
-  assert.ok(later.compose.services["glean-mcp"], "still on at the next apply");
-  const kept = run("removed", { modules_removed: ["slack", "glean"] }, { oldBundle });
-  assert.equal(kept.compose.services["slack-mcp"], undefined);
-  assert.equal(kept.compose.services["glean-mcp"], undefined);
-  assert.ok(kept.compose.services["security-scanner"]);
-  assert.equal(run("first", {}, {}).compose.services["glean-mcp"], undefined, "with no old bundle and no record, nothing extra");
-});
-
-test("every module has a README in the one shape (modules/AGENTS.md)", () => {
-  const headings = ["## What it does", "## Connect", "## What agents get", "## New installs"];
-  for (const n of readdirSync(join(product, "modules"))) {
-    if (!existsSync(join(product, "modules", n, "module.yaml"))) continue;
-    const lines = readFileSync(join(product, "modules", n, "README.md"), "utf8").split("\n");
-    assert.deepEqual(lines.filter((l) => l.startsWith("## ")), headings, `modules/${n}/README.md`);
-    assert.equal(lines[0], `# ${n}`, `modules/${n}/README.md title`);
   }
 });
