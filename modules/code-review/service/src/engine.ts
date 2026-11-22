@@ -432,22 +432,15 @@ export function createEngine(d: EngineDeps) {
 
   /** The last posted review on the PR (the poster's view of what Aiden posted before). */
   const lastPosted = (r: { repo: string; number: number; id: string }) => one<{ json: string }>("SELECT v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.posted = 'posted' AND r.id != ? ORDER BY r.ended DESC LIMIT 1", r.repo, r.number, r.id);
-  type Open = { id: string; severity: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; run: string };
+  type Open = { id: string; severity: string; path: string; line: number; title: string; why: string | null; evidence: string | null; gating: number; pending: number; run: string };
   /** The PR's findings still open (no outcome yet), whichever combo found them; `gating`: an important one a mandatory run found
    * and posted. A finding with no GitHub thread yet (its post pending or refused) can't be fixed-and-answered on GitHub, so it
    * never gates: the verdict waits on the post instead (verdict), never on a finding nobody can see. */
   const stillOpen = (repo: string, n: number) => all<Omit<Open, "severity"> & { rank: number }>(
-    `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1 AND r.posted = 'posted') gating, MAX(f.run) run
+    `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1 AND r.posted = 'posted') gating, MAX(f.claim IS NOT NULL) pending, MAX(f.run) run
      FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
-  /** Gating findings answered `fixed` (an agent's call or a thread reply) while `head` is still a commit they were raised or reopened
-   * on: the fix isn't on the PR yet, so they hold the merge of that head. A run's own recheck finding one gone leaves no claim. */
-  const unpublished = (repo: string, n: number, head: string) => all<{ id: string; path: string; line: number; title: string }>(
-    `SELECT f.id, f.path, f.line, f.title FROM findings f JOIN runs r ON r.id = f.run
-     WHERE f.repo = ? AND f.number = ? AND f.outcome = 'fixed' AND f.claim LIKE 'fixed:%' AND f.severity = 'important' AND r.mandatory = 1 AND r.posted = 'posted'
-       AND (r.head = ? OR EXISTS (SELECT 1 FROM dispositions d WHERE d.repo = f.repo AND d.number = f.number AND d.finding = f.id AND d.state = 'open' AND d.head = ?))
-     GROUP BY f.id`, repo, n, head, head);
   /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
    * shrink before a gating finding is left out; one that can't fit even bare stays open (never marked fixed unseen). */
   function recheckList(repo: string, n: number) {
@@ -455,7 +448,9 @@ export function createEngine(d: EngineDeps) {
     const claimed = all<{ id: string; path: string; line: number; title: string; claim: string }>("SELECT id, MIN(path) path, MIN(line) line, MIN(title) title, MAX(claim) claim FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND outcome NOT IN ('open_at_merge', 'open_at_close') GROUP BY id ORDER BY MAX(rowid) DESC LIMIT 30", repo, n)
       .map((f) => ({ id: f.id, severity: "important", path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), claim: f.claim.slice(0, 300) }));
     const open = stillOpen(repo, n);
-    const gating = open.filter((f) => f.gating), other = open.filter((f) => !f.gating).slice(0, 50);
+    // An open finding carrying an agent's `fixed` claim goes first: it is what the next review is to settle, and what is cut stays open.
+    const byClaim = (a: Open, b: Open) => b.pending - a.pending;
+    const gating = open.filter((f) => f.gating).sort(byClaim), other = open.filter((f) => !f.gating).sort(byClaim).slice(0, 50);
     const size = (v: unknown) => JSON.stringify({ findings: v }).length;
     const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
       ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
@@ -691,7 +686,7 @@ export function createEngine(d: EngineDeps) {
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed ? iso() : null, claimed?.claim ?? null);
       }
       // A claim the mandatory recheck found unsafe or malicious (it hides the problem, or the fix adds one): open again.
-      for (const id of unsafe) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL", r.repo, r.number, id).changes)
+      for (const id of unsafe) if (run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome_at <= ?", r.repo, r.number, id, r.started ?? "").changes)
         dispose([id], r, "open", "the recheck found the answer's fix or reason unsafe", `run:${r.id}`);
       // What the recheck confirmed gone at this head: fixed, wherever it was found (and not found again by this run). A gating
       // finding is closed only by a mandatory run's recheck.
@@ -1447,7 +1442,7 @@ export function createEngine(d: EngineDeps) {
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     // Partial coverage (a file no finder read whole, a withheld finding, an unchecked recheck) is information: shown, never waited on.
     const partial = !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
-    return { repo, number: n, head, reason, important: openGating(repo, n).length + unpublished(repo, n, head).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
+    return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
   }
   /** Status writes GitHub or the kernel refused, by repo and head: tried again after STATUS_RETRY or once the verdict changes. */
   const statusFailed = new Map<string, { key: string; at: number }>();
@@ -1534,9 +1529,10 @@ export function createEngine(d: EngineDeps) {
   /** The one way an answer closes an open finding (fixed, else dismissed), whatever carried it (a thread reply, an agent's call): kept as the finding's claim. */
   function answer(at: { repo: string; number: number; head: string }, id: string, word: string, reason: string, by: string, evidence: string | null, label: string) {
     const w = word.toLowerCase().replace(/['’]/g, "").replace("wont", "won't");
-    const claim = `${w}: ${reason}`.slice(0, 1500), outcome = w === "fixed" ? "fixed" : "dismissed";
+    const claim = `${w}: ${reason}`.slice(0, 1500), outcome = w === "fixed" ? "claimed" : "dismissed";
+    // `fixed` is a claim only: the finding stays open and gating, and the next mandatory review (which gets it first) closes it as fixed when it finds the defect gone.
     const changed = tx(() => {
-      const c = run("UPDATE findings SET outcome = ?, outcome_at = ?, claim = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", outcome, iso(), claim, at.repo, at.number, id).changes;
+      const c = run(`UPDATE findings SET ${w === "fixed" ? "claim = ?" : "outcome = 'dismissed', outcome_at = ?, claim = ?"} WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL`, ...(w === "fixed" ? [claim] : [iso(), claim]), at.repo, at.number, id).changes;
       if (c) dispose([id], at, outcome, `${label}: ${claim}`, by, evidence);
       return c;
     });
@@ -1655,9 +1651,6 @@ export function createEngine(d: EngineDeps) {
     const open = openGating(repo, n);
     if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
       unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
-    const early = unpublished(repo, n, head);
-    if (early.length) reasons.push({ code: "findings", text: `${early.length} finding${early.length === 1 ? "" : "s"} answered fixed, but the fix isn't on the PR yet: ${head.slice(0, 7)} is still a commit ${early.length === 1 ? "it was" : "they were"} raised on (${early.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")})`,
-      unblock: "publish the fix (push it to the PR); the review of the new head then rechecks it" });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 
@@ -1669,7 +1662,7 @@ export function createEngine(d: EngineDeps) {
     const p = prRow(repo, n);
     if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
     const changed = tx(() => {
-      const c = run("UPDATE findings SET outcome = 'dismissed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND (outcome IS NULL OR (outcome = 'fixed' AND claim LIKE 'fixed:%'))", iso(), repo, n, id).changes;
+      const c = run("UPDATE findings SET outcome = 'dismissed', outcome_at = ? WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), repo, n, id).changes;
       if (c) dispose([id], p, "dismissed", b.reason as string, String(b.by ?? "owner").slice(0, 100));
       return c;
     });
@@ -1774,7 +1767,7 @@ export function createEngine(d: EngineDeps) {
       const findings = all<{ id: string; severity: string; path: string; line: number; title: string; outcome: string | null }>("SELECT id, severity, path, line, title, outcome FROM findings WHERE run = ? ORDER BY rowid", id).map((f) => ({ ...f }));
       // On a gated repo, the PR's merge verdict at its current head and its open gating findings (what the owner may dismiss).
       const cfg = repoCfg(r.repo), p = prRow(r.repo, r.number);
-      const gate = cfg && gated(cfg) && p?.open ? { ...verdict(r.repo, r.number, p.head), head: p.head, open: [...openGating(r.repo, r.number), ...unpublished(r.repo, r.number, p.head)].map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title })) } : null;
+      const gate = cfg && gated(cfg) && p?.open ? { ...verdict(r.repo, r.number, p.head), head: p.head, open: openGating(r.repo, r.number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title })) } : null;
       return { run: view({ ...r, title: p?.title ?? null }, waiting.has(r.id)), review: v ? (JSON.parse(v.json) as Review) : null, findings, gate };
     },
     repos() {
