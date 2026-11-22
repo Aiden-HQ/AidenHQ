@@ -37,7 +37,7 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
   name the live copy and the path inside it.
 - **Only checks the repository runs.** Before a brief names a CI check, read that repository's workflows on its default
   branch and name a job that is there (`sed -n '/^jobs:/,$p' .github/workflows/*.yml | rg -N '^  [a-z][a-z0-9_-]*:$'`):
-  the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` is the product repo's and the app repos' that copied
+  the product repo runs `ci-required` (its `modules` job for the official modules), where `image-scan` (advisory in the product repo) is the product repo's and the app repos' that copied
   its CI template, so each criterion is one this repository's CI can satisfy. Name the selector and its rule ("pin what
   `best-version.ts` prints"), not a version: the description can't be edited after filing, and the AI reviewer reads it,
   not the comments.
@@ -59,8 +59,9 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
 - Engineers work without Docker, system installs, this host, app logs or the warehouse: put the data a task needs in
   the task. A task for the Engineer says "don't try to view the deployed app: the grader captures
   its pages".
-- Image and CVE fixes are proven by the PR's image scan: in the product repo and app repos built from its CI template,
-  the rubric says "`image-scan` green on the PR's head"; elsewhere it names the change and the PR carries the registry's
+- Image and CVE fixes are proven by the PR's image scan: in app repos built from the CI template the rubric says
+  "`image-scan` green on the PR's head"; in the product repo, where the scan is advisory (always green, findings as its
+  error annotations), it says "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere it names the change and the PR carries the registry's
   vulnerability data for the tag and digest it pins. What a Dockerfile's RUN steps install is proven by the deployed
   image's security scan.
 - One task per change: the Engineer publishes, merges and rebases its one PR. A change over about 2,000 changed lines

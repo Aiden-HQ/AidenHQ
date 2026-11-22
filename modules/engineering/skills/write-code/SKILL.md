@@ -63,7 +63,7 @@ description: How code is written, tested and published here, in any repository -
   it to a log file and read the end of that file, and give it a timeout short enough that the run ends before the stall
   window.
 - Judge the work by using it: run it, look at it, click through it.
-- Image CVE scans are the PR's `image-scan` check (lock files and pinned base images, no build), not a local step.
+- Image CVE scans are the PR's `image-scan` check (lock files and pinned base images, no build; advisory in the product repo, findings as its error annotations), not a local step.
 
 ## Checks
 

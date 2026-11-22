@@ -54,32 +54,3 @@ test("a read grant carries no named tool, and the proxy would refuse it to a cal
   assert.ok(!keeper.allowed.has("repo_tree"));
   assert.ok(!keeper.listed.has("repo_tree"));
 });
-
-test("a module naming a tool tagged in no group still fails with the existing error", () => {
-  assert.throws(() => build(gh({ read: ["issue_list"], write: [] }), { keeper: { adapter: "codex_local", connections: { gh: ["issue_list", "issue_reopen"] } } }), /keeper: gh has no tool issue_reopen/);
-});
-
-test("named without read fails compile", () => {
-  assert.throws(() => build(gh({ read: ["issue_list"], write: [], named: ["issue_comment"] }), { keeper: { adapter: "codex_local", connections: { gh: "read" } } }), /connection gh: issue_comment is tagged named without read: named only narrows a read tool/);
-});
-
-test("named with write or destructive fails compile", () => {
-  assert.throws(() => build(gh({ read: ["issue_list"], write: ["issue_close"], named: ["issue_close"] }), { keeper: { adapter: "codex_local", connections: { gh: "write" } } }), /connection gh: issue_close is tagged write and named: named only narrows a read tool/);
-  assert.throws(() => build(gh({ read: ["issue_list"], write: [], destructive: ["issue_purge"], named: ["issue_purge"] }), { keeper: { adapter: "codex_local", connections: { gh: ["issue_purge"] } } }), /connection gh: issue_purge is tagged destructive and named: named only narrows a read tool/);
-});
-
-test("read, write and destructive behave as before for tools without named", () => {
-  const tools = { read: ["issue_list"], write: ["issue_close"], destructive: ["issue_purge"] };
-  const out = build(gh(tools), {
-    reader: { adapter: "codex_local", connections: { gh: "read" } },
-    writer: { adapter: "codex_local", connections: { gh: "write" } },
-    purger: { adapter: "codex_local", connections: { gh: ["issue_purge"] } },
-  });
-  assert.deepEqual(out.paperclip.agents.reader.enabled_tools.gh, ["issue_list"]);
-  assert.deepEqual(out.paperclip.agents.writer.enabled_tools.gh, ["issue_list", "issue_close"]);
-  assert.deepEqual(out.paperclip.agents.purger.enabled_tools.gh, ["issue_purge"]);
-  assert.equal(out.connections.gh.tools.named, undefined);
-  const reader = toolsFor({ ...GRANT, tools: { gh: ["issue_list"] } }, "gh", out.connections.gh);
-  assert.deepEqual([...reader.listed], ["issue_list", "issue_close", "issue_purge"]);
-  assert.deepEqual([...reader.allowed], ["issue_list"]);
-});

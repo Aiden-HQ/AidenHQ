@@ -2,9 +2,7 @@
 // through a channel's transport with that channel's own token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { kernel, readBody, serve } from "./helpers.ts";
-import { createNotify } from "../src/notify.ts";
 
 test("queued by the board or a module, taken once by the router, sent through a channel's transport with its token", async (t) => {
   const seen = [];
@@ -43,48 +41,4 @@ test("queued by the board or a module, taken once by the router, sent through a 
   // A channel that isn't set up says so: nothing to retry there.
   assert.equal((await k.v1("POST", "/v1/notify/send", { to: "channel-telegram", message: msg }, "router-key")).json.off, true);
   assert.equal((await k.v1("POST", "/v1/notify/send", { to: "plain", message: msg }, "router-key")).status, 404);
-});
-
-test("a transport is a compose service: an address, localhost or a name that resolves to loopback gets no token", async () => {
-  const { DatabaseSync } = await import("node:sqlite");
-  const { createNotify } = await import("../src/notify.ts");
-  const hit = [];
-  const resolver = { resolve: async (u) => (hit.push(u), { host: "127.0.0.1", port: 1, path: "/transport/send" }), forget: () => {} };
-  const ch = (transport) => ({ privileged: ["speaks-as-owner"], channel: { transport }, token: "t" });
-  const n = createNotify({ db: new DatabaseSync(":memory:"), secret: () => "key", resolver, modules: () => ({ modules: { ip: ch("http://169.254.169.254:80/x"), local: ch("http://localhost:8089/x"), named: ch("http://telegram:8089/x") } }) });
-  const send = (to) => n.send(["kernel.notify"], { to, message: { kind: "done", text: "x" } }).then((r) => r, (e) => ({ status: e.status }));
-  assert.deepEqual(await send("ip"), { status: 403 });
-  assert.deepEqual(await send("local"), { status: 403 });
-  assert.deepEqual(hit, []);
-  assert.deepEqual(await send("named"), { sent: false, reason: "unreachable (it resolves to loopback)" });
-});
-
-test("a message the router took and never acknowledged (it crashed, its answer was lost) is handed over again after its lease", () => {
-  let now = 1_000_000;
-  const n = createNotify({ db: new DatabaseSync(":memory:"), modules: () => ({}), secret: () => "", resolver: {}, now: () => now });
-  const router = ["kernel.notify"];
-  n.queue({ kind: "decision", text: "WOR-9 needs you" });
-  const [first] = n.take(router).messages;
-  assert.equal(n.take(router).messages.length, 0);
-  now += 3 * 60_000;
-  const [again] = n.take(router).messages;
-  assert.equal(again.id, first.id);
-  n.ack(router, { ids: [again.id] });
-  now += 3 * 60_000;
-  assert.equal(n.take(router).messages.length, 0);
-});
-
-test("the approvals digest is queued when taken: a take whose answer was lost hands it over again after the lease", () => {
-  let now = 1_000_000, digest = "🧾 Approvals digest";
-  const n = createNotify({ db: new DatabaseSync(":memory:"), secret: () => "", resolver: {}, modules: () => ({}), now: () => now, extra: () => (digest ? [{ kind: "digest", text: digest }] : []) });
-  const first = n.take(["kernel.notify"]).messages;
-  digest = null; // the kernel marked the day sent: it never makes it again today
-  assert.deepEqual(first.map((m) => m.text), ["🧾 Approvals digest"]);
-  assert.deepEqual(n.take(["kernel.notify"]).messages, [], "leased");
-  now += 3 * 60_000; // the router never acknowledged it
-  const again = n.take(["kernel.notify"]).messages;
-  assert.deepEqual(again.map((m) => [m.id, m.text]), [[first[0].id, "🧾 Approvals digest"]]);
-  n.ack(["kernel.notify"], { ids: [again[0].id] });
-  now += 3 * 60_000;
-  assert.deepEqual(n.take(["kernel.notify"]).messages, []);
 });

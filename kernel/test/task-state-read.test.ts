@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync, StatementSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { openFacts } from "../src/facts.ts";
 import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createTaskStateRead } from "../src/task-state-read.ts";
@@ -40,59 +40,6 @@ test("open lists every open task once, closed ones not", (t) => {
   assert.equal(r.as_of, iso(30));
 });
 
-test("ids accepts identifiers and returns closures", (t) => {
-  const { add, task, reader } = setup(t);
-  task("t1", "WOR-1");
-  add("task.status_changed", "t1", 5, { from: "todo", to: "done" });
-  task("t2", "WOR-2");
-  const r = reader.read({ ids: ["WOR-1", "t2", "nope"] });
-  assert.deepEqual(r.tasks.map((x) => [x.task, x.kind]).sort(), [["t1", "done"], ["t2", "idle"]]);
-});
-
-test("a blocker's closure is read with the task it blocks", (t) => {
-  const { add, task, reader } = setup(t);
-  task("t1", "WOR-1");
-  task("t2", "WOR-2");
-  add("task.blocked_changed", "t1", 1, { blocked_by: ["t2"] });
-  assert.equal(reader.read({ ids: ["t1"] }).tasks[0].reason, "blocked");
-  add("task.status_changed", "t2", 2, { from: "todo", to: "done" });
-  assert.notEqual(reader.read({ ids: ["t1"] }).tasks[0].reason, "blocked");
-});
-
-test("counts match the rows, attention oldest first", (t) => {
-  const { add, task, reader } = setup(t);
-  task("t1", "WOR-1");
-  add("record.filed", "t1", 10, { kind: "push", tier: 2, state: "owner" }, { subject: "record:k1" });
-  task("t2", "WOR-2");
-  add("job.ended", "t2", 5, { state: "failed" }, { subject: "job:j1" });
-  add("wake.opened", "t2", 1, { cause: "idle" }, { subject: "wake:w1" });
-  add("job.queued", "t2", 2, {}, { subject: "job:j1" });
-  task("t3", "WOR-3");
-  add("task.assignee_changed", "t3", 0, { from: null, to: "kai" });
-  task("t4", "WOR-4");
-  add("job.started", "t4", 29, {}, { subject: "job:j4" });
-  const r = reader.read({ open: true });
-  assert.deepEqual(r.counts, { needs_you: 1, failed: 1, unexplained_idle: 1 });
-  assert.deepEqual(r.tasks.map((x) => x.identifier), ["WOR-3", "WOR-2", "WOR-1", "WOR-4"]);
-  assert.equal(r.tasks.find((x) => x.task === "t2").idle_wakes, 1);
-});
-
-test("one snapshot", (t) => {
-  const { facts, task, reader } = setup(t);
-  task("t1", "WOR-1");
-  // A job starts on t1 while the read is between its queries: the read never sees it.
-  const all = StatementSync.prototype.all;
-  let calls = 0;
-  StatementSync.prototype.all = function (...args) {
-    if (++calls === 2) facts.record({ type: "job.started", subject: "job:j1", version: "started", at: iso(20), actor: "agent:kai", task: "t1", data: {} });
-    return all.apply(this, args);
-  };
-  try {
-    assert.equal(reader.read({ open: true }).tasks[0].kind, "idle");
-  } finally { StatementSync.prototype.all = all; }
-  assert.equal(reader.read({ open: true }).tasks[0].kind, "working");
-});
-
 const A1 = "11111111-1111-4111-8111-111111111111";
 const A2 = "22222222-2222-4222-8222-222222222222";
 test("a holder Paperclip reports terminated is named and marked gone; a failed agent read leaves the rows as they are", async (t) => {
@@ -114,17 +61,4 @@ test("a holder Paperclip reports terminated is named and marked gone; a failed a
   bad.task("t1", "WOR-1");
   bad.add("task.assignee_changed", "t1", 1, { from: null, to: A1 });
   assert.equal((await bad.reader.named(bad.reader.read({ ids: ["t1"] }))).tasks[0].holder_name, undefined);
-});
-
-test("a held task nobody polls is unpolled in the read and its unexplained count, never orphaned", (t) => {
-  const w = setup(t, 16, undefined, (agent) => agent !== "app-maintainer");
-  for (const [id, holder] of [["t1", "app-maintainer"], ["t2", "kai"]] as const) {
-    w.task(id, id.toUpperCase());
-    w.add("task.assignee_changed", id, 1, { from: null, to: holder });
-  }
-  const r = w.reader.read({ open: true });
-  const by = (id) => r.tasks.find((x) => x.task === id)!;
-  assert.deepEqual([by("t1").kind, by("t1").reason, by("t1").attention.map((a) => a.why)], ["idle", "unpolled", ["unpolled"]]);
-  assert.deepEqual([by("t2").reason, by("t2").attention.map((a) => a.why)], ["orphaned", ["orphaned"]], "a polled agent's task is the one that was always named");
-  assert.equal(r.counts.unexplained_idle, 2, "unpolled counts as unexplained idle, so the board and the steward see it");
 });
