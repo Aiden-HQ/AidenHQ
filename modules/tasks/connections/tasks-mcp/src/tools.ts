@@ -860,8 +860,6 @@ async function withStates(list: Json[], state: unknown, attention: unknown) {
 const PAGE = 200;
 /** A whole task_list scan's wall-clock budget: past it the list says so instead of running into the tool timeout. */
 const SCAN_MS = 120_000;
-/** A page advances half its length: rows shifted up by a task leaving the list are still on the next page. */
-const STEP = PAGE / 2;
 /**
  * A company's issues, newest first, one page at a time: Paperclip's `offset` paging, as scripts/modules.ts and the board
  * read it. Yields rows not seen yet.
@@ -874,17 +872,18 @@ const STEP = PAGE / 2;
 async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } = {}) {
   const seen = new Set<string>();
   let repeats = 0;
-  for (let offset = 0; ; offset += STEP) {
+  for (let offset = 0; ; ) {
     const p = new URLSearchParams(q);
     p.set("limit", String(PAGE));
     p.set("offset", String(offset));
     const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
     if (!Array.isArray(page) || !page.length) return;
+    // Advance by half of what came back, not by what was asked: a server capping its page size would otherwise leave a gap.
+    offset += Math.max(1, Math.floor(page.length / 2));
     const fresh = page.filter((i: Json) => !seen.has(i.id));
     if (!fresh.length) {
-      // An overlap page with nothing new is normal while pages overlap; a page that repeats past the overlap is the end,
-      // or a server that ignores `offset`.
-      if (++repeats >= PAGE / STEP) {
+      // An overlap page with nothing new is normal; two in a row is a repeated page: the end, or a server ignoring `offset`.
+      if (++repeats > 1) {
         progress.stalled = true;
         return;
       }
@@ -976,7 +975,14 @@ const TOOLS: Record<string, Tool> = {
           stopped = true;
           break;
         }
-        list.push(...(await matchingStates(fresh, kinds, one)));
+        const ms = deadline - Date.now();
+        try {
+          list.push(...(await matchingStates(fresh, kinds, one, ms)));
+        } catch (err) {
+          if (Date.now() < deadline) throw err;
+          stopped = true;
+          break;
+        }
         // Advance by what came back, not by what was asked: a server capping its page size would skip the rows between.
         offset += page.length;
       }
