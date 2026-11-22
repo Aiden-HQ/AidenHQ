@@ -3,7 +3,7 @@
 The grader (modules/grading/service/src/grader/grade.ts) uses these lines when a delegation names a `pr` deliverable without its own
 rubric. The delegating agent adapts them to the request (DELEGATING_SECTION in scripts/paperclip-setup.ts).
 
-- Merged into the default branch (on the AidenHQ product repo a PR merges on its approved card, so its merge is the deliverable there too: a criterion asking whether the PR was delivered is met by the merged PR, never failed for no longer being open).
+- Merged into the default branch (on the AidenHQ product repo a PR merges on its approved card: a criterion asking whether the PR was delivered is met by the merged PR, never failed as not open).
 - Every named check is green on the PR's head (the grader reads the PR's head, never the merge commit).
 - The diff makes the change the task asked for, and nothing unrelated.
 - A test covers the changed behaviour, or the task said none was needed.

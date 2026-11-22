@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gradePrompt, template } from "../service/src/grader/grade.ts";
+import { parseRubric } from "../service/src/grades.ts";
 
 const RUBRICS = fileURLToPath(new URL("../rubrics", import.meta.url));
 const SERVICE_RUBRICS = fileURLToPath(new URL("../service/rubrics", import.meta.url));
@@ -19,6 +20,13 @@ test("the pr template's merged criterion is met by a merged PR and never reads a
   assert.match(merged, /met by the merged PR/, "a merged PR meets a criterion asking whether the PR was delivered");
   assert.doesNotMatch(merged, /open PR/i, "the criterion carries no open-PR-as-deliverable reading");
   assert.doesNotMatch(merged, /the owner merges/, "the criterion does not say the owner merges product PRs by hand");
+  // A delegator copies this line into a filed rubric, and a filed criterion is capped at 200 characters (parseRubric): a longer
+  // template line cannot be filed at all, so the merged criterion would have to be reworded on every delegation.
+  assert.ok(merged.length <= 200, `the merged criterion is ${merged.length} characters, over the 200 a filed rubric allows`);
+  assert.doesNotThrow(
+    () => parseRubric([merged, "The diff makes the change the task asked for", "A test covers the changed behaviour"]),
+    "a delegator can file the merged criterion in a rubric",
+  );
 });
 
 test("the pr template's Evidence criterion accepts proof in the task's completion comment after a merge", () => {
