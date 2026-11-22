@@ -133,22 +133,8 @@ RUN case "$(dpkg --print-architecture)" in \
 # a review run links only the selected skill or plugin into its own throwaway home (resolveSkill).
 #   /opt/review/skills/<owner>__<repo>/  the repo at its pin (skill folders inside)
 #   /opt/review/plugins/<name>/          a Claude Code plugin folder at its pin
-# deepsec 2.3.12 (2026-11-06; 2.3.13 on 2026-11-16 is too new): npm's tarball, install scripts off. Its tree pins zod
-# 3.24.4 in @vercel/sandbox and 4.1.11 in @vercel/cli-config (GHSA-mrhx-c7xc-m3w5, fixed in 4.6.6); no deepsec release moves
-# either, because @vercel/sandbox 1.x pins zod 3 and @vercel/oidc pins @vercel/cli-config 0.3.1. deepsec-zod/ beside this
-# file is a checked-in lockfile for zod 4.6.7 (the 4.6.x the 7-day rule picks, 2026-10-12), installed with npm ci and moved
-# over both copies, as agent-base does for codegenie. The build fails if either copy is below 4.6.6, and the smoke check
-# keeps what a review run needs: the CLI and init command load, and both packages' schemas still parse with the new zod.
-COPY deepsec-zod /opt/deepsec-zod
-RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force \
-    && (cd /opt/deepsec-zod && npm ci --ignore-scripts --no-audit --no-fund \
-        && cd "$(npm root -g)/deepsec/node_modules" \
-        && for p in @vercel/sandbox @vercel/cli-config; do rm -rf "$p/node_modules/zod" && cp -r /opt/deepsec-zod/node_modules/zod "$p/node_modules/zod"; done) \
-    && deepsec --version | grep -qx 2.3.12 && deepsec init --help >/dev/null \
-    && (cd "$(npm root -g)/deepsec" \
-        && node -e 'const fs = require("fs"); for (const p of ["./node_modules/@vercel/sandbox/node_modules/zod", "./node_modules/@vercel/cli-config/node_modules/zod"]) { const v = JSON.parse(fs.readFileSync(p + "/package.json", "utf8")).version; const [a, b, c] = v.split(".").map(Number); if (!(a > 4 || (a === 4 && (b > 6 || (b === 6 && c >= 6))))) { console.error(p + " has zod " + v + ", below 4.6.6"); process.exit(1); } }' \
-        && node --input-type=module -e 'const v = await import("./node_modules/@vercel/sandbox/dist/api-client/validators.js"); v.NetworkPolicyValidator.parse({ mode: "custom", allowedDomains: ["a.example"] }); v.InjectionRuleValidator.parse({ domain: "x.example" }); const c = await import("./node_modules/@vercel/cli-config/dist/index.js"); c.globalConfigSchema.parse({});') \
-    && rm -rf /opt/deepsec-zod/node_modules
+# deepsec 2.3.12 (2026-11-06; 2.3.13 on 2026-11-16 is too new): npm's tarball, install scripts off.
+RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force && deepsec --version
 RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
     pin() { d=$1; repo=$2; sha=$3; git init -q "$d" && git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$sha" && git -C "$d" checkout -q FETCH_HEAD && rm -rf "$d/.git"; }; \
     skills() { pin "/opt/review/skills/$(echo "$1" | sed 's#/#__#')" "$1" "$2"; }; \

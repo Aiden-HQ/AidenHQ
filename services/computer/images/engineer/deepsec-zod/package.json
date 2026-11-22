@@ -1,5 +1,0 @@
-{
-  "name": "deepsec-zod",
-  "private": true,
-  "dependencies": { "zod": "4.6.7" }
-}
