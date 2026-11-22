@@ -204,11 +204,11 @@ export class Paperclip {
     return this.cached("projects", 300_000, async () => ProjectsSchema.parse(await this.request("GET", `/api/companies/${this.companyId}/projects`)).map((p) => ({ id: p.id, name: p.name })));
   }
 
-  /** One status list read page by page until a short page or LIST_BOUND. */
+  /** One status list read page by page, newest update first, until a short page or LIST_BOUND (so the bound cuts the oldest). */
   private async paged(status: string, updatedSince?: string): Promise<Listed> {
     const issues: Issue[] = [];
     for (let offset = 0; offset < LIST_BOUND; offset += PAGE) {
-      const page = await this.list(status, updatedSince, String(PAGE), false, offset);
+      const page = await this.list(status, updatedSince, String(PAGE), false, offset, true);
       issues.push(...page);
       if (page.length < PAGE) return { issues, incomplete: false };
     }
@@ -297,8 +297,8 @@ export class Paperclip {
     return (await this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${p}`)).filter((i) => i.assigneeAgentId === agentId);
   }
 
-  private list(status: string, updatedSince?: string, limit = "500", routines = false, offset = 0): Promise<Issue[]> {
-    const q = new URLSearchParams({ status, limit, excludeRoutineExecutions: String(!routines), ...(offset ? { offset: String(offset) } : {}) });
+  private list(status: string, updatedSince?: string, limit = "500", routines = false, offset = 0, newest = false): Promise<Issue[]> {
+    const q = new URLSearchParams({ status, limit, excludeRoutineExecutions: String(!routines), ...(offset ? { offset: String(offset) } : {}), ...(newest ? { sortField: "updated", sortDir: "desc" } : {}) });
     if (updatedSince) q.set("updatedSince", updatedSince);
     return this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${q}`);
   }

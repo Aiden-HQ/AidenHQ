@@ -6,6 +6,7 @@
 .tt-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .tt-tools .spacer { flex: 1; }
 .tt-tools .ui-seg { flex: none; }
+.tt-boards { display: flex; gap: 2px; align-items: center; min-width: 0; }
 .tt-tabs { display: flex; gap: 2px; align-items: center; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .tt-tab-wrap { display: contents; }
 .tt-tab { flex: none; display: inline-flex; gap: 6px; align-items: center; height: 28px; padding: 0 10px; border: 0; border-radius: var(--radius-md); background: none; color: var(--muted); font-size: var(--text-base); white-space: nowrap; cursor: pointer; }
@@ -55,7 +56,8 @@
 .tt-tools.phone { display: flex; padding: 10px clamp(16px, 1.4vw, 28px); border-bottom: 1px solid var(--border); background: var(--bg); }
 .tt-tools.phone .tt-row:first-child { flex-wrap: wrap; row-gap: 8px; }
 .tt-tools.phone .tt-asof { margin-left: auto; }
-.tt-tabs.phone { order: 3; flex: 1 1 100%; mask-image: linear-gradient(to right, black calc(100% - 28px), transparent); padding-right: 24px; }
+.tt-boards.phone { order: 3; flex: 1 1 100%; }
+.tt-boards.phone .tt-tabs { flex: 1; mask-image: linear-gradient(to right, black calc(100% - 28px), transparent); padding-right: 24px; }
 .tt-tools.phone .tt-tab, .tt-tools.phone .tt-fbtn, .tt-tools.phone .btn { min-height: 36px; }
 
 /* ------------------------------------------------------------ lanes */

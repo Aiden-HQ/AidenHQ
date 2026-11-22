@@ -555,6 +555,9 @@ export interface ShownState {
   refLabel?: string;
   /** The same for each attention entry's ref and the blocker's, by ref. */
   refs?: Record<string, string>;
+  /** A holder Paperclip reports removed: its name. */
+  holder_name?: string;
+  holder_gone?: true;
 }
 export interface ChatRow {
   identifier: string;

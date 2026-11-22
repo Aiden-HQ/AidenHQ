@@ -3,6 +3,7 @@
 // card shows the one line its lane needs, linked to what it names (the question, the approval, the run, the blocker).
 import { useMemo, useState } from "react";
 import { LANES, LANE_NAMES, laneOf } from "./filters";
+import { admin } from "./api";
 import { Bone } from "./Skeleton";
 import { Monogram } from "./ui";
 import { hueClass } from "./ui/hue";
@@ -25,13 +26,13 @@ const taskOf = (ref: string | undefined) => (ref?.startsWith("task:") ? ref.slic
 export function holderName(c: WorkCard, crew: Assignee[]): string {
   if (c.assignee === null) return "Unassigned";
   if (c.assignee === "me") return "You";
-  return crew.find((a) => a.key === c.assignee)?.name ?? "Agent";
+  return crew.find((a) => a.key === c.assignee)?.name ?? (c.state?.holder_name ? `${c.state.holder_name} (removed)` : "Removed agent");
 }
 
 /** The amber or red callout: what the card waits on, linked to it. */
-function Callout({ tone, head, body, href }: { tone: "needs" | "bad"; head: string; body?: string; href: string }) {
+function Callout({ tone, head, body, href, external }: { tone: "needs" | "bad"; head: string; body?: string; href: string; /** The kernel's approval page: a page of its own. */ external?: boolean }) {
   return (
-    <a className={`aw-callout ${tone}`} href={href} onClick={stop}>
+    <a className={`aw-callout ${tone}`} href={href} onClick={stop} {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
       <b>{head}</b>
       {body && <q>{body}</q>}
     </a>
@@ -46,7 +47,7 @@ function LaneLine({ c, s }: { c: WorkCard; s: ShownState | null }) {
   if (!s) return <Status tone="idle" text="No reported state" />;
   if (lane === "needs_you") {
     const a = s.attention.find((x) => x.who === "owner")!;
-    if (a.why === "card") return <Callout tone="needs" head="Needs you" body={`Your approval: ${named(a.ref) ?? "a card waits"}`} href="#/approvals" />;
+    if (a.why === "card") return <Callout tone="needs" head="Needs you" body={`Your approval: ${named(a.ref) ?? "a card waits"}`} href={`${admin.url}/approvals/${encodeURIComponent(a.ref.replace(/^record:/, ""))}`} external />;
     if (a.why === "handback") return <Callout tone="needs" head="Needs you" body="Handed back to you" href={self} />;
     return <Callout tone="needs" head="Needs you" body={s.question ?? "Your answer"} href={self} />;
   }
@@ -144,11 +145,19 @@ function LaneColumn({ lane, cards, board, loading }: { lane: Lane; cards: WorkCa
   );
 }
 
-/** Cards by lane, each lane oldest attention first as the kernel sorts it, else newest activity first. */
+/**
+ * Cards by lane. Needs you and Blocked: the longest outstanding first (the state's `since`, as the kernel orders attention), so
+ * the oldest ask is never behind "Show more"; Done: newest close first; the rest: newest activity first.
+ */
+const OLDEST_FIRST = new Set<Lane>(["needs_you", "blocked"]);
 function byLane(cards: WorkCard[]): Record<Lane, WorkCard[]> {
   const out = Object.fromEntries(LANES.map((l) => [l, [] as WorkCard[]])) as Record<Lane, WorkCard[]>;
   for (const c of cards) out[laneOf(c)].push(c);
-  for (const l of LANES) out[l].sort((a, b) => (l === "done" ? (b.closedAt ?? "").localeCompare(a.closedAt ?? "") : b.activityAt.localeCompare(a.activityAt)));
+  for (const l of LANES)
+    out[l].sort((a, b) =>
+      OLDEST_FIRST.has(l) ? (a.state?.since ?? a.activityAt).localeCompare(b.state?.since ?? b.activityAt)
+      : l === "done" ? (b.closedAt ?? "").localeCompare(a.closedAt ?? "")
+      : b.activityAt.localeCompare(a.activityAt));
   return out;
 }
 

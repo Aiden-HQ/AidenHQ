@@ -147,9 +147,11 @@ export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
   };
 }
 
+/** Its assignee is the issue's own (an agent removed from the roster stays its holder, named from the kernel's row). */
 export function workCard(issue: Issue, list: Assignee[], state: ShownState | null, parent: string | null, crewIds: string[]): WorkCard {
   const closed = issue.status === "done" || issue.status === "cancelled";
-  return { ...toCard(issue, list, ""), unread: false, state, parent, crewIds, closedAt: closed ? closedAt(issue) : null };
+  const assignee = issue.assigneeAgentId ?? (issue.assigneeUserId ? "me" : null);
+  return { ...toCard(issue, list, ""), assignee, unread: false, state, parent, crewIds, closedAt: closed ? closedAt(issue) : null };
 }
 
 const isBrief = (i: Issue) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL);
@@ -227,7 +229,7 @@ export function buildBoard(input: BoardInput): Board {
   };
 }
 
-const closedAt = (i: Issue) => i.completedAt ?? i.cancelledAt ?? i.updatedAt;
+export const closedAt = (i: Issue) => i.completedAt ?? i.cancelledAt ?? i.updatedAt;
 
 /** Hidden markers (source, runner) never show; Markdown is rendered and sanitised in the browser. */
 export function displayText(text: string | null | undefined): string {

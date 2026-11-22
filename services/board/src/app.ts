@@ -19,7 +19,7 @@ import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type Live
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
-import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, commentView, displayText, executorOf, isWork, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
+import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
@@ -518,19 +518,26 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    * Idle, "No reported state"); a closed one only while the kernel's row says it closed in the window. The brief, the owner's
    * settings tasks and setup's log tasks are never work.
    */
-  function agentWork(inv: Awaited<ReturnType<typeof inventory>>, states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>): WorkCard[] {
+  async function agentWork(inv: Awaited<ReturnType<typeof inventory>>, states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>): Promise<WorkCard[]> {
     const logs = logTasks();
     const byId = new Map([...inv.closed, ...inv.open].map((i) => [i.id, i]));
     const kids = new Map<string, string[]>();
     for (const i of byId.values()) if (i.parentId && i.assigneeAgentId) kids.set(i.parentId, [...(kids.get(i.parentId) ?? []), i.assigneeAgentId]);
+    const shown = [...byId.values()].filter((i) => isWork(i) && !logs.has(i.id) && !logs.has(i.identifier));
+    // A parent outside the inventory (closed before the window) is read by id, a few at a time (issueSummary caches each a minute).
+    const missing = [...new Set(shown.flatMap((i) => (i.parentId && !byId.has(i.parentId) ? [i.parentId] : [])))];
+    const parents = new Map<string, string>();
+    for (let n = 0; n < missing.length; n += 4) for (const p of await Promise.all(missing.slice(n, n + 4).map((id) => pc.issueSummary(id).catch(() => null)))) if (p) parents.set(p.id, p.identifier);
     const out: WorkCard[] = [];
-    for (const i of byId.values()) {
-      if (!isWork(i) || logs.has(i.id) || logs.has(i.identifier)) continue;
-      const state = states.get(i.id) ?? null;
+    for (const i of shown) {
       const closed = i.status === "done" || i.status === "cancelled";
-      if (closed && state?.lane !== "done") continue;
-      const parent = i.parentId ? byId.get(i.parentId) : undefined;
-      out.push(workCard(i, ctx.assignees, state, parent?.identifier ?? null, [...new Set(kids.get(i.id) ?? [])].filter((a) => a !== i.assigneeAgentId)));
+      let state = states.get(i.id) ?? null;
+      // Done: the kernel's row is done and Paperclip's own close time is in the window (a close fact the kernel dated by a later
+      // edit never brings an old task back). An open issue whose row still says done was reopened after the snapshot: no state yet.
+      if (closed && (state?.lane !== "done" || closedAt(i) < inv.since)) continue;
+      if (!closed && state?.lane === "done") state = null;
+      const parent = i.parentId ? (byId.get(i.parentId)?.identifier ?? parents.get(i.parentId) ?? null) : null;
+      out.push(workCard(i, ctx.assignees, state, parent, [...new Set(kids.get(i.id) ?? [])].filter((a) => a !== i.assigneeAgentId)));
     }
     return out;
   }
@@ -1353,7 +1360,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // One kernel snapshot for both layouts: each row's refs named once (identifiers from the inventory).
         const idents = new Map([...inv.open, ...inv.closed].map((i) => [i.id, i.identifier]));
         const states = new Map((await shownRows(inv.read.tasks, idents)).map((r) => [r.task, r]));
-        const work = agentWork(inv, states, ctx);
+        const work = await agentWork(inv, states, ctx);
         for (const card of cards) {
           const w = busy.map.get(card.identifier);
           if (w) card.working = w;

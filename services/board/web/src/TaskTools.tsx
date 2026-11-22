@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ViewConflict } from "./api";
 import { FILTER_KEYS, FILTER_NAMES, LANES, LANE_NAMES, UPDATED_NAMES, cardMatches, chipCount, compact, sameFilters, type FilterKey } from "./filters";
-import { Banner, Dialog, Monogram, Segmented } from "./ui";
+import { Banner, Dialog, Menu, Monogram, Segmented } from "./ui";
 import type { Board, Card, Filters, Layout, SavedView, ViewSpec } from "./types";
 import { PRIORITIES, PRIORITY_NAMES } from "./util";
 import "./agent-work.css";
@@ -36,6 +36,9 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
   const [selected, setSelected] = useState<string | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const view = views?.find((v) => v.id === selected) ?? null;
+  // The selection as it is when a write answers: a late 409 for a board the owner has left is not his concern now.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   const setLayout = useCallback((l: Layout) => {
     setLayoutState(l);
@@ -70,7 +73,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
   const replace = (v: SavedView) => setViews((vs) => (vs ?? []).map((x) => (x.id === v.id ? v : x)));
   const fail = (v: SavedView, e: unknown) => {
     if (e instanceof ViewConflict) {
-      setConflict({ view: v, current: e.current });
+      if (selectedRef.current === v.id) setConflict({ view: v, current: e.current });
       if (e.current) replace(e.current);
       else setViews((vs) => (vs ?? []).filter((x) => x.id !== v.id));
     } else toast(`Couldn't save the board: ${(e as Error).message}`);
@@ -120,7 +123,7 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
   const reload = () => {
     const c = conflict;
     setConflict(null);
-    if (c?.current) apply(c.current.spec);
+    if (c?.current && c.view.id === selectedRef.current) apply(c.current.spec);
   };
   return { layout, setLayout, filters, setFilters, groupBy, setGroupBy, views, view, select, dirty, saveNew, update, rename, remove, conflict, reload, spec };
 }
@@ -173,7 +176,9 @@ export function BoardTabs({ tb, ready, mobile, saveSignal }: { tb: TaskBoard; re
     <>
       <Segmented label="Layout" value={tb.layout} onChange={tb.setLayout} options={[["day", "My day"], ["work", "Agent work"]] as const} />
       {ready && tb.views && (
-        <div className={`tt-tabs${mobile ? " phone" : ""}`} role="tablist" aria-label="Saved boards">
+        // The strip scrolls sideways; its menus sit beside it, outside the scroller, so they never clip.
+        <div className={`tt-boards${mobile ? " phone" : ""}`}>
+        <div className="tt-tabs" role="tablist" aria-label="Saved boards">
           <button type="button" role="tab" className="tt-tab" aria-selected={!tb.view} onClick={() => tb.select(null)}>
             All tasks{!tb.view && tb.dirty && <i className="tt-dirty" title="Changed: not saved" />}
           </button>
@@ -185,6 +190,8 @@ export function BoardTabs({ tb, ready, mobile, saveSignal }: { tb: TaskBoard; re
               </button>
             </span>
           ))}
+          <button type="button" className="tt-tab tt-add" onClick={() => setDialog("save")}>+ Save board</button>
+        </div>
           {rest.length > 0 && (
             <div className="tt-more" ref={moreRef}>
               <button type="button" className="tt-tab" aria-haspopup="menu" aria-expanded={more} onClick={() => setMore(!more)}>More</button>
@@ -197,8 +204,7 @@ export function BoardTabs({ tb, ready, mobile, saveSignal }: { tb: TaskBoard; re
               )}
             </div>
           )}
-          {tb.view && <TabMenu onRename={() => setDialog("rename")} onSaveNew={() => setDialog("save")} onDelete={() => setDialog("delete")} />}
-          <button type="button" className="tt-tab tt-add" onClick={() => setDialog("save")}>+ Save board</button>
+          {tb.view && <Menu label="Board actions" items={[{ label: "Rename…", onSelect: () => setDialog("rename") }, { label: "Save as new…", onSelect: () => setDialog("save") }, { label: "Delete board", onSelect: () => setDialog("delete"), danger: true }]} />}
         </div>
       )}
       {dialog === "save" && <NameDialog title="Save board" action="Save board" initial="" onSave={(n) => void tb.saveNew(n)} onClose={() => setDialog(null)} />}
@@ -219,33 +225,6 @@ export function BoardTabs({ tb, ready, mobile, saveSignal }: { tb: TaskBoard; re
         </Dialog>
       )}
     </>
-  );
-}
-
-function TabMenu({ onRename, onSaveNew, onDelete }: { onRename: () => void; onSaveNew: () => void; onDelete: () => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    document.addEventListener("pointerdown", away);
-    return () => document.removeEventListener("pointerdown", away);
-  }, [open]);
-  const item = (label: string, run: () => void, danger?: boolean) => (
-    <button type="button" role="menuitem" className={`tt-item${danger ? " danger" : ""}`} onClick={() => (setOpen(false), run())}>{label}</button>
-  );
-  return (
-    <div className="tt-more" ref={ref} onKeyDown={(e) => e.key === "Escape" && setOpen(false)}>
-      <button type="button" className="tt-tab tt-menu" aria-label="Board actions" title="Board actions" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>⋯</button>
-      {open && (
-        <div className="tt-pop" role="menu">
-          {item("Rename…", onRename)}
-          {item("Save as new…", onSaveNew)}
-          <hr />
-          {item("Delete board", onDelete, true)}
-        </div>
-      )}
-    </div>
   );
 }
 

@@ -14,7 +14,7 @@ const at = "2026-11-20T10:00:00.000Z";
 const issue = (id: string, o: Partial<Issue> = {}): Issue => ({ id, identifier: `WOR-${id}`, title: `Task ${id}`, description: "", status: "todo", priority: "medium", assigneeUserId: null, assigneeAgentId: AGENT, assigneeAdapterOverrides: null, createdAt: at, updatedAt: at, ...o });
 // A parent closed elsewhere with its crew part still open: the sweep closes the part, a GET never does.
 const open = [issue("1"), issue("2", { parentId: "9" }), issue("3")];
-const closed = [issue("9", { status: "cancelled", cancelledAt: at, assigneeAgentId: null, assigneeUserId: "me" }), issue("8", { status: "done", completedAt: at })];
+const closed = [issue("9", { status: "cancelled", cancelledAt: new Date().toISOString(), assigneeAgentId: null, assigneeUserId: "me" }), issue("8", { status: "done", completedAt: at })];
 const writes: string[] = [];
 const pc = new Proxy(
   {
