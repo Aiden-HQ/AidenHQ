@@ -201,18 +201,22 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // the repositories present at that point: adding a repository is what makes a later unpinned install a problem, and
   // removing it before an install stops it being one. A `deb` line is filed under the source file its own command
   // writes, appends to or removes; one naming no file is kept apart and its entries accumulate.
-  // A command after `&&` or `||` runs only if the one before it succeeded or failed, so `test -f marker && rm x` may
-  // leave x in place for a later line. Its removal applies to the rest of this line (where the shell guarantees it ran
-  // if a later command does), and at the line's end the state it would have left is restored, so the next line still
-  // sees the file and the pin requirement it carries.
-  let conditional = false;
+  // Two questions per removal. Does it run before a later command in this line? `rm x && apt install` runs the install
+  // only if the removal succeeded, so x is gone — but `test -f m && rm x || true && apt install` reaches the install with
+  // x untouched, and `test -f x || rm x` skips it when the test passes. So a removal applies to the rest of its line only
+  // when it follows `&&` and no `||` comes after it. Does it survive the line? Only an unconditional removal — the first
+  // command, or one after `;` — does; anything else may have been skipped, so the file is put back when the line ends.
+  const parts = cmd.split(/(&&|\|\||;)/);
+  const opBefore = (i: number) => parts[i - 1];
+  const laterOr = (i: number) => parts.slice(i + 1).some((q) => q === "||");
+  const applies = (i: number) => opBefore(i) === "&&" && !laterOr(i);
   let restore: (() => void) | undefined;
-  for (const part of cmd.split(/(&&|\|\||;)/)) {
-    if (/^&&$|^\|\|$|^;$/.test(part)) { conditional = part !== ";"; continue; }
-    const segment = part;
+  for (let i = 0; i < parts.length; i += 2) {
+    const segment = parts[i]!;
     const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
     // A removal is a command that runs `rm`/`unlink` on a sources.list.d name, not a quoted message mentioning one.
-    const removes = /(?:^|\s)(?:sudo\s+)?(?:rm|unlink)\b/.test(unquoted(segment)) && /sources\.list\.d/.test(unquoted(segment));
+    const removal = /(?:^|\s)(?:sudo\s+)?(?:rm|unlink)\b/.test(unquoted(segment)) && /sources\.list\.d/.test(unquoted(segment));
+    const removes = removal && (i === 0 || opBefore(i) === ";" || applies(i));
     // What a command reads is not what it writes: the file a pipeline's `tee` writes carries its `deb` line, while a
     // source file it only copies for diagnostics adds no repository.
     const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
@@ -221,10 +225,10 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     // install sees, so it neither requires pins nor dates them.
     const loaded = files.filter((w) => w.file && /\.(list|sources)$/.test(w.file));
     if (removes) {
-      // A conditional removal may not have run: remember the state to put back when the line ends.
-      if (conditional && !restore) {
-        const before = { files: new Map([...state.files].map(([f, v]) => [f, [...v]])), holds: new Set(state.holds), entries: new Map([...state.entries].map(([f, v]) => [f, [...v]])) };
-        restore = () => { state.files = before.files; state.holds = before.holds; state.entries = before.entries; state.added = state.holds.size > 0 || state.entries.has(undefined); };
+      // A removal that may not have run is undone when the line ends, so a later line still sees the file.
+      if (i > 0 && opBefore(i) !== ";" && !restore) {
+        const saved = { files: new Map([...state.files].map(([f, v]) => [f, [...v]])), holds: new Set(state.holds), entries: new Map([...state.entries].map(([f, v]) => [f, [...v]])) };
+        restore = () => { state.files = saved.files; state.holds = saved.holds; state.entries = saved.entries; state.added = state.holds.size > 0 || state.entries.has(undefined); };
       }
       // `rm` of one file drops that file; `rm` of the directory itself (no name) drops them all. A name APT ignores
       // removes nothing it loads.
@@ -258,7 +262,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       }
     }
   }
-  // Undo a conditional removal once the line is done: the file may still be there for the next line.
+  // A removal that may have been skipped is undone at the line's end: a later line can still see the file.
   restore?.();
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
     pins.push({ kind: "github-release", name: m[1]!, package: m[1]!, version: m[2], at });

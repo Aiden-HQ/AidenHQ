@@ -326,12 +326,20 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   // A message that mentions `rm` removes nothing.
   const message = `FROM debian:bookworm${d}\nRUN ${write}\nRUN echo 'To disable this repository, rm /etc/apt/sources.list.d/vendor.list'\nRUN apt-get install -y foo\n`;
   assert.equal(scanFile("Dockerfile", message).problems.length, 1);
-  // A real removal, unconditional or an `&&` the next command depends on, still clears it.
+  // A plain removal, or one an `&&` chain makes a condition of the install, still clears it.
   for (const line of [`rm -f /etc/apt/sources.list.d/vendor.list`, `true; rm -f /etc/apt/sources.list.d/vendor.list`])
-    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems, []);
-  // A removal behind `&&` or `||` may be skipped, so the repository may survive: the pin requirement stays.
-  for (const line of [`test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list`, `test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list || true`])
-    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems.length, 1);
+    assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line} && apt-get install -y foo\n`).problems, []);
+  // A removal behind `&&` or `||` may be skipped, so the repository may survive: the pin requirement stays — including
+  // within the same line, where `… && rm x || true && apt install` still reaches the install with x in place.
+  for (const [line, count] of [
+    [`test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list`, 1],
+    // The install is reached with the file untouched, so both it and the next line's are unpinned.
+    [`test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list || true && apt-get install -y foo`, 2],
+    // The `&&` guarantees the removal ran, so the line's own install is fine — but a failed test skips it, so the next
+    // line's install is still checked.
+    [`test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list && apt-get install -y foo`, 1],
+  ] as const)
+    assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems.length, count);
   // A redirect on the install line is not a package to pin.
   const redirected = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y example=1.2 >/dev/null 2>&1\n`;
   assert.deepEqual(scanFile("Dockerfile", redirected).problems, []);
