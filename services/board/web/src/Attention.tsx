@@ -24,7 +24,11 @@ const toYou = (i: Item) => {
   return card ? `→ you: ${card}` : "→ you";
 };
 
-export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
+/**
+ * `compact` (Agent work, whose lanes already show these tasks): one line of counts, each opening its list in place; the
+ * list starts closed. Otherwise (My day) the counts and the list, open.
+ */
+export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; compact?: boolean }) {
   const q = useQuery(QUERIES.needsYou, onSignIn);
   useLive(["approvals", "chat", "tasks"], q.reload, 30_000);
   const [chosen, setChosen] = useState<Which | null>(null);
@@ -33,6 +37,32 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
   const n: Record<Which, number> = { needs: d.counts.needs_you, failed: d.counts.failed, idle: d.counts.unexplained_idle };
   const which = chosen ?? (n.needs ? "needs" : n.failed ? "failed" : n.idle ? "idle" : "needs");
   const rows = d.items.filter(IN[which]);
+  const list = rows.length > 0 && (
+    <div className="attn-list">
+      <ListRows>
+        {rows.map((i) => (
+          <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />
+        ))}
+      </ListRows>
+    </div>
+  );
+  if (compact) {
+    const words: Record<Which, string> = { needs: `${n.needs} need you`, failed: `${n.failed} failed`, idle: `${n.idle} unexplained` };
+    return (
+      <section className="attn attn-compact" aria-label="What needs attention">
+        <div className="attn-head">
+          <b className="attn-title">Fleet attention</b>
+          {(["needs", "failed", "idle"] as const).map((w) => (
+            <button key={w} type="button" className={`attn-count attn-${w}${n[w] ? " on" : ""}`} aria-expanded={chosen === w} onClick={() => setChosen(chosen === w ? null : w)}>
+              {words[w]}
+            </button>
+          ))}
+          {chosen && <span className="attn-order">oldest first</span>}
+        </div>
+        {chosen && list}
+      </section>
+    );
+  }
   return (
     <section className="attn" aria-label="What needs attention">
       <div className="attn-head">
@@ -45,15 +75,7 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
         />
         <span className="attn-order">oldest first</span>
       </div>
-      {rows.length > 0 && (
-        <div className="attn-list">
-          <ListRows>
-            {rows.map((i) => (
-              <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />
-            ))}
-          </ListRows>
-        </div>
-      )}
+      {list}
     </section>
   );
 }

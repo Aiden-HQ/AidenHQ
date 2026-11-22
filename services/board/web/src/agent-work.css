@@ -149,3 +149,14 @@
 .aw-lanes.phone .aw-cards { padding-top: 8px; }
 /* A narrow desktop: the tabs scroll sideways under the same fade, never clipped mid-word. */
 @media (max-width: 1279px) { .tt-tabs { mask-image: linear-gradient(to right, black calc(100% - 28px), transparent); padding-right: 24px; } }
+
+/* Fleet attention on Agent work (Attention.tsx compact): one line of counts above the tools, each opening its list in place. */
+.attn.attn-compact { padding-top: 7px; padding-bottom: 7px; background: var(--surface-2); }
+.attn-compact .attn-head { gap: 6px 14px; }
+.attn-count { border: 0; background: none; padding: 2px 4px; margin: 0 -4px; border-radius: var(--radius-sm); font: inherit; font-size: var(--text-sm); color: var(--muted); cursor: pointer; white-space: nowrap; }
+.attn-count:hover { background: var(--hover); color: var(--text); }
+.attn-count:focus-visible { outline: none; box-shadow: var(--ring); }
+.attn-count[aria-expanded="true"] { background: var(--accent-soft); }
+.attn-count.on.attn-needs { color: var(--warn-text); font-weight: 600; }
+.attn-count.on.attn-failed { color: var(--bad-text); font-weight: 600; }
+.attn-count.on.attn-idle { color: var(--text); font-weight: 600; }

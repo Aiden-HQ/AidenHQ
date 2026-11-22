@@ -725,6 +725,7 @@ export function App() {
           </div>
         </header>
       )}
+      {onBoard && work && <AttentionStrip onSignIn={signInNeeded} compact />}
       {!mobile && onBoard && (
         <header className="page-tools tt-tools">
           <div className="tt-row">
@@ -776,7 +777,7 @@ export function App() {
       )}
       {onBoard && <ConflictBanner tb={tb} onSaveNew={() => setSaveOpen((n) => n + 1)} />}
 
-      {onBoard && <AttentionStrip onSignIn={signInNeeded} />}
+      {onBoard && !work && <AttentionStrip onSignIn={signInNeeded} />}
 
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       <GoogleBanner google={board.google} canReconnect={googleConnect} />
