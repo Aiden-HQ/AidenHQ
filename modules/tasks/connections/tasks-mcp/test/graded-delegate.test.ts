@@ -262,6 +262,12 @@ test("an absence criterion is refused at filing and at amendment, naming a diff-
   // A later independent clause is not part of the claim's subject, even when it names a repository file.
   const later = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the /slipped page has no `Linus` row and docs/a.md has the new heading", "merged into main", "checks green on the head"] });
   assert.equal(later.r.result?.isError, undefined, later.text);
+  // A comma-separated list of subjects is still a claim about each of them, and the object of a claim is never its subject.
+  const comma = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["docs/a.md, docs/b.md, and the attached report contain no `Linus`", "merged into main", "checks green on the head"] });
+  assert.equal(comma.r.result?.isError, true, comma.text);
+  assert.match(comma.text, /claims file contents are absent/);
+  const pageObject = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the /totals page has no README.md link", "merged into main", "checks green on the head"] });
+  assert.equal(pageObject.r.result?.isError, undefined, pageObject.text);
 });
 
 test("a refused rubric read is reported as a refusal, not as a task with no rubric", async () => {

@@ -111,7 +111,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     await refAllowed(b.deliverable);
     // The row records its filer as the agent that delegated the task: a differing re-file is that agent's, and only its. A
     // task already closed is left alone (its row may not have been swept to not_graded yet).
-    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`, { closed: isClosed(issue) });
+    const r = grades.file(issue.id, b.rubric, b.deliverable, `agent:${caller.agent}`, { closed: isClosed(issue), held: issue.status === "in_review" });
     if (r.created) log("rubric filed", { task: issue.identifier, kind: b.deliverable.kind, criteria: b.rubric.length });
     return { created: r.created, state: r.grade.state };
   }
@@ -161,7 +161,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     // body carries only the task's id and identifier, so its status is read here: a closed task is left alone, as on the
     // agent route (its row may not have been swept to not_graded yet).
     const issue = await kernel.issue(b.task.id);
-    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`, { closed: isClosed(issue) });
+    const r = grades.file(b.task.id, f.rubric, f.deliverable, `module:${b.module}`, { closed: isClosed(issue), held: issue.status === "in_review" });
     if (r.created) log("rubric filed for a module's task", { task: b.task.id, module: b.module, kind: f.deliverable.kind, criteria: f.rubric.length });
     return { verdict: "ok", created: r.created };
   }
