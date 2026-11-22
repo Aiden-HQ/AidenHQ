@@ -1605,13 +1605,17 @@ export function createEngine(d: EngineDeps) {
         for (const r of t.replies) {
           const key = `reply:${r.id}`;
           if (one("SELECT 1 FROM seen WHERE repo = ? AND comment = ?", cfg.repo, key)) continue;
-          if (!open.has(t.finding)) { run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key); continue; }
+          if (!open.has(t.finding)) {
+            // Not gating: closed (consumed) or still open with its post pending (left unread for the poll that sees it gate).
+            if (!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", cfg.repo, p.number, t.finding)) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
+            continue;
+          }
           const m = answerOf(r.body);
           const may = !!m && ((r.author.toLowerCase() === p.author && !p.fork) || WRITERS.has(await d.source.permission(cfg.repo, r.author)));
           if (m && !may) log("an answer from someone who isn't the PR's author and has no write access: ignored", { repo: cfg.repo, pr: p.number, author: r.author.slice(0, 40) });
           if (m && may) {
             answer({ repo: cfg.repo, number: p.number, head: p.head }, t.finding, m.word, m.reason, `reply:${r.author.slice(0, 40)}`, r.body, `answered by ${r.author.slice(0, 40)}`);
-            open.delete(t.finding);
+            if (!/^fixed/i.test(m.word)) open.delete(t.finding); // a fixed claim leaves it open: a correction in the same poll still applies
           }
           run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", cfg.repo, key);
         }
