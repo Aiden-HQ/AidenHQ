@@ -647,6 +647,16 @@ export function createEngine(d: EngineDeps) {
     // deliver it, or both would read "no notice filed yet" and each file one.
     delivering.add(r.id);
     try {
+      // The pull request moved on while this notice waited: the head it speaks for is gone, so the notice is too. Otherwise a
+      // delayed refusal for head A would later edit the one acknowledgement to say A's review was not posted, wiping the newer
+      // head's own (a done notice or a queued one), and ask for a review of a head nobody is looking at. A review of the newer
+      // head that is refused has its own notice.
+      const now = prRow(r.repo, r.number);
+      if (now?.open && now.head !== r.head) {
+        run("UPDATE runs SET notice = 'failed', notice_write = NULL, notice_due = NULL WHERE id = ?", r.id);
+        release(r.repo, r.number);
+        return log("refused post's notice dropped: the pull request moved to a newer head", { repo: r.repo, pr: r.number, run: r.id, head: r.head.slice(0, 12), now: now.head.slice(0, 12) });
+      }
       // A pull request closed before its notice landed: there is no head to ask again on, so that one is the end of it.
       if (await gone(r)) {
         run("UPDATE runs SET notice = 'failed' WHERE id = ?", r.id);
@@ -667,7 +677,10 @@ export function createEngine(d: EngineDeps) {
     const p = prRow(r.repo, r.number);
     // A watched repo's poll keeps its row current, so a row that says the PR still stands (open, or merged: which still takes a
     // notice) is the answer. Nothing seen yet means nothing about a close.
-    if (repoCfg(r.repo)) return !!p && !p.open && !p.merged;
+    // A row that says closed without merged is not proof: the poll's own detail read can fail just as the PR leaves the open
+    // list, and a merged PR still takes its notice. GitHub is asked once more there (and for a row written before this service
+    // recorded merges at all); a read that fails leaves the notice pending, never dropped on a guess.
+    if (repoCfg(r.repo)) return !!p && !p.open && (p.merged ? false : away(r));
     // Nothing polls an unwatched repo's PR (a one-off elsewhere, a repo since dropped): its row is a snapshot from when the
     // review was asked for, so GitHub is asked now.
     return away(r);

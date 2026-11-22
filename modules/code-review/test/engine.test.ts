@@ -23,7 +23,8 @@ function world(settings = {}) {
   // A post this fake refuses directly (the executor's answer), by the run it is for: { state: "refused", why, need }.
   const refusals = new Map();
   const threads = new Map(), commits = new Map(), patches = new Map(), bases = new Map();
-  const { db: _db, ...rest } = settings;
+  const readsDown = settings.readsDown ?? [];
+  const { db: _db, readsDown: _rd, ...rest } = settings;
   const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
   const db = settings.db ?? new DatabaseSync(":memory:");
   const deps = {
@@ -32,7 +33,7 @@ function world(settings = {}) {
     now: () => t,
     source: {
       open: async () => [...prs.values()].filter((p) => p.open),
-      get: async (_r, n) => prs.get(n),
+      get: async (_r, n) => { const f = readsDown.shift(); if (f) throw Object.assign(new Error(`github-mcp pr: ${f}`), { status: f }); return prs.get(n); },
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
       permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
@@ -62,7 +63,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  const w = { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
+  const w = { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
   // `w` is returned after createEngine's deps, so the fake's ack can read acksDown from it.
   return w;
 }
@@ -522,6 +523,64 @@ test("a refused post's notice still lands on a merged pull request, and a row fr
   await w.tick({ github: false });
   assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
   assert.equal(w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:")).length, 1);
+});
+
+test("a watched PR that leaves the open list while its detail read fails never has its notice dropped on the guess", async () => {
+  // The merge happened as GitHub's own detail read timed out: `poll` writes `open = 0` with `merged` never confirmed. A merged PR
+  // still takes its notice, so that row is not proof of a close. GitHub is asked once more, and a read that fails leaves the notice
+  // where it is (never `failed`); once GitHub answers "merged", it lands rather than being dropped.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick();
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.acksDown = 40; // the notice can't land yet
+  await w.tick({ github: false });
+  const run = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "pending");
+  // It leaves the open list; the detail read times out, so the row says closed with no merge state recorded, and so does the
+  // notice's own fresh read.
+  w.prs.set(3, { ...w.prs.get(3), open: false, merged: false });
+  w.readsDown.push(1, 1);
+  w.later(60_000);
+  await w.tick();
+  assert.notEqual(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "failed");
+  // GitHub answers that it was merged: the notice lands there.
+  w.acksDown = 0;
+  w.prs.set(3, { ...w.prs.get(3), merged: true });
+  w.later(60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(run.id).notice, "sent");
+  assert.equal(w.acks.filter((a) => a.state === "failed" && a.why?.startsWith("not posted:")).length, 1);
+});
+
+test("a delayed refusal notice for an older head never reaches the pull request after a newer head arrives", async () => {
+  // The notice for head A backs off (the kernel can't take it now) and the author pushes B. A's notice asks for a review of a head
+  // nobody is looking at any more, and editing the one acknowledgement with it would wipe whatever the newer head's review put
+  // there. It is dropped where it is; a refusal at B has its own notice.
+  const w = world();
+  w.posts.pending = true;
+  await opened(w, 3, sha("3"));
+  w.finish(0);
+  w.later(5000);
+  await w.tick(); // A's post is filed
+  w.outcomes.set("k-1", { state: "refused", why: "write k-1 stale" });
+  w.acksDown = 40; // A's notice can't land yet
+  await w.tick({ github: false });
+  const a = w.engine.runs({ repo: REPO })[0];
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "pending");
+  // B arrives: A's head is no longer the pull request's.
+  w.acksDown = 0;
+  w.acks.length = 0;
+  w.pr(3, sha("4"));
+  await w.tick();
+  // A's notice comes due: it is dropped, never filed against the pull request's new head.
+  w.later(60 * 60_000);
+  await w.tick({ github: false });
+  assert.equal(w.db.prepare("SELECT notice FROM runs WHERE id = ?").get(a.id).notice, "failed");
+  assert.deepEqual(w.acks.filter((x) => x.head === sha("3")), []);
 });
 
 test("two deliveries of the same notice can't both file one: the in-flight guard is taken before the first await", async () => {
