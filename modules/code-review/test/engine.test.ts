@@ -1513,9 +1513,20 @@ test("an agent's `fixed: …` is a claim with no GitHub write: the finding stays
   assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"], "still open: the nit's won't-fix closed, the fixed claim didn't");
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.deepEqual(w.started[1].previous.map((x) => [x.id, x.claim]).sort(), [["f1", undefined], ["n1", "won't fix: style only, left as is"]], "the open finding goes to the recheck as open, the claimed nit as a claim");
-  w.finish(1, { findings: [], fixed: ["f1"] }); await w.tick();
-  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "the review of the new head found it gone: closed as fixed");
+  w.finish(1, { findings: [] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "the review of the new head didn't report it again (even without listing it fixed): the claim stands, closed as fixed");
   assert.deepEqual({ ...w.db.prepare("SELECT outcome, claim FROM findings WHERE id = 'f1'").get() }, { outcome: "fixed", claim: null }, "verified: the claim is spent, a later regression isn't inherited as fixed");
+});
+
+test("a fixed claim stays open when the review of the new head reports the finding again", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
+  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock (abc1234)", by: "agent:engineer" });
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "reported again: the claim doesn't stand");
+  assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"]);
 });
 
 test("a corrected answer closes a finding that carries a fixed claim, and a recheck's result that comes back after it can't undo it", async () => {
