@@ -94,6 +94,16 @@ test("a background hit only records; tick queues one batched digest line a day o
   w.s.tick();
   assert.equal(w.queued.at(-1).kind, "digest");
 });
+test("a removed connection's need is dropped by tick, never reported", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "old_name", { cause: "not_connected", detail: "" });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  w.tick(LASTED);
+  w.s.tick();
+  assert.deepEqual(w.queued.map((n) => n.dedupe_key), ["connect:github:not_connected"]);
+  assert.deepEqual((w.db.prepare("SELECT module FROM connection_state").all() as { module: string }[]).map((r) => r.module), ["github"]);
+});
+
 test("a blip never reaches the digest: a need that a success clears before it has lasted queues nothing", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });

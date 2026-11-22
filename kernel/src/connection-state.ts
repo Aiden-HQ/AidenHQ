@@ -239,6 +239,11 @@ export function createConnectionState(o: {
     tick(): void {
       const t = now(), today = day(t);
       q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
+      // A removed or renamed connection can never clear its rows: drop them rather than report them again.
+      const live = Object.keys(o.connections());
+      const gone = `module NOT IN (${live.map(() => "?").join(", ")})`;
+      q(`DELETE FROM connection_state WHERE ${gone}`).run(...live);
+      q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
       const rows = q(`SELECT * FROM connection_state s WHERE (reported_day IS NULL OR reported_day != ?) AND since <= ?`).all(today, t - LASTING) as Row[];
       for (const r of rows) {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
