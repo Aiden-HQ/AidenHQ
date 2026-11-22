@@ -73,6 +73,12 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // A flag with no value is refused instead of silently taking the next flag or nothing.
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--title", "fix(login): x"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
+  // A value that merely starts with `--` is still a value: only the next option (or none) counts as missing.
+  const dotted = join(process.cwd(), "--notes.md");
+  writeFileSync(dotted, "A file named like a flag.");
+  t.after(() => rmSync(dotted, { force: true }));
+  await aidenhq("publish", "acme/app", "fix-login", "--body-file", "--notes.md");
+  assert.equal(seen.at(-1).body.args.text.body, "A file named like a flag.");
   // --fixes without --body-file would send a generated-line-only body as the whole description: refused, and nothing is filed.
   const before = seen.length;
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--fixes", "acme/app#8"), (e) => e.code === 2 && /--fixes needs --body-file/.test(e.stderr));

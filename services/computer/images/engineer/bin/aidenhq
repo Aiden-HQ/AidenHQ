@@ -64,9 +64,11 @@ if (!gateway || !token || !workspace) fail("only available inside a job's comput
 const flags = {};
 const words = [];
 const fixes = [];
+// A value may itself start with `--` (a file named --notes.md); only a missing one, or the next option, is refused.
+const OPTIONS = ["--fixes", "--title", "--body-file", "--file", "--keep", "-h", "--help"];
 const value = (i) => {
   const v = rest[i + 1];
-  if (v === undefined || v.startsWith("--")) fail(`${rest[i]} needs a value\n${usage}`, 2);
+  if (v === undefined || OPTIONS.includes(v)) fail(`${rest[i]} needs a value\n${usage}`, 2);
   return v;
 };
 for (let i = 0; i < rest.length; i++) {
