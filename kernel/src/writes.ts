@@ -39,7 +39,7 @@ type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: s
 /** A write.filed check as config/kernel/checks.json holds it (`<module>.<id>`): the kinds it runs on. */
 export type FiledCheck = { module: string; at: string; kinds?: string[]; mode?: unknown };
 /** A write.filed check's code, run in process on a filing: its verdict (`ok`, `raise` tier 1 or 2, or `deny`) raises or refuses, never lowers. */
-export type FiledCheckFn = (input: { kind: string; args: unknown; paths: unknown; facts: { productRepo?: string } }) => { verdict: string; tier?: number; rule?: string; reason?: string };
+export type FiledCheckFn = (input: { kind: string; args: unknown; paths: unknown; details: string; facts: { productRepo?: string } }) => { verdict: string; tier?: number; rule?: string; reason?: string };
 /** The kernel's own planner for one of its kinds (kernel.apply: apply-tier.ts), in place of an executor's plan. */
 export type Planner = (b: { kind: string; args: unknown; requester: Requester; task: string; workspace?: string }) => Promise<Plan>;
 export const CONN_TOOL = "conn.tool";
@@ -238,11 +238,11 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /**
-   * The write.filed checks on `kind`, each run on the plan (its args and the files it changes): their raises, for the tier.
+   * The write.filed checks on `kind`, each run on the plan (its args, the files it changes and the card's whole details): their raises, for the tier.
    * Fail closed: a registry that won't load, a check with no code here, or one that throws or answers malformed refuses the
    * filing (503); a check's deny refuses it (422, the job's refusal). They always enforce (gates.ts: never observe).
    */
-  function filedRaises(kind: string, plan: Plan): Raise[] {
+  function filedRaises(kind: string, plan: Plan, details: string): Raise[] {
     const unavailable = (why: string) => fail(503, "check_failed", `the write checks are unavailable (${why}): nothing was filed; try again`);
     let mine: [string, FiledCheck][];
     try {
@@ -256,7 +256,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const run = Object.hasOwn(filedChecks, id) ? filedChecks[id] : undefined;
       if (!run) throw unavailable(`${id} has no code in this kernel`);
       let v: ReturnType<FiledCheckFn>;
-      try { v = run({ kind, args: plan.args, paths: plan.paths, facts: { ...(repos().product ? { productRepo: repos().product } : {}) } }); } catch (e) { throw unavailable(`${id} failed: ${String((e as Error).message).slice(0, 200)}`); }
+      try { v = run({ kind, args: plan.args, paths: plan.paths, details, facts: { ...(repos().product ? { productRepo: repos().product } : {}) } }); } catch (e) { throw unavailable(`${id} failed: ${String((e as Error).message).slice(0, 200)}`); }
       const reason = String(v?.reason ?? "").slice(0, 500);
       if (v?.verdict === "deny") throw fail(422, "refused", `refused by ${c.module}'s ${id.slice(c.module.length + 1)} check (${v.rule ?? "deny"}): ${reason}`);
       if (v?.verdict === "raise" && (v.tier === 1 || v.tier === 2)) out.push({ tier: v.tier, rule: String(v.rule ?? id), reason });
@@ -286,7 +286,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
-    const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];
+    const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan, whole.details)];
     const t = computeTier({ floor: k.floor, raise, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), uncapped: isUpdater(requester), ownerSave });
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const top = checkRaises.reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);

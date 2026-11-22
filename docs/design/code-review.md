@@ -133,7 +133,7 @@ model gateway. The service accepts what the recipe runs: each engine's own effor
 
 ## Posting
 
-The service files a `post` write (Tier 1: the AI reviewer reads the whole rendered review, which is exactly what is posted) or
+The service files a `post` write (Tier 0: no AI reviewer reads it; the `instance-details` write.filed check refuses a host, home path or address in the rendered review, which is exactly what is posted) or
 a `notice` (Tier 0, fixed words) per run and a `status` (Tier 0, fixed words) per verdict change; the github module's poster executes it. One GitHub review per head and combo, always a `COMMENT` on the
 commit it reviewed: a review that finished before the PR moved on still posts (its comments show as outdated where lines
 changed; the acknowledgement is left to the newer head), while a run whose PR moved on while it ran is superseded (Triggers):
@@ -173,7 +173,7 @@ says the same); a command's queued notice is updated once with the outcome. Writ
 summary already as it would be writes nothing, and a post's thread resolves are one request.
 
 Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment and notice ending with the
-AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a Tier 1 write). Every fleet write posts as
+AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a kernel write record). Every fleet write posts as
 that same login, so nothing that decides anything is read back from GitHub text: findings, coverage, dispositions and the verdict
 live in the service's database, and a thread is Aiden's own (a reply on it may answer its finding; it may be resolved) only when its first
 comment's id is one the service recorded from its own post's outcome (table `comments`), and the acknowledgement is the comment
@@ -233,7 +233,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   author (not a fork's) or someone with write access now, whose first word is `fixed`, `disputed`, `by design` or `won't fix`
   followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). An agent records the same answer with the
   `code_review_resolve` tool (engine `resolve`, the same `answer` path, no GitHub write: a GitHub refusal never holds a merge);
-  an important finding's answer is then replied on its thread by the service (the `code-review.reply` write, Tier 1, queued in
+  an important finding's answer is then replied on its thread by the service (the `code-review.reply` write, Tier 0, queued in
   the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply
   still works. Any other reply is conversation.
   The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds

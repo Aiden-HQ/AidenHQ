@@ -32,10 +32,7 @@ an autonomy he set below full.
   shows that state as `running` with the reason (clipped for display; the whole reason is what identifies a change), and the
   record's task hears the reason once when the wait starts and again only when it changes.
 - **Earlier decisions bind, narrowly** (`tier.ts` `priorDecisions`). The owner's rejection of an action on a task is his veto:
-  every later request of it there is his card until he approves one. Content the reviewer rejected as malicious (`MALICE`:
-  `malicious`, `secret_exfiltration`, `prompt_injection`) stays rejected: the same commits, PR heads or digest are refused by
-  code before any review. Nothing else binds: no retry bound, no park, no lift. A rejection from before the malice-only
-  reviewer (a scope reject, an unsure, a split) never refuses a resubmission.
+  every later request of it there is his card until he approves one. A reviewer's reject never binds: a resubmission, even of identical content, is reviewed afresh. Nothing else binds: no retry bound, no park, no lift.
 - **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so the code host keeps each
   reviewed head in its cache clone as `refs/reviewed/<approval>/<branch>`; it is never pushed and is pruned after 30 days
   (`modules/github/service/src/tidy.ts`).

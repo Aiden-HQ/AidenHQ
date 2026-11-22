@@ -92,7 +92,11 @@ export function instanceDetails(card: ReviewCard | undefined, diff: string | und
     // The same arguments in both forms are read once; details that differ from the structured call are read too, never trusted.
     if (!toolCall || JSON.stringify(parsed) !== JSON.stringify(toolCall.arguments)) walkArguments(parsed, parts, versions);
   } else if (!toolCall) parts.push(details);
-  const text = parts.join("\n");
+  return instanceDetailsIn(parts.join("\n"), versions);
+}
+
+/** The instance details in plain text (see instanceDetails): the hosts, home paths and addresses it holds, each once. */
+export function instanceDetailsIn(text: string, versions = new Set<string>()): string[] {
   const found = [
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),

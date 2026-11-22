@@ -3,8 +3,8 @@
 //   as the Maintainer's issue read is), as the owner's GitHub sign-in github-mcp holds.
 // - Review runs: the kernel's credential-free check job `code-review` (POST /v1/checks; the recipe is lane E's), its Review read
 //   from the finished check.
-// - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post (Tier 1, the AI reviewer
-//   decides), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
+// - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post and .reply (Tier 0, the
+//   instance-details check refuses leaked hosts and addresses), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
 //   /internal/review routes.
 // - The code host through the kernel (/v1/codehost/:op, this module's `codehost:` grant): snapshots (a tree's paths and the commit
 //   it resolved; a pending deepsec setup branch's files) and the deepsec setup PR (`setup`: github files its own Tier 1 write).
@@ -110,8 +110,8 @@ export function reasonOf(why: string | undefined): "post_refused" | "draft" | "f
 }
 
 /**
- * Posting as kernel write records of this module's own kinds (module.yaml writes): `code-review.post` (Tier 1: the AI reviewer
- * decides, so it is filed on the PR's task, one per PR for the Reviewer Manager) and `code-review.notice` (Tier 0, fixed words).
+ * Posting as kernel write records of this module's own kinds (module.yaml writes): `code-review.post` (Tier 0, filed on
+ * the PR's task, one per PR for the Reviewer Manager) and `code-review.notice` (Tier 0, fixed words).
  * The target (repo, pr, head) is always the run's, never the review body's.
  */
 /** The need a refused post's outcome named, when github-mcp carried one (needs_owner: restricted, expired, sso, scope). */

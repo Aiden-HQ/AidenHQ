@@ -490,3 +490,10 @@ test("the card's details text is read decoded too, so a report's version is not 
   assert.equal(instanceDetails({ action: "conn.tool" }, big).length, 3000, "each private-range quad is still refused");
   assert.ok(Date.now() - started < 1000, `the scan is bounded (${Date.now() - started}ms)`);
 });
+test("a code review post or reply that names an instance host, home path or address is refused by code at filing; clean text passes", async () => {
+  const { check } = await import("../src/instance-details-check.ts");
+  assert.deepEqual(check({ details: "Looks fine: the retry bound is read before it is defaulted (src/plan.ts line 41)." }), { verdict: "ok" });
+  const denied = check({ details: "The agent ran on agents.acme.ts.net (10.0.0.7), log /home/sam/run.log" });
+  assert.equal(denied.verdict, "deny");
+  assert.match(String(denied.reason), /agents\.acme\.ts\.net.*10\.0\.0\.7.*\/home\/sam\/run\.log/);
+});
