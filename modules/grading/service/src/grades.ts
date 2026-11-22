@@ -116,10 +116,30 @@ const REPO_FILE = /\b(?:files?|handbooks?|docs?|documents?|trees?|repos?(?:itori
 const ATTACHED = /\battach(?:ed|ment|ments)\b/i;
 const DIFF_SUBJECT = /\b(?:pr|pull requests?|diff|patch|changes?|commits?|merge[ds]?)\b/i;
 const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
+const CLAUSE_BREAK = /[.;:,]\s+|\b(?:and|but|while|whereas)\s+/gi;
+/** The subject an absence claim is about: its own clause, widened backwards only when that clause names nothing the claim could be about. */
+function absenceSubject(c: string, at: number, length: number): string {
+  const breaks = [...c.slice(0, at).matchAll(CLAUSE_BREAK)].map((m) => (m.index ?? 0) + m[0].length);
+  const after = c.slice(at + length);
+  const next = after.search(CLAUSE_BREAK);
+  const tail = next < 0 ? after : after.slice(0, next);
+  for (let i = breaks.length - 1; i >= -1; i--) {
+    const span = c.slice(i < 0 ? 0 : breaks[i]!, at) + c.slice(at, at + length) + tail;
+    if (i < 0 || REPO_FILE.test(span) || ATTACHED.test(span) || PAGE_PATH.test(span) || DIFF_SUBJECT.test(span)) return span;
+  }
+  return c;
+}
 /** The first criterion claiming a repository file's contents lack something, or undefined (see ABSENT). */
 export function uncheckableAbsence(rubric: string[], kind?: string): string | undefined {
   if (kind === "file") return undefined;
-  return rubric.find((c) => ABSENT.test(c) && REPO_FILE.test(c) && !ATTACHED.test(c) && !PAGE_PATH.test(c) && !DIFF_SUBJECT.test(c));
+  return rubric.find((c) => {
+    // "the diff removes X and docs/a.md contains no Y": each claim is judged on its own subject, never on another clause.
+    for (const claim of c.matchAll(new RegExp(ABSENT.source, "gi"))) {
+      const subject = absenceSubject(c, claim.index, claim[0].length);
+      if (REPO_FILE.test(subject) && !ATTACHED.test(subject) && !PAGE_PATH.test(subject) && !DIFF_SUBJECT.test(subject)) return true;
+    }
+    return false;
+  });
 }
 const OUTCOMES = ["awaiting_evidence", "satisfied", "needs_revision", "cannot_judge", "grading_failed", "error"] as const;
 export type VerdictInput = { version: string; outcome: (typeof OUTCOMES)[number]; model: string; criteria: Verdict["criteria"]; reason?: string; rubric?: string };

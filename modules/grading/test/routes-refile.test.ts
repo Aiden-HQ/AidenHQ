@@ -169,6 +169,14 @@ test("the absence rule is one rule on every write path: agent filing, module fil
     const r = await h.agentAmend("cos", { issue: "t1", rubric: [ok, "merged into main", "checks green on the head"] });
     assert.equal(r.status, 200, `${ok}: ${JSON.stringify(r.json)}`);
   }
+  const accepted = h.grades.get("t1").rubric;
+  // The exemption covers the absence claim's own subject, never another clause of the same criterion.
+  for (const mixed of ["the diff removes every `Linus` line and docs/a.md contains no `Linus`", "the PR is fine and the handbook has no old token", "the attached report is good and docs/a.md contains no `Linus`"]) {
+    const r = await h.agentAmend("cos", { issue: "t1", rubric: [mixed, "merged into main", "checks green on the head"] });
+    assert.equal(r.status, 400, `${mixed}: ${JSON.stringify(r.json)}`);
+    assert.match(r.json.error, /claims repository file contents are absent/, mixed);
+    assert.deepEqual(h.grades.get("t1").rubric, accepted, mixed);
+  }
 });
 
 test("a file deliverable's contents are evidence, so an absence criterion on it is accepted", async (t) => {
