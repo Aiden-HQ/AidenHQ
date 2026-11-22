@@ -14,9 +14,10 @@
 //                whether such a path is there)
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
-//   setup        {repo, branch, expected_tip, files, title, body, task} → {pr_url, tip}: files the code host's own Tier 1 `github.setup` write
-//                (the AI reviewer reads the files), which runs only once approved: one commit adding the missing allowlisted files on an
-//                aidenhq/ branch off the default branch's head, and its PR. Answers {pending, write} while the record waits.
+//   setup        {repo, files, title, body, task} → {pr_url, branch, tip}: files the code host's own Tier 1 `github.setup` write
+//                (the AI reviewer reads the files), which runs only once approved: one commit adding the missing allowlisted files off the
+//                default branch's head, on a new aidenhq/setup-<sha> branch no one else has moved, and its PR (an earlier setup PR is
+//                closed). Answers {pending, write} while the record waits.
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
 // and the same answer (its bundle: every branch), and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
@@ -173,9 +174,6 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = [], set
   }
   if (op === "comment") return { number: int(b.number, "number"), body: text(b.body, "body", 65_000), ...(b.id == null ? {} : { id: int(b.id, "id") }) };
   if (op === "setup") {
-    const branch = String(b.branch ?? ""), tip = b.expected_tip ?? null;
-    if (!REF.test(branch) || !/^aidenhq\/[\w.-]{1,80}$/.test(branch)) throw fail(400, "branch is aidenhq/<name>");
-    if (tip !== null && !/^[0-9a-f]{40}$/.test(String(tip))) throw fail(400, "expected_tip is a full commit sha, or null for a new branch");
     const entries = b.files && typeof b.files === "object" && !Array.isArray(b.files) ? Object.entries(b.files as Record<string, unknown>) : [];
     if (!entries.length || entries.length > 8) throw fail(400, "files is 1 to 8 paths");
     const allowed = setupPaths.map((g) => new RegExp(`^${g.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[\\w.-]+")}$`));
@@ -189,7 +187,7 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = [], set
     if (Buffer.byteLength(JSON.stringify(files)) > 800_000) throw fail(413, "the setup files are at most 800,000 bytes in all");
     const task = String(b.task ?? "");
     if (!/^[\w.:-]{1,100}$/.test(task)) throw fail(400, "task is the id of the task the setup's approval belongs to");
-    return { branch, expected_tip: tip, files, allow: setupPaths, title: text(b.title, "title", 200), body: text(b.body, "body", 20_000), task };
+    return { files, allow: setupPaths, title: text(b.title, "title", 200), body: text(b.body, "body", 20_000), task };
   }
   // commit
   const path = text(b.path, "path", 500), branch = String(b.branch ?? ""), parent = String(b.parent ?? "");

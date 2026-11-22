@@ -1,13 +1,12 @@
 {
-  "title": "github.setup: add these setup files on an aidenhq/ branch and open its PR.",
+  "title": "github.setup: add these setup files on a new aidenhq/setup-<sha> branch and open its PR.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["repo", "branch", "expected_tip", "files", "allow", "title", "body"],
+  "required": ["repo", "files", "allow", "title", "body"],
   "properties": {
     "repo": { "type": "string", "pattern": "^[\\w.-]+/[\\w.-]+$" },
-    "branch": { "type": "string", "pattern": "^aidenhq/[\\w.-]{1,80}$" },
+    "base": { "type": "string", "pattern": "^[\\w./-]{1,255}$", "description": "The default branch the setup was reviewed against (the plan binds it)." },
     "base_head": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "expected_tip": { "pattern": "^[0-9a-f]{40}$", "description": "The branch's tip, or null for a new branch (no type: the kernel's validator takes one type; the executor checks sha-or-null)." },
     "files": {
       "type": "object",
       "minProperties": 1,

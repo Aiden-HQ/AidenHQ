@@ -121,22 +121,19 @@ test("dot-only repo segments and hostile refs never reach the code host", async 
   assert.equal(seen.length, 0);
 });
 
-test("setup passes only the grant's paths, an aidenhq/ branch and the fields it names, to the code host", async (t) => {
+test("setup passes only the grant's paths and the fields it names, to the code host", async (t) => {
   const { call, seen } = await setup(t);
-  const body = { repo: "acme/widgets", branch: "aidenhq/deepsec-setup", expected_tip: null, files: { ".deepsec/data/w/INFO.md": "# w\n", ".deepsec/package.json": "{}" }, title: "Add deepsec", body: "Setup.", task: "T-1" };
+  const body = { repo: "acme/widgets", files: { ".deepsec/data/w/INFO.md": "# w\n", ".deepsec/package.json": "{}" }, title: "Add deepsec", body: "Setup.", task: "T-1" };
   assert.equal((await call("code-review", "setup", { ...body, files: { "src/a.ts": "x" } })).status, 403, "a path outside the grant");
   assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/../x/INFO.md": "x" } })).status, 403, "a glob star is one segment, never ..");
   assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/a/b/INFO.md": "x" } })).status, 403, "a glob star is one segment");
-  assert.equal((await call("code-review", "setup", { ...body, branch: "main" })).status, 400, "only aidenhq/ branches");
-  assert.equal((await call("code-review", "setup", { ...body, branch: "aidenhq/a/b" })).status, 400, "the record's one-segment branch shape");
-  assert.equal((await call("code-review", "setup", { ...body, expected_tip: "main" })).status, 400);
   assert.equal((await call("github", "setup", body)).status, 403, "no setup grant");
   assert.equal((await call("code-review", "setup", { ...body, task: undefined })).status, 400, "the task the approval belongs to");
   const big = "x".repeat(450_000);
   assert.equal((await call("code-review", "setup", { ...body, files: { ".deepsec/data/a/INFO.md": big, ".deepsec/data/b/INFO.md": big } })).status, 413, "800,000 bytes in all");
   assert.equal(seen.length, 0);
   assert.equal((await call("code-review", "setup", { ...body, base: "b".repeat(40), junk: 1 })).status, 200);
-  assert.deepEqual(seen.at(-1).body, { module: "code-review", repo: "acme/widgets", branch: "aidenhq/deepsec-setup", expected_tip: null, files: body.files, allow: [".deepsec/data/*/INFO.md", ".deepsec/package.json"], title: "Add deepsec", body: "Setup.", task: "T-1" });
+  assert.deepEqual(seen.at(-1).body, { module: "code-review", repo: "acme/widgets", files: body.files, allow: [".deepsec/data/*/INFO.md", ".deepsec/package.json"], title: "Add deepsec", body: "Setup.", task: "T-1" });
 });
 
 test("a file read needs the evidence grant and a listed path; the general read never reaches it", async (t) => {
