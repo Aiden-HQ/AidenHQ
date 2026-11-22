@@ -28,10 +28,10 @@
 // its file or base image lists) is a printed warning, not a failure (the gates fail open); a pin the registry contradicts (an action's tag is another commit) fails.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
+import { DAY, fetchRetry, parseImage, publishedAt, readExceptions } from "./best-version.ts";
 import type { Exception, FetchError } from "./best-version.ts";
 
-export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string; raced?: boolean }
+export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string; raced?: boolean; suiteAlias?: boolean; codename?: string }
 // Apt repository state. `files` are the source files the stage has (each used for dating, and whether it was removed);
 // `entries` holds the repositories, one string per `deb` line and one `url suite component` per Deb822 stanza, filed
 // under the source file it was written to (`undefined` for a line naming no file, which accumulates); `added` is whether
@@ -107,7 +107,7 @@ function numericRelease(part: string, distro: string, numbers: Map<string, strin
   const fields = part.split(".");
   return numbers.get(distro === "debian" ? fields[0]! : fields.slice(0, 2).join("."));
 }
-function baseDistro(ref: string): { distro: string; release: string } | undefined {
+function baseDistro(ref: string): { distro: string; release: string; suiteAlias?: boolean } | undefined {
   const { host, repo, tag } = parseImage(ref);
   if (!tag || !repo.startsWith("library/")) return undefined;
   // A Map, not an object: an image named `constructor` or `__proto__` must read as an unknown image, not Object.prototype.
@@ -115,7 +115,7 @@ function baseDistro(ref: string): { distro: string; release: string } | undefine
   if (!entry) return undefined;
   const [distro, codenames, numbers] = entry;
   for (const part of tag.split("-")) {
-    if (DISTRO_ALIASES.get(distro)?.has(part)) return { distro, release: part };
+    if (DISTRO_ALIASES.get(distro)?.has(part)) return { distro, release: part, suiteAlias: true };
     if (codenames.includes(part)) return { distro, release: part };
     const release = numericRelease(part, distro, numbers);
     if (release) return { distro, release };
@@ -1148,12 +1148,34 @@ async function datePin(p: Pin) {
  * passed over only when it was read and doesn't list the version; any other error (a repository that can't be read)
  * fails, so a lookup failure on the file's own repository never falls through to dating the package from somewhere else.
  */
-export async function dateApt(p: Pin, lookup: typeof publishedAt = publishedAt) {
+// What a Debian suite alias names right now: the alias is what Debian's archive resolves server-side, but a file's own
+// repository expands `$VERSION_CODENAME` to the codename, so the two must not be confused. Read once per alias per run;
+// an unreadable Release file leaves the alias in place, which keeps the previous behaviour rather than inventing one.
+const aliasCodenames = new Map<string, Promise<string>>();
+function aliasCodename(alias: string): Promise<string> {
+  if (!aliasCodenames.has(alias)) {
+    aliasCodenames.set(alias, (async () => {
+      const r = await fetchRetry(`http://deb.debian.org/debian/dists/${alias}/Release`, { timeout: 30000 });
+      const m = /^Codename:\s*(\S+)\s*$/m.exec(await r.text());
+      if (!m) throw new Error(`dists/${alias}/Release names no Codename`);
+      return m[1]!;
+    })().catch((e) => { aliasCodenames.delete(alias); throw e; }));
+  }
+  return aliasCodenames.get(alias)!;
+}
+
+export async function dateApt(p: Pin, lookup: typeof publishedAt = publishedAt, codenameOf: (alias: string) => Promise<string> = aliasCodename) {
   const release = p.release ?? DEFAULT_RELEASE;
-  // A raced source file may end up holding any one of the repositories its commands wrote, so a version it lists must
-  // be old enough in every one of them: the newest publication date across the file's sources is the one that counts.
-  // Otherwise a version a losing stage writes (dated 30 days ago there) would pass on a winner's yesterday record.
-  const own = p.sources!.map((s) => onRelease(s, release, p.distro));
+  // Only a file's own sources need this, and only when the base named a suite alias rather than a codename.
+  if (p.suiteAlias && p.sources?.length) {
+    p = { ...p };
+    try { p.codename = await codenameOf(release); } catch { /* unreadable: fall back to the alias, as before */ }
+  }
+  // `stable` and `testing` are Debian suite names, not codenames: Debian's own archive resolves them, but a third-party
+  // repository writing `$VERSION_CODENAME` means the codename (`trixie`), never the alias. So a file's own sources are
+  // expanded with the codename the alias names today (read from Debian's Release file, cached per alias), while Debian's
+  // pockets keep the alias and let the server resolve it.
+  const own = p.sources!.map((s) => onRelease(s, p.suiteAlias ? p.codename ?? release : release, p.distro));
   let newest: Awaited<ReturnType<typeof publishedAt>> | undefined;
   for (const source of [...own, ...distroSources(release, p.distro)]) {
     // Only the file's own sources are race candidates; the distro's pockets are where a pin is dated when none of them

@@ -119,6 +119,23 @@ test("pins: a moving Debian suite alias is dated from that alias, not a codename
     assert.deepEqual(tried, [`http://deb.debian.org/debian ${release} main`], base);
   }
 
+  // A file's own repository writes `$VERSION_CODENAME`, which means the codename the alias names today — never the
+  // alias. Expanding it to `stable` would query a suite a third-party repository does not publish, so the codename is
+  // read from Debian's Release file and used only for the custom source; Debian's own pocket keeps the alias.
+  const custom = `FROM debian:stable-slim${d}\nRUN echo "deb [trusted=yes] https://repo.example/apt $VERSION_CODENAME main" >/etc/apt/sources.list.d/r.list\nRUN apt-get install -y tool=2.0\n`;
+  const [withSource] = scanFile("Dockerfile", custom).pins.filter((x) => x.kind === "apt");
+  assert.deepEqual([withSource.distro, withSource.release], ["debian", "stable"]);
+  const order: string[] = [];
+  await dateApt(withSource, async (_k, _n, { source }) => { order.push(source); throw Object.assign(new Error("not listed"), { notListed: true }); },
+    async (alias) => { assert.equal(alias, "stable"); return "trixie"; }).catch(() => {});
+  // The custom source is the codename; Debian's own pockets keep the alias for the server to resolve.
+  assert.deepEqual(order, [
+    "https://repo.example/apt trixie main",
+    "http://deb.debian.org/debian stable main",
+    "http://deb.debian.org/debian stable-updates main",
+    "http://deb.debian.org/debian stable-security main",
+  ]);
+
   // A numeric suite tag is that suite: `debian:12` is bookworm and `ubuntu:24.04` is noble, so neither falls to the
   // default. Without this a Debian 12 stage was dated from Ubuntu's noble pockets — the same mis-dating the FROM base fixes.
   // A point release keeps its suite: Debian by its major (`12.7`), Ubuntu by its year.minor (`24.04.1`).
