@@ -1369,12 +1369,14 @@ export function createEngine(d: EngineDeps) {
     const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
     // No mandatory on_push: a later head needs no review of its own, only a PR never reviewed by a mandatory combo gets one.
     if (openOnly(cfg)) {
-      // Its opening review lacks a mandatory run (a push superseded one): the newest head gets the mandatory combos (as a batch of
-      // its own, so the push's queued advice stays). One such batch still queued for an older head is superseded first.
+      // Its opening review lacks a mandatory run (a push superseded one): the newest head gets each such combo (as a batch of its
+      // own, so the push's queued advice stays); none at all yet (a PR open when its repo became gated): every mandatory combo. One
+      // such batch still queued for an older head is superseded first.
       for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head != ? AND mandatory = 1 AND kind = 'command' AND COALESCE(moment, 'open') = 'open' AND status = 'queued'", p.repo, p.number, p.head)) skipQueued(q.id, "superseded: a newer push");
-      if (!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' AND status != 'skipped'", p.repo, p.number)
-        && !one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND status IN ('queued', 'running')", p.repo, p.number))
-        queue(p, cfg.on_open.filter((c) => c.mandatory), "command", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open" });
+      if (one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND status IN ('queued', 'running')", p.repo, p.number)) return;
+      const opening = gateRuns(cfg, p.repo, p.number, p.head).filter((r) => (r.moment ?? "open") === "open");
+      const lacking: Combo[] = opening.length ? opening.filter((r) => r.status === "skipped").map((r) => ({ engine: r.engine as Combo["engine"], model: r.model, effort: r.effort, mandatory: true })) : cfg.on_open.filter((c) => c.mandatory);
+      if (lacking.length) queue(p, lacking, "command", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open" });
       return;
     }
     if (!mandatory(p.head)) trigger(cfg, p, pushed(p) && mandatory() ? "push" : "open");
