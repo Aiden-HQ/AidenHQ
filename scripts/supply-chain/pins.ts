@@ -102,7 +102,9 @@ const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
 // that ends up empty adds no repository.
 interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none" }
 const REDIRECT = /(?:^|[^>])(\d*)(>>?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g;
-const stdoutRedirected = (text: string) => [...text.replace(/\d*>&\d+/g, " ").matchAll(REDIRECT)].some((m) => m[1] !== "2");
+// Only fd 1 (a bare `>` or `1>`) takes a command's stdout away; `2>` and `3>` name other descriptors.
+const takesStdout = (fd: string) => fd === "" || fd === "1";
+const stdoutRedirected = (text: string) => [...text.replace(/\d*>&\d+/g, " ").matchAll(REDIRECT)].some((m) => takesStdout(m[1]!));
 // A command's own words, with quoted text blanked: `echo '… rm /etc/apt/sources.list.d/x'` prints a message, it does
 // not remove anything.
 const unquoted = (s: string) => s.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
@@ -129,16 +131,33 @@ function writtenFiles(segment: string): Written[] {
   // A command's stdout goes to the last `>` it names, and every `>` before that one truncates its own file: `echo … >
   // vendor.list > /tmp/log` empties vendor.list and writes the line only to the log.
   const redirects = [...clean.matchAll(REDIRECT)];
-  // A `|` starts a new command, and each command's stdout is its own: `a > f | b > g` writes `a`'s output to f.
+  // A `|` starts a new command, and each command's stdout is its own: `a > f | b > g` writes `a`'s output to f, and
+  // only the stage a redirect is in says what reaches it — `echo 'deb …' > /tmp/x | cat > vendor.list` fills vendor.list
+  // from `cat`, which receives nothing.
   const pipes = [...clean.matchAll(/\|/g)].map((m) => m.index!);
+  // A command that copies its input verbatim and names no file to read: its stdin, so what the pipe carries may hold a
+  // repository and its output is unknown rather than known-empty. `cat /tmp/x` reads that file instead.
+  const COPIES = /^\s*(?:(?:sudo\s+)?cat|dd|tee)(?:\s+-\S+)*\s*$/;
+  const stage = (i: number) => {
+    const at = redirects[i]!.index!;
+    return clean.slice((pipes.filter((p) => p < at).at(-1) ?? -1) + 1, pipes.find((p) => p > at) ?? clean.length);
+  };
   const outlived = (i: number) => {
     const end = pipes.find((p) => p > redirects[i]!.index!) ?? clean.length;
-    // Only a stdout redirect (no descriptor, or `1>`) takes the output away; `2>` and `3>` name other descriptors.
-    return redirects.slice(i + 1).some((n) => (n[1] === "" || n[1] === "1") && n.index! < end);
+    return redirects.slice(i + 1).some((n) => takesStdout(n[1]!) && n.index! < end);
   };
   redirects.forEach((m, i) => {
     const append = m[2] === ">>";
-    const content: Written["content"] = m[1] === "2" ? "unknown" : outlived(i) ? append ? "none" : "empty" : "deb";
+    // The stage's words, with its redirections cut out: `cat > f` is `cat`, `echo > f` is not a copier.
+    const text = stage(i).replace(REDIRECT, (_w: string) => (_w.startsWith(">") ? "" : _w[0]!)).trim();
+    const pipe = clean.slice(0, redirects[i]!.index!).lastIndexOf("|");
+    const producer = pipe >= 0 ? clean.slice(clean.lastIndexOf("|", pipe - 1) + 1, pipe) : "";
+    // The file a command's own output reaches carries that command's `deb` line. A copier in a later stage is different:
+    // what it writes is what the pipe gives it, so it holds a repository only when its producer's stdout reached the pipe.
+    const content: Written["content"] = m[1] === "2" ? "unknown"
+      : outlived(i) ? (append ? "none" : "empty")
+      : COPIES.test(text) ? (producer.trim() && !stdoutRedirected(producer) ? "unknown" : append ? "none" : "empty")
+      : "deb";
     add(unmask(strip(m[3]!)), append, content);
   });
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list

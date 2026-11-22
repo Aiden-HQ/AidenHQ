@@ -358,6 +358,17 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   // the install after `;` may still see the repository.
   const chainEnd = `FROM debian:bookworm${d}\nRUN ${write}\nRUN test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list; apt-get install -y foo\n`;
   assert.equal(scanFile("Dockerfile", chainEnd).problems.length, 1);
+  // Only fd 1 takes a command's stdout, here too: `echo … 3> /tmp/log | tee vendor.list` still feeds `tee`, so the
+  // repository exists and the next install must be pinned.
+  const fdPipe = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' 3> /tmp/log | tee /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", fdPipe).problems.length, 1);
+  // A later pipeline stage owns its own redirect: `echo … > /tmp/x | cat > vendor.list` gives `cat` nothing, so the file
+  // is empty and a following install needs no pin — while a `cat` fed by a producer that did write its stdout does hold
+  // whatever that producer wrote.
+  const drained = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' > /tmp/tmp.list | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.deepEqual(scanFile("Dockerfile", drained).problems, []);
+  const carried = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", carried).problems.length, 1);
   // A quoted `;` or `&&` is text: it does not start a new command, so a message naming `rm` removes nothing.
   for (const message of [`echo 'note; rm -f /etc/apt/sources.list.d/vendor.list'`, `echo 'test && rm -f /etc/apt/sources.list.d/vendor.list'`])
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${message}\nRUN apt-get install -y foo\n`).problems.length, 1, message);
