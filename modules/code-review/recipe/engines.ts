@@ -452,7 +452,7 @@ const BUDGET = 150_000;
  * The patch a review reads, made here and handed to the model, so coverage holds by construction: git's own diff of each reviewed file
  * from `base` to the checkout's head (no renames, textconv or external diff; deletions and mode changes keep their headers), packed
  * whole-file into requests of at most `budget` characters. A file over the budget is split at hunk boundaries, its header repeated
- * in each part; a hunk that alone is over it, or a file git gave no patch for, is not delivered and comes back in `oversize` (path and why).
+ * in each part; a hunk that alone is over it, a patch with no hunk to split at, or a file git gave no patch for, is not delivered and comes back in `oversize` (path and why).
  */
 export function patchGroups(root: string, base: string, files: string[], budget = BUDGET) {
   const groups: { text: string; files: string[] }[] = [];
@@ -470,6 +470,7 @@ export function patchGroups(root: string, base: string, files: string[], budget 
     if (!patch) { oversize.push(`${path} (no patch could be made for it)`); continue; }
     if (patch.length <= budget) { add(patch.endsWith("\n") ? patch : `${patch}\n`, path); continue; }
     const [head = "", ...hunks] = patch.split(/^(?=@@ )/m);
+    if (!hunks.length) { oversize.push(`${path} (a patch of ${patch.length} characters with no hunk to split at)`); continue; }
     let part = head, any = false;
     for (const h of hunks) {
       if (head.length + h.length > budget) { oversize.push(`${path} (a hunk of ${h.length} characters)`); continue; }
@@ -514,7 +515,15 @@ async function codexNative({ instructions, model, effort, root, files, minutes, 
     const v = nativeReview(rollouts);
     // A group is delivered when its turn completed and its verdict parsed (codex leaves overall_correctness empty when the model's answer didn't).
     const done = r.code === 0 && events.some((e) => e.type === "turn.completed") && !!v && ["patch is correct", "patch is incorrect"].includes(String(v.overall_correctness));
-    if (done) { ok++; findings.push(...nativeFindings(v!, roots)); continue; }
+    if (done) {
+      ok++;
+      const got = nativeFindings(v!, roots), said = v!.findings?.length ?? 0;
+      findings.push(...got);
+      // A verdict of "incorrect" with nothing usable to show for it, or findings that couldn't be placed, is not a clean part.
+      if (v!.overall_correctness === "patch is incorrect" && !got.length) failed.push(`part ${i + 1} of ${groups.length}: the verdict says the patch is incorrect, with no finding that could be read`);
+      else if (got.length < said) failed.push(`part ${i + 1} of ${groups.length}: ${said - got.length} finding${said - got.length === 1 ? "" : "s"} without a usable location`);
+      continue;
+    }
     const said = events.filter((e) => e.type === "error" || e.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
     failed.push(`part ${i + 1} of ${groups.length} (${g.files.slice(0, 3).join(", ")}${g.files.length > 3 ? ", …" : ""}): ${r.code === 0 && !r.timedOut ? "codex review gave no review" : stopped(r, said)}`);
   }

@@ -26,9 +26,9 @@ function codexDir() {
 }
 
 /** A model endpoint that records each request and answers with a review (a verdict of "patch is correct"), or fails the ones in `fail`. */
-async function endpoint(fail: number[] = [], found?: string) {
+async function endpoint(fail: number[] = [], found?: string, verdictOverride?: object) {
   const requests: any[] = [];
-  const verdict = JSON.stringify({ findings: found ? [{ title: "[P1] it breaks", body: "Failure scenario: a(1) returns 2", confidence_score: 0.9, priority: 1, code_location: { absolute_file_path: found, line_range: { start: 1, end: 1 } } }] : [], overall_correctness: found ? "patch is incorrect" : "patch is correct", overall_explanation: "ok", overall_confidence_score: 0.9 });
+  const verdict = JSON.stringify(verdictOverride ?? { findings: found ? [{ title: "[P1] it breaks", body: "Failure scenario: a(1) returns 2", confidence_score: 0.9, priority: 1, code_location: { absolute_file_path: found, line_range: { start: 1, end: 1 } } }] : [], overall_correctness: found ? "patch is incorrect" : "patch is correct", overall_explanation: "ok", overall_confidence_score: 0.9 });
   const server = http.createServer((req, res) => {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
       requests.push(JSON.parse(b || "{}"));
@@ -50,7 +50,7 @@ function repoWith(files: Record<string, (v: number) => string>) {
   sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t"); sh(repo, "config", "commit.gpgsign", "false"); sh(repo, "config", "tag.gpgsign", "false");
   for (const v of [0, 1]) {
     for (const [p, make] of Object.entries(files)) { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), make(v)); }
-    sh(repo, "add", "."); sh(repo, "commit", "-qm", `v${v}`);
+    sh(repo, "add", "."); sh(repo, "commit", "-q", "--allow-empty", "-m", `v${v}`);
     if (!v) sh(repo, "tag", "base");
   }
   return { dir, repo, base: sh(repo, "rev-parse", "base") };
@@ -151,4 +151,23 @@ test("self-review exits 2 when some part of the patch could not be reviewed, wha
     assert.match(r.stdout, new RegExp(`^self-review: branch ${branch} base \\w+ \\(merge base\\) head \\w+: incomplete$`, "m"));
     assert.equal((await run("main", "some-other-branch")).status, 2, "a branch that isn't checked out is not reviewed");
   } finally { model.close(); }
+});
+
+test("a verdict of incorrect with no finding to show for it is incomplete, not clean", { timeout: 240_000 }, async (t) => {
+  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n` });
+  const model = await endpoint([], undefined, { findings: [], overall_correctness: "patch is incorrect", overall_explanation: "x", overall_confidence_score: 0.9 });
+  try {
+    const r = await review(repo, base, ["s.txt"], model);
+    if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
+    assert.match(String(r.incomplete), /part 1 of 1: .*(incorrect|usable location)/);
+  } finally { model.close(); }
+});
+
+test("a patch with no hunk to split at, over the budget, is named, not cut or dropped", () => {
+  const { repo } = repoWith({ "x.sh": () => "echo\n" });
+  const base = sh(repo, "rev-parse", "HEAD");
+  sh(repo, "update-index", "--chmod=+x", "x.sh"); sh(repo, "commit", "-qm", "mode");
+  const g = patchGroups(repo, base, ["x.sh"], 20);
+  assert.deepEqual(g.groups, []);
+  assert.match(g.oversize[0]!, /^x\.sh \(a patch of \d+ characters with no hunk to split at\)$/);
 });
