@@ -5,7 +5,7 @@
 // GitHub's secondary limit, as its guidance asks, but only inside the write's budget: the writes of one tool invocation share
 // one 240 s budget, fixed when the invocation starts so its own reads spend it too (below the kernel's 300 s allowance), and a
 // write that cannot start in what is left fails at once, `rate_limited` (with its `until`) or `write_busy` for a queue that is
-// too deep.
+// too deep. A background write (a job's) is not on that clock and keeps waiting a limit out, as before.
 // Typed needs name the cause and the one fix: a refusal the owner can fix (connect, reconnect, a scope, an org's SSO or app
 // restriction) is needs_owner (vendor/needs.ts), which the kernel routes to the owner or the digest. The token never leaves this
 // process: token() is for git children here only, and no answer carries it.
@@ -238,8 +238,9 @@ export function createAccess(o: {
     return undefined;
   }
 
-  /** Whether an attempt that can only start at `at` still sees its 30 s through inside the write's budget. */
-  const fits = (deadline: number, at = now()) => at + ATTEMPT_TIMEOUT_MS <= deadline;
+  /** Whether an attempt that can only start at `at` still sees its 30 s through inside the write's budget. A background
+   * write has no deadline: it is a job, not a tool call, so it may wait as long as it must (as it always has). */
+  const fits = (deadline: number | undefined, at = now()) => deadline === undefined || at + ATTEMPT_TIMEOUT_MS <= deadline;
 
   /** Fails a write that cannot start in budget: the real limit when one blocks it, the queue when that is the reason. */
   function noBudget(): never {
@@ -251,8 +252,9 @@ export function createAccess(o: {
     if (!createsContent(method, path, body)) return attempt(method, path, body, resource, background, accept);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
-    // tool call, each write gets its own.
-    const deadline = invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS;
+    // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
+    // the patience it always had and waits a limit out, inside the queue like every other write.
+    const deadline = background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS;
     return queued(deadline, () => paced(deadline, () => attempt(method, path, body, resource, background, accept, deadline)));
   }
 
@@ -260,7 +262,7 @@ export function createAccess(o: {
    * still queued at the deadline fails there and is marked dead (the pre-attempt check keeps it from being sent), so no write
    * lands after its caller was told it failed. Once the entry takes its turn, its own budget checks and its fetch's 30 s
    * timeout govern it: the timer never reports a failure for a request already in flight, which GitHub may have completed. */
-  function queued<T>(deadline: number, go: () => Promise<T>): Promise<T> {
+  function queued<T>(deadline: number | undefined, go: () => Promise<T>): Promise<T> {
     let expired = false;
     let cancel = () => {};
     const run = writeTail.then(() => {
@@ -269,6 +271,8 @@ export function createAccess(o: {
       return go();
     });
     writeTail = run.catch(() => {});
+    // A background write has no deadline, so nothing to expire it.
+    if (deadline === undefined) return run.finally(() => cancel());
     const expiry = new Promise<never>((_, reject) => {
       cancel = timer(Math.max(deadline - now(), 0), () => {
         expired = true;
@@ -279,7 +283,8 @@ export function createAccess(o: {
     return Promise.race([run, expiry]).finally(() => cancel());
   }
 
-  async function paced<T>(deadline: number, go: () => Promise<T>): Promise<T> {
+
+  async function paced<T>(deadline: number | undefined, go: () => Promise<T>): Promise<T> {
     for (;;) {
       const until = Math.max(lastWriteEnd + WRITE_GAP_MS, writeBlockedUntil);
       const wait = until - now();

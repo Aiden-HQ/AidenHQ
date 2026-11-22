@@ -292,6 +292,24 @@ it("a background write still sleeps out the reserve instead of failing", async (
   expect(post.at).toBeGreaterThanOrEqual((reset + 60) * 1000);
 });
 
+it("a background write retries a limit that outlasts the tool budget instead of failing", async () => {
+  let clock = 1_000_000;
+  let calls = 0;
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    // A 300 s secondary-limit refusal: past the tool invocation's 240 s budget, but a background job has no such clock.
+    fetchImpl: async () => {
+      calls++;
+      return calls === 1 ? answer(403, { message: "secondary rate limit" }, { "retry-after": "300" }) : answer(201, {});
+    },
+  });
+  expect(await access.rest("POST", "/repos/acme/api/issues", { title: "t" }, { background: true })).toMatchObject({ status: 201 });
+  expect(calls).toBe(2);
+  expect(clock).toBeGreaterThanOrEqual(1_300_000);
+});
+
 it("a write retried inside the budget that meets the budget edge fails there as rate_limited, sending nothing again", async () => {
   let clock = 1_000_000;
   let calls = 0;
