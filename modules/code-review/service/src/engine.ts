@@ -20,7 +20,7 @@
 // A repo review (a batch whose target is a tree: a whole repo at one commit, resolved once when it is asked for) runs on the same
 // lifecycle: its catalog options as runs of one batch, in sequence: the tools check (the selected tool options together,
 // token-free) first, then each model option as its own check. Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
-// Primer (one document per repo, a version per review) and is served to the board. deepsec's set-up files from a run are asked
+// Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
 // its own. Everything here is off until settings.code_review.lenses is on.
@@ -155,7 +155,6 @@ CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha TEXT NOT NULL, options TEXT NOT NULL, combo TEXT NOT NULL,
   status TEXT NOT NULL, verdict TEXT, report TEXT, report_url TEXT, report_version INTEGER, report_why TEXT, created INTEGER NOT NULL, ended TEXT,
   author TEXT NOT NULL DEFAULT '', deepsec INTEGER NOT NULL DEFAULT 0, setup_tip TEXT, setup_files TEXT, report_write TEXT);
-CREATE TABLE IF NOT EXISTS documents (repo TEXT PRIMARY KEY, document TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS setups (repo TEXT PRIMARY KEY, asked INTEGER NOT NULL, answer TEXT);
 -- Who asked for a one-off review: their task and the agent or owner's name, and the runs their own request was answered with
 -- (its run set: the same ask twice by two askers shares them, and each hears the summary of the runs it asked for).
@@ -167,7 +166,7 @@ CREATE TABLE IF NOT EXISTS askers (batch TEXT NOT NULL, task TEXT NOT NULL DEFAU
 CREATE TABLE IF NOT EXISTS replies (repo TEXT NOT NULL, number INTEGER NOT NULL, finding TEXT NOT NULL, body TEXT NOT NULL, write TEXT, tries INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL, PRIMARY KEY (repo, number, finding));`;
 /** The data's format (module.yaml data_version), migrated forward at start. 1: combos and findings; a database from before starts
  * fresh (its runs, its PRs and today's spend counts are dropped: the first look at each repo then records what is open, as on a new
- * install). 2: repo reviews (batches, documents, setups; runs' target, option and profile) and findings per option observation
+ * install). 2: repo reviews (batches, setups; runs' target, option and profile) and findings per option observation
  * (their key gains the option): a version 1 database keeps every run, review and finding. */
 export const DATA_VERSION = 2;
 
@@ -545,7 +544,7 @@ export function createEngine(d: EngineDeps) {
       const boxed = r.engine === "deepsec" && b.setup_files ? Object.fromEntries(Object.entries(JSON.parse(b.setup_files) as Record<string, string>).filter(([p]) => BOX_SETUP.test(p))) : {};
       const fits = JSON.stringify(boxed).length <= SETUP_FILES_MAX;
       if (!fits) log("deepsec's setup files are too big for a check's spec: it sets up itself", { run: r.id });
-      const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", profile: tools ? "code-review-tools" : "code-review",
+      const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: tools ? "code-review-tools" : "code-review",
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skill: o.run.skill } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
         ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}),
@@ -602,8 +601,8 @@ export function createEngine(d: EngineDeps) {
       const bound = String(v.repo ?? "").toLowerCase() === r.repo && v.head === r.head && Array.isArray(v.findings) && (r.target === "tree" || (v.pr === r.number && v.base === r.merge_base));
       if (!bound) res = { state: "failed", why: "the review's result isn't for this run (repo, PR, head or base differ)", billed_usd: res.billed_usd };
       // A repo review's findings come from many tools' mappers: one not in the shared shape fails the run with that reason.
-      else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string"))
-        res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title)", billed_usd: res.billed_usd };
+      else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string" && (f.end_line === undefined || Number.isInteger(f.end_line)) && ["why", "evidence", "fix_brief", "option", "lens"].every((k) => (f as Record<string, unknown>)[k] === undefined || typeof (f as Record<string, unknown>)[k] === "string")))
+        res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title, and its optional text and end line)", billed_usd: res.billed_usd };
       else if (r.target === "tree" && !treeCoverageOk(v.coverage, r, v.withheld))
         res = { state: "failed", why: "the review's result isn't for this run: its coverage or withheld counts aren't in the shared shape", billed_usd: res.billed_usd };
       // A tools run's findings each name one of the options it was asked for (a box's word for another's is no word at all).
@@ -765,10 +764,9 @@ export function createEngine(d: EngineDeps) {
    */
   async function publishReport(id: string) {
     const b = batchRow(id)!;
-    const doc = one<{ document: string }>("SELECT document FROM documents WHERE repo = ?", b.repo)?.document;
     try {
       // The note names the batch: a write that threw is read back by it, and no other review's note can stand for this one.
-      const o = await d.publisher.file({ repo: b.repo, title: `Repo review: ${b.repo}`, content: b.report!, ...(doc ? { documentId: doc } : {}), versionNote: `${b.sha.slice(0, 7)} ${b.id}` });
+      const o = await d.publisher.file({ repo: b.repo, title: `Repo review: ${b.repo}`, content: b.report!, versionNote: `${b.sha.slice(0, 7)} ${b.id}` });
       run("UPDATE batches SET report_write = ? WHERE id = ?", o.write, id);
       published(id, o);
     } catch (e) {
@@ -785,7 +783,6 @@ export function createEngine(d: EngineDeps) {
       log("repo review report not published to Primer", { batch: id, why: String(o.why ?? "").slice(0, 200) });
       return void run("UPDATE batches SET report_write = NULL, report_why = ? WHERE id = ?", `not in Primer: ${String(o.why ?? "refused").slice(0, 300)}`, id);
     }
-    run("INSERT INTO documents (repo, document) VALUES (?, ?) ON CONFLICT (repo) DO UPDATE SET document = excluded.document", b.repo, o.documentId!);
     // report_url is "" for a report Primer took without a link: published, so never sent again.
     run("UPDATE batches SET report_write = NULL, report_url = ?, report_version = ? WHERE id = ?", o.url ?? "", o.version ?? null, id);
   }
@@ -1385,8 +1382,8 @@ export function createEngine(d: EngineDeps) {
         else live.delete(r.id);
       }
     }
-    for (const b of all<{ id: string; report_write: string; document: string | null }>("SELECT id, report_write, (SELECT document FROM documents d WHERE d.repo = batches.repo) document FROM batches WHERE report_write IS NOT NULL"))
-      published(b.id, await d.publisher.outcome(b.report_write, b.document ?? undefined).catch(() => ({ state: "pending" as const, write: b.report_write })));
+    for (const b of all<{ id: string; report_write: string }>("SELECT id, report_write FROM batches WHERE report_write IS NOT NULL"))
+      published(b.id, await d.publisher.outcome(b.report_write).catch(() => ({ state: "pending" as const, write: b.report_write })));
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'done' AND report IS NOT NULL AND report_write IS NULL AND report_url IS NULL AND report_why IS NULL")) await publishReport(b.id);
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
@@ -1767,9 +1764,14 @@ export function createEngine(d: EngineDeps) {
       const picked = available.filter((o) => ids.includes(o.id));
       // The effort each model option's engine takes (recipe/engines.ts: deepsec up to xhigh; a skill runs on its harness), checked now, not when its run is refused.
       for (const o of picked.filter((o) => o.kind !== "tool")) {
-        const efforts: readonly string[] = o.kind === "engine" ? DEEPSEC_EFFORTS : (ENGINES[o.run.harness as keyof typeof ENGINES]?.efforts ?? []);
+        const key = o.kind === "engine" ? o.run.engine : o.run.harness;
+        const efforts: readonly string[] = key === "deepsec" ? DEEPSEC_EFFORTS : (ENGINES[key as keyof typeof ENGINES]?.efforts ?? []);
         if (!efforts.includes(combo.effort as string)) throw new RequestError(`${o.id} takes an effort of ${efforts.join(", ")}, not ${String(combo.effort)}`);
       }
+      const asBatch = (batch: string) => ({ batch, repo, sha: tree.sha, options: ids, runs: all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", batch).map((r) => view(r)) });
+      // The same review asked again while it runs (a request the board gave up on, asked once more) is that review, never a second one.
+      const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(combo));
+      if (same) return asBatch(same.id);
       const id = `b-${randomBytes(6).toString("hex")}`;
       const author = String(b.author ?? "").toLowerCase().slice(0, 100);
       // deepsec scans when the commit has any of its files; else a pending setup branch's files (its PR not merged yet) are scanned with.
@@ -1784,7 +1786,7 @@ export function createEngine(d: EngineDeps) {
         if (tools.length) add("tools", "", "", tools.join(","), "code-review-tools");
         for (const o of picked.filter((o) => o.kind !== "tool")) add(o.kind === "engine" ? String(o.run.engine ?? o.id) : `skill:${o.id}`, combo.model as string, combo.effort as string, o.id, "code-review");
       });
-      return { batch: id, repo, sha: tree.sha, options: ids, runs: all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => view(r)) };
+      return asBatch(id);
     },
     /** Repo reviews, newest first (the board's TreeBatch): commit, spend, status and why, and once ended the verdict, the report
      * the service serves and its Primer document. */

@@ -38,7 +38,7 @@ check_jobs:
     title: the code review
     # target: pr, or tree (a whole repo at head: pr is empty and base is the head); option and lens: a catalog option's (empty
     # for a combo); setup_files: a pending deepsec setup branch's files ({} for none).
-    spec: { base: sha, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, intent: text }
+    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, intent: text }
     model: true
     result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
@@ -48,7 +48,7 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/tools.ts ]
     timeout_min: 180
     title: the code review tools
-    spec: { base: sha, options: json }
+    spec: { base: sha, options: json, run: text }
     result: true
 # Flow (docs/design/flow.md): one started and one ended fact per review run (version: the run id) on its PR.
 facts:

@@ -69,9 +69,10 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   const tree = s.target === "tree";
   const base = tree ? s.head : s.merge_base;
-  if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}) };
+  // `run` keeps two reviews of one commit with one spec apart (the kernel reuses a check for an identical spec): empty for a PR run.
+  if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}), run: s.run ?? "" };
   return {
-    base, incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
+    base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
     option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
@@ -296,7 +297,8 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
         if (code === 0 || /Not found in archive/.test(err)) resolve(Buffer.concat(chunks).toString("utf8"));
         else reject(new Error(`the snapshot of ${repo} didn't unpack: ${err.trim().slice(0, 200) || `tar ${code}`}`));
       });
-      Readable.fromWeb(r.body as never).on("error", reject).pipe(t.stdin);
+      // A source that fails (the code host drops, a timeout) ends tar too, or it waits for the rest of the archive for good.
+      Readable.fromWeb(r.body as never).on("error", (e) => { t.kill("SIGKILL"); reject(e); }).pipe(t.stdin);
     });
     return { sha, value: read(out) };
   };

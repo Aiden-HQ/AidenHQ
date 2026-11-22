@@ -422,6 +422,7 @@ function BatchPage({ id, batch, onSignIn }: { id: string; batch: TreeBatch | und
         }
       />
       {batch && (batch.status === "failed" || batch.status === "skipped") && batch.why && <Banner tone="danger">{batch.why}</Banner>}
+      {batch && batch.status === "done" && batch.why && <Banner tone="warn">{batch.why}. The report is below.</Banner>}
       {error ? <Banner tone="danger">Couldn't load this report: {error}</Banner> : md === null ? <div className="rv-loading" aria-busy="true" /> : <Card className="rv-report"><Markdown text={md} prefix="" className="md" /></Card>}
     </Page>
   );

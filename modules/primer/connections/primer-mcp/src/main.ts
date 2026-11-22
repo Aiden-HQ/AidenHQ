@@ -10,7 +10,6 @@ import { fenceDigest } from "./digest.js";
 import { kernelClient } from "./kernel.js";
 import { getOwner, recordOwner } from "./owners.js";
 import { publisher } from "./publish.js";
-import { fileReports } from "./reports.js";
 import { replier } from "./reply.js";
 import { createSubscriber } from "./subscriber.js";
 import { connectorToken, tokenAuth } from "./token.js";
@@ -50,7 +49,7 @@ const makePrivate = async (documentId: string, title: string) => {
   await patchDoc(documentId, { visibility: "private" });
   await patchDoc(documentId, { title }).catch((e: Error) => log.warn({ err: e.message }, "the report document keeps its neutral title"));
 };
-const publish = publisher(send, undefined, { makePrivate, reports: fileReports(stateDir) });
+const publish = publisher(send, undefined, { makePrivate });
 const reply = replier(send);
 const executor = serviceKey
   ? serveExecutor(

@@ -78,6 +78,8 @@ export type ReviewSpec = {
   target: "pr" | "tree";
   /** The check job: `code-review` (one model option or combo, metered) or `code-review-tools` (the selected tool options, token-free). */
   profile: "code-review" | "code-review-tools";
+  /** A repo review run's id: part of its check's spec, so two reviews of one commit are two checks. */
+  run?: string;
   /** The tools run's selected tool options, as the recipe runs them (catalog.ts toolSpec). */
   tools?: Record<string, unknown>;
   /** A model option's catalog id and lens (stamped on its findings); none for a combo. */
@@ -170,11 +172,10 @@ export interface CodeHost {
   /** Asks for the deepsec setup PR (codehost.setup): github files its own Tier 1 write, on a new branch off the default branch's head, and closes an earlier setup PR. */
   setup(b: { repo: string; files: Record<string, string> }): Promise<unknown>;
 }
-/** A report to Primer (a `primer.publish` write record): a new private document, or a version of `documentId`; filed, then its outcome. */
-export type ReportIn = { repo: string; title: string; content: string; documentId?: string; versionNote: string };
+/** A report to Primer (a `primer.publish` write record): a new private document; filed, then its outcome. */
+export type ReportIn = { repo: string; title: string; content: string; versionNote: string };
 export type ReportOut = { state: "pending" | "done" | "refused"; write: string; documentId?: string; url?: string; version?: number; why?: string };
 export interface Publisher {
   file(r: ReportIn): Promise<ReportOut>;
-  /** `documentId`: the document the report was filed against (a version's answer may leave it out). */
-  outcome(write: string, documentId?: string): Promise<ReportOut>;
+  outcome(write: string): Promise<ReportOut>;
 }
