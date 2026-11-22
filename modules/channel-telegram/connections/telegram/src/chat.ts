@@ -47,6 +47,37 @@ export function fromTelegram(update: unknown, ownerChatId: string): ChatMessage 
   return { source: "telegram", text, forward: { from, date: f.date ? new Date(f.date * 1000).toISOString() : "unknown" } };
 }
 
+/** How often one unpaired chat is told how to pair again: enough to help a stranger, not enough to spam one. */
+export const UNPAIRED_NOTICE_MS = 10 * 60_000;
+export const UNPAIRED_NOTICE = "This bot isn't paired with AidenHQ yet. Open the board, then Settings, then the Telegram setup step, and tap its pairing link.";
+
+/**
+ * When the bot isn't paired, a private text message is answered once with how to pair it (and logged); nothing on this path
+ * reaches the kernel. Returns whether this update was such a message, and sends at most one notice per chat per
+ * UNPAIRED_NOTICE_MS, so a stranger writing over and over isn't answered each time.
+ */
+export async function answerUnpaired(
+  update: unknown,
+  send: (chatId: string, text: string) => Promise<unknown>,
+  log: { info: (fields: { chatId: string }, message: string) => void },
+  sent = new Map<string, number>(),
+  now = Date.now(),
+): Promise<boolean> {
+  const msg = rec(rec(update).message);
+  const chat = rec(msg.chat);
+  const text = str(msg.text) || str(msg.caption);
+  if (!text || chat.type !== "private" || (typeof chat.id !== "number" && typeof chat.id !== "string")) return false;
+  const chatId = String(chat.id);
+  const last = sent.get(chatId);
+  if (last !== undefined && now - last < UNPAIRED_NOTICE_MS) return false;
+  // Forget chats whose window has passed, so a stranger writing once from many chats can't grow the map forever.
+  for (const [id, at] of sent) if (now - at >= UNPAIRED_NOTICE_MS) sent.delete(id);
+  sent.set(chatId, now);
+  log.info({ chatId }, "unpaired chat messaged the bot; told how to pair");
+  await send(chatId, UNPAIRED_NOTICE).catch(() => undefined);
+  return true;
+}
+
 /** The message a voice note replies to, so it is routed like typed text. */
 export function voiceReplyTo(update: unknown): string | undefined {
   const id = rec(rec(rec(update).message).reply_to_message).message_id;
@@ -123,6 +154,8 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
   const tg = (method: string, body: unknown) =>
     fetch(`${base}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null);
   log.info("telegram polling started");
+  // One rate limiter for the whole poll: a fresh map per update would let every update through.
+  const unpairedSent = new Map<string, number>();
   // The "/" menu in Telegram.
   if (extras) await tg("setMyCommands", { commands: COMMANDS });
   for (;;) {
@@ -139,6 +172,9 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
           store.setKv("tg_offset", String(u.update_id + 1));
           continue;
         }
+        // Unpaired: a private chat is told how to pair (rate-limited), and nothing goes to the kernel. Not awaited: a slow send
+        // to a stranger must not hold up the owner's own pairing or chat.
+        if (!cfg.telegramChatId) void answerUnpaired(u, (chat_id, text) => tg("sendMessage", { chat_id, text }), log, unpairedSent);
         const m = fromTelegram(u, cfg.telegramChatId);
         const stopping = m && !m.forward && m.text.trim() === "/stop" && extras?.stop ? await extras.stop(m.replyTo) : null;
         // An exact typed reply decides the one card held for that task (typed here, never a voice note or a forward).

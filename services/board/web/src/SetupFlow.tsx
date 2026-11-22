@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import qrcode from "qrcode-generator";
 import { SignInRequired, api, type AdvancedFlowView, type SetupChoice, type SetupFlowView } from "./api";
 import { ConnectButton } from "./Connect";
+import { forgetFlows } from "./SetupButton";
 import { useEvents } from "./events";
 import { Markdown } from "./markdown";
 import { ChangeProgress, Page } from "./settings-ui";
@@ -313,28 +314,54 @@ export function Steps({ text }: { text: string }) {
 /** A pairing time (the service's ISO string, or ms) as ms. */
 const ms = (t: string | number | undefined) => (typeof t === "number" ? (t < 1e12 ? t * 1000 : t) : t ? Date.parse(t) : NaN);
 
-function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: () => Promise<void>; fail: (e: unknown) => void }) {
+/** The code's life when the response omits it: what every pairing module keeps (the board sends the channel's own value). */
+const PAIR_TTL_S = 15 * 60;
+
+export function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: () => Promise<void>; fail: (e: unknown) => void }) {
   // `was`: paired already when minted. Then only a pairing time after the mint shows the re-pair; with no time, keep waiting.
-  const [pair, setPair] = useState<{ code: string; link?: string; minted_at: number; was: boolean } | null>(null);
+  // `ends`: when this code dies by this browser's clock, from the lifetime the channel gave; `minted_at` stays the board's
+  // clock, to compare with the service's `paired_at`.
+  const [pair, setPair] = useState<{ code: string; link?: string; minted_at: number; ends: number; was: boolean } | null>(null);
+  const [expired, setExpired] = useState(false);
+  // Bumped on each mint: a check that answers after a newer code was minted is about the old one, so it changes nothing.
+  const minted = useRef(0);
+  const live = pair !== null && !expired;
   useEffect(() => {
-    if (!pair) return;
-    // Paired by this code: a pairing after it was minted, or, from unpaired, any pairing when the service gives no time.
-    const t = setInterval(
-      () =>
-        api.setupPaired(flow.module).then(
-          (r) => {
-            if (r.paired && (r.paired_at != null ? ms(r.paired_at) >= pair.minted_at : !pair.was)) {
-              setPair(null);
-              void reload();
-            }
-          },
-          () => {},
-        ),
-      2000,
+    if (!live) return;
+    // A pairing the service now reports is this code's if it happened after the mint, or, from unpaired, when it gives no time.
+    const no = minted.current;
+    const check = (): Promise<boolean> =>
+      api.setupPaired(flow.module).then(
+        (r) => {
+          if (minted.current !== no) return false; // a newer code replaced this one while the check was out
+          if (!(r.paired && (r.paired_at != null ? ms(r.paired_at) >= pair.minted_at : !pair.was))) return false;
+          setPair(null);
+          setExpired(false);
+          // The modules and setup buttons read their flows once per page: a pairing changes "needs setup", so drop it now.
+          forgetFlows();
+          void reload();
+          return true;
+        },
+        () => false,
+      );
+    // The code is dead at its end whether or not the service answers: stop showing it, and let a last check that does answer
+    // show a pairing made at the end of its life as paired.
+    const last = setTimeout(() => {
+      setExpired(true);
+      void check();
+    }, Math.max(0, pair.ends - Date.now()));
+    const t = setInterval(() => void check(), 2000);
+    return () => (clearInterval(t), clearTimeout(last));
+  }, [live, pair, flow.module, reload]);
+  const mint = () => api.setupPair(flow.module).then((r) => (setExpired(false), minted.current++, setPair({ ...r, ends: Date.now() + (r.expires_in ?? PAIR_TTL_S) * 1000, was: flow.paired })), fail);
+  if (pair && expired) {
+    return (
+      <div className="setup-actions">
+        <p className="setup-hint">That code expired. Get a new one.</p>
+        <button className="btn primary" onClick={mint}>Get a new pairing code</button>
+      </div>
     );
-    return () => clearInterval(t);
-  }, [pair, flow.module, reload]);
-  const mint = () => api.setupPair(flow.module).then((r) => setPair({ ...r, was: flow.paired }), fail);
+  }
   if (!pair) {
     return (
       <>

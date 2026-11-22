@@ -1,18 +1,37 @@
 // Shared by the Modules list and a module's page: the on/off switch with its turn-off confirm, the Turn on card, a
 // module's state in one word, its facts, and which modules need setup.
-import { useEffect, useState, type ReactNode } from "react";
-import { flows } from "./SetupButton";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEvents } from "./events";
+import { flows, forgetFlows, pairingNext, type Flow } from "./SetupButton";
 import { ChangePreview, IN_FLIGHT, useChanges, useFiled } from "./settings-ui";
 import type { Advisory, BrowseModule, FiledChange, ModuleRow } from "./types";
 import { StatusDot, Switch, type StatusTone } from "./ui";
 
+/** The setup flows as this page last read them; read once, and again after a pairing (`connections`). */
+function useFlowList(): Flow[] {
+  const [list, setList] = useState<Flow[]>([]);
+  const reread = useCallback(() => (forgetFlows(), void flows().then(setList)), []);
+  useEvents(["connections"], reread);
+  useEffect(() => void flows().then(setList), []);
+  return list;
+}
+
 /** Installed modules whose setup flow isn't done (GET /api/setup-flows; absent or failing: none). */
 export function useSetupNeeded(): Set<string> {
-  const [needed, setNeeded] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    void flows().then((l) => setNeeded(new Set(l.filter((f) => !f.done).map((f) => f.module))));
-  }, []);
-  return needed;
+  const list = useFlowList();
+  return useMemo(() => new Set(list.filter((f) => !f.done).map((f) => f.module)), [list]);
+}
+
+/** What an enabled but unpaired module's action says: pair the phone, then its setup is done. */
+export const PAIR_ACTION = "Pair your phone";
+
+/**
+ * The unfinished flows whose next step is pairing: saved secrets and every sign-in behind them are done, so pairing is all
+ * that is left. A flow still asking for a secret or a sign-in needs that first, not "Pair your phone".
+ */
+export function useSetupPairing(): Set<string> {
+  const list = useFlowList();
+  return useMemo(() => new Set(list.filter((f) => !f.done && pairingNext(f)).map((f) => f.module)), [list]);
 }
 
 type Toggled = Pick<ModuleRow, "name" | "agents" | "routines" | "neededBy" | "state">;
@@ -114,14 +133,21 @@ export const lockedWhy = (m: Pick<ModuleRow, "state" | "neededBy">) => (m.state 
 
 const STAGE: Partial<Record<FiledChange["stage"], string>> = { working: "In review", applying: "Applying", failed: "Change failed", rejected: "Turned down" };
 
-/** A module's state in one tone and word: a change under way or stopped, a security fix, setup, a sign-in, then on or off. */
-export function moduleState(m: Pick<ModuleRow, "state">, o: { filed?: FiledChange; setup?: boolean; connect?: boolean; advisory?: Advisory }): { tone: StatusTone; word: string } {
+/**
+ * A module's state in one tone and word: a change under way or stopped, a security fix, setup, a sign-in, then on or off.
+ * `pairing`: the module's setup flow finished by pairing a phone. A module switched on with that unfinished says so,
+ * instead of reading on beside "Needs setup", and `action` names what closes it.
+ */
+export function moduleState(
+  m: Pick<ModuleRow, "state">,
+  o: { filed?: FiledChange; setup?: boolean; pairing?: boolean; connect?: boolean; advisory?: Advisory },
+): { tone: StatusTone; word: string; action?: string } {
   const f = o.filed;
   if (f && (f.stage === "failed" || f.stage === "rejected")) return { tone: "failed", word: STAGE[f.stage]! };
   if (f && f.stage === "waiting" && f.tier !== 1) return { tone: "needs", word: "Waiting for you" };
   if (f && IN_FLIGHT.includes(f.stage)) return { tone: "working", word: STAGE[f.stage] ?? "In review" };
   if (o.advisory) return { tone: "failed", word: "Security fix" };
-  if (o.setup) return { tone: "needs", word: "Needs setup" };
+  if (o.setup) return o.pairing && m.state !== "off" && m.state !== "core" ? { tone: "needs", word: "Enabled, not paired", action: PAIR_ACTION } : { tone: "needs", word: "Needs setup" };
   if (o.connect) return { tone: "needs", word: "Not connected" };
   if (m.state === "core") return { tone: "working", word: "Always on" };
   if (m.state === "off") return { tone: "done", word: "Off" };

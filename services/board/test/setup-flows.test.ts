@@ -138,7 +138,8 @@ describe("setup flows", () => {
     expect((await other("POST", "/api/setup-flows/phone/pair")).status).toBe(403);
     expect(pairCalls.filter((c) => c.method === "POST")).toHaveLength(0);
     const r = await admin("POST", "/api/setup-flows/phone/pair");
-    expect(r.json).toEqual({ code: "ABCD-1234", link: "https://t.me/bot?start=ABCD", minted_at: expect.any(Number) });
+    // The channel says how long its code lives; without that, the board's 15 minutes.
+    expect(r.json).toEqual({ code: "ABCD-1234", link: "https://t.me/bot?start=ABCD", minted_at: expect.any(Number), expires_in: 900 });
     expect(pairCalls.at(-1)).toEqual({ method: "POST", auth: "Bearer pair-secret" });
     expect((await admin("GET", "/api/setup-flows/phone/pair")).json).toEqual({ paired: false });
   });
