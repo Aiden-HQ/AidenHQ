@@ -97,7 +97,7 @@ export const GRAPHQL = {
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
   // Comment ids are 64-bit: `fullDatabaseId` (a BigInt, a JSON string). `databaseId` is the deprecated 32-bit Int and isn't read.
-  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 20) { nodes { fullDatabaseId url body author { __typename login } } } } } } } }`,
+  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 100) { nodes { fullDatabaseId url body author { __typename login } } } } } } } }`,
 } as const;
 /** The most threads one resolve request takes (a post resolves at most 100). */
 export const RESOLVE_MAX = 100;
