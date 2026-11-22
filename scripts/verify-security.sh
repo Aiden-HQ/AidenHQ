@@ -789,6 +789,8 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'return call.token && String(mergeCommit?.message ?? "").includes(call.token) ? sha : undefined;' "$rq" \
   && grep -qF 'const token = mergeToken();' "$rq" \
   && grep -qF 'const mergeToken = () => `queue-${randomUUID()}`;' "$rq" \
+  && grep -qF 'p.mergeCall = { token, method, at: now().toISOString() };' "$rq" \
+  && grep -qF 'if (!call || call.method === "rebase") return undefined;' "$rq" \
   && grep -qF 'p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);' "$rq" \
   && grep -qF 'trailer(`merge queue ${token}`)' "$rq" \
   && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \

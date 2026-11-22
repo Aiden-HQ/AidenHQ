@@ -23,7 +23,7 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** The merge call this poll may be looking at: the token this record's commit_message carries (what an unanswered PUT may have made). */ mergeCall?: { token: string; at: string }; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** The merge call this poll may be looking at: the token this record's commit_message carries (what an unanswered PUT may have made). */ mergeCall?: { token: string; method: string; at: string }; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -31,6 +31,8 @@ const KEEP_MS = 7 * 24 * 3600_000;
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
 /** The fixed start of a merge outcome's first line: the PRs merged at their bound head, this queue's or already (finish). */
 export const MERGED_LINE = "merged-prs: ";
+/** What the kernel keeps of an outcome (kernel/src/records.ts OUTCOME_MAX): the first line and the summary after it must fit. */
+export const OUTCOME_MAX = 6_000;
 
 export function createMerges(d: {
   dir: string;
@@ -90,8 +92,10 @@ export function createMerges(d: {
    * id made for this one call and kept only here, never in the PR's title or body, so a PR author cannot plant it in their text
    * and have another writer's merge credited: `call` (a PUT that went unanswered) is the only source of it.
    */
-  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, method: string, sha: string, call: { token: string } | undefined): string | undefined {
-    if (!call || method === "rebase") return undefined;
+  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, sha: string, call: { token: string; method: string } | undefined): string | undefined {
+    // The method the PUT was made with, not the repo's config read now: a repo whose allowed methods changed since would otherwise
+    // judge (or skip) a merge that this call made. A rebase merge makes no commit of its own, so it is never claimed.
+    if (!call || call.method === "rebase") return undefined;
     return call.token && String(mergeCommit?.message ?? "").includes(call.token) ? sha : undefined;
   }
 
@@ -145,9 +149,10 @@ export function createMerges(d: {
       const uiReview = inFleetOrg(p.repo);
       let v = decide(data, p.head, { uiReview, designAdvisory: p.reviewExpired === p.head });
       const pull = data.repository.pullRequest;
-      // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Never let the
-      // call outlive the poll that answers it, or a later owner merge at the bound head would be credited to this queue.
-      if (v.do !== "done") delete p.mergeCall;
+      // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. The call is kept
+      // across a wait (checks, review, mergeability) while the PR is still open at the bound head: a PUT that merged it may only be
+      // seen as merged a few polls later, and the nonce is what proves that merge this queue's. It is dropped when the call is
+      // answered (a fail clears it, a done read uses it) and when a later PUT replaces it, so an owner's merge is never credited.
       // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
       const named = namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup);
       if (p.checked !== p.head && pull?.headRefOid === p.head && named.length && named.every((c) => !c.pending)) {
@@ -161,7 +166,7 @@ export function createMerges(d: {
         // merge commit is exactly that call's (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge
         // commit at the bound head is evidence; finish() emits it for grading when the PR links to the task the record is for.
         const sha = String(pull?.mergeCommit?.oid ?? "");
-        const ours = sha ? mergedBy(pull?.mergeCommit, mergeMethod(data.repository) ?? "", sha, p.mergeCall) : undefined;
+        const ours = sha ? mergedBy(pull?.mergeCommit, sha, p.mergeCall) : undefined;
         if (sha && !ours && p.mergeCall) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
         if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
         else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
@@ -201,12 +206,14 @@ export function createMerges(d: {
       // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy).
       const body = String(pull?.body ?? "");
       const token = mergeToken();
-      p.mergeCall = { token, at: now().toISOString() };
+      p.mergeCall = { token, method, at: now().toISOString() };
+      // Persisted before the call: a restart mid-PUT must still hold the nonce that proves whether that PUT merged the PR.
+      save();
       try {
         p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);
       } catch (e) {
         // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does.
-        if (/try the merge again|base branch was modified/i.test(says(e))) return wait("retry");
+        if (/try the merge again|base branch was modified/i.test(says(e))) { delete p.mergeCall; return wait("retry"); }
         // Only a 4xx is GitHub's answer. A timeout or a 5xx may have merged: the next poll reads the PR and sees which.
         const status = (e as { status?: number }).status ?? 0;
         if (status >= 400 && status < 500) return fail(`GitHub refused the merge: ${says(e)}`);
@@ -246,8 +253,12 @@ export function createMerges(d: {
     const merged = q.prs.filter(evidence).sort((a, b) => Number(b.status === "merged") - Number(a.status === "merged"))
       .map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha! }));
     const objects = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => `github:${p.repo.toLowerCase()}@${p.sha}`);
-    // The first line is machine-readable and whole (the grading module reads it); the human summary after it is what gets cut.
-    q.outcome = { ok, text: `${MERGED_LINE}${JSON.stringify(merged)}\n\n${[...q.said, headline].join("\n\n").slice(-8_000)}`, ...(objects.length ? { objects } : {}) };
+    // The first line is machine-readable and whole (the grading module reads it): the kernel keeps the outcome to OUTCOME_MAX
+    // characters, cutting only the end, so the human summary after the first line is what is capped here — sized to the room the
+    // kernel leaves it, never by a constant of its own that could push the line's end past the cut.
+    const line = `${MERGED_LINE}${JSON.stringify(merged)}`;
+    const human = [...q.said, headline].join("\n\n").slice(-Math.max(0, OUTCOME_MAX - line.length - 2));
+    q.outcome = { ok, text: `${line}\n\n${human}`, ...(objects.length ? { objects } : {}) };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });
     deliver(id, q);

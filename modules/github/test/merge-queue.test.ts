@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,9 +29,13 @@ function fakeGitHub(prs) {
       const p = prs[`${repo}#${v.number}`] ?? prs[repo];
       if (!p) return { status: 400, body: { errors: [{ message: `fake GitHub: no PR ${repo}#${v.number}` }] } };
       if (body.query.includes("pullRequest(number")) {
-        return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
-          id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
-          mergedAt: p.mergedAt ?? null, mergeCommit: p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
+        // `lag`: GitHub's read still shows the PR open for that many polls (its merge not yet reflected); a repo's allowed
+        // methods can change between the PUT and the poll (`squash: false, rebase: true`).
+        const stale = (p.lag ?? 0) > 0;
+        if (stale) p.lag--;
+        return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: p.squash !== false, rebaseMergeAllowed: p.rebase === true, pullRequest: {
+          id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: stale ? "OPEN" : p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
+          mergedAt: stale ? null : p.mergedAt ?? null, mergeCommit: !stale && p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
           mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: "main",
           files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
@@ -446,6 +450,8 @@ test("a maximum-size mixed batch keeps the whole evidence line: the queue's merg
   const [line] = outcomes[0].text.split("\n");
   const OUTCOME_MAX = 6000; // kernel/src/records.ts
   assert.ok(line.length <= OUTCOME_MAX, `the evidence line fits the kernel's outcome cap; it is ${line.length}`);
+  // 30 merges each say so, and that summary is trimmed to the room left: the whole outcome, not just the line, fits the cap.
+  assert.ok(outcomes[0].text.length <= OUTCOME_MAX, `the whole outcome fits the kernel's cap; it is ${outcomes[0].text.length}`);
   const kept = JSON.parse(line.replace(/^merged-prs: /, ""));
   assert.equal(kept.length, 30, `every PR of the batch is on the line, not truncated; it has ${kept.length}`);
   assert.deepEqual(kept.map((p) => p.number), [...Array(28)].map((_, i) => i + 1).concat([29, 30]), "the queue's own merges first, then the ones already merged");
@@ -489,6 +495,88 @@ test("a merge call that times out after GitHub merged is reported merged, and an
   await merges.step();
   await tick();
   assert.equal(reports.length, 2, "taken: not delivered a third time");
+});
+
+test("a merge call is credited by the merge method it was made with, even after the repo's methods change", async () => {
+  // The repo allowed squash when the PUT was made; by the next poll only rebase is allowed. The old check re-read the repo's
+  // config at poll time and would judge the call by "rebase", drop the queue's own merge, and lose both the credit and the object.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", lag: 1 } };
+  const github = fakeGitHub(prs);
+  const reports = [];
+  let timeouts = 1;
+  const gh = async (m, p, b) => {
+    const r = await github.gh(m, p, b);
+    if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
+    return r;
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-method-")), gh, fleetOrg: "acme-agents",
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000d2", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step(); // the PUT goes unanswered: GitHub squash-merged it with our message
+  assert.equal(github.merges()[0].body.merge_method, "squash");
+  prs["acme-agents/widget"].squash = false;
+  prs["acme-agents/widget"].rebase = true;
+  await merges.step(); // the poll still reads it open: the call is kept while the PR is open at the bound head
+  await merges.step(); // now it reads merged
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(merges.status("k-00000000000000d2").state, "done");
+  assert.match(reports[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/, "the squash call this queue made is still its merge");
+  assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"], "and its commit is still named as made here");
+});
+
+test("a merge call is persisted before the PUT, so a restart mid-call still proves the merge it made", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const dir = mkdtempSync(join(tmpdir(), "merges-persist-"));
+  const github = fakeGitHub(prs);
+  let reports = [];
+  // The PUT merges on GitHub's side and then never answers: the service dies while the call is still open.
+  const gh = async (m, p, b) => {
+    const r = await github.gh(m, p, b);
+    if (m === "PUT") await new Promise(() => {});
+    return r;
+  };
+  const merges = createMerges({
+    dir, gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000d3", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  void merges.step(); // hangs in the PUT, after the token was saved
+  for (let i = 0; i < 50 && !github.merges().length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(github.merges().length, 1, "the PUT was made");
+  const saved = JSON.parse(readFileSync(join(dir, "merges.json"), "utf8"));
+  const call = saved.queues["k-00000000000000d3"].prs[0].mergeCall;
+  assert.equal(typeof call?.token, "string", "the nonce is on disk before GitHub answers");
+  assert.equal(call.method, "squash");
+  // A new service on the same dir (the old one died mid-PUT): the token is still there, and the merge the PUT made is its own.
+  reports = [];
+  const again = createMerges({
+    dir, gh: github.gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  await again.step();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(again.status("k-00000000000000d3").state, "done");
+  assert.match(reports[0]?.text ?? "", /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/, "the restart still proves the merge its own call made");
+});
+
+test("the stored outcome's first line is whole inside the kernel's cap whenever any line can be, and the summary is what is cut", async (t) => {
+  // The first line is the grading reader's evidence; the kernel keeps OUTCOME_MAX characters and cuts only the end. The summary
+  // after it is sized to the room left, so the line's end is never what the kernel cuts.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: "d".repeat(40) } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-cap-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
+  await merge("k-00000000000000d4", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  const text = outcomes[0].text;
+  const [line] = text.split("\n");
+  assert.ok(line.length < 6000, "the evidence line alone fits the cap");
+  assert.deepEqual(JSON.parse(line.replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: "d".repeat(40) }], "parses whole");
+  assert.ok(text.length <= 6000, `the outcome fits the kernel's cap; it is ${text.length}`);
+  assert.ok(text.includes("was already merged"), "the summary is kept, short here");
+  const { OUTCOME_MAX } = await import("../service/src/merges.ts");
+  assert.equal(OUTCOME_MAX, 6000, "the queue caps its summary by the kernel's own OUTCOME_MAX");
 });
 
 test("a red default branch takes no merge on top, except the PR that already holds its tip; running base CI waits only for a PR behind it", () => {
