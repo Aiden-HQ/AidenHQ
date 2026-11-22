@@ -18,7 +18,7 @@ third-party module). Only the sha runs. Entering or moving a fork is the owner's
 
 **Daily switch-back run.** For each fork in `instance.yaml`:
 
-1. No `upstream_pr` recorded: note "no upstream PR recorded" and go on. Else `gh pr view <upstream_pr> --json state,mergeCommit`. Open: note "waiting on <upstream_pr>". Closed unmerged: note "upstream
+1. No `upstream_pr` recorded: note "no upstream PR recorded" and go on. Else read the PR with `github_issue_read` (state and merge commit). Open: note "waiting on <upstream_pr>". Closed unmerged: note "upstream
    closed it; the fork stays until the owner removes it".
 2. Merged at M: find the official revision containing it.
    - Kernel and official modules: the newest product `main` commit containing M (`git merge-base --is-ancestor M <sha>` in
