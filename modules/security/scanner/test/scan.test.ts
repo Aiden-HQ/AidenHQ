@@ -265,7 +265,7 @@ it("src_security: a retired row the warehouse could not take settles nothing, so
 it("src_security: DDL single-quoted literals stay closed (a bare apostrophe in the findings COMMENT breaks migrate())", () => {
   // A static check: is the text balanced as SQL? It has to read -- comments (which contain apostrophes) and '' escapes, and
   // must not split on ';' because the findings COMMENT contains one. An unterminated literal is reported at its opening
-  // quote, so a newly added apostrophe (like the one in target's) names a line and offset in DDL.
+  // quote, so a newly added bare apostrophe names a line and offset in DDL.
   function assertLiteralsClosed(ddl: string): void {
     let i = 0;
     let line = 1;
@@ -297,9 +297,6 @@ it("src_security: DDL single-quoted literals stay closed (a bare apostrophe in t
     if (open) throw new Error(`unterminated single-quoted literal at line ${open.line}, offset ${open.offset} (column ${open.column})`);
   }
 
+  // The #1175 DDL ended with an unterminated literal here; the test fails on that text without depending on any wording.
   expect(() => assertLiteralsClosed(DDL)).not.toThrow();
-  // The regression: the generated literal with the bare apostrophe ends a literal early and leaves a later one unterminated.
-  const broken = DDL.replace("target''s replacement", "target's replacement");
-  expect(broken).not.toBe(DDL);
-  expect(() => assertLiteralsClosed(broken)).toThrow(/unterminated single-quoted literal at line \d+, offset \d+/);
 });
