@@ -15,6 +15,10 @@ description: How code is written, tested and published here, in any repository -
 - The AidenHQ product repository: skill `aidenhq-product`. UI for AidenHQ apps and the board, and every new app: skill
   `design-system`. Adding or bumping a dependency, image, action or tool: skill `supply-chain`. App code standards:
   `references/apps.md`.
+- Before your first commit, fetch the task's branch from origin and start from its remote head when it has one
+  (`git fetch origin <branch>`, then `git switch -C <branch> origin/<branch>`): an earlier run of the same task may
+  already have pushed commits there, and yours go on top of them. Never rebuild the branch from your own workspace
+  history and force that result over the remote.
 
 ## Work fast, in few big steps
 
