@@ -680,8 +680,8 @@ export function createEngine(d: EngineDeps) {
         if (carried.has(f.id)) continue;
         // Reported again: a finding a recheck found fixed opens again; one its author answered (a claim) stays closed: only a
         // recheck that flags the claim unsafe reopens it.
-        const claimed = one<{ outcome: string; claim: string; outcome_at: string }>("SELECT outcome, claim, outcome_at FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND (? = 0 OR outcome_at <= ?) ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id, r.mandatory ? 1 : 0, r.started ?? "");
-        // A claim recorded after this mandatory run started (its snapshot never held it) is not reviewed by it: reported again, the finding opens.
+        const claimed = one<{ outcome: string; claim: string; outcome_at: string }>("SELECT outcome, claim, outcome_at FROM findings WHERE repo = ? AND number = ? AND id = ? AND claim IS NOT NULL AND outcome IS NOT NULL ORDER BY rowid DESC LIMIT 1", r.repo, r.number, f.id);
+        // A recheck never touches an answer recorded after it started (a correction made while it ran): that one stands and the next review reads it.
         if (!claimed && run("UPDATE findings SET outcome = NULL, outcome_at = NULL, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IN ('fixed', 'dismissed')", r.repo, r.number, f.id).changes)
           dispose([f.id], r, "open", "reported again", `run:${r.id}`);
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, outcome, outcome_at, claim) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", r.id, f.id, r.repo, r.number, f.severity, f.path, f.line, f.title, f.why.slice(0, 1500), f.evidence.slice(0, 1500), claimed?.outcome ?? null, claimed?.outcome_at ?? null, claimed?.claim ?? null);
@@ -697,8 +697,6 @@ export function createEngine(d: EngineDeps) {
       for (const id of fixed) run("UPDATE findings SET outcome = 'fixed', outcome_at = ?, claim = NULL WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL", iso(), r.repo, r.number, id);
       dispose(fixed, r, "fixed", "a recheck at this head found it gone", `run:${r.id}`);
     });
-    // The replies already on a reopened finding's thread answered the claim that was just refused: never read as a new answer.
-    if (unsafe.length) for (const t of await d.source.threads(r.repo, r.number).catch(() => [])) if (t.finding && unsafe.includes(t.finding)) for (const x of t.replies) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", r.repo, `reply:${x.id}`);
     if (!stale) cover(r);
     // A run that posts says nothing here: afterPost writes its state, its reason and (when it is filed again) its retry deadline
     // together, once the post's outcome is known.

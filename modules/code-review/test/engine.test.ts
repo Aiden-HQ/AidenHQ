@@ -1529,6 +1529,16 @@ test("a corrected answer closes a finding that carries a fixed claim, and a rech
   w.finish(1, { findings: [], unsafe: ["f1"], fixed: ["f1"] }); await w.tick();
   assert.deepEqual(w.engine.verdict(REPO, 2, sha("3")).reasons, [], "the answer given while the review ran stands");
   assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "by design: the caller holds the lock");
+  // The same when that review reports the finding again: the correction made while it ran stands.
+  const v = gatedWorld();
+  await opened(v, 2, sha("2"));
+  v.finish(0); await v.tick();
+  v.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
+  v.pr(2, sha("3")); await v.tick(); v.later(DEBOUNCE + 1); await v.tick();
+  v.later(1000);
+  v.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "by design", reason: "the caller holds the lock" });
+  v.finish(1, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }] }); await v.tick();
+  assert.deepEqual(v.engine.verdict(REPO, 2, sha("3")).reasons, [], "reported again by a review that started before the correction: still closed");
 });
 
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {
