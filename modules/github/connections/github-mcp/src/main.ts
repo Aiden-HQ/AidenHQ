@@ -81,7 +81,7 @@ const maintainer = new Maintainer(access, maintainedRepos, OWNER_TERMS, ours);
 const REPOS = describeRepos(maintainer.list());
 const github = new GitHub(access);
 // Code review's posting (review-post.ts): the code-review module's executor reaches it through /internal/review below.
-const poster = new ReviewPoster(github, access);
+const poster = new ReviewPoster(github, access, tellOwner);
 // Code review's watcher reads (code-review-read.ts), through /internal/code-review below. Reviews post as the owner wherever
 // the owner's account reaches, once GitHub is connected.
 const crReader = new CodeReviewReader(github, async () => (access.connected() ? "owner" : null));

@@ -179,7 +179,7 @@ export function createConnectionState(o: {
 
     /** A module's own call that only the owner can fix (not through the proxy): the same record and routing as a tool call's, as background work. */
     async report(module: string, connection: string, need: Need): Promise<void> {
-      if (o.connections()[connection]?.module !== module) throw new Error(`${module} has no connection ${connection}`);
+      if (o.connections()[connection]?.module !== module) throw Object.assign(new Error(`${module} has no connection ${connection}`), { code: "unknown_connection" });
       await this.hit({ kind: "module", module, roles: [], tools: {}, credential: "" }, connection, need);
     },
 

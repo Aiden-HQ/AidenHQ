@@ -553,7 +553,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           const b = await json(req);
           const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: b?.need } });
           if (typeof b?.connection !== "string" || !need || !OWNER_CAUSES.includes(b.need?.cause)) throw fail(400, "bad_request", "send {connection, need: {cause, detail, …}}");
-          await connectionState.report(w.module!, b.connection, need).catch((e: Error) => { throw fail(400, "bad_request", e.message); });
+          await connectionState.report(w.module!, b.connection, need).catch((e: Error & { code?: string }) => { throw e.code === "unknown_connection" ? fail(400, "bad_request", e.message) : e; });
           return send(res, 200, { ok: true });
         }
         case "GET /v1/connections/down": {
