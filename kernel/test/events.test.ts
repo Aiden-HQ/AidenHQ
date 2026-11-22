@@ -180,4 +180,7 @@ test("a batch belongs to the subscription that accepted it; resources match in a
   const run = r.runs.find((x) => x.routine === R1)!;
   const got = await events.batch({ task: `issue-${run.key.slice(0, 8)}`, agent: "a2", routine: "slack-triage" }, run.key);
   assert.ok("events" in got && got.events[0]!.thread === "1700000000.000100");
+  // Its task is bound to outside text: the kernel refuses that run's self_change (backplane /v1/settings/agent).
+  assert.equal(events.fired(`issue-${run.key.slice(0, 8)}`), true);
+  assert.equal(events.fired("issue-other"), false);
 });

@@ -133,6 +133,8 @@ export function createEvents(o: {
       }
       return { queued };
     },
+    /** Whether a batch was fired into this task: its run read outside text. */
+    fired: (task: string) => Boolean(db.prepare("SELECT 1 FROM event_batches WHERE task = ?").get(task)),
     /** The resources a source module should watch on its connection: every subscription's ("*" for all it reads). */
     resources(module: string, connection: string): string[] {
       ownerOf(module, connection);

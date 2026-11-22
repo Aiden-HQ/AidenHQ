@@ -4,7 +4,7 @@
 //   node kernel/test/e2e/events-paperclip.manual.ts
 // It starts a throwaway Paperclip container (the image pinned in compose.yaml, its own temp volume, local_trusted on loopback),
 // runs itself again inside a node:24 container that shares the Paperclip container's network, and removes both and the volume
-// at the end. Needs Docker and the images `node:24` and the pinned Paperclip one (pulled if missing).
+// at the end. Needs Docker and the two pinned images (pulled if missing).
 // It proves: a Slack-shaped burst becomes one run carrying its variables; the same batch key fired twice is still one run and
 // one issue; the run's job reads its batch, bound to its task, agent and routine; and the refusals of the plan's Review Focus 3
 // (another module's events, a paused routine, a revoked grant, a batch read by another task or agent, an oversize text).
@@ -15,6 +15,8 @@ import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// The runner image, pinned (node 24, by digest).
+const NODE = "node:24@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 if (!process.env.V3_INSIDE) {
@@ -28,7 +30,7 @@ if (!process.env.V3_INSIDE) {
     docker("run", "-d", "--name", tag, "-v", `${tag}:/paperclip`, "-e", "HOST=127.0.0.1", "-e", "PORT=3100", "-e", "PAPERCLIP_HOME=/paperclip",
       "-e", "PAPERCLIP_DEPLOYMENT_MODE=local_trusted", "-e", "PAPERCLIP_DEPLOYMENT_EXPOSURE=private", "-e", "PAPERCLIP_PUBLIC_URL=http://127.0.0.1:3100",
       "-e", `BETTER_AUTH_SECRET=${tag}-secret-${Date.now()}`, "-e", `PAPERCLIP_AGENT_JWT_SECRET=${tag}-jwt-${Date.now()}`, image, "node", "server/dist-runtime/index.mjs");
-    execFileSync("docker", ["run", "--rm", "--network", `container:${tag}`, "-v", `${repo}:/repo:ro`, "-w", "/repo", "-e", "V3_INSIDE=1", "node:24",
+    execFileSync("docker", ["run", "--rm", "--network", `container:${tag}`, "-v", `${repo}:/repo:ro`, "-w", "/repo", "-e", "V3_INSIDE=1", NODE,
       "node", "--disable-warning=ExperimentalWarning", "kernel/test/e2e/events-paperclip.manual.ts"], { stdio: "inherit" });
     console.log("V3: PASS");
   } catch (e) {
