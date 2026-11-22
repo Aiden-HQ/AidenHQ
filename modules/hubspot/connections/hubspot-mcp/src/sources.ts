@@ -258,22 +258,22 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
 export async function syncReference(store: SourceStore, call: CallHubSpot, kinds: string[], deadline = Infinity): Promise<number> {
   await store.migrate(DDL);
   let written = 0;
-  if (kinds.includes("deals"))
-    for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   // The owner scan writes and checkpoints a page at a time, and resumes where the last pass's budget ran out (its cursor is the
-  // next offset; empty once it reached the end).
+  // next offset; empty once it reached the end). A spent budget stops the writes mid-page: the page is read again next pass.
   const from = (await store.scope("owners")).cursor || undefined;
   let next = from === undefined ? undefined : Number(from);
-  do {
+  scan: do {
     const page = await ownersPage(call, next);
     next = page.next;
     for (const o of page.owners) {
-      // A spent budget stops the writes mid-page: the page is read again next pass (upserts are no-ops for what's written).
-      if (Date.now() >= deadline) return written;
+      if (Date.now() >= deadline) break scan;
       if ((await store.upsert(USERS, { user_id: o.id, display_name: o.name, is_bot: false }, { baseline: false })) !== "same") written++;
     }
     await store.saveScope("owners", next === undefined ? "" : String(next));
   } while (next !== undefined && Date.now() < deadline);
+  // The deal stages are one call and a dozen rows: they run whatever the owner scan left of the budget.
+  if (kinds.includes("deals"))
+    for (const s of await dealStages(call)) if ((await store.upsert(DEAL_STAGE, { stage_id: s.id, label: s.label, pipeline: s.pipeline, display_order: s.order }, { baseline: false })) !== "same") written++;
   return written;
 }
 
