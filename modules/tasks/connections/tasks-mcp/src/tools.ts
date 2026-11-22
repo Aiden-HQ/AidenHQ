@@ -528,20 +528,27 @@ const REPO_FILE = /\b(?:files?|handbooks?|docs?|documents?|trees?|repos?(?:itori
 const ATTACHED = /\battach(?:ed|ment|ments)\b/i;
 const DIFF_SUBJECT = /\b(?:pr|pull requests?|diff|patch|changes?|commits?|merge[ds]?)\b/i;
 // A clause ends at punctuation or a contrast, never at a coordination: "docs/a.md and the attached report contain no X" is one
-// claim about both, so its subject is split on the coordination and each part judged on its own.
+// claim about both, so its subject is split on the coordination and each part judged on its own. A coordination after the
+// claim's object ("... contains no X and docs/a.md has Y") starts a new claim and is not part of this one's subject.
 const CLAUSE_BREAK = /[.;:,]\s+|\b(?:but|while|whereas)\s+/gi;
 const COORDINATION = /\s*(?:[,;]|\band\b|\bor\b|&|\bplus\b)\s*/gi;
-/** The clause an absence claim sits in: its subject, with any other clause ("the diff removes X, and ...") left out. */
-function absenceSubject(c: string, at: number, length: number): string {
+/**
+ * The subject an absence claim is about: the coordinated parts of its own clause before the claim, plus the claim and its
+ * object. Another clause is left out, so "the /slipped page has no `Linus` row and docs/a.md has the heading" is a claim
+ * about the page; "docs/a.md and the attached report contain no X" is a claim about both.
+ */
+function absenceSubject(c: string, at: number, length: number): string[] {
   const breaks = [...c.slice(0, at).matchAll(CLAUSE_BREAK)].map((m) => (m.index ?? 0) + m[0].length);
+  const head = c.slice(breaks.length ? breaks[breaks.length - 1]! : 0, at);
   const after = c.slice(at + length);
   const next = after.search(CLAUSE_BREAK);
-  const tail = next < 0 ? after : after.slice(0, next);
-  return c.slice(breaks.length ? breaks[breaks.length - 1]! : 0, at) + c.slice(at, at + length) + tail;
+  // The object is "no X": a coordination after it starts something else, so it ends the claim rather than joining it.
+  const tail = (next < 0 ? after : after.slice(0, next)).split(COORDINATION)[0] ?? "";
+  return [...head.split(COORDINATION), c.slice(at, at + length) + tail].map((p) => p.trim()).filter(Boolean);
 }
-/** Whether a subject names a repository file the claim's own evidence can't show, judging each coordinated part on its own. */
-const absenceRefuses = (subject: string) =>
-  subject.split(COORDINATION).some((part) => REPO_FILE.test(part) && !ATTACHED.test(part) && !PAGE_PATH.test(part) && !DIFF_SUBJECT.test(part));
+/** Whether any part of a claim's subject names a repository file its evidence can't show. */
+const absenceRefuses = (parts: string[]) =>
+  parts.some((part) => REPO_FILE.test(part) && !ATTACHED.test(part) && !PAGE_PATH.test(part) && !DIFF_SUBJECT.test(part));
 /** Whether a criterion claims a repository file's contents lack something (see ABSENT), which a diff cannot show. */
 const absentFromFile = (c: Json, kind?: Json) => {
   const text = String(c);

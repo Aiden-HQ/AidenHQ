@@ -179,6 +179,7 @@ test("the absence rule is one rule on every write path: agent filing, module fil
     "docs/a.md and the attached report contain no `Linus`",
     "the attached report and docs/a.md contain no `Linus`",
     "both the handbook and the attached log have no old token",
+    "the /slipped page has no `Linus` row and docs/a.md has no old token",
   ]) {
     const r = await h.agentAmend("cos", { issue: "t1", rubric: [mixed, "merged into main", "checks green on the head"] });
     assert.equal(r.status, 400, `${mixed}: ${JSON.stringify(r.json)}`);
@@ -186,7 +187,13 @@ test("the absence rule is one rule on every write path: agent filing, module fil
     assert.deepEqual(h.grades.get("t1").rubric, accepted, mixed);
   }
   // A subject that is only an attachment, a page or a diff stays accepted even when it lists several of them.
-  for (const ok of ["the attached report contains no unredacted email addresses or phone numbers", "the attached log and the attached report contain no `Linus`"]) {
+  for (const ok of [
+    "the attached report contains no unredacted email addresses or phone numbers",
+    "the attached log and the attached report contain no `Linus`",
+    // A later independent clause is not part of the claim's subject, even when it names a repository file.
+    "the /slipped page has no `Linus` row and docs/a.md has the new heading",
+    "the attached report contains no unredacted email addresses, and the handbook has the new heading",
+  ]) {
     const r = await h.agentAmend("cos", { issue: "t1", rubric: [ok, "merged into main", "checks green on the head"] });
     assert.equal(r.status, 200, `${ok}: ${JSON.stringify(r.json)}`);
   }
