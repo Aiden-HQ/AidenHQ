@@ -463,7 +463,7 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   await five.watch.tick();
   assert.deepEqual(five.woke.map((w) => w.task), ["ACME-2"], "an HTTP 500 about one PR doesn't stop the next PR's verdict");
   let text = "code review: finding one (a.ts:1)";
-  const changing = await rig(t, { reviewGate: async () => ({ wait: text, findings: text }), merge: () => [200, { skip: "merging" }] });
+  const changing = await rig(t, { reviewGate: async () => ({ wait: text, findings: text, findingsKey: text }), merge: () => [200, { skip: "merging" }] });
   changing.set([changing.agentPr(1)]);
   await changing.watch.tick();
   await changing.watch.tick();

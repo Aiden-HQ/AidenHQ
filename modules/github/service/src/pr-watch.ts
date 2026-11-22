@@ -394,7 +394,7 @@ export function startPrWatch(o: PrWatchOptions) {
         const g = await o.reviewGate(repo, pr.number, pr.headRefOid);
         if (g && "down" in g) gateDown = true; // the rest of this pass skips the gate: no wake, the PR is handled as before
         if (g && "findings" in g && g.findings) {
-          const seen = `${pr.headRefOid}:${createHash("sha1").update(g.findings).digest("hex").slice(0, 12)}`;
+          const seen = `${pr.headRefOid}:${g.findingsKey ?? ""}`;
           if (state.found[url] !== seen && !state.breaker[url]?.told && findingsWakes < FINDINGS_WAKES_PER_TICK) {
             // The reasons carry the PR author's finding titles: fenced as data. They name no thread links, so the PR url leads to `github_pr_threads`.
             // The kernel keeps a wake's first WAKE_TEXT characters: the findings are cut to leave the instructions whole (the threads hold the rest).

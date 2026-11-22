@@ -403,3 +403,10 @@ test("the outage timer counts only one continuous streak of failures: an answer 
   for (let i = 0; i < 21; i++) { clock.t += 30_000; await ask(); }
   assert.ok("bypass" in (await ask()), "over 10 minutes of continuous failure lets the merge go");
 });
+
+test("the review gate's findings key follows the whole set of reasons, not the cut text", async () => {
+  const body = (b: string) => ({ ok: true, status: 200, json: async () => ({ verdict: "wait", reasons: [{ code: "findings", text: "a".repeat(700) + b, unblock: "fix and push" }] }) }) as Response;
+  const gate = (b: string) => createReviewGate({ gated: ["acme/x"], url: "http://cr", key: () => "k", fetchFn: async () => body(b) });
+  const one = await gate("1")("acme/x", 1, "h"), two = await gate("2")("acme/x", 1, "h");
+  assert.ok(one && "findingsKey" in one && two && "findingsKey" in two && one.findingsKey !== two.findingsKey);
+});

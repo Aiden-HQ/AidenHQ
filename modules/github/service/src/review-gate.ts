@@ -6,6 +6,8 @@
 // or a GAP_MS silence) lets the merge go, and the merge queue records it as the
 // fact pr.review_bypassed (Flow; the Fleet Steward reads it in its flow report) so the gap is seen, never silent.
 
+import { createHash } from "node:crypto";
+
 /** How long code review may be unreachable before a merge goes without its verdict. */
 export const DOWN_MS = 10 * 60_000;
 /** A failure more than this after the last one starts a new streak: the queue asks every 30 s while a merge waits, so a longer
@@ -15,7 +17,7 @@ const GAP_MS = 2 * 60_000;
  * undefined: the head may merge; wait: why not yet (code review's reasons, each with how it unblocks; `findings`: the reasons when
  * the only thing left is open important findings, none still running or queued: the author's to fix); bypass: it may merge
  * without the verdict, code review unreachable for over DOWN_MS (why). */
-export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string; findings?: string; down?: true } | { bypass: string; down?: true }>;
+export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { wait: string; findings?: string; findingsKey?: string; down?: true } | { bypass: string; down?: true }>;
 
 export function createReviewGate(o: { gated: string[]; url: string; key: () => string; fetchFn?: typeof fetch; now?: () => number }): ReviewGate {
   const gated = new Set(o.gated.map((r) => r.toLowerCase()));
@@ -45,6 +47,6 @@ export function createReviewGate(o: { gated: string[]; url: string; key: () => s
     if (v.verdict === "pass") return undefined;
     const reasons = (v.reasons ?? []).map((x) => `${String(x.text ?? "").slice(0, 600)}${x.unblock ? ` (${String(x.unblock).slice(0, 300)})` : ""}`);
     const wait = `code review: ${reasons.join("; ") || "not passed yet"}`;
-    return reasons.length && (v.reasons ?? []).every((x) => x.code === "findings") ? { wait, findings: wait } : { wait };
+    return reasons.length && (v.reasons ?? []).every((x) => x.code === "findings") ? { wait, findings: wait, findingsKey: createHash("sha1").update(JSON.stringify(v.reasons)).digest("hex").slice(0, 12) } : { wait };
   };
 }
