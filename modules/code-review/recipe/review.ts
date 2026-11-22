@@ -20,31 +20,52 @@
 // and force-pushes included; any other only where the change since the last reviewed head touched its lines (or removed its
 // file). Never one merely absent from this run, one found again, or anything when the change holds text addressed to a reviewer. Everything the repo wrote (code, guidance, the focus a commenter typed) is data, fenced,
 // never instructions; guidance grants no authority. Partial coverage is said (`coverage.incomplete`), never shown as clean.
+// Tree target (spec.target "tree", the one-off whole-repo review): the merge base is the empty tree, so the "change" is every
+// file at the head, in one pass, with no previous findings and no guidance (there is no trusted base to read it from). The files
+// eligible for review (coverage.eligible: all but excluded ones) are listed apart from what the engine actually covered
+// (coverage.reviewed: the files it reports it analysed, else the eligible ones whose diff some finder read); a run that stopped
+// short, an unreadable file or a truncated list is `coverage.incomplete`, never a clean pass. Engines with their own scope
+// (deepsec: setup files and scan, spec.setup_files) return `setup`, the files to commit. Every finding carries the spec's option
+// and lens.
 // Exit 0 with a result; 1 with none (no finder finished: the run failed).
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
 import { checklistText, globRe, matchChecklist } from "./review-checklist.ts";
 import { asker, comboProblem, plan, runEngine } from "./engines.ts";
+import { setupPath } from "./deepsec.ts";
+import { plain, readSmall } from "./proc.ts";
 import { page, tools } from "./review-tools.ts";
 import type { Combo, EngineResult } from "./engines.ts";
 
 type Severity = "important" | "nit" | "pre_existing";
 type Git = (args: string[]) => string;
 /** The review job's spec ($AIDENHQ_SPEC): the PR and the heads to review; combo and previous are JSON text. */
-export interface Spec { repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string }
+export interface Spec {
+  repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string;
+  /** `tree`: the whole tree at the head against the empty tree; `pr` (default): the change. */
+  target?: "tree" | "pr";
+  /** The catalog option this run is, and its lens: stamped on each finding. */
+  option?: string; lens?: string;
+  /** deepsec's spend cap (the run's remaining budget), and, when a setup branch is pending, its files as JSON text (path to text). */
+  budget_usd?: number | string; setup_files?: string;
+}
 interface Changed { path: string; added: number; removed: number; binary: boolean }
 interface Excluded { path: string; why: string; gap: boolean }
 interface Cleaned { severity: Severity; path: string; line: number; end_line?: number; title: string; why: string; evidence: string; fix_brief: string }
-type Placed = Cleaned & { id: string };
+type Placed = Cleaned & { id: string; option?: string; lens?: string };
 interface BriefInput { root?: string; guides: { path: string; text: string }[]; checks: string; focus: string; excluded: Excluded[]; incremental: boolean; addressed: boolean; reported?: Reported[] }
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
   incremental_from: string | null; full: boolean;
-  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null };
+  /** `target`, `eligible` and `counts` are tree mode's: eligible files apart from the ones actually covered. */
+  target?: "tree";
+  coverage: { eligible?: string[]; reviewed: string[]; excluded: string[]; incomplete: string | null; counts?: { eligible: number; reviewed: number } };
+  /** Files the engine set the repo up with (deepsec): path to text, the allowlisted ones only. */
+  setup?: Record<string, string>;
   findings: Placed[]; fixed: string[]; unsafe?: string[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
   /** A note on coverage that isn't a gap (an engine that doesn't report what it read); never posted, never incomplete. */
   coverage_note?: string;
@@ -69,23 +90,36 @@ const LENSES = [
 const cap = (s: unknown, n: number) => String(s ?? "").replace(/\u0000/g, "").slice(0, n);
 const fence = (t: unknown, marker: string) => `${marker}\n${String(t).replaceAll(marker, "")}\n${marker}`;
 
-/** A small regular file, never through a link; undefined otherwise. */
-export function readSmall(file: string, max = 20_000) {
-  let fd: number;
-  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
-  try { const st = fstatSync(fd); return st.isFile() ? readFileSync(fd, "utf8").slice(0, max) : undefined; } finally { closeSync(fd); }
-}
-/** Whether `rel` under `root` resolves without a link at any step (a tree may hold one pointing out of it). */
-const plain = (root: string, rel: string) => {
-  let at = root;
-  for (const part of rel.split("/")) { at = join(at, part); const st = lstatSync(at, { throwIfNoEntry: false }); if (!st || st.isSymbolicLink()) return false; }
-  return true;
-};
-
 /** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. */
 export function history(ws: string, out: string, spec: Spec) {
   const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
-  const g = (args: string[], extra: Record<string, string> = {}) => execFileSync("git", ["-c", "user.name=aidenhq-review", "-c", "user.email=review@aidenhq.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", ...args], { cwd: ws, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 1 << 30 }).trim();
+  const flags = ["-c", "user.name=aidenhq-review", "-c", "user.email=review@aidenhq.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"];
+  const g = (args: string[], extra: Record<string, string> = {}) => execFileSync("git", [...flags, ...args], { cwd: ws, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 1 << 30 }).trim();
+  /** Whether any diff line git prints for `args` passes `test`: its output goes to a file read in 1 MB chunks, since a whole tree's diff
+   * (binaries and left-out files included) can be larger than a string holds. */
+  const anyLine = (args: string[], test: (line: string) => boolean) => {
+    const file = join(out, `git-${randomBytes(6).toString("hex")}`);
+    try {
+      const w = openSync(file, "w");
+      try { execFileSync("git", [...flags, ...args], { cwd: ws, env, stdio: ["ignore", w, "ignore"] }); } finally { closeSync(w); }
+      const r = openSync(file, "r"), buf = Buffer.alloc(1 << 20);
+      try {
+        let rest = "", n: number;
+        while ((n = readSync(r, buf, 0, buf.length, null)) > 0) {
+          const lines = (rest + buf.toString("utf8", 0, n)).split("\n");
+          rest = lines.pop()!;
+          if (lines.some(test)) return true;
+          // One huge diff line: judged so far, then kept as its kind (an added line "+ ", anything else, a +++ header included, "  ")
+          // and its last 4 KB, so text across the cut is still seen and the line is classed as it was.
+          if (rest.length > 1 << 20) {
+            if (test(rest)) return true;
+            rest = (rest.startsWith("+") && !rest.startsWith("+++") ? "+ " : "  ") + rest.slice(-4096);
+          }
+        }
+        return test(rest);
+      } finally { closeSync(r); }
+    } finally { rmSync(file, { force: true }); }
+  };
   const commit = (tree: string | undefined, msg: string) => {
     if (tree) g(["add", "-A", "-f"], { GIT_WORK_TREE: tree });
     else g(["add", "-A", "-f"]);
@@ -97,14 +131,16 @@ export function history(ws: string, out: string, spec: Spec) {
   // rewrite line ends. The box's info/attributes, which outranks them, puts every path back on git's defaults: binary only
   // by content (a NUL in the first 8000 bytes), no filter, no conversion.
   writeFileSync(join(ws, ".git", "info", "attributes"), "* !binary !diff !text !eol !filter !merge !working-tree-encoding\n");
-  const base = existsSync(join(out, "base")) ? commit(join(out, "base"), "base") : undefined;
+  // A tree review's base is the empty tree: an empty commit (nothing of the checkout added), so base..HEAD is every file.
+  const base = spec.target === "tree" ? (g(["commit", "-q", "--allow-empty", "--no-verify", "-m", "empty tree"]), g(["rev-parse", "HEAD"]))
+    : existsSync(join(out, "base")) ? commit(join(out, "base"), "base") : undefined;
   const from = existsSync(join(out, "incremental_from")) ? commit(join(out, "incremental_from"), "last reviewed head") : undefined;
   // A fresh index for the head: what the earlier commits staged from other trees must not linger.
   g(["read-tree", "--empty"]);
   const head = commit(undefined, "head");
   const b = base ?? head; // the base is the head itself (an empty PR)
   const f = spec.incremental_from === spec.base ? b : spec.incremental_from === spec.head ? head : from ?? b;
-  return { base: b, from: f, head, git: (args: string[]) => g(args) };
+  return { base: b, from: f, head, git: (args: string[]) => g(args), anyLine };
 }
 
 /**
@@ -259,14 +295,15 @@ When you are done, your final message is only this JSON: {"fixed": ["<id>", ...]
 // Credential shapes no review may carry out of the box: our tokens (ahqj_, ahqci_, ahqu_) and sk- style keys.
 const KEYS = /\bahq[a-z]{0,3}_[A-Za-z0-9._-]{8,}|\bsk-[A-Za-z0-9_-]{16,}/g;
 /**
- * An engine's result with credentials taken out of everything it hands back (its message, cause and coverage note): the run's
+ * An engine's result with credentials taken out of everything it hands back (its message, cause, coverage notes and setup files): the run's
  * own token (`secrets`; an engine with a shell could read it from the process tree) and any key-shaped text. The one point every
  * engine's output passes before it is mapped and posted.
  */
 export function scrub(r: EngineResult, secrets: unknown[] = [process.env.OPENROUTER_API_KEY]): EngineResult {
-  const known = secrets.map(String).filter((k) => k.length >= 8);
+  const known = secrets.filter((k) => typeof k === "string" && k.length >= 8) as string[];
   const s = (t: string) => known.reduce((acc, k) => acc.replaceAll(k, "[redacted]"), t).replace(KEYS, "[redacted]");
-  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}), ...(r.untracked ? { untracked: s(r.untracked) } : {}) };
+  return { ...r, message: s(String(r.message ?? "")), ...(r.cause ? { cause: s(r.cause) } : {}), ...(r.incomplete ? { incomplete: s(r.incomplete) } : {}), ...(r.untracked ? { untracked: s(r.untracked) } : {}),
+    ...(r.setup ? { setup: Object.fromEntries(Object.entries(r.setup).map(([p, t]) => [p, s(String(t))])) } : {}) };
 }
 
 /** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
@@ -338,6 +375,11 @@ export function withhold(findings: Placed[], maxNits = 5) {
   return { kept, withheld };
 }
 
+/** A spec's pending setup files (JSON: path to text), only the strings. */
+function setupFilesOf(text: string) {
+  try { const j = JSON.parse(text); return Object.fromEntries(Object.entries(j && typeof j === "object" ? j : {}).filter(([, v]) => typeof v === "string")) as Record<string, string>; } catch { return {}; }
+}
+
 /** The whole review from the spec, the head checkout `ws` and the out folder; `run` is the engine (tests fake it). */
 export async function review({ spec, ws, out, run: engine = runEngine }: { spec: Spec; ws: string; out: string; run?: typeof runEngine }) {
   const run: typeof runEngine = async (name, i) => scrub(await engine(name, i));
@@ -346,10 +388,12 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   if (problem) throw new Error(`combo: ${problem}`);
   const how = plan(combo);
   const h = history(ws, out, spec);
-  const full = spec.incremental_from === spec.base;
+  const tree = spec.target === "tree";
+  const full = tree || spec.incremental_from === spec.base;
   // What the PR changes against its merge base (not just since the last reviewed head): generated paths it touches are gaps.
   const prChanged = new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", h.base, "HEAD"]).split("\0").filter(Boolean));
-  const { reviewed, excluded } = scope(changed(h.git, h.from), combo.ignore ?? [], prChanged);
+  // (A tree's files are all "changed": generated ones are left out, not a hiding place.)
+  const { reviewed, excluded } = scope(changed(h.git, h.from), combo.ignore ?? [], tree ? new Set() : prChanged);
   const diff = reviewed.length ? h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", h.from, "HEAD", "--", ...reviewed.map((p) => `:(literal)${p}`)]) : "";
   const baseTree = existsSync(join(out, "base")) ? join(out, "base") : undefined;
   const guides = guidance(baseTree, reviewed);
@@ -357,10 +401,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const list = baseTree && plain(baseTree, ".github/code-review-checklist.json") ? readSmall(join(baseTree, ".github/code-review-checklist.json"), 200_000) : undefined;
   try { if (list) checks = checklistText(matchChecklist(JSON.parse(list).items, diff)); } catch {}
   // Text addressed to a reviewer is looked for in the whole change, left-out files included (they can't hide it).
-  const whole = h.git(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"]);
-  const addressed = atReviewer(whole);
+  const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer);
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
-  const previous = (() => { try { const p = JSON.parse(spec.previous ?? "{}").findings; return Array.isArray(p) ? p : []; } catch { return []; } })()
+  const previous = tree ? [] : (() => { try { const p = JSON.parse(spec.previous ?? "{}").findings; return Array.isArray(p) ? p : []; } catch { return []; } })()
     .filter((f) => f && /^[0-9a-f]{16}$/.test(f.id) && typeof f.path === "string")
     .map((f) => ({ id: f.id as string, severity: (SEVERITIES.includes(f.severity) ? f.severity : "pre_existing") as Severity, path: f.path as string, line: Number(f.line) || 1, title: cap(f.title, 120), why: cap(f.why, 1000), evidence: cap(f.evidence, 1000), gating: f.gating === true, claim: typeof f.claim === "string" && f.claim ? cap(f.claim, 300) : undefined }));
   const reported = new Map(previous.map((f) => [f.id, f]));
@@ -377,7 +420,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const result: Result = {
     addressed,
     version: 1, repo: spec.repo, pr: Number(spec.pr), base: spec.base, head: spec.head, engine: combo.engine, model: combo.model, effort: combo.effort,
-    incremental_from: full ? null : spec.incremental_from, full,
+    incremental_from: full ? null : spec.incremental_from, full, ...(tree ? { target: "tree" as const } : {}),
     coverage: { reviewed, excluded: excluded.map((e) => `${e.path} (${e.why})`), incomplete: null },
     findings: [], fixed: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], guidance: guides.map((g) => g.path),
   };
@@ -387,12 +430,19 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   if (!reviewed.length) {
     // Nothing to review (lockfiles, ignored or binary files only) is no gap; a hiding place the change adds is.
     result.coverage.incomplete = gaps.join("; ") || null;
+    if (tree) Object.assign(result.coverage, { eligible: [], reviewed: [], counts: { eligible: 0, reviewed: 0 } });
     return bound(result);
   }
 
+  // What a skill or deepsec engine needs besides the brief: its harness and skill, the target, the spend cap, a pending setup.
+  const engineSpec = {
+    target: spec.target ?? "pr", harness: combo.harness, skill: combo.skill,
+    ...(Number(spec.budget_usd) > 0 ? { budget_usd: Number(spec.budget_usd) } : {}),
+    ...(spec.setup_files ? { setupFiles: setupFilesOf(spec.setup_files) } : {}),
+  };
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true, ...engineSpec })
     .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
   // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
   const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });
@@ -403,8 +453,17 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // An engine that reads the change its own way (untracked) reports no tool calls to count; it says so as a note.
   const untracked = answers.find((a) => a.untracked)?.untracked;
   if (untracked) result.coverage_note = cap(untracked, 300);
-  const unread = untracked ? [] : unreadDiffs(answers, reviewed, tools(ws, h.from), (p) => (p.startsWith(`${ws.replace(/\/$/, "")}/`) ? p.slice(ws.replace(/\/$/, "").length + 1) : p));
+  // An engine that reports the files it analysed (deepsec) has no diff reads to count either.
+  const covered = answers.find((a) => a.covered)?.covered;
+  const setup = answers.find((a) => a.setup)?.setup;
+  if (setup) result.setup = Object.fromEntries(Object.entries(setup).filter(([p, t]) => setupPath(p) && typeof t === "string"));
+  const unread = untracked || covered ? [] : unreadDiffs(answers, reviewed, tools(ws, h.from), (p) => (p.startsWith(`${ws.replace(/\/$/, "")}/`) ? p.slice(ws.replace(/\/$/, "").length + 1) : p));
   if (unread.length) gaps.push(`${unread.length} reviewed file${unread.length > 1 ? "s" : ""} whose diff no finder read to the end (${unread.slice(0, 10).join(", ")}${unread.length > 10 ? ", …" : ""})`);
+  // A change's file at the head the engine says it never analysed (deepsec's ignore filter, a cut-off run) is a gap; a deleted one
+  // has nothing to analyse; a tree lists what was covered.
+  const deleted = covered && !tree ? new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--diff-filter=D", "--name-only", "-z", h.from, "HEAD"]).split("\0").filter(Boolean)) : new Set<string>();
+  const missed = covered && !tree ? reviewed.filter((p) => !covered.includes(p) && !deleted.has(p)) : [];
+  if (missed.length) gaps.push(`${missed.length} reviewed file${missed.length > 1 ? "s" : ""} the engine didn't analyse (${missed.slice(0, 10).join(", ")}${missed.length > 10 ? ", …" : ""})`);
   const root = ws.replace(/\/$/, "");
   const reviewedSet = new Set(reviewed);
   // A finding that restates one already reported (the finder says so, or it has the same id) isn't reported again: it is still there.
@@ -480,6 +539,14 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   result.fixed = fixed;
   result.unsafe = unsafe;
   result.coverage.incomplete = gaps.length ? gaps.join("; ") : null;
+  if (tree) {
+    // The eligible files, apart from what was actually covered: the files the engine says it analysed, else those whose diff a
+    // finder read to the end. An engine that doesn't report its reads (untracked) is shown covering none, never the whole tree.
+    const unreadSet = new Set(unread), got = covered ? new Set(covered) : undefined;
+    const actual = untracked && !got ? [] : reviewed.filter((p) => (got ? got.has(p) : !unreadSet.has(p)));
+    Object.assign(result.coverage, { eligible: reviewed, reviewed: actual, counts: { eligible: reviewed.length, reviewed: actual.length } });
+  }
+  if (spec.option) for (const f of result.findings) Object.assign(f, { option: spec.option, ...(spec.lens ? { lens: spec.lens } : {}) });
   return bound(result);
 }
 
@@ -488,9 +555,19 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
  * can't fit are the last importants withheld too, and the review says so (incomplete): a result over the limit would lose all. */
 export function bound(result: Result, max = 200_000) {
   const cov = result.coverage;
-  for (const k of ["reviewed", "excluded"] as const) if (cov[k].length > 500) { cov.incomplete = [cov.incomplete, `${cov[k].length - 500} more ${k} files not listed`].filter(Boolean).join("; "); cov[k] = cov[k].slice(0, 500); }
   // The post takes at most 500 characters of it (schemas/post.json): a long list of gaps is cut, never the post refused.
   const gap = (t?: string) => { const g = [cov.incomplete, t].filter(Boolean).join("; "); cov.incomplete = g.length > 500 ? `${g.slice(0, 497)}…` : g || null; };
+  // A tree has thousands of files: a list cut short is no gap there (the counts say how many), just a shorter list.
+  // Each list keeps at most 500 paths and 30 KB of them (long nested paths), so the lists alone never fill the result.
+  for (const k of ["eligible", "reviewed", "excluded"] as const) {
+    const list = cov[k];
+    if (!list) continue;
+    let n = 0, bytes = 0;
+    while (n < Math.min(500, list.length) && (bytes += Buffer.byteLength(JSON.stringify(list[n]!)) + 1) <= 30_000) n++;
+    if (n === list.length) continue;
+    if (!result.target) cov.incomplete = [cov.incomplete, `${list.length - n} more ${k} files not listed`].filter(Boolean).join("; ");
+    cov[k] = list.slice(0, n);
+  }
   gap();
   // Sizes summed, not the whole result restringified per finding (a tools run can have thousands); 600 bytes of room for the
   // counts' digits and the note below.
@@ -506,6 +583,8 @@ export function bound(result: Result, max = 200_000) {
     }
   };
   withhold(false);
+  // A setup too large to carry is dropped (said as a gap) before any important finding is cut short.
+  if (total > max && result.setup) { total -= size(result.setup); delete result.setup; gap("deepsec's setup files were too large to file"); }
   if (total > max) {
     for (const f of result.findings) Object.assign(f, { why: cap(f.why, 300), evidence: cap(f.evidence, 300), fix_brief: cap(f.fix_brief, 300) });
     total = size(result) + 600;
