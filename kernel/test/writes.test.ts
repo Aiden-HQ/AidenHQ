@@ -32,7 +32,7 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
   const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
   let handler = () => false;
   const ex = await serve(async (req, res) => { if (fx.down && req.url.endsWith("/plan")) return void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"starting"}'); if (!(await handler(req, res))) res.writeHead(404).end(); });
-  t.after(() => ex.s.close());
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
   const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: (msg) => ({ content: [{ type: "text", text: `${msg.params.name} done` }] }) });
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
   const verdicts = [];
@@ -336,7 +336,7 @@ test("a replace with a claimed record reconciles it before A stops: its executor
     status.push(b.id);
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(b.id === done ? { state: "done", text: "it went through" } : { state: "unknown" }));
   });
-  t.after(() => ex.s.close());
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
   const k = await kernel(t, { secrets, connections: {}, writes: { "a.post": { module: "a", floor: 1, tools: [], executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
   const base = { kind: "a.post", module: "a", args: {}, targets: {}, executor: { module: "a", url: `${ex.url}/x` }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1 };
   const done = k.records.file({ ...base, state: "claimed" }).id;
@@ -509,7 +509,7 @@ test("a kernel job's write names its own workspace, whatever its args say", asyn
     if (req.url.endsWith("/plan")) plans.push(b.args);
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(req.url.endsWith("/plan") ? { args: b.args, targets: {} } : { ok: true, text: "pushed" }));
   });
-  t.after(() => ex.s.close());
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
   const rows = { "j-1": { agent: "ag-bo", task: "task-uuid-7", state: "running", identifier: "PEN-7", authority: { tools: { code: ["push"] }, jobcaps: [], writes: [], roles: [], model: "~z-ai/glm-flash-latest" } } };
   const args = { type: "object", additionalProperties: false, required: ["workspace", "branch"], properties: { workspace: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*-[0-9]+$" }, branch: { type: "string" } } };
   const k = await kernel(t, { secrets, grants, connections: {}, job: (id) => rows[id], writes: { "code.push": { module: "code", floor: 1, tools: ["code.push"], args, executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
