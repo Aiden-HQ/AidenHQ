@@ -728,7 +728,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       for (const m of [agentMade, unreadUntil]) for (const k of m.keys()) if (!live.has(k)) m.delete(k);
       for (const i of states) {
         const why = i.attention.map((a) => a.why).find((w) => JUDGEMENTS[w] !== undefined);
-        const since = i.wait_since ?? i.since;
+        // A handback's own age is the state's `since` only while the handback is what the task waits on (a pending card or an
+        // older wait shows instead, and the handback waits its turn); a delegator wait's is `wait_since`.
+        if (why === "handback" && i.reason !== "handback") continue;
+        const since = why === "handback" ? i.since : i.wait_since ?? i.since;
         if (!why || age(since, t) <= JUDGEMENT_WAIT_MS || exempt({ identifier: i.identifier, originKind: null })) continue;
         if (why === "handback" && !agentMade.has(i.task) && !((unreadUntil.get(i.task) ?? 0) > t)) {
           // Past this pass's reads, a handback already open stays open (a later pass reads it); a failed read is unknown, so it is

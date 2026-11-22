@@ -43,13 +43,13 @@ const OWNER_SENTENCE: Record<string, string> = {
 };
 
 /** Alertmanager's webhook body: firing alerts are kept (or updated), resolved ones dropped. */
-export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
+export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string, key?: string) => Promise<void>, now = new Date()): Promise<{ firing: number }> {
   // One call at a time (it reads the map, awaits the notices, writes the map back): overlapping calls would drop each
   // other's alerts. The call's notices share one NOTICE_MS budget; one still unsent when it runs out counts as failed and is
   // tried again on the next webhook or tick, so a slow kernel can't hold the chain.
   const run = serial.then(() => {
     const until = Date.now() + NOTICE_MS;
-    const bounded = (text: string) => until <= Date.now() ? Promise.reject(new Error("notice budget spent")) : Promise.race([notify(text), new Promise<void>((_, no) => setTimeout(() => no(new Error("notice timed out")), Math.max(0, until - Date.now())).unref())]);
+    const bounded = (text: string, key?: string) => until <= Date.now() ? Promise.reject(new Error("notice budget spent")) : Promise.race([notify(text, key), new Promise<void>((_, no) => setTimeout(() => no(new Error("notice timed out")), Math.max(0, until - Date.now())).unref())]);
     return applyAlerts(kv, alerts, bounded, now);
   });
   serial = run.catch(() => {});
@@ -58,7 +58,7 @@ export function receiveAlerts(kv: Kv, alerts: Alert[], notify: (text: string) =>
 const NOTICE_MS = 10_000;
 let serial: Promise<unknown> = Promise.resolve();
 
-async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Promise<void>, now: Date): Promise<{ firing: number }> {
+async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string, key?: string) => Promise<void>, now: Date): Promise<{ firing: number }> {
   const f = firing(kv);
   for (const a of alerts) {
     if (a.status === "resolved") { delete f[a.fingerprint]; continue; }
@@ -70,8 +70,9 @@ async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Pr
     // The chief of staff hears of a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
     // notice went out: a kernel that was down is tried again on the next webhook or tick.
     let told = f[a.fingerprint]?.told;
-    if (!told && severity === "critical") told = await notify(`Monitoring: ${name} (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. The Fleet Steward is on it.`).then(() => true, () => false);
     const since = f[a.fingerprint]?.since ?? (a.startsAt && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(a.startsAt) && !a.startsAt.startsWith("0001") ? a.startsAt : now.toISOString());
+    // Keyed by its firing episode (the fingerprint and when it started): a retry is the same notice, a new firing a new one.
+    if (!told && severity === "critical") told = await notify(`Monitoring: ${name} (critical): ${OWNER_SENTENCE[name] ?? "a critical alert fired"}. The Fleet Steward is on it.`, `alert:${a.fingerprint.slice(0, 40)}:${since}`).then(() => true, () => false);
     f[a.fingerprint] = { name, severity, summary, since, ...(told ? { told } : {}) };
   }
   kv.set(KEY, JSON.stringify(f));
@@ -82,7 +83,7 @@ async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string) => Pr
  * The detector's `alert` group: one incident per firing alert, its text fenced as data. Alertmanager's live list is the truth,
  * not only its one-shot webhook: a vanished series recovers.
  */
-export async function alertIncidents(kv: Kv, notify: (text: string) => Promise<void>, alertmanager = "http://alertmanager:9093", fetcher: typeof fetch = fetch): Promise<Incident[]> {
+export async function alertIncidents(kv: Kv, notify: (text: string, key?: string) => Promise<void>, alertmanager = "http://alertmanager:9093", fetcher: typeof fetch = fetch): Promise<Incident[]> {
   const res = await fetcher(`${alertmanager}/api/v2/alerts`, { signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   const live = res?.ok ? await res.json().then((j) => (Array.isArray(j) && j.length <= 500 ? j : undefined), () => undefined) : undefined;
   if (live) {

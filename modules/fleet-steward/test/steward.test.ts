@@ -172,6 +172,8 @@ test("a task waiting over an hour on its delegator's call or an agent's task han
     { task: "h", identifier: "WOR-H", reason: "handback", since: minsAgo(20), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:h" }] },
     // A task the owner made, handed back with its result two hours ago: theirs to read.
     { task: "i", identifier: "WOR-I", reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:i" }] },
+    // Handed back a minute ago behind a card open for hours: the handback's own hour hasn't passed, so it waits its turn.
+    { task: "k", identifier: "WOR-K", reason: "card_review", since: minsAgo(300), holder: "owner", attention: [{ who: "reviewer", why: "card", ref: "record:x" }, { who: "owner", why: "handback", ref: "task:k" }] },
     // A handback whose task can't be read now: unknown, so it is raised rather than hidden.
     { task: "j", identifier: "WOR-J", reason: "handback", since: minsAgo(120), holder: "owner", attention: [{ who: "owner", why: "handback", ref: "task:j" }] },
   ];
@@ -494,9 +496,14 @@ test("notices (the chief of staff's, and the owner's two lines) are marked told 
   const kv = kvOf(), told = [];
   const alert = parseAlerts({ alerts: [{ status: "firing", fingerprint: "ab", labels: { alertname: "CoreServiceDown", severity: "critical" }, annotations: {} }] });
   await receiveAlerts(kv, alert, async () => { throw new Error("kernel down"); });
-  await receiveAlerts(kv, alert, async (t) => void told.push(t));
-  await receiveAlerts(kv, alert, async (t) => void told.push(t));
+  await receiveAlerts(kv, alert, async (t, k) => void told.push(k));
+  await receiveAlerts(kv, alert, async (t, k) => void told.push(k));
   assert.equal(told.length, 1);
+  // Resolved, then firing again later the same day: a new episode, a new notice key (never folded into the first task).
+  await receiveAlerts(kv, parseAlerts({ alerts: [{ status: "resolved", fingerprint: "ab", labels: { alertname: "CoreServiceDown", severity: "critical" }, annotations: {} }] }), async () => {});
+  await receiveAlerts(kv, parseAlerts({ alerts: [{ status: "firing", fingerprint: "ab", startsAt: "2026-11-22T15:00:00.000Z", labels: { alertname: "CoreServiceDown", severity: "critical" }, annotations: {} }] }), async (t, k) => void told.push(k));
+  assert.equal(told.length, 2);
+  assert.notEqual(told[0], told[1]);
   // A dispatch stall whose notice failed is told on the next check, then once.
   const k2 = kvOf(), sent = [];
   let fail = true;
