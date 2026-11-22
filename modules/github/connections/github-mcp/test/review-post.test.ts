@@ -243,7 +243,7 @@ describe("posting", () => {
     expect(w.calls.filter((c) => c.path.includes("/statuses/"))).toHaveLength(1);
     await p.execute("status", { ...st, important: 3 });
     expect(w.calls.filter((c) => c.path.includes("/statuses/"))).toHaveLength(2);
-    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "budget_repo" };
+    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "stopped" };
     const out = JSON.parse((await p.execute("notice", n)).text);
     await p.execute("notice", { ...n, ack: out.ack_id });
     await p.execute("notice", { ...n, ack: out.ack_id });
