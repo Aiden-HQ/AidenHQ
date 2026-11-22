@@ -5,160 +5,134 @@ Status: design, owner-approved direction (extend the Tasks page, no separate boa
 ## Why
 
 Tasks is "my day": the owner's time buckets (Triage, Today, Tomorrow, Later, Backlog). It cannot answer "what is the fleet
-doing, what waits on me, what is stuck". The kernel already knows (`kernel/src/task-state.ts`); the board shows it only as
-a chip per card. This adds a read-only layout over the same cards, filters, group-by, and saved views.
+doing, what waits on me, what is stuck". The kernel already knows (`kernel/src/task-state.ts`); the board shows it only as a
+chip per card. This adds a read-only layout over the same tasks, with filters, group-by, and saved views.
 
 ## Scope
 
-In: a layout switch (My day | Agent work); a filter bar and an optional swimlane group-by; saved views (table in board
-SQLite); Paperclip projects as a filterable category; three card additions.
+In: a layout switch (My day | Agent work); a filter bar and optional agent swimlanes; saved views (one table in board
+SQLite); Paperclip projects as a read-only filter; two card additions.
 
-Out, deliberately: custom statuses; table or Gantt layouts; drag between state lanes (state is the kernel's, never set by a
-drag); drag inside Agent work (placement stays My day's); server-side filtering or paging; shared or multi-user views;
-a project-management UI (create/rename/archive projects in Paperclip's console); per-view notifications.
+Out, deliberately: custom statuses; table or Gantt layouts; drag between state lanes (state is the kernel's); drag or
+mutation shortcuts in Agent work; server-side filtering; shared or multi-user views; any project UI; agent project assignment
+and inheritance (follow-up, below); a new keyboard suite; per-view notifications; run cost on the card (drawer only).
 
 ## The one rule
 
-The board never derives state. A lane is a lookup on the kernel's `attention`, `reason` and `kind`; kind, reason, question
-and `wait_since` are shown as the kernel sent them. A card the kernel has no state for is shown in Idle with a quiet
-"No reported state" line, never a guessed one.
+The board never derives state. The kernel emits the lane; the board renders it.
 
-## Lanes
+## Lanes (emitted by the kernel)
 
-`lane(state)` is one function in `web/src/lanes.ts`, four steps in this order, so every state lands in exactly one lane:
+`kernel/src/task-state.ts` gains one field on `TaskState`, `lane: "needs_you" | "working" | "waiting" | "blocked" | "idle" |
+"done"`, set once in the reducer from all of a task's obligations (`open`, `attention`, `fail`), so no client re-derives it
+from the primary `reason` (which a running job or a higher-ranked wait can mask). Precedence, first match wins:
 
-1. Owner attention (`needsOwner`, `web/src/ui/TaskState.tsx`: `attention.who === "owner"`) is **Needs you**. It is checked
-   first because a running task can carry an owner question, and it matches the kernel's `counts.needs_you`.
-2. **Blocked**: reason `blocked` or `failed`, or an agent-attention `why` of `stalled_wait`, `unpolled`, `orphaned`, `unknown`
-   or `history_expired` (the kernel raises these only after a 15-minute grace, so a fresh quiet task is not Blocked).
-3. **Idle**: `kind` is `idle`, or the reason is `scheduled`, `backlog`, `owner_task` or `chat_turn` (the kernel gives these
-   four `kind: "waiting"`, so they are listed explicitly).
-4. Otherwise by `kind`: `working` is **Working**, `waiting` is **Waiting** (`job_queued`, `job_held`, `card_review`,
-   `delegator_wait`, `agent_wait`, `module_wait`), `done` is **Done** (`closed`, `cancelled`). A reason the kernel adds later
-   lands by its kind.
+1. `kind` done: **done** (`closed`, `cancelled`).
+2. any `attention.who === "owner"`: **needs_you** (`card_owner`, `owner_wait`, `handback`; a running task can carry one).
+3. a running job: **working** (`job_running`).
+4. any open `blocked` obligation or a `fail` (tested over all obligations, not the primary reason, which `job_queued` or another wait can outrank), or agent attention `stalled_wait`, `unpolled`, `orphaned`, `unknown`, `history_expired`
+   (the kernel raises each after its own grace: 15 minutes, six hours for a module wait, none for expired history): **blocked**.
+5. reason `scheduled`, `backlog`, `owner_task`, `chat_turn`, or `kind` idle: **idle** (the first four are `kind: "waiting"`).
+6. otherwise **waiting** (`job_queued`, `job_held`, `card_review`, `delegator_wait`, `agent_wait`, `module_wait`).
 
-The State filter, its counts and the lane use this one function, so a card shown in a lane always matches that lane's filter.
-
-Every one of the 22 `Reason`s: `card_owner`, `owner_wait`, `handback` (owner attention) go to Needs you; `blocked`, `failed`,
-`unpolled`, `orphaned`, `unknown`, `history_expired` to Blocked once flagged (Idle during the grace); `job_running` to Working; `job_queued`, `job_held`,
-`card_review`, `delegator_wait`, `agent_wait`, `module_wait` to Waiting; `scheduled`, `backlog`, `owner_task`, `chat_turn`
-to Idle; `closed`, `cancelled` to Done. A stalled `module_wait` goes to Blocked. The web's `Reason` union is a copy of the kernel's (`web/src/types.ts`, "change them together"), so the
-kind fallback, not a type check, is what keeps new reasons safe.
-Done is the board's existing 48-hour window (`RECENT_MS`, `src/app.ts`) and disappears by itself; a task the owner settled
-stays off, as everywhere. Lane counts are the length of the rendered, filtered lane, labelled as cards (not the kernel's
-fleet counts, which include sub-tasks); the Attention strip above Tasks (`web/src/Attention.tsx`, fed by `/api/needs-you`)
-stays the fleet-wide source for "what needs me" and is labelled "Fleet attention" (the lane count reads "matching cards").
-
-Known limit: agents' sub-tasks fold into their parent's card (`foldedChildren`, `src/board.ts`) and the kernel never makes a
-parent wait for its children, so a parent can sit in Working or Idle while a child waits on the owner. The card's crew line
-shows the child's state and the Attention strip lists it; the lane stays the parent's own. Paperclip's list caps (500 open,
-100 recently closed, `src/paperclip.ts`) bound the board the same way they bound My day.
+All 22 reasons land in exactly one lane. `lane` is part of the shared wire type: the board's copy (`services/board/src/task-state.ts`,
+`web/src/types.ts`, "change them together") gains it, and the filter, the lane, the swimlane and every count read it. A task with no
+kernel row shows in Idle with "No reported state". `web/src/lanes.ts` does not exist.
 
 ## Data flow
 
-No new data endpoint. `GET /api/board` (`src/app.ts`) already returns every open card with its kernel state: it
-collects open tasks (`pc.openIssues()`), then `stateRows(ids)` reads state through `statesOf` (`src/task-state.ts`).
-`statesOf` splits ids into batches of `MAX_IDS` (200, the kernel's `/v1/tasks/state?ids=` limit in
-`kernel/src/backplane.ts`) and reads them side by side, so any number of tasks gets a state. `GET /api/needs-you` instead
-uses `open: true` (`?open=1`, no id limit) because it wants every open task, including agents' sub-tasks the board
-folds into parents; Agent work wants cards, so it keeps the board's path.
+One kernel snapshot per board response. Today `statesOf` (`src/task-state.ts`) merges independent 200-id reads, each its own
+transaction and `as_of`. Extend the kernel's bulk read (`kernel/src/task-state-read.ts`, route `/v1/tasks/state` in
+`kernel/src/backplane.ts`) with `closed_since=<iso>`: `?open=1&closed_since=` returns every open task plus tasks closed after that
+instant in one transaction, one `as_of`, no id limit (the 200-id limit stays for `ids=` callers). `/api/board` carries `as_of`.
+The kernel row alone decides lane membership and Done expiry: a task is in Done for 48 hours after its close fact, by kernel
+time, so an old task edited later cannot reappear. Paperclip supplies title, labels, priority, assignee, project.
 
-Changes to `/api/board`:
+Both layouts are built from one issue inventory (`inventory()` in `src/app.ts`: open + recently closed issues, the kernel snapshot,
+labels, agents), built before My day's own filters (`mine()` drops unassigned issues, `unsettled()` hides settled ones); each layout applies its visibility rules to its projection, and Agent work excludes only the brief and settings tasks (`isBrief`, `isSettings`). My day folds agents' sub-tasks into the parent card (`foldedChildren`, `src/crew.ts`) as today. Agent work does
+not fold: every issue is its own card, placed once under its assignee, with a "part of WOR-7790" parent link (kernel state of its
+own, so a child waiting on the owner shows in Needs you). The crew line on My day cards reads the child's kernel state, never
+unread activity alone (`crew.ts` `issueState` today can say "needs" from unread activity).
 
-- `stateRows` is also read for `board.done` (today only open and recurring cards get a state), so Done cards have a lane
-  and a grade. Same batching, one more read in parallel.
-- Each card gains `projectId` (from `Issue.projectId`, `src/paperclip.ts`) and `lastRun` (below). The payload gains
-  `projects: {id, name}[]` next to `labels`.
-- Filtering, grouping and lanes run in the browser over this payload (open tasks plus 48 hours of done: hundreds, not
-  thousands). One way: a filter is a pure function in `web/src/filters.ts`; free-text `matches()` in `web/src/util.ts`
-  becomes one of its terms.
+Bounds: Paperclip list reads cap at 500 open and 100 closed (`src/paperclip.ts`). The inventory pages them (offset until a short
+page, hard limit 2000) and sets `incomplete: true` if a bound is hit; the page then shows "Showing the newest 2,000 tasks" in a
+`Banner`. Closed issues are hydrated by id from the kernel's recent-close ids (not listed by `updatedSince`, which cannot order by close time). "No reported state" applies to open issues only.
 
-Freshness is the board's own: `App.tsx` reloads `/api/board` about every ten seconds while Tasks is visible and on
-focus, so lanes are a snapshot of the latest successful response, never of the drag-held My day copy. Agent work renders
-straight from that response (no second store), so a lane, its count and a card's chip can never disagree.
+On failure the page keeps the last good snapshot and shows its age ("As of 10:42, 3 min ago") with the existing offline banner. The
+page reloads about every ten seconds while visible (`App.tsx`), so lanes are the latest successful response, never My day's
+drag-held copy. Filtering and grouping run in the browser (`web/src/filters.ts`, a pure function; `matches()` in `web/src/util.ts` is
+its text term). Counts are the lengths of the rendered, filtered arrays, labelled "matching cards". The Attention strip
+(`web/src/Attention.tsx`, `/api/needs-you`) stays the fleet-wide "what needs me", labelled "Fleet attention".
+
+Read-only is structural. `GET /api/board` today writes: `closeLeftoverParts` (`src/app.ts`) closes crew parts via
+`pc.updateIssue` on every refresh. It moves, with `store.unsettle()` and `store.placeNew()` (also called from that handler), into one sweep run by the live watch
+(`src/watch.ts`) and once at start-up as catch-up (the watch restarts its cursor near now), so a GET never mutates. My day's drag, move and complete handlers and keyboard actions (`App.tsx`: `r` toggles Recurring, keys move or close the
+selected card) are scoped to My day; Agent work binds none. A filtered My day hides the carried-over bulk action (it moves every
+carried task, not the visible ones).
 
 ## Filters and group-by
 
-One bar above the lanes (page tools live in the page, `docs/design/board-ui.md`), shown for both layouts:
+One bar above the lanes, in both layouts (page tools live in the page, `docs/design/board-ui.md`).
 
-| Filter | Source on the card |
+| Filter | Source (stable ids, names resolved from catalogs) |
 | --- | --- |
-| Agent | `assignee`, or any `crew[].agent` |
-| State / reason | the kernel `state.reason` (multi-select by lane, then reason) |
-| Label | `labels[].name` |
+| Agent | assignee (agent id); the Agent filter also matches a card's crew |
+| State | the six lanes (no nested reasons; the reason shows on the card) |
+| Label | `labelIds` (carried through `toCard`, which strips them today) |
 | Priority | `priority` |
-| Project | `projectId` |
-| Updated | `activityAt` (today, 7 days, 30 days) |
-| Text | existing `matches()` |
+| Project | `projectId` (read-only, below) |
+| Updated | `lastActivityAt` (today, 7 days, 30 days) |
+| Text | `matches()` |
 
-Filters AND together; values within one filter OR. Group-by: none (default) or agent. Agent swimlanes group by the
-card's `assignee` only, so a card sits in exactly one row; the Agent filter is how you see work an agent has in a
-sub-task. The kernel's `holder` is not used: it is an id or key with no name map on the board and can be null.
-My day keeps filters but never swimlanes (drag order is per bucket).
+Filters AND; values within one filter OR. Group by: none, or agent (Agent work only). Each issue sits once under its assignee;
+rows are the agents plus **You** and **Unassigned**, sorted by most owner attention then most working. A saved id that no longer
+exists (a deleted label) stays as a removable struck-through chip and matches nothing; a failed catalog read shows the filter as
+"unavailable", never as "No project" (that means `projectId` null).
 
-## Saved views ("boards")
+## Saved views
 
-A view is `{name, layout, filters, groupBy}`. Two built-ins are constants in `web/src/lanes.ts`, never rows, so a fresh
-install has them with no setup: **My day** (layout `day`, no filters) and **Agent work** (layout `work`, no filters).
-Saved views follow as tabs (`Tabs` from `web/src/ui/Tabs.tsx`; over about six, the rest go in a `Menu`). Editing
-filters on any view marks it changed; "Save view" creates one (name required), and on a saved view "Update" overwrites
-it and "Delete" removes it. The route carries the view id (`Route` in `web/src/App.tsx` gets an optional view), so Back
-and reload keep it.
-
-Table in `services/board/src/store.ts` (same `CREATE TABLE IF NOT EXISTS` block as `placements`):
+A view is `{name, spec: {layout, filters, groupBy}}`; the layout switch is separate and lives in the spec. The unsaved default
+is "All tasks", the first tab (no row; it cannot be renamed or deleted). Edits are a draft until "Save"; the draft survives a conflict.
 
 ```
 views(id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
-      spec TEXT NOT NULL,            -- JSON {layout, filters, groupBy}, validated by one zod schema on write
+      spec TEXT NOT NULL,       -- JSON, one zod schema used on read and on write (ids, not names)
+      rev INTEGER NOT NULL,     -- bumped on every write
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL)
 ```
 
-Single owner now: reads and writes use the signed-in admin's `session.accountId` (the same one `authored` stores), so
-each account sees its own views. The extension path is one additive `scope` column (`ALTER TABLE`, the pattern at
-`store.ts:180`) that makes a row visible to a workspace; no sharing code now. Unknown filter values in a stored spec
-(a label or project since deleted) simply match nothing and show in the bar as removable chips.
-
-API (all behind the board's admin session, like every `/api/*` route):
+Beside `placements` in `src/store.ts` (`CREATE TABLE IF NOT EXISTS`). Single owner now: rows are scoped to the session's
+`accountId` (as `authored`); the extension path is one additive `scope` column (`ALTER TABLE`, pattern at `store.ts:180`).
 
 | Route | Body | Result |
 | --- | --- | --- |
-| `GET /api/views` | | `{views: [{id, name, spec}]}` for the account |
+| `GET /api/views` | | `{views: [{id, name, spec, rev}]}` for the account |
 | `POST /api/views` | `{name, spec}` | the view |
-| `PUT /api/views/:id` | `{name?, spec?}` | the view |
-| `DELETE /api/views/:id` | | `{ok: true}` |
+| `PUT /api/views/:id` | `{name?, spec?, rev}` | the view, or 409 |
+| `DELETE /api/views/:id?rev=` | | `{ok: true}`, or 409 |
 
-The list is read with the board (one extra small query), not a separate fetch, so tabs paint with the page.
+Update and delete are one SQL statement `WHERE account_id = ? AND id = ? AND rev = ?`; no row changed is a 409, the page keeps
+the draft and reloads the saved row; if the row is gone (deleted elsewhere) the page offers "Save as new". Tabs render only after the session is confirmed (the board cache can paint before that,
+`App.tsx`). The route is `#/board?view=<id>`, parsed explicitly in `Route`; an unknown id falls back to All tasks with a toast.
 
-## Projects
+## Projects (read-only filter now)
 
-Paperclip issues already carry `projectId`; the board ignores it today. Use it as is, in a second step (the kernel proxy must
-learn projects first):
-
-- Read: `pc.projects()` (new, `GET /api/companies/:id/projects`; probe the live shape before building) feeds `projects` in
-  the board payload. The kernel's board read paths (`BOARD_READ_PATHS`, `kernel/src/cp.ts`) get the projects route. A card
-  without a project is "No project".
-- Set: by agents, not UI. `kernel/src/cp.ts` today allows neither a projects route nor `projectId` in `CREATE`/`PATCH`; add
-  `projectId` to both lists and the agent read path. Then `task_create` and `task_update`
-  (`modules/tasks/connections/tasks-mcp/src/tools.ts`) take an optional `project` name, resolved to an existing project, and
-  a delegated sub-task inherits its parent's project where it inherits priority (`assignTask`). One line in the
-  `delegate-work` skill, not in handbooks. Creating a project by name stays an owner or Paperclip action; an unknown name is an
-  error that lists the projects, so agents never fan out near-duplicates.
-- The owner says "put these under Launch" to Aiden. No create/rename UI on the board.
-- New installs: no projects, so the Project filter is absent (no empty menu). Until this step ships, labels carry the same
-  filter.
+Paperclip issues carry `projectId`; pass it through on the card. A company project catalog read goes through the kernel: add the
+projects route to `BOARD_READ_PATHS` (`kernel/src/cp.ts`), `pc.projects()` in `src/paperclip.ts`, `projects: {id, name}[]` in
+the payload. Probe the deployed response before enabling the filter. New installs: no projects, so the Project filter is absent.
+Follow-up (not in this build): agents assign projects. It touches the `task_create`/`task_update` schemas
+(`modules/tasks/connections/tasks-mcp/src/tools.ts`), `CREATE`/`PATCH` in `cp.ts`, and the Paperclip plugin's validators
+(`services/paperclip-events/post.js`); until then projects are set in Paperclip's console and labels carry the same filter.
 
 ## Card additions (both layouts)
 
-- **Needs you line.** For any state with owner attention the card shows a callout under the title, resolved from each
-  `attention` entry (`why`, `ref`), not from the primary reason (a running job can hold an approval): the first line of
-  `state.question` for `owner_wait`, "Your approval: <card sentence>" for a `card` entry (`shown()` today attaches the sentence only
-  when the card is the primary reason; resolve it from the entry's `ref` the same way), "Handed to you" for `handback`.
-- **Run trace link.** `#/r/<id>` (Route kind `run`) for the task's newest job, from the kernel activity the board already
-  reads (`cachedActivity`, `src/runs.ts`: running and recent jobs carry `task`) as `lastRun`. A task with no job in that
-  window has no link; older runs stay in the drawer (`runLinks`). No per-card kernel call.
-- **Run cost is not on the card.** `ledgerBy("issue")` (`src/store.ts`) ranks and caps its groups (default 5000, ordered by
-  spend), so an absent card would wrongly read as "no spend", and sub-task spend would be missing. Cost stays in the drawer's
-  feature cost (`/api/issues/:id/feature-cost`), which is exact.
+- **What the card is waiting on, with a link to it.** For each `attention` entry the callout reads its `why`/`ref`, not the primary
+  reason: the question for `owner_wait` (opens the task's answer form), "Your approval: <sentence>" for a card (opens the
+  approval, `ref` `k-…`), "Blocked by WOR-7744" (opens that task, `task:` ref), "Failed: how the job ended" (opens the run,
+  `job:` ref, `#/r/<id>`). `shown()` (`src/task-state.ts`) attaches the card sentence only for a primary-reason card; it resolves
+  from the entry's ref instead. The footer's arrow opens the run for the task's job ref.
+- **Working cards** show the kernel's `stage` (the module's label) and elapsed time from `since`; a live "what the agent said" line is not
+  in the state read (the activity feed caps at 50 running and 200 recent jobs and omits progress), so it is shown only on the run page.
 
 ## UX
 
@@ -168,15 +142,14 @@ radius and type are the shipped ones. Builders get these files; the rules below 
 `docs/design/board-ui.md`: Stripe polish, Linear crispness, more colour; radius 5/8/10/14 and never a pill; dense; fluid.
 
 ```
-Tasks   [My day|Agent work]  All agents  Needs review  Launch  + Save board          ⌕ Filter tasks  /
-        Agent: Engineer ✕  Project: Launch ✕  + Filter  Clear all        Group by [None|Agent]  Update board
+Tasks   [My day|Agent work]  All tasks  Needs review  Engineering●  + Save board     As of 10:42  ⌕ Filter  /
+        Agent: Engineer ✕  Updated: 7 days ✕  + Filter  Clear all        Group by [None|Agent]  Update board
  ┌ Needs you 2 ┐ ┌ Working 3 ┐ ┌ Waiting 3 ┐ ┌ Blocked 2 ┐ ┌ Idle 3 ┐ ┌ Done, last 48h 3 ┐
 ```
 
 **Layout switch.** The layout and the saved filters have separate jobs: the `Segmented` picks how tasks are drawn; the tabs next to it are saved
 filters only (no built-in tab, "Update board" appears only on a saved one; the unsaved default is "All"). A `Segmented` (`My day | Agent work`) at the left of the page-tools row, not a tab: it changes how the
-same tasks are drawn, while the board tabs next to it are saved filters. The choice is remembered per board (stored in the
-board's spec; built-ins keep it in `localStorage`). My day is untouched, including drag.
+same tasks are drawn, while the board tabs next to it are saved filters. The choice is part of a saved board's spec; the unsaved default remembers it in `localStorage`. My day is untouched, including drag.
 
 **Lanes.** Six columns share the whole width (the My day `.column` rule: `flex: 1 1 0`, no narrow strip on a big screen);
 Idle and Done run a little narrower because they are the quiet ones. Lane header: a dot in the lane's colour (Needs you amber
@@ -185,21 +158,21 @@ Idle and Done run a little narrower because they are the quiet ones. Lane header
 wide the row scrolls horizontally with the lane header sticky; it never wraps to a second row.
 
 **Card anatomy** (the existing `.card` surface, 10px radius, priority stripe on the left edge from `prio-*`). Top to bottom:
-identifier (tabular, faint) and project name in its hue at the right; title (13.5px/560, two lines, ellipsis, wraps any
-unbroken string); then the one line that matters for its lane; then a footer: agent monogram (`avatar.ts` tones) and name,
-spend is not shown, age, run link (the arrow, labelled "Open the run trace"). The lane line is:
+identifier (tabular, faint) and project name in its hue at the right; title (13.5px/560, two lines, ellipsis, wraps any unbroken
+string); a "part of WOR-7790" link when it is a delegated sub-task (Agent work); the one line that matters for its lane; then the
+footer: agent monogram and name, age (elapsed on a working card), and the run arrow. Spend is not shown. The lane line, each
+resolved from the `attention` entry or the state, and each a link to what it names:
 
 | Lane | Line under the title |
 | --- | --- |
-| Needs you | amber callout "Needs you" with the question (3 lines), the approval sentence, or "Handed to you" |
-| Working | green breathing dot and the live step (what the agent last said, two lines); the footer age becomes elapsed time |
-| Waiting | blue dot and the kernel's words (`stateWords`: "AI review: reviewer is reading the diff", "CI checks") |
-| Blocked | red callout "Failed" with how the job ended, or "Blocked by WOR-7744" with its `refLabel` |
+| Needs you | amber callout "Needs you": the question (3 lines, opens the answer form), or "Your approval: <sentence>" (opens the approval) |
+| Working | green breathing dot, the kernel stage, elapsed time |
+| Waiting | blue dot and the kernel's words (`stateWords`: "AI review", "CI checks", "an answer from Research Lead") |
+| Blocked | red callout "Failed: <how the job ended>" (opens the run), or "Blocked by WOR-7744" (opens that task) |
 | Idle | grey dot and why ("Backlog", "Scheduled for tomorrow 08:00", "Your task", "No reported state") |
 | Done | quiet title, "Done, graded pass" or "Stopped" |
 
-Crew: a card with other agents on it shows "+1" after the name; hover lists them (`crewLine`). One card, one accent: the
-callout colour is the only saturated area on a card, so a column scans by colour.
+One card, one accent: the callout colour is the only saturated area on a card, so a column scans by colour.
 
 **Filter bar.** Always visible under the layout row. `+ Filter` opens a menu of the six filters (Agent, State, Label,
 Priority, Project, Updated) with a type-to-find field; picking one opens its value list (multi-select with counts, agent
@@ -208,18 +181,18 @@ A value that no longer exists (a deleted label) stays as a struck-through chip a
 field at the right (`/` focuses it). Filters apply to both layouts. On My day a filter hides the carried-over bulk action (it moves every carried task, not the
 visible ones), and the page's keyboard handlers (`App.tsx`: `r` toggles Recurring) are scoped by layout, so the new keys exist only
 in Agent work. Group by is a `Segmented` (`None | Agent`), shown only in
-Agent work.
+Agent work. State is a six-value menu (the lanes), no counts in the menu.
 
-**Group by agent.** Each agent is a row on a `--col` surface: collapse chevron, monogram, name, and per-lane counts as
-coloured dots. The six lanes run across it as a grid (equal columns); a lane with nothing in it shrinks to a hairline, so a
-quiet agent costs one thin line. Rows sort by most owner attention, then most working. Collapsed state is remembered per
-board.
+**Group by agent.** Each agent is a row on a `--col` surface: chevron (open or closed for the session only), monogram, name, and per-lane
+counts as coloured dots. Rows are the agents plus You and Unassigned. The six lanes run across as a grid; a lane with nothing in it
+shrinks to a hairline, so a quiet agent costs one thin line.
 
-**Saved boards.** Tabs after the layout switch (`All agents` is the built-in, then saved ones), the selected tab on
-`--accent-soft`. Editing any filter puts a dot on the tab and shows "Update board" (and "Save as new" in its menu).
-`+ Save board` opens a small `Dialog` with a name field and a primary "Save board". Rename, Duplicate and Delete are in a
-`Menu` on the selected tab (also right-click); Delete confirms in a `Dialog` ("Delete 'Launch'? The tasks stay.").
-Over six boards the rest sit behind a "More" `Menu`.
+**Saved boards.** After the layout switch: "All tasks" (the unsaved default, first tab), then saved boards as tabs, the selected one on
+`--accent-soft`. Editing any filter makes a draft: a dot on the tab and "Save" (on a saved board "Update board" and "Save as new").
+`+ Save board` opens a small `Dialog` with a name field and a primary "Save board". Rename and Delete are in a `Menu` on the selected
+tab; Delete confirms ("Delete 'Engineering'? The tasks stay."). A conflict keeps the draft and says "This board changed elsewhere;
+your edits are kept" with "Reload". Over six boards the rest sit behind "More". The header shows "As of 10:42" and, on a failed
+read, the age of the last good snapshot.
 
 **Empty, loading, errors.** On phone the first lane shown is the first populated one, and a "Filters (3)" button replaces the chip row
 (chips open in a sheet, with Clear and Update board). Loading: lane headers draw at once, cards are skeletons (`Skeleton.tsx`), never a spinner. Filters
@@ -231,25 +204,24 @@ viewport) and renders 25 cards, then "Show 38 more"; header counts always show t
 
 **Phone (390px).** The bottom bar is unchanged; lanes become a scrolling strip of lane buttons (dot, name, count) above a
 single full-width lane, the lane header dropped because the strip names it. The layout switch and board tabs sit in two rows,
-the search field takes a row, and the chips scroll in one row. Swimlanes are off on a phone (the Group by control is
+the search field takes a row, and the chips collapse into the "Filters (n)" button. Swimlanes are off on a phone (the Group by control is
 hidden). Tap targets are 36px or more; inputs are 16px.
 
-**Keyboard.** `/` filter field, `f` add a filter, `g d` My day, `g w` Agent work, `[` `]` previous or next board, `j` `k`
-between cards, `Enter` opens the task, `r` its latest run. ⌘K (`Palette`) gains "Agent work", every saved board by name, and
-"Save board" from cached data only. Every control is a real button or link with `--ring` focus; state is a word as well as a
-colour; the live dot is a small breathing dot only and stops under reduced motion.
+**Keyboard.** No new shortcuts, and none of My day's act in Agent work (`/` already focuses the search field of the page). ⌘K (`Palette`)
+gains "Agent work", every saved board by name and "Save board", from cached data only. Every control is a real button or link
+with `--ring` focus; state is a word as well as a colour; the live dot is a small breathing dot and stops under reduced motion.
 
-## Build order (one PR)
+## Build order (one PR, kernel first)
 
-1. `lanes.ts`, `filters.ts`, the Agent work layout and filter bar (web only, payload gains `state` on done cards).
-2. `views` table, `/api/views`, tabs.
-3. Projects: kernel `cp.ts` routes and fields, `pc.projects()`, `projectId`/`projects` on the payload, tasks-mcp `project`.
-4. Card lines: needs-you callout, run link.
-5. Swimlanes (last, and the first thing to cut if the build runs long: lanes and filters are the core).
+1. Kernel: `lane` on `TaskState` and `closed_since` on the bulk read; board copies of the wire type.
+2. Board: the issue inventory with paging and `incomplete`, one snapshot, `closeLeftoverParts` moved to the watch, My day's
+   handlers scoped.
+3. Web: Agent work layout, filter bar, per-issue cards, swimlanes (last, first thing to cut if the build runs long).
+4. Views: table, routes, tabs after the session.
+5. Projects read-only filter.
 
 ## New installs
 
-A fresh install sees My day (unchanged), Agent work with empty lanes ("Nothing running yet" `EmptyState`), no saved
-views, no Project filter. Nothing depends on an optional module: lanes read kernel state only. Another owner's modules
-plug in through the kernel's `Reason`/`stage` vocabulary, not through the board: a module wait already arrives as
-`module_wait` with its `ref`, and shows in Waiting with its own words.
+A fresh install sees My day unchanged, Agent work with empty lanes ("No tasks yet"), no saved views, no Project filter. Nothing
+depends on an optional module: lanes read the kernel only. Another owner's modules plug in through the kernel's reasons and
+stages: a module wait arrives as `module_wait` with its `ref` and shows in Waiting with its own words.
