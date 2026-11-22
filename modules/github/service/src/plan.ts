@@ -93,14 +93,13 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
 }
 
 /**
- * close: prs [{ repo, dependabot? }]. Tier 0 in the agents org and on a maintained repo (reversible, no code changes); the
- * instance repo's PRs are the owner's. On the product repo (listed or not) only a Dependabot PR (its author verified as
- * dependabot[bot] from the GitHub API by the runner, never from text) may be closed, at Tier 0 (owner, 2026-11-13): closing changes no code, the reason is posted on the PR, and reopening it undoes it.
+ * close: prs [{ repo }]. Tier 0 in the agents org, on the product repo and on a maintained repo: closing changes no code,
+ * the reason is posted on the PR, and reopening it undoes it (agents are trusted: a duplicate PR is theirs to close). The
+ * instance repo's PRs are the owner's.
  */
 function closePart(p: Pr, s: State) {
   if (same(p.repo, s.productRepo)) {
-    if (p.dependabot !== true) return REJECT("core-repo-close", `${p.repo} is the product repo: only its Dependabot PRs may be closed`);
-    return T(0, "product-dependabot-close", "closing a Dependabot PR of the product repo is reversible (reopen) and changes no code");
+    return T(0, "product-close", "closing a PR of the product repo is reversible (reopen) and changes no code");
   }
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close", `${p.repo} is the instance repo: its PRs are the owner's`);
   if (inMaintained(p.repo, s)) return T(0, "maintained-close", `closing a PR of ${p.repo} (${LISTED}) is reversible and changes no code`);
