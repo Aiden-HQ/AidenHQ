@@ -22,7 +22,8 @@
 // token-free) first, then each model option as its own check. Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
 // Primer (one document per repo, a version per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
-// that PR's branch until it merges. Everything here is off until settings.code_review.lenses is on.
+// that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
+// its own. Everything here is off until settings.code_review.lenses is on.
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
@@ -581,8 +582,12 @@ export function createEngine(d: EngineDeps) {
   const ownTask = (r: RunRow) => !repoCfg(r.repo) || !prRow(r.repo, r.number)?.open;
 
   /** A tree run's coverage as the report reads it: `options` (the tools that ran) a list of ids, `failed` a list of { id, why }, when present. */
-  const treeCoverageOk = (c: unknown, r: RunRow) => {
-    const v = (c ?? {}) as { options?: unknown; failed?: unknown };
+  const treeCoverageOk = (c: unknown, r: RunRow, withheld: unknown) => {
+    const v = (c ?? {}) as { options?: unknown; failed?: unknown; reviewed?: unknown; excluded?: unknown; incomplete?: unknown };
+    const w = (withheld ?? {}) as Record<string, unknown>;
+    // Coverage and what was withheld are the evidence a run ran in full: a result without them is no result, never a clean one.
+    if (!Array.isArray(v.reviewed) || !Array.isArray(v.excluded) || !(v.incomplete === null || typeof v.incomplete === "string")) return false;
+    if (!["important", "nit", "pre_existing"].every((k) => Number.isInteger(w[k]) && (w[k] as number) >= 0)) return false;
     const ids = (x: unknown) => typeof x === "string" && x.length > 0;
     return (v.options === undefined || (Array.isArray(v.options) && v.options.every(ids)))
       && (v.failed === undefined || (Array.isArray(v.failed) && v.failed.every((f) => ids((f as { id?: unknown })?.id) && typeof (f as { why?: unknown }).why === "string")))
@@ -599,8 +604,8 @@ export function createEngine(d: EngineDeps) {
       // A repo review's findings come from many tools' mappers: one not in the shared shape fails the run with that reason.
       else if (r.target === "tree" && !v.findings!.every((f) => f && typeof f.id === "string" && f.id && ["important", "nit", "pre_existing"].includes(f.severity) && typeof f.path === "string" && Number.isInteger(f.line) && typeof f.title === "string"))
         res = { state: "failed", why: "the review's result isn't for this run: a finding isn't in the shared shape (id, severity, path, line, title)", billed_usd: res.billed_usd };
-      else if (r.target === "tree" && !treeCoverageOk(v.coverage, r))
-        res = { state: "failed", why: "the review's result isn't for this run: its coverage isn't in the shared shape (options and failed tools, each by id)", billed_usd: res.billed_usd };
+      else if (r.target === "tree" && !treeCoverageOk(v.coverage, r, v.withheld))
+        res = { state: "failed", why: "the review's result isn't for this run: its coverage or withheld counts aren't in the shared shape", billed_usd: res.billed_usd };
       // A tools run's findings each name one of the options it was asked for (a box's word for another's is no word at all).
       else if (r.target === "tree" && r.profile === "code-review-tools" && !v.findings!.every((f) => typeof f.option === "string" && r.option!.split(",").includes(f.option)))
         res = { state: "failed", why: "the review's result isn't for this run: a finding names an option the run wasn't asked for", billed_usd: res.billed_usd };
@@ -766,7 +771,11 @@ export function createEngine(d: EngineDeps) {
       const o = await d.publisher.file({ repo: b.repo, title: `Repo review: ${b.repo}`, content: b.report!, ...(doc ? { documentId: doc } : {}), versionNote: `${b.sha.slice(0, 7)} ${b.id}` });
       run("UPDATE batches SET report_write = ? WHERE id = ?", o.write, id);
       published(id, o);
-    } catch (e) { published(id, { state: "refused", write: "", why: String((e as Error).message).slice(0, 300) }); }
+    } catch (e) {
+      // A refusal the kernel answered (a 4xx) is final; one it couldn't answer now (unreachable, 5xx) is tried again by the next sweep.
+      if (!permanent(e)) return void log("repo review report not sent yet; the next tick tries again", { batch: id, err: String((e as Error).message).slice(0, 200) });
+      published(id, { state: "refused", write: "", why: String((e as Error).message).slice(0, 300) });
+    }
   }
   /** The report's publish record settled: its document saved for the repo (later reviews add versions to it), or why it isn't in Primer. */
   function published(id: string, o: Awaited<ReturnType<Publisher["outcome"]>>) {
@@ -794,12 +803,18 @@ export function createEngine(d: EngineDeps) {
   async function fileSetup(r: RunRow, raw: Record<string, string>) {
     const files = Object.fromEntries(Object.entries(raw ?? {}).filter(([p, c]) => SETUP_PATH.test(p) && typeof c === "string"));
     if (!Object.keys(files).length || batchRow(r.batch)?.setup_tip) return;
+    // The branch the last answer named still exists (its PR is pending or open; one that can't be read counts as there): no second request, which would close it.
+    const named = setupBranchOf(r.repo);
+    if (named && await d.codehost.setupBranch(r.repo, named).then((x) => x !== undefined, () => true)) return;
     const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
     if (asked !== undefined && now() - asked < SETUP_RETRY) return;
-    // The slot is taken before the await (a request takes minutes), so a concurrent batch asks for no second PR.
+    // The slot is taken in the same step as the look above (a request takes minutes), so a concurrent batch asks for no second PR.
     run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, 'asking') ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now());
     let answer: string;
-    try { answer = JSON.stringify(await d.codehost.setup({ repo: r.repo, files })).slice(0, 1000); } catch (e) {
+    try {
+      const j = (await d.codehost.setup({ repo: r.repo, files })) as { pr_url?: unknown; branch?: unknown; tip?: unknown };
+      answer = JSON.stringify({ pr_url: j.pr_url, branch: j.branch, tip: j.tip });
+    } catch (e) {
       answer = `refused: ${String((e as Error).message).slice(0, 300)}`;
       log("deepsec setup PR not asked for", { repo: r.repo, err: answer });
     }
@@ -1376,7 +1391,7 @@ export function createEngine(d: EngineDeps) {
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
-      // A repo review's options run one at a time, in order: each gets what the ones before it left of the cap.
+      // A repo review's options run one at a time, in order: each is its own check (metered by the gateway like any run).
       if (r.target === "tree" && one("SELECT 1 FROM runs WHERE batch = ? AND id != ? AND (status = 'running' OR (status = 'queued' AND rowid < (SELECT rowid FROM runs WHERE id = ?)))", r.batch, r.id, r.id)) continue;
       const started = admit(r);
       if (started) await startRun(started);
@@ -1640,8 +1655,8 @@ export function createEngine(d: EngineDeps) {
   async function readTree(repoIn: unknown, commit: unknown) {
     const repo = String(repoIn ?? "").toLowerCase();
     if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo)) throw new RequestError("repo is owner/name");
-    if (commit !== undefined && commit !== null && commit !== "" && !(typeof commit === "string" && /^[0-9a-f]{7,40}$/.test(commit))) throw new RequestError("commit is a commit sha (or leave it out for the default branch's head)");
-    const ref = (commit as string) || "HEAD";
+    if (commit !== undefined && commit !== null && commit !== "" && !(typeof commit === "string" && /^[0-9a-f]{40}$/i.test(commit))) throw new RequestError("commit is a full 40-character commit sha (or leave it out for the default branch's head)");
+    const ref = commit ? String(commit).toLowerCase() : "HEAD";
     let tree: { sha: string; paths: string[] };
     try { tree = await d.codehost.tree(repo, ref); } catch (e) { throw new RequestError(`${repo} can't be read at ${ref === "HEAD" ? "its default branch" : ref.slice(0, 12)}: ${String((e as Error).message).slice(0, 200)} (a repo snapshot needs the github or codehost-local module)`); }
     if (ref !== "HEAD" && !tree.sha.startsWith(ref)) throw new RequestError(`the snapshot of ${repo} is of ${tree.sha.slice(0, 12)}, not ${ref.slice(0, 12)}`);
@@ -1712,7 +1727,7 @@ export function createEngine(d: EngineDeps) {
     },
     repos() {
       const c = d.config();
-      return { day_spent_usd: round(spent()), errors: c.errors,
+      return { day_spent_usd: round(spent()), errors: c.errors, lenses: c.lenses,
         repos: c.repos.map((r) => {
           // Who posts there: the identity its last posted review went out as (the owner's sign-in).
           const identity = one<{ identity: string }>("SELECT identity FROM runs WHERE repo = ? AND identity IS NOT NULL ORDER BY ended DESC LIMIT 1", r.repo)?.identity ?? null;

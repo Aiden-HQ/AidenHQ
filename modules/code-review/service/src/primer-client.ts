@@ -3,6 +3,7 @@
 // (Tier 1): a new document private to the owner, or a version of the repo's document (`documentId`). Its outcome names the document.
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import type { Publisher, ReportOut } from "./seams.ts";
+import { ROLE } from "./adapters.ts";
 
 export const PUBLISH_KIND = "primer.publish";
 
@@ -27,13 +28,17 @@ function settled(r: Rec, known?: string): ReportOut {
 }
 
 export function primerPublisher(kernel: KernelClient): Publisher {
+  /** A write above Tier 0 belongs to a task: a quiet one per repo (the kernel files the same source once), kept for every report of the repo. */
+  const taskOf = async (repo: string) => String(((await kernel.call("POST", "/v1/tasks", { title: `Code review: report for ${repo}`, description: `${repo}\n\nCode review's repo review reports to Primer are approved here.`, role: ROLE, source: `code-review:report:${repo}`, quiet: true })) as { id: string }).id);
   return {
     async file(r) {
       const args = { title: r.title, content: r.content, format: "markdown", ...(r.documentId ? { documentId: r.documentId } : {}), versionNote: r.versionNote, private: true, repo_key: r.repo };
-      return settled((await kernel.call("POST", "/v1/writes", { kind: PUBLISH_KIND, args })) as Rec, r.documentId);
+      const rec = (await kernel.call("POST", "/v1/writes", { kind: PUBLISH_KIND, args, task: await taskOf(r.repo) })) as Rec;
+      return settled(rec, r.documentId);
     },
     async outcome(write, documentId) {
-      return settled((await kernel.call("GET", `/v1/writes/${write}`)) as Rec, documentId);
+      const rec = (await kernel.call("GET", `/v1/writes/${write}`)) as Rec;
+      return settled(rec, documentId);
     },
   };
 }

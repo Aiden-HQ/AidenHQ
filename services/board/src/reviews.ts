@@ -149,7 +149,7 @@ export interface TreeBatch {
 }
 export const TreeRequestSchema = z
   .object({
-    target: z.object({ tree: z.literal(true), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"), commit: z.string().regex(/^[0-9a-f]{7,40}$/i, "a commit is a hex SHA").optional() }).strict(),
+    target: z.object({ tree: z.literal(true), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"), commit: z.string().regex(/^[0-9a-f]{40}$/i, "a commit is a full 40-character SHA").optional() }).strict(),
     options: z.array(z.string().regex(/^[\w.-]{1,64}$/)).min(1, "tick at least one option").max(60),
     combo: z.object({ model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id"), effort: z.string().regex(/^[a-z]{3,8}$/) }).strict(),
   })

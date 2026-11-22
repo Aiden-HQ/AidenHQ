@@ -115,7 +115,15 @@ describe("a module's private report (primer.publish with private)", () => {
     shared.clear();
     const out = await p.file(args(), "k-0000000000000011");
     expect(out.ok).toBe(false);
-    expect(out.text).toMatch(/was shared or removed while this version was written/);
+    expect(out.text).toMatch(/replaced by a placeholder/);
+    expect(p.calls.filter((c) => c[0] === "primer_add_version").at(-1)?.[1].content).toBe("This private report is being prepared.");
+    const o: NonNullable<Parameters<typeof primer>[0]> = { afterVersion: () => { o.flaky = true; } };
+    const f = primer(o);
+    await f.file(args(), "k-0000000000000014");
+    o.flaky = false;
+    const unknown = await f.file(args(), "k-0000000000000015");
+    expect(unknown).toMatchObject({ ok: true });
+    expect(unknown.text).toMatch(/privacy couldn't be confirmed/);
     const q = primer({ raw: { primer_list_collaborators: "null" } });
     await q.file(args(), "k-0000000000000012");
     await expect(q.file(args(), "k-0000000000000013")).rejects.toThrow(/answered no data/);

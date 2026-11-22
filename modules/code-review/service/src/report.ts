@@ -36,6 +36,9 @@ export function coverageOf(runs: ReportRun[]): Coverage {
     const ran = r.options ? new Set(r.review.coverage?.options ?? []) : undefined;
     for (const id of ids) failed.has(id) ? c.failed.push({ id, why: failed.get(id)! }) : ran && !ran.has(id) ? c.failed.push({ id, why: "the tools run didn't report it ran" }) : c.ran.push(id);
     if (r.review.coverage?.incomplete) c.partial.push({ id: r.option, why: r.review.coverage.incomplete });
+    // A model run over a tree that can't say it read every eligible file (an engine that reports no reads shows none) is partial, never "ran in full".
+    const k = r.review.coverage?.counts;
+    if (k && k.reviewed < k.eligible) c.partial.push({ id: r.option, why: `${k.reviewed} of ${k.eligible} eligible files confirmed read` });
     // Findings a run left out (a tool's output capped, nits past the cap) are coverage the report doesn't show whole.
     const w = r.review.withheld ?? { important: 0, nit: 0, pre_existing: 0 };
     const left = (w.important ?? 0) + (w.nit ?? 0) + (w.pre_existing ?? 0);
@@ -52,13 +55,13 @@ export function findingsOf(b: Pick<ReportBatch, "runs" | "lensOf">): Shown[] {
   }));
 }
 
-/** For display only: findings in the same lens and file, of one severity, whose lines overlap are one entry, keeping every option that found it. */
+/** For display only: findings in the same lens and file, of one severity and title, whose lines overlap are one entry, keeping every option that found it. */
 export function display(findings: Shown[]) {
   type Group = { lens: string; path: string; line: number; end: number; severity: Finding["severity"]; items: Shown[]; options: string[] };
   const groups: Group[] = [];
   for (const f of [...findings].sort((a, b) => a.lens.localeCompare(b.lens) || a.path.localeCompare(b.path) || a.line - b.line)) {
     const end = Math.max(f.line, f.end_line ?? f.line);
-    const g = groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && f.line <= x.end && end >= x.line);
+    const g = groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && x.items[0]!.title.toLowerCase() === f.title.toLowerCase() && f.line <= x.end && end >= x.line);
     if (!g) { groups.push({ lens: f.lens, path: f.path, line: f.line, end, severity: f.severity, items: [f], options: [f.option] }); continue; }
     g.items.push(f);
     g.end = Math.max(g.end, end);

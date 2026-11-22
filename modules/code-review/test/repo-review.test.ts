@@ -92,7 +92,7 @@ test("a tools result naming an option the run wasn't asked for, or a coverage th
   await v.tick();
   v.finish(0, { coverage: { reviewed: [], excluded: [], incomplete: null, options: {} } });
   await v.tick();
-  assert.match(v.db.prepare("SELECT why FROM runs WHERE status = 'failed'").get().why, /coverage isn't in the shared shape/);
+  assert.match(v.db.prepare("SELECT why FROM runs WHERE status = 'failed'").get().why, /coverage or withheld counts aren't in the shared shape/);
 });
 
 test("display groups the same lens, file and overlapping lines, but storage keeps each option's observation", async () => {
@@ -103,7 +103,7 @@ test("display groups the same lens, file and overlapping lines, but storage keep
   w.finish(0, { findings: [w.finding("x1", { option: "sec.gitleaks", lens: "security", line: 3, end_line: 5 }), w.finding("x1", { option: "maint.knip", lens: "security", line: 4 })] });
   await w.tick();
   assert.deepEqual(w.db.prepare("SELECT option FROM findings WHERE id = 'x1' ORDER BY option").all().map((r) => r.option), ["maint.knip", "sec.gitleaks"]);
-  const groups = display([{ ...w.finding("a", { line: 3, end_line: 5 }), option: "o1", lens: "security" }, { ...w.finding("b", { line: 4 }), option: "o2", lens: "security" }, { ...w.finding("c", { line: 9 }), option: "o2", lens: "security" }]);
+  const groups = display([{ ...w.finding("a", { line: 3, end_line: 5, title: "same" }), option: "o1", lens: "security" }, { ...w.finding("b", { line: 4, title: "same" }), option: "o2", lens: "security" }, { ...w.finding("c", { line: 9 }), option: "o2", lens: "security" }]);
   assert.deepEqual(groups.map((g) => g.options), [["o1", "o2"], ["o2"]]);
   // Each tool's own lens (the catalog's), not the one the box wrote: knip is maintainability, whatever its finding says.
   assert.deepEqual(w.db.prepare("SELECT option, lens FROM findings WHERE id = 'x1' ORDER BY option").all().map((r) => [r.option, r.lens]), [["maint.knip", "maintainability"], ["sec.gitleaks", "security"]]);
@@ -220,7 +220,7 @@ test("a finished report not yet sent (a restart between) is sent by the sweep; e
 });
 
 test("a tool's allowed exit codes reach the recipe; Primer's worded answer names the document", async () => {
-  const spec = toolSpec(loadCatalog(readFileSync(new URL("../catalog.json", import.meta.url), "utf8")).filter((o) => o.id === "maint.vulture"));
+  const spec = toolSpec(loadCatalog(readFileSync(new URL("../service/src/catalog.json", import.meta.url), "utf8")).filter((o) => o.id === "maint.vulture"));
   assert.deepEqual(spec["maint.vulture"].exits, [0, 3]);
   const kernel = (outcome) => ({ call: async () => ({ id: "w1", state: "done", outcome: { ok: true, text: outcome } }) });
   const r = { repo: REPO, title: "t", content: "c", versionNote: "n" };

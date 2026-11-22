@@ -1,4 +1,4 @@
-// The option catalog (modules/code-review/catalog.json): every ready-made reviewer a run may pick, by lens and mode, with the
+// The option catalog (modules/code-review/service/src/catalog.json): every ready-made reviewer a run may pick, by lens and mode, with the
 // stack it needs (`when`: path globs on the snapshot; none: always). The service reads it to offer and check a run's options.
 // The canonical is the recipe's (recipe/catalog.ts, lane R1); this file follows its interface until it is that file's sync-shared copy.
 

@@ -752,7 +752,7 @@ const LENS_WORDS: Record<(typeof LENSES)[number], [string, string]> = {
   maintainability: ["Maintainability", "Dead code, duplication, complexity, tangled structure"],
   performance: ["Performance", "Slow paths, wasted work, heavy dependencies"],
 };
-const SHA = /^[0-9a-f]{7,40}$/i;
+const SHA = /^[0-9a-f]{40}$/i;
 /** The service refuses repo reviews until settings.code_review.lenses is on; the page says so instead of failing. */
 function RepoReviewsOff() {
   return (
@@ -827,7 +827,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       <Card className="rv-form">
       <div className="rv-split">
         <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setRepo(r))} />
-        <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A commit SHA; the default branch's head when empty."} error={commitOk ? null : "A commit SHA, 7 to 40 hex characters"}>
+        <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A full commit SHA; the default branch's head when empty."} error={commitOk ? null : "A full 40-character commit SHA"}>
           {(id, d) => <Input id={id} aria-describedby={d} className="rv-mono" placeholder="default branch head" value={commit} onChange={(e) => setCommit(e.target.value)} spellCheck={false} />}
         </Field>
       </div>

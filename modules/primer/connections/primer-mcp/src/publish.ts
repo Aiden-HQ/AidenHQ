@@ -69,6 +69,7 @@ const byOf = (r: { agent?: string }, task: string): Owner | undefined => (r.agen
 export interface Private { makePrivate(documentId: string, title: string): Promise<void>; reports: Reports }
 /** A report's document is created with this title, before it is private: it names no repo. Its real title is set once private. */
 export const NEUTRAL_TITLE = "Repo review";
+const PLACEHOLDER = "This private report is being prepared.";
 
 /**
  * Whether a document is private to its owner alone: private, and no collaborator. A read that fails throws (the publish fails
@@ -149,13 +150,19 @@ export function publisher(call: Call, owners: Owners = fileOwners(), priv: Priva
         const known = priv.reports.get(a.repo_key!);
         if (known !== undefined && (await ownerOnly(call, known))) {
           const out = applied(await write({ ...a, documentId: known }, undefined));
-          // Primer takes no precondition on a version, so the document is read again once it is written: a share that landed in
-          // between is reported as the failure it is, never as a quiet success.
-          return out.ok && !(await ownerOnly(call, known).catch(() => false)) ? { ok: false, text: `${out.text} But document ${known} was shared or removed while this version was written, so the report may be visible to others: check it on Primer.` } : out;
+          if (!out.ok) return out;
+          // Primer takes no precondition on a version, so the document is read again once it is written. Shared (or gone) by
+          // then: the version just written is replaced by the placeholder before anything is reported. A read that fails says
+          // nothing about sharing: the write stands, reported with its privacy unconfirmed.
+          const still = await ownerOnly(call, known).then((v) => v, () => undefined);
+          if (still === undefined) return { ok: true, text: `${out.text} (its privacy couldn't be confirmed after the write)` };
+          if (still) return out;
+          await write({ ...a, documentId: known, content: PLACEHOLDER, description: undefined }, undefined);
+          return { ok: false, text: `${out.text} But document ${known} was shared or removed while this version was written: the version was replaced by a placeholder and the report was not published.` };
         }
         // A new document: created with a placeholder, made private, and only then given the report, so the report is never
         // readable by the organization, not even for a moment.
-        const made = await write({ ...a, documentId: undefined, content: "This private report is being prepared.", description: undefined, title: NEUTRAL_TITLE }, undefined);
+        const made = await write({ ...a, documentId: undefined, content: PLACEHOLDER, description: undefined, title: NEUTRAL_TITLE }, undefined);
         if (!made.ok) return made;
         const id = /\(document ([A-Za-z0-9-]+)\)/.exec(made.text)?.[1];
         if (!id) return { ok: false, text: `${made.text}: its id wasn't in Primer's answer, so the report wasn't added` };

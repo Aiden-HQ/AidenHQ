@@ -328,12 +328,17 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
       } finally { rmSync(dir, { recursive: true, force: true }); }
     },
     async setup(b) {
-      // The setup's approval lands on a quiet task of its own (the kernel's setup op names one), closed once the PR is filed.
+      // The setup's approval lands on a quiet task per repo (the kernel's setup op names one; the same source is the same task).
       const t = await kernel.call("POST", "/v1/tasks", { title: `Code review: deepsec setup for ${b.repo}`, description: `${b.repo}\n\nCode review's deepsec setup PR is approved here.`, role: ROLE, source: `code-review:setup:${b.repo}`, quiet: true });
-      const r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY, task: String(t.id) });
-      const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      // The code host waits five minutes for the approval, then answers 202 { pending }: asking again finds the same open record.
+      let r: Response, j: Record<string, unknown>;
+      for (let i = 0; ; i++) {
+        r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY, task: String(t.id) });
+        j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        if (r.status !== 202 || j.pending !== true) break;
+        if (i >= 5) throw new Error(`the deepsec setup PR is still waiting for its approval (write ${String(j.write)})`);
+      }
       if (!r.ok) throw new Error(`the deepsec setup PR: ${r.status} ${JSON.stringify(j).slice(0, 300)}`);
-      await kernel.call("POST", `/v1/tasks/${String(t.id)}/close`, { status: "done", body: "The setup PR is filed." }).catch(() => {});
       return j;
     },
   };

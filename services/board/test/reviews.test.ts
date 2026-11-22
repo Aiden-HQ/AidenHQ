@@ -73,14 +73,14 @@ describe("the Reviews page's routes", () => {
 
   it("proxies the repo-review catalog with its repo, and starts a tree review for admins only", async () => {
     asked.length = 0;
-    expect((await call("GET", "/api/reviews/catalog?repo=acme/payments&commit=abc1234")).body.sha).toBe("b".repeat(40));
+    expect((await call("GET", "/api/reviews/catalog?repo=acme/payments&commit=abcdef0123456789abcdef0123456789abcdef01")).body.sha).toBe("b".repeat(40));
     expect((await call("GET", "/api/reviews/catalog?repo=not-a-repo")).status).toBe(400);
     expect((await call("POST", "/api/reviews", { ...TREE, run_usd: 25 })).status).toBe(400);
     expect(await call("POST", "/api/reviews", TREE)).toMatchObject({ status: 200, body: { batch: "b1" } });
     role = "user";
     expect((await call("POST", "/api/reviews", TREE)).status).toBe(403);
     role = "admin";
-    expect(asked).toEqual([{ catalog: { repo: "acme/payments", commit: "abc1234" } }, { tree: TREE }]);
+    expect(asked).toEqual([{ catalog: { repo: "acme/payments", commit: "abcdef0123456789abcdef0123456789abcdef01" } }, { tree: TREE }]);
   });
 
   it("files a watched repo as one settings change, and refuses the old reviewers and string-trigger shape", async () => {
