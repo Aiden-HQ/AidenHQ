@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { flushDigest, goneNeeds, queueBatch, queueDigest } from "../src/attention.js";
+import { flushDigest, queueDigest } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";
 
@@ -69,37 +69,22 @@ it("a long digest goes as several messages under the transport limit, each told 
   expect(store.recentTold(3, 50, Date.UTC(2026, 10, 17, 9, 5))).toHaveLength(20);
 });
 
-it("a connection-need digest line goes only while the kernel confirms it; an unreadable kernel keeps every line", async () => {
+it("a digest appends the kernel's confirmed connection needs, and says so when it can't read them", async () => {
   const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
   const at = Date.UTC(2026, 10, 17, 9);
-  const run = async (live: () => Promise<string[]>) => {
+  const run = async (needs: () => Promise<string[]>, queued = true) => {
     const store = openStore(":memory:");
-    queueBatch(store, cfg, { text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" }, at - 1000);
-    queueBatch(store, cfg, { text: "Google isn't connected", dedupe_key: "connect:google:expired" }, at - 1000);
-    queueDigest(store, { agent: "Worker", text: "other" }, at - 1000);
+    if (queued) queueDigest(store, { agent: "Worker", text: "other" }, at - 1000);
     let out = "";
-    await flushDigest(store, cfg, async (t) => ((out = t), true), at, live);
-    return out;
+    await flushDigest(store, cfg, async (t) => ((out = t), true), at, needs);
+    return { out, left: JSON.parse(store.getKv("digest:queue") || "[]") as unknown[] };
   };
-  const sent = await run(async () => ["google:expired"]);
-  expect(sent).toContain("Google isn't connected");
-  expect(sent).toContain("other");
-  expect(sent).not.toContain("GitHub isn't connected");
-  expect(await run(async () => { throw new Error("kernel down"); })).toContain("GitHub isn't connected");
-});
-
-it("goneNeeds is the one check: a need the kernel no longer confirms is gone, other keys and an unreadable kernel are kept (310400ec)", async () => {
-  const live = async () => ["google:expired"];
-  expect([...(await goneNeeds(["connect:github:not_connected", "connect:google:expired", "other", undefined], live))]).toEqual(["connect:github:not_connected"]);
-  expect((await goneNeeds(["connect:github:not_connected"], async () => { throw new Error("down"); })).size).toBe(0);
-  expect((await goneNeeds(["connect:github:not_connected"])).size).toBe(0);
-});
-
-it("one need is one pending line: a new day's line replaces the earlier one (956cbf59)", () => {
-  const store = openStore(":memory:");
-  const cfg = { digestHours: [9], timezone: "UTC" };
-  queueBatch(store, cfg, { text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" }, Date.UTC(2026, 10, 16, 8));
-  queueDigest(store, { agent: "Worker", text: "other" }, Date.UTC(2026, 10, 16, 8));
-  queueBatch(store, cfg, { text: "GitHub isn't connected (again)", dedupe_key: "connect:github:not_connected" }, Date.UTC(2026, 10, 17, 8));
-  expect((JSON.parse(store.getKv("digest:queue")!) as { text: string }[]).map((i) => i.text)).toEqual(["other", "GitHub isn't connected (again)"]);
+  const ok = await run(async () => ["GitHub isn't connected (not connected): https://board/connect/github"]);
+  expect(ok.out).toContain("other");
+  expect(ok.out).toContain("GitHub isn't connected");
+  expect(ok.left).toEqual([]);
+  expect((await run(async () => [])).out).not.toContain("connect");
+  expect((await run(async () => { throw new Error("kernel down"); })).out).toContain("couldn't check connections");
+  expect((await run(async () => ["GitHub isn't connected"], false)).out).toContain("GitHub isn't connected");
+  expect((await run(async () => { throw new Error("kernel down"); }, false)).out).toBe("");
 });

@@ -2,7 +2,7 @@
 import { expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { flushDigest, queueBatch } from "../src/attention.js";
+import { flushDigest, queueDigest } from "../src/attention.js";
 import { buildServer } from "../src/mcp.js";
 import { notify, retry, type Deps } from "../src/notify.js";
 import { openStore } from "../src/store.js";
@@ -20,7 +20,7 @@ it("delivered, queued and retried messages are in notify_recent; dropped ones ar
   await notify(d, { kind: "alert", text: "Prod is down", task: "WOR-1" }, who("ops")); // duplicate: nothing
   await notify(d, { kind: "fyi", text: "Routine news" }, who("scout")); // digest: queued
   await notify(d, { kind: "fyi", text: "Silenced" }, who("muted")); // blocked: nothing
-  queueBatch(d.store, d.attention!, { text: "Kernel batch line" }); // kernel digest line: queued
+  queueDigest(d.store, { agent: "AidenHQ", text: "Kernel batch line", source: "kernel", kind: "fyi" }); // kernel digest line: queued
   up = false;
   await notify(d, { kind: "alert", text: "Later news", dedupe_key: "k" }, who("late")); // waits for a channel: nothing yet
   expect(d.store.recentTold(3, 50)).toHaveLength(1); // only "Prod is down": digest lines are told when their digest goes

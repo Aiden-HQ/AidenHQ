@@ -16,7 +16,7 @@ export interface AttentionConfig {
 }
 export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | { do: "digest" };
 /** A digest line, with what the ledger records once it goes out: `source` is the agent key ("kernel" for the kernel's), `at` when it was queued. */
-type Item = { id?: string; key?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
+type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
 
 const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
 
@@ -45,24 +45,8 @@ export function attend(store: Store, cfg: AttentionConfig, who: { id: string; ke
 export function queueDigest(store: Store, item: Item, now = Date.now()): void {
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
   // One line per item: agent-supplied whitespace and newlines collapse so an item can't forge another agent's line.
-  q.push({ id: randomUUID(), ...(item.key ? { key: item.key } : {}), agent: clip(item.agent, 60), ...(item.task ? { task: clip(item.task, 40) } : {}), text: clip(item.text, TOLD_MAX), source: item.source ?? "kernel", kind: item.kind ?? "fyi", at: now, ...(item.told ? { told: true as const } : {}) });
+  q.push({ id: randomUUID(), agent: clip(item.agent, 60), ...(item.task ? { task: clip(item.task, 40) } : {}), text: clip(item.text, TOLD_MAX), source: item.source ?? "kernel", kind: item.kind ?? "fyi", at: now, ...(item.told ? { told: true as const } : {}) });
   store.setKv("digest:queue", JSON.stringify(q.slice(-100)));
-}
-
-/**
- * A kernel batch item (a line for the next digest): queued once per `dedupe_key` per UTC day. Returns false when there is no
- * digest slot configured, so the caller sends it as an ordinary fyi instead.
- */
-export function queueBatch(store: Store, cfg: Pick<AttentionConfig, "digestHours">, m: { text: string; dedupe_key?: string }, now = Date.now()): boolean {
-  if (!cfg.digestHours.length) return false;
-  const day = new Date(now).toISOString().slice(0, 10);
-  const key = m.dedupe_key ? `batch:${m.dedupe_key}` : undefined;
-  if (key && store.getKv(key) === day) return true;
-  // One need is one line: a pending line with the same dedupe key (an earlier day's) gives way to this one.
-  if (key) store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => i.key !== key)));
-  queueDigest(store, { agent: "AidenHQ", text: m.text, source: "kernel", kind: "fyi", ...(key ? { key } : {}) }, now);
-  if (key) store.setKv(key, day);
-  return true;
 }
 
 /** The owner-local slot now: its date plus the latest digest hour already reached (none before the first one). */
@@ -76,35 +60,21 @@ export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, 
 const DIGEST_MAX = 3000;
 const line = (i: Item) => `- ${i.agent}${i.task ? ` · ${i.task}` : ""}: ${clip(i.text, 300)}`;
 
-const NEED = "connect:";
-/**
- * Which of these dedupe keys are connection-need lines (`connect:<key>`) the kernel no longer confirms down: a recovered, expired or
- * removed need is never told. A kernel that can't be read keeps every line: better to tell the owner than to hide a real outage.
- * Both the digest and an immediate send ask here.
- */
-export async function goneNeeds(dedupeKeys: (string | undefined)[], liveNeeds?: () => Promise<string[]>): Promise<Set<string>> {
-  const needs = dedupeKeys.filter((k): k is string => Boolean(k?.startsWith(NEED)));
-  if (!liveNeeds || !needs.length) return new Set();
-  const live = await liveNeeds().then((k) => new Set(k), () => undefined);
-  return live ? new Set(needs.filter((k) => !live.has(k.slice(NEED.length)))) : new Set();
-}
-
 /**
  * Sends the queued digest once per slot (called on a timer), as as many messages as it takes to stay under DIGEST_MAX. Each
  * message's items leave the queue (and are told) only once it went; a failed send keeps the rest for the next tick.
  */
-export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now(), liveNeeds?: () => Promise<string[]>): Promise<boolean> {
+export async function flushDigest(store: Store, cfg: AttentionConfig, send: (text: string) => Promise<boolean | "off">, now = Date.now(), needs?: () => Promise<string[]>): Promise<boolean> {
   const slot = slotNow(cfg, now);
   if (!slot || store.getKv("digest:slot") === slot) return false;
-  let q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
-  const gone = await goneNeeds(q.map((i) => i.key?.replace(/^batch:/, "")), liveNeeds);
-  if (gone.size) {
-    const stays = (i: Item) => !gone.has(String(i.key?.replace(/^batch:/, "")));
-    q = q.filter(stays);
-    store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter(stays)));
-  }
+  const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
+  // The connections still broken, pulled from the kernel each time the digest is composed (a retry asks again): a recovered one is
+  // simply absent. When the kernel can't be read, one line says so rather than hiding it. Not queue items: nothing to replay or clear.
+  const asked = needs ? await needs().then((l) => l, () => undefined) : [];
+  const extra = (text: string): Item => ({ id: `need:${text}`, agent: "AidenHQ", text, source: "kernel", kind: "fyi", told: true });
+  const items = [...q, ...(asked ?? (q.length ? ["couldn't check connections"] : [])).map(extra)];
   const batches: Item[][] = [];
-  for (const i of q) {
+  for (const i of items) {
     const b = batches.at(-1);
     if (b && [...b, i].map(line).join("\n").length <= DIGEST_MAX) b.push(i);
     else batches.push([i]);
@@ -119,7 +89,7 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
     if (out === true) for (const i of b) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }, now);
   }
   store.setKv("digest:slot", slot);
-  return q.length > 0;
+  return items.length > 0;
 }
 
 /** The digest lines waiting for their slot, as ledger rows (not yet told: the digest hasn't gone). */
