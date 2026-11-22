@@ -427,11 +427,19 @@ args = [${[join(HERE, "review-tools.ts"), repo.root, repo.base].map(q).join(", "
 ` : ""}`;
 }
 
+/** git over a checkout whose branch wrote its own .gitattributes and config: attributes are read from the empty tree (never the work
+ * tree's, which could mark a file -diff or set a filter or driver), no system or global config, no textconv or external diff. */
+export function gitSafe(cwd: string, args: string[]) {
+  const empty = execFileSync("git", ["hash-object", "-t", "tree", "/dev/null"], { cwd, encoding: "utf8" }).trim();
+  const env = { ...process.env, GIT_ATTR_SOURCE: empty, GIT_ATTR_NOSYSTEM: "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+  return execFileSync("git", ["-c", "core.attributesFile=/dev/null", ...args], { cwd, encoding: "utf8", maxBuffer: 1 << 28, env, stdio: ["ignore", "pipe", "ignore"] });
+}
+
 /** The files of the change from `base` that a review must see, renames as delete and add: the path and whether it has a hunk (a binary
  * file, a mode change or an empty file has none). Lockfiles and generated files are no requirement. undefined when git can't list them. */
 export function changeFiles(root: string, base: string): { path: string; hunks: boolean }[] | undefined {
   try {
-    const out = execFileSync("git", ["-c", "core.quotePath=false", "diff", "--no-renames", "--numstat", "-z", base, "HEAD"], { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 });
+    const out = gitSafe(root, ["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", base, "HEAD"]);
     return out.split("\0").filter(Boolean).map((l) => { const [a, r, ...p] = l.split("\t"); return { path: p.join("\t"), hunks: a !== "-" && Number(a) + Number(r) > 0 }; })
       .filter((f) => !/(^|\/)(go\.sum|bun\.lockb)$|[-.]lock(\.json|\.yaml)?$|\.snap$|\.map$|\.min\.(js|css)$/.test(f.path));
   } catch { return undefined; }

@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runEngine } from "../recipe/engines.ts";
+import { changeFiles, runEngine } from "../recipe/engines.ts";
 
 const sh = (cwd: string, ...a: string[]) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
 
@@ -50,3 +50,12 @@ test("quoted paths and a rename in git's default diff are covered", async () => 
 test("a changed-file list that can't be made is not clean", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD`, { badBase: true }), false));
 test("headers without a hunk (a cut-off output) are not the read", async () => assert.equal(await readOf((b) => `git diff ${b} HEAD | grep -v '^@@\\|^[-+ ]'`), false));
 test("only a lockfile changed: there is nothing to require", async () => assert.equal(await readOf(() => "true", { lockOnly: true }), true));
+
+test("a branch's .gitattributes can't hide a file's hunks from the file list", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "attrs-"));
+  sh(dir, "init", "-q"); sh(dir, "config", "user.email", "t@t"); sh(dir, "config", "user.name", "t");
+  writeFileSync(join(dir, "a.ts"), "1\n"); sh(dir, "add", "."); sh(dir, "commit", "-qm", "base");
+  const base = sh(dir, "rev-parse", "HEAD");
+  writeFileSync(join(dir, "a.ts"), "2\n"); writeFileSync(join(dir, ".gitattributes"), "*.ts -diff\n"); sh(dir, "add", "."); sh(dir, "commit", "-qm", "hide");
+  assert.deepEqual(changeFiles(dir, base)?.find((f) => f.path === "a.ts"), { path: "a.ts", hunks: true });
+});

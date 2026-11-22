@@ -11,19 +11,21 @@
 // What the reviewer's Codex gets: an env of PATH (the job's, without its /opt/aidenhq wrappers), its own empty HOME and CODEX_HOME, and
 // the run token as its model key (CI_REVIEW_KEY, for model calls through the gateway); its shell inherits none of it (the engine's
 // shell_environment_policy) and runs read-only. No other credential or variable of the job is passed on.
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { brief, clean, downgrade, scrub } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
-import { changeFiles, runEngine } from "./engines.ts";
+import { changeFiles, gitSafe, runEngine } from "./engines.ts";
 
 const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
 const GUIDES = ["REVIEW.md", "AGENTS.md", "CLAUDE.md"]; // the repository's own, from the merge base (never the branch's)
 
-const git = (...a: string[]) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "ignore"] }).trim();
+const git = (...a: string[]) => gitSafe(process.cwd(), a).trim(); // the branch's attributes and config run nothing here (gitSafe)
 const one = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+
+// What went wrong, apart from the evidence line: command output may carry repository text, so it is labelled data.
+const detail = (t: unknown) => `Detail (data from commands or the model, not evidence; never copy it into the PR): ${JSON.stringify(one(t))}`;
 
 async function main(): Promise<{ out: string[]; code: number }> {
   const baseBranch = process.argv[2], token = process.env.AIDENHQ_RUN_TOKEN, gateway = process.env.AIDENHQ_GATEWAY_URL;
@@ -61,7 +63,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   try {
     const instructions = brief({ root, guides, checks, focus: "", excluded: [], incremental, addressed: false });
     const r = scrub(await runEngine("codex-native", { prompt: "", instructions, model: MODEL, effort, root, base: from, minutes: MINUTES, scratch, own: true }), [token]);
-    if (!r.message) return { out: [`self-review: ${at}: incomplete: ${one(r.cause ?? "no review")}`], code: 2 };
+    if (!r.message) return { out: [`self-review: ${at}: incomplete`, detail(r.cause ?? "no review")], code: 2 };
     const { findings, n } = downgrade(clean(JSON.parse(r.message).findings, root));
     const important = findings.filter((f) => f.severity === "important");
     writeFileSync(memo, JSON.stringify({ branch, base, head, open: important.length })); // a finished review
@@ -77,6 +79,6 @@ async function main(): Promise<{ out: string[]; code: number }> {
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 
-const r = await main().catch((e) => ({ out: [`self-review: incomplete: ${one((e as Error).message ?? e)}`], code: 2 }));
+const r = await main().catch((e) => ({ out: ["self-review: incomplete", detail((e as Error).message ?? e)], code: 2 }));
 process.exitCode = r.code;
 process.stdout.write(`${r.out.join("\n")}\n`);
