@@ -57,6 +57,9 @@ const AppSchema = z
       // the exact routes it names. The app's own paths stay prefixes: where its agent API lives, not which routes it serves.
       callers: z.array(z.union([z.string().min(1), z.object({ agent: z.string().min(1), paths: z.array(callerPath).min(1) }).strict()])).min(1),
       paths: z.array(z.string().regex(PREFIX, "paths are plain absolute path prefixes")).min(1),
+      // Public routes a member-role request may reach even when they are outside api.paths. Additive and off by default:
+      // admin is still held to api.paths, and an object caller's own paths still narrow this grant.
+      member_paths: z.array(z.string().regex(PREFIX, "paths are plain absolute path prefixes")).default([]),
     }).strict().optional(),
     // Shared access (docs/design/access.md): people (not agents) who reach the app through
     // Cloudflare Access and the gate at https://<host>. Instance apps.yaml only (compile refuses it on module apps), sensitive.
