@@ -266,10 +266,11 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
         <Start setup={setup} onWatch={() => setDialog({ kind: "repo" })} onOneOff={(url) => setDialog({ kind: "oneoff", url })} />
       ) : (
         <>
+          {!ready && <Banner tone="info">GitHub isn't connected, so pull request reviews can't run. <LinkButton variant="primary" href="#/settings/connections?connect=github">Connect GitHub</LinkButton></Banner>}
           <div>
             <Tabs label="Reviews views" tabs={TABS} value={tab} href={(t) => `#/reviews/${t}`} />
           </div>
-          {tab === "reviews" && <RunsTab runs={runs} batches={batches} engines={engines} onOneOff={() => setDialog({ kind: "oneoff" })} />}
+          {tab === "reviews" && <RunsTab runs={runs} batches={batches} engines={engines} onOneOff={ready ? () => setDialog({ kind: "oneoff" }) : undefined} />}
           {tab === "repos" && config && <ReposTab config={config} repos={repos} engines={engines} onEdit={(repo) => setDialog({ kind: "repo", repo })} onWatch={() => setDialog({ kind: "repo" })} />}
           {tab === "insights" && <InsightsTab onSignIn={onSignIn} />}
         </>
@@ -347,7 +348,7 @@ function Start({ setup, onWatch, onOneOff }: { setup: ReviewsSetup; onWatch: () 
 
 /* ----------------------------------------------------------------------------- Reviews tab */
 type Filter = "all" | "important" | "skipped";
-function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; batches: TreeBatch[]; engines: EngineCatalog | null; onOneOff: () => void }) {
+function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; batches: TreeBatch[]; engines: EngineCatalog | null; onOneOff?: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [repo, setRepo] = useState("");
   const repoNames = useMemo(() => [...new Set([...(runs ?? []).map((r) => r.repo), ...batches.map((b) => b.repo)])].sort(), [runs, batches]);
@@ -377,7 +378,7 @@ function RunsTab({ runs, batches, engines, onOneOff }: { runs: Run[] | null; bat
       }
     >
       {!shown.length ? (
-        <EmptyState action={<Button onClick={onOneOff}>Review a PR</Button>}>{runs.length || batches.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
+        <EmptyState action={onOneOff && <Button onClick={onOneOff}>Review a PR</Button>}>{runs.length || batches.length ? "No reviews match this filter." : "No reviews yet. The first one starts when a watched repo gets a pull request, or paste a PR link to review one now."}</EmptyState>
       ) : (
         <div className="rv-runs" role="list">
           {shown.map((r) => (
