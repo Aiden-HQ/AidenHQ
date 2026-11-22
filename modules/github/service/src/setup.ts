@@ -124,6 +124,12 @@ export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promi
     else await api("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${a.branch}`, sha: tip });
   } else if (!tip || (!into && !s.carried.length)) return { ok: true, text: JSON.stringify({ pr_url: null, tip, nothing_to_add: true }) };
   if (into) return { ok: true, text: JSON.stringify({ pr_url: into.html_url, tip }) };
+  // The PR opens from whatever the branch holds then: it is bound to the reviewed tip by checking the opened PR's head (the branch can move
+  // between the read and this call) and closing it unreported when another writer got in.
   const pr = await api("POST", `/repos/${a.repo}/pulls`, { title: a.title, body: withFooter(a.body, signedAs), head: a.branch, base: s.def });
+  if (String(pr.head?.sha ?? "") !== tip) {
+    await api("PATCH", `/repos/${a.repo}/pulls/${Number(pr.number)}`, { state: "closed" });
+    throw fail(409, `${a.branch} moved from ${String(tip).slice(0, 12)} to ${String(pr.head?.sha ?? "").slice(0, 12)} while the pull request opened (closed ${pr.html_url}): ask again`);
+  }
   return { ok: true, text: JSON.stringify({ pr_url: pr.html_url, tip }), objects: [`github:${a.repo.toLowerCase()}#${Number(pr.number)}`] };
 }

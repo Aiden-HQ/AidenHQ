@@ -18,7 +18,7 @@ const args = (over = {}) => ({ repo: "acme/widgets", branch: "aidenhq/deepsec-se
 const runOf = (api: any, a: any) => setup.run(api, { base_head: HEAD, ...a });
 
 /** A fake GitHub: the default branch, the setup branch's tip, the files each commit has, what the branch's diff carries, the open PRs. */
-function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?: { html_url: string; base?: { ref: string } }[] } = {}) {
+function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?: { html_url: string; base?: { ref: string } }[]; prHead?: string } = {}) {
   const writes: { method: string; path: string; body: any }[] = [];
   const api = async (method: string, path: string, body?: any) => {
     if (method !== "GET") writes.push({ method, path, body });
@@ -33,7 +33,8 @@ function github(o: { tip?: string | null; has?: string[]; diff?: string[]; open?
     if (path.endsWith("/git/commits")) return { sha: "d".repeat(40) };
     if (path.includes("/git/refs")) return {};
     if (method === "GET" && path.startsWith("/repos/acme/widgets/pulls")) return o.open ?? [];
-    if (path === "/repos/acme/widgets/pulls") return { html_url: "https://github.com/acme/widgets/pull/9", number: 9 };
+    if (path === "/repos/acme/widgets/pulls") return { html_url: "https://github.com/acme/widgets/pull/9", number: 9, head: { sha: o.prHead ?? (writes.some((w) => w.path.endsWith("/git/commits")) ? "d".repeat(40) : o.tip) } };
+    if (method === "PATCH" && path === "/repos/acme/widgets/pulls/9") return {};
     throw new Error(`unexpected ${method} ${path}`);
   };
   return { api, writes };
@@ -194,4 +195,10 @@ test("the op answers only the kernel, and writes nothing to GitHub unless its ow
   assert.deepEqual((await done.call(op())).json, { pr_url: "https://github.com/acme/widgets/pull/9", tip: "d".repeat(40) });
   assert.deepEqual(done.ghCalls, []);
   assert.equal((await done.call(op({ task: undefined }))).status, 400);
+});
+
+test("a branch that moves while the PR opens: the PR is closed and nothing is reported", async () => {
+  const g = github({ tip: TIP, diff: [".deepsec/package.json"], has: Object.keys(args().files), prHead: "f".repeat(40) });
+  await assert.rejects(runOf(g.api, args({ expected_tip: TIP })), /moved from .* while the pull request opened/);
+  assert.deepEqual(g.writes.map((w) => `${w.method} ${w.path}`).slice(-2), ["POST /repos/acme/widgets/pulls", "PATCH /repos/acme/widgets/pulls/9"]);
 });

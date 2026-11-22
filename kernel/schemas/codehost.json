@@ -134,6 +134,7 @@
         "paths": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 20,
           "items": {
             "type": "string",
             "pattern": "^[\\w.][\\w./*-]{0,499}$"
