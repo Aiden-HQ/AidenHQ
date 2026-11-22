@@ -2,8 +2,9 @@
 // agents, and as admin only under those path prefixes. A caller's entry may instead name one exact route (`POST /api/x/{id}/y`:
 // the method, then `{name}` for one segment), holding it to the routes it uses rather than a namespace. role: "member" is the
 // signed-in test-user identity app_view uses: the same caller gate and read-access policy, with the caller's own grant kept, so
-// a public POST can be exercised end to end (a plain-string caller reaches any route the app serves). apps-mcp signs the call's
-// identity token (identity.ts: agent:<key>, bound to this method and path) and adds it to the request; the agent never sees it.
+// a public POST can be exercised end to end (a plain-string caller reaches any route the app serves). An app's optional
+// `member_paths` extends that member grant to public routes outside its agent API. apps-mcp signs the call's identity token
+// (identity.ts: agent:<key>, bound to this method and path) and adds it to the request; the agent never sees it.
 import { IDENTITY_HEADER, memberScope, type Sign } from "./identity.js";
 import type { App } from "./registry.js";
 
@@ -44,14 +45,15 @@ export function plainPath(path: string): string {
 }
 
 /** plainPath, under one of these prefixes (on a segment boundary) or on one of these exact routes for this method. A
- * route only reaches where the app's own API lives. Refuses rather than normalizes. */
-export function checkPath(app: App, path: string, paths = app.api!.paths, method?: string): void {
+ * member request may also use the app's member_paths; every other call only reaches its agent API. Refuses rather than normalizes. */
+export function checkPath(app: App, path: string, paths = app.api!.paths, method?: string, member = false): void {
   const p = plainPath(path);
+  const roots = member ? [...app.api!.paths, ...(app.api!.member_paths ?? [])] : app.api!.paths;
   const under = (pre: string) => p === pre || p.startsWith(pre.endsWith("/") ? pre : `${pre}/`);
   const seg = segmentsOf(p);
   const ok = (entry: string) => {
     const r = parseRoute(entry);
-    if (!app.api!.paths.some(under)) return false;
+    if (!roots.some(under)) return false;
     if (!r) return under(entry);
     return r.method === method && r.segments.length === seg.length && r.segments.every((s, i) => (s === undefined ? seg[i] !== "" : s === seg[i]));
   };
@@ -68,7 +70,7 @@ export function authorize(app: App, callerKey: string, path: string, method?: st
   // listed for one integration never widens to the app's whole public surface. A plain-string caller is granted any route.
   if (role === "member") {
     plainPath(path);
-    if (typeof c !== "string") checkPath(app, path, c.paths, method);
+    if (typeof c !== "string") checkPath(app, path, c.paths, method, true);
     return;
   }
   checkPath(app, path, typeof c === "string" ? app.api.paths : c.paths, method);

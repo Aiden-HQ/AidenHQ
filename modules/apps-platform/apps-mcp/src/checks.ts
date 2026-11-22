@@ -9,7 +9,10 @@
 // kind off). Inferred probes are lenient (a default `/` that 404s or isn't HTML, or a guessed schema path, is a warning);
 // declared ones are strict. One attempt each, short timeouts. Only hard findings fail a deploy (health, a 5xx page, a declared page that won't open, the identity gate); warnings are reported.
 //   identity every TCP port any of the app's containers listens on or exposes: a security gate, not a light check
-//            (identityProbes below). Always hard, fails closed; only an app nobody can reach is skipped, and says so.
+//            (identityProbes below). Fails closed; skipped only when it clearly isn't HTTP, when nothing listens on an
+//            exposed port, when nobody can reach the app, or for an app that is not expected to serve HTTP at all (not
+//            exposed, not shared, no health.url, no api), each said as a warning. A socket that answers HTTP is judged
+//            either way, so no skip covers one.
 // Everything a page says is app-authored: findings carry generated text, and page text only as a short sanitized sample.
 import { apiTarget, checkPath, plainPath } from "./api.js";
 import type { Scope } from "./identity.js";
@@ -33,6 +36,14 @@ export const AGENT_TIMEOUT_MS = 5_000;
 export const sample = (s: unknown): string => String(s ?? "").replace(/[\p{Cc}<>`]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 160);
 
 export const isWeb = (app: App) => app.expose && !!app.port && !!app.health.url;
+
+/**
+ * The app is not expected to serve HTTP at all: not exposed on the tailnet or through the gate, not shared, no `health.url`
+ * and no agent `api` (the registry needs a health.url for an api). A database is the shape this is for: it speaks its own
+ * protocol, so its ports answer silence to an HTTP request. Such an app's unprobed ports are recorded as non-hard findings
+ * instead of failing the deploy; a port that does answer HTTP is still judged, on this app as on any other (identityPorts).
+ */
+export const noHttpSurface = (app: App) => !app.expose && !app.share?.host && !app.health.url && !app.api;
 
 /** Which render and agent probes to run, and whether each path was declared (strict) or inferred (lenient). */
 export function plan(app: App, declared: Declared = {}): { render: { path: string; declared: boolean }[]; agent: { path: string; declared: boolean }[] } {
@@ -201,17 +212,28 @@ export function judgeIdentity(answers: { probe: IdentityProbe; status: number }[
  * One socket of one container (a listening or exposed port, on one address it can be reached at) and what each identity
  * probe got there (status 0: no HTTP answer). `raw`, when nothing answered HTTP, is a plain TCP look: `banner` it spoke
  * something that isn't HTTP, `refused` nothing listens, `http` it said HTTP after all, `closed` it hung up silently, `silent`
- * no answer at all.
+ * no answer at all. `tls` is the ClientHello's verdict, and it alone decides whether a skip may cover the socket.
  */
-export interface PortAnswers { service: string; port: number; host: string; listening: boolean; raw?: "banner" | "refused" | "http" | "closed" | "silent"; answers: { probe: IdentityProbe; status: number }[] }
+export interface PortAnswers {
+  service: string; port: number; host: string; listening: boolean;
+  raw?: "banner" | "refused" | "http" | "closed" | "silent";
+  /** What a TLS ClientHello got on a socket that answered no HTTP: `tls` a TLS record header, `no` anything else. */
+  tls?: "tls" | "no";
+  answers: { probe: IdentityProbe; status: number }[];
+}
 
 /**
  * The gate over every socket of every container (IDENTITY_SCRIPT's findings). A socket that answered HTTP is judged by
- * judgeIdentity. One that didn't is skipped only when it clearly isn't HTTP (a non-HTTP banner) or nothing listens on an
- * exposed port, and never on a port the registry says is HTTP (required); any other silence fails closed. No socket at all:
- * nobody can reach the app, the one skip, recorded as a warning.
+ * judgeIdentity, and one that answered HTTP bytes without a counted status is hard too: no skip covers either. One that
+ * didn't is skipped when it clearly isn't HTTP (a non-HTTP banner), when nothing listens on an exposed port, or when the
+ * app serves no HTTP at all (`noHttp`: not exposed, not shared, no health.url, no api), so its ports are recorded as
+ * non-hard "not probed" findings; never on a port the registry says is HTTP (required). The plaintext look cannot tell a
+ * database from a TLS listener that hangs up on a GET, so every socket that answered no HTTP gets a TLS ClientHello too,
+ * on every app shape: a TLS record is "answers HTTPS" and hard before any skip, and a socket on an app the skip may cover
+ * is only skipped when the ClientHello says no TLS. Any other silence, `closed` and `silent` included, fails closed. No
+ * socket at all: nobody can reach the app, the one skip, every skip a non-hard finding.
  */
-export function identityPorts(ports: PortAnswers[], required: Door[], denied: string[] = []): ProbeResult {
+export function identityPorts(ports: PortAnswers[], required: Door[], denied: string[] = [], noHttp = false): ProbeResult {
   const name = (p: { service: string; port: number | string }) => `${p.service}:${p.port}`;
   const at = (p: PortAnswers) => `${name(p)} on ${p.host}`;
   const findings: Finding[] = [];
@@ -221,10 +243,40 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
   if (!ports.length && !findings.length) return probeResult("identity", "*", [{ hard: false, what: "not probed: no container of the app listens on or exposes a TCP port, so nothing can reach it" }]);
   for (const p of ports) {
     const req = required.some((d) => name(d) === name(p));
-    if (p.answers.some((a) => a.status > 0)) findings.push(...judgeIdentity(p.answers).findings.map((f) => ({ ...f, what: `${at(p)}: ${f.what}` })));
-    else if (p.raw === "banner" && !req) findings.push({ hard: false, what: `${at(p)} speaks something other than HTTP: not probed` });
-    else if (p.raw === "refused" && !p.listening && !req) findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
-    else findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})` });
+    const hard = (what: string) => findings.push({ hard: true, what: `${at(p)}: ${what}` });
+    // An HTTP answer is judged, counted or not, before any skip can apply.
+    if (p.answers.some((a) => a.status > 0)) {
+      findings.push(...judgeIdentity(p.answers).findings.map((f) => ({ ...f, what: `${at(p)}: ${f.what}` })));
+      continue;
+    }
+    if (p.raw === "http") {
+      hard("answers HTTP (a plaintext GET got an HTTP reply), so it isn't a database speaking its own protocol: not skipped");
+      continue;
+    }
+    // A TLS record in answer to a ClientHello is an HTTPS listener on any app shape: never skipped, whatever the plaintext
+    // look read its alert as.
+    if (p.tls === "tls") {
+      hard("answers HTTPS (a TLS ClientHello got a TLS record), so it isn't a database speaking its own protocol: not skipped");
+      continue;
+    }
+    // A port nothing listens on on an exposed app is a skip, on any app shape, before the app-level rule.
+    if (p.raw === "refused" && !p.listening && !req) {
+      findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
+      continue;
+    }
+    // The one skip rule: a socket that showed it isn't HTTP and isn't TLS, on a port the registry doesn't call HTTP. Always a
+    // recorded non-hard finding, never a silent pass. The plaintext byte look alone doesn't decide it for an app that may be
+    // skipped: the TLS ClientHello does, because a TLS listener hangs up on a GET exactly as a database does.
+    const why = req ? undefined
+      : noHttp ? (p.tls === "no" ? "the app isn't exposed, isn't shared and has no health.url or api, so it isn't expected to serve HTTP (not HTTP, not TLS)" : undefined)
+      : p.raw === "banner" && p.tls === "no" ? "speaks something other than HTTP"
+      : undefined;
+    if (why) {
+      findings.push({ hard: false, what: `${at(p)}: not probed: ${why}` });
+      continue;
+    }
+    if (noHttp) hard(`${UNCONFIRMED}: the TLS probe didn't answer, so a listener that serves HTTPS can't be ruled out (no HTTP answer: ${p.raw ?? "none"})`);
+    else hard(`${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})`);
   }
   // Hard findings first, so the deploy's summary keeps the sentence.
   return probeResult("identity", [...new Set(ports.map(name))].join(" ") || "*", [...findings.filter((f) => f.hard), ...findings.filter((f) => !f.hard)]);
@@ -238,10 +290,11 @@ export const PORT_PROBE_MS = 3_000;
  * process of this pid namespace holds it: its inode appears as a `socket:[<inode>]` fd of some /proc/<pid>/fd. A listener
  * no fd attributes (it vanished between the two reads) is dropped too; the registry's required doors are still checked.
  * stdin { ports: number[] (exposed or required), ips: string[] (the container's addresses), probes: { method, path,
- * headers }[] }, and `proc`, the proc root those pids and net tables are read from (the platform leaves it unset: /proc; a
- * test passes a fixture tree). Every such socket (but Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a
- * wildcard bind on loopback and every container address; a given port nothing listens on, on the same. Every probe is sent to
- * every socket; one that answered none gets a plain TCP look. Prints { sockets: [{ port, host, listening, raw?, statuses }] }.
+ * headers }[], tls: boolean (send a TLS ClientHello to a socket that answered no HTTP: an HTTPS listener is never skipped), and `proc`, the proc root those pids and
+ * net tables are read from (the platform leaves it unset: /proc; a test passes a fixture tree). Every such socket (but
+ * Docker's DNS on 127.0.0.11) is probed on the address it is bound to; a wildcard bind on loopback and every container
+ * address; a given port nothing listens on, on the same. Every probe is sent to every socket; one that answered none gets a
+ * plain TCP look, and (when `tls`) a ClientHello. Prints { sockets: [{ port, host, listening, raw?, tls?, statuses }] }.
  */
 export const IDENTITY_SCRIPT = String.raw`
 const fs = require("fs"), net = require("net");
@@ -263,6 +316,46 @@ const raw = (host, port) => new Promise((done) => {
   s.on("timeout", () => end(got ? "banner" : "silent"));
   s.on("end", () => end(got ? (got.startsWith("HTTP/") ? "http" : "banner") : "closed"));
   s.on("error", (e) => end(e.code === "ECONNREFUSED" ? "refused" : got ? "banner" : "silent"));
+});
+// A well-formed TLS 1.2 ClientHello (TLS 1.3 versions offered, x25519 and P-256 key shares, the TLS 1.3 suites): a real TLS
+// server answers with a handshake record, while a server that only speaks its own protocol hangs up or reads a nonsense
+// length, as a database does. Built field by field so no length can drift out of step.
+const HELLO = (() => {
+  const u8 = (...a) => Buffer.from(a.flat());
+  const u16 = (n) => u8(n >> 8, n & 0xff);
+  const u24 = (n) => u8(n >> 16, (n >> 8) & 0xff, n & 0xff);
+  const vec16 = (items) => { const b = Buffer.concat(items); return Buffer.concat([u16(b.length), b]); };
+  const ext = (type, body) => Buffer.concat([u16(type), u16(body.length), body]);
+  const share = (group, key) => Buffer.concat([u16(group), u16(key.length), key]);
+  const point = Buffer.concat([u8(4), Buffer.alloc(64, 9)]); // an uncompressed P-256 point: well-formed for any server
+  const exts = Buffer.concat([
+    ext(0x002b, Buffer.concat([u8(4), u16(0x0304), u16(0x0303)])),            // supported_versions: TLS 1.3, 1.2
+    ext(0x000a, vec16([u16(0x001d), u16(0x0017)])),                          // supported_groups: x25519, P-256
+    ext(0x000d, vec16([u16(0x0403), u16(0x0401), u16(0x0503), u16(0x0501)])), // signature_algorithms
+    ext(0x0033, vec16([share(0x001d, Buffer.alloc(32, 9)), share(0x0017, point)])), // key_share
+  ]);
+  const body = Buffer.concat([
+    u16(0x0303), Buffer.alloc(32, 7), u8(0),
+    vec16([u16(0x1301), u16(0x1302), u16(0x1303), u16(0xc02f), u16(0xc030)]),
+    u8(1), u8(0), u16(exts.length), exts,
+  ]);
+  const hs = Buffer.concat([u8(1), u24(body.length), body]);
+  return Buffer.concat([u8(0x16), u16(0x0301), u16(hs.length), hs]);
+})();
+const tlsLook = (host, port) => new Promise((done) => {
+  let got = Buffer.alloc(0), finished = false;
+  // A TLS record content type (change_cipher_spec, alert, handshake, application_data) in answer to a hello is TLS evidence,
+  // even truncated; a type byte followed by something other than a 0x03 version is not. A first byte of 0x15 alone is not
+  // read as a plain banner: a listener that begins a TLS record and hangs up could serve HTTPS, so it stays hard.
+  const verdict = () => {
+    if (!got.length || ![0x14, 0x15, 0x16, 0x17].includes(got[0])) return "no";
+    return got.length < 2 || got[1] === 0x03 ? "tls" : "no";
+  };
+  const end = () => { if (finished) return; finished = true; s.destroy(); done(verdict()); };
+  const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
+  s.on("connect", () => s.write(HELLO));
+  s.on("data", (d) => { got = Buffer.concat([got, d]); end(); });
+  s.on("timeout", end); s.on("end", end); s.on("error", end);
 });
 let s = "";
 process.stdin.on("data", (c) => (s += c)).on("end", async () => {
@@ -312,7 +405,9 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       } catch {}
       statuses.push(status);
     }
-    out.push({ ...k, statuses, ...(statuses.some((x) => x) ? {} : { raw: await raw(k.host, k.port) }) });
+    const plain = statuses.some((x) => x) ? {} : { raw: await raw(k.host, k.port) };
+    const tls = r.tls && !statuses.some((x) => x) ? { tls: await tlsLook(k.host, k.port) } : {};
+    out.push({ ...k, statuses, ...plain, ...tls });
   }
   process.stdout.write(JSON.stringify({ sockets: out, denied }));
 });
@@ -326,14 +421,54 @@ export function processUids(top: string): number[] {
 }
 
 /**
- * One container's scans, one per uid, merged: a socket listens when any scan attributed it (the first such answer is
- * kept), and a process stays denied only when every scan was refused it.
+ * One container's scans, one per uid, merged. Any scan's evidence counts, whichever one attributed the listener: one uid can
+ * read a socket another could not, so a later scan must never erase an earlier one's answer. A socket listens when any scan
+ * attributed it; a process stays denied only when every scan was refused it. Everything else is joined so evidence can only
+ * get stronger, never weaker: a probe's status keeps the answer that is strongest evidence of a problem (a served request
+ * first, then a refusal, then any other answer, then silence), `raw` keeps the strongest look (`http`, then a hang-up, then a
+ * banner, then a refusal), and the TLS answer is `tls` if any scan saw a TLS record, `no` if any answered `no`, and absent
+ * only when no scan answered. Losing any of these could turn an HTTP or TLS listener into a skip (identityPorts).
  */
-export function mergeScans(scans: { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; statuses: number[] }[]; denied?: string[] }[]) {
+export function mergeScans(scans: { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; tls?: PortAnswers["tls"]; statuses: number[] }[]; denied?: string[] }[]) {
   const sockets = new Map<string, (typeof scans)[number]["sockets"][number]>();
-  for (const sc of scans) for (const k of sc.sockets) { const key = `${k.host} ${k.port}`; if (!sockets.has(key) || (k.listening && !sockets.get(key)!.listening)) sockets.set(key, k); }
+  for (const sc of scans) for (const k of sc.sockets) {
+    const key = `${k.host} ${k.port}`, had = sockets.get(key);
+    if (!had) { sockets.set(key, k); continue; }
+    // The scan that attributed the listener supplies the socket's own fields; every piece of evidence is joined, so no
+    // scan can weaken another's answer.
+    const owner = k.listening && !had.listening ? k : had;
+    const raw = strongestRaw([had.raw, k.raw]);
+    const tls = had.tls || k.tls ? (had.tls === "tls" || k.tls === "tls" ? "tls" as const : "no" as const) : undefined;
+    sockets.set(key, {
+      port: owner.port,
+      host: owner.host,
+      listening: had.listening || k.listening,
+      statuses: Array.from({ length: Math.max(had.statuses.length, k.statuses.length) }, (_, i) => strongestStatus(had.statuses[i] ?? 0, k.statuses[i] ?? 0)),
+      ...(raw ? { raw } : {}),
+      ...(tls ? { tls } : {}),
+    });
+  }
   const denied = (scans[0]?.denied ?? []).filter((p) => scans.every((sc) => (sc.denied ?? []).includes(p)));
   return { sockets: [...sockets.values()], denied };
+}
+
+/**
+ * Which of two answers to the same probe is stronger evidence, never weaker. The order follows what judgeIdentity needs to
+ * pass: a served status (under 400) is hard on its own; silence is hard on its own; an answer that is not a refusal is hard
+ * when no counted request was refused; and a refusal is the only answer that lets the gate pass. So a served status beats
+ * silence, silence beats other answers, and every answer beats a refusal. Keeping the first non-zero answer let one scan's
+ * 401 hide another scan's 200, and ranking a refusal above other answers let the same 401 clear a 500 or a silence.
+ */
+export function strongestStatus(a: number, b: number): number {
+  const rank = (s: number) => (s > 0 && s < 400 ? 4 : s === 0 ? 3 : REFUSED.has(s) ? 1 : 2);
+  return rank(a) >= rank(b) ? a : b;
+}
+
+/** The same, for the plaintext look: an HTTP reply, then a hang-up or silence, then a banner, then a refusal. `refused` is
+ * the weakest (nothing listens), so it must never win over a look that got an answer. */
+export function strongestRaw(seen: (PortAnswers["raw"] | undefined)[]): PortAnswers["raw"] | undefined {
+  const rank = (r: PortAnswers["raw"] | undefined) => (r === "http" ? 4 : r === "closed" || r === "silent" ? 3 : r === "banner" ? 2 : r === "refused" ? 1 : 0);
+  return seen.reduce<PortAnswers["raw"] | undefined>((best, r) => (rank(r) > rank(best) ? r : best), undefined);
 }
 
 /**

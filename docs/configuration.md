@@ -316,6 +316,9 @@ Design: [design/access.md](design/access.md).
   ([access](design/access.md#in-app-feedback)). `api.callers` entries may be `{agent, paths}` to narrow one caller's paths:
   a bare path is a prefix (any method, anything below it), and `METHOD /path` with `{name}` for one segment names one exact
   route (`GET /api/agent/intake`, `POST /api/agent/intake/{reference}/decision`). The app's own `api.paths` stay prefixes.
+  `api.member_paths` (plain prefixes, empty by default) widens only an object-form caller, and only within that caller's own
+  `paths`: a member-role call may reach `api.paths` or a public `member_paths` prefix. Admin calls stay limited to `api.paths`;
+  a plain-string caller already reaches every route.
 - **Data:** `data/kernel/auth/auth.db` (`app_roles`, `app_defaults`, `app_requests`, `app_access_log`), keyed by app name and
   exported to the gate in `data/gate/accounts.json`. An app that leaves `gate.json` takes its rows with it within a
   minute. A block or demotion returns only once the gate's file has it.

@@ -89,7 +89,7 @@ import { createWakes, wakeNotice } from "./wakes.ts";
 import { createWorkspaceSweep, pruneSkillRuntimes } from "./workspaces.ts";
 import { createModuleTasks } from "./modtasks.ts";
 import { createWork } from "./work.ts";
-import { readEngines } from "./sandbox.ts";
+import { ensureStateDirs, readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
@@ -243,6 +243,11 @@ const channels = createChannels({ db: records.db, records, writes, board: boardA
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log, extra: () => [channels.digest()].filter((t): t is string => t !== null).map((text) => ({ kind: "digest" as const, text })) });
 // alert: something is wrong now (a page); done: a plain notice, never muted.
 const toOwner = (kind: "alert" | "done") => (text: string) => notify.queue({ kind, text });
+// The runner's state root can't be made (a reclaim removed it, or another user owns it): one alert per episode, naming the
+// path, its owner and mode, and the uid the kernel runs as, so the owner can fix it instead of every job failing unseen. The
+// key names the episode: the owner channel drops an alert key it already sent within the hour, so a second outage an hour or
+// even a minute later must not reuse the first one's.
+const warnStateNeed = (e: Error, episode: string) => notify.queue({ kind: "alert", text: `Jobs on this host can't start: ${e.message}. Recreate it as this user (mode 0700) or fix its owner and mode.`, dedupe_key: `runner-state-dir:${episode}` });
 // A judgement a task can't make for itself (a parked target, an agent's wait on its delegator or the owner) reaches whoever
 // can make it, once (escalate.ts).
 // A task as the control plane has it now (undefined when gone; throws when it can't be read now): escalate and connection state.
@@ -369,6 +374,10 @@ const sandbox = sandboxConfig(env);
 // the `change` check job, whose receipt the kernel signed and verifies.
 const tasksDir = path.join(sandbox.workDir, "tasks"), localScratch = path.join(sandbox.workDir, "codehost-scratch");
 mkdirSync(localScratch, { recursive: true });
+// The runner's state root and its logs (the engine homes and job logs live there): made 0700 at start, beside the other
+// startup directories, so a reclaim that removed them doesn't wait for the first job to find out. A root that still can't be
+// made is one owner alert; the first launch reports the same way (`stateNeed` below).
+try { ensureStateDirs(sandbox.stateDir, warnStateNeed); } catch (e) { log("WARNING: the runner state directory can't be made", { err: (e as Error).message }); }
 const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
 const localCode = codehostLocal({
   fact: localFacts(facts),
@@ -405,7 +414,7 @@ const agentKey = (id: string) => String(grantsTable().agents?.[id]?.key ?? id);
 // The agents a module dispatches (compile: an agent runs on the engine runner, and this module holds kernel.jobs), by key.
 const mayDispatch = dispatchesFrom(() => (modulesFile().modules ?? {}) as never, () => grantsTable().agents ?? {});
 const jobs = createJobs({
-  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id), mayDispatch,
+  db: records.db, cfg: sandbox, log, facts, agentKey, boxWrap: BOX_EXEC_WRAP, onEnd: (id) => boxes?.ended(id), mayDispatch, stateNeed: (e, episode) => warnStateNeed(e, episode),
   cp: {
     task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); return r.ok ? ((await r.json()) as never) : undefined; },
   },
@@ -543,6 +552,7 @@ const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.
 boxes = createBoxes({
   db: records.db, cfg: sandbox, jobs, stopping: () => draining, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), secret, whoami,
   connections: () => computers().connections ?? {}, handbook: handbookFrom(configDir), cleanup: jobTools.cleanup, log, once: outcomes.once,
+  stateNeed: (e, episode) => warnStateNeed(e, episode),
   attachments: {
     list: async (task) => (await cpJson(`/api/issues/${encodeURIComponent(task)}/attachments`)) as { originalFilename?: string; byteSize?: number }[],
     add: async (task, name, type, data) => {
@@ -591,7 +601,7 @@ const codehost = createCodehost({ repos: codehostRepos, grants: codehostGrants, 
   // codehost-local's snapshot for `local/…` repos, when that module is enabled.
   local: () => (localHost() ? { snapshot: localSnapshot({ bare: localCode.bare }), bundle: (repo) => localCode.bundle(repo) } : undefined) , noteObject: (ref, record) => records.addObjects(record, [ref]) });
 // Check jobs (checkjobs.ts): credential-free boxes of the launcher's, snapshots from the module that provides them.
-const checkJobs = checkJobsFrom({ pool, db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), log });
+const checkJobs = checkJobsFrom({ pool, db: records.db, secret, recipes: () => modulesFile().check_jobs ?? {}, ask: codehost.ask, call: launcherClient(launcherUrl, () => secret("launcher_kernel_key")), workDir: sandbox.workDir, gatewayUrl: `${sandbox.boxGatewayUrl}/api/v1`, spent: (runKey) => gw.spentByKey(runKey), tokens: (runKey) => gw.tokensByKey(runKey), refused: (runKey) => gw.refusedByKey(runKey), log });
 const lane = createLane({ once: outcomes.once, owner: ownerApi, grantsFile: grantsTable, facts, log, postAsAgent: lanePoster(outcomes) });
 // The board's reads of module services that declare a board API (providers.board), through the kernel.
 const moduleBoardApi = createBoardApi({ decl: (m) => (modulesFile().modules?.[m] as { board?: { url: string; auth_secret: string } } | undefined)?.board, secret, resolver });

@@ -195,32 +195,108 @@ export function moveLedger(db: DatabaseSync, legacy?: string): number {
   }
 }
 
+/** An SSE line's `data` field (the space after the colon is optional, a trailing CR dropped), or undefined for any other line. */
+export const sseData = (line: string): string | undefined => (line.startsWith("data:") ? line.slice(line[5] === " " ? 6 : 5).replace(/\r$/, "") : undefined);
+
+/** Error codes and types that name a passing upstream condition (overload, rate limit, provider fault): worth another attempt. */
+const TRANSIENT_ERRORS = new Set(["server_error", "api_error", "overloaded_error", "rate_limit_error", "rate_limit_exceeded", "timeout"]);
+
+/**
+ * Whether an SSE `data` field reports a failure: OpenRouter's error chunk (a top-level `error`), an `error` event (Responses,
+ * Anthropic) or `response.failed`. Only top-level fields count (a response's own `error: null`, a delta's text never do).
+ * → its reason (the error's code, else its type: a short word, never the message) and whether it is transient (a code in
+ * RETRY_STATUS or TRANSIENT_ERRORS); undefined when the field is no failure.
+ */
+export function streamError(data: string): { reason: string; transient: boolean } | undefined {
+  if (!data.includes('"error"') && !data.includes("response.failed")) return undefined;
+  try {
+    const j = JSON.parse(data) as { error?: { code?: unknown; type?: unknown }; type?: unknown; code?: unknown; response?: { error?: { code?: unknown; type?: unknown } } } | null;
+    if (!j || typeof j !== "object" || !(j.error || j.type === "error" || j.type === "response.failed")) return undefined;
+    const e = (typeof j.error === "object" && j.error) || j.response?.error || { code: j.code }; // a Responses `error` event carries its code at the top
+    const raw = String(e.code ?? e.type ?? "");
+    const reason = /^[\w.-]{1,60}$/.test(raw) ? raw : "unknown";
+    return { reason, transient: RETRY_STATUS.has(Number(raw)) || TRANSIENT_ERRORS.has(raw) };
+  } catch { return undefined; }
+}
+
+/** An SSE `data:` line that ends an answer: a chat chunk's finish_reason (but `error`), a response's completion, Anthropic's message_stop.
+ * The pattern is only a cheap filter: the parsed top-level fields decide (an echoed schema may contain the same words). */
+const FINISHED = /"finish_reason"\s*:\s*"(?!error")[^"]+"|"type"\s*:\s*"(?:response\.completed|response\.incomplete|message_stop)"/;
+function finishes(data: string): boolean {
+  if (!FINISHED.test(data)) return false;
+  try {
+    const j = JSON.parse(data) as { type?: unknown; choices?: { finish_reason?: unknown }[] } | null;
+    return ["response.completed", "response.incomplete", "message_stop"].includes(String(j?.type)) || (Array.isArray(j?.choices) && j.choices.some((c) => typeof c?.finish_reason === "string" && c.finish_reason !== "error"));
+  } catch { return false; }
+}
+/** An SSE `data` field's event type (its first `type`, a short word), or undefined (a chat chunk has none). */
+const eventType = (data: string) => /"type"\s*:\s*"([\w.]{1,60})"/.exec(data.slice(0, 200))?.[1];
+/** An SSE event's data: its `data` fields joined by newlines (empty for a comment-only event). */
+const eventData = (ev: string) => ev.split(/\r?\n/).map(sseData).filter((d) => d !== undefined).join("\n");
+/** Events that only open an answer, before any output: Responses' created and in_progress, Anthropic's message_start and ping. */
+const OPENING = new Set(["response.created", "response.in_progress", "message_start", "ping"]);
+/** Whether an event (not a failure) only opens an answer: an OPENING type, or a chat chunk whose deltas name only the role. */
+function opening(data: string): boolean {
+  if (OPENING.has(eventType(data) ?? "")) return true;
+  if (!data.includes('"choices"') || data.includes('"usage":{')) return false;
+  try {
+    const j = JSON.parse(data) as { choices?: { delta?: Record<string, unknown>; finish_reason?: unknown }[] } | null;
+    return Array.isArray(j?.choices) && j.choices.length > 0 && j.choices.every((c) => !c.finish_reason && Object.entries(c.delta ?? {}).every(([k, v]) => k === "role" || v === "" || v == null));
+  } catch { return false; }
+}
+
 /**
  * What OpenRouter billed for one call, read as the answer passes: the last SSE `data:` line with a usage block (a chat
  * completion's final chunk, or `response.completed`), or the whole JSON body. done() → { key, model, input (uncached),
- * cached, output, costUsd } or undefined. The model is the one OpenRouter answered with.
+ * cached, output, costUsd } or undefined. The model is the one OpenRouter answered with. failure() (a stream, after done())
+ * → why an answer that never completed (neither final usage nor a finish event) failed: its first error event's reason,
+ * else its last event's type; undefined for an answer that completed. `[DONE]` is only the transport's end, never a finish.
+ * Never model text: the reason is safe to log.
  */
-export function usageTap(sse: boolean): { feed(text: string): void; done(): Usage | undefined } {
-  let tail = "", body = "", found: (Answer & { id: string; usage: UsageBlock }) | undefined;
+export function usageTap(sse: boolean): { feed(text: string): void; done(): Usage | undefined; failure(): string | undefined } {
+  let tail = "", body = "", event: string[] = [], held = 0, last = "none", error: string | undefined, finished = false, final = false, found: (Answer & { id: string; usage: UsageBlock }) | undefined;
+  const line = (data: string) => {
+    if (data !== "[DONE]") last = eventType(data) ?? "chunk";
+    const err = streamError(data);
+    if (err) error ??= `error event: ${err.reason}`;
+    else if (finishes(data)) finished = true;
+    // Completed usage stays authoritative; an error event's usage is kept for billing only when the answer had none, and never counts as completion.
+    if (err && final) return;
+    const was = final;
+    take(data);
+    if (err) final = was;
+  };
+  const field = (l: string) => {
+    const d = sseData(l);
+    if (d !== undefined) { if ((held += d.length) <= MAX_BODY) event.push(d); return; }
+    if (l.replace(/\r$/, "") !== "") return;
+    if (event.length && held <= MAX_BODY) line(event.join("\n"));
+    event = []; held = 0;
+  };
   const take = (text: string) => {
     if (!text.includes('"usage"')) return;
     try {
       const j = JSON.parse(text) as (Answer & { type?: unknown; response?: Answer; message?: Answer }) | null;
       // Anthropic's stream: the id and input in message_start, the final usage (and OpenRouter's cost) in message_delta.
-      if (j?.type === "message_delta" && j.usage && found) return void (found.usage = { ...found.usage, ...j.usage });
+      if (j?.type === "message_delta" && j.usage && found) { found.usage = { ...found.usage, ...j.usage }; final = true; return; }
       const r = j?.type === "response.completed" || j?.type === "response.incomplete" ? j.response : j?.type === "message_start" ? j.message : j; // an answer cut at its output limit is billed too
-      if (r?.usage && typeof r.id === "string") found = r as Answer & { id: string; usage: UsageBlock };
+      if (r?.usage && typeof r.id === "string") { found = r as Answer & { id: string; usage: UsageBlock }; final = j?.type !== "message_start"; }
     } catch {}
   };
   return {
     feed(text) {
       if (!sse) { if (body.length < MAX_BODY) body += text; return; }
+      // Line by line, comments dropped; an event's data fields are joined at its blank line, as the peek reads them (held
+      // to MAX_BODY: past it the event is dropped).
       const lines = (tail + text).split("\n");
       tail = lines.pop()!;
-      for (const l of lines) if (l.startsWith("data: ")) take(l.slice(6));
+      for (const l of lines) field(l);
+    },
+    failure() {
+      return finished || final ? undefined : (error ?? `no usage or finish; last event: ${last}`);
     },
     done() {
-      if (sse) { if (tail.startsWith("data: ")) take(tail.slice(6)); } else take(body);
+      if (sse) { field(tail); field(""); tail = ""; } else take(body);
       if (!found) return undefined;
       const u = found.usage;
       const anthropic = u.cache_read_input_tokens !== undefined || u.cache_creation_input_tokens !== undefined;
@@ -252,6 +328,11 @@ const TRUE_UP_MS = 30 * 60_000;
 
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 524]);
 const RETRY_DELAYS_MS = [1000, 3000, 9000, 20000];
+/** How much of a stream, and for how long, is held back while looking for its first output before it is passed through. */
+const PEEK_BYTES = 64 * 1024;
+const FIRST_EVENT_MS = 10_000;
+/** A stream that ended before any output: incomplete, worth one more attempt. */
+const NO_OUTPUT = { reason: "ended before any output", transient: true };
 
 /**
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
@@ -326,6 +407,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
     ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE kind = 'ci-code-review' AND day = ?"),
+    // A cap refusal's ledger row: its key is `cap:<run key>:<scope>:<subject>:<cap>`.
+    refusedRun: db.prepare("SELECT key, rowid AS n FROM calls WHERE run_key = ? AND status = 'cap_reached' ORDER BY rowid"),
   };
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
@@ -608,8 +691,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     if (body.max_completion_tokens !== undefined) body.max_completion_tokens = r.maxOutput;
     body.provider = { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), zdr: true };
     // Settled once, however the call ends: at what OpenRouter billed (usage.cost; tokens x list price if a usage block lacks it,
-    // never 0); nothing when the upstream refused before any output (`free`: OpenRouter bills none); else the reservation (a
-    // stream cut, no usage, a restart).
+    // never 0); nothing when the upstream refused before any output or a stream failed in-band (`free`: OpenRouter bills
+    // neither; the latter as `stream_error`, so it stays visible); else the reservation (a stream cut, no usage, a restart).
     live++;
     const settle = (status: string, u?: Usage, free = false) => {
       live--;
@@ -618,23 +701,91 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let peeked: Peeked | undefined;
     let gen = "";
     let attempt = new AbortController();
     const betas = String(req.headers["anthropic-beta"] ?? "").split(",").map((b) => b.trim()).filter((b) => ANTHROPIC_BETAS.has(b));
     const anthropic = path !== "messages" ? {} : { ...(typeof req.headers["anthropic-version"] === "string" ? { "anthropic-version": req.headers["anthropic-version"] } : {}), ...(betas.length ? { "anthropic-beta": betas.join(",") } : {}) };
     const post = () => (attempt = new AbortController(), fetch(`${upstream}/${path}`, { method: "POST", headers: { "content-type": "application/json", accept: req.headers.accept ?? "*/*", authorization: `Bearer ${upKey}`, ...anthropic }, body: JSON.stringify(body), signal: attempt.signal }));
+    const isSse = (u: Response) => String(u.headers.get("content-type") ?? "").includes("event-stream");
+    // OpenRouter's generation id: its header, else the first event's id (a chat chunk's id, a response's response.id).
+    const genOf = (u: Response, text: string) => { const h = u.headers.get("x-generation-id") ?? ""; return /^gen-[\w-]{1,190}$/.test(h) ? h : (/"id"\s*:\s*"(gen-[\w-]{1,190})"/.exec(text)?.[1] ?? ""); };
+    // A stream that goes quiet for streamIdleMs is cut: its reservation is settled instead of held for minutes. Armed from the
+    // first read, so a stream that stalls before its first event is cut too.
+    let idle: NodeJS.Timeout | undefined;
+    const poke = () => { clearTimeout(idle); idle = setTimeout(() => attempt.abort(new Error("the answer's stream went quiet")), streamIdleMs); };
+    // A stream is read up to its first output event before any byte reaches the caller (comments such as OpenRouter's
+    // keep-alives and the OPENING events held back too), so an answer that failed before any output can be re-run: its chunks
+    // and text (replayed to the caller) and its failure, if it failed. Bounded: past firstEventMs (well inside the idle cut) or
+    // PEEK_BYTES beyond what the opening events take (each echoes the request: its instructions and tools) it stops looking
+    // (`pending`: the read in flight) and the stream is passed through.
+    type Peeked = { chunks: Uint8Array[]; text: string; failed?: { reason: string; transient: boolean }; pending?: Promise<ReadableStreamReadResult<Uint8Array>> };
+    const peek = async (rd: ReadableStreamDefaultReader<Uint8Array>): Promise<Peeked> => {
+      const chunks: Uint8Array[] = [], dec = new TextDecoder();
+      let text = "", buf = "", timer: NodeJS.Timeout | undefined;
+      const firstEventMs = Math.min(FIRST_EVENT_MS, streamIdleMs / 4);
+      const late = new Promise<"late">((ok) => { timer = setTimeout(() => ok("late"), firstEventMs); });
+      try {
+        for (poke(); ; ) {
+          const read = rd.read();
+          // A cut (or the idle cut) while looking is passed through like a late first output: the stream loop settles it.
+          const got = await Promise.race([read, late]).catch(() => "late" as const);
+          if (got === "late") return { chunks, text, pending: read };
+          if (got.done) {
+            const d = eventData(buf); // a last event without its blank line
+            return { chunks, text, failed: (d && streamError(d)) || (d && d !== "[DONE]" && !opening(d) ? undefined : NO_OUTPUT) };
+          }
+          poke();
+          chunks.push(got.value);
+          const s = dec.decode(got.value, { stream: true });
+          text += s;
+          const events = (buf + s).split(/\r?\n\r?\n/);
+          buf = events.pop()!;
+          for (const ev of events) {
+            const d = eventData(ev);
+            if (d === "[DONE]") return { chunks, text, failed: NO_OUTPUT };
+            const failed = d ? streamError(d) : undefined;
+            if (failed || (d && !opening(d))) return { chunks, text, failed };
+          }
+          if (text.length > PEEK_BYTES + 4 * raw.length) return { chunks, text };
+        }
+      } finally { clearTimeout(timer); }
+    };
     try {
-      // A transient refusal (rate limit, "high demand" 502, a reset) is retried with backoff before any byte reaches the caller.
+      // A transient refusal (rate limit, "high demand" 502, a reset) is retried with backoff before any byte reaches the caller;
+      // an answer that failed before any output (incomplete, nothing sent yet) once, when its error is transient.
+      let rerun = false;
       for (let n = 0; ; n++) {
         let err: unknown;
         up = undefined as unknown as Response;
-        try { up = await post(); } catch (e) { err = e; }
-        const transient = err ? !["ECONNREFUSED", "ENOTFOUND"].includes(String(((err as Error).cause as { code?: string } | undefined)?.code)) : RETRY_STATUS.has(up.status);
+        reader = undefined;
+        peeked = undefined;
+        try {
+          up = await post();
+          reader = up.body?.getReader();
+          if (up.ok && reader && isSse(up)) peeked = await peek(reader);
+        } catch (e) { err = e; }
+        clearTimeout(idle);
+        const failed = peeked?.failed;
+        const transient = err ? !["ECONNREFUSED", "ENOTFOUND"].includes(String(((err as Error).cause as { code?: string } | undefined)?.code)) : failed ? failed.transient && !rerun : RETRY_STATUS.has(up.status);
         if (!transient || n >= retryDelaysMs.length) { if (err) throw err; break; }
+        if (failed) {
+          // The re-run is cap-checked like any call (refused: this attempt goes to the caller and settles on the call's own
+          // row); the discarded attempt keeps its own free `stream_error` row.
+          const held = `gw:${randomUUID()}`;
+          if ("over" in reserve(who, now(), held, body.model, 0, 0, 1)) break;
+          rerun = true;
+          // The discarded attempt keeps the token counts it reported, booked at $0.
+          const tk = usageTap(true);
+          tk.feed(peeked?.text ?? "");
+          const ku = tk.done();
+          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, 0, now() - t0, "stream_error", held);
+        }
         const after = Number(up?.headers.get("retry-after"));
         const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
-        log("upstream retry", { model: body.model, attempt: n + 1, status: up?.status ?? String((err as Error).message).slice(0, 100), wait_ms: Math.round(wait) });
-        await up?.body?.cancel().catch(() => {});
+        log("upstream retry", { model: body.model, attempt: n + 1, ...(failed ? { stream_error: failed.reason } : { status: up?.status ?? String((err as Error).message).slice(0, 100) }), wait_ms: Math.round(wait) });
+        await reader?.cancel().catch(() => {});
         await new Promise((r) => setTimeout(r, wait));
       }
     } catch (e) {
@@ -642,31 +793,43 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       settle("upstream_error", undefined, ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(String(((e as Error).cause as { code?: string } | undefined)?.code)));
       throw fail(502, "upstream_error", `OpenRouter unreachable (${(e as Error).message})`);
     }
-    // OpenRouter names the generation in a header too (an Anthropic-format answer's own id is a `msg_` one): a cut-off call's handle.
-    if (/^gen-[\w-]{1,190}$/.test(up.headers.get("x-generation-id") ?? "")) q.gen.run(gen = up.headers.get("x-generation-id")!, id);
-    const sse = String(up.headers.get("content-type") ?? "").includes("event-stream");
+    // The generation id is a cut-off call's handle (an Anthropic-format answer's own id is a `msg_` one: the header names it).
+    if ((gen = genOf(up, peeked?.text ?? ""))) q.gen.run(gen, id);
+    const sse = isSse(up);
     const tap = usageTap(sse);
     const text = new TextDecoder();
+    const rd = reader, head = peeked?.chunks ?? [], pending = peeked?.pending;
+    // The answer's chunks: the peeked ones, then the rest. Leaving early (a throw below) cancels the upstream body.
+    const chunks = async function* () {
+      let ended = !rd;
+      try {
+        yield* head;
+        if (pending) { const x = await pending; if (x.done) return void (ended = true); yield x.value; }
+        while (!ended) { const x = await rd!.read(); if (x.done) return void (ended = true); yield x.value; }
+      } finally { if (!ended) await rd!.cancel().catch(() => {}); }
+    };
     // Read to the end even if the caller hung up, so what OpenRouter billed still lands in the ledger. A stream that goes quiet
     // for streamIdleMs is cut: it is settled at its reservation (fail closed; only restart-closed calls are trued up from OpenRouter's record) instead of held for minutes.
     let status = "upstream_aborted";
-    let idle: NodeJS.Timeout | undefined;
-    const poke = () => { clearTimeout(idle); idle = setTimeout(() => attempt.abort(new Error("the answer's stream went quiet")), streamIdleMs); };
     try {
       res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => !["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k))));
       if (sse) poke();
-      if (up.body) for await (const c of up.body) {
+      for await (const c of chunks()) {
         if (sse) poke();
         if (!res.destroyed) res.write(c);
         const s = text.decode(c, { stream: true });
         tap.feed(s);
-        // The generation id from the answer's first event (a chat chunk's id, a response's response.id): a cut-off call's handle.
         if (!gen && (gen = /"id"\s*:\s*"(gen-[\w-]{1,190})"/.exec(s)?.[1] ?? "")) q.gen.run(gen, id);
       }
       status = up.ok ? "ok" : `upstream_${up.status}`;
     } finally {
       clearTimeout(idle);
-      settle(status, tap.done(), !up.ok && !sse && status !== "upstream_aborted"); // a definite error answer, no stream started
+      const u = tap.done();
+      const failed = status === "ok" && sse ? tap.failure() : undefined;
+      if (failed) {
+        log("upstream stream error", { model: body.model, gen, reason: failed });
+        settle("stream_error", u && { ...u, costUsd: 0 }, true);
+      } else settle(status, u, !up.ok && !sse && status !== "upstream_aborted"); // free: a definite error answer, no stream started
     }
     if (!res.destroyed) res.end();
   }
@@ -766,5 +929,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const spentBy = (cred: string) => spentByKey(sha256(cred));
   /** A run key's tokens (settled calls' input, cached input and output). */
   const tokensByKey = (runKey: string) => ({ ...(q.tokensRun.get(runKey) as { input: number; cached: number; output: number }) });
-  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
+  /** The limits a run key was refused at, as the scope each named (`day`, `month` or `task`): `[]` when it wasn't. The gateway
+   *  refuses and records them, so this is the limit event itself, never a caller's account of it. A refusal is never forgotten
+   *  for the key: a call settling after it means the limit was raised, not that the case the limit cut was judged. */
+  const refusedByKey = (runKey: string) => [...new Set((q.refusedRun.all(runKey) as { key: string }[]).map((r) => r.key.split(":")[2] ?? ""))];
+  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, refusedByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
 }
