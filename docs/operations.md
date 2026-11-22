@@ -539,8 +539,10 @@ runner starts the hook with an environment of its own (the github and runner con
 job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the owner's sign-in with `admin:org` on the
 Aiden-HQ org; a runner group there limited to the two repos with *Allow public repositories* on, named in
 `settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
-aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-6` (six run today, owner 2026-11-22); then the repo variables
-(Settings -> Secrets and variables -> Actions -> Variables): `CI_SELF_HOSTED` and `CI_SELF_HOSTED_RUNNERS` (the number of runners, 6). Unset it to go back to hosted only.
+aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-4` (four run today, owner 2026-11-22: the host was overloaded at six); then the repo variables
+(Settings -> Secrets and variables -> Actions -> Variables): `CI_SELF_HOSTED` and `CI_SELF_HOSTED_RUNNERS` (the number of runners, 4). Unset it to go back to hosted only.
+To scale down, `systemctl --user disable --now` each instance above the new count (and `reset-failed` it): a unit that is
+only stopped stays enabled, so `ops/ci-runner-units.sh` restarts it and a failed one keeps alerting.
 aidenhq-distro can adopt the same routing in its ci.yml later.
 
 A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly
