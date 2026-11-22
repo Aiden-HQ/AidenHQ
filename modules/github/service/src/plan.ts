@@ -8,10 +8,12 @@
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
+import { productMergeEligible, type Verdict } from "./merge-gate.ts";
+
 interface Part { tier: 0 | 1 | 2; rule: string; reason: string; reject?: boolean }
-interface Check { ok?: boolean; pending?: boolean; skipped?: boolean }
+interface Check { name?: string; ok?: boolean; pending?: boolean; skipped?: boolean }
 interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string }
-interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string }
+interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string; /** Code review's verdict for the head (product merges). */ verdict?: Verdict }
 interface State {
   agentsOrgs?: string | string[];
   agentsOrg?: string;
@@ -160,7 +162,7 @@ function mergeParts(p: Pr, s: State): Part[] {
   const ref = `${p.repo}#${p.number ?? "?"}`;
   // The instance repo is refused before anything reads its files: it changes only through apply, whatever it touches.
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
-  if (same(p.repo, s.productRepo)) return [productMergePart(p, ref)];
+  if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);
   if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
   // A maintained repo outside the agents org merges like an agents-org repo, under its own rule names (the reviewer sees
   // where it is). Anywhere else the code host only opens PRs: the merge queue refuses it too (merges.ts).
@@ -191,19 +193,23 @@ function mergeParts(p: Pr, s: State): Part[] {
 
 /**
  * A product PR's merge (owner, 2026-11-13; any requester since 2026-11-22: every product PR gets ci-required and the
- * mandatory code review before GitHub merges it, and agents are trusted). Still running is not red: a reviewer-approved merge
- * runs the strict queue, which merges only once every named check is green on that exact head. Never Tier 0: the product
- * reaches every instance through the pin. Its files are the platform check's.
+ * mandatory code review before GitHub merges it, and agents are trusted). Once `ci-required` is green and code review passed
+ * that exact head (productMergeEligible, checked again right before the merge), it skips the AI reviewer (owner,
+ * 2026-11-23); otherwise the reviewer reads it, and the strict queue merges only once every named check is green on that
+ * head. A foreign head and a `.github/` change stay the reviewer's. Its files are the platform check's.
  */
-function productMergePart(p: Pr, ref: string) {
-  if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
+function productMergeParts(p: Pr, ref: string, s: State): Part[] {
+  if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
   const friction = mergeFriction(p, ref);
-  if (friction) return friction;
+  if (friction) return [friction];
+  if (!p.ownHead) return [T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`)];
   // Plain wording, and no "skipped counts as passed": the reviewer reads this line as code's description of the gate, and a
   // sentence that reads as a weakened check made every product merge card a false reject (issue #1449).
   const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head and only after every named check has finished without failure`;
-  if (p.ownHead) return T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`);
-  return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
+  const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });
+  const parts = [eligible ? T(0, "product-merge-reviewed", `${ref}: ci-required is green and code review passed its head`) : T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`)];
+  if (eligible && p.files.some((f) => GITHUB.test(f))) parts.push(T(1, "github-dir", `${ref} changes ${p.files.filter((f) => GITHUB.test(f)).length} file(s) under .github/`));
+  return parts;
 }
 
 /**

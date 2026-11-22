@@ -78,8 +78,6 @@ export type Options = {
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
-  /** The owner's name, as the design reviewer's task names who approved a merge that doesn't wait for it. */
-  selfName?: string;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
   /** The churn pass ignores these globs (the churn_exclude setting). */
@@ -220,7 +218,8 @@ export function createService(o: Options) {
     return { s, dir };
   }
 
-  // GitHub's checks on a commit as plan.ts reads them: { ok, pending, skipped } each (names never leave this function).
+  // GitHub's checks on a commit as plan.ts reads them: { name, ok, pending, skipped } each. The name is only matched (the gate
+  // check `ci-required`, merge-gate.ts productMergeEligible), never shown: the card counts checks.
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
   async function checksAt(s: ReturnType<typeof slugOf>, sha: string) {
     const all = async (path: string, key: string) => {
@@ -240,8 +239,8 @@ export function createService(o: Options) {
     const unread = runs.complete && status.complete ? [] : [{ pending: true, skipped: false, ok: false }];
     return [
       ...unread,
-      ...runs.items.map((r: any) => ({ pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion) })),
-      ...status.items.map((x: any) => ({ pending: x.state === "pending", skipped: false, ok: x.state === "success" })),
+      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion) })),
+      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), pending: x.state === "pending", skipped: false, ok: x.state === "success" })),
     ];
   }
   // The commits this code host pushed, each as "<repo, lowercase> <sha>": a head is the runner's own only in the repo it was
@@ -307,6 +306,8 @@ export function createService(o: Options) {
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files, checks: await checksAt(s, pr.head?.sha),
+          // Code review's verdict for this head on the product repo: with ci-required green, a real pass skips the AI reviewer.
+          ...(merge && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, Number(p.number), String(pr.head?.sha)) } : {}),
           ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
@@ -373,7 +374,7 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
-      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier);
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier);
       // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
       if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
@@ -387,7 +388,7 @@ export function createService(o: Options) {
     },
   };
   /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
-  async function run1(rec: { id: string; kind: string; args: any; task?: string }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+  async function run1(rec: { id: string; kind: string; args: any; task?: string; identifier?: string; tier?: number }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     {
       const a = rec.args ?? {};
       const objects: string[] = [];
@@ -430,7 +431,7 @@ export function createService(o: Options) {
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
-      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier);
+      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier, rec.tier);
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
@@ -560,7 +561,7 @@ export function createService(o: Options) {
   }
   // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
   // queue waits on for its verdict.
-  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", gh: (m, p, b) => gh(m, p, b, { background: true }), log });
+  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, gh: (m, p, b) => gh(m, p, b, { background: true }), log });
   // The managed repos: the fleet org's, the product repo and the instance repo.
   async function managedRepos(): Promise<string[]> {
     const out = new Set([o.productRepo, o.instanceRepo].filter(Boolean).map((r) => r!.toLowerCase()));
@@ -616,7 +617,6 @@ export function createService(o: Options) {
       return (records as { kind?: string; args?: { only?: { repo?: string; sha?: string }[] } }[]).some((x) => (x.kind === "github.pr" || x.kind === "github.push")
         && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && b.sha === pr.head));
     },
-    designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(), hold: () => o.holdMerges?.() === true, holdReason: () => o.mergeHoldReason?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, waiting, log, now: o.now, everyMs: o.mergeEveryMs,

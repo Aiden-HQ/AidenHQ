@@ -258,6 +258,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     const tools = (x: Dict, ...tags: string[]) => tags.flatMap((t) => list(map(x.tools)[t]).map(String));
     for (const t of tools(now, "write", "destructive").filter((t) => !tools(was, "write", "destructive").includes(t))) owner(`connection ${id(c)}: adds write tool ${id(t)}`);
     for (const t of tools(now, "read").filter((t) => !tools(was, "read", "write", "destructive").includes(t))) review(`connection ${id(c)}: adds read tool ${id(t)}`);
+    for (const t of tools(now, "unreviewed").filter((t) => !tools(was, "unreviewed").includes(t))) owner(`connection ${id(c)}: ${id(t)} skips the AI reviewer`);
     // A retag widens every grant that names its tag: a write tool tagged read reaches `read` grants, a destructive one tagged
     // write reaches `write` grants. Any tag change of an existing tool is the owner's.
     const tagOf = (x: Dict, t: string) => ["destructive", "write", "read"].find((g) => tools(x, g).includes(t));

@@ -783,11 +783,11 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # the head the record bound (GitHub refuses any other), only after decide says so (open on the default branch, at that head,
 # every named check green, none truncated, the base's gate check present). Nothing in the
 # queue updates, rebases, retargets, re-runs, deletes or closes: a moved head or base goes back to the PR's own path. Its only
-# other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure, so the code
-# host can only hold a merge, never pass the review). Its only other GitHub calls are two confirming reads on the same token
+# other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure: the review
+# is advisory and never holds a merge). Its only other GitHub calls are two confirming reads on the same token
 # — `GET /repos/:slug`, and the PR itself (`GET /repos/:slug/pulls/:n`) — which tell a deleted repo or PR from one this token
 # can no longer see before a NOT_FOUND ends an approved merge; neither writes. The record is the
-# review in our own repos; a product merge is never Tier 0. Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
+# review in our own repos; a product merge is Tier 0 only on its exact-head eligibility (productMergeEligible). Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
@@ -812,18 +812,21 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (!def || pr.baseRefName !== def) return { do: "fail"' "$rm_" \
   && grep -qF 'if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail"' "$rm_" \
   && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
-  && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW.name,' "$rdr" \
+  && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW_CHECK,' "$rdr" \
   && grep -qF 'if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
   && grep -qF 'export const ownRepo = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos) => inOrg(fleetOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/git-auth.ts \
   && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/git-auth.ts \
-  && grep -qF 'if (same(p.repo, s.productRepo)) return [productMergePart(p, ref)];' "$rplan" \
-  && [ "$(awk '/^function productMergePart/,/^}/' "$rplan" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
+  && grep -qF 'if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);' "$rplan" \
+  && grep -qF 'const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });' "$rplan" \
+  && grep -qF 'const ci = p.checks.some((c) => c.name === GATE_CHECK && c.ok === true && !c.pending && !c.skipped);' "$rm_" \
+  && grep -qF 'return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true);' "$rm_" \
+  && grep -qF '!productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");' "$rq" \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
   && grep -qF 'if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close"' "$rplan" \
   && grep -qF 'const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
   && grep -qF 'agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
-  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is never Tier 0 ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
+  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required green and code review's pass on its exact head, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
 # The AI reviewer's own code (evalgate.ts REVIEWER_CODE) merges on CI's reviewer-eval job, part of ci-required; the code host
 # runs no eval of its own. An `aidenhq` marketplace pin never lands through an apply: official modules come with the product pin.
 rgate="modules/github/service/src/evalgate.ts"
@@ -844,7 +847,8 @@ rreview="modules/ai-reviewer/service/src/review.ts"
   && grep -qF 'if (autonomy === "off") return { tier: 2, merit, cap: { by: "autonomy", value: "off" }, rule: "autonomy-off", state: "owner" };' kernel/src/tier.ts \
   && grep -qF 'const same = mine.find((r) => r.state === "rejected" && /^reviewer:/.test(r.decidedBy ?? "") && MALICE.includes(r.reviewCode ?? "")' kernel/src/tier.ts \
   && grep -qF 'if (v.decision === "escalate" && v.code === "reviewer_failed") {' kernel/src/writes.ts && grep -qF 'const post = v.model === "kernel/code" && v.decision === "reject" ? v : shadowed(v, mode);' kernel/src/writes.ts \
-  && grep -qF 'const leaked = instanceDetails({ action }, diff, toolCall);' kernel/src/review-loop.ts && grep -qF 'const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];' kernel/src/review-loop.ts \
+  && grep -qF 'const leaked = instanceDetails({ action }, diff, toolCallOf(action, r.args));' kernel/src/review-loop.ts && grep -qF 'const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];' kernel/src/review-loop.ts \
+  && grep -qF 'const refused = codeRefusal(r);' kernel/src/review-loop.ts && [ "$(grep -c 'if (t.state === "rejected") throw fail(422' kernel/src/writes.ts)" = 2 ] \
   && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/review-loop.ts", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "modules/ai-reviewer/service/src/review.ts"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/$rgate" \
   && grep -qF 'const top = filedRaises(kind, plan).reduce<Raise | undefined>(' kernel/src/writes.ts \
   && grep -qF 'if (!run) throw unavailable(`${id} has no code in this kernel`);' kernel/src/writes.ts \

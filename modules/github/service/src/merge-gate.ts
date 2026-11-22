@@ -10,6 +10,23 @@
 // check not yet on the head) never counts as passing.
 
 import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import type { ReviewGate } from "./review-gate.ts";
+
+/** A check on a head, by name (service.ts checksAt, checks.ts namedChecks). */
+export type NamedCheck = { name?: string; ok?: boolean; pending?: boolean; skipped?: boolean };
+/** Code review's answer for a head (review-gate.ts). */
+export type Verdict = Awaited<ReturnType<ReviewGate>>;
+
+/**
+ * The one product-merge eligibility rule (owner, 2026-11-23), used when planning (plan.ts) and again right before the merge
+ * (merges.ts): the product repo, `ci-required` successful on this exact head, and code review's real pass for it (a bypass,
+ * an ungated repo or a wait is not one). Eligible, a product merge skips the AI reviewer.
+ */
+export function productMergeEligible(p: { repo: string; head: string; checks: NamedCheck[]; verdict: Verdict | undefined; productRepo: string }): boolean {
+  const same = String(p.repo).toLowerCase() === String(p.productRepo ?? "").toLowerCase() && Boolean(p.productRepo);
+  const ci = p.checks.some((c) => c.name === GATE_CHECK && c.ok === true && !c.pending && !c.skipped);
+  return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true);
+}
 
 // GitHub GraphQL payloads (PR_QUERY's answer), read by field.
 type Json = any;
@@ -31,13 +48,10 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
 
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
-/** The UI Reviewer's design review: advisory in the named checks, required on a UI PR in the agents org (owner, 2026-11-13) until its wait of `minutes` (asked twice) ends with no verdict: then advisory for that head. `asks`: how many times a second ask that nobody received may be retried before the review is advisory for that head too (a wait that can never end is no wait). */
-export const DESIGN_REVIEW = { name: DESIGN_REVIEW_CHECK, minutes: 120, asks: 3 };
-
 /**
  * Files that change what people see: styles, markup and component files, the usual UI folders, the vendored design system,
  * and server-rendered page code by its name (render, styles, layout, view, page, template). Conservative: a false match
- * costs a design review, a miss ships an unreviewed page.
+ * costs a design review (advisory: it never holds a merge), a miss leaves a page unreviewed.
  */
 const UI_EXT = /\.(css|scss|sass|less|html?|tsx|jsx|vue|svelte|astro|hbs|handlebars|ejs|njk|pug|erb|liquid|mustache)$/i;
 const UI_DIR = /(^|\/)(web|public|templates|views|static|pages|components|layouts|design-system)\//i;
@@ -74,9 +88,6 @@ export function supersededDesignReview(marker: Json, pr: Json) {
   return dr === "success" || dr === "failure" ? "its verdict is on that head already" : undefined;
 }
 
-/** Whether a PR's head waits on the UI Reviewer: it changes UI files, isn't a draft, and has no design-review verdict yet. */
-export const awaitsDesignReview = (pr: Json) => Boolean(pr) && !pr.isDraft && prTouchesUi(pr) && ["missing", "pending"].includes(designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
-
 /**
  * The aggregate gate check a repository's CI may end with (the product's ci.yml `ci-required`): it appears only once the jobs it
  * covers finish, so a head can look all green before it. When the base branch's rollup has it, a head without it is pending.
@@ -112,10 +123,11 @@ export function mergeMethod(repo: Json) {
 
 /**
  * What to do with one PR of an approved record, from `data` (PR_QUERY's answer, withGate applied) and the record's bound `head`:
- * { do: "merge" | "done" | "wait" | "fail", why, review? }. Before a "merge", merges.ts still asks the eval gate.
- * Only our own repos (agents org, product) reach it, so the record is the review. `uiReview`: a UI PR needs the design review's pass, unless `designAdvisory` (its wait ended with no verdict: a failure still fails).
+ * { do: "merge" | "done" | "wait" | "fail", why }. Before a "merge", merges.ts still asks code review's gate.
+ * Only our own repos (agents org, product) reach it, so the record is the review. The design review is advisory: it never
+ * holds a merge.
  */
-export function decide(data: Json, head: string, { uiReview, designAdvisory }: { uiReview?: boolean; designAdvisory?: boolean }) {
+export function decide(data: Json, head: string) {
   const pr = data?.repository?.pullRequest;
   if (!pr) return { do: "fail", why: "not found on GitHub" };
   if (pr.state === "MERGED") return pr.headRefOid === head ? { do: "done", why: "already merged" } : { do: "fail", why: `merged by someone else at \`${String(pr.headRefOid).slice(0, 12)}\`, not the approved head` };
@@ -135,11 +147,6 @@ export function decide(data: Json, head: string, { uiReview, designAdvisory }: {
   if (red.length) return { do: "fail", why: `${red.length} check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)` };
   if (named.some((c) => c.pending)) return { do: "wait", why: `${named.filter((c) => c.pending).length} check(s) still running on its head` };
   if (skippedImageScan(pr)) return { do: "fail", why: "it changes an image but its image-scan check was skipped" };
-  if (uiReview && prTouchesUi(pr)) {
-    const dr = designReview(rollup);
-    if (dr === "failure") return { do: "fail", why: "the UI Reviewer's design review failed on its head" };
-    if (dr !== "success" && !designAdvisory) return { do: "wait", why: "waiting for the UI Reviewer's design review on its head", review: true };
-  }
   switch (pr.mergeStateStatus) {
     case "CLEAN":
     case "HAS_HOOKS":

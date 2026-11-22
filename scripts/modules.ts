@@ -799,6 +799,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const [k, c] of Object.entries<Obj>(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
+      // `unreviewed`: destructive tools whose calls skip the AI reviewer (Tier 0; still granted only by name, and code's refusals hold).
+      if (c.tools.unreviewed != null && (!Array.isArray(c.tools.unreviewed) || c.tools.unreviewed.some((t: string) => !(c.tools.destructive ?? []).includes(t)))) fail(`connection ${k}: tools.unreviewed lists only its destructive tools`);
       if (c.tools.named != null && (!Array.isArray(c.tools.named) || c.tools.named.some((t: string) => typeof t !== "string" || !t))) fail(`connection ${k}: tools.named must be a list of its read tools`);
       // `named` only narrows a read tool out of the read shorthand (never a fourth group): a tool tagged `named` is still a
       // read, on the read path, and only a grant that names it reaches it. Tagging a write or destructive tool named, or a
@@ -1155,7 +1157,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // The kernel's connection table (config/kernel/connections.json): where each connection is and with which key.
   const connections = Object.fromEntries(Object.entries<Obj>(paperclip.mcp_servers).map(([k, c]) => [k, {
     url: c.url, auth_secret: c.auth, module: c.module, returns: c.returns ?? "untrusted",
-    tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
+    tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}), ...(c.tools.unreviewed?.length ? { unreviewed: [...c.tools.unreviewed] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
     ...(c.health_probes ? { health_probes: c.health_probes } : {}),
   }]));

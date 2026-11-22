@@ -7,7 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 import { verifyToken } from "./gateway/token.ts";
 
 export type Grant = { key?: string; roles?: string[]; tools?: Record<string, string[]>; trial?: boolean; jobcaps?: string[]; [k: string]: unknown };
-export type Connection = { url: string; auth_secret: string; module: string; returns: "trusted" | "untrusted"; tools: { read: string[]; write: string[]; destructive: string[]; named?: string[] }; tool_timeout_s?: number;
+export type Connection = { url: string; auth_secret: string; module: string; returns: "trusted" | "untrusted"; tools: { read: string[]; write: string[]; destructive: string[]; named?: string[]; unreviewed?: string[] }; tool_timeout_s?: number;
   /** The module may make model calls billed to the caller of a tool call in flight (its manifest says so; off by default). */
   model_as_caller?: boolean;
   /** The module's health probes (module.yaml `health_probes`): name -> one read tool with fixed arguments (health.ts). */

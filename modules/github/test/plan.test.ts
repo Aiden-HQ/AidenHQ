@@ -33,6 +33,18 @@ describe("plan: the product repo", () => {
 
 });
 
+describe("plan: product merges", () => {
+  it("product merge eligibility is one exact-head predicate, in plan and at merge", () => {
+    const ci = [...green, { name: "ci-required", ok: true }];
+    const tier = (extra) => planParts("merge", { ...s, prs: [pr(s.productRepo, { checks: ci, ...extra })] })[0].map((p) => [p.rule, p.tier]);
+    assert.deepEqual(tier({ verdict: { pass: true } }), [["product-merge-reviewed", 0]], "pass with ci-required green");
+    assert.deepEqual(tier({ verdict: { bypass: "down" } }), [["product-merge", 1]], "a bypass");
+    assert.deepEqual(tier({ verdict: undefined }), [["product-merge", 1]], "an ungated repo");
+    assert.deepEqual(tier({ verdict: { pass: true }, checks: green }), [["product-merge", 1]], "ci-required missing");
+    assert.deepEqual(tier({ verdict: { pass: true }, files: [".github/workflows/ci.yml"] }), [["product-merge-reviewed", 0], ["github-dir", 1]], "a .github/ change stays the reviewer's");
+  });
+});
+
 describe("plan: maintained repos (maintainer_repos)", () => {
   const m = { ...s, maintained: ["globex/payments", s.productRepo, s.instanceRepo] };
   const rules = (action, st, p) => planParts(action, { ...st, prs: [p] })[0].map((x) => [x.rule, x.tier]);

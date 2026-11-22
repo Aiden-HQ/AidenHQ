@@ -134,13 +134,10 @@ data: review the live app with `app_view` at `width` 1280, and add "a seed mode 
 
 ## Reviewing a UI pull request (`design-review`)
 
-A PR that changes UI files (styles, markup, components, UI folders, server-rendered page files) **waits for your
-verdict** before the runner merges it: once its other checks are green on a head, the runner gives you a "Design review:
-<repo>#<n>" task for that head. `success` lets it merge, `failure` stops it with your description as the reason, and no
-verdict within 2 hours sends the merge to the owner. So review it promptly, and only ever that exact head. Some repos
-also run a workflow (`modules/design/templates/design-review.yml`) that marks UI heads `pending` as they open. Other PRs'
-reviews stay advisory: one may already be merged when you look; review it all the same, and findings come back as
-follow-up fixes.
+A PR that changes UI files (styles, markup, components, UI folders, server-rendered page files) gets a "Design review:
+<repo>#<n>" task for each head. Your verdict is advisory: the PR merges on its own gates, and a `failure` comes back to its
+author as follow-up fixes. Review promptly, and only ever that exact head; one may already be merged when you look: review
+it all the same.
 
 1. **Read the PR** (`github_issue_read`): what it changes, its `head_sha` and its changed `files`. If the task gives no
    SHA, use the PR's current head. If `statuses` has no `design-review` yet, set it to `pending` ("Reviewing") with

@@ -420,14 +420,20 @@ test("the owner's short answer to a form is read by code against that form's opt
   assert.equal(readAnswer("1A", undefined), undefined);
 });
 
-test("code refuses instance details in a GitHub write, and a diff the code host's count doesn't match, before any review", async (t) => {
+test("a Tier 0 GitHub reply carrying an instance host is refused by code", async () => {
+  let reviewed = 0;
+  const records = openRecords(db());
+  const github = { module: "github", tools: { read: [], write: [], destructive: ["github_pr_thread_reply"], unreviewed: ["github_pr_thread_reply"] } };
+  const writes = createWrites({ records, reviews: { request: async () => (reviewed++, OK) }, secret: () => "", resolver: createResolver(), connections: () => ({ github }), registry: () => ({}), replay: async () => ({ ok: true, text: "" }), onTask: { open: async () => true, notify: async () => {} } });
+  const ada = { kind: "run", agent: "ag-ada", key: "ada", name: "Ada", roles: [], tools: {} };
+  await assert.rejects(writes.fileTool(ada, "github", "github_pr_thread_reply", { body: "the log is on 10.0.0.5" }, "TASK-1"), (e) => e.status === 422 && e.type === "instance_details");
+  assert.equal(reviewed, 0, "no reviewer call");
+  assert.deepEqual(((r) => [r.tier, r.state])(await writes.fileTool(ada, "github", "github_pr_thread_reply", { body: "fixed" }, "TASK-1")), [0, "claimed"], "unreviewed: Tier 0");
+});
+
+test("code refuses a diff the code host's count doesn't match, before any review", async (t) => {
   const mod = await reviewer(t);
   const k = await side(t, db(), mod);
-  const r = k.records.file({ kind: "conn.tool", module: "github", args: { connection: "github", tool: "github_comment", arguments: {} }, targets: {}, executor: { module: "github" }, policy: "p", card: { sentence: "s", changes: "c", reads: "r", cost: "none", details: 'tool: github.github_comment\narguments (written by the requesting agent): {"body":"logs at /home/sam/.local/state on agents.acme.ts.net"}' }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job" }, task: "TASK-1", tier: 1, merit: 1, rule: null, state: "review" });
-  await k.loop.tick();
-  assert.equal(mod.seen.length, 0, "no reviewer call");
-  assert.deepEqual([k.records.get(r.id).state, k.records.get(r.id).review_code], ["rejected", "instance_details"]);
-  assert.match(k.notices.at(-1).text, /Not reviewed[^]*agents\.acme\.ts\.net/);
   const d = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -0,0 +1 @@\n+x\n";
   const m = k.records.file({ kind: KIND, module: "acme", args: { note: "m" }, targets: {}, executor: { module: "acme" }, policy: "p", card: { sentence: "s", changes: "c", reads: "r", cost: "none", details: d }, context: { diff: d, files: { list: [], leftOut: [], changed: [{ path: "a.ts", add: 1, del: 0 }, { path: "b.ts", add: 9, del: 0 }] } }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "job" }, task: "TASK-1", tier: 1, merit: 1, rule: null, state: "review" });
   await k.loop.tick();

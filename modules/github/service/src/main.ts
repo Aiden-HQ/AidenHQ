@@ -9,7 +9,6 @@
 //   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there; those with dependabot on get
 //                           the PR watch's Dependabot duty
 //   GITHUB_MIGRATE_FROM_APP  the retired App's id, for the one release that moves the repos' rules off it (migrate.ts)
-//   OWNER_NAME              who the design reviewer's task says approved a merge that doesn't wait for it
 //   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict,
 //                           asked with the module's own token
 // Its loops start here: the merge queue, the held writes, the release train, the PR watch, the design reviews' sweep and the
@@ -49,7 +48,7 @@ const watchGate = createReviewGate(gateOptions);
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   access, reportNeed, holdMerges: () => migration?.pending() ?? false, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
-  productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), selfName: env.OWNER_NAME || undefined,
+  productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo),
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   reviewGate,
   log,

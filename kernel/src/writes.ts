@@ -22,6 +22,7 @@ import { openRefusals, markRefusal } from "./refusals.ts";
 import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { gateMode } from "./gates.ts";
+import { codeRefusal } from "./review-loop.ts";
 import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
@@ -273,7 +274,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     // The reason and rule shown: the strictest raise, the plan's on a tie.
     const top = filedRaises(kind, plan).reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
-    const t = computeTier({ floor: k.floor, raise: top, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomyOf(requester), ownerSave });
+    // Code's refusals read the whole planned diff (never the card cut for storage), whatever the tier.
+    const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext });
+    const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomyOf(requester), ownerSave });
+    if (t.state === "rejected") throw fail(422, String(t.rule), refused!.reason);
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
     // context while it is open (records.ts drops it once closed), and the card keeps what it shows.
     return { base, filed: { ...base, card: { ...card, reason: (t.cap ? capText(t.cap) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
@@ -327,7 +331,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const o = await own.execute({ id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => ({ ok: false, text: e.message }));
       return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
     }
-    await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
+    await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, tier: r.tier, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
   }
 
   /**
@@ -617,17 +621,21 @@ export function createWrites({ records, registry, connections, secret, resolver,
         if (!t.scope) throw fail(403, "forbidden", `${t.identifier || t.id} isn't yours to write on: a ${connection}.${tool} call goes on a task assigned to you, one you created, or a child of one assigned to you`);
         record = t.id, identifier = t.identifier || undefined;
       }
-      const floor: Tier = c.tools.destructive.includes(tool) ? 1 : 0;
-      // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
-      const t = computeTier({ floor, priorVeto: floor > 0 && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
-      if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
+      // A destructive tool is the reviewer's, unless its connection lists it `unreviewed` (it still runs only on an explicit grant).
+      const floor: Tier = c.tools.destructive.includes(tool) && !(c.tools.unreviewed ?? []).includes(tool) ? 1 : 0;
       const shown = JSON.stringify(args ?? {});
+      const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}`;
+      // Code's refusals hold on every call, Tier 0 included.
+      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null });
+      // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
+      const t = computeTier({ floor, refusal: refused?.code, priorVeto: floor > 0 && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
+      if (t.state === "rejected") throw fail(422, String(t.rule), refused!.reason);
+      if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);
       // Where the call is aimed: its tool and the arguments that name an issue, a PR, a channel or a thread (never its text).
       const aim = ["repo", "number", "issue_number", "pull_number", "channel", "thread_ts", "id"].filter((k) => ["string", "number"].includes(typeof (args as Record<string, unknown> | undefined)?.[k])).map((k) => `${k}=${String((args as Record<string, unknown>)[k]).toLowerCase()}`);
       const target = `${connection}.${tool}${aim.length ? ` (${aim.join(", ")})` : ""}`;
-      const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${t.tier > 0 ? shown : shown.slice(0, 4000)}`;
-      const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details, ...(target ? { target } : {}) };
+      const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: t.tier > 0 ? details : details.slice(0, details.length - shown.length + 4000), ...(target ? { target } : {}) };
       // The requester keeps the job's own task (the run's): it is the job's credential's reach, and replay signs the caller
       // assertion with it, so a card on another task still can't finish that task as its own (cp.ts cross-task finish gate).
       const requester = requesterOf(who, task);

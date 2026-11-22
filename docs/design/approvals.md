@@ -49,9 +49,9 @@ an autonomy he set below full.
   (never the owner) and is posted on its task. A review that fails (the reviewer module unreachable, a call error or timeout,
   every model refusing, a spend or tool-round limit) is tried once more after `RETRY_MS` (a minute; the model gateway already
   retries transient model errors), then approved by code (`fail_open`, `reviewer:kernel/code`). The only writes that never
-  fail open are the ones the kernel refuses itself before it asks the reviewer (`review-loop.ts`): instance details in a
-  GitHub write (`instanceDetails`, `instance_details`) and a diff that differs from the code host's own count of the change
-  (`files_not_shown`). No other signal in the review path tags a secret-carrying write, so beyond that the rule is the model's:
+  fail open are the ones the kernel refuses itself (`review-loop.ts` `codeRefusal`, on every filing path, Tier 0 included,
+  and again before a review): instance details in a GitHub write (`instanceDetails`, `instance_details`) and a diff that
+  differs from the code host's own count of the change (`files_not_shown`). No other signal in the review path tags a secret-carrying write, so beyond that the rule is the model's:
   a malice verdict rejects, everything else approves.
 - **Tier 2: owner.** A board card plus a message on the owner channel, with no reviewer first: the owner's veto on the task,
   autonomy off. His own signed-in settings
@@ -77,7 +77,8 @@ Typical git assignments (`plan.ts`; read it for the full rules):
 | Merge in the agents org: every named check green (or running, merged only once green) on the exact head, head pushed by the code host, no other `.github/` change, app not sensitive | 0 |
 | Same merge with a foreign head, other `.github/` change or sensitive app; any other `.github/` change; an empty repo's first push; push or PR outside the agents org; a change request on `local` | 1 |
 | Push to an agents-org repo's default or deploy branch | 1 |
-| Product repo: PR, branch push, or merge of a head the code host pushed with no red check | 1 |
+| Product repo: merge of a head the code host pushed, `ci-required` green and code review's `pass` on that exact head (`productMergeEligible`, checked again at the merge; no `.github/` change) | 0 |
+| Product repo: PR, branch push, or any other merge of a head the code host pushed with no red check | 1 |
 | Merge with no named checks, red checks or a moved head; the instance repo; outside the agents org; product default branch | refused |
 
 Fleet applies (`kernel.apply`, floor 1, planned by `apply-tier.ts`) are all the AI reviewer's. Code refuses one whose files
@@ -86,7 +87,8 @@ more than routing. The card lists the module authority changes from the authorit
 
 Module write kinds are records too: a tool a module routes into a kind (manifest `writes:`) goes to that module's executor
 (`executor@1`): its plan checks the caller and pins what runs, the kernel tiers it, and the executor runs it only once
-approved, claimed and revalidated. Any other write is `conn.tool` at Tier 0 (a destructive one at Tier 1, replayed once). Apps
+approved, claimed and revalidated. Any other write is `conn.tool` at Tier 0 (a destructive one at Tier 1, replayed once, unless its connection lists it in
+`tools.unreviewed`: GitHub's issue labels and state and PR thread replies run at Tier 0, still granted only by name). Apps
 platform kinds (`modules/apps-platform/module.yaml`): a stateful `app_deploy` is Tier 1 (labelled when it touches a
 migration or schema file), refused when too large to review; restarts, rollbacks and app API writes are Tier 0.
 
