@@ -382,6 +382,33 @@ test("a UI head waiting on its design review gets the UI Reviewer's task beside 
   await settle();
 });
 
+test("a design review that was not filed is asked again next poll, and only a delivered request starts the advisory clock", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", files: ["web/app.css"] } };
+  const asked = [];
+  // The first filing answer is the module's own "not filed" (no agent holds the design-review role): nobody was asked.
+  const answers = [{ filed: false, why: "no agent holds the design-review role" }, { filed: true }, { filed: true }];
+  const checks = (method, url, b) => {
+    if (method === "POST" && url === "/v1/tasks") {
+      asked.push(b.source);
+      const r = answers[Math.min(asked.length - 1, answers.length - 1)];
+      return r.filed ? { id: `t${asked.length}`, identifier: `T-${asked.length}` } : { __status: 409 };
+    }
+    return undefined;
+  };
+  const { handle, github, merge, settle, clock } = await setup(t, { prs, checks });
+  await merge("k-00000000000000e1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  // The module answered 409 (its own "not filed"): the marker was not recorded, so the next poll asks again.
+  await handle.stepMerges();
+  assert.equal(asked.length, 2, "a request nobody received is asked again on the next poll");
+  // Now it was filed. Past the wait, the second ask goes out; the advisory clock starts only from that delivered request.
+  clock.t += 181 * 60_000;
+  await handle.stepMerges();
+  assert.equal(asked[2], `design-review:acme-agents/widget/1@${HEAD}#again`, "the second ask is sent once the first was delivered");
+  assert.deepEqual(github.merges(), [], "never merged while the reviewer still has time to answer");
+  await settle();
+});
+
 test("a merge-queue wait and its end become waiting and resumed facts with the reason", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
   const facts = [];

@@ -63,7 +63,7 @@ export function createMerges(d: {
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
   flow?: Flow;
   /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
-  designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<unknown>;
+  designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<{ filed?: boolean; why?: string } | unknown>;
   /** The task that opened a PR (pr-tasks.json, pr-watch.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
   taskOf?: (repo: string, n: number) => string | null;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
@@ -226,10 +226,18 @@ export function createMerges(d: {
     const wait = (key: string) => {
       if (p.wait?.key !== key) p.wait = { key, since: now().toISOString() };
     };
+    // The marker says a review was really asked for this head, so it is set only once the task was filed: a filing that threw,
+    // or answered `filed: false` (no agent holds the role, the PR changes no UI files), asked nobody and must be asked again on
+    // the next poll. Recording it up front let the advisory waiver start from a second request that never reached a reviewer.
     const askReview = async (again: boolean) => {
+      let filed = true;
+      await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) })
+        .then((r) => { if (r && typeof r === "object" && (r as { filed?: boolean }).filed === false) filed = false; })
+        .catch((e: Error) => { filed = false; log("design review task failed", { pr: p.url, err: says(e) }); });
+      if (!filed) return;
       if (again) p.reviewAskedAgain = p.head;
       else p.reviewAsked = p.head;
-      await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) }).catch((e: Error) => log("design review task failed", { pr: p.url, err: says(e) }));
+      save();
     };
     // Outside the fleet org, the product repo and maintainer_repos the code host is PR-only: it merges nothing there (a repo taken
     // off the list after its record was approved included).
