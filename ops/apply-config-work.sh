@@ -834,9 +834,25 @@ switchOver() {
 }
 
 # A read the timeout branch makes while it holds the apply lock: a query stalled on storage must not hold the lock or delay
-# the automatic rollback, so it is bounded; a read that runs out reports 124, or 137 when the kill was needed. SIGKILL
-# follows SIGTERM two seconds later, so a journalctl that is blocked (and so does not take its signal) still ends.
-kernelRead() { timeout -k 2 5 "$@"; }
+# the automatic rollback, so the apply bounds it itself. `timeout` alone cannot do that here: it waits for its child, and a
+# journalctl stuck in uninterruptible I/O keeps even SIGKILL pending until the I/O returns, so the apply would wait with it.
+# The read therefore runs in the background, writing to a file instead of a pipe this shell reads to EOF, with the inherited
+# apply lock closed (fd 9): a reader that outlives the deadline holds neither the lock nor this shell, so the rollback still
+# starts. `timeout -k 2 5` still ends an ordinary stuck reader early; this shell's own bound is a second longer than that
+# timeout's SIGKILL, so it holds only when the kill cannot land, and it reports 124 (or timeout's own 124/137) so the caller
+# says the read timed out.
+kernelRead() {
+  local f d i=0 status
+  f="$(mktemp)"
+  ( timeout -k 2 5 "$@" </dev/null >"$f" 2>/dev/null 9>&-; printf '%s' "$?" > "$f.rc" ) &
+  d=$!
+  while [ ! -e "$f.rc" ] && [ "$i" -lt 80 ]; do sleep 0.1; i=$(( i + 1 )); done
+  if [ -e "$f.rc" ]; then status="$(cat "$f.rc")"; wait "$d" 2>/dev/null || true
+  else kill -KILL "$d" 2>/dev/null || true; status=124; fi
+  cat "$f"
+  rm -f "$f" "$f.rc"
+  return "$status"
+}
 
 # What blocked the kernel when /healthz went unanswered at the deadline, from what the apply can read on the host: the
 # health request's curl exit, the unit's state and the tail of its journal (the journal is what says why the unit is not
