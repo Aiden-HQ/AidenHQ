@@ -116,7 +116,7 @@ export type Posted = {
   /** A refusal that wasn't the AI reviewer's (stale after a restart, a failed GitHub call): filing it again may post it. */
   retry?: boolean;
   /** Once posted (the executor's outcome): the review's link, the threads it resolved, and who posted it. */
-  url?: string; resolved?: number; identity?: "owner";
+  url?: string; resolved?: number; identity?: "owner" | "app";
   /** The comment ids it opened (its threads' first comments): what makes a thread Aiden's own. */
   comments?: number[];
   /** The acknowledgement comment it wrote. */

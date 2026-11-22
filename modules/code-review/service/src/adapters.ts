@@ -110,7 +110,7 @@ function settled(r: { id: string; state: string; outcome?: { ok: boolean; text: 
     // The executor's outcome (github-mcp review-post.ts): the review's link, the threads it resolved, the identity it posted as.
     let o: { review?: unknown; resolved?: unknown; identity?: unknown; comments?: unknown; ack_id?: unknown } = {};
     try { o = JSON.parse(r.outcome?.text ?? "{}"); } catch {}
-    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" ? { identity: o.identity } : {}), ...(Number.isInteger(o.ack_id) && (o.ack_id as number) > 0 ? { ack: o.ack_id as number } : {}), ...(Array.isArray(o.comments) ? { comments: o.comments.filter((c): c is number => Number.isInteger(c) && (c as number) > 0).slice(0, 200) } : {}) };
+    return { state: "posted", ...(typeof o.review === "string" && /^https:\/\/github\.com\//.test(o.review) ? { url: o.review } : {}), ...(typeof o.resolved === "number" ? { resolved: o.resolved } : {}), ...(o.identity === "owner" || o.identity === "app" ? { identity: o.identity } : {}), ...(Number.isInteger(o.ack_id) && (o.ack_id as number) > 0 ? { ack: o.ack_id as number } : {}), ...(Array.isArray(o.comments) ? { comments: o.comments.filter((c): c is number => Number.isInteger(c) && (c as number) > 0).slice(0, 200) } : {}) };
   }
   // Failed or stale (what it acted on changed, e.g. a restart between its approval and its run) may post when filed again; a
   // rejection is the AI reviewer's or the owner's answer, and a cancel is someone's decision.

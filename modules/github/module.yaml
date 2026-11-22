@@ -231,7 +231,7 @@ check_jobs:
 # files issues and pull requests upstream from that fork, nothing more. Asked for on the first-run page (/setup); empty =
 # nothing goes upstream.
 secrets:
-  state: true # its own vault dir, read-write at github-mcp's /state: the sign-in's token
+  state: true # its own vault dir, read-write at /state: the sign-in's token, and code review's optional GitHub App (github-app/{app_id,key.pem}, written by the kernel's /setup/github-app)
   provided:
     - name: github_bot_token
       setup:

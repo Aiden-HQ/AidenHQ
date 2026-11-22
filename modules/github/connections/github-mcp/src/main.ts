@@ -5,6 +5,7 @@
 // is signed with the AidenHQ footer naming the agent.
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Projects, issueLink, parseProductRepo, productTarget, upstreamReport } from "./projects.js";
 import { originIds, ownerTerms } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
@@ -24,6 +25,8 @@ import { createAccess, GitHubNeed, needResult, withWriteBudget, type GitHubAcces
 import { officialProxy, signIn } from "./official.js";
 import { signedIn } from "./vendor/needs.js";
 import { ReviewPoster } from "./review-post.js";
+import { gitHubApp } from "./github-app.js";
+import { reviewAs } from "./review-as.js";
 import { reviewErrorAnswer, type ReviewErrorAnswer } from "./review-need.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
@@ -60,7 +63,7 @@ const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim();
 const auth = signIn({ clientId, mcpUrl, stateDir, ci: process.env.GITHUB_CI === "1" });
 const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const codehostKey = () => { const f = process.env.CODEHOST_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
-const access = createAccess({ auth, clientId });
+const access = createAccess({ auth, clientId, log: (msg, f) => log.info(f, msg) });
 /** Whether a GitHub object (`github:<repo>#<n>[/comment/<id>]`) is in AidenHQ's records; a failed read is "no". */
 const ours = async (ref: string): Promise<boolean> => {
   const r = await fetch(`${kernelUrl}/v1/objects?ref=${encodeURIComponent(ref)}`, { headers: { authorization: `Bearer ${codehostKey()}` }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
@@ -82,7 +85,11 @@ const maintainer = new Maintainer(access, maintainedRepos, OWNER_TERMS, ours);
 const REPOS = describeRepos(maintainer.list());
 const github = new GitHub(access);
 // Code review's posting (review-post.ts): the code-review module's executor reaches it through /internal/review below.
-const poster = new ReviewPoster(github, access, tellOwner);
+// Its writes go as the owner's optional GitHub App where it is installed (github-app.ts; its id and key in this process's vault
+// dir, written by the kernel's /setup/github-app), else as the owner; review-as.ts keeps which, per repo, for the GitHub card.
+const reviewApp = gitHubApp({ dir: join(stateDir, "github-app") });
+const reviewIdentity = reviewAs({ file: join(stateDir, "review-as.json"), app: reviewApp });
+const poster = new ReviewPoster(github, access, tellOwner, reviewApp, reviewIdentity.record);
 // Code review's watcher reads (code-review-read.ts), through /internal/code-review below. Reviews post as the owner wherever
 // the owner's account reaches, once GitHub is connected.
 const crReader = new CodeReviewReader(github, async () => (access.connected() ? "owner" : null));
@@ -90,6 +97,8 @@ const crReader = new CodeReviewReader(github, async () => (access.connected() ? 
 const authKeyFile = process.env.GITHUB_AUTH_TOKEN_FILE;
 const official = officialProxy({
   auth, access, mcpUrl, log, stateDir, serviceKey: inboundToken,
+  // The card's rows after the sign-in's own: who code review posts as, per org (review-as.ts).
+  lines: () => reviewIdentity.lines(),
   // The reads the module tags (github_official.tools.read): every other official tool is refused (official.ts).
   reads: (process.env.GITHUB_OFFICIAL_READ ?? "").split(",").map((t) => t.trim()).filter(Boolean),
   authKey: authKeyFile && existsSync(authKeyFile) ? readFileSync(authKeyFile, "utf8").trim() || undefined : undefined,
