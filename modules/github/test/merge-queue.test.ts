@@ -36,7 +36,7 @@ function fakeGitHub(prs) {
         return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: p.squash !== false, rebaseMergeAllowed: p.rebase === true, pullRequest: {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: stale ? "OPEN" : p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
           mergedAt: stale ? null : p.mergedAt ?? null, mergeCommit: !stale && p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
-          mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: "main",
+          mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: p.base ?? "main",
           files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
           baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS", { names: p.baseNames }) } },
@@ -633,6 +633,25 @@ test("an unlinked PR already merged by its merge commit's message is evidence on
   await settle();
   assert.equal(outcomes[0]?.ok, true);
   assert.match(outcomes[0].text, /^merged-prs: \[\]/, "WOR-95 is not WOR-9");
+
+  // Merged into a release branch: the commit names WOR-9 but its change never reached the default branch, so it proves nothing.
+  prs["acme-agents/release"] = { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, base: "release", message: "Fix the release\n\nWOR-9" };
+  outcomes.length = 0;
+  await merge("k-00000000000000cd", [{ repo: "acme-agents/release", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "a non-default-branch merge is not evidence");
+
+  // A row that names another task is an answer: a message mentioning WOR-9 in passing must not take the PR over.
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-10", branch: "feature" } }));
+  prs["acme-agents/widget"] = { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the widget\n\nWOR-9" };
+  outcomes.length = 0;
+  await merge("k-00000000000000ce", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true);
+  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "the row says WOR-10: the message never overrides it");
 });
 
 test("a queue persisted before the identifier was kept recovers it from the record, so its already-merged PR is still evidence", async (t) => {

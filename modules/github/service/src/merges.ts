@@ -283,7 +283,9 @@ export function createMerges(d: {
         const ours = sha ? mergedBy(pull?.mergeCommit, sha, p.mergeCalls) : undefined;
         if (sha && !ours && p.mergeCalls?.length) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
         if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
-        else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha, mergeMessage: String(pull?.mergeCommit?.message ?? "") } : {}) });
+        // The message is kept only for a merge that landed on the default branch: a PR merged into a release branch carries a
+        // message naming the task but its change never reached main, so it proves nothing about what delivered the task.
+        else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha, ...(pull?.baseRefName === data.repository.defaultBranchRef?.name ? { mergeMessage: String(pull?.mergeCommit?.message ?? "") } : {}) } : {}) });
         delete p.mergeCalls;
         delete p.refusal;
         delete p.wait;
@@ -426,16 +428,20 @@ export function createMerges(d: {
       const row = d.taskOf?.(p.repo, p.number);
       return Boolean(row) && Boolean((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
     };
-    // A PR the fleet never opened has no row to link: the merge commit is the commit that landed on the default branch, so an
-    // identifier written in its message is a fact about what merged, unlike the PR's title or body, which whoever opened it wrote.
-    // Whole-token only: a longer identifier sharing the prefix (WOR-99381 for WOR-9938) names another task, and an unknown
-    // identifier or an absent message keeps today's answer (not evidence).
+    // A PR the fleet never opened has no row to link, so the merge commit that landed on the default branch is what can credit
+    // it: its message names the task this merge is for. Whole-token only: a longer identifier sharing the prefix (WOR-99381 for
+    // WOR-9938) names another task, and an unknown identifier or an absent message keeps today's answer (not evidence).
     const namesTask = (p: Pr) => {
       if (!q.taskIdentifier || !p.mergeMessage) return false;
       const token = q.taskIdentifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`(?<![\\w-])${token}(?![\\w-])`).test(p.mergeMessage);
     };
-    const evidence = (p: Pr) => settled(p) && typeof p.sha === "string" && (p.status === "merged" || linked(p) || namesTask(p));
+    // A row that names another task is an answer, not an absence: a message that mentions this task in passing never overrides it.
+    const linkedElsewhere = (p: Pr) => {
+      const row = d.taskOf?.(p.repo, p.number);
+      return Boolean(row) && !((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
+    };
+    const evidence = (p: Pr) => settled(p) && typeof p.sha === "string" && (p.status === "merged" || linked(p) || (!linkedElsewhere(p) && namesTask(p)));
     // The queue's own merges first, then the ones already merged at their bound head, each in the record's order.
     const merged = q.prs.filter(evidence).sort((a, b) => Number(b.status === "merged") - Number(a.status === "merged"))
       .map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha! }));
