@@ -140,8 +140,13 @@ void take();
 setInterval(() => void retry(d).catch((err) => log.warn({ err: String(err) }, "retry failed")), 30_000).unref();
 // The digest of routine crew messages: one message per slot.
 dropQueuedNeeds(store);
+let flushing = false; // one pass at a time: a slow multi-part send must not overlap the next tick and resend
 setInterval(() => {
-  void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds()).catch(() => undefined);
-  void flushNeeds(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds()).catch(() => undefined);
+  if (flushing) return;
+  flushing = true;
+  void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds())
+    .then(() => flushNeeds(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.connectionNeeds()))
+    .catch(() => undefined)
+    .finally(() => { flushing = false; });
 }, 5 * 60_000).unref();
 startWatch({ work: kernel.activity, api: (p) => kernel.read(p), store, notify: async (text, kind) => (await notify(d, { kind, text })).sent }, log);

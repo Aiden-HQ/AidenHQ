@@ -268,8 +268,11 @@ export function createConnectionState(o: {
       q("DELETE FROM connection_waits WHERE at < ?").run(t - 7 * DAY);
       const live = Object.keys(o.connections());
       const gone = `module NOT IN (${live.map(() => "?").join(", ")})`;
-      q(`DELETE FROM connection_state WHERE ${gone}`).run(...live);
-      q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
+      // An empty registry may be an unreadable config, not a real one: prune only against a registry that has connections.
+      if (live.length) {
+        q(`DELETE FROM connection_state WHERE ${gone}`).run(...live);
+        q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
+      }
     },
   };
 }

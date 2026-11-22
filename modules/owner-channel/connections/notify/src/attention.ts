@@ -82,7 +82,7 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
   // The connections still broken, pulled from the kernel each time the digest is composed (a retry asks again): a recovered one is
   // simply absent. When the kernel can't be read, one line says so rather than hiding it. Not queue items: nothing to replay or clear.
   const asked = needs ? await needs().then((l) => l, () => undefined) : [];
-  const extra = (text: string): Item => ({ id: `need:${text}`, agent: "AidenHQ", text, source: "kernel", kind: "fyi", told: true });
+  const extra = (text: string): Item => ({ id: `need:${text}`, agent: "AidenHQ", text, source: "kernel", kind: "fyi" });
   // Lines of this slot a failed attempt already delivered are not sent again.
   const done = JSON.parse(store.getKv("digest:needs-sent") || "{}") as { slot?: string; ids?: string[] };
   const delivered = new Set(done.slot === slot ? done.ids : []);
@@ -120,7 +120,11 @@ export async function flushNeeds(store: Store, cfg: Pick<AttentionConfig, "diges
   if (store.getKv("needs:day") === day) return false;
   if (store.getKv("needs:sig") === sig) return false;
   // Sent in chunks under the transport limit. The signature is recorded only once every chunk went, so a failed chunk resends the whole list.
-  for (const b of chunks(lines, (l) => `- ${l}`)) if ((await send(`Connections that need you:\n\n${b.map((l) => `- ${l}`).join("\n")}`)) === false) return false;
+  for (const b of chunks(lines, (l) => `- ${l}`)) {
+    const out = await send(`Connections that need you:\n\n${b.map((l) => `- ${l}`).join("\n")}`);
+    if (out !== true) return false; // down, or no channel set up yet: not delivered, so nothing is marked
+    for (const l of b) store.told({ source: "kernel", kind: "fyi", text: clip(l, 300) }, now);
+  }
   store.setKv("needs:sig", sig);
   store.setKv("needs:day", day);
   return true;
@@ -129,7 +133,7 @@ export async function flushNeeds(store: Store, cfg: Pick<AttentionConfig, "diges
 /** Digest lines the kernel's connection state used to queue (before the digest pulled them): dropped, so none repeats or goes stale. */
 export function dropQueuedNeeds(store: Store): void {
   const q = JSON.parse(store.getKv("digest:queue") || "[]") as Item[];
-  const keep = q.filter((i) => !(i.source === "kernel" && / isn't connected \(.*\): https?:\/\//.test(i.text)));
+  const keep = q.filter((i) => !(i.source === "kernel" && / isn't connected \(.*\)(, and work is waiting on it)?: https?:\/\//.test(i.text)));
   if (keep.length !== q.length) store.setKv("digest:queue", JSON.stringify(keep));
 }
 

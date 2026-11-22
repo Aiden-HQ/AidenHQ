@@ -127,6 +127,7 @@ it("with no digest hours the broken connections go once a day, an unchanged set 
 it("queued connection lines from before the digest pulled them are dropped at startup (1099443c)", () => {
   const store = openStore(":memory:");
   queueDigest(store, { agent: "AidenHQ", text: "GitHub isn't connected (not connected): http://board/connect/github", source: "kernel" });
+  queueDigest(store, { agent: "AidenHQ", text: "Google isn't connected (sign-in expired), and work is waiting on it: http://board/connect/google", source: "kernel" });
   queueDigest(store, { agent: "Worker", text: "other" });
   dropQueuedNeeds(store);
   expect((JSON.parse(store.getKv("digest:queue")!) as { text: string }[]).map((i) => i.text)).toEqual(["other"]);
@@ -158,4 +159,15 @@ it("a connection line keeps its whole reconnect link in the digest (d5305a6e)", 
   let out = "";
   await flushDigest(store, cfg, async (t) => ((out = t), true), Date.UTC(2026, 10, 17, 9), async () => [`GitHub isn't connected (acme needs SSO authorization): ${link}`]);
   expect(out).toContain(link);
+});
+
+it("the connections message is not marked delivered while no channel is set up, and delivered lines are in the ledger", async () => {
+  const store = openStore(":memory:");
+  const cfg = { digestHours: [] as number[] };
+  const day = Date.UTC(2026, 10, 17, 9);
+  const lines = ["GitHub isn't connected: http://board/connect/github"];
+  expect(await flushNeeds(store, cfg, async () => "off", day, async () => lines)).toBe(false);
+  expect(store.recentTold(3, 50, day)).toHaveLength(0);
+  expect(await flushNeeds(store, cfg, async () => true, day + 60_000, async () => lines)).toBe(true);
+  expect(store.recentTold(3, 50, day + 60_000).map((r) => r.text)).toEqual(lines);
 });

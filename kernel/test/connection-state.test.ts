@@ -92,6 +92,14 @@ test("a background hit only records and queues nothing; the digest pulls it once
   assert.ok(w.s.needs().some((l) => l.startsWith("Github isn't connected")));
 });
 
+test("an empty connections registry (an unreadable config) prunes nothing", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  const s2 = createConnectionState({ db: w.db, idle: { wait: async () => ({}) as never }, wakes: { open: () => {} }, queue: () => {}, issue: async () => undefined, comments: async () => [], agentName: async () => "Aiden", label: (m) => m, connections: () => ({}) as never, grants: () => ({}), boardUrl: () => "http://board.example", now: w.now });
+  s2.tick();
+  assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get() as { n: number }).n, 1);
+});
+
 test("a removed connection's need is dropped by tick and never listed", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "old_name", { cause: "not_connected", detail: "" });
