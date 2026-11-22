@@ -227,7 +227,7 @@ export function judgeIdentity(answers: { probe: IdentityProbe; status: number }[
  * probe got there (status 0: no HTTP answer). `raw`, when nothing answered HTTP, is what the socket said: `postgres` it
  * answered a PostgreSQL startup handshake (the one protocol identified positively, because a database answers silence to an
  * HTTP request; an SSLRequest reply alone is not enough, since a TLS listener offers SSL too), `banner` it spoke something
- * that isn't HTTP, `refused` nothing listens, `http` it said HTTP after all, `https` it speaks TLS (a TLS record or a TLS
+ * that isn't HTTP, `http` it answered HTTP to a known host, `refused` nothing listens, `http` it said HTTP after all, `https` it speaks TLS (a TLS record or a TLS
  * alert answered the plaintext look, or a TLS hello got an answer), so it could be HTTP, `closed` it hung up silently,
  * `silent` no answer at all.
  */
@@ -255,6 +255,7 @@ export function identityPorts(ports: PortAnswers[], required: Door[], denied: st
     if (p.answers.some((a) => a.status > 0)) findings.push(...judgeIdentity(p.answers).findings.map((f) => ({ ...f, what: `${at(p)}: ${f.what}` })));
     else if (p.raw === "banner" && !req) findings.push({ hard: false, what: `${at(p)} speaks something other than HTTP: not probed` });
     else if (p.raw === "refused" && !p.listening && !req) findings.push({ hard: false, what: `${at(p)} is exposed but nothing listens: not probed` });
+    else if (p.raw === "http") findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: answers HTTP to a known host, so it is a web app the gate judges, never a database it skips` });
     else if (p.raw === "https") findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: answers HTTPS, so it is a web app the gate can't judge over these probes` });
     else if (declared && p.service === declared.service && String(p.port) === declared.port && !req && p.raw === "postgres") findings.push({ hard: false, what: `${at(p)}: speaks PostgreSQL, not HTTP: not probed (the app declares protocol: postgres for this published port, and has no HTTP door)` });
     else findings.push({ hard: true, what: `${at(p)}: ${UNCONFIRMED}: no HTTP answer (${p.raw ?? "none"})` });
@@ -297,16 +298,19 @@ const v6 = (h) => {
 // A TLS listener may answer the plaintext GET with a TLS alert (record type 0x15 on TLS 0x03) instead of a protocol
 // banner. Those bytes are not a non-HTTP greeting: they are a TLS server refusing the plaintext request, so the port speaks
 // TLS and could be HTTP. The reply is kept as bytes (not a string) so a TLS byte compares as its number. A lone 0x15/0x16
-// opening is not yet TLS: the next byte decides, and a greeting that starts with either byte but is not 0x03 is a banner.
+// opening is never TLS on its own: the record's version byte must follow, so the second byte alone decides, and a greeting
+// that starts with either byte but is not 0x03 is a banner.
 // "http" is an HTTP reply, "https" TLS, "banner" other non-HTTP bytes, "refused" nothing listens, "closed" a hang-up with
 // nothing said, "silent" a timeout with nothing said.
-const TLS_PREFIX = (b) => b.length >= 1 && (b[0] === 0x16 || b[0] === 0x15) && (b.length < 2 || b[1] === 0x03);
+const TLS_PREFIX = (b) => b.length >= 2 && (b[0] === 0x16 || b[0] === 0x15) && b[1] === 0x03;
 const rawLook = (b) => !b.length ? "silent" : b.subarray(0, 5).toString("latin1") === "HTTP/" ? "http" : TLS_PREFIX(b) ? "https" : "banner";
-const raw = (host, port) => new Promise((done) => {
+// An HTTP/1.0 request with no Host: a plain server answers it, a vhost router that knows no default route may not. The
+// optional name adds the Host of a known app host, so an HTTP service a named router serves is found before any exemption.
+const raw = (host, port, name) => new Promise((done) => {
   let got = Buffer.alloc(0);
   const end = (r) => { s.destroy(); done(r); };
   const s = net.connect({ host, port, timeout: ${PORT_PROBE_MS} });
-  s.on("connect", () => s.write("GET / HTTP/1.0\r\n\r\n"));
+  s.on("connect", () => s.write(name ? "GET / HTTP/1.0\r\nHost: " + name + "\r\n\r\n" : "GET / HTTP/1.0\r\n\r\n"));
   s.on("data", (d) => {
     got = Buffer.concat([got, d]);
     const r = rawLook(got);
@@ -547,7 +551,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       const look = await raw(k.host, k.port);
       let seen = look;
       if (r.postgresProbe && k.port === r.postgresProbe) {
-        if (look === "closed" || look === "silent") seen = (await postgres(k.host, k.port)) || look;
+        // A vhost router may answer only a known name, so each name gets a plaintext GET with that Host first: an HTTP
+        // service is judged like any other and never exempted as a database.
+        for (const name of (r.sni ?? []).filter((n) => n && n.length <= 255)) if ((await raw(k.host, k.port, name)) === "http") { seen = "http"; break; }
+        if (seen === "closed" || seen === "silent") seen = (await postgres(k.host, k.port)) || look;
         // A TLS listener answers the plaintext GET with a TLS alert, which the raw look now reads as "https" and never
         // reaches here. But a listener that answers the plaintext GET with a non-TLS banner and also speaks TLS on the
         // same port would be skipped as a banner, so the declared database socket gets the TLS probes whatever its

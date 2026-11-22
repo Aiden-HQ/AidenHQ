@@ -326,6 +326,50 @@ describe("identity gate", () => {
     expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTPS/) });
   }, 60_000);
 
+  it.runIf(process.platform === "linux")("waits for the TLS version byte: a greeting split after 0x15 is a banner, as it is in one chunk", async () => {
+    // A non-TLS greeting that opens with 0x15 (the TLS alert record type) must be judged by its second byte, not by its
+    // first: delivered whole it is a banner, and split across two reads it must be the same banner. Deciding on byte one
+    // alone would call the split greeting HTTPS and block the deploy for how TCP happened to segment the write.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+    const split = await tcp(`(s) => {
+      s.on("data", (d) => {
+        if (d[0] === 0x47) { s.write(Buffer.from([0x15])); return setTimeout(() => s.end(Buffer.from([0x20, 0x20, 0x20])), 100); }
+        s.destroy(); // a TLS hello gets no answer, so nothing but the plaintext look can decide
+      });
+    }`);
+    const r = await scan(db, [split]);
+    expect(r.ok).toBe(true);
+    expect(r.findings).toEqual([{ hard: false, what: expect.stringMatching(/other than HTTP/) }]);
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("judges an HTTP service that only answers a known hostname before granting the database exemption", async () => {
+    // A vhost router on the declared database port serves plaintext HTTP only for the app's name and closes anything else,
+    // so the HTTP looks that use the socket IP as Host (and the Host-less raw GET) see nothing. The named look finds it, and
+    // a socket that answers HTTP is judged, never exempted as a database, whatever else it says.
+    const db = parseApp({ name: "warehouse", repo: "example-org/x", owner: "a", description: "d", port: 5433, expose: false, protocol: "postgres" });
+    // The socket answers PostgreSQL on the declared port too, so without the named HTTP look it would be exempted.
+    const named = await tcp(`(s) => {
+      let got = Buffer.alloc(0);
+      s.on("data", (d) => {
+        got = Buffer.concat([got, d]);
+        const text = got.toString("latin1");
+        if (text.includes("HTTP/1.")) {
+          if (/^Host: warehouse\\r$/m.test(text)) return s.end("HTTP/1.0 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n");
+          return s.destroy(); // a Host-less request, or the socket IP as Host: no default route
+        }
+        if (got.length < 4) return;
+        const len = got.readUInt32BE(0);
+        if (got.length < len) return;
+        if (len === 8 && got.readUInt32BE(4) === 80877103) { got = Buffer.alloc(0); return s.end("N"); } // SSLRequest
+        if (got.readUInt32BE(4) === 196608) return s.end(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0])); // a startup message
+        s.destroy();
+      });
+    }`);
+    const r = await scan(db, [named]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0]).toMatchObject({ hard: true, what: expect.stringMatching(/answers HTTP to a known host/) });
+  }, 60_000);
+
   it.runIf(process.platform === "linux")("probes TLS on the declared database socket even when the plaintext look is a non-TLS banner", async () => {
     // A listener that answers the plaintext GET with a protocol banner (not TLS) and also serves TLS on the same port would
     // be skipped as a non-HTTP banner without the TLS probes. The declared database socket gets the TLS probes whatever its
