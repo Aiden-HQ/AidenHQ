@@ -70,7 +70,7 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, graphql, repo = () => 404, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
   const waits = [];
   const taken = new Set();
@@ -99,6 +99,9 @@ async function setup(t, { prs, connected = { on: true }, hold, holdReason, cache
       if (!connected.on) throw Object.assign(new Error("GitHub isn't connected"), { need: { cause: "not_connected" } });
       // A merge call that never answers: GitHub may or may not have merged it (merges.ts mergeCalls).
       if (m === "PUT" && p.endsWith("/merge") && putFails()) throw new Error("The operation was aborted due to timeout");
+      // The repo read the queue confirms an absent repository with: `repo(slug)` is its status (404: really gone).
+      if (m === "GET" && /^\/repos\/[^/]+\/[^/]+$/.test(p)) return { status: repo(p.slice("/repos/".length)), body: { full_name: p.slice("/repos/".length) }, headers: new Headers() };
+      if (p === "/graphql" && graphql) return { ...(await graphql()), headers: new Headers() };
       return { ...(await github.gh(m, p, b)), headers: new Headers() };
     },
     graphql: async () => ({}),
@@ -143,6 +146,93 @@ test("an approved agents-org merge waits for green, merges at its bound head, an
   assert.match(outcomes[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/);
   const [line] = outcomes[0].text.split("\n");
   assert.deepEqual(JSON.parse(line.replace(/^merged-prs: /, "")).map((p) => [p.repo, p.number, p.head, typeof p.sha]), [["acme-agents/widget", 1, HEAD, "string"]], "the first line lists what it merged, with its merge commit");
+});
+
+test("a deleted repo (GraphQL NOT_FOUND) ends the record as not merged with a reason, instead of waiting forever", async (t) => {
+  // GitHub answers with an error whose type is NOT_FOUND (an absent node would do too): the repo or PR is gone for good.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs,
+    graphql: async () => ({ status: 200, body: { data: null, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a Repository with the name 'acme-agents/widget'." }] } }),
+  });
+  await merge("k-00000000000000d1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  const o = outcomes[0];
+  assert.equal(o?.ok, false, JSON.stringify(outcomes));
+  assert.match(String(o?.text), /repository or PR no longer exists/i);
+  assert.doesNotMatch(String(o?.text), /GitHub kept failing/, "not the transient-failure wait");
+  // The successful-answer form: the repository is there, its PR node is absent (a deleted PR): same definitive end.
+  outcomes.length = 0;
+  const absent = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, pullRequest: null } } } }) });
+  await absent.merge("k-00000000000000d2", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await absent.handle.stepMerges();
+  await absent.settle();
+  assert.equal(absent.outcomes[0]?.ok, false, JSON.stringify(absent.outcomes));
+  assert.match(String(absent.outcomes[0]?.text), /repository or PR no longer exists/i);
+  // A token that lost access to a private repo gets the same NOT_FOUND answer, but the repo read says it is there (200): the
+  // merge waits and asks again, it is never failed as "gone".
+  outcomes.length = 0;
+  const blind = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: null, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a Repository with the name 'acme-agents/widget'." }] } }), repo: () => 200 });
+  await blind.merge("k-00000000000000d4", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await blind.handle.stepMerges();
+  await blind.handle.stepMerges();
+  assert.equal(blind.outcomes.length, 0, "a repo the token can't see waits, it is not ended as gone");
+  // The same on the null-node shape: the repo read decides, not the null alone.
+  const nullNode = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: null } } }), repo: () => 403 });
+  await nullNode.merge("k-00000000000000d5", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await nullNode.handle.stepMerges();
+  await nullNode.handle.stepMerges();
+  assert.equal(nullNode.outcomes.length, 0, "a null repository node with no confirmation waits");
+  // Any other GraphQL error is not definitive: the record waits (and is not failed), as before.
+  outcomes.length = 0;
+  const other = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: null, errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }] } }) });
+  await other.merge("k-00000000000000d3", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await other.handle.stepMerges();
+  assert.equal(other.outcomes.length, 0, "a non-definitive GraphQL error waits, it does not end the record");
+});
+
+test("an answer that omits the fields the gate reads is waited on, not taken as the PR being gone", async (t) => {
+  // A repository node with a PR node that answers none of the fields the gate reads (a truncated or proxied body): nothing
+  // says the PR is gone, so the queue asks again instead of ending an approved merge.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const { handle, outcomes, merge } = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: { pullRequest: { number: 1 } } } } }) });
+  await merge("k-00000000000000f1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.equal(outcomes.length, 0, "a PR answer missing state/head/base is retried");
+  // A repository node that answered none of the requested repository fields is the same: no evidence the PR is absent.
+  const bare = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: {} } } }) });
+  await bare.merge("k-00000000000000f2", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await bare.handle.stepMerges();
+  assert.equal(bare.outcomes.length, 0, "an answer with no requested fields is retried");
+});
+
+test("an explicit null from GitHub is its answer, so the gate ends the record with its own reason instead of asking again", async (t) => {
+  // The PR node carries the keys, with null values: GitHub answered that the field is empty, which is not a partial answer.
+  // The gate's own reason ends it (a PR with no state), so a queued merge doesn't wait forever on an answer already given.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: { number: 1, state: null, headRefOid: null, baseRefName: null, files: { pageInfo: { hasNextPage: false }, nodes: [] }, commits: { nodes: [] } } } } } }) });
+  await merge("k-00000000000000f3", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.doesNotMatch(String(outcomes[0]?.text), /kept failing/, "not the transient wait: the answer was read");
+});
+
+test("a partial GraphQL answer and an empty 200 are waited on, not taken as a deleted PR", async (t) => {
+  // The PR node is there, but a nested lookup answered NOT_FOUND: not the PR being gone, so the approved merge waits.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const nested = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, pullRequest: { number: 1 } } }, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a Ref." }] } }) });
+  await nested.merge("k-00000000000000e1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await nested.handle.stepMerges();
+  await nested.handle.stepMerges();
+  assert.equal(nested.outcomes.length, 0, "a partial answer is retried, not failed");
+  // A 200 with data null and no errors (a proxy body) is not evidence the repo is gone either.
+  const empty = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: null } }) });
+  await empty.merge("k-00000000000000e2", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await empty.handle.stepMerges();
+  await empty.handle.stepMerges();
+  assert.equal(empty.outcomes.length, 0, "an empty answer waits");
 });
 
 test("missing evidence never counts as passing: no checks wait with no time limit, a truncated page of checks, the base's gate check not yet on the head", async (t) => {

@@ -160,3 +160,21 @@ test("the PR query asks for each check's external_id and whether the check list 
   assert.match(query, /files\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated file list is refused too");
   assert.match(query, /baseRef \{ target \{ oid /, "the PR's own base oid comes back, for a merged run whose pull_requests list GitHub dropped");
 });
+
+test("a PR read keeps GitHub's explicit nulls, so grading can tell a PR that is gone from one it could not read", async () => {
+  // A token that lost access, or a deleted repo, answers `repository: null`; a repository that has its other fields but no PR
+  // answers `pullRequest: null` beside them. Both are answers about the PR, and the grading module's presence check needs them
+  // to stop holding a close for a PR that cannot come back. Anything malformed, or a GraphQL error, is still no answer.
+  const pr = (answer: unknown) => answerOp("read", { module: "grading", repo: "acme/app", kind: "pr", number: 7 },
+    withRest(ctx(), async (_m, path) => (path === "/graphql" ? ok(answer) : ok({}))));
+  const noRepo = await pr({ data: { repository: null } });
+  assert.deepEqual(noRepo.json, { repository: null }, "a null repository is kept as the answer");
+  const noPr = await pr({ data: { repository: { defaultBranchRef: { name: "main" }, pullRequest: null } } });
+  assert.equal(noPr.json.repository.pullRequest, null, "an explicit null PR is kept beside its siblings");
+  await assert.rejects(() => pr({ data: { repository: { defaultBranchRef: { name: "main" } } } }), /no readable/, "an omitted PR field is no answer");
+  await assert.rejects(() => pr({ data: null, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a Repository." }] }), /no readable/, "a GraphQL error is no answer");
+  await assert.rejects(() => pr({ data: { repository: { pullRequest: null } }, errors: [{ type: "NOT_FOUND", message: "Could not resolve to a Repository." }] }), /no readable/, "an error even beside a null is no answer");
+  // The issue read is unchanged: a null issue is still no answer.
+  await assert.rejects(() => answerOp("read", { module: "grading", repo: "acme/app", kind: "issue", number: 7 },
+    withRest(ctx(), async (_m, path) => (path === "/graphql" ? ok({ data: { repository: { issue: null } } }) : ok({})))), /no readable/);
+});

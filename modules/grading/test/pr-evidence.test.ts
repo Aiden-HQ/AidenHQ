@@ -3,7 +3,7 @@
 // merged PR in the same repo beside the superseded branch, the merged PR is the one graded.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { baseCommitOf, localPullRequest, prEvidence } from "../service/src/grader/evidence.ts";
+import { baseCommitOf, localPullRequest, prEvidence, presentNow } from "../service/src/grader/evidence.ts";
 
 const REPO = "acme-agents/app";
 const SHA = (c) => c.repeat(40);
@@ -67,6 +67,29 @@ test("the same holds when the task's merge records, not its branch rows, name bo
   assert.ok(ev.version, "the merged record's PR is graded");
   assert.match(ev.version, /#224@/);
   assert.deepEqual(ev.prs.map((p) => p.number), [224]);
+});
+
+test("a merge-records read that failed is an unreadable deliverable, never 'the task has no PR'", async () => {
+  // No branch row names a PR, so the runner's own records are the only way to the merge. When that read fails, the answer is
+  // "could not be read": reading it as absent would let a versionless close land done/ungraded with the merge ungraded.
+  const down = await presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => [], taskMerged: async () => { throw new Error("kernel GET /v1/merges → 502"); }, pr: async () => ({}) });
+  assert.deepEqual([down.present, down.unknown], [false, true], "a failed records read is unknown, not an absence");
+  assert.match(down.facts.join("; "), /merge records for this task could not be read just now/);
+  // With the records readable, the same call finds the PR they name and holds it open (not merged yet) rather than absent.
+  const open = merged(224, "b", "c");
+  Object.assign(open, { state: "OPEN", mergedAt: null, mergeCommit: null });
+  const there = await presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => [], taskMerged: async () => [{ repo: REPO, number: 224, url: url(224), headRef: "branch-b" }], pr: async () => ({ repository: { pullRequest: open } }) });
+  assert.deepEqual([there.present, there.unknown], [false, false], "a readable record naming an open PR is a known answer");
+  assert.match(there.facts.join("; "), /open, not merged yet/);
+});
+
+test("a failed merge-records read in prEvidence is an evidence wait, never 'no pull request yet'", async () => {
+  // "no pull request yet" is a missing deliverable (it closes the task after MISSING_WAIT_MS). A 502 on the records that are
+  // the only route to the merge is unavailable evidence: the row waits, and nothing is closed on it.
+  const ev = await prEvidence([], "", { ...depsFor([]), taskMerged: async () => { throw new Error("kernel GET /v1/merges → 502"); } });
+  assert.match(ev.awaiting, /merge records for this task could not be read just now/);
+  assert.equal(ev.missing, undefined, "an unreadable record is not 'no pull request yet'");
+  assert.equal(ev.version, undefined);
 });
 
 test("when every PR the task names is closed, the hold applies: no verdict either way", async () => {
@@ -470,4 +493,81 @@ test("the module's evidence grant lists every path the fact reads: the code and 
   assert.deepEqual([...read].sort(), [".github/ci/areas.json", ".github/workflows/ci.yml"]);
   for (const path of read) assert.ok(listed.includes(path!), `the evidence grant does not list ${path}, so that read is refused`);
   assert.ok(listed.every((p) => !p.endsWith("/") && !p.includes("*")), "the grant names files exactly, never a directory or a prefix");
+});
+
+// GitHub answering "no such repository" or "no such PR" is an answer, unlike a read that threw: a PR that cannot reappear must
+// not keep a close waiting, while a failed read still must. Both are exercised through `presentNow`, which is what the close's
+// staleness check and escalationFor consult.
+test("a presence lookup GitHub answers as gone is a fact, never an unreadable wait", async () => {
+  const rows = [{ repo: REPO, number: 224, url: url(224) }];
+  const gone = (answer: any) => presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => rows, pr: async () => answer });
+  // The repository node is null: GitHub answered, and there is no PR to wait for.
+  const noRepo = await gone({ repository: null });
+  assert.deepEqual([noRepo.present, noRepo.unknown], [false, false], "a null repository is an answer, not a wait");
+  assert.match(noRepo.facts.join("; "), new RegExp(`${url(224)} no longer exists`));
+  // An explicit `pullRequest: null` beside the repository node is the same answer.
+  const noPr = await gone({ repository: { defaultBranchRef: { name: "main" }, pullRequest: null } });
+  assert.deepEqual([noPr.present, noPr.unknown], [false, false], "an explicit null PR is a definitive absence");
+  assert.match(noPr.facts.join("; "), /no longer exists/);
+  // A field that is simply missing is not that answer: the read did not say what the PR is, so it is unknown and waits.
+  const omitted = await gone({ repository: { defaultBranchRef: { name: "main" } } });
+  assert.deepEqual([omitted.present, omitted.unknown], [false, true], "an omitted PR field is not a definitive absence");
+  assert.match(omitted.facts.join("; "), /could not be read just now/);
+  // A read that threw is unknown too.
+  const threw = await presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => rows, pr: async () => { throw new Error("GitHub answered 502"); } });
+  assert.deepEqual([threw.present, threw.unknown], [false, true], "a failed read is unknown, never 'gone'");
+});
+
+// A deploy history the app read could not complete is not proof that a healthy deploy is absent: the fact must say it is
+// unknown, because the close can quote that fact to the owner as its reason.
+test("an unreadable deploy history is reported as unknown, never as 'no healthy deploy'", async () => {
+  const mergedPr = merged(701, "a", "b");
+  const base = {
+    taskPrs: async () => [{ repo: REPO, number: 701, url: url(701), heads: ["branch-a"] }],
+    pr: async () => ({ repository: { pullRequest: mergedPr } }),
+    appOfRepo: async () => ({ name: "roadmap-keeper", deploys: [] }),
+  };
+  // The history read failed (`deployHistory` threw): deploysOf falls back to the status row's recent entries and says the
+  // history is incomplete. The status row has no entry for this merge commit, which proves nothing.
+  const incomplete = await presentNow({ kind: "pr", ref: "" }, { ...base, deployHistory: async () => { throw new Error("apps-mcp GET /internal/deploys → 504"); } });
+  const fact = incomplete.facts.find((f) => f.startsWith("app roadmap-keeper:"));
+  assert.ok(fact, "the app's deploy fact is present");
+  assert.match(fact, /deploy history could not be read just now/);
+  assert.match(fact, /is unknown/);
+  assert.doesNotMatch(fact, /no healthy deploy/, "a lookup failure is never reported as a missing deploy");
+  // The same read answering with the complete history still says what it found: no healthy deploy is a real answer then.
+  const complete = await presentNow({ kind: "pr", ref: "" }, { ...base, deployHistory: async () => [] });
+  const said = complete.facts.find((f) => f.startsWith("app roadmap-keeper:"));
+  assert.match(String(said), /no healthy deploy/, "a complete history with no healthy row is a real miss");
+});
+
+// The runner's own merge record fills in the identifier a branch row may lack. When that read fails, a row whose own identifiers
+// prove nothing is an unreadable answer, never "this number is not the task's change": a retry may confirm the PR.
+test("an unreadable identity record is unknown, not proof the PR is not the task's", async () => {
+  // The branch row names the PR by number only: no branch, head commit or merge commit to tell it by.
+  const bare = [{ repo: REPO, number: 224, url: url(224) }];
+  const mergedPr = merged(224, "b", "c");
+  const record = { repo: REPO, number: 224, url: url(224), headRef: "branch-b", merge: SHA("c") };
+  const deps = (taskMerged: any) => ({
+    taskPrs: async () => bare, pr: async () => ({ repository: { pullRequest: mergedPr } }), taskMerged,
+    appOfRepo: async () => null,
+  });
+  // The record read failed: the row alone can't establish identity, so the close waits rather than closing on the silence.
+  const unread = await presentNow({ kind: "pr", ref: "" }, deps(async () => { throw new Error("kernel GET /v1/merges → 502"); }));
+  assert.deepEqual([unread.present, unread.unknown], [false, true], "a failed records read is unknown");
+  assert.match(unread.facts.join("; "), /could not be read just now/);
+  assert.doesNotMatch(unread.facts.join("; "), /keeps no branch, head commit or merge commit/, "never worded as an unverifiable number");
+  // The same read answering, with no row for this PR, is a real answer: the number proves nothing and is not read as the change.
+  const nothing = await presentNow({ kind: "pr", ref: "" }, deps(async () => []));
+  assert.deepEqual([nothing.present, nothing.unknown], [false, false], "a readable record with no row is a known answer");
+  assert.match(nothing.facts.join("; "), /keeps no branch, head commit or merge commit/);
+  // With the record, the identifiers are there and the merged PR is the deliverable.
+  const found = await presentNow({ kind: "pr", ref: "" }, deps(async () => [record]));
+  assert.deepEqual([found.present, found.unknown], [true, false], "the record's identifiers establish the PR");
+  // A row that carries its own identifiers needs no record: a failed read still leaves a definitive answer, no wait.
+  const own = await presentNow({ kind: "pr", ref: "" }, {
+    taskPrs: async () => [{ ...bare[0], headRef: "branch-b" }], pr: async () => ({ repository: { pullRequest: mergedPr } }),
+    taskMerged: async () => { throw new Error("502"); }, appOfRepo: async () => null,
+  });
+  assert.deepEqual([own.present, own.unknown], [true, false], "the row's own branch identifies it without the record");
 });
