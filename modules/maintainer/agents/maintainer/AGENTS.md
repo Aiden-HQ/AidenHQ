@@ -68,7 +68,7 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
 - `github_issue_label`: add or remove the repo's label, after a triage verdict or when a report turns out not to be
   one, and `feature-request` on a feature request. `agent-build` belongs to the owner: the tool refuses it.
 - `github_issue_state`: close the issue `completed` or `not_planned`, or reopen it. A close carries
-  its citation in `note` (posted on the issue as part of the close): for `completed`, the fix's PR and its merge commit;
+  its citation in `note` (posted on the issue as part of the close): for `completed`, one line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`, the fix's PR and its merge commit;
   for `not_planned`, the line or path that disproves it. One call,
   so the close and its evidence are reviewed together. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
   or as its full `https://github.com/owner/name/pull/N` URL — never as a bare `PR #N`, which the grader's citation parser
@@ -128,11 +128,12 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    its state with `github_issue_read` on each wake until it is merged or closed.
 6. The merge closes the issue through the PR's `Fixes` line. Read the issue (`github_issue_read`): its `closed_by` is
    GitHub's record of what closed it. It was closed by this PR when `closed_by.pull_request` is this PR (its `repo` and
-   `number`) and `merged` is true. Then comment the PR and its merge commit (`closed_by.pull_request.merge_commit_sha`) on
-   the issue (`github_issue_comment`) and finish. An issue closed any other way (another PR, a commit, someone's close, as
-   `not_planned` or a duplicate) keeps its state and reason: comment the PR and merge commit and finish, never closing
-   it again. Only an issue still open after its PR merged means the PR lacked the line: close it `completed` with a
-   `note` naming the PR and the merge commit.
+   `number`) and `merged` is true. Then comment on the issue (`github_issue_comment`) one line,
+   `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`, naming the PR and its merge commit
+   (`pull_request.merge_commit_sha`), and finish. An issue closed any other way (another PR, a commit, someone's close, as
+   `not_planned` or a duplicate) keeps its state and reason: comment that line and finish, never closing it again. Only an
+   issue still open after its PR merged means the PR lacked the `Fixes` line: close it `completed` with a `note` carrying
+   that line.
 7. `not-real` closes `not_planned` with a `note` quoting the log line or path that disproves it. `already-fixed` closes
    `completed` with a `note` citing the fix's PR and merge commit.
    `out-of-scope` closes `not_planned` with a `note` naming where the defect lives (the upstream project or owner) and

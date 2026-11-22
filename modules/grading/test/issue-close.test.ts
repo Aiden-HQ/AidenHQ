@@ -1,47 +1,46 @@
-// A closed issue counts as resolved when GitHub's own closer is a merged PR in its repo, or an owner's comment (at any time after
-// the close) cites a PR the code host reads as merged; a manual close with neither stays unresolved.
+// A closed issue counts as resolved when GitHub's own closer is a merged PR (in any repo), or a comment by an owner, member or
+// collaborator carries the one line `Fixed by <owner>/<repo>#<n> (merge <sha>)` for a PR the code host reads as merged at that sha.
+// Nothing else is scanned: other links never count and never mask the line.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { issueEvidence } from "../service/src/grader/evidence.ts";
 
-const base = { number: 7, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", labels: { nodes: [] } };
-const merged = { state: "MERGED", mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: "b".repeat(40) }, headRefOid: "a".repeat(40) };
-const run = (issue: object) => issueEvidence("acme/app#7", { issue: async () => ({ repository: { issue: { ...base, ...issue } } }), pr: async () => ({ repository: { pullRequest: merged } }) });
+const SHA = "b".repeat(40);
+const base = { number: 7, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", labels: { nodes: [] }, closedEvents: { nodes: [{ actor: { login: "someone" }, closer: null }] } };
+const merged = { state: "MERGED", mergedAt: "2026-11-19T10:00:00Z", mergeCommit: { oid: SHA }, headRefOid: "a".repeat(40) };
+const run = (issue: object, pr: (n: number) => object = () => merged) => issueEvidence("acme/app#7", { issue: async () => ({ repository: { issue: { ...base, ...issue } } }), pr: async (_r: string, n: number) => ({ repository: { pullRequest: pr(n) } }) });
 const text = (e: { facts: string[] }) => e.facts.join("\n");
+const said = (body: string, assoc = "OWNER", at = "2026-11-19T11:00:00Z") => ({ author: { login: "aiden" }, authorAssociation: assoc, createdAt: at, body });
+const line = (n = 9, sha = SHA) => `Fixed by acme/app#${n} (merge ${sha})`;
 
-test("an issue closed by a merged PR counts; so does one an owner's later comment cites a merged PR for; a bare manual close does not", async () => {
-  const keyword = await run({ closedEvents: { nodes: [{ actor: { login: "github-actions" }, closer: { __typename: "PullRequest", number: 9, state: "MERGED", mergeCommit: { oid: "b".repeat(40) }, repository: { nameWithOwner: "acme/app" } } }] }, comments: { nodes: [] } });
-  assert.match(text(keyword), /closed by GitHub through the closing keyword of https:\/\/github.com\/acme\/app\/pull\/9.*merged \(merge commit b{40}\)/);
-  assert.doesNotMatch(text(keyword), /does not count/);
-
-  const later = await run({ closedEvents: { nodes: [{ actor: { login: "someone" }, closer: null }] }, comments: { nodes: [{ author: { login: "owner" }, authorAssociation: "OWNER", createdAt: "2026-11-19T11:00:00Z", body: "Fixed by https://github.com/acme/app/pull/9." }] } });
-  assert.match(text(later), /acme\/app\/pull\/9: merged at 2026-11-19T10:00:00Z/);
-  assert.doesNotMatch(text(later), /does not count/);
-
-  // The closer commented first without citing a PR: the owner's later citation still counts, attributed to its own author.
-  const both = await run({ closedEvents: { nodes: [{ actor: { login: "someone" }, closer: null }] }, comments: { nodes: [
-    { author: { login: "someone" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:00Z", body: "closing" },
-    { author: { login: "aiden" }, authorAssociation: "OWNER", createdAt: "2026-11-19T11:00:00Z", body: "Fixed by https://github.com/acme/app/pull/9." }] } });
-  assert.match(text(both), /closing comment \(by aiden, .*cites https:\/\/github.com\/acme\/app\/pull\/9/);
-
-  const bare = await run({ closedEvents: { nodes: [{ actor: { login: "someone" }, closer: null }] }, comments: { nodes: [] } });
-  assert.match(text(bare), /the close does not count/);
-
-  // A merged PR in another repo, which GitHub records as the closer of a cross-repo `Fixes owner/repo#n`, counts.
-  const cross = await run({ closedEvents: { nodes: [{ actor: { login: "github-actions" }, closer: { __typename: "PullRequest", number: 3, state: "MERGED", mergeCommit: { oid: "c".repeat(40) }, repository: { nameWithOwner: "acme/other" } } }] }, comments: { nodes: [] } });
-  assert.match(text(cross), /closing keyword of https:\/\/github.com\/acme\/other\/pull\/3.*merged/);
-  assert.doesNotMatch(text(cross), /does not count/);
+test("a merged PR GitHub records as the closer counts, in this repo or another", async () => {
+  for (const repo of ["acme/app", "acme/other"]) {
+    const e = await run({ closedEvents: { nodes: [{ actor: { login: "github-actions" }, closer: { __typename: "PullRequest", number: 3, state: "MERGED", mergeCommit: { oid: "c".repeat(40) }, repository: { nameWithOwner: repo } } }] }, comments: { nodes: [] } });
+    assert.match(text(e), new RegExp(`closing keyword of https://github.com/${repo}/pull/3.*merged`));
+    assert.doesNotMatch(text(e), /does not count/);
+  }
 });
 
-test("every citation is read: an unrelated or unmerged link never masks the merged fix", async () => {
-  const unmerged = { state: "OPEN" };
-  const e = await issueEvidence("acme/app#7", {
-    issue: async () => ({ repository: { issue: { ...base, closedEvents: { nodes: [{ actor: { login: "owner" }, closer: null }] }, comments: { nodes: [
-      { author: { login: "owner" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: "Related: https://github.com/acme/app/pull/4" },
-      { author: { login: "aiden" }, authorAssociation: "OWNER", createdAt: "2026-11-19T11:00:00Z", body: "See https://github.com/acme/app/pull/5 and the fix https://github.com/acme/app/pull/9." }] } } } }),
-    pr: async (_repo: string, n: number) => ({ repository: { pullRequest: n === 9 ? merged : unmerged } }),
-  });
-  assert.match(text(e), /pull\/4: open, not merged/);
-  assert.match(text(e), /pull\/9: merged at/);
-  assert.match(e.version, /:b{12}\+/, "the merged fix is in the version's merges");
+test("the Fixed-by line counts from an owner at any time, once the PR is merged at that sha", async () => {
+  const e = await run({ comments: { nodes: [said(`Verified.\n\n${line()}\n\n🤖 Generated by Aiden`)] } });
+  assert.match(text(e), /acme\/app\/pull\/9 merged at b{40}: merged at 2026-11-19T10:00:00Z/);
+  assert.doesNotMatch(text(e), /does not count/);
+  assert.match(e.version, /:b{12}\+/);
+  // A PR merged at another sha, or not merged, is no resolution.
+  assert.match(text(await run({ comments: { nodes: [said(line(9, "d".repeat(40)))] } })), /not that sha/);
+  assert.match(text(await run({ comments: { nodes: [said(line())] } }, () => ({ state: "OPEN" }))), /open, not merged/);
 });
+
+test("an unrelated link beside a valid line, or five lines with the valid one last, never masks it", async () => {
+  const unrelated = await run({ comments: { nodes: [said("Related: https://github.com/acme/app/pull/4"), said(`See acme/app#5.\n${line()}`)] } }, (n) => (n === 9 ? merged : { state: "OPEN" }));
+  assert.match(e(unrelated), /pull\/9 merged at b{40}: merged at/);
+  assert.doesNotMatch(text(unrelated), /pull\/[45]/);
+  const five = await run({ comments: { nodes: [1, 2, 3, 4, 5].map((n) => said(n === 5 ? line(9) : line(n, "e".repeat(40)))) } }, (n) => (n === 9 ? merged : { state: "OPEN" }));
+  assert.match(e(five), /pull\/9 merged at b{40}: merged at/);
+});
+
+test("a manual close with no line stays unresolved: a link, a non-owner's line and a missing comment all fail", async () => {
+  for (const comments of [[], [said("Fixed by https://github.com/acme/app/pull/9")], [said(line(), "NONE")], [said(`prefix ${line()} suffix`)]])
+    assert.match(text(await run({ comments: { nodes: comments } })), /the close does not count/);
+});
+
