@@ -556,7 +556,7 @@ it("attributes a restriction to the org GitHub names, keeps a refusal inside one
   await expect(bad.graphql("q", { org: "acme" })).rejects.toThrow(/answered 502/);
 });
 
-it("a GraphQL refusal's warning stays while refusals keep coming and expires 30 minutes after the last", async () => {
+it("a GraphQL refusal's warning stays while refusals keep coming and expires two hours after the last", async () => {
   const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
   const t = fakeTime();
   let refuse = true;
@@ -564,15 +564,15 @@ it("a GraphQL refusal's warning stays while refusals keep coming and expires 30 
   await a.graphql("q", { org: "acme" }).catch(() => undefined);
   expect(a.status().problems).toHaveLength(1);
   refuse = false;
-  await t.sleep(29 * 60_000);
+  await t.sleep(119 * 60_000);
   await a.graphql("q", { org: "acme" });
   expect(a.status().problems).toHaveLength(1);
   await t.sleep(2 * 60_000);
   expect(a.status().problems).toHaveLength(0);
   refuse = true;
   await a.graphql("q", { org: "acme" }).catch(() => undefined);
-  await t.sleep(20 * 60_000);
+  await t.sleep(60 * 60_000);
   await a.graphql("q", { org: "acme" }).catch(() => undefined); // another refusal restarts the clock
-  await t.sleep(20 * 60_000);
+  await t.sleep(60 * 60_000);
   expect(a.status().problems).toHaveLength(1);
 });

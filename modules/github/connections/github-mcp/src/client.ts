@@ -485,8 +485,8 @@ function graphqlNeeds(errors: unknown, org: string, clientId?: string): { need: 
   return out;
 }
 
-/** A GraphQL refusal's warning goes when its org has had none for this long (two sync intervals). */
-const PROBLEM_TTL_MS = 30 * 60_000;
+/** A GraphQL refusal's warning goes when its org has had none for this long: two board reads (a board's items are read hourly). */
+const PROBLEM_TTL_MS = 2 * 60 * 60_000;
 
 const RECONNECT = { label: "Reconnect", reconnect: true } as const;
 

@@ -170,12 +170,14 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
       await put(PROJECT, { project, org, number: b.number, title: b.title, url: b.url, closed: !!b.closed, source_updated_at: b.updatedAt }, !st.baselined);
       if (st.baselined && (b.closed || now - Date.parse(st.cursor ?? "") < BOARD_EVERY)) continue;
       const seen = new Set<string>();
+      let partial = false; // an item's content was refused: the board is read again next pass, whatever its state
       let cur: string | null = null;
       do {
         const p = await gh.request(org, "POST", "/graphql", { query: ITEMS, variables: { org, number: b.number, after: cur } });
         const items = p.data?.organization?.projectV2?.items;
         cost += p.data?.rateLimit?.cost ?? 0;
         const refused = new Set<number>((Array.isArray(p.errors) ? p.errors : []).filter(isContentRefusal).map((e: any) => e.path.at(-2)));
+        partial ||= refused.size > 0;
         for (const [i, n] of (items?.nodes ?? []).entries()) {
           seen.add(n.id);
           await put(ITEM, itemRow(project, n, refused.has(i)), !st.baselined);
@@ -184,7 +186,7 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
       } while (cur);
       const ours = await store.pool.query(`SELECT item_id FROM src_github.project_item WHERE project = $1 AND NOT removed`, [project]);
       for (const { item_id } of ours.rows) if (!seen.has(item_id)) await put(ITEM, { project, item_id, removed: true }, false);
-      await store.saveScope(scope, new Date(now).toISOString(), true);
+      if (!partial) await store.saveScope(scope, new Date(now).toISOString(), true);
     }
     after = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
   } while (after);
