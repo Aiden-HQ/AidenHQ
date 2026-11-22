@@ -542,6 +542,12 @@ export function createService(o: Options) {
   });
   const merges = createMerges({
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
+    // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
+    identifierOf: async (record) => {
+      const r = await kernel("GET", `/v1/work?record=${encodeURIComponent(record)}`).catch(() => undefined);
+      const ident = String((r as { identifier?: unknown })?.identifier ?? "");
+      return ident || undefined;
+    },
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
