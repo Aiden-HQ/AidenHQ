@@ -109,3 +109,13 @@ test("patchGroups packs whole files, splits a big file at hunks with its header 
   assert.deepEqual(big.groups, []);
   assert.match(big.oversize[0]!, /^c\.txt \(a hunk of \d+ characters\)$/);
 });
+
+test("a file that became a directory: the path's patch is its own, not what lies under it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "native-dir-")), repo = join(dir, "r");
+  mkdirSync(repo); sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t"); sh(repo, "config", "commit.gpgsign", "false");
+  writeFileSync(join(repo, "config"), "x\n"); sh(repo, "add", "."); sh(repo, "commit", "-qm", "a"); const base = sh(repo, "rev-parse", "HEAD");
+  sh(repo, "rm", "-q", "config"); mkdirSync(join(repo, "config")); writeFileSync(join(repo, "config", "settings.ts"), "y\n"); sh(repo, "add", "."); sh(repo, "commit", "-qm", "b");
+  const g = patchGroups(repo, base, ["config"]);
+  assert.equal(g.groups.length, 1);
+  assert.ok(g.groups[0]!.text.startsWith("diff --git a/config b/config\n") && !g.groups[0]!.text.includes("settings.ts"));
+});
