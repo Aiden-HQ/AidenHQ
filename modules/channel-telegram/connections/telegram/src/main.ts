@@ -71,8 +71,8 @@ async function pair(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const username = await botUsername(cfg.telegramToken);
     const code = pairing.mint();
-    // expires_in is this service's own code lifetime, so the board times its screen by the live value, not a copy.
-    return json(res, 200, { code, link: `https://t.me/${username}?start=${code}`, expires_in: CODE_TTL_MS });
+    // expires_in (seconds) is this service's own code lifetime, so the board times its screen by the live value, not a copy.
+    return json(res, 200, { code, link: `https://t.me/${username}?start=${code}`, expires_in: CODE_TTL_MS / 1000 });
   } catch (err) {
     return json(res, 502, { error: (err as Error).message });
   }

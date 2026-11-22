@@ -22,6 +22,7 @@ afterEach(() => {
 const flush = async () => {
   for (let i = 0; i < 5; i++) await act(async () => void (await Promise.resolve()));
 };
+const answer = (body: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
 const advance = async (ms: number) => {
   await act(async () => void vi.advanceTimersByTime(ms));
   await flush();
@@ -75,5 +76,44 @@ describe("a pair code's expiry", () => {
     // This one lives a second, as its channel said: not the 15 minutes of the one before.
     await advance(1_100);
     expect(el.textContent).toContain("That code expired. Get a new one.");
+    expect(el.textContent).not.toContain("CODE-2");
+  });
+
+  it("stops showing the code when it dies even if the service doesn't answer; a pairing it reports at that moment wins", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    let mints = 0;
+    const behaviour = { stalls: true, pairs: false };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_path: string, init?: RequestInit) => {
+        if (init?.method === "POST") return answer({ code: `CODE-${++mints}`, minted_at: Date.now(), expires_in: 60 });
+        if (behaviour.stalls) return new Promise<never>(() => {}); // the service never answers
+        return answer({ paired: behaviour.pairs, ...(behaviour.pairs ? { paired_at: Date.now() } : {}) });
+      }),
+    );
+    const reload = vi.fn(async () => {});
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    root = createRoot(el);
+    await act(async () => root!.render(createElement(Pairing, { flow, reload, fail: () => {} })));
+    await flush();
+    await act(async () => el.querySelector<HTMLButtonElement>("button.btn.primary")!.click());
+    await flush();
+    expect(el.textContent).toContain("CODE-1");
+    await advance(60_000);
+    expect(el.textContent).toContain("That code expired. Get a new one.");
+    expect(el.textContent).not.toContain("CODE-1");
+
+    // The next code: a pairing lands just as it dies, and the last check sees it, so it reads paired rather than expired.
+    behaviour.pairs = true;
+    const again = [...el.querySelectorAll("button")].find((b) => b.textContent === "Get a new pairing code")!;
+    await act(async () => again.click());
+    await flush();
+    expect(el.textContent).toContain("CODE-2");
+    behaviour.stalls = false;
+    await advance(60_000);
+    expect(el.textContent).toContain("Get a pairing code");
+    expect(el.textContent).not.toContain("That code expired");
+    expect(reload).toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import qrcode from "qrcode-generator";
 import { SignInRequired, api, type AdvancedFlowView, type SetupChoice, type SetupFlowView } from "./api";
 import { ConnectButton } from "./Connect";
+import { forgetFlows } from "./SetupButton";
 import { useEvents } from "./events";
 import { Markdown } from "./markdown";
 import { ChangeProgress, Page } from "./settings-ui";
@@ -329,13 +330,19 @@ export function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: (
           if (!(r.paired && (r.paired_at != null ? ms(r.paired_at) >= pair.minted_at : !pair.was))) return false;
           setPair(null);
           setExpired(false);
+          // The modules and setup buttons read their flows once per page: a pairing changes "needs setup", so drop it now.
+          forgetFlows();
           void reload();
           return true;
         },
         () => false,
       );
-    // The last check runs when the code dies: one made at the end of its life is shown as paired, not expired.
-    const last = setTimeout(() => void check().then((pairedNow) => !pairedNow && setExpired(true)), Math.max(0, pair.ends - Date.now()));
+    // The code is dead at its end whether or not the service answers: stop showing it, and let a last check that does answer
+    // show a pairing made at the end of its life as paired.
+    const last = setTimeout(() => {
+      setExpired(true);
+      void check();
+    }, Math.max(0, pair.ends - Date.now()));
     const t = setInterval(() => void check(), 2000);
     return () => (clearInterval(t), clearTimeout(last));
   }, [live, pair, flow.module, reload]);
