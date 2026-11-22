@@ -4,8 +4,10 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } fr
 import { join } from "node:path";
 
 /** A child process to its end (killed at `minutes`): exit code, stdout, the tail of stderr. */
-export async function run(cmd: string, args: string[], o: { cwd: string; env: Record<string, string>; minutes?: string | number }) {
-  const child = spawn(cmd, args, { cwd: o.cwd, env: o.env, stdio: ["ignore", "pipe", "pipe"] });
+export async function run(cmd: string, args: string[], o: { cwd: string; env: Record<string, string>; minutes?: string | number; input?: string }) {
+  const child = spawn(cmd, args, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.on("error", () => {}); // a child that exits without reading its input
+  child.stdin.end(o.input); // none: closed at once, as /dev/null would be
   let stdout = "", stderr = "", timedOut = false;
   // Decoded as streams, so a character split across chunks arrives whole.
   child.stdout.setEncoding("utf8");

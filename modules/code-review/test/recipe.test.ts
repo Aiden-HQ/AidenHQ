@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { bound, history, review, scrub } from "../recipe/review.ts";
+import { bound, history, review } from "../recipe/review.ts";
+import { scrub } from "../recipe/brief.ts";
 
 import { page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
