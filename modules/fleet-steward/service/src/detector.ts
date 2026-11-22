@@ -97,9 +97,9 @@ export function failingRoutines(jobs: JobRow[], since: Record<string, string> = 
 }
 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
-export interface Incident { key: string; reason: string; critical?: boolean }
+export interface Incident { key: string; reason: string; critical?: boolean; /** The task the flag is about, when its key names a card rather than a task. */ task?: string }
 /** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: the chief of staff was told the gate stayed jammed (open two hours). Each once, apart. */
-interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean }
+interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean; task?: string; /** When the gate's activity lookup first failed while the gate was past its two hours. */ lookup_failed_at?: string }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
 
 
@@ -149,7 +149,11 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     const found = await check().catch(() => undefined);
     if (!found) continue;
     const tripped = new Map(found.map((i) => [`${group}:${i.key}`, i]));
-    for (const [key, i] of tripped) if (!s.open[key]) s.open[key] = { reason: i.reason, at, fired: false, ...(i.critical ? { critical: true } : {}) };
+    for (const [key, i] of tripped) {
+      const open = s.open[key];
+      if (!open) s.open[key] = { reason: i.reason, at, fired: false, ...(i.critical ? { critical: true } : {}), ...(i.task ? { task: i.task } : {}) };
+      else if (i.task) open.task = i.task;
+    }
     for (const [key, o] of Object.entries(s.open)) {
       if (!key.startsWith(`${group}:`) || tripped.has(key)) continue;
       delete s.open[key];
@@ -171,8 +175,19 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
   const jammed: [string, Open][] = [];
   if (stewardOn) for (const [key, o] of Object.entries(s.open)) {
     if (!JAMMED.test(key) || o.jammed || Date.parse(at) - Date.parse(o.at) <= GATE_ESCALATE_MS) continue;
-    const task = /^(?:gate|unresumed):(.+)$/.exec(key)?.[1];
-    const last = task && acting ? await acting(task).catch(() => undefined) : undefined; // an unreadable task has no known activity: the clock decides, as it did before activity counted
+    // A review-stall's key is a card id; its task came with the flag. The other keys name their task.
+    const task = o.task ?? /^(?:gate|unresumed):(.+)$/.exec(key)?.[1];
+    let last: string | undefined;
+    if (task && acting) {
+      try { last = await acting(task); o.lookup_failed_at = undefined; }
+      catch {
+        // An unreadable task is not inactivity: one transient failure must not file a false jam line, so the flag waits one more
+        // window before the clock alone decides. A lookup that keeps failing past that window still escalates, so a persistent
+        // failure can't suppress it either.
+        o.lookup_failed_at ??= at;
+        if (Date.parse(at) - Date.parse(o.lookup_failed_at) < GATE_LOOKUP_MS) continue;
+      }
+    } else o.lookup_failed_at = undefined;
     if (Date.parse(at) - Math.max(Date.parse(o.at), Date.parse(last ?? "") || 0) > GATE_ESCALATE_MS) jammed.push([key, o]);
   }
   if (jammed.length && jam && (await jam(jammed.map(([k]) => k)).then(() => true, () => false))) for (const [, o] of jammed) o.jammed = true;
@@ -225,19 +240,31 @@ const REVIEW_STALL_MS = 15 * MIN; // a card with the AI reviewer, undecided this
 const REVIEW_GATE_MS = 90 * MIN; // a PR the merge queue holds for code review's verdict with no job on the task, twice a review run's 45-minute limit
 const UNRESUMED_MS = HOUR_MS; // a task still waiting on an answer that arrived this long ago
 const GATE_ESCALATE_MS = 2 * HOUR_MS; // a jammed gate's flag still open this long after it was raised goes to the chief of staff (tick's `jam`)
+const GATE_LOOKUP_MS = HOUR_MS; // a failed activity lookup defers that flag this long; still failing past it, the clock decides
 const JAMMED = /^(gate|unresumed|review-stall):/;
 const MAX_LOOKUPS = 20;
 /**
  * When a gate's task was last acted on, for tick's two-hour escalation: now while a job runs or is queued on it (the kernel's
- * `job_running`, `job_queued`; a `job_held` capacity hold is QUEUE_MS's, not work), else the newest agent comment (any agent's;
- * the kernel's own markers don't count). Undefined when neither.
+ * `job_running`, `job_queued`; a `job_held` capacity hold is QUEUE_MS's, not work), else the newest comment by its holder or by a
+ * fleet-audit agent (the Steward; another agent's comment is not the work moving). The kernel's own markers don't count.
+ * Undefined when neither. Throws when the task can't be read: a failed lookup is unknown activity, never inactivity.
  */
 export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (task: string) => Promise<string | undefined> {
+  // The agents that act on a gate for the fleet (role fleet-audit), read at most once every five minutes.
+  let audit: { at: number; ids: Set<string> } | undefined;
+  const auditors = async () => {
+    const t = (d.now ?? Date.now)();
+    if (audit && t - audit.at < 5 * MIN) return audit.ids;
+    const dir = (await d.kernel.call("GET", "/v1/agents")) as { agents?: Record<string, { roles?: string[] }> };
+    const ids = new Set(Object.entries(dir.agents ?? {}).filter(([, g]) => (g?.roles ?? []).includes("fleet-audit")).map(([id]) => id));
+    audit = { at: t, ids };
+    return ids;
+  };
   return async (task) => {
     const row = ((await d.kernel.call("GET", `/v1/tasks/state?ids=${encodeURIComponent(task)}`)).tasks ?? [])[0] as StateRow | undefined;
     if (row && ["job_running", "job_queued"].includes(row.reason)) return new Date((d.now ?? Date.now)()).toISOString();
-    const comments = (await d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`)) as CommentRow[];
-    return comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)))?.createdAt;
+    const [comments, stewards] = await Promise.all([d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>, auditors()]);
+    return comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId === row?.holder || (c.authorAgentId != null && stewards.has(c.authorAgentId))))?.createdAt;
   };
 }
 
@@ -320,10 +347,10 @@ export function capacityQueues(rows: StateRow[], running: number, capacity: numb
 }
 
 /** Write records still with the AI reviewer (state `review`) past REVIEW_STALL_MS: a review that was lost or never ran. */
-export function reviewStalls(records: (WorkRecord & { id?: string; kind?: string })[], t: number): { key: string; reason: string }[] {
+export function reviewStalls(records: (WorkRecord & { id?: string; kind?: string })[], t: number): { key: string; reason: string; task?: string }[] {
   return records
     .filter((x) => x.state === "review" && x.id && age(x.created_at, t) > REVIEW_STALL_MS)
-    .map((x) => ({ key: slug(x.id), reason: `card ${slug(x.id)} (${slug(x.kind)}) on task ${slug(x.identifier ?? x.task)} has been with the AI reviewer for ${mins(age(x.created_at, t))} with no decision` }));
+    .map((x) => ({ key: slug(x.id), reason: `card ${slug(x.id)} (${slug(x.kind)}) on task ${slug(x.identifier ?? x.task)} has been with the AI reviewer for ${mins(age(x.created_at, t))} with no decision`, ...(x.task ? { task: x.task } : {}) }));
 }
 
 /** Tasks whose last runs alternate between exactly two agents: PING_PONG.n runs, started within the span, at least n - 1 changes of agent. */

@@ -105,7 +105,8 @@ through their own card or the chief of staff, never through you: log it as `owne
     reason as evidence, naming the agent and its team. A team with every member running a job is at its size: list it in the
     digest with the queue depth and the oldest wait.
   - `review-stall`: a card with the AI reviewer over 15 minutes with no decision: slug `review-stall`, with the card id, its
-    kind, its age and the last apply from `fleet_generation_status`.
+    kind, its age and the last apply from `fleet_generation_status`. Its two-hour escalation is judged like `gate`'s: a job
+    on the card's task, or a comment there by the task's holder or by the Steward, means it is still being worked.
   - `gate`: the merge queue has held the PR for code review's verdict over 90 minutes with no job on the task. Read the PR's
     reviews and the code review posts' cards (`task_approvals` on the Reviewer Manager's task for that PR, `app_view`) to see
     which step stopped, and fix it at its source: a rule or settings change through the Engineer or the Reviewer Manager, or a
