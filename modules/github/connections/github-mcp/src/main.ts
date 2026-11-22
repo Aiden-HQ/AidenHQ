@@ -19,7 +19,7 @@ import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { GitHub, GitHubRefused, parseRef } from "./github.js";
 import { Maintainer } from "./maintainer.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
-import { isModule, reportNeed } from "./module-caller.js";
+import { isModule, needQueue } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
 import { createAccess, GitHubNeed, needResult, withWriteBudget, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
@@ -89,6 +89,13 @@ const github = new GitHub(access);
 // dir, written by the kernel's /setup/github-app), else as the owner; review-as.ts keeps which, per repo, for the GitHub card.
 const reviewApp = gitHubApp({ dir: join(stateDir, "github-app") });
 const reviewIdentity = reviewAs({ file: join(stateDir, "review-as.json"), app: reviewApp });
+// A failure only the owner can fix (GitHubNeed) goes to the kernel: the reply waits up to a second for it, so a restart in that
+// window can't drop it, and one the kernel didn't take is kept and retried at the start of the next request. Never throws.
+const needs = needQueue({ kernelUrl, key: codehostKey, log });
+// tellOwner is fire-and-forget (the poster's best-effort reads must not wait); each route awaits `needs.flush()`-bounded work
+// itself where the reply must carry the report: see `await needs.tell(err)` below.
+const tellOwner = (err: unknown) => void needs.tell(err);
+
 const poster = new ReviewPoster(github, access, tellOwner, reviewApp, reviewIdentity.record);
 // Code review's watcher reads (code-review-read.ts), through /internal/code-review below. Reviews post as the owner wherever
 // the owner's account reaches, once GitHub is connected.
@@ -121,11 +128,6 @@ function failure(err: unknown): ReviewErrorAnswer {
   const need = a.body.need as { detail?: unknown } | undefined;
   log.warn({ detail: String(a.body.detail ?? need?.detail ?? a.body.error).slice(0, 300) }, "review route failed");
   return a;
-}
-
-/** A failure only the owner can fix (GitHubNeed) goes to the kernel in the background: no reply waits on it, and nothing in it (the key file, the kernel) can fail one. */
-function tellOwner(err: unknown) {
-  if (err instanceof GitHubNeed) void (async () => { try { await reportNeed(kernelUrl, codehostKey(), err, log); } catch (e) { log.warn({ err: (e as Error).message }, "a connection need report failed"); } })();
 }
 
 function buildServer(caller?: Caller): McpServer {
@@ -553,6 +555,8 @@ function authorized(req: IncomingMessage): boolean {
 const http = createServer(async (req, res) => {
   let url: URL;
   try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
+  // A need the kernel didn't take on the request that met it is retried here, before this one's work: a dropped report is not lost.
+  void needs.flush();
   if (url.pathname === "/healthz") {
     // No token: not set up yet (state "missing"), which the apply's live agent check notes rather than fails.
     const ok = github.available();
@@ -642,11 +646,11 @@ const http = createServer(async (req, res) => {
         res.writeHead(200, { "content-type": "application/json" });
         const beat = setInterval(() => res.write(" "), 30_000);
         res.once("close", () => clearInterval(beat)); // the caller went away: the queued write still runs, only the blanks stop
-        try { return void res.end(JSON.stringify(await poster.execute(b.kind, b.args))); } catch (err) { tellOwner(err); return void res.end(JSON.stringify(failure(err).body)); } finally { clearInterval(beat); }
+        try { return void res.end(JSON.stringify(await poster.execute(b.kind, b.args))); } catch (err) { await needs.tell(err); return void res.end(JSON.stringify(failure(err).body)); } finally { clearInterval(beat); }
       }
       return send(404, { error: "no such operation" });
     } catch (err) {
-      tellOwner(err);
+      await needs.tell(err);
       // A typed need (an org that restricts OAuth apps, an expired sign-in) leaves as needs_owner in the body, never a bare 502:
       // only the owner can fix it, and the executor carrying the post tells its requester how (review-need.ts).
       const answer = failure(err);
@@ -657,7 +661,7 @@ const http = createServer(async (req, res) => {
   if (url.pathname.startsWith("/internal/code-review/")) {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
-    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams, tellOwner);
+    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams, needs.tell);
     return void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
