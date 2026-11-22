@@ -45,13 +45,16 @@ export function useTaskBoard({ ready, routed, toast, go }: { ready: boolean; rou
   const load = useCallback(() => api.views().then((r) => (setViews(r.views), r.views), (e) => (toast(`Couldn't load saved boards: ${(e as Error).message}`), null)), [toast]);
   useEffect(() => void (ready && load()), [ready, load]);
 
-  /** Show a saved board (null: All tasks, the unsaved default). Any draft is dropped. */
-  const select = useCallback((id: string | null, list = views) => {
+  /** Show a saved board (null: All tasks, the unsaved default, in `layout` when given). Any draft is dropped. */
+  const select = useCallback((id: string | null, list = views, layout?: Layout) => {
     const v = id ? list?.find((x) => x.id === id) : undefined;
     setConflict(null);
     setSelected(v?.id ?? null);
     if (v) apply(v.spec);
-    else (setFilters({}), setGroupBy("none"), setLayoutState(savedLayout()));
+    else {
+      if (layout) try { localStorage.setItem(LAYOUT_KEY, layout); } catch {}
+      setFilters({}), setGroupBy("none"), setLayoutState(layout ?? savedLayout());
+    }
     go(v ? `#/board?view=${v.id}` : "#/board");
   }, [views, apply, go]);
   // The address names a board (a link, Back and Forward): show it once the boards are known.

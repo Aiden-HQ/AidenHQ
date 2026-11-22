@@ -924,7 +924,7 @@ export function App() {
         apps={appsQ.data?.apps ?? []}
         onNewTask={newTask}
         tasks={[
-          { id: "t-work", kind: "Go to", label: "Agent work", icon: "tasks", run: () => (tb.setLayout("work"), go("#/board")) },
+          { id: "t-work", kind: "Go to", label: "Agent work", icon: "tasks", run: () => tb.select(null, tb.views, "work") },
           ...(tb.views ?? []).map((v) => ({ id: `t-${v.id}`, kind: "Board", label: v.name, icon: "tasks" as const, run: () => tb.select(v.id) })),
           ...(tb.views ? [{ id: "t-save", kind: "Action", label: "Save board", icon: "plus" as const, run: () => (go("#/board"), setSaveOpen((n) => n + 1)) }] : []),
         ]}
