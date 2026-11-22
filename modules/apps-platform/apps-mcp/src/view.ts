@@ -16,8 +16,8 @@ export const WEB_NETWORK = "aidenhq-computers";
 const redact = (s: string, secret?: string) => (secret ? s.replaceAll(secret, "***") : s);
 export const SNAPSHOT_CAP = 20_000;
 export const SNAPSHOT_MAX = 200_000; // the most a caller may ask the renderer to keep (the grader's own capture asks for more than an agent's view)
-/** What the grader's own capture keeps: long enough to reach the row a criterion names on a long page, still bounded. Not a
- * request field, so no other apps.read caller can ask for a larger snapshot. */
+/** What the grading module's own capture keeps: long enough to reach the row a criterion names on a long page, still bounded.
+ * main.ts gives it only to the module the kernel names `grading`, never from a request field and never to another reader. */
 export const GRADER_SNAPSHOT_CAP = 200_000;
 export const RENDER_TIMEOUT_MS = 45_000; // the script exits itself at 40 s; docker run gets a little more
 const WIDTHS = { min: 320, max: 1920, default: 1280 };
@@ -79,13 +79,13 @@ export type GraderView = { unavailable: string } | (ViewResult & { sha_before: s
  * commit read before and after the render, so the runner can tell a redeploy mid-capture from a verdict. An app it can't
  * view for good (role-restricted, no health.url, not local) is `unavailable` with the reason, not an error to retry.
  */
-export async function graderView(app: App, req: { path?: string; width?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; audit?: (o: object) => void }): Promise<GraderView> {
+export async function graderView(app: App, req: { path?: string; width?: number; cap?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; audit?: (o: object) => void }): Promise<GraderView> {
   // Restricted apps' pages stay with the agents holding their roles: the grader's notes are posted on the task.
   if (app.access) return { unavailable: `${app.name} is restricted to roles, so the grader doesn't capture its pages` };
   if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view` };
   if (app.host !== "local") return { unavailable: `${app.name} runs on docker context ${app.host}; only local apps can be viewed` };
   const sha_before = d.running(app.name) ?? "";
-  const r = await renderApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d, GRADER_SNAPSHOT_CAP);
+  const r = await renderApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d, req.cap ?? SNAPSHOT_CAP);
   return { ...r, sha_before, sha_after: d.running(app.name) ?? "" };
 }
 
