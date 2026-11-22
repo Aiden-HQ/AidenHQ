@@ -2309,10 +2309,15 @@ export function createApp(opts: AppOptions): Server {
     const calls = (Array.isArray(body) ? body : [body]) as { method?: string; params?: { name?: string } }[];
     const writes = calls.some((m) => m?.method === "tools/call" && WRITE_TOOLS.has(String(m.params?.name)));
     let code: string | undefined;
-    const who = await auth.check(token, writes, (c) => (code = c)).catch((e: Error) => {
-      log.warn({ reason: "kernel unreachable", err: String(e.message).slice(0, 100), userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 401");
-      return undefined;
-    });
+    // The kernel restarts in every apply: a token it couldn't be asked about is not a token it refused. A 401 makes the client
+    // sign the owner in again, a 503 makes it retry.
+    let down: Error | undefined;
+    const who = await auth.check(token, writes, (c) => (code = c)).catch((e: Error) => ((down = e), undefined));
+    if (down) {
+      log.warn({ err: String(down.message).slice(0, 100), userAgent: String(req.headers["user-agent"] ?? "").slice(0, 100) }, "/mcp answered 503: kernel unreachable");
+      res.writeHead(503, { ...SECURITY_HEADERS, "content-type": "application/json", "cache-control": "no-store", "retry-after": "5" }).end(JSON.stringify({ error: "the kernel is restarting: retry" }));
+      return;
+    }
     if (!who) return unauthorized("invalid_token", "kernel refused", code);
     sessions.set(req, { session: who.session, credential: { mcp: { token, resource: auth.resource() } } });
     await mcp!(req, res, body, { token, resource: auth.resource(), origin: auth.board });
