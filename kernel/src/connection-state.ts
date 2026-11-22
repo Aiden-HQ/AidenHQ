@@ -226,7 +226,7 @@ export function createConnectionState(o: {
       return Boolean(q(`SELECT 1 FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired')${account ? " AND account = ?" : ""} LIMIT 1`).get(...(account ? [connection, account] : [connection])));
     },
 
-    /** The agent's granted connections that has a full-cause row: names, causes and dates only. */
+    /** The agent's granted connections that has a full-cause row the owner has been told of (reported_day set; an unconfirmed blip stays retryable): names, causes and dates only. */
     downFor(agent: string): Down[] {
       const granted = Object.keys(o.grants()[agent]?.tools ?? {});
       const conns = o.connections();
@@ -234,7 +234,7 @@ export function createConnectionState(o: {
       for (const connection of granted) {
         const module = conns[connection]?.module;
         if (!module) continue;
-        const r = q("SELECT cause, account, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') ORDER BY since LIMIT 1").get(connection) as { cause: Cause; account: string; since: number } | undefined;
+        const r = q("SELECT cause, account, since FROM connection_state WHERE module = ? AND cause IN ('not_connected', 'expired') AND reported_day IS NOT NULL ORDER BY since LIMIT 1").get(connection) as { cause: Cause; account: string; since: number } | undefined;
         if (r) out.push({ connection, module, cause: r.cause, ...(r.account ? { account: r.account } : {}), since: iso(r.since) });
       }
       return out;

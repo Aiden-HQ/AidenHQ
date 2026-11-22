@@ -117,6 +117,15 @@ test("a need hit again more than 10 minutes after it began, with no success betw
   assert.equal(w.queued[0].kind, "digest");
 });
 
+test("an unconfirmed blip is not in downFor: agents still retry it", async () => {
+  const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  assert.deepEqual(w.s.downFor("a1"), []);
+  w.tick(LASTED);
+  await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
+  assert.equal(w.s.downFor("a1").length, 1);
+});
+
 test("a partial need is no blip: it reaches the digest on its first hit", async () => {
   const w = world({});
   await w.s.report("github", "github", { cause: "restricted", org: "acme", detail: "" });
