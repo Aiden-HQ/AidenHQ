@@ -41,11 +41,11 @@ async function read(api: Api, a: SetupArgs) {
   const tip = await api("GET", `/repos/${a.repo}/branches/${enc(a.branch)}`).then((b) => String(b.commit?.sha ?? ""), (e: Error) => { if (/ 404\b/.test(e.message)) return null; throw e; });
   if (tip !== a.expected_tip) throw fail(409, `${a.branch} is at ${tip ? tip.slice(0, 12) : "nothing"}, not ${a.expected_tip ? a.expected_tip.slice(0, 12) : "a new branch"}: ask again`);
   const parent = tip ?? head;
-  // What the branch already carries against the default branch: the reviewer reads it whole with the files to add, and the push
+  // What the branch already carries against the default branch head it read (by sha, never the moving branch name, so the diff, the path tier and the bound head are one snapshot): the reviewer reads it whole with the files to add, and the push
   // refuses any path outside the allowlist; the record binds the tip, so what runs is what was read.
   const carried: { filename: string; previous_filename?: string; status?: string; patch?: string }[] = [];
   if (tip) {
-    const cmp = await api("GET", `/repos/${a.repo}/compare/${encodeURIComponent(def)}...${tip}`);
+    const cmp = await api("GET", `/repos/${a.repo}/compare/${head}...${tip}`);
     const files = (cmp.files ?? []) as typeof carried;
     if (files.length >= 300) throw fail(409, `${a.branch}'s diff is too large to verify`);
     // Every file reaching a box is read by the reviewer: one GitHub gives no text for (binary, too large, a bare rename) can't be, so

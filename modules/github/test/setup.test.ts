@@ -122,6 +122,14 @@ test("the plan binds the reviewed default-branch head and the files it changes; 
   assert.deepEqual(g.writes, []);
 });
 
+test("what the branch carries is compared against the default-branch head sha the record binds, never the branch name", async () => {
+  const g = github({ tip: TIP, diff: [".deepsec/package.json"] });
+  const asked: string[] = [];
+  const api = (m: string, path: string, b?: any) => (asked.push(path), g.api(m, path, b));
+  await setup.plan(api, args({ expected_tip: TIP }));
+  assert.deepEqual(asked.filter((p) => p.includes("/compare/")), [`/repos/acme/widgets/compare/${HEAD}...${TIP}`]);
+});
+
 test("a branch carrying a file the reviewer can't read as text is refused, in the plan and the run", async () => {
   const noText = github({ tip: TIP, diff: [".deepsec/package.json"] });
   const api = (m: string, path: string, b?: any) => (path.startsWith("/repos/acme/widgets/compare/") ? Promise.resolve({ files: [{ filename: ".deepsec/package.json", status: "added" }] }) : noText.api(m, path, b));
