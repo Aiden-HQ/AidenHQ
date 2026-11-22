@@ -174,11 +174,12 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
    * The session to resume: the one of this agent's last finished job on this task with this engine, when that job's engine ran
    * (it wrote events). A resume that died at start (no events: its session isn't in the engine home) starts the next job
    * fresh, so one lost session never fails every later job; a job the kernel didn't admit (before the engine home was per agent
-   * and task) is never resumed. A launch that failed before the engine was spawned (`pid = 0`: an MCP preflight refusal, no
-   * engine home, no handbook, a clone that couldn't finish) never reached it, so it is not the session's newest word: skip it.
+   * and task) is never resumed. A launch that failed before the engine ran never reached it, so it is not the session's newest
+   * word: skip it — no pid (an MCP preflight refusal, no engine home, no handbook, a clone that couldn't finish), or exit 127
+   * (the box's shell ran but the engine binary was missing: jobs.ts's own ENOENT rule).
    */
   const lastSession = (agent: string, task: string, engine: string) => {
-    const r = db.prepare("SELECT session, offset FROM jobs WHERE agent = ? AND task = ? AND engine = ? AND authority IS NOT NULL AND pid > 0 AND state NOT IN ('admitted', 'running') ORDER BY at DESC LIMIT 1").get(agent, task, engine) as { session: string | null; offset: number } | undefined;
+    const r = db.prepare("SELECT session, offset FROM jobs WHERE agent = ? AND task = ? AND engine = ? AND authority IS NOT NULL AND pid > 0 AND exit IS NOT 127 AND state NOT IN ('admitted', 'running') ORDER BY at DESC LIMIT 1").get(agent, task, engine) as { session: string | null; offset: number } | undefined;
     return r && r.offset > 0 ? r.session ?? undefined : undefined;
   };
 

@@ -222,8 +222,11 @@ test("an MCP preflight refusal does not erase the session a real run left behind
   const refused = h.db.prepare("SELECT state, pid FROM jobs ORDER BY rowid DESC LIMIT 1").get();
   assert.equal(refused.state, "failed");
   assert.equal(refused.pid, 0); // no engine was spawned, so it never ran
-  // A job that got a box but failed before its engine was spawned (pid 0) is no more a session's newest word than a refusal.
-  h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, authority, session, offset, released, box) VALUES ('j-boxed', 'acme-dispatch', 'agent-1', 'task-1', 'wait', 0, '', '', ?, '[]', 0, 0, 'failed', '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(Date.now() + 5000);
+  // A job that got a box but never spawned an engine is no more a session's newest word than a refusal: pid 0 (a clone that
+  // couldn't finish), and exit 127 (the box's shell ran, the engine binary was missing: jobs.ts's ENOENT rule).
+  const notStarted = (id, pid, exit, at) => h.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, exit, authority, session, offset, released, box) VALUES (?, 'acme-dispatch', 'agent-1', 'task-1', 'wait', ?, '', '', ?, '[]', 0, 0, 'failed', ?, '{}', NULL, 0, 1, '{\"container\":\"c\"}')").run(id, pid, at, exit);
+  notStarted("j-boxed", 0, 1, Date.now() + 5000);
+  notStarted("j-no-engine", 7, 127, Date.now() + 6000);
   // With the configuration repaired, the next run resumes the session the real run left.
   h.declared["agent-1"] = ["slack", "tasks"];
   const next = await h.admit("task-1");
