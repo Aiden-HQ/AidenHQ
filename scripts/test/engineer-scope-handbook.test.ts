@@ -1,7 +1,7 @@
 // A publish stays inside the brief: the Engineer handbook says the diff carries the change the task names, and an
 // access rule, a config change or an unrelated file comes in only when the brief asks for it by name. A fix that cannot
 // work without one is asked about with the tool the Engineer actually holds (`task_wait` for its delegator), which keeps
-// the task open for the widened brief.
+// the task open; the reply is a comment, and only one that names and approves the extra change widens the scope.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -39,14 +39,29 @@ function scopeParagraph(text = compiled()) {
 test("the Engineer's handbook keeps a publish to the brief's scope", () => {
   const rule = scopeParagraph();
   assert.match(rule, /the diff carries the change the task names/, "the diff is the task's change");
-  for (const outside of [/access rule/i, /config/i, /unrelated file/i]) assert.match(rule, outside, `${outside} is named as out of scope`);
-  assert.match(rule, /brief asks for it by name/i, "each one needs the brief to name it");
+  assert.match(rule, /an access rule/i, "an access rule is named as out of scope");
+  assert.match(rule, /a config change/i, "a config change is named as out of scope");
+  assert.match(rule, /an unrelated file/i, "an unrelated file is named as out of scope");
+  assert.match(rule, /only when the brief asks for it by name/i, "each one needs the brief to name it");
 });
 
 test("a fix that needs something outside the brief asks with task_wait and leaves the task open", () => {
   const rule = scopeParagraph();
   assert.match(rule, /`task_wait`/, "the run ends with the tool it holds");
-  assert.match(rule, /delegator/i, "the question goes to the delegator");
+  assert.match(rule, /`?for:\s*delegator`?/, "the question targets the delegator in the tool arguments");
   assert.match(rule, /(instead of|rather than)\b[^.]*\badd/i, "the change is not added");
-  assert.match(rule, /(task|it) (stays|remains|is left) open/i, "the task stays open for the widened brief");
+  assert.match(rule, /(task|it) (stays|remains|is left) open/i, "the task stays open for the reply");
+});
+
+test("the reply widens the brief only when it names the change and comes from someone who may approve it", () => {
+  const rule = scopeParagraph();
+  assert.match(rule, /the reply from whoever received the question wakes it/i, "the wake delivers a reply, not an edited brief");
+  assert.match(rule, /names the change and approves it/i, "approval must name the change");
+  assert.match(rule, /only from the brief's author/i, "an approval comes from the brief's author");
+  assert.match(rule, /the delegator, or the chief of staff when it took the question/i, "the delegator, or the chief of staff that took the question");
+  assert.match(rule, /or the owner/i, "the owner's own approval counts");
+  assert.match(rule, /any other reply/i, "another agent's reply cannot widen the brief");
+  assert.match(rule, /declines or asks a question/i, "a refusal or a question leaves the brief alone");
+  assert.match(rule, /never the approval/i, "widening the request is not approving the change");
+  assert.match(rule, /its own approval tier/i, "the change still goes through its approval tier");
 });
