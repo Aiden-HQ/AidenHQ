@@ -840,17 +840,22 @@ switchOver() {
 # apply lock closed (fd 9): a reader that outlives the deadline holds neither the lock nor this shell, so the rollback still
 # starts. `timeout -k 2 5` still ends an ordinary stuck reader early; this shell's own bound is a second longer than that
 # timeout's SIGKILL, so it holds only when the kill cannot land, and it reports 124 (or timeout's own 124/137) so the caller
-# says the read timed out.
+# says the read timed out. The status is the command's own exit, taken from wait, so there is no second file to publish; a
+# temporary file that cannot be created fails the read at once (125) instead of running it against an empty name.
 kernelRead() {
-  local f d i=0 status
-  f="$(mktemp)"
-  ( timeout -k 2 5 "$@" </dev/null >"$f" 2>/dev/null 9>&-; printf '%s' "$?" > "$f.rc" ) &
+  local f d i=0 status=0
+  f="$(mktemp 2>/dev/null)" && [ -n "$f" ] || return 125
+  timeout -k 2 5 "$@" </dev/null >"$f" 2>/dev/null 9>&- &
   d=$!
-  while [ ! -e "$f.rc" ] && [ "$i" -lt 80 ]; do sleep 0.1; i=$(( i + 1 )); done
-  if [ -e "$f.rc" ]; then status="$(cat "$f.rc")"; wait "$d" 2>/dev/null || true
-  else kill -KILL "$d" 2>/dev/null || true; status=124; fi
-  cat "$f"
-  rm -f "$f" "$f.rc"
+  while kill -0 "$d" 2>/dev/null && [ "$i" -lt 80 ]; do sleep 0.1; i=$(( i + 1 )); done
+  if kill -0 "$d" 2>/dev/null; then
+    kill -KILL "$d" 2>/dev/null || true
+    wait "$d" 2>/dev/null || true
+    status=124
+  elif wait "$d" 2>/dev/null; then status=0
+  else status=$?; fi
+  cat "$f" 2>/dev/null || true
+  rm -f "$f"
   return "$status"
 }
 
@@ -873,6 +878,7 @@ kernelTimeoutWhy() {
   out="$(kernelRead systemctl --user show "$unit" --property=ActiveState,Result,NRestarts 2>/dev/null)" || src=$?
   out="${out//$'\n'/ }"; out="${out% }"
   if [ "$src" -eq 124 ] || [ "$src" -eq 137 ]; then why+="; unit state unavailable, systemctl timed out"
+  elif [ "$src" -eq 125 ]; then why+="; unit state unavailable, could not start the read"
   elif [ "$src" -ne 0 ]; then why+="; unit state unavailable, systemctl exit $src"
   elif [ -n "$out" ]; then why+="; unit $out"
   else why+="; unit state unavailable, systemctl printed nothing"; fi
@@ -885,6 +891,7 @@ kernelTimeoutWhy() {
   [ "$budget" -lt 100 ] && budget=100
   [ "${#journal}" -le "$budget" ] || journal="...${journal: -$((budget - 3))}"
   if [ "$jsrc" -eq 124 ] || [ "$jsrc" -eq 137 ]; then why+="; last journal unavailable, journalctl timed out"
+  elif [ "$jsrc" -eq 125 ]; then why+="; last journal unavailable, could not start the read"
   elif [ -n "$journal" ]; then why+="; last journal: $journal"
   else why+="; last journal empty or unavailable"; fi
   printf '%s' "$why"
