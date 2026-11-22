@@ -51,6 +51,8 @@ export interface GateInfo {
   previews?: boolean;
   /** The shared apps by name: their host and the registry's default role (share.default_role), if any. */
   apps?: Record<string, SharedApp>;
+  /** Test-user sign-in (docs/design/access.md, Test-user sign-in): the one identity an agent may use, and the apps named for it. */
+  test_user?: { email: string; apps: string[] };
   /** App doors (docs/design/app-doors.md): every exposed app at <name>.<base>, named by browsers with this scheme and port. */
   door?: { base: string; scheme: "http" | "https"; port?: number };
   /** The module door (docs/design/app-doors.md): its exact origin (the board's host on the door port) → the gate's host for it. */
@@ -66,7 +68,11 @@ export function readGate(file: string): GateInfo | undefined {
     const shared = entries.filter(([, h]) => h.door !== true);
     const moduleDoors = Object.fromEntries(entries.filter(([, h]) => h.door === true && typeof h.origin === "string").map(([host, h]) => [String(h.origin), host.toLowerCase()]));
     const apps = Object.fromEntries(shared.map(([host, h]) => [String(h.app), { host: host.toLowerCase(), ...(h.default_role ? { defaultRole: h.default_role } : {}) }]));
-    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: shared.map(([h]) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}), ...(Object.keys(moduleDoors).length ? { moduleDoors } : {}) };
+    const t = (g as { test_user?: unknown }).test_user as { email?: unknown; apps?: unknown } | undefined;
+    const testUser = t && typeof t.email === "string" && Array.isArray(t.apps)
+      ? { email: t.email.trim().toLowerCase(), apps: t.apps.map(String) }
+      : undefined;
+    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: shared.map(([h]) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}), ...(Object.keys(moduleDoors).length ? { moduleDoors } : {}), ...(testUser ? { test_user: testUser } : {}) };
   } catch {
     return undefined;
   }

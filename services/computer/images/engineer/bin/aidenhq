@@ -26,6 +26,10 @@
 //   aidenhq apply <org/repo> <branch>                apply the instance repo's branch at its commit here: one kernel.apply write
 //   aidenhq task <PEN-N>                             read a task (tasks-mcp task_get, when the job's profile grants it)
 //   aidenhq tasks <words>                            search open tasks (tasks-mcp task_search)
+//   aidenhq test-request <app> <method> <path> [--body <json|@file>] [--header name:value]...
+//                                                    one request as the owner's named test user at a gated app
+//                                                    (settings.edge.test_user): through the gate's own loopback listener, the
+//                                                    session never shown here. Prints status, headers and body (JSON).
 //   aidenhq advise "<question>" [--file <brief>]     a second opinion from the advisor (tasks-mcp advisor_ask)
 //   aidenhq reset                                    start the next turn with a fresh session
 //   aidenhq engine <kind> [model]                    run the next turn on another engine or model
@@ -43,8 +47,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
-const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | test-request <app> <method> <path> [--body <json|@file>] [--header name:value]... | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "test-request", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -62,9 +66,12 @@ if (!gateway || !token || !workspace) fail("only available inside a job's comput
 const flags = {};
 const words = [];
 const fixes = [];
+const testHeaders = {};
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--fixes") fixes.push(rest[++i]);
+  else if (rest[i] === "--header" && command === "test-request") { const h = rest[++i] ?? ""; const at = h.indexOf(":"); if (at < 1) fail("--header takes name:value", 2); testHeaders[h.slice(0, at).trim()] = h.slice(at + 1).trim(); }
   else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
+  else if (rest[i] === "--body" && command === "test-request") flags.body = rest[++i];
   else if (rest[i] === "--keep" && command === "clone") flags.keep = true;
   else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
   else words.push(rest[i]);
@@ -269,6 +276,17 @@ if (command === "publish" || command === "review") {
 } else if (command === "tasks") {
   if (!words.length) fail("usage: aidenhq tasks <words>", 2);
   lines.push(await tool("task_search", { query: words.join(" ") }));
+} else if (command === "test-request") {
+  if (words.length !== 3) fail("usage: aidenhq test-request <app> <method> <path> [--body <json|@file>] [--header name:value]...", 2);
+  const [app, method, path] = words;
+  const body = flags.body === undefined ? undefined : flags.body.startsWith("@") ? readFileSync(flags.body.slice(1), "utf8") : flags.body;
+  const req = { app, method, path, ...(body !== undefined ? { body } : {}), ...(Object.keys(testHeaders).length ? { headers: testHeaders } : {}) };
+  // A refusal (403 not-allowed, 413 body too large, 400 bad path) is the kernel's answer, not a request the app saw: report it and exit 1.
+  const res = await fetch(new URL("/v1/jobtools/test-request", gateway), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(req), signal: AbortSignal.timeout(2 * 60_000) }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
+  const text = await res.text();
+  if (!res.ok) { let m = text; try { m = JSON.parse(text).error?.message ?? text; } catch {} fail(m); }
+  console.log(text);
+  process.exit(0);
 } else if (command === "advise") {
   const question = words.join(" ").trim();
   if (!question) fail('usage: aidenhq advise "<question>" [--file <brief>]', 2);

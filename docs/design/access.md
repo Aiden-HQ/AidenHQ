@@ -255,6 +255,47 @@ and each app's Access page. A user invite link lands there to set a password.
 The board writes `accounts.json` (email, name, role, disabled, plus each app's default and role assignments) on every
 change. Exports are serialized, and a block, demotion, removal or disable returns only after the gate's file has it.
 
+## Test-user sign-in
+
+End-to-end checks of a gated app's person-facing routes (a public form, a status page, a rate limit) need a request that
+the front door and the gate accept as a signed-in person. A front door in front of the gate (Depoly/Okta with
+`app_login: header-jwt`, or Cloudflare Access) closes those routes to every agent, and handing the owner manual steps is
+not an answer. The test user is the one identity an agent may use, for the apps the owner names.
+
+- **Setting.** `settings.edge.test_user: { email, apps: [<app name>] }`, an instance setting (a Tier 2 apply). Compile
+  refuses an email that isn't an address, an empty list, a repeated name, and any name that isn't a shared app with a
+  `share.host`; it writes `test_user` and `test_keys_file` into `config/gate.json`. Naming no test user leaves it off.
+- **Signing key.** `scripts/identity.ts` creates `identity/test.pem` (Ed25519, issuer `aidenhq-test`) beside the gate's and
+  apps-mcp's, and lists its public half in `identity/keys.json`. Only the kernel reads the private key; the gate mounts
+  `keys.json` read-only and is the only other reader of the public one. Apps do not know `aidenhq-test`, so an app never
+  accepts a test token as an identity.
+- **The request.** `aidenhq test-request <app> <method> <path> [--body …] [--header …]` in an Engineer's computer calls
+  `POST /v1/jobtools/test-request`, which takes the live job's own `ahqj_` token. The kernel reads `gate.json`, refuses an
+  app the owner did not name (403), takes the agent and task from the job row (never the request), signs a 60-second
+  Ed25519 token bound to the app's host, the app name, the configured email and a random `jti`, and sends the request to
+  the gate's loopback listener with `Host` set to the app's host. The token never reaches the agent: the answer carries
+  the status, a few headers (`content-type`, `retry-after`, `location`, …) and a trimmed body. Each use is logged by the
+  kernel (agent, task, app, host, method, path) and by the gate (`test sign-in`, with the `jti`).
+- **What the gate does with it.** On the loopback listener only (`createGate({ testSessions: true })`; the front and
+  tunnel listeners refuse it) the gate verifies the token: EdDSA, a known `aidenhq-test` key, `iss`/`aud`/`app`, a
+  signature, 60 seconds, the configured email and its `sub`, one use per `jti`. It then runs the same `authorize()` as a
+  browser's session: the account must exist and be enabled, the role is the app's role resolution, `blocked` is 403,
+  `sameOrigin` holds for writes, and the normal `X-AidenHQ-Identity` is minted. The configured email must be a non-admin
+  account, and its role on the named app must not be `admin` (either one is refused), so a mistake in the setting can never
+  grant the test identity admin on an app. The
+  header matches the gate's `x-aidenhq-` strip rule, so an app never sees it, and nothing the gate trusts for everyone
+  was added: no header or shared secret is accepted without a kernel signature.
+- **Revocation.** Remove the app from `test_user.apps` (an apply, so `gate.json` loses it), disable or remove the account
+  (the gate reads `accounts.json` on every request), or rename `identity/test.pem` to a trusted-looking `test.old.pem` and
+  run an apply: compile creates a fresh key, so the old one stays listed but the kernel signs with the new one and the
+  gate's copy of `keys.json` is rewritten. None of these needs a redeploy of the app. The scoping is what stops it on
+  an app the owner has not named: `gate.json` lists no such host for the test identity, the kernel refuses the app, and
+  the gate refuses a token for any host outside the named list (403).
+- **What it cannot do.** It is one member's identity, for the named apps only: it cannot act as the owner, an app admin, or
+  on any other host, preview or door, and it is not a way around the front door for anyone else. Writes it makes are the
+  test user's writes and are visible to the app like any member's; keep canaries in the text so a test submission is
+  recognisable, and clean up (a follow-up request's `Retry-After`, or the app's own admin queue) as the run needs.
+
 ## Per-app roles
 
 The gate enforces one thing: `blocked`. The app decides the rest from the identity token's `role`.

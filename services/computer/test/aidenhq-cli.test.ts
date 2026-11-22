@@ -32,6 +32,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
         return json(200, { id: req.url.split("/").pop(), state: "done", outcome: { ok: true, text: "opened https://github.com/acme/app/pull/1" } });
       }
       if (req.url === "/v1/jobtools/review") return json(200, { decision: "reject", text: "The AI reviewer (~acme/model-a) would reject it. Nothing was filed.", reason: "say which login loop" });
+      if (req.url === "/v1/jobtools/test-request") return body.app === "elsewhere" ? json(403, { error: { code: "not-allowed", message: "elsewhere isn't one the test user may sign in to (app)" } }) : json(200, { app: body.app, host: "app.example.com", url: `https://app.example.com${body.path}`, status: 201, headers: { "content-type": "application/json" }, body: JSON.stringify({ reference: "ABCDEFGH" }), truncated: false, by: { agent: "a", task: "t" } });
       if (req.url === "/v1/jobtools/reset") return json(200, { text: "The next turn starts with a fresh session." });
       if (req.url === "/c/paperclip_tasks/mcp" && body.method === "initialize") return json(200, { jsonrpc: "2.0", id: 1, result: {} }, { "mcp-session-id": "s1" });
       if (req.url === "/c/paperclip_tasks/mcp") return res.writeHead(200, { "content-type": "text/event-stream" }).end(`data: ${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: `${body.params.name} ${JSON.stringify(body.params.arguments)}` }] } })}\n\n`);
@@ -74,6 +75,16 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   assert.match(await aidenhq("task", "PEN-12"), /task_get \{"issue":"PEN-12"\}/);
   // The tool proxy, as the box's own MCP config calls it: the token as X-Agent-Key.
   assert.deepEqual([seen.at(-1).path, seen.at(-1).key, seen.at(-1).auth], ["/c/paperclip_tasks/mcp", "ahqj_job", undefined]);
+  // test-request: the body as JSON or an @file, the allowed headers, and the kernel's refusal with its reason.
+  const testRun = JSON.parse(await aidenhq("test-request", "app", "POST", "/intake", "--body", '{"kind":"feedback"}', "--header", "referer:https://app.example.com/"));
+  assert.equal(testRun.status, 201);
+  assert.deepEqual(seen.at(-1).body, { app: "app", method: "POST", path: "/intake", body: '{"kind":"feedback"}', headers: { referer: "https://app.example.com/" } });
+  const bodyFile = join(ws, "probe.json");
+  writeFileSync(bodyFile, '{"kind":"correction"}');
+  await aidenhq("test-request", "app", "POST", "/intake", "--body", `@${bodyFile}`);
+  assert.equal(seen.at(-1).body.body, '{"kind":"correction"}');
+  await assert.rejects(aidenhq("test-request", "elsewhere", "GET", "/"), (e) => e.code === 1 && /isn't one the test user may sign in to/.test(e.stderr));
+  await assert.rejects(aidenhq("test-request", "app", "GET"), (e) => e.code === 2 && /usage: aidenhq test-request/.test(e.stderr));
   assert.match(await aidenhq("reset"), /fresh session/);
   // Outside a job's computer, nothing is sent.
   await assert.rejects(run(process.execPath, [CLI, "reset"], { env: { PATH: process.env.PATH } }), /only available inside a job's computer/);

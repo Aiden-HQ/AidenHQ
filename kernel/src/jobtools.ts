@@ -62,6 +62,12 @@ export function createJobTools({ db, secret, engines, orgs = () => [], now = Dat
   }
 
   return {
+    /** The live job this token names: its agent and task (test-user.ts: who a test request is attributable to). */
+    who(token: string): { agent: string; task: string } {
+      const id = jobOf(token);
+      const r = db.prepare("SELECT agent, task FROM jobs WHERE id = ?").get(id) as { agent: string; task: string };
+      return { agent: r.agent, task: r.task };
+    },
     /** One command from a job's box: what it prints. */
     run(token: string, cmd: string, b: { engine?: unknown; model?: unknown }): string {
       if (!(JOB_TOOLS as readonly string[]).includes(cmd)) throw new JobToolError(404, "no-command", `no command ${cmd} (${JOB_TOOLS.join(", ")})`);

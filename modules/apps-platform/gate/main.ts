@@ -1,7 +1,8 @@
 // The gate's process: reads the compiled config (GATE_CONFIG, mounted read-only) again whenever it changes and listens on
 // 127.0.0.1 (host networking: cloudflared and the apps' loopback ports are on the host), plus `front` (the tailnet address a
 // front door reaches) when the config has one, plus cloudflared's unix socket (`socket`): the one listener whose
-// CF-Connecting-IP is believed, since only cloudflared and the gate mount its directory.
+// CF-Connecting-IP is believed, since only cloudflared and the gate mount its directory. The test user's session header is
+// accepted on the loopback listener only (testSessions): the kernel, on the host, is its only caller.
 import { chmodSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createGate, type GateConfig } from "./gate.ts";
 
@@ -16,7 +17,7 @@ const config = (): GateConfig => {
   return cfg;
 };
 const { port, front, socket } = config();
-createGate({ config }).listen(port, "127.0.0.1", () => console.log(JSON.stringify({ msg: "gate listening", port })));
+createGate({ config, testSessions: true }).listen(port, "127.0.0.1", () => console.log(JSON.stringify({ msg: "gate listening", port })));
 if (front) createGate({ config }).listen(front.port, front.address, () => console.log(JSON.stringify({ msg: "gate listening (front)", address: front.address, port: front.port })));
 if (socket) {
   rmSync(socket, { force: true }); // a stale socket from the last run

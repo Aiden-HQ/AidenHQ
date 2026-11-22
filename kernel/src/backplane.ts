@@ -77,6 +77,9 @@
 //                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
 //                              | clone {repo}: a repository its dispatcher's clone grant covers as a git bundle (its default
 //                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
+//                              | test-request {app, method, path, body?, headers?}: one request as the owner's named test user at a
+//                              shared app (test-user.ts), signed by the kernel and sent to the gate's loopback listener, its session
+//                              never returned; the gate resolves the account and role as for a browser
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/connections/:module/ok  (the board's key) a sign-in or setup flow of that module finished: its down state clears and
@@ -106,6 +109,7 @@ import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
 import type { JobTools } from "./jobtools.ts";
+import type { TestUser } from "./test-user.ts";
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf, type Answer } from "./codehost.ts";
 import { fail } from "./proxy.ts";
@@ -277,7 +281,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, testUser, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
@@ -328,6 +332,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
   checkJobs?: CheckJobs;
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
+  /** Test-user requests (test-user.ts): an agent's own request as the owner's named test identity. */
+  testUser?: TestUser;
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
   precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
   /** A repo's bundle for a job's `aidenhq clone`, under its dispatcher's clone grant (codehost.ts bundle): the code host's answer. */
@@ -506,6 +512,14 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
               throw j.name === "JobToolError" ? fail(j.status!, j.code!, j.message) : e;
             } };
             return send(res, 200, await precheck(w, { kind: String(b.kind ?? ""), args: b.args }, slot));
+          }
+          if (m[0] === "test-request") {
+            if (!testUser) throw fail(503, "unavailable", "test-user requests are off");
+            try { return send(res, 200, await testUser.run(bearer(req), b as never)); } catch (e) {
+              const j = e as { name?: string; status?: number; code?: string; message: string };
+              if (j.name === "JobToolError" || j.name === "TestUserError") throw fail(j.status ?? 500, j.code ?? "test-request-failed", j.message);
+              throw e;
+            }
           }
           if (m[0] === "clone") {
             // The repo as a git bundle; the box clones it, or fetches it into the clone it has, itself.

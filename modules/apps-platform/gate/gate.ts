@@ -84,6 +84,10 @@ export interface GateConfig {
   /** Where a door's visitor signs in: the kernel's admin listener (every door, the module door included). */
   signin?: string;
   identity_key_file: string;
+  /** The public identity keys (scripts/identity.ts keys.json), read to verify a test user's session (test_user below). */
+  test_keys_file?: string;
+  /** Test-user sign-in (docs/design/access.md, Test-user sign-in): the one identity, and the apps the owner named for it. */
+  test_user?: { email: string; apps: string[] };
   hosts: Record<string, HostSite>;
   previews?: { file: string; ports: [number, number] };
 }
@@ -109,7 +113,7 @@ interface BoardReply { error?: string; code?: unknown; token?: unknown; requests
 /** A refusal (or a redirect to sign-in): the status and a short text. */
 interface Refusal { status: number; msg: string; location?: string; cookie?: string; email?: undefined }
 /** A sign-in method's answer: the email it verified. */
-interface SignIn { email: VerifiedEmail; idp: "access" | "password" | "header-jwt" }
+interface SignIn { email: VerifiedEmail; idp: "access" | "password" | "header-jwt" | "test" }
 interface Visitor { email: VerifiedEmail; name: string; idp: string | undefined }
 /** What authorize() decided; each kind's flags are absent (undefined) on every other kind, so a truthy flag narrows. */
 type Decision =
@@ -171,6 +175,12 @@ const HOP = ["connection", "keep-alive", "proxy-connection", "proxy-authenticate
 const b64json = (s: string): unknown => JSON.parse(Buffer.from(s, "base64url").toString("utf8"));
 const b64url = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
 export const IDENTITY_HEADER = "x-aidenhq-identity";
+/** The kernel's test-user session, accepted only on the loopback listener (docs/design/access.md, Test-user sign-in). */
+export const TEST_SESSION_HEADER = "x-aidenhq-test-session";
+const TEST_ISSUER = "aidenhq-test";
+const TEST_TTL_S = 60;
+const TEST_JTI = /^[0-9a-f]{32}$/;
+const TEST_SEEN_MAX = 10_000;
 const IDENTITY_TTL_S = 300;
 
 /** A person's stable, opaque id: the same under every sign-in method, from the email that method verified. */
@@ -446,7 +456,7 @@ export function doorSites(): (cfg: GateConfig, host: string) => Site | undefined
  * accounts_file: the board's account map and app roles (mounted read-only), re-read when its content changes.
  * fromTunnel: this server listens on cloudflared's socket (main.ts), so CF-Connecting-IP names the visitor.
  */
-export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean }): Server {
+export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, log = (o) => console.log(JSON.stringify(o)), fromTunnel = false, testSessions = false }: { config: () => GateConfig; fetch?: typeof fetch; now?: () => number; log?: Log; fromTunnel?: boolean; testSessions?: boolean }): Server {
   const keysets = new Map<string, KeyLookup>(); // certs_url → key lookup (one in practice)
   const keyFor = (url: string) => keysets.get(url) ?? keysets.set(url, jwks(url, fetchImpl, now)).get(url)!;
   const signers = new Map<string, () => Signer>(); // identity_key_file → its key (one in practice)
@@ -535,6 +545,60 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
   };
 
   /**
+   * A test user's session (docs/design/access.md, Test-user sign-in), only when this listener is the loopback one and the token
+   * checks out: an Ed25519 JWT signed by the kernel's key (issuer aidenhq-test, public half in test_keys_file), 60 seconds,
+   * bound to this exact host and app, and naming the one configured email. Returns undefined when no such header is present.
+   * It is an identity, not a bypass: authorize() then resolves the account and role exactly as for a browser's session, and
+   * the account must be an enabled non-admin (an admin account or app role is refused, so a misconfigured name can never
+   * grant admin).
+   * Each jti is accepted once, and the header is stripped before the app like every x-aidenhq-* header.
+   */
+  const seenTest = new Map<string, number>(); // jti → expiry ms
+  function testSession(req: IncomingMessage, cfg: GateConfig, host: string, site: Site | undefined): { email: VerifiedEmail; jti: string } | Refusal | undefined {
+    if (!testSessions) return undefined;
+    const token = req.headers[TEST_SESSION_HEADER];
+    if (token === undefined) return undefined;
+    const t = cfg.test_user;
+    if (!t || !cfg.test_keys_file || !site || site.door || site.parent) return { status: 403, msg: "forbidden: no test user for this app" };
+    if (!t.apps.includes(site.app)) return { status: 403, msg: "forbidden: this app isn't named for the test user" };
+    let keys: { kid?: string; iss?: string; kty?: string; crv?: string; x?: string }[];
+    try {
+      keys = (JSON.parse(readFileSync(cfg.test_keys_file, "utf8")) as { keys?: typeof keys }).keys ?? [];
+    } catch (e) {
+      log({ msg: "test keys unreadable", err: String(e) });
+      return { status: 503, msg: "unavailable: can't verify test sign-ins right now" };
+    }
+    try {
+      const parts = String(Array.isArray(token) ? token[0] : token).split(".");
+      if (parts.length !== 3) throw new Error("malformed token");
+      const header = b64json(parts[0]!) as { alg?: unknown; kid?: unknown };
+      if (header.alg !== "EdDSA") throw new Error("alg not allowed");
+      const jwk = keys.find((k) => k.kid === String(header.kid ?? "") && k.iss === TEST_ISSUER);
+      if (!jwk || jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || !jwk.x) throw new Error("unknown signing key");
+      const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: jwk.x }, format: "jwk" });
+      if (!verify(null, Buffer.from(`${parts[0]}.${parts[1]}`), key, Buffer.from(parts[2]!, "base64url"))) throw new Error("bad signature");
+      const c = b64json(parts[1]!) as { iss?: unknown; aud?: unknown; app?: unknown; email?: unknown; sub?: unknown; jti?: unknown; iat?: unknown; exp?: unknown };
+      const nowS = Math.floor(now() / 1000), int = (n: unknown): n is number => Number.isSafeInteger(n);
+      if (c.iss !== TEST_ISSUER) throw new Error("wrong issuer");
+      if (c.aud !== host) throw new Error("wrong audience");
+      if (c.app !== site.app) throw new Error("wrong app");
+      if (typeof c.email !== "string" || c.email.trim().toLowerCase() !== t.email.trim().toLowerCase()) throw new Error("wrong email");
+      const email = t.email.trim().toLowerCase() as VerifiedEmail;
+      if (c.sub !== subOf(email)) throw new Error("wrong subject");
+      if (typeof c.jti !== "string" || !TEST_JTI.test(c.jti)) throw new Error("bad jti");
+      if (!int(c.iat) || !int(c.exp) || c.exp <= c.iat || c.exp - c.iat > TEST_TTL_S || c.iat > nowS + 5 || nowS >= c.exp) throw new Error("expired");
+      for (const [k, exp] of seenTest) if (exp <= now()) seenTest.delete(k);
+      if (seenTest.has(c.jti)) throw new Error("replayed");
+      if (seenTest.size >= TEST_SEEN_MAX) seenTest.clear();
+      seenTest.set(c.jti, c.exp * 1000);
+      return { email, jti: c.jti };
+    } catch (e) {
+      log({ msg: "denied", host, why: `test session: ${(e as Error).message}` });
+      return { status: 403, msg: "forbidden: not a valid test session" };
+    }
+  }
+
+  /**
    * → { status, msg, location? } to refuse (or send to sign-in), { auth: true } for the auth listener,
    * { mine: true, email, name, roleOf, access } for the my-apps host, { request | requests: true, site, email, role } for
    * the gate's own /.aidenhq paths, or { site, email, name, role, app, secret } to proxy.
@@ -562,9 +626,15 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
     const read = req.method === "GET" || req.method === "HEAD";
     const aud = (site ?? cfg.my_apps)?.aud;
 
-    // Access: always in access mode (a host without an aud is refused), and on a password-mode host that has an aud.
+    // A test user's session (the kernel on this box's loopback): the email it names goes through the same account and role
+    // checks as a browser's, and the configured identity is never an admin.
     let email: VerifiedEmail | undefined, idp: string | undefined;
-    if (login === "header-jwt") {
+    const test = testSession(req, cfg, host, site);
+    if (test && !("email" in test)) return test;
+    if (test) {
+      ({ email } = test);
+      idp = "test";
+    } else if (login === "header-jwt") {
       const a = await adapters.headerJwt.authenticate(req, cfg, host, aud);
       if (!a.email) return a as Refusal;
       ({ email, idp } = a);
@@ -594,7 +664,7 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       // Sibling app hosts are same-site: another host's page must not sign a visitor in or out here.
       return read || sameOrigin(req, origin) ? { auth: true, path: `${path}${norm.search}` } : { status: 403, msg: "forbidden: cross-origin" };
     }
-    if (login === "password") {
+    if (login === "password" && !email) {
       try {
         ({ email, idp } = (await adapters.password.authenticate(req, cfg)) ?? ({} as Partial<SignIn>));
       } catch (e) {
@@ -627,8 +697,15 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       return { status: 403, msg: "forbidden: this account is disabled" };
     }
     // Password mode: a member is an account (a session with none, removed or not yet in the map, gets nothing). Access mode:
-    // every email the Access policy admits is a member, account or not.
+    // every email the Access policy admits is a member, account or not. A test user is always an account, so disabling or
+    // removing it revokes the test identity; an admin account or app role is refused below (the test identity is a member,
+    // never the owner's).
     if (login === "password" && !acct) return { status: 403, msg: "forbidden: no account" };
+    if (idp === "test") {
+      if (!acct) return { status: 403, msg: "forbidden: the test user has no account" };
+      if (acct.role === "admin") return { status: 403, msg: "forbidden: the test user must not be an admin" };
+      log({ msg: "test sign-in", app: site?.app, email, jti: test && "jti" in test ? test.jti : undefined });
+    }
     // An AidenHQ admin by its account (the owner's is one) is an admin of every app; else the app's assignment, its default,
     // or blocked.
     const roleOf = (app: string): string => {
@@ -651,6 +728,11 @@ export function createGate({ config, fetch: fetchImpl = fetch, now = Date.now, l
       return { status: 403, msg: "forbidden: this app opens only for AidenHQ admins until it is shared" };
     }
     const role = roleOf(site!.parent ?? site!.app); // a preview: its parent app's access
+    // A test identity is a member, never an admin: an app role assignment of admin is as refused as an admin account.
+    if (idp === "test" && role === "admin") {
+      log({ msg: "denied", host, email, why: "test user: admin role" });
+      return { status: 403, msg: "forbidden: the test user must not be an admin" };
+    }
     if (role === "blocked") {
       log({ msg: "denied", host, email, why: "blocked" });
       return { status: 403, msg: "forbidden: this app isn't shared with you" };

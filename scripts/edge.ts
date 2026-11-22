@@ -17,6 +17,10 @@
 // pr-<n>.<host> under each share.host, through the gate, with the parent's access: one ingress rule *.<host> per shared
 // app behind the parent's own aud (its Access application must cover *.<host> too). apps-mcp writes which previews run
 // (data/previews/previews.json); the gate takes only ports in PREVIEW_PORTS from it.
+// settings.edge.test_user ({ email, apps }): the one identity an agent may sign in as at the named shared apps, for end-to-end
+// checks of person-facing routes (docs/design/access.md, Test-user sign-in). Compile validates it (an email, and each app a
+// shared app with a host and no door or preview) and writes it to the gate; the gate accepts its kernel-signed session on its
+// loopback listener only, and the kernel is its only caller.
 // App doors (docs/design/app-doors.md): without `edge`, on exposure local or public, compile still runs the gate, serving
 // every exposed app to AidenHQ admins at <app>.<base> (`localhost` over http on loopback; <ip-with-dashes>.sslip.io behind
 // Caddy, scripts/front-door.ts), with each app's port from apps-mcp's doors file and sign-in only on the kernel's admin
@@ -46,6 +50,8 @@ export const ACCOUNTS_FILE = "/accounts/accounts.json"; // the kernel's account 
 export const AUTH_SECRET_FILE = "/secrets/auth_listener"; // gate_board_secret in the gate: X-AidenHQ-Gate to 3129 (sign-in, app access)
 export const LOGINS = ["access", "password", "header-jwt"];
 export const IDENTITY_KEY_FILE = "/secrets/identity_key"; // the vault's identity/gate.pem in the gate: it mints app identity tokens
+export const TEST_KEYS_FILE = "/secrets/test_keys.json"; // identity/keys.json in the gate: the public keys a test session is verified with
+const TEST_KEYS_MOUNT = `\${AIDENHQ_SECRETS_DIR}/identity/keys.json:${TEST_KEYS_FILE}:ro`; // only with a test user: nothing reads it otherwise
 export const PREVIEWS_FILE = "/previews/previews.json"; // apps-mcp's running previews (data/previews), mounted read-only
 export const DOORS_FILE = "/previews/doors.json"; // apps-mcp's door apps and their loopback ports, beside the previews file
 const PREVIEWS_MOUNT = `\${AIDENHQ_DATA_DIR:-./data}/previews:${dirname(PREVIEWS_FILE)}:ro`;
@@ -84,7 +90,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
   if (!LOGINS.includes(login)) fail(`settings.app_login must be ${LOGINS.join(" or ")}`);
   const front = login === "header-jwt";
   if (!front && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(edge.tunnel_id ?? ""))) fail("settings.edge.tunnel_id must be the tunnel's UUID");
-  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews", "identity", "front"].includes(k)) fail(`settings.edge.${k} is not a setting`);
+  for (const k of Object.keys(edge)) if (!["team_domain", "tunnel_id", "my_apps", "previews", "identity", "front", "test_user"].includes(k)) fail(`settings.edge.${k} is not a setting`);
   // An Access application's audience tag: required on every host with app_login access, optional with password.
   const audOf = (aud: unknown, where: string) => {
     if (aud == null && login === "password") return undefined;
@@ -141,6 +147,19 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     if (!Number.isInteger(f.port) || f.port < 1024 || f.port > 65535 || f.port === AUTH_PORT || f.port === GATE_PORT) fail(`settings.edge.front.port must be 1024-65535, never ${AUTH_PORT} or ${GATE_PORT}`);
     frontDoor = { address: f.address, port: f.port };
   } else for (const k of ["identity", "front"]) if (edge[k] !== undefined) fail(`settings.edge.${k} is only for app_login header-jwt`);
+  // The test user (docs/design/access.md, Test-user sign-in): named apps only, each a shared app with a host.
+  let testUser: Obj | undefined;
+  if (edge.test_user !== undefined) {
+    const t = edge.test_user;
+    if (!t || typeof t !== "object" || Array.isArray(t)) fail("settings.edge.test_user must be { email, apps }");
+    for (const k of Object.keys(t)) if (!["email", "apps"].includes(k)) fail(`settings.edge.test_user.${k} is not a setting`);
+    if (typeof t.email !== "string" || !/^[^@\s]+@[^@\s]+$/.test(t.email.trim()) || t.email.length > 200) fail("settings.edge.test_user.email must be an email address");
+    if (!Array.isArray(t.apps) || t.apps.length === 0) fail("settings.edge.test_user.apps must name at least one shared app");
+    const names = t.apps.map(String);
+    if (new Set(names).size !== names.length) fail("settings.edge.test_user.apps names an app twice");
+    for (const n of names) if (!shared.some((a: Obj) => a.name === n)) fail(`settings.edge.test_user.apps: ${n} is not a shared app (its apps.yaml entry needs share.host)`);
+    testUser = { email: t.email.trim().toLowerCase(), apps: names };
+  }
   const gateHosts = [...Object.entries(hosts), ...(myApps ? [[myApps.host, myApps]] : [])];
   const anyAud = gateHosts.some(([, h]) => h.aud);
   const team = /^([a-z0-9-]+)\.cloudflareaccess\.com$/.exec(String(edge.team_domain ?? ""))?.[1];
@@ -151,6 +170,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
     port: GATE_PORT, login, ...(issuer ? { issuer, certs_url: `${issuer}/cdn-cgi/access/certs` } : {}),
     ...(identity ? { identity, front: frontDoor } : { socket: GATE_SOCKET }),
     auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE, owner_email: owner,
+    ...(testUser ? { test_user: testUser, test_keys_file: TEST_KEYS_FILE } : {}),
     ...(myApps ? { my_apps: myApps } : {}), hosts, ...(previews ? { previews } : {}),
   };
   // Previews: *.<host> for each shared app, behind that app's aud, after every exact host (cloudflared takes the first match).
@@ -171,7 +191,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
       // Host networking: it listens on 127.0.0.1:<GATE_PORT> and reaches the apps' loopback ports. No secrets, no sockets.
       // Its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the identity dir.
       // The kernel's account map is the one file of data/ it sees (never data/kernel: no sessions, hashes or TOTP secrets).
-      gate: gateService([
+      gate: gateService(testUser ? [TEST_KEYS_MOUNT] : [], [
         // Which previews run (apps-mcp writes it; a directory, so its atomic replace is seen).
         ...(previews ? [PREVIEWS_MOUNT] : []),
         // cloudflared's socket (the gate listens there too); not with a front door.
@@ -188,7 +208,7 @@ export function edgeConfig(settings: Obj, instanceApps: Obj[], moduleApps: Obj[]
 
 const HARDENING = { security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: "unless-stopped", user: "${PUID:-1000}:${PGID:-100}", read_only: true };
 /** The gate's service. Host networking: it listens on 127.0.0.1:<GATE_PORT> and reaches the apps' loopback ports. */
-const gateService = (extra: string[]) => ({
+const gateService = (testKeys: string[] = [], extra: string[] = []) => ({
   ...HARDENING, build: "./modules/apps-platform/gate", image: "aidenhq/gate:local", network_mode: "host", environment: { GATE_CONFIG: "/config/gate.json" },
   // No secrets, no sockets: its signing key (vault identity/gate.pem, read-only; compile creates it) and nothing else of the
   // identity dir; the kernel's account map is the one file of data/ it sees (never data/kernel: no sessions, hashes or TOTP).
@@ -197,6 +217,7 @@ const gateService = (extra: string[]) => ({
     `\${AIDENHQ_SECRETS_DIR}/identity/gate.pem:${IDENTITY_KEY_FILE}:ro`,
     // Its proof to the kernel's sign-in listener (core's generated gate_board_secret): sessions and handoffs.
     `\${AIDENHQ_SECRETS_DIR}/gate_board_secret:${AUTH_SECRET_FILE}:ro`,
+    ...testKeys,
     ...extra,
   ],
 });
@@ -238,7 +259,7 @@ function doorConfig(exposure: unknown, { publicIp, adminUrl, boardUrl }: Door = 
     port: GATE_PORT, login: "password", auth_url: AUTH_URL, auth_secret_file: AUTH_SECRET_FILE, accounts_file: ACCOUNTS_FILE, identity_key_file: IDENTITY_KEY_FILE,
     hosts, ...(origin ? { origin } : {}), ...(doors ? { doors } : {}), signin,
   };
-  return { gate, cloudflared: null, compose: { services: { gate: gateService([PREVIEWS_MOUNT]) }, secrets: {} }, urls };
+  return { gate, cloudflared: null, compose: { services: { gate: gateService([], [PREVIEWS_MOUNT]) }, secrets: {} }, urls };
 }
 
 /**

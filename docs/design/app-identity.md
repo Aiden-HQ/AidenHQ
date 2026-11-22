@@ -15,7 +15,7 @@ A JWT (compact JWS), EdDSA (Ed25519) via `node:crypto`, sent to the app in `X-Ai
 | `kind` | `person` or `agent` |
 | `email`, `name` | display and contact (agents: no email; `name` is the agent key) |
 | `role` | the gate's resolved role on this app (people); `admin` (`app_api`, default) or `member` (`app_view`, or `app_api` with `role: "member"`) for agents |
-| `idp` | `access`, `password`, `header-jwt` (people), `apps-mcp` (agents) |
+| `idp` | `access`, `password`, `header-jwt`, `test` (people), `apps-mcp` (agents) |
 | `iat`, `exp` | `exp = iat + 300` |
 | `methods`, `path` | agents only: what the token may do (below) |
 
@@ -35,6 +35,9 @@ would mean migrating apps' stored `sub`s.
 - `access`: the Cloudflare Access JWT for the host's audience tag (RS256, team JWKS).
 - `header-jwt`: a front door's signed identity header (`cfg.identity`: header, issuer, JWKS, optional `auth_method`), see access.md.
 - `password`: the board's Better Auth session through the auth listener (3129).
+- `test`: the kernel's test-user session (access.md, Test-user sign-in), verified on the loopback listener only; the email
+  it names then takes the same account and role resolution, and must not be an admin. It is not an app identity: apps
+  never see an `aidenhq-test` token, only the `aidenhq-gate` one the gate mints after it.
 
 The gate's `login` setting (`settings.app_login`, `LOGINS` in `scripts/edge.ts`: `access`, `password`, `header-jwt`) and
 the host's `aud` decide which adapters run, and all of them must pass: a `password` host with an `aud` still needs Access
@@ -104,7 +107,7 @@ public keys as a JWK set; each key has `kid` = first 16 characters of the base64
 `iss`). `scripts/identity.ts` (run by `scripts/compile.ts` on every apply) creates a missing private key and rewrites
 `keys.json` in place (a single-file bind mount pins the inode) from every `gate*.pem` and `apps*.pem` in the dir. Mounts:
 
-- the gate: `identity/gate.pem` (read-only), nothing else of the dir;
+- the gate: `identity/gate.pem` (read-only), plus `identity/keys.json` as the test user's public keys when `test_user` is set;
 - apps-mcp: `identity/apps.pem` (read-only), plus the host path of `keys.json` to mount into apps;
 - every app: `keys.json` as the compose secret `AIDENHQ_IDENTITY_KEYS`, and `AIDENHQ_APP=<name>` in its environment.
 

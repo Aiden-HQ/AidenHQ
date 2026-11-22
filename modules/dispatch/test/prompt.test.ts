@@ -13,6 +13,14 @@ test("an Engineer's prompt points other tasks at the delegator, not at `aidenhq 
   assert.doesNotMatch(buildPrompt(args("crew")), /Your task tools reach this task only/);
 });
 
+test("an Engineer's prompt names test-request, with the owner's named test user and app", () => {
+  const p = buildPrompt(args("engineer"));
+  assert.match(p, /`aidenhq test-request <app> <method> <path>/);
+  assert.match(p, /settings\.edge\.test_user/);
+  assert.match(p, /session never leaves the kernel/);
+  assert.doesNotMatch(buildPrompt(args("crew")), /aidenhq test-request/);
+});
+
 test("down connections are listed in fresh and resumed prompts", () => {
   const down = [{ connection: "google_workspace", module: "google", cause: "not_connected", since: "2026-11-20T08:00:00Z" }];
   for (const resumed of [false, true]) {

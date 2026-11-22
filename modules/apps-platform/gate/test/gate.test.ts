@@ -731,3 +731,70 @@ test("the module door: a module service at the board's own host on the door port
     for (const s of [auth, doc, g]) { s.close(); s.closeAllConnections(); }
   }
 });
+
+test("test user: a kernel-signed session for a named app signs in as that member; replayed, misaddressed or unknown apps are refused", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-test-user-"));
+  ensureIdentityKeys(dir);
+  const testKey = signingKey(join(dir, "identity", "test.pem"))();
+  const email = "probe@example.com";
+  writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [
+    { email: "Boss@Example.com", role: "admin", disabled: false },
+    { email: "probe@example.com", role: "user", disabled: false },
+    { email: "root@example.com", role: "admin", disabled: false },
+  ], apps: { roadmap: { default: "member" }, other: { default: "blocked" } } }));
+  const seen2 = {};
+  const app2 = createServer((q, r) => { seen2.headers = q.headers; seen2.method = q.method; r.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(q.headers)); });
+  const appPort = await listen(app2);
+  const cfg = {
+    login: "header-jwt", identity: { header: "x-depoly-identity", issuer: "https://idp.invalid", jwks_url: "http://jwks.invalid/jwks" },
+    accounts_file: join(dir, "accounts.json"), identity_key_file: join(dir, "identity", "gate.pem"), owner_email: "boss@example.com",
+    my_apps: { host: "apps.example.com" }, test_keys_file: join(dir, "identity", "keys.json"),
+    test_user: { email, apps: ["roadmap"] },
+    hosts: { "roadmap.example.com": { app: "roadmap", port: appPort, aud: "aud-roadmap" }, "other.example.com": { app: "other", port: appPort, aud: "aud-other" } },
+  };
+  const g = createGate({ config: () => cfg, log: () => {}, testSessions: true });
+  const port = await listen(g);
+  const send = (h) => new Promise((resolve) => request({ host: "127.0.0.1", port, path: "/intake", method: "POST", headers: { host: "roadmap.example.com", origin: "https://roadmap.example.com", "content-type": "application/json", ...h } }, (r) => { let body = ""; r.on("data", (c) => (body += c)).on("end", () => resolve({ status: r.statusCode, body })); }).end("{}"));
+  const t = () => Math.floor(Date.now() / 1000);
+  const session = (claims = {}, key = testKey) => {
+    const now = t();
+    const body = `${b64({ alg: "EdDSA", kid: key.kid, typ: "JWT" })}.${b64({ iss: "aidenhq-test", aud: "roadmap.example.com", app: "roadmap", sub: subOf(email), email, jti: "a".repeat(32), iat: now, exp: now + 60, ...claims })}`;
+    return `${body}.${sign(null, Buffer.from(body), key.key).toString("base64url")}`;
+  };
+  try {
+    // A valid session is the configured member, and the app sees the gate's own token, never the test header.
+    const ok = await send({ "x-aidenhq-test-session": session() });
+    assert.equal(ok.status, 200);
+    const seenWho = createIdentity({ app: "roadmap", keysFile: join(dir, "identity", "keys.json") }).identify({ method: "GET", url: "/", headers: JSON.parse(ok.body) });
+    assert.deepEqual(seenWho, { sub: subOf(email), email, name: "", role: "member", kind: "person" });
+    assert.equal(seen2.headers["x-aidenhq-test-session"], undefined);
+    // Replayed jti; another host; another key; an expired or over-long token; an admin email: all refused.
+    assert.equal((await send({ "x-aidenhq-test-session": session() })).status, 403);
+    assert.equal((await send({ "x-aidenhq-test-session": session({ aud: "other.example.com", jti: "b".repeat(32) }) })).status, 403);
+    assert.equal((await send({ "x-aidenhq-test-session": session({ jti: "c".repeat(32) }, { key: generateKeyPairSync("ed25519").privateKey, kid: testKey.kid }) })).status, 403);
+    assert.equal((await send({ "x-aidenhq-test-session": session({ exp: t() - 5, iat: t() - 65, jti: "d".repeat(32) }) })).status, 403);
+    assert.equal((await send({ "x-aidenhq-test-session": session({ exp: t() + 600, jti: "e".repeat(32) }) })).status, 403);
+    cfg.test_user = { email: "root@example.com", apps: ["roadmap"] };
+    assert.equal((await send({ "x-aidenhq-test-session": session({ email: "root@example.com", sub: subOf("root@example.com"), jti: "f".repeat(32) }) })).status, 403);
+    // An app role assignment of admin is refused too: the test identity is a member, whatever accounts.json says.
+    cfg.test_user = { email, apps: ["roadmap"] };
+    writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [{ email, role: "user", disabled: false }], apps: { roadmap: { default: "member", roles: { [email]: "admin" } } } }));
+    assert.equal((await send({ "x-aidenhq-test-session": session({ jti: "9".repeat(32) }) })).status, 403);
+    writeFileSync(join(dir, "accounts.json"), JSON.stringify({ accounts: [
+      { email: "Boss@Example.com", role: "admin", disabled: false },
+      { email: "probe@example.com", role: "user", disabled: false },
+      { email: "root@example.com", role: "admin", disabled: false },
+    ], apps: { roadmap: { default: "member" }, other: { default: "blocked" } } }));
+    // An app the owner did not name, and the my-apps host, are refused even with a correct signature.
+    cfg.test_user = { email, apps: ["roadmap"] };
+    assert.equal((await send({ "x-aidenhq-test-session": session({ app: "other", aud: "other.example.com", jti: "1".repeat(32) }) })).status, 403);
+    // The same header on a listener that is not the loopback one (the front door's) is not an identity: 401 from the front door.
+    const front = createGate({ config: () => ({ ...cfg, identity: { ...cfg.identity, jwks_url: "http://127.0.0.1:1/jwks" } }), log: () => {} });
+    const frontPort = await listen(front);
+    const refused = await new Promise((resolve) => request({ host: "127.0.0.1", port: frontPort, path: "/", headers: { host: "roadmap.example.com", "x-aidenhq-test-session": session({ jti: "2".repeat(32) }) } }, (r) => { r.resume(); resolve(r.statusCode); }).end());
+    assert.equal(refused, 401);
+    front.close(); front.closeAllConnections();
+  } finally {
+    for (const s of [app2, g]) { s.close(); s.closeAllConnections(); }
+  }
+});

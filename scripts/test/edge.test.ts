@@ -136,22 +136,35 @@ test("two services can't claim one host port", () => {
   checkPorts([{ services: { board: { ports: ["127.0.0.1:3129:3129", "${BOARD_LAN_BIND:-127.0.0.1}:${BOARD_LAN_PORT:-3121}:3121"] } } }], [[3129, "board"]]);
 });
 
-test("identity keys: both signers' keys made once, keys.json lists every gate*/apps* key, rewritten in place", async () => {
+test("identity keys: every signer's key made once, keys.json lists every gate*/apps*/test* key, rewritten in place", async () => {
   const { ensureIdentityKeys } = await import("../identity.ts");
   const { readFileSync, renameSync, statSync, rmSync } = await import("node:fs");
   const dir = mkdtempSync(join(tmpdir(), "identity-"));
-  assert.deepEqual(ensureIdentityKeys(dir), ["identity/gate.pem", "identity/apps.pem"]);
+  assert.deepEqual(ensureIdentityKeys(dir), ["identity/gate.pem", "identity/apps.pem", "identity/test.pem"]);
   assert.deepEqual(ensureIdentityKeys(dir), []);
   const file = join(dir, "identity", "keys.json");
   const keys = () => JSON.parse(readFileSync(file, "utf8")).keys;
-  assert.deepEqual(keys().map((k) => k.iss).sort(), ["aidenhq-apps", "aidenhq-gate"]);
+  assert.deepEqual(keys().map((k) => k.iss).sort(), ["aidenhq-apps", "aidenhq-gate", "aidenhq-test"]);
   assert.equal(statSync(join(dir, "identity", "gate.pem")).mode & 0o777, 0o600);
   const inode = statSync(file).ino;
   renameSync(join(dir, "identity", "gate.pem"), join(dir, "identity", "gate.old.pem")); // ordinary rotation: both trusted
   assert.deepEqual(ensureIdentityKeys(dir), ["identity/gate.pem"]);
-  assert.deepEqual(keys().map((k) => k.iss).sort(), ["aidenhq-apps", "aidenhq-gate", "aidenhq-gate"]);
+  assert.deepEqual(keys().map((k) => k.iss).sort(), ["aidenhq-apps", "aidenhq-gate", "aidenhq-gate", "aidenhq-test"]);
   assert.equal(statSync(file).ino, inode); // apps bind this one file: the same inode
   rmSync(join(dir, "identity", "gate.old.pem"));
   ensureIdentityKeys(dir);
-  assert.equal(keys().length, 2);
+  assert.equal(keys().length, 3);
+});
+
+test("test user: the named apps and their one email compile into the gate; an unknown or unshared app and a bad email are refused", () => {
+  const app = { ...roadmap, share: { host: "roadmap.acme.com", aud: "aud-roadmap-0001", default_role: "member" } };
+  const out = compile(mods, inst({ edge: { ...edge, test_user: { email: "Probe@Acme.com", apps: ["roadmap"] } } }, [app]));
+  assert.deepEqual(out.edge.gate.test_user, { email: "probe@acme.com", apps: ["roadmap"] });
+  assert.equal(out.edge.gate.test_keys_file, "/secrets/test_keys.json");
+  assert.ok(out.compose.services.gate.volumes.includes("${AIDENHQ_SECRETS_DIR}/identity/keys.json:/secrets/test_keys.json:ro"));
+  assert.equal(compile(mods, inst({ edge }, [app])).edge.gate.test_user, undefined);
+  assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user: { email: "probe@acme.com", apps: ["notes"] } } }, [app, { name: "notes", repo: "acme/notes", owner: "a", description: "d", port: 4200 }])), /not a shared app/);
+  assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user: { email: "not-an-email", apps: ["roadmap"] } } }, [app])), /must be an email/);
+  assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user: { email: "probe@acme.com", apps: ["roadmap", "roadmap"] } } }, [app])), /twice/);
+  assert.throws(() => compile(mods, inst({ edge: { ...edge, test_user: { email: "probe@acme.com", apps: [] } } }, [app])), /at least one/);
 });
