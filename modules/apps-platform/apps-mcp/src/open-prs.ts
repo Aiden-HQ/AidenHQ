@@ -19,21 +19,34 @@ export async function openPrs(local: () => Promise<OpenPr[]>, github: () => Prom
 }
 
 type Recorded = { repo: string; number: number };
-/** A row of the warehouse's `src_github.issues` for a recorded PR, open or not. */
-export type WarehousePr = OpenPr & { state: string };
+/** A row of the warehouse's `src_github.issues` for a recorded issue or PR, open or not. */
+export type WarehouseRow = OpenPr & { kind: string; state: string };
+const LIST_LIMIT = 500; // the code host's open-PR list stops here (ops.ts): a number missing from a full list is unknown, not closed
 
 /**
- * The open GitHub PRs among the ones the kernel recorded: state from the warehouse's row where it has one, else from the code host's
- * list of the repo's open PRs (one call per repo; the warehouse syncs only the configured orgs, and lags by up to 15 minutes). A PR
- * absent from that list is closed. The caller's own deadline covers every call.
+ * The open GitHub PRs among the refs the kernel recorded (issues included): state from the warehouse's row where it has one, else from
+ * the code host's list of the repo's open PRs (one call per repo; the warehouse syncs only the configured orgs and lags by up to 15
+ * minutes). A recorded PR absent from that list is closed. A repo outside the module's read grant (403) is not looked up; any other
+ * failure, or a list cut at its limit with a number still missing, throws. Repos are lower-cased: one identity per PR whichever source
+ * answers.
  */
-export async function recordedOpenPrs(ours: Recorded[], rows: WarehousePr[], listOpen: (repo: string) => Promise<{ number: number; draft?: boolean; created_at?: string | null }[]>): Promise<OpenPr[]> {
+export async function recordedOpenPrs(ours: Recorded[], rows: WarehouseRow[], listOpen: (repo: string) => Promise<{ number: number; draft?: boolean; created_at?: string | null }[]>): Promise<OpenPr[]> {
   const key = (r: Recorded) => `${r.repo.toLowerCase()}#${r.number}`;
   const known = new Set(rows.map(key));
   const missing = new Map<string, Set<number>>();
-  for (const o of ours) if (!known.has(key(o))) missing.set(o.repo, (missing.get(o.repo) ?? new Set()).add(o.number));
+  for (const o of ours) if (!known.has(key(o))) missing.set(o.repo.toLowerCase(), (missing.get(o.repo.toLowerCase()) ?? new Set()).add(o.number));
   const listed: OpenPr[] = [];
-  for (const [repo, numbers] of missing)
-    for (const p of await listOpen(repo)) if (numbers.has(p.number) && p.created_at) listed.push({ repo, number: p.number, opened_at: p.created_at, draft: !!p.draft });
-  return [...rows.filter((r) => r.state === "open").map(({ state: _state, ...r }) => r), ...listed];
+  for (const [repo, numbers] of missing) {
+    let list;
+    try {
+      list = await listOpen(repo);
+    } catch (err) {
+      if ((err as { status?: number }).status === 403) continue;
+      throw err;
+    }
+    const found = list.filter((p) => numbers.has(p.number));
+    if (list.length >= LIST_LIMIT && found.length < numbers.size) throw new Error(`${repo} has ${LIST_LIMIT} or more open PRs: the list can't show whether a recorded one is closed`);
+    for (const p of found) if (p.created_at) listed.push({ repo, number: p.number, opened_at: p.created_at, draft: !!p.draft });
+  }
+  return [...rows.filter((r) => r.kind === "pr" && r.state === "open").map(({ kind: _k, state: _s, ...r }) => ({ ...r, repo: r.repo.toLowerCase() })), ...listed];
 }

@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { startLoops } from "./loops.js";
-import { openPrs, recordedOpenPrs, type OpenPr, type WarehousePr } from "./open-prs.js";
+import { openPrs, recordedOpenPrs, type OpenPr, type WarehouseRow } from "./open-prs.js";
 import { startPeople } from "./people.js";
 import { buildServer, refreshRegistry, type Board, type Caller } from "./mcp.js";
 import { appsExecutor } from "./executor.js";
@@ -293,10 +293,10 @@ async function fleetPrs(kernel: string, key: string): Promise<{ repo: string; nu
 async function githubOpenPrs(): Promise<OpenPr[]> {
   const ours = await fleetPrs(kernelUrl, serviceKey);
   if (!ours.length) return [];
-  let rows: WarehousePr[] = [];
+  let rows: WarehouseRow[] = [];
   try {
     const r = await p.warehouse().pool.query(
-      "SELECT i.repo, i.number, i.state, i.created_at_src AS opened_at, i.draft, (SELECT max(c.observed_at) FROM src_github.changes c WHERE c.entity = 'issue' AND c.field = 'draft' AND c.new_value = 'false' AND c.entity_id = i.repo || '/' || i.number) AS ready_at FROM src_github.issues i JOIN unnest($1::text[], $2::int[]) AS o(repo, number) ON lower(i.repo) = o.repo AND i.number = o.number WHERE i.kind = 'pr'",
+      "SELECT i.repo, i.number, i.kind, i.state, i.created_at_src AS opened_at, i.draft, (SELECT max(c.observed_at) FROM src_github.changes c WHERE c.entity = 'issue' AND c.field = 'draft' AND c.new_value = 'false' AND c.entity_id = i.repo || '/' || i.number) AS ready_at FROM src_github.issues i JOIN unnest($1::text[], $2::int[]) AS o(repo, number) ON lower(i.repo) = o.repo AND i.number = o.number",
       [ours.map((o) => o.repo), ours.map((o) => o.number)],
     );
     rows = r.rows;
