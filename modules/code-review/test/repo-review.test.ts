@@ -274,3 +274,13 @@ test("the same options in another order are one review; a run the spend limit re
   assert.equal(w.engine.batches({})[0].status, "done");
   assert.match(w.engine.report(a.batch), /spend limit reached/);
 });
+
+test("a report trimmed to fit still has the verdict of every finding", () => {
+  const big = (i, o = {}) => ({ id: `f${i}`, severity: "important", path: `src/f${i}.ts`, line: 1, title: `t${i}`, why: "w".repeat(1400), evidence: "e".repeat(1400), fix_brief: "b".repeat(900), option: "o", lens: "correctness", ...o });
+  const findings = [...Array.from({ length: 60 }, (_, i) => big(i)), big(99, { lens: "security", path: "zz.ts" })];
+  const out = render({ repo: REPO, sha: sha("1"), created: "2026-11-22T00:00:00Z", lensOf: () => "correctness", runs: [{ option: "o", lens: "correctness", status: "done", why: null, cost_usd: 0,
+    review: { findings, coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 } } }] });
+  assert.match(out.markdown, /Not shown, to keep the report within Primer's size/);
+  assert.equal(out.verdict, "blocked");
+  assert.ok(out.markdown.length <= REPORT_MAX);
+});

@@ -87,6 +87,7 @@ const LENS_ORDER = ["security", "correctness", "maintainability", "performance"]
 export function render(b: ReportBatch): { markdown: string; verdict: Verdict; counts: Record<string, number> } {
   const findings = findingsOf(b);
   const coverage = coverageOf(b.runs);
+  // From every finding, whatever the size cut below leaves out of the document: a trimmed report never softens its verdict.
   const v = verdict({ findings, coverage });
   const groups = display(findings);
   const counts = { important: 0, nit: 0, pre_existing: 0 } as Record<string, number>;

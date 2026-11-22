@@ -67,7 +67,7 @@ export function handler(engine: Engine, token: () => string, isGithub: (authoriz
       if (route === "GET /reviews") {
         const q = url.searchParams;
         const limit = Number(q.get("limit")) || undefined;
-        return send(res, 200, { runs: engine.runs({ repo: q.get("repo") || undefined, status: q.get("status") || undefined, limit }), batches: engine.batches({ repo: q.get("repo") || undefined, limit }) });
+        return send(res, 200, { runs: engine.runs({ repo: q.get("repo") || undefined, status: q.get("status") || undefined, target: q.get("target") || undefined, limit }), batches: engine.batches({ repo: q.get("repo") || undefined, limit }) });
       }
       const report = /^GET \/reviews\/(b-[0-9a-f]{12})\/report$/.exec(route);
       if (report) {

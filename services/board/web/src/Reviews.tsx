@@ -153,7 +153,7 @@ export function ReviewsView({ onSignIn }: { onSignIn: () => void }) {
 
   const fail = useCallback((e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)), [onSignIn]);
   const loadSetup = useCallback(() => api.reviewsSetup().then(setSetup, fail), [fail]);
-  const loadRuns = useCallback(() => api.reviews({ limit: 200 }).then((r) => (setRuns(r.runs.filter((x) => x.target !== "tree")), setBatches(r.batches ?? [])), fail), [fail]);
+  const loadRuns = useCallback(() => api.reviews({ limit: 200 }).then((r) => (setRuns(r.runs), setBatches(r.batches ?? [])), fail), [fail]);
   const loadRepos = useCallback(() => api.reviewRepos().then(setRepos, fail), [fail]);
   const loadEngines = useCallback(() => api.reviewEngines().then((r) => setEngines(r.engines), fail), [fail]);
   const loadFiled = useCallback(() => api.settingsChanges().then((r) => setFiled(r.changes.find((c) => c.identifier === savedId.current) ?? r.changes.find((c) => c.items.some((i) => i.kind === "setting" && i.key === "code_review")) ?? null), () => {}), []);

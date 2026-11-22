@@ -1736,8 +1736,10 @@ export function createEngine(d: EngineDeps) {
       const who: Asker | undefined = asker ? { requester: name || "an agent", ...(task ? { task } : {}) } : undefined;
       return queue(p, list, "oneoff", { full: b.full !== false, focus: (b.focus as string) || null, ...(who ? { asker: who } : {}) });
     },
-    runs(q: { repo?: string; status?: string; limit?: number }) {
+    runs(q: { repo?: string; status?: string; target?: string; limit?: number }) {
       const where: string[] = [], args: unknown[] = [];
+      // `target=pr` is a PR history: repo review option runs (their batches list them) are left out before the limit, never after.
+      if (q.target === "pr") where.push("target = 'pr'");
       if (q.repo) (where.push("repo = ?"), args.push(q.repo.toLowerCase()));
       if (q.status) (where.push("status = ?"), args.push(q.status));
       return all<RunRow & { title: string | null }>(`SELECT r.*, p.title FROM runs r LEFT JOIN prs p ON p.repo = r.repo AND p.number = r.number ${where.length ? `WHERE ${where.map((w) => `r.${w}`).join(" AND ")}` : ""} ORDER BY r.created DESC LIMIT ?`, ...args, Math.min(Math.max(1, q.limit ?? 50), 500)).map((r) => view(r, waiting.has(r.id)));
