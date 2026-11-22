@@ -7,8 +7,9 @@
 #                   its running image (the Docker socket, read-only mount): the tag's platform manifest, which compose
 #                   records on the container, or on a daemon whose image id is the content id the top-level id
 #   image:sha256:<id> an image whose container's tag has moved since creation: the running image itself, saved from Docker and
-#                   scanned offline, so the scan follows what runs rather than whatever the tag names today. An id the daemon
-#                   no longer holds has nothing to scan and gets no line
+#                   scanned offline, so the scan follows what runs rather than whatever the tag names today. The platform
+#                   manifest compose records on the container is used when the container's top-level id is gone; an id the
+#                   daemon no longer holds is a line saying so, never a silent gap in the batch
 #   repo:product    this checkout (lockfiles; not data/, node_modules or .git)
 #   repo:instance   the instance checkout
 #   app:<name>      each app's deployed source (data/apps/.platform/<name>/src, what apps-mcp checked out)
@@ -33,7 +34,8 @@ flock -n 9 || { echo "security-sbom: another pass holds $out/.lock; skipping thi
 pass="$(printf '%s' "$out" | sha256sum | cut -c1-12)-$$"
 next="$out/next"
 work="$out/.work"
-rm -rf "$next" "$work"
+archives="$out/.archives"
+rm -rf "$next" "$work" "$archives"
 mkdir -p "$next" "$work"
 : > "$next/targets.tsv"
 user="$(id -u):$(id -g)"
@@ -104,7 +106,6 @@ host_excludes=("${HOST_EXCLUDES[@]}" "./${PWD#/}/**" "./${out#/}/**" '**/node_mo
 [ -n "$inst" ] && host_excludes+=("./${inst#/}/**")
 host_args=()
 for p in "${host_excludes[@]}"; do host_args+=(--exclude "$p"); done
-scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
 # Each running container's own image, `.Image`: after a rebuild a container's configured tag (`.Config.Image`) names the new
 # build, and once the image is untagged names nothing at all, so a target keyed on it stops covering what runs and the
 # running image is never inventoried. A configured name keeps its `image:<ref>` target while it still names what the
@@ -113,66 +114,115 @@ scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
 # top-level id is an image index and every build rewrites it, so comparing that would drop the target after any rebuild.
 # Containers without the label, and daemons where the top-level id is the content id, are compared by that id. Any other
 # container's image is named by its own id, which is stable across passes, and syft reads it from a `docker save` archive.
-# An id the daemon confirms it no longer holds is left out of the batch: the store collected it, so there is nothing to
-# scan and no coverage to lose. Any other reason it can't be read (a daemon that won't answer, say) is a line with its
-# error, so a broken daemon never reads as a clean pass. A name only counts when it isn't an image id itself: syft can't
-# resolve a bare id, it would try to pull it.
+# A container whose tag has moved but which carries `com.docker.compose.image` is scanned from that platform manifest:
+# it is the image the container actually runs, and the top-level id `.Image` may already be gone. An image nothing can
+# read -- the store collected the id, the save failed, a daemon that won't answer -- is a line naming the id and the
+# error, so a short batch never looks like a complete one. A name only counts when it isn't an image id itself: syft
+# can't resolve a bare id, it would try to pull it. The enumeration and the inspect/save calls run under the host's
+# apply lock: between `docker compose build` and the recreate an apply leaves every rebuilt tag naming the new image
+# while its container still runs the old one, and a batch enumerated there is a half-applied snapshot.
 fail() { # <target> <error>: a target that never reached syft is a line with its error, like a failed scan
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
 }
-declare -A running=() tags=()
+# The apply lock is data/apply.lock at a fixed path from this checkout root (ops/lib/apply-lock.sh); it is not the
+# data dir's .lock above, and not AIDENHQ_DATA_DIR, because ops/apply-config.sh opens exactly this file. Non-blocking:
+# while an apply holds it a batch would be a mid-apply snapshot, so it leaves current/ alone and skips, and the scanner
+# re-reads the previous complete batch. Only the container enumeration and the target list it decides run under it;
+# the scans do not, so an apply never waits on a forty-minute pass.
+# fd 9 is this pass's own .lock above, so the apply lock is taken on fd 8.
+# shellcheck source=ops/lib/apply-lock.sh
+. ops/lib/apply-lock.sh
+mkdir -p "$(dirname "$APPLY_LOCK")"
+exec 8>>"$APPLY_LOCK"
+if ! flock -n 8; then
+  echo "security-sbom: an apply holds the apply lock; skipping this pass" >&2
+  rm -rf "$next" "$work"
+  exit 0
+fi
+declare -A running=() tags=() manifests=()
 while read -r cid image config label; do
   [ -n "$cid" ] || continue
   case "$config" in *anchore/syft*) continue ;; esac
   running[$image]=1
+  if [ -n "$label" ]; then : "${manifests[$image]:=$label}"; fi
   [ "${config#sha256:}" = "$config" ] || continue
   { [ -n "$label" ] && [ "$(docker image inspect --platform "$platform" -f '{{.Id}}' "$config" 2>/dev/null)" = "$label" ]; } \
     || [ "$(docker image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] || continue
   { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; } || continue
   tags[$image]="$config"
 done <<< "$(docker ps -q | xargs -r docker inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' 2>/dev/null)"
+# The image targets, decided from that one enumeration while the apply lock is still held: the tag while it still names
+# what the container runs, else the platform manifest compose recorded on it, else the container's own top-level id. The
+# size inspect and the `docker save` run here too, so the image the batch will scan is the one the containers were
+# running. Only the syft scans run after the lock is released: an apply never waits on a forty-minute pass. Every image
+# is a target in the plan or a line saying why it can't be.
+mkdir -p "$archives"
+plan_kind=(); plan_target=(); plan_arg=()
+plan_add() { plan_kind+=("$1"); plan_target+=("$2"); plan_arg+=("$3"); }
+archives_n=0
 for image in $(printf '%s\n' "${!running[@]}" | sort); do
+  # The images to try, in the order the container's image is known best: the configured tag while it still names what
+  # the container runs, then the platform manifest compose recorded on it, then the container's own top-level id. A tag
+  # that moved names a different image; the manifest is what the container actually runs even when that top-level id is
+  # already collected. Only a candidate the daemon answers a size for is scanned, so the target is an image it holds.
+  tag="${tags[$image]:-}"
+  cands=()
+  if [ -n "$tag" ]; then cands+=("$tag"); fi
+  if [ -n "${manifests[$image]:-}" ] && [ "${manifests[$image]:-}" != "$tag" ]; then cands+=("${manifests[$image]}"); fi
+  if [ "$image" != "$tag" ] && [ "$image" != "${manifests[$image]:-}" ]; then cands+=("$image"); fi
+  # A tag that doesn't resolve has moved since the container was created, so the image is read from the platform
+  # manifest or the container's own id. A daemon that fails any other way is a line with its error, not a fallback:
+  # "No such image" is the only answer that means the image is not there to read.
+  ref=""; raw=""; err=""; have=""
+  for cand in "${cands[@]}"; do
+    ref="$cand"
+    if raw="$(docker image inspect -f '{{.Size}}' "$cand" 2>&1)"; then have=1; break; fi
+    err="$raw"
+    [[ "$raw" == *"No such image"* ]] || break
+  done
+  if [ -z "$have" ]; then
+    plan_add fail "image:$ref" "docker image inspect: ${err:-failed}"
+    continue
+  fi
   # What one image costs: syft's daemon source runs its own `docker save` and unpacks every layer into $work, and the
   # archive source does the same over the tar this script saved. Either way the target needs about twice the image's size,
   # so an image that doesn't fit in half the room above the floor is refused up front rather than as a full disk mid-scan.
-  # A size the daemon won't give is unknown, not zero: an unknown demand can't be judged to fit, so the target is recorded
-  # instead of scanned (a daemon that can't answer says nothing about coverage). Only "No such image" is the store having
-  # collected it, which is left out like the inspect paths below.
-  if ! raw="$(docker image inspect -f '{{.Size}}' "$image" 2>&1)"; then
-    [[ "$raw" == *"No such image"* ]] || fail "image:$image" "docker image inspect: ${raw:-failed}"
-    continue
-  fi
-  # The template prints one number; a warning ahead of it is not the size, so the last line is what is judged.
+  # A size the daemon won't give is unknown, not zero: an unknown demand can't be judged to fit. A target that can't be
+  # read or can't fit is a line naming it and the reason, never a silent gap in the batch. The template prints one
+  # number; a warning ahead of it is not the size, so the last line is what is judged.
   size="$(printf '%s\n' "$raw" | tail -1)"
   if [[ ! "$size" =~ ^[0-9]+$ ]]; then
-    fail "image:$image" "docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')"
+    plan_add fail "image:$ref" "docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')"
     continue
   fi
   size_gb=$(( (size + 1073741823) / 1073741824 ))
   room_gb=$(( $(free_gb) - min_free_gb ))
-  if [ -n "${tags[$image]:-}" ]; then
-    if [ "$room_gb" -ge 0 ] && [ "$size_gb" -gt $(( room_gb / 2 )) ]; then
-      fail "image:$image" "skipped: ${size_gb} GB image needs more than half the ${room_gb} GB of room above the ${min_free_gb} GB floor on $out"
-    else
-      scan "image:${tags[$image]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${tags[$image]}"
-    fi
-  elif err="$(docker image inspect "$image" 2>&1 >/dev/null)"; then
-    if [ "$room_gb" -ge 0 ] && [ "$size_gb" -gt $(( room_gb / 2 )) ]; then
-      fail "image:$image" "skipped: ${size_gb} GB image needs more than half the ${room_gb} GB of room above the ${min_free_gb} GB floor on $out"
-    elif err="$(docker save -o "$work/image.tar" "$image" 2>&1)"; then
-      # $work is on disk and emptied after each syft run, so the archive is not held for the next target.
-      scan "image:$image" "" -- "docker-archive:/work/image.tar"
-    elif [[ "$err" != *"No such image"* ]]; then
-      # The store can collect an image between the inspect and the save: that is gone like the one above, not a target
-      # that went missing, so it is left out rather than recorded as a `docker save` failure the pass can't close.
-      fail "image:$image" "docker save: ${err:-failed}"
-    fi
-  elif [[ "$err" != *"No such image"* ]]; then
-    # Only an image the daemon says is gone is the store having collected it; anything else is a target that went missing.
-    fail "image:$image" "docker image inspect: ${err:-failed}"
+  if [ "$room_gb" -ge 0 ] && [ "$size_gb" -gt $(( room_gb / 2 )) ]; then
+    plan_add fail "image:$ref" "skipped: ${size_gb} GB image needs more than half the ${room_gb} GB of room above the ${min_free_gb} GB floor on $out"
+  elif [ -n "$tag" ]; then
+    plan_add tag "image:$ref" "$ref"
+  elif err="$(docker save -o "$archives/$archives_n.tar" "$ref" 2>&1)"; then
+    # The archive lands under $out, not $work, which each scan empties; it is removed once its scan finishes.
+    plan_add archive "image:$ref" "$archives/$archives_n.tar"
+    archives_n=$((archives_n + 1))
+  else
+    # The store can collect an image between the size inspect and the save. That is still a running container's image,
+    # so it is a line naming the id and the error, never a silent gap; the pass carries on with the other targets.
+    plan_add fail "image:$ref" "docker save: ${err:-failed}"
   fi
 done
+# From here the target list is fixed; let an apply run and scan. The archives are the images enumerated under the lock.
+exec 8>&-
+scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
+for i in "${!plan_kind[@]}"; do
+  case "${plan_kind[$i]}" in
+    tag) scan "${plan_target[$i]}" "" -v /var/run/docker.sock:/var/run/docker.sock:ro -- "docker:${plan_arg[$i]}" ;;
+    archive) scan "${plan_target[$i]}" "" -v "${plan_arg[$i]}:/image.tar:ro" -- "docker-archive:/image.tar"; rm -f "${plan_arg[$i]}" ;;
+    fail) fail "${plan_target[$i]}" "${plan_arg[$i]}" ;;
+  esac
+done
+rm -rf "$archives"
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'
 if [ -n "$inst" ]; then scan repo:instance "$(git -C "$inst" rev-parse HEAD 2>/dev/null || true)" -v "$inst:/src:ro" -- dir:/src --exclude './.git/**' --exclude '**/node_modules/**'; fi
 for src in "$PWD"/data/apps/.platform/*/src; do

@@ -1,7 +1,7 @@
 // ops/security-sbom.sh with a fake `docker` on PATH: the syft invocations it would run are read back from the fake's
 // log, so the host scan's scope is its argument list, not an inference from the script's text.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,6 +34,7 @@ async function run(env = {}, {
   saveErrors = {},
   sizeErrors = [],
   sizeJunk = {},
+  seed,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "security-sbom-"));
   mkdirSync(join(dir, "bin"), { recursive: true });
@@ -93,6 +94,10 @@ case "$1" in
         if grep -qxF -- "$1" "$SIZE_ERRORS"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
         found="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $2; found = 1 }' "$SIZES")"
         if [ -n "$found" ]; then printf '%s\\n' "$found"; exit 0; fi
+        # A configured tag resolves to the image it names, as the daemon does; the table holds ref<TAB>id<TAB>manifest.
+        # An image id in the table's first column is that image, not a tag naming another one.
+        by_tag="$(awk -F '\\t' -v ref="$1" '$1 == ref && $3 != "" { print $2; found = 1 }' "$TAGS")"
+        if [ -n "$by_tag" ] && ! grep -qxF -- "$1" "$HELD"; then set -- "$by_tag"; fi
         if grep -qxF -- "$1" "$HELD"; then printf '0\\n'; exit 0; fi
         if grep -qxF -- "$1" "$BROKEN"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
         echo "Error response from daemon: No such image: $1" >&2; exit 1
@@ -133,6 +138,8 @@ exit 0
   writeFileSync(join(dir, "labelled"), ""); // containers this fake daemon reports as this scanner's own
   const calls = join(dir, "calls");
   const data = join(dir, "data");
+  mkdirSync(data, { recursive: true });
+  if (seed) seed(data);
   const r = await new Promise((resolve) => {
     execFile("bash", [script], {
       cwd: join(here, "../.."),
@@ -144,9 +151,10 @@ exit 0
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
   const batch = join(data, "modules/security/sbom/current/targets.tsv");
-  const targets = existsSync(batch) ? readFileSync(batch, "utf8").split("\n").filter(Boolean).map((l) => l.split("\t")) : [];
+  const batchRaw = existsSync(batch) ? readFileSync(batch, "utf8") : null;
+  const targets = batchRaw ? batchRaw.split("\n").filter(Boolean).map((l) => l.split("\t")) : [];
   return {
-    ...r, targets,
+    ...r, targets, batchRaw,
     calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean) : [],
     workStates: existsSync(join(dir, "clean")) ? readFileSync(join(dir, "clean"), "utf8").trim().split("\n").filter(Boolean) : [],
   };
@@ -187,4 +195,84 @@ test("security-sbom: a container with a matching name but no scanner label is ne
   const runs = calls.filter((c) => c.startsWith("run "));
   assert.ok(runs.length > 0, calls.join("\n"));
   for (const r of runs) assert.match(r, /--label aidenhq\.oneoff=1/, r);
+});
+
+/** Holds the checkout's own data/apply.lock on fd 9, as ops/apply-config.sh does, for the length of `fn`. */
+async function withApplyLock(fn) {
+  const repo = join(here, "../..");
+  mkdirSync(join(repo, "data"), { recursive: true });
+  // Blocked on stdin, not `sleep`: the holder must stay alive until the test's script has run.
+  const child = spawn("bash", ["-c", "exec 9>>data/apply.lock; flock -n 9 || { echo busy >&2; exit 3; }; echo locked; read -r _"], {
+    cwd: repo,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  await new Promise((resolve, reject) => {
+    child.stdout.on("data", (d) => { if (String(d).includes("locked")) resolve(); });
+    child.on("error", reject);
+    child.on("exit", (code) => reject(new Error(`the lock holder exited (${code}) before taking the lock`)));
+  });
+  try {
+    return await fn();
+  } finally {
+    child.kill("SIGKILL");
+  }
+}
+
+test("security-sbom: a running container whose image is gone is a line naming the id and the error, never a gap", { skip: NOT_LINUX }, async () => {
+  // The tag moved to a build the container does not run, the daemon holds neither the container's own id nor that build,
+  // and there is no compose label to fall back to: the container's image is gone and the pass must say so.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, `no line for the dropped image:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(line[1], "-", "it was not scanned");
+  assert.match(line[2], /No such image/, "the line names the error");
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1111")), calls.join("\n"));
+});
+
+test("security-sbom: a moved tag with the compose platform manifest is scanned from that manifest's archive", { skip: NOT_LINUX }, async () => {
+  // The tag now names sha256:9999, the container runs sha256:1111 whose top-level id the store collected, and compose
+  // recorded sha256:2222 as the platform manifest the container actually runs.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    manifests: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:sha256:2222");
+  assert.ok(scanned, `the manifest was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", "the manifest target reached syft");
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:2222")), `no save of the manifest id:\n${calls.join("\n")}`);
+  const call = syft(calls, "image:sha256:2222");
+  assert.match(call.line, /docker-archive:\/image\.tar/, "scanned from the saved tar");
+  assert.ok(!calls.some((c) => c.startsWith("run ") && / docker:sha256:/.test(c)), `never the daemon source for a bare id:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an apply holding the lock skips the pass and leaves current/ untouched", { skip: NOT_LINUX }, async () => {
+  const sentinel = "host\t-\told pass\t\n";
+  const { status, out, batchRaw, calls } = await withApplyLock(() => run({}, {
+    seed: (data) => {
+      const dir = join(data, "modules/security/sbom/current");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "targets.tsv"), sentinel);
+    },
+  }));
+  assert.equal(status, 0, out);
+  assert.match(out, /security-sbom: an apply holds the apply lock; skipping this pass/);
+  assert.equal(batchRaw, sentinel, "the previous batch is left exactly as it was");
+  assert.ok(!calls.some((c) => c.startsWith("run ") || c.startsWith("save ")), `nothing was scanned or saved:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: with the lock free the same fixture produces the full target list", { skip: NOT_LINUX }, async () => {
+  const { status, out, targets } = await run();
+  assert.equal(status, 0, out);
+  const names = targets.map((t) => t[0]);
+  assert.ok(names.includes("host"), names.join(","));
+  assert.ok(names.includes("image:aidenhq/board:local"), names.join(","));
+  assert.ok(names.some((t) => t.startsWith("repo:product")), names.join(","));
 });

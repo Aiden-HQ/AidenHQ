@@ -400,17 +400,22 @@ exact email match only).
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
 runs pinned syft over the host packages, every running image (the image each container runs: by its configured tag
-while the tag's platform manifest is still the one the container records, else by its own id from a saved archive, and an
-id the daemon no longer holds is dropped), the product and instance checkouts and each app's deployed source, into
+while the tag's platform manifest is still the one the container records, else by its platform manifest when compose
+recorded one, else by its own id from a saved archive; an image the daemon no longer holds is a `targets.tsv` line naming
+the id and the error, never a silent gap), the product and instance checkouts and each app's deployed source, into
 `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
 noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var/lib/dpkg` stay in it. `targets.tsv`
 records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
-`src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/`, and one image costs about twice
-its size there (syft saves it and unpacks its layers): it empties that dir after every target, keeps 30 GB free before it
-starts a target and refuses an image that needs more than half the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown
-demand can't be judged to fit), and a second pass started while one holds `.lock` skips rather than running two at once. On
+`src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/` (each target's archive waits
+in `data/modules/security/sbom/.archives` until its scan), and one image costs about twice its size there: it empties the
+work dir after every target, keeps 30 GB free before it starts a target and refuses an image that needs more than half
+the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown demand
+can't be judged to fit), and a second pass started while one holds `.lock` skips rather than running two at once.
+The container enumeration and the image target list are taken under the host's apply lock (`data/apply.lock`), so a
+pass that lands between an apply's `docker compose build` and its recreate skips instead of recording a half-applied
+snapshot; the lock is released before the scans, so an apply never waits on them. On
 2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%. `AIDENHQ_SBOM_MIN_FREE_GB` can raise
 the floor for a smaller disk, never lower it: 30 GB is the least a pass runs with, and a value under it (or not a number) is
 ignored. The scanner matches a new batch within the hour (or daily anyway) and fires Security
