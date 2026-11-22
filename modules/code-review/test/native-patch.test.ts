@@ -278,7 +278,7 @@ test("snapshot writes a commit's regular files exactly (binary, executable, nest
   writeFileSync(join(repo, "d", "b.bin"), bin); writeFileSync(join(repo, "x.sh"), "echo\n"); writeFileSync(join(repo, "empty"), "");
   sh(repo, "add", "."); sh(repo, "update-index", "--chmod=+x", "x.sh"); sh(repo, "commit", "-qm", "files");
   const full = sh(repo, "rev-parse", "HEAD");
-  sh(repo, "rm", "-rq", "."); sh(repo, "commit", "-qm", "none");
+  sh(repo, "rm", "-rqf", "."); sh(repo, "commit", "-qm", "none");
   const out = join(dir, "out");
   await snapshot(repo, full, out);
   assert.deepEqual(readFileSync(join(out, "d", "b.bin")), bin);
