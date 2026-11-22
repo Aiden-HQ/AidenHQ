@@ -48,7 +48,7 @@ function world() {
   const facts = openFacts(db);
   const wakes = createWakes({ db, facts, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
   const w = {
-    db, wakes, issues, posts, facts, fail,
+    db, wakes, issues, posts, facts, fail, comments,
     tick: (ms = 1000) => (clock += ms),
     issue: (id, f = {}) => (issues[id] = { id, status: "todo", assigneeAgentId: AGENT, updatedAt: iso(clock), statusVersion: 1, ...issues[id], ...f }),
     comment: (task, id, f = {}) => { (comments[task] ??= []).push({ id, body: "hi", authorAgentId: null, createdAt: iso(clock), ...f }); issues[task].updatedAt = iso(clock); },
@@ -154,6 +154,8 @@ test("a note on a claimed wake's task is posted as its agent, once, tagged; only
 test("a blocked task is released once when every blocker is done or cancelled: todo, one tagged notice, one wake", async () => {
   const w = world();
   const b = (id, status) => ({ id, identifier: `WOR-${id}`, status });
+  w.issue("b1", { status: "in_progress", assigneeAgentId: OTHER });
+  w.issue("b2", { status: "in_progress", assigneeAgentId: OTHER });
   w.issue("t8", { status: "blocked", blockedBy: [b("b1", "in_progress"), b("b2", "in_progress")] });
   await w.wakes.poll();
   w.issues.t8.blockedBy = [b("b1", "done"), b("b2", "in_review")];
@@ -383,6 +385,65 @@ test("an unblock whose move to todo fails after its relations were cleared is fi
   await w.wakes.poll();
   assert.equal(w.issues.t23.status, "todo");
   assert.match(w.rows("t23").join("\n"), /^unblocked:t23:b9:cancelled open$/m);
+});
+
+test("a task blocked on a deleted blocker is released, the relation dropped: one wake, a notice naming it", async () => {
+  const w = world();
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t24", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll();
+  assert.equal(w.issues.t24.status, "blocked", "still there: not news");
+  w.tick();
+  delete w.issues.t24.blockedBy;
+  await w.wakes.poll();
+  assert.equal(w.issues.t24.status, "todo");
+  assert.equal(w.rows("t24").filter((x) => x.startsWith("unblocked:")).length, 1, "one wake");
+  assert.match(w.rows("t24").join("\n"), /^unblocked:t24:b9:deleted open$/m);
+  const notice = w.comments.t24.map((c) => c.body).join("\n");
+  assert.match(notice, /^Unblocked: WOR-b9 \(deleted\)\.\n\n<!-- aidenhq:job=kernel kind=unblocked -->$/m);
+});
+
+test("a task blocked on a deleted blocker is released when the relation is kept and its read answers 404", async () => {
+  const w = world();
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t25", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll();
+  w.tick();
+  w.issues.t25.blockedBy = [{ id: "b9", identifier: "WOR-b9", status: "blocked" }];
+  delete w.issues.b9;
+  await w.wakes.poll();
+  assert.equal(w.issues.t25.status, "todo", "a 404 for the listed blocker releases it");
+  assert.deepEqual(w.issues.t25.blockedBy, [], "the deleted relation is cleared so the move takes");
+  assert.match(w.rows("t25").join("\n"), /^unblocked:t25:b9:deleted open$/m);
+  assert.match(w.comments.t25.map((c) => c.body).join("\n"), /^Unblocked: WOR-b9 \(deleted\)\.$/m);
+});
+
+test("a blocked task with no blockers and none recorded stays blocked", async () => {
+  const w = world();
+  w.issue("t26", { status: "blocked" });
+  await w.wakes.poll();
+  w.tick();
+  await w.wakes.poll();
+  assert.equal(w.issues.t26.status, "blocked");
+  assert.deepEqual(w.rows("t26"), []);
+});
+
+test("a released task a team route parks again with no blockers stays blocked", async () => {
+  const w = world();
+  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
+  w.issue("t27", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
+  await w.wakes.poll();
+  w.tick();
+  delete w.issues.t27.blockedBy;
+  delete w.issues.b9;
+  await w.wakes.poll();
+  assert.equal(w.issues.t27.status, "todo", "released from the deleted blocker");
+  w.tick();
+  Object.assign(w.issues.t27, { status: "blocked", statusVersion: 2, updatedAt: iso(Date.now()) });
+  await w.wakes.poll();
+  await w.wakes.poll();
+  assert.equal(w.issues.t27.status, "blocked", "a park with no blockers of its own is not a deletion");
+  assert.equal(w.rows("t27").filter((x) => x.startsWith("unblocked:")).length, 1, "only the deleted blocker released it");
 });
 
 test("a failing close of ended wakes is logged and the poll still scans every agent", async () => {

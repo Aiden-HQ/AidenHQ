@@ -7,7 +7,8 @@
 // model; dispatch folds a run into an earlier open one of its routine, and cancels overtaken blocked ones), reopen:<issueId>:<statusVersion> (a comment reopened a finished task),
 // wake_at:<module>.<id> (a module's scheduled wake, due at `until`), wait:<issueId>:<until> (an agent's own wait, idle.ts),
 // idle:<issueId>:<since> (the idle sweep's nudge, idle.ts), unblocked:<issueId>:<closure> (a blocked task whose first-class
-// blockers (blockedBy) are all done or cancelled: the poll moves it to todo with one tagged notice, then files this wake).
+// blockers (blockedBy) are all done, cancelled or deleted: the poll moves it to todo with one tagged notice, then files
+// this wake).
 // Polled agents: those the modules that claim wakes dispatch (compile's `dispatches`); a module joins on its first claim.
 // So nothing is polled until a dispatcher claims, and an agent's first scan only wakes for comments after its dispatcher
 // joined or its own last word on the task, whichever is later.
@@ -101,6 +102,8 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   // (a row made only to diff the task's facts, for a task nobody polls, is not a first sight's cursor).
   const have = new Set((db.prepare("PRAGMA table_info(wake_tasks)").all() as { name: string }[]).map((c) => c.name));
   if (!have.has("blocked")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked TEXT");
+  // The names its blockers had when last seen: a deleted blocker's id is all that is left, and the notice names it.
+  if (!have.has("blocked_names")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked_names TEXT");
   if (!have.has("polled")) db.exec("ALTER TABLE wake_tasks ADD COLUMN polled INTEGER NOT NULL DEFAULT 1");
   // When a row was last claimed (`claimed_at`): the dispatcher reads the task's thread after it claims, so the job a wake starts
   // covers what happened before its claim, not before its spawn (a box start or a clone can take minutes).
@@ -137,6 +140,11 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   /** A comment a job consumed (its prompt, or its live input, carried it): bound to that job, as admission binds a starter. */
   const covered = (w: { key: string; task: string }, job: string) => fact({ type: "wake.bound", subject: `wake:${w.key}`, version: `bound:${job}`, at: iso(now()), actor: "kernel", task: w.task, data: { job } });
   const blockedKey = (i: Issue) => (i.blockedBy ? i.blockedBy.map((b) => b.id).sort().join(",") : null);
+  const blockedNames = (i: Issue) => (i.blockedBy?.length ? JSON.stringify(Object.fromEntries(i.blockedBy.map((b) => [b.id, b.identifier ?? b.id]))) : null);
+  // What the row remembers of a task's blockers: kept while the task is blocked (a live list that drops an id says nothing
+  // about which id it held, and an empty one never replaces a remembered one), cleared once it leaves blocked, so a task a
+  // team route parks later with no blockers of its own is never mistaken for one whose blocker was deleted.
+  const keptBlocked = (col: string) => `CASE WHEN excluded.status = 'blocked' THEN COALESCE(NULLIF(excluded.${col}, ''), ${col}) ELSE NULL END`;
 
   /**
    * What changed on a task since its facts last said, as facts (spec: flow §1). Their versions come from Paperclip, so the event
@@ -217,7 +225,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
     const joined = agent ? polled().get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
-      q("INSERT INTO wake_tasks (task, agent, status, blocked, polled) VALUES (?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), polled = 0").run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue));
+      q(`INSERT INTO wake_tasks (task, agent, status, blocked, blocked_names, polled) VALUES (?, ?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = ${keptBlocked("blocked")}, blocked_names = ${keptBlocked("blocked_names")}, polled = 0`).run(issue.id, agent ?? null, String(issue.status ?? ""), blockedKey(issue), blockedNames(issue));
       if (agent && joined !== undefined) return serial(() => place(issue, agent));
       return;
     }
@@ -275,8 +283,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       rearmRoutine(`routine-run:${issue.id}`, issue.id, agent, key ? `routine:${key}` : "routine", actor);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
-    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, polled) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = COALESCE(excluded.blocked, blocked), polled = 1")
-      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, deferred ? (prev?.status ?? seen?.status ?? null) : status, newest, blockedKey(issue));
+    q(`INSERT INTO wake_tasks (task, agent, status, comment, blocked, blocked_names, polled) VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = ${keptBlocked("blocked")}, blocked_names = ${keptBlocked("blocked_names")}, polled = 1`)
+      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, deferred ? (prev?.status ?? seen?.status ?? null) : status, newest, blockedKey(issue), blockedNames(issue));
   }
 
   /**
@@ -285,6 +293,11 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
    * and its assignee is woken. Stateless: a task still blocked is simply retried next poll, and the wake key (the closure) files
    * once. Paperclip counts a cancelled blocker as unresolved for a status write, so those relations are cleared first; a 409 is
    * retried once with them all cleared.
+   * A blocker that was deleted is gone for good, and a task it held must not stay blocked on it. Paperclip reports that either
+   * by dropping the relation (the live list is empty) or by keeping it with a status that never resolves (its GET answers 404).
+   * The task is released, naming the deleted blockers, once every blocker it had is resolved or gone. The wake_tasks record of
+   * the ids it had is what tells a task blocked from outside from a task a team route parked with no blockers at all: only the
+   * former is released when its live list is empty. A listed blocker that does not resolve is read once.
    */
   async function unblock(issue: Issue, agent: string) {
     const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
@@ -294,13 +307,37 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // An unblock whose relations were cleared but whose move failed is finished from what it recorded, never stranded.
     const half = q("SELECT closure, line FROM unblocking WHERE task = ?").get(task.id) as { closure: string; line: string } | undefined;
     if (task.status !== "blocked") { if (half) q("DELETE FROM unblocking WHERE task = ?").run(task.id); return; }
-    if (!half && (!blockers.length || !blockers.every((b) => b.status === "done" || b.status === "cancelled"))) return;
-    const closure = half?.closure ?? blockers.map((b) => `${b.id}:${b.status}`).sort().join(",");
-    const line = half?.line ?? `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`;
+    const resolved = (b: { status: string }) => b.status === "done" || b.status === "cancelled";
+    // The blockers it had: the live relation can drop an id, so the remembered record is what says it existed.
+    const row = q("SELECT blocked, blocked_names FROM wake_tasks WHERE task = ?").get(task.id) as { blocked: string | null; blocked_names: string | null } | undefined;
+    const had = [...new Set([...blockers.map((b) => b.id), ...(row?.blocked ?? "").split(",").filter(Boolean)])];
+    let names: Record<string, string> = {};
+    try { names = JSON.parse(row?.blocked_names ?? "{}") as Record<string, string>; } catch { /* a record from before names: the id names it */ }
+    const gone = new Set<string>();
+    if (!half && had.length) {
+      for (const b of blockers) {
+        if (resolved(b) || gone.has(b.id)) continue;
+        const g = await owner("GET", `/api/issues/${encodeURIComponent(b.id)}`);
+        if (g.status === 404) { gone.add(b.id); continue; }
+        if (g.status !== 200) throw new Error(`control plane GET blocker ${b.id} → ${g.status}`);
+      }
+      for (const id of had) if (!blockers.some((b) => b.id === id)) gone.add(id);
+    }
+    const complete = blockers.length > 0 && blockers.every(resolved);
+    if (!half && !complete && (blockers.some((b) => !resolved(b) && !gone.has(b.id)) || !gone.size)) return;
+    const nameOf = (id: string) => names[id] ?? blockers.find((b) => b.id === id)?.identifier ?? id;
+    const closure = half?.closure ?? (complete
+      ? blockers.map((b) => `${b.id}:${b.status}`).sort().join(",")
+      : [...blockers.filter((b) => !gone.has(b.id)).map((b) => ({ key: `${b.id}:${b.status}`, text: `${b.identifier ?? b.id} closed (${b.status})` })), ...[...gone].sort().map((id) => ({ key: `${id}:deleted`, text: `${nameOf(id)} (deleted)` }))]
+        .sort((a, b) => a.key.localeCompare(b.key)).map((p) => p.key).join(","));
+    const line = half?.line ?? (complete
+      ? `${blockers.map((b) => b.identifier ?? b.id).join(", ")} closed (${blockers.map((b) => b.status).join(", ")}).`
+      : [...blockers.filter((b) => !gone.has(b.id)).map((b) => `${b.identifier ?? b.id} closed (${b.status})`), ...[...gone].sort().map((id) => `${nameOf(id)} (deleted)`)].join(", ") + ".");
     if (!half) q("INSERT OR REPLACE INTO unblocking (task, closure, line) VALUES (?, ?, ?)").run(task.id, closure, line);
     const patch = (b: object) => owner("PATCH", `/api/issues/${encodeURIComponent(task.id)}`, b);
     const ok = (res: { status: number }) => { if (res.status >= 300) throw new Error(`control plane PATCH issue → ${res.status}`); return res; };
-    const keep = blockers.filter((b) => b.status !== "cancelled").map((b) => b.id);
+    // A cancelled blocker still refuses a status write, and a deleted one no longer has a relation to keep.
+    const keep = blockers.filter((b) => b.status !== "cancelled" && !gone.has(b.id)).map((b) => b.id);
     if (keep.length !== blockers.length) ok(await patch({ blockedByIssueIds: keep }));
     const move = { status: "todo", comment: `Unblocked: ${line}\n\n<!-- aidenhq:job=kernel kind=unblocked -->` };
     let res = await patch(move);
@@ -308,6 +345,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     ok(res);
     insert(`unblocked:${task.id}:${closure}`, task.id, agent, "unblocked", now(), null, "kernel");
     q("DELETE FROM unblocking WHERE task = ?").run(task.id);
+    q("UPDATE wake_tasks SET blocked = NULL, blocked_names = NULL WHERE task = ?").run(task.id);
   }
 
   // ---- Team routing (team-routing.ts picks; this gathers, records and places) ----
