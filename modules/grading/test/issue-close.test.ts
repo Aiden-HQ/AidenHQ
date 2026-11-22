@@ -54,6 +54,9 @@ test("a not-planned close counts when its closer, an owner, said why just before
   const closer = { author: { login: "someone" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: "Not a bug: src/a.ts:3 shows it." };
   assert.doesNotMatch(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [closer] } })), /does not count/);
   assert.match(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [{ ...closer, authorAssociation: "NONE" }] } })), /does not count/);
+  // A rationale far from the close (an hour before, or a day after) is no reason for this close.
+  for (const createdAt of ["2026-11-19T09:00:00Z", "2026-11-20T10:05:00Z"])
+    assert.match(text(await run({ stateReason: "NOT_PLANNED", comments: { nodes: [{ ...closer, createdAt }] } })), /does not count/);
 });
 
 test("only a line posted since the latest reopen counts: an earlier close-and-reopen cycle's citation does not", async () => {
