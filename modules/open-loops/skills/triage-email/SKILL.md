@@ -1,35 +1,32 @@
 ---
 name: triage-email
-description: The inbox scan - one task per email thread the user labels Aiden in Gmail (any connected account), and close the task when the label is removed.
+description: Load for the inbox scan run (Intake): one task per email thread the user labels Aiden in Gmail (any connected account), closed when the label is removed.
 when: { fields: { name: Intake } }
 ---
 
 # Inbox scan
 
-The user marks the email threads they want as tasks with the Gmail label **`Aiden`** (any connected account, inbox or archived). Each labelled thread becomes one task, closed when they remove the label; the rest of their mail stays as it is. Gmail is read-only for you: the mail itself is never sent, drafted, labelled, archived or deleted.
-
-Tools: `gmail_search` (Gmail query syntax; searches every connected account; each result has an `account`, or an `error` when that account failed), `gmail_read_thread` (pass the result's `account`); tasks `task_list`, `task_search`, `task_create` (idempotent by marker), `task_update`, `task_get`, `task_comment`, `task_cancel`, `task_finish`.
+The Gmail label **`Aiden`** (any connected account, inbox or archived) marks a thread as a task. Gmail is read-only for you.
 
 ## 1. Find the labelled threads
 
-`gmail_search` with `label:Aiden`, `max_results` 50 and no `account`, so every account is included. Group the messages by `account` and `thread_id`. Note each account that returned an `error` or exactly 50 messages (its list may be cut off).
+`gmail_search` with `label:Aiden`, `max_results` 50, no `account` (every account is searched). Group by `account` and `thread_id`. An account that returned an `error` or exactly 50 messages has an incomplete list.
 
-## 2. Close tasks whose label was removed
+## 2. Close unlabelled tasks
 
-`task_list` with `label: "email"`. For each task, `task_get` it and read its own `source:gmail:label:<thread_id>` marker and the `Account:` line in its Source section. When that thread is missing from step 1's labelled threads and its account returned a complete list, the user removed the label: `task_finish` (its `issue`) with the comment "Label removed in Gmail". A task whose account had an error or a cut-off list stays open.
+`task_list` with `label: "email"`; `task_get` each for its `source:gmail:label:<thread_id>` marker and its `Account:` line. A thread missing from step 1 whose account listed completely lost its label: `task_finish` (its `issue`) with "Label removed in Gmail". An account with an error or cut-off list keeps its tasks open.
 
 ## 3. One task per labelled thread
 
-Read each labelled thread with `gmail_read_thread` (pass its `account`) and `task_create`:
+`gmail_read_thread` (pass its `account`), then `task_create`:
 
-- `marker`: `source:gmail:label:<thread_id>`; `dedupe_closed: true` (a task the user closed stays closed, even with the label still on).
-- `labels`: `["todo", "email"]`.
-- `title`: what the user needs to do, in a few words: "Reply to Dana: Globex agenda review", "Sign the Contoso NDA (DocuSign)", "Read: vendor incident report" when purely informational.
-- `priority`: `high` for an explicit deadline today or tomorrow, or a blocker; `medium` otherwise; `low` when plainly FYI.
-- `description`: the format in your mission with `Type: Email`, `Account:`, `From: Name <email>`, `Subject:`, `Received:` (the newest message) and `Link:` (the result's `link`, unchanged), and a Reason starting "Labelled `Aiden` in Gmail."
+- `marker: source:gmail:label:<thread_id>`, `dedupe_closed: true` (a closed task stays closed with the label on), `labels: ["todo", "email"]`.
+- `title`: what the user needs to do ("Reply to Dana: Globex agenda review", "Read: vendor incident report" when informational).
+- `priority`: `high` for a deadline today or tomorrow or a blocker, `medium`, `low` when plainly FYI.
+- `description`: your mission's format with `Type: Email`, `Account:`, `From:`, `Subject:`, `Received:` (newest message), `Link:` (the result's `link`, unchanged) and a Reason starting "Labelled `Aiden` in Gmail."
 
-`deduplicated: true` means the task exists (or the user closed it). On an open one, when the thread has a genuinely new message since the task was created (a reply, a new deadline), add a one-sentence `task_comment` and raise the priority with `task_update` when the message warrants it.
+`deduplicated: true` on an open task with a genuinely new message (reply, new deadline): one-sentence `task_comment`, and `task_update` the priority if warranted.
 
 ## 4. Finish
 
-`task_finish` with a one-line count summary, e.g. "Labelled: 3 threads across 2 accounts (1 new task); closed 1 unlabelled". The inbox scan reports through its summary only.
+`task_finish` with a count line, e.g. "Labelled: 3 threads across 2 accounts (1 new task); closed 1 unlabelled".
