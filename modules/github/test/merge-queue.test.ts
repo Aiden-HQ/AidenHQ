@@ -72,6 +72,7 @@ function fakeGitHub(prs) {
 
 async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
+  const waits = [];
   const taken = new Set();
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -80,6 +81,9 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     // The kernel takes a record's first outcome and answers 409 to a repeat (the executor and the queue both post it).
     if (m && taken.has(m[1])) return res.writeHead(409).end("{}");
     if (m) { taken.add(m[1]); outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    // A claimed record's live wait (kernel/src/backplane.ts): the task's card reads it while the merge cannot move.
+    const w = /^\/v1\/writes\/([^/]+)\/wait$/.exec(req.url);
+    if (w) { waits.push({ id: w[1], reason: JSON.parse(body || "{}").reason ?? null }); return res.writeHead(200).end(JSON.stringify({ ok: true, new: true })); }
     const reply = checks?.(req.method, req.url, body ? JSON.parse(body) : undefined);
     // A read that failed rather than answered: `{ __status: 503 }` makes the fake kernel answer that status (a restarting kernel).
     if (reply?.__status) return res.writeHead(reply.__status).end(JSON.stringify({ error: { message: `fake kernel ${reply.__status}` } }));
@@ -115,7 +119,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
   // must reach the queue (the production shape, where an id and an identifier are never the same string).
   const merge = (id, prsArgs, task = "tsk_0000000000000w9", identifier = "WOR-9") => call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id, ...(task ? { task } : {}), ...(identifier ? { identifier } : {}) });
   const settle = async () => { for (let i = 0; i < 100 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
-  return { handle, github, outcomes, call, merge, settle, cacheDir, clock };
+  return { handle, github, outcomes, waits, call, merge, settle, cacheDir, clock };
 }
 
 test("an approved agents-org merge waits for green, merges at its bound head, and reports its outcome", async (t) => {
@@ -781,12 +785,18 @@ test("merge queue waits while disconnected", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const facts = [];
   const connected = { on: false };
-  const { handle, github, merge, settle, outcomes } = await setup(t, { prs, connected, checks: (m, u, b) => (u === "/v1/facts" ? (facts.push(...b.facts), { recorded: b.facts.length }) : undefined) });
+  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, connected, checks: (m, u, b) => (u === "/v1/facts" ? (facts.push(...b.facts), { recorded: b.facts.length }) : undefined) });
   await merge("k-00000000000000b9", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
   await handle.flushFacts();
   assert.deepEqual(github.merges(), [], "nothing merges while GitHub is signed out");
   assert.deepEqual(facts.filter((f) => f.type === "work.waiting").map((f) => [f.subject, f.data.reason]), [["pr:acme-agents/widget#1", "github"]]);
+  // The claimed merge card carries the reconnect reason too, not only the queue's own fact: otherwise it reads as a card running
+  // with no reason at all. Its PR is still waiting, so the reason says why.
+  assert.deepEqual(waits.map((w) => [w.id, w.reason]), [["k-00000000000000b9", `https://github.com/acme-agents/widget/pull/1: GitHub is signed out: waiting for the owner to reconnect it`]]);
+  // Another pass while still signed out posts nothing new (the kernel deduplicates, and the queue does not poll it).
+  await handle.stepMerges();
+  assert.equal(waits.length, 1, "the same reason is not re-posted every poll");
   connected.on = true;
   await handle.stepMerges();
   assert.equal(github.merges().length, 1, "merged once connected again");

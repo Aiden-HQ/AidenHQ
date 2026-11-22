@@ -283,8 +283,10 @@ export function openRecords(file: string, now = () => new Date()) {
      */
     setWait(id: string, reason: string | null): boolean {
       // A set reason counts as a wait transition even when it repeats an earlier one (A → B → A), so each accepted wait is a
-      // notice of its own; a clear ends the count, and a move out of `claimed` clears both.
-      const waited = reason === null ? "NULL" : "COALESCE(waits, 0) + 1";
+      // notice of its own. A clear keeps the count: it ends this wait, not the claim's history, so a reason reported after the
+      // clear (`A → clear → A`) still gets a new tag instead of reusing one whose notice may still be queued. Only leaving
+      // `claimed` clears it (the `move` above).
+      const waited = reason === null ? "COALESCE(waits, 0)" : "COALESCE(waits, 0) + 1";
       return db.prepare(`UPDATE records SET wait = ?, waits = ${waited} WHERE id = ? AND state = 'claimed'`).run(reason, id).changes === 1;
     },
     /** GitHub objects the outcome of record `id` made (objects.ts). */

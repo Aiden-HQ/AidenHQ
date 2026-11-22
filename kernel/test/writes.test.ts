@@ -477,6 +477,13 @@ test("a claimed record's wait reason comes from its own module only, and its tas
   assert.match(k.notices[4].text, /1 important finding open/);
   assert.equal(k.records.get(r.id).waits, 5);
   assert.equal(k.records.get(r.id).wait, "code review: 1 important finding open");
+  // A clear ends the wait, not the claim's history: the count stays, so a reason reported after it still gets a fresh tag (a
+  // reuse would collide with a notice still queued under the same tag, and be dropped as a duplicate).
+  assert.deepEqual((await wait(r.id, "")).json, { ok: true, new: true });
+  assert.equal(k.records.get(r.id).waits, 5, "clearing a wait keeps the claim's count");
+  assert.equal((await wait(r.id, "code review: 1 important finding open")).json.new, true);
+  await until(() => k.notices.length === 6);
+  assert.equal(k.records.get(r.id).waits, 6, "a reason after a clear is a new notice");
   // Another module's key may not report it (the same guard as the outcome route).
   assert.equal((await wait(r.id, "not mine", "other-key")).status, 403);
   // The executor that owns it clears the reason when its wait ends (the review passed): `""` clears, and nobody is told.
