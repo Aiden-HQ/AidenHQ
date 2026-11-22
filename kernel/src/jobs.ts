@@ -139,7 +139,7 @@ const clip = (s: unknown, n: number) => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 // Steps show command lines on the board: blank the usual secret shapes first, whatever the engine sent.
-const redact = (t: string) =>
+export const redact = (t: string) =>
   t
     .replace(/(Bearer|Basic|token)\s+[^\s'"]+/gi, "$1 …")
     .replace(/:\/\/[^/\s@]+@/g, "://…@")

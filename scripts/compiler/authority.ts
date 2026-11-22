@@ -56,6 +56,7 @@ const KERNEL_ROLE_GRANTS: Record<string, string> = {
   "kernel.grader": "mints grader tokens",
   "kernel.jobs": "runs agents' jobs",
   "kernel.lane": "writes fast-lane turns to an agent's chat",
+  "kernel.memory": "writes the calling agent's own memory, for its memory tools",
   "kernel.notify": "takes and sends the owner's messages",
   "kernel.owner-notice": "messages the owner",
   "kernel.routines": "pauses a routine (never resumes one)",

@@ -46,7 +46,7 @@ export function repoKey(v: unknown): string | undefined {
  * The kernel's roles a module may request (module.yaml roles.requests): each opens one backplane route or, for kernel.apply,
  * filing that kernel kind. No module declares a kernel.* role or a role named after a write kind (compile refuses both).
  */
-export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.notify", "kernel.owner-notice", "kernel.routines", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.wake", "kernel.work-read"];
+export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.memory", "kernel.notify", "kernel.owner-notice", "kernel.routines", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.wake", "kernel.work-read"];
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {

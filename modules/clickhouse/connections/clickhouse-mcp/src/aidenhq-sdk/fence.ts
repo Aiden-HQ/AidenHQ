@@ -13,6 +13,15 @@ export function fence(text: string, source: string): string {
 }
 
 /**
+ * A prompt with an agent's memory view (kernel/src/memory.ts) in its last `{{memory}}`, fenced as data: the kernel's job
+ * handbook and the chat lane fill it the same way. An empty view reads "Nothing yet."; a prompt with no placeholder is unchanged.
+ */
+export function fillMemory(prompt: string, view: string): string {
+  const at = prompt.lastIndexOf("{{memory}}");
+  return at < 0 ? prompt : `${prompt.slice(0, at)}${fence(view.trim() || "Nothing yet.", "memory")}${prompt.slice(at + "{{memory}}".length)}`;
+}
+
+/**
  * A judge's named data block (the AI reviewer's and the grader's prompts): `<<<NAME`, the text, `NAME>>>`, at most `max`
  * characters of text (`middle`: past the cap keep the start and the end and say code cut it). No text can close a block early
  * or open another: every run of three or more of `<`, `>`, `‹`, `›` in it becomes `≪`/`≫`, so a marker or a terminator
