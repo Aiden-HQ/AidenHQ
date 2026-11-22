@@ -153,6 +153,15 @@ changed; the acknowledgement is left to the newer head), while a run whose PR mo
 - The severity line `<!-- aidenhq-review: {"important":n,"nit":n,"pre_existing":n} -->`.
 - **A post that fails for anything but a decision** (stale: a restart between its approval and its run; a failed GitHub call,
   such as a secondary rate limit) is filed once more two minutes later; a rejection stands.
+- **A post that is still refused is never silent**: when its approval record ends refused (stale, rejected, or failed in the
+  executor), the run row keeps the reason and the acknowledgement says, in fixed words, that the review of that head was not
+  posted and to ask again with `@aiden review`. A per-push run has no author to tell, so the pull request is where it is said;
+  the PR's approval task stays quiet.
+- **The notice is not given up on**: if the kernel or GitHub can't take it now, it is asked again with backoff (a minute,
+  doubling to fifteen) for as long as the pull request is open; waiting is not failing, so only a pull request that closes
+  first ends it (`failed` on the run row).
+- **A post is bound to its head alone**: the kind declares `binds` (`repo`, `ref`, `commit`), so redeploying this module or the
+  pull request's base moving never stales a review of a head that still stands. Every other write keeps the full revalidation.
 
 Our own markers (`<!-- aidenhq-... -->`) mark every post so the next run and the command parser recognise them. Threads whose
 finding is gone on the next run are resolved, only when Aiden posted them. The acknowledgement comment is one per PR: with

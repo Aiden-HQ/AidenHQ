@@ -370,6 +370,11 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   // A kind naming a tool that isn't one of its module's writes, or one another kind took, fails compile.
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: ["r"], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["r"] } } }, product), /r is no write or destructive tool/);
   assert.throws(() => writeKinds("m", { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: [], write: ["w"] } } }, writes: { k: { floor: 0, tools: ["w"] }, j: { floor: 1, tools: ["w"] } } }, product), /c\.w is already routed/);
+  // binds: a head-bound kind names the target fields it acts on (repo, ref, commit), and nothing else; it compiles through.
+  const def = { providers: { executor: { url: "http://m:1/x", auth: "m_service_key" } }, generated_secrets: ["m_service_key"], connections: { c: { tools: { read: [], write: ["w"] } } } };
+  assert.deepEqual(writeKinds("m", { ...def, writes: { k: { floor: 1, binds: ["repo", "ref", "commit"], tools: ["w"] } } }, product)["m.k"].binds, ["repo", "ref", "commit"]);
+  assert.throws(() => writeKinds("m", { ...def, writes: { k: { floor: 1, binds: ["head"], tools: ["w"] } } }, product), /binds is a list of target fields/);
+  assert.throws(() => writeKinds("m", { ...def, writes: { k: { floor: 1, binds: [], tools: ["w"] } } }, product), /binds is a list of target fields/);
 });
 
 test("checks: a task.finish check may observe; a hard gate or a write.filed check may not", () => {

@@ -294,7 +294,9 @@ export class ReviewPoster {
         changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (one thread per important finding, on its line, the nearest diff line or its file; nits only as lines of the summary) and the pull request's acknowledgement comment, as code review's GitHub identity (its App where installed, else the owner), signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
         details,
       },
-      targets: { [`${r.repo}#${r.pr}`]: { repo: r.repo, ref: `pull/${r.pr}`, commit: r.head, base_sha: r.base } },
+      // The head alone: a review is of one commit, so its base moving (another merge landed) never makes it stale. Other
+      // kinds keep binding the base, where what they act on is what they push or merge.
+      targets: { [`${r.repo}#${r.pr}`]: { repo: r.repo, ref: `pull/${r.pr}`, commit: r.head } },
     };
   }
 
@@ -370,19 +372,56 @@ export class ReviewPoster {
       if (rs.length < 100) break;
     }
     const onLines = first.comments.filter((c) => !c.file);
-    review ??= await w.gh.request<{ id: number; html_url: string; body?: string }>("POST", `${api(ref)}/pulls/${ref.number}/reviews`, {
-      body: { event: "COMMENT", commit_id: r.head, body: withFooter(first.summary, AGENT), ...(onLines.length ? { comments: onLines.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", ...(c.start_line ? { start_line: c.start_line } : {}), body: c.body })) } : {}) },
-    });
-    // Its inline comments (each thread's first comment) by finding, for the links and AidenHQ's records.
-    const mine: { id: number; html_url: string; body?: string }[] = [];
-    for (let page = 1; page <= 10; page++) {
-      const cs = await this.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review.id}/comments`, { query: { per_page: 100, page } });
-      mine.push(...cs);
-      if (cs.length < 100) break;
+    if (!review) {
+      // A create that failed may still have made the review (a timeout, a gateway that lost the reply): read the PR's reviews
+      // again before calling the post failed, so a review that is on the pull request is never reported as not posted and never
+      // posted twice. A read that fails too is left to the caller's retry, which finds the review by its run's marker.
+      review = await w.gh.request<{ id: number; html_url: string; body?: string }>("POST", `${api(ref)}/pulls/${ref.number}/reviews`, {
+        body: { event: "COMMENT", commit_id: r.head, body: withFooter(first.summary, AGENT), ...(onLines.length ? { comments: onLines.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", ...(c.start_line ? { start_line: c.start_line } : {}), body: c.body })) } : {}) },
+      }).catch(async (e: Error) => {
+        for (let page = 1; page <= 10; page++) {
+          const rs = await this.gh.request<{ id: number; html_url: string; body?: string; user?: Author }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page } }).catch(() => []);
+          const found = rs.find((x) => x.body?.includes(RUN_MARK(a.run)) && isWho(who, x.user));
+          if (found) return found;
+          if (rs.length < 100) break;
+        }
+        throw e;
+      });
     }
-    const made = mine.map((c) => ({ id: c.id, url: c.html_url, finding: FINDING_MARK.exec(c.body ?? "")?.[1] }));
+    // The review is on the pull request from here on: a later step failing (reading its comments, its summary links, its
+    // threads) must not report the review as not posted, nor drop the comments it did make from AidenHQ's records. Each step is
+    // tried on its own and what it made is kept; the ones that didn't finish are named in the outcome.
+    const made: { id: number; url: string; finding?: string }[] = [];
     const problems: string[] = [];
     const tryTo = async <T>(what: string, f: () => Promise<T>) => f().catch((e: Error) => void (this.onFailure?.(e), problems.push(`${what}: ${String(e.message).slice(0, 150)}`)));
+    // Its inline comments (each thread's first comment) by finding, for the links and AidenHQ's records. The review is on the
+    // pull request already: a read of its comments that fails is asked again here (the write is not repeated), because those ids
+    // are the only record of which threads are Aiden's own. A read that keeps failing falls back to the review's threads, which
+    // name the same comments by their run's marker: the ids are recorded either way, and no second review is ever made.
+    await tryTo("reading the review's comments", async () => {
+      for (let attempt = 1; ; attempt++) {
+        const mine: { id: number; html_url: string; body?: string }[] = [];
+        try {
+          for (let page = 1; page <= 10; page++) {
+            const cs = await this.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}/comments`, { query: { per_page: 100, page } });
+            mine.push(...cs);
+            if (cs.length < 100) break;
+          }
+          made.push(...mine.map((c) => ({ id: c.id, url: c.html_url, finding: FINDING_MARK.exec(c.body ?? "")?.[1] })));
+          return;
+        } catch (e) {
+          if (attempt >= 3) {
+            // Its comments can't be listed by the review: its threads still name them (each first comment, its run's marker), so
+            // the ids are recovered from there rather than left for a caller's retry that would only find them the same way.
+            const mine = (await this.threads(ref).catch(() => [])).filter((t) => t.run === a.run && isWho(who, { login: t.author, type: t.bot ? "Bot" : "User" }));
+            if (!mine.length) throw e;
+            made.push(...mine.map((t) => ({ id: t.comment, url: t.url, finding: t.finding ?? undefined })));
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 250 * attempt));
+        }
+      }
+    });
     // A finding on a file without diff lines takes a file comment (its own thread, outside the review).
     const unthreaded = new Set<string>();
     for (const c of first.comments.filter((x) => x.file)) {

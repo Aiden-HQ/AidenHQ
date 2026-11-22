@@ -127,6 +127,9 @@ writes:
   post:
     args: schemas/post.json
     floor: 1
+    # Head-bound: a post is of one pull request at one commit, so only those decide whether it may still run. Redeploying this
+    # module (its code revision) or the pull request's base moving never stales a review of a head that still stands.
+    binds: [ repo, ref, commit ]
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
   # An agent's recorded answer to an important finding, replied on that finding's thread so it shows closed: the text is the

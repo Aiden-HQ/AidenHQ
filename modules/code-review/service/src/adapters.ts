@@ -81,11 +81,14 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
   };
 }
 
-/** A skip's reason as the notice's fixed words name it (seams' `why` starts with its key). */
-export function reasonOf(why: string | undefined): string | undefined {
+/** A reason as the notice's fixed words name it (seams' `why` starts with its key): a skip's, or a refused post's. */
+export function reasonOf(why: string | undefined): "post_refused" | "draft" | "fork" | "superseded" | "stopped" | undefined {
   const w = String(why ?? "");
+  // A post the kernel refused after its review ran (refused, stale, rejected): the run row keeps the reason, the PR's notice
+  // says in fixed words that this head's review was not posted. Checked first: its words are never read as a skip's.
+  if (/^not posted:/.test(w)) return "post_refused";
   const key = w.split(":")[0]!;
-  return ["draft", "fork", "superseded", "stopped"].includes(key) ? key : undefined;
+  return ["draft", "fork", "superseded", "stopped"].includes(key) ? (key as "draft" | "fork" | "superseded" | "stopped") : undefined;
 }
 
 /**
@@ -163,10 +166,22 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     },
     async ack(a) {
       // The notice speaks only in its fixed words: a phase (with a reason), or a command's answer (help, always, focus).
-      const reason = reasonOf(a.why);
+      const why = reasonOf(a.why);
+      // A reason goes only where its phase can carry it: a skip's on a skip, the refusal's on a failed post. A run that failed on
+      // budget keeps the generic failed notice rather than being turned into a skip reason its phase refuses (and so lost).
+      const reason = a.state === "skipped" ? (why && why !== "post_refused" ? why : undefined) : a.state === "failed" ? (why === "post_refused" ? why : undefined) : undefined;
       if (a.state === "skipped" && !reason) return undefined;
       const r = (await kernel.call("POST", "/v1/writes", { kind: ACK_KIND, args: { ...(a.ack ? { ack: a.ack } : {}), repo: a.repo, pr: a.number, head: a.head, phase: a.state, ...(a.state === "answered" ? { answer: a.answer ?? "help" } : {}), ...(reason ? { reason } : {}), ...(a.combo ? { engine: a.combo.engine, model: a.combo.model, effort: a.combo.effort } : {}), ...(a.run ? { run: a.run } : {}), ...(a.review ? { review: a.review } : {}), ...(a.counts ?? {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
-      return { ...settled(r), write: r.id };
+      // A notice is Tier 0 and runs inline, but the filing answers with the record as it was filed (`claimed`): the record read
+      // back is what says whether the kernel took it. A refused notice throws, so a refused post's delivery retries it rather
+      // than marking the pull request told; one still running comes back pending, with its id, for a later tick.
+      const rec = await kernel.call("GET", `/v1/writes/${r.id}`).catch(() => r) as typeof r;
+      const o = settled(rec);
+      // A refusal that asking again cannot change (a schema or plan refusal is deterministic) carries a 4xx status: the delivery
+      // ends after a few tries instead of polling for it while the PR stays open. One that can (a stale or failed notice record,
+      // which the kernel files again) carries none, so it is retried as long as the pull request stands.
+      if (o.state === "refused") throw Object.assign(new Error(`notice ${r.id} not posted: ${o.why ?? "refused"}`), o.retry ? {} : { status: 422 });
+      return { ...o, write: r.id };
     },
     async notify(n) {
       // A notice on the requester's own task wakes its agent (role kernel.wake); with no task, the one notify reaches the owner.

@@ -30,6 +30,9 @@ export const DEBOUNCE = 60_000;
 /** A post refused by something other than a decision (stale after a restart, a failed GitHub call, a rate limit) is filed again
  * after this, doubling each time (2 to 32 minutes), up to POST_TRIES times while its PR is open. */
 export const POST_RETRY = 2 * 60_000;
+/** A refused post's notice that couldn't be filed waits this long, doubling up to the cap, while its pull request is open. */
+const NOTICE_RETRY = 60_000;
+const NOTICE_RETRY_CAP = 15 * 60_000;
 const POST_TRIES = 6;
 /** A run its model token's spend cap refused (the gateway's "spend cap reached") waits this long, its attempt not counted. */
 /** A failed run's retry waits this long (a deploy or restart that made it fail is usually over by then). */
@@ -80,13 +83,18 @@ export type RunRow = {
   post_tries: number; post_due: number | null;
   /** A refused post's typed need (needs_owner, JSON): restricted, expired, sso or scope, with what fixes it. */
   need: string | null;
+  /** A refused post's notice on the pull request: `pending` until the kernel took its notice write, then `sent`. A delivery that
+   * failed (a kernel or GitHub that can't answer now) is asked again with backoff, for as long as the run's pull request is open:
+   * waiting is not failing, so the acknowledgement is never given up on and the pull request never left silent. `failed` only when
+   * the pull request closed first. `notice_write` is its record while the outcome is still ours to read. */
+  notice: "pending" | "sent" | "failed" | null; notice_tries: number; notice_due: number | null; notice_write: string | null;
 };
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS prs (repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL, last_reviewed_head TEXT,
   mode TEXT NOT NULL DEFAULT 'auto', focus TEXT, updated TEXT NOT NULL,
   author TEXT NOT NULL DEFAULT '', draft INTEGER NOT NULL DEFAULT 0, fork INTEGER NOT NULL DEFAULT 0, open INTEGER NOT NULL DEFAULT 1,
-  last_reviewed_base TEXT, title TEXT, close_due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, number));
+  merged INTEGER NOT NULL DEFAULT 0, last_reviewed_base TEXT, title TEXT, close_due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, number));
 CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL,
   engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
   cost_usd REAL NOT NULL DEFAULT 0, tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, duration_ms INTEGER,
@@ -149,7 +157,7 @@ export function createEngine(d: EngineDeps) {
     && !(db.prepare("PRAGMA table_info(askers)").all() as { name: string }[]).some((c) => c.name === "setkey")) db.exec("DROP TABLE IF EXISTS askers");
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
-  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"]] as const)
+  for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // A send a restart cut off (its claim still set) is tried again: the summary is recoverable, never dropped.
   db.exec("UPDATE askers SET claim = NULL WHERE claim IS NOT NULL");
@@ -164,12 +172,15 @@ export function createEngine(d: EngineDeps) {
     try { const v = f(); db.exec("COMMIT"); return v; } catch (e) { db.exec("ROLLBACK"); throw e; }
   };
   const repoCfg = (repo: string) => d.config().repos.find((r) => r.repo === repo.toLowerCase());
-  const prRow = (repo: string, n: number) => one<{ repo: string; number: number; head: string; base: string; last_reviewed_head: string | null; mode: string; focus: string | null; author: string; draft: number; fork: number; open: number; last_reviewed_base: string | null; title: string | null }>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
+  const prRow = (repo: string, n: number) => one<{ repo: string; number: number; head: string; base: string; last_reviewed_head: string | null; mode: string; focus: string | null; author: string; draft: number; fork: number; open: number; merged: number; last_reviewed_base: string | null; title: string | null }>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
   const runRow = (id: string) => one<RunRow>("SELECT * FROM runs WHERE id = ?", id);
   const subject = (repo: string, n: number) => `pr:${repo}#${n}`;
   /** The acknowledgement comment each PR has (recorded from an outcome, never found by its marker), and notices still settling. */
   const ackOf = (repo: string, n: number) => one<{ ack: number | null }>("SELECT ack FROM prs WHERE repo = ? AND number = ?", repo, n)?.ack ?? undefined;
-  const acked = (repo: string, n: number, o: Posted | undefined) => {
+  const acked = (repo: string, n: number, o: Posted | undefined, write?: string) => {
+    // A refused post's waiting notice whose own write the shared queue read as done is told; another notice on the same PR is
+    // not (its delivery reads its own record).
+    if (o?.state === "posted" && write) run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE notice = 'pending' AND notice_write = ?", write);
     if (o?.state === "pending" && o.write) return void acking.set(o.write, { repo, number: n });
     if (o?.state === "posted" && o.ack) run("UPDATE prs SET ack = ? WHERE repo = ? AND number = ?", o.ack, repo, n);
     const next = ackNext.get(`${repo}#${n}`);
@@ -177,6 +188,11 @@ export function createEngine(d: EngineDeps) {
   };
   /** Notices filed and not settled yet (write id: its PR), and the latest notice waiting behind one (by PR). */
   const acking = new Map<string, { repo: string; number: number }>();
+  // A restart between filing a notice and learning its comment's id leaves the record in its run row: that write still holds its
+  // PR's slot, so a second notice waits for it (two in flight would each make their own acknowledgement comment, and the one
+  // without the id could never be edited in place). Restored here, before any notice is accepted.
+  for (const r of all<{ notice_write: string; repo: string; number: number }>("SELECT notice_write, repo, number FROM runs WHERE notice = 'pending' AND notice_write IS NOT NULL"))
+    acking.set(r.notice_write, { repo: r.repo, number: r.number });
   const ackNext = new Map<string, Ack>();
   const acking_ = (repo: string, n: number) => [...acking.values()].some((t) => t.repo === repo && t.number === n);
   // The notice is the only path that makes the acknowledgement: one at a time per PR until its comment's id is known (two in
@@ -194,9 +210,9 @@ export function createEngine(d: EngineDeps) {
   };
 
   function upsertPr(p: PullRequest) {
-    run(`INSERT INTO prs (repo, number, head, base, updated, author, draft, fork, open, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    run(`INSERT INTO prs (repo, number, head, base, updated, author, draft, fork, open, merged, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (repo, number) DO UPDATE SET head = excluded.head, base = excluded.base, updated = excluded.updated, author = excluded.author,
-      draft = excluded.draft, fork = excluded.fork, open = excluded.open, title = excluded.title`, p.repo, p.number, p.head, p.base, iso(), p.author.toLowerCase(), p.draft ? 1 : 0, p.fork ? 1 : 0, p.open ? 1 : 0, p.title?.slice(0, 200) ?? null);
+      draft = excluded.draft, fork = excluded.fork, open = excluded.open, merged = excluded.merged, title = excluded.title`, p.repo, p.number, p.head, p.base, iso(), p.author.toLowerCase(), p.draft ? 1 : 0, p.fork ? 1 : 0, p.open ? 1 : 0, p.merged ? 1 : 0, p.title?.slice(0, 200) ?? null);
   }
 
   // ---- runs: queue, skip, start, finish ---------------------------------------------------------------------------------------
@@ -523,8 +539,10 @@ export function createEngine(d: EngineDeps) {
     // The replies already on a reopened finding's thread answered the claim that was just refused: never read as a new answer.
     if (unsafe.length) for (const t of await d.source.threads(r.repo, r.number).catch(() => [])) if (t.finding && unsafe.includes(t.finding)) for (const x of t.replies) run("INSERT OR IGNORE INTO seen (repo, comment) VALUES (?, ?)", r.repo, `reply:${x.id}`);
     if (!stale) cover(r);
-    const done = (status: Status, why: string | null, posted?: string) => {
-      run("UPDATE runs SET status = ?, why = ?, posted = ?, ended = ?, duration_ms = ? WHERE id = ?", status, why, posted ?? null, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
+    // A run that posts says nothing here: afterPost writes its state, its reason and (when it is filed again) its retry deadline
+    // together, once the post's outcome is known.
+    const done = (status: Status, why: string | null) => {
+      run("UPDATE runs SET status = ?, why = ?, ended = ?, duration_ms = ? WHERE id = ?", status, why, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
       end(runRow(r.id)!);
     };
     // A run whose PR moved on (a push) while it ran is superseded: it never posts over the newer head. One closed unmerged is
@@ -532,13 +550,7 @@ export function createEngine(d: EngineDeps) {
     if (stale) return done("skipped", "superseded: a newer head is being reviewed");
     if (gh && !gh.open && !gh.merged) return done("skipped", "closed");
     const posted = await publish(r, review);
-    // A refusal it files again ends as done (its review is complete; only its post is pending again), never failed then done.
-    const again = retries(r, posted);
-    // A refusal filed again is recorded as a retry now, before the summary looks: afterPost sets its due time, and a summary
-    // must not read the in-between state as settled.
-    done(posted.state === "refused" && !again ? "failed" : "done", posted.state === "refused" && !again ? `not posted: ${posted.why ?? "refused"}` : null,
-      posted.state === "refused" && again ? "retry" : posted.state);
-    afterPost(runRow(r.id)!, posted);
+    afterPost(runRow(r.id)!, posted, { at: iso(), ms: r.started ? now() - Date.parse(r.started) : null });
   }
   const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && (!r.post_tries || (r.post_tries < POST_TRIES && !!prRow(r.repo, r.number)?.open));
 
@@ -557,24 +569,151 @@ export function createEngine(d: EngineDeps) {
     return posted;
   }
 
-  /** A post's outcome: one refused by something other than a decision is filed once more later (a completed review is never
-   * dropped for a restart or a GitHub hiccup); otherwise it is settled. */
-  function afterPost(r: RunRow, o: Posted) {
-    if (o.state === "pending") return;
-    if (retries(r, o)) {
-      log("review post refused; filing it once more", { run: r.id, why: String(o.why ?? "").slice(0, 200) });
-      return void run("UPDATE runs SET status = 'done', posted = 'retry', why = ?, post_tries = post_tries + 1, post_due = ? WHERE id = ?", `posting again: ${String(o.why ?? "refused").slice(0, 300)}`, now() + POST_RETRY * 2 ** Math.min(r.post_tries, 4), r.id);
+  /** A post's outcome, written whole in one statement: its state, its reason, a refusal's notice intent, and — for one refused by
+   * something other than a decision — its attempt count and the time it is due. A completed review is never dropped for a restart
+   * or a GitHub hiccup, and nothing here can be half-written: a `retry` row always has a deadline a later tick will reach, and a
+   * refusal always has its notice intent, so a restart between two statements can leave neither a stranded post nor a silent one.
+   * A refused post is never silent: the run row keeps the reason, and the PR's notice says (in fixed words) that this head's
+   * review was not posted. The PR's task is quiet, so it is not where an author would see it; a per-push run has no author to
+   * tell, so the pull request is the place. */
+  function afterPost(r: RunRow, o: Posted, ended?: { at: string; ms: number | null }) {
+    // Filed and not decided yet: the run is done, and the post is settled by the id later.
+    if (o.state === "pending") {
+      run("UPDATE runs SET posted = 'pending', status = 'done', why = NULL, ended = COALESCE(?, ended), duration_ms = COALESCE(?, duration_ms) WHERE id = ?", ended?.at ?? null, ended?.ms ?? null, r.id);
+      if (ended) end(runRow(r.id)!);
+      return;
     }
-    settled(r, o);
+    const again = retries(r, o);
+    const refused = o.state === "refused" && !again;
+    if (again) log("review post refused; filing it once more", { run: r.id, why: String(o.why ?? "").slice(0, 200) });
+    const why = o.state === "posted" ? null : again ? `posting again: ${String(o.why ?? "refused").slice(0, 300)}` : `not posted: ${o.why ?? "refused"}`;
+    // The need is this outcome's, never an earlier one's: a retry that settled (posted, or refused for another reason) replaces the
+    // need the failed attempt left, so the summary never names a Grant link for a connection that is fine now.
+    run(`UPDATE runs SET posted = ?, status = ?, why = ?, post_tries = ?, post_due = ?, need = ?, notice = CASE WHEN ? THEN COALESCE(notice, 'pending') ELSE notice END,
+      ended = COALESCE(?, ended), duration_ms = COALESCE(?, duration_ms) WHERE id = ?`,
+      again ? "retry" : o.state, again || o.state === "posted" ? "done" : "failed", why, again ? (r.post_tries ?? 0) + 1 : r.post_tries ?? 0,
+      again ? now() + POST_RETRY * 2 ** Math.min(r.post_tries ?? 0, 4) : null, o.state === "refused" && o.need ? JSON.stringify(o.need) : null, refused ? 1 : 0, ended?.at ?? null, ended?.ms ?? null, r.id);
+    // A run that has just posted is finished now: its fact says where it ended (superseded and closed runs never get here).
+    if (ended) end(runRow(r.id)!);
+    if (refused || o.state === "posted") settled(r, o);
   }
 
   /** A post due to be filed again. */
   async function repost(r: RunRow) {
     const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
-    if (!v) return void run("UPDATE runs SET status = 'failed', posted = 'refused', why = 'not posted: its review is gone' WHERE id = ?", r.id);
+    if (!v) {
+      // Same one statement as a refusal: the reason and the notice's intent land together.
+      run("UPDATE runs SET status = 'failed', posted = 'refused', why = 'not posted: its review is gone', notice = COALESCE(notice, 'pending') WHERE id = ?", r.id);
+      return;
+    }
     const o = await publish(r, JSON.parse(v.json) as Review);
-    run("UPDATE runs SET posted = ?, status = ?, why = ?, post_due = NULL WHERE id = ?", o.state, o.state === "refused" ? "failed" : "done", o.state === "refused" ? `not posted: ${o.why ?? "refused"}` : null, r.id);
     afterPost(runRow(r.id)!, o);
+  }
+
+  /** The notice writes a refused post's fixed words reach the pull request, retried while pending. It goes through the same
+   * one-acknowledgement-per-PR path as every other notice: while another notice is in flight and the comment's id isn't known
+   * yet (two would each make one), this one waits for the next tick. A notice is Tier 0, filed as `claimed`: its outcome is read
+   * back, and only a done one counts as sent. */
+  const delivering = new Set<string>();
+  async function deliver(r: RunRow) {
+    if (r.notice !== "pending" || delivering.has(r.id)) return;
+    // The guard is taken before the first await: two ticks (or a tick and a settle) that both saw this run pending must not both
+    // deliver it, or both would read "no notice filed yet" and each file one.
+    delivering.add(r.id);
+    try {
+      // A pull request closed before its notice landed: there is no head to ask again on, so that one is the end of it.
+      if (await gone(r)) {
+        run("UPDATE runs SET notice = 'failed' WHERE id = ?", r.id);
+        return log("refused post's notice not posted: the pull request closed first", { repo: r.repo, pr: r.number, run: r.id });
+      }
+      await deliverOnce(r);
+    } finally {
+      delivering.delete(r.id);
+    }
+  }
+  /** Whether a run's pull request is gone (closed unmerged) before its notice landed. A watched repo's poll keeps its row
+   * current; nothing polls an unwatched repo's PR (a one-off elsewhere, a repo since dropped). Either way it is read from GitHub
+   * now before the notice is given up on: a row written before this service recorded merges says `open = 0` for a merged PR too,
+   * and a merged PR still takes its notice. A PR that can't be read is not given up on. */
+  async function gone(r: RunRow): Promise<boolean> {
+    const p = prRow(r.repo, r.number);
+    // A watched repo's poll keeps its row current, so a row that says the PR still stands (open, or merged: which still takes a
+    // notice) is the answer. Nothing seen yet means nothing about a close.
+    if (repoCfg(r.repo)) return !!p && !p.open && !p.merged;
+    // Nothing polls an unwatched repo's PR (a one-off elsewhere, a repo since dropped): its row is a snapshot from when the
+    // review was asked for, so GitHub is asked now.
+    return away(r);
+  }
+  /** Read from GitHub now: the PR is closed without merging, so it takes no notice (a merged one still does). Unknown when it
+   * can't be read (never "gone" on a guess). */
+  async function away(r: RunRow): Promise<boolean> {
+    const fresh = await d.source.get(r.repo, r.number).catch(() => undefined);
+    return !!fresh && !fresh.open && !fresh.merged;
+  }
+
+  async function deliverOnce(r: RunRow) {
+    const ack = ackOf(r.repo, r.number);
+    const mine = r.notice_write;
+    if (!ack && [...acking.values()].some((t) => t.repo === r.repo && t.number === r.number) && (!mine || !acking.has(mine))) return; // another notice holds the PR's slot: the next tick goes
+    let o: Posted | undefined;
+    if (mine) {
+      // Filed on an earlier tick: its outcome now decides. The shared queue may already have read it; that is idempotent.
+      o = await d.poster.outcome(mine).catch(() => ({ state: "pending" as const }));
+      if (o.state !== "pending") acking.delete(mine);
+    } else {
+      // Filed now, holding the PR's slot so no second notice makes a second acknowledgement comment.
+      const slot = `slot:${r.id}`;
+      acking.set(slot, { repo: r.repo, number: r.number });
+      try {
+        o = await d.poster.ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: r.why ?? "not posted: refused", ...(ack ? { ack } : {}) });
+      } catch (e) {
+        acking.delete(slot);
+        return noticeFailed(r, e);
+      }
+      acking.delete(slot);
+    }
+    if (o?.state === "posted") {
+      acked(r.repo, r.number, o);
+      return void run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE id = ?", r.id);
+    }
+    // Its outcome says whether filing it again could change anything: a rejection or a cancel is final, a stale or failed
+    // record may post when it is filed again.
+    if (o?.state === "refused") return noticeFailed(r, o.why ?? "refused", o.retry === true);
+    // Pending: its record's outcome is read on a later tick, by this delivery and by the shared queue. No poster answer (a
+    // fake, or a notice with nothing to file) is nothing left to wait for.
+    if (!o) return void run("UPDATE runs SET notice = 'sent', notice_write = NULL, notice_due = NULL WHERE id = ?", r.id);
+    if (o.write) {
+      run("UPDATE runs SET notice_write = ? WHERE id = ?", o.write, r.id);
+      acking.set(o.write, { repo: r.repo, number: r.number });
+    }
+  }
+  /** A failed delivery waits longer each time (NOTICE_RETRY doubling up to NOTICE_RETRY_CAP) and is asked again while its pull
+   * request is open: a kernel or GitHub that can't answer now must not leave it silent for good. As long as a failure can change
+   * (a 5xx, a timeout, a write that is stale until the kernel files it again), waiting is not failing, so that never ends. But a
+   * refusal that cannot change by asking again — a 4xx that isn't a lost answer, an outcome the kernel calls final, a notice the
+   * executor refuses on a PR that isn't open or merged — must not be asked every fifteen minutes for as long as the PR stands: it
+   * is asked a few times, then ends with its reason on the run row and in the log. */
+  const PERMANENT_NOTICE_TRIES = 3;
+  function noticeFailed(r: RunRow, err: unknown, retry?: boolean) {
+    const why = String((err as Error)?.message ?? err).slice(0, 300);
+    // The executor refuses a notice on a pull request that isn't open or merged: it has nowhere left to go, so asking again can
+    // only be refused again. That is the end of it (as for a PR whose close this service saw first), never a retry forever.
+    if (/isn't open or merged/.test(why)) {
+      run("UPDATE runs SET notice = 'failed', notice_write = NULL, notice_due = NULL WHERE id = ?", r.id);
+      return log("refused post's notice not posted: the pull request closed first", { repo: r.repo, pr: r.number, run: r.id, err: why.slice(0, 200) });
+    }
+    const n = (r.notice_tries ?? 0) + 1;
+    // A refusal the kernel's record already called final (a rejection or a cancel, not a stale or failed one it may file again), or
+    // a 4xx that isn't a lost answer, is the same every time: a few tries and then done, loudly.
+    const final = retry === false || (retry === undefined && permanent(err));
+    if (final && n >= PERMANENT_NOTICE_TRIES) {
+      run("UPDATE runs SET notice = 'failed', notice_tries = ?, notice_write = NULL, notice_due = NULL WHERE id = ?", n, r.id);
+      return log("refused post's notice was refused outright and is not asked again", { repo: r.repo, pr: r.number, run: r.id, tries: n, err: why.slice(0, 200) });
+    }
+    // The first failure asks again on the very next tick (a kernel restart, a blip); later ones wait progressively longer.
+    const wait = n === 1 ? 0 : Math.min(NOTICE_RETRY * 2 ** (n - 2), NOTICE_RETRY_CAP);
+    run("UPDATE runs SET notice_tries = ?, notice_due = ?, notice_write = NULL, notice = 'pending' WHERE id = ?", n, now() + wait, r.id);
+    log("refused post's notice not posted; asking again", { repo: r.repo, pr: r.number, run: r.id, tries: n, err: why.slice(0, 200) });
   }
 
   /** Records why findings changed state: their ids, the head, the reason and who decided (a run, an answer on its thread, the owner). */
@@ -595,9 +734,6 @@ export function createEngine(d: EngineDeps) {
 
   /** A post's outcome is in: a posted one is the PR's baseline and keeps its link; a one-off's task is done either way. */
   function settled(r: RunRow, o: Posted) {
-    // A refusal only the owner can fix (github-mcp's needs_owner) is kept, so the batch's summary names its one link; any other
-    // outcome clears it, so a need an earlier attempt left is never read as this one's.
-    run("UPDATE runs SET need = ? WHERE id = ?", o.state === "refused" && o.need ? JSON.stringify(o.need) : null, r.id);
     if (o.state === "posted") {
       // The comments it opened: what makes a thread Aiden's own (an answer, a resolve), never a marker read back from GitHub.
       for (const c of o.comments ?? []) run("INSERT OR IGNORE INTO comments (repo, number, comment, run) VALUES (?, ?, ?, ?)", r.repo, r.number, c, r.id);
@@ -685,7 +821,7 @@ export function createEngine(d: EngineDeps) {
   }
 
   /** Sends each stored, unsent summary to its asker; one whose task has closed goes to the owner instead, once per batch. */
-  async function deliver() {
+  async function sendSummaries() {
     const todo = all<{ batch: string; task: string; setkey: string; requester: string; text: string | null; pending: string; sent: string | null; claim: string | null }>(
       "SELECT batch, task, setkey, requester, text, pending, sent, claim FROM askers WHERE text IS NOT NULL AND (sent IS NULL OR sent != pending) AND claim IS NULL ORDER BY rowid");
     // Tasks that hear nothing (gone, done or cancelled), by the batch and the run set they asked about: the owner is told
@@ -747,9 +883,11 @@ export function createEngine(d: EngineDeps) {
   async function settle(r: RunRow) {
     const o = await d.poster.outcome(r.write_id!).catch(() => ({ state: "pending" as const }));
     if (o.state === "pending") return;
-    // The need is this outcome's, never an earlier one's: a retry that settled (posted, or refused for another reason) replaces the
-    // need the failed attempt left, or the summary would name a Grant link for a connection that is fine now.
-    run("UPDATE runs SET posted = ?, status = ?, why = ?, need = ? WHERE id = ?", o.state, o.state === "posted" ? "done" : "failed", o.state === "posted" ? null : `not posted: ${String(o.why ?? "refused").slice(0, 300)}`, o.need ? JSON.stringify(o.need) : null, r.id);
+    // afterPost writes the outcome, its reason, the notice's intent and a retry's deadline in one statement: a restart between
+    // them must never leave the pull request silent about a review that wasn't posted, nor strand a retry nothing polls. A post
+    // filed once more says nothing to the pull request yet (its next attempt may post it); only a refusal that stands asks for
+    // the notice. The need is this outcome's, never an earlier one's: a retry that settled (posted, or refused for another reason)
+    // replaces the need the failed attempt left, or the summary would name a Grant link for a connection that is fine now.
     afterPost(runRow(r.id)!, o);
   }
 
@@ -832,14 +970,14 @@ export function createEngine(d: EngineDeps) {
     }
     for (const gone of all<{ number: number }>("SELECT number FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       if (seenNow.has(gone.number)) continue;
-      // Its findings still open are open at its merge or close (GitHub says which; unknown when it can't be read).
-      if (one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL", cfg.repo, gone.number)) {
-        const closed = await d.source.get(cfg.repo, gone.number).catch((e) => void log("closed PR not read; its findings' outcome stays unknown", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) }));
-        if (closed && !closed.open) run("UPDATE findings SET outcome = ?, outcome_at = ? WHERE repo = ? AND number = ? AND outcome IS NULL", closed.merged ? "open_at_merge" : "open_at_close", iso(), cfg.repo, gone.number);
-      }
+      // Read once: its merge or close says whether its findings are open at a merge or at a close (unknown when GitHub can't be
+      // read now), and whether a notice still waiting may land (a merged PR takes one; a closed one doesn't).
+      const closed = await d.source.get(cfg.repo, gone.number).catch((e) => void log("closed PR not read; its findings' outcome stays unknown", { repo: cfg.repo, pr: gone.number, err: String((e as Error).message).slice(0, 200) }));
+      if (one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL", cfg.repo, gone.number) && closed && !closed.open)
+        run("UPDATE findings SET outcome = ?, outcome_at = ? WHERE repo = ? AND number = ? AND outcome IS NULL", closed.merged ? "open_at_merge" : "open_at_close", iso(), cfg.repo, gone.number);
       for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND status = 'queued'", cfg.repo, gone.number)) skipQueued(q.id, "closed");
       // Its review task held only its posts' approvals: done with the PR. The close is retried after the tick's main work (closeTasks).
-      run("UPDATE prs SET open = 0, close_due = EXISTS (SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL) WHERE repo = ? AND number = ?", cfg.repo, gone.number, cfg.repo, gone.number);
+      run("UPDATE prs SET open = 0, merged = COALESCE(?, merged), close_due = EXISTS (SELECT 1 FROM runs WHERE repo = ? AND number = ? AND write_id IS NOT NULL) WHERE repo = ? AND number = ?", closed ? (closed.merged ? 1 : 0) : null, cfg.repo, gone.number, cfg.repo, gone.number);
     }
     reconciled.add(cfg.repo);
     if (!cursor) return void run("INSERT INTO cursors (repo, comments) VALUES (?, ?)", cfg.repo, iso());
@@ -921,13 +1059,15 @@ export function createEngine(d: EngineDeps) {
     }
     await replies();
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
-    for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND post_due <= ?", now())) await repost(r);
+    // A `retry` row's deadline is written with its state; one without a deadline (a row this service left before it wrote both)
+    // is filed again now rather than never.
+    for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND (post_due IS NULL OR post_due <= ?)", now())) await repost(r);
     for (const [write, t] of [...acking]) {
       if (write.startsWith("slot:")) continue;
       const o = await d.poster.outcome(write).catch(() => ({ state: "pending" as const }));
       if (o.state === "pending") continue;
       acking.delete(write);
-      acked(t.repo, t.number, o);
+      acked(t.repo, t.number, o, write);
     }
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'running' AND check_job IS NOT NULL")) {
       waiting.delete(r.id);
@@ -944,9 +1084,12 @@ export function createEngine(d: EngineDeps) {
       const started = admit(r);
       if (started) await startRun(started);
     }
+    // Last, and in one pass: every refusal this tick is recorded by now (a settled post, a re-filed one, a run that finished), so
+    // each pending notice is delivered exactly once this tick, by the only path that does it.
+    for (const r of all<RunRow>("SELECT * FROM runs WHERE notice = 'pending' AND (notice_due IS NULL OR notice_due <= ?)", now())) await deliver(r);
     if (github || mirrorDue) { mirrorDue = false; await mirror(); }
     // Every one-off summary a request settled in this tick (or an earlier tick couldn't send) goes now, one per asker.
-    await deliver();
+    await sendSummaries();
   }
 
   // ---- the verdict on GitHub: the commit status aidenhq/review ---------------------------------------------------------------
