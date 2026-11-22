@@ -467,7 +467,7 @@ function writeGrants(agents: Record<string, Obj>, reviewLogs: Record<string, str
   if (fleetIssues) table.fleet_issues = fleetIssues;
   table.routine_keys = { ...routineKeys };
   // Each event routine's subscription (kernel events.ts), by its Paperclip id: the key it was compiled under and its assignee.
-  const events = Object.entries(routineKeys).flatMap(([id, key]) => { const r = cfg.routines?.[key]; return r?.event && agents[r.agent] ? [[id, { key, agent: agents[r.agent].id, connection: r.event.connection, resource: r.event.resource, filter: r.event.filter }]] : []; });
+  const events = Object.entries<string>(routineKeys).flatMap(([id, key]) => { const r = cfg.routines?.[key]; return r?.event && agents[r.agent] ? [[id, { key, agent: agents[r.agent]!.id, connection: r.event.connection, resource: r.event.resource, filter: r.event.filter }]] : []; });
   if (events.length) table.routine_events = Object.fromEntries(events);
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
   for (const [key, a] of Object.entries(agents)) if (reviewLogs[key]) table.agents[a.id].review_log = reviewLogs[key];
