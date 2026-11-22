@@ -834,13 +834,17 @@ const ALL_STATUSES = `${OPEN_STATUSES},done,cancelled`;
  * (an expired closed task can still carry attention).
  */
 const statusesFor = (state: unknown, attention: unknown) => (attention || stateKinds(state).some((k) => k === "done" || k === "idle" || k === "waiting") ? ALL_STATUSES : OPEN_STATUSES);
+/** The kinds a list returns when it names none: every task but the done and cancelled ones, as the tool documents. */
+const DEFAULT_KINDS = ["working", "waiting", "idle"];
 /** A `state`/`attention` argument as the kind list and the one attention, validated. */
 function stateFilter(state: unknown, attention: unknown) {
-  const kinds = stateKinds(state);
-  const bad = kinds.filter((k) => !KINDS.includes(k));
+  const named = stateKinds(state);
+  const bad = named.filter((k) => !KINDS.includes(k));
   const one = attention ? String(attention) : "";
   if (bad.length || (one && !ATTENTION.includes(one))) throw new Error(`state is ${KINDS.join(", ")} (comma-separated); attention is ${ATTENTION.join(", ")}`);
-  return { kinds, attention: one };
+  // An attention-only query keeps the documented default kinds: its wider candidate statuses must not put a closed task in
+  // the list the default leaves out.
+  return { kinds: named.length || !one ? named : DEFAULT_KINDS, attention: one };
 }
 /** Whether a kernel row passes the filter; a task with no row passes only without a filter. */
 const matchesState = (s: Json | undefined, kinds: string[], attention: string) =>
@@ -1070,6 +1074,11 @@ const TOOLS: Record<string, Tool> = {
           // whole page of requests at once, and one slow read must not hold up every other row's answer.
           const ready: Json[] = [];
           for (let n = 0; n < raw.length; n += PREPARE_AT_ONCE) {
+            // A chunk that ran out the clock ends the page's preparation: no further batch starts past the budget.
+            if (Date.now() > until) {
+              complete = false;
+              break;
+            }
             const chunk = raw.slice(n, n + PREPARE_AT_ONCE);
             ready.push(...((await atEdge(() => Promise.all(chunk.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[]));
           }
@@ -1162,14 +1171,14 @@ const TOOLS: Record<string, Tool> = {
         // Paperclip cuts a long description in a list, which can cut the marker off the end: read the full task then.
         const owner = await ownerUserId();
         let theirs: URLSearchParams | undefined;
-        let aChat = async () => null as Json | null;
+        let aChat: (row: Json, until: number) => Promise<Json | null> = async () => null;
         if (owner) {
           theirs = new URLSearchParams(q);
           theirs.delete("assigneeAgentId");
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
           const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
-          aChat = async (row: Json, until: number) => {
+          aChat = async (row, until) => {
             if (row.assigneeAgentId) return null;
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
             // any other failure still surfaces rather than silently omitting the chat.

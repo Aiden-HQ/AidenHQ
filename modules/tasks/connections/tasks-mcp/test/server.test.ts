@@ -102,6 +102,15 @@ test("task_list(attention=\"any\") returns the rows with an attention entry, pas
   assert.deepEqual(owner.out.tasks.map((t) => t.id), ["needs-1"]);
 });
 
+test("task_list(attention) keeps the default's kinds, so a closed task does not take a slot", async () => {
+  const closed = { ...row("closed-1", "todo"), createdAt: "2026-02-01T00:00:00Z" };
+  const open = { ...row("open-1", "todo"), createdAt: "2026-01-01T00:00:00Z" };
+  const states = { "closed-1": state("done", [{ who: "agent", why: "history_expired", ref: "closed-1" }]), "open-1": state("waiting", [{ who: "owner", why: "owner_wait", ref: "open-1" }]) };
+  const { call } = bridge({ handler: issueBoard({ rows: [closed, open] }), states });
+  const out = parse(await call("task_list", { attention: "any", limit: 1 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["open-1"], JSON.stringify(out));
+});
+
 test("task_list(state=\"done\") returns a done row behind a first page of open rows", async () => {
   const rows = [...Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo")), row("done-1", "done")];
   const states = Object.fromEntries(rows.map((r) => [r.id, r.id === "done-1" ? noAttention("done") : noAttention("working")]));
