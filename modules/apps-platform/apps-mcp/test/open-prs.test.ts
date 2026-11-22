@@ -1,12 +1,15 @@
 import { expect, it } from "vitest";
-import { fleetOnly } from "../src/open-prs.js";
+import { openPrs } from "../src/open-prs.js";
 
-it("lists only PRs the kernel has a record of: a hand-made PR in the fleet org is not listed", () => {
-  const rows = [
-    { repo: "acme-agents/probe", number: 2 },
-    { repo: "Acme-Agents/app", number: 5 },
-    { repo: "acme/other", number: 5 },
-  ];
-  expect(fleetOnly(rows, [{ repo: "acme-agents/app", number: 5 }])).toEqual([rows[1]]);
-  expect(fleetOnly(rows, [])).toEqual([]);
+const row = (repo: string, number: number) => ({ repo, number, opened_at: "2026-11-22T10:00:00Z", draft: false });
+
+it("lists the GitHub PRs the kernel recorded and the local change requests together", async () => {
+  expect(await openPrs(async () => [row("local/app", 1)], async () => [row("acme/app", 7)], () => {})).toEqual({ prs: [row("acme/app", 7), row("local/app", 1)] });
+});
+
+it("a failed GitHub read still returns the local rows, marked so the detector keeps its GitHub incidents", async () => {
+  let warned = 0;
+  const out = await openPrs(async () => [row("local/app", 1)], async () => { throw new Error("the kernel said 503"); }, () => warned++);
+  expect(out).toEqual({ prs: [row("local/app", 1)], github_error: true });
+  expect(warned).toBe(1);
 });

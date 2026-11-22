@@ -399,11 +399,22 @@ test("a review-stall flag's card carries its task, so its activity is checked li
   assert.deepEqual(await jamRun(kvFrom(state), NOW, async () => undefined), ["review-stall:card-1"]);
 });
 
-test("the pr check raises a fleet-published PR past the allowance, not a young or draft one", async () => {
+test("the pr check raises a fleet PR past the allowance, counted from when a draft was marked ready; a young or draft one is not raised", async () => {
   const prs = [
     { repo: "acme/app", number: 7, opened_at: ago(2), draft: false },
     { repo: "acme/app", number: 8, opened_at: ago(0.2), draft: false },
     { repo: "acme/app", number: 9, opened_at: ago(2), draft: true },
+    // Opened overnight, marked ready ten minutes ago: its allowance has barely started.
+    { repo: "acme/app", number: 10, opened_at: ago(14), draft: false, ready_at: ago(0.17) },
+    { repo: "acme/app", number: 11, opened_at: ago(14), draft: false, ready_at: ago(2) },
   ];
-  assert.deepEqual((await detect(world({ prs })).pr()).map((i) => i.key), ["acme/app#7"]);
+  assert.deepEqual((await detect(world({ prs })).pr()).map((i) => i.key), ["acme/app#7", "acme/app#11"]);
+});
+
+test("when GitHub could not be read, the pr check keeps GitHub incidents open and still raises a local change request", async () => {
+  const prs = [{ repo: "local/app", number: 3, opened_at: ago(2), draft: false }];
+  const w = world({ prs });
+  const open = ["pr:acme/app#7", "pr:local/old#1", "quality:x:y"];
+  const c = checks({ kernel: w, kv: kvOf(), apps: async () => ({ prs, github_error: true }), alerts: async () => [], openKeys: () => open, now: () => NOW });
+  assert.deepEqual((await c.pr()).map((i) => i.key), ["local/app#3", "acme/app#7"]);
 });

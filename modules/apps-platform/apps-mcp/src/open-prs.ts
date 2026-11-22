@@ -1,5 +1,17 @@
-/** The open PRs the fleet opened: warehouse rows kept only where the kernel's records name the same repo and number. A PR made by hand has no record, in the fleet org or anywhere else. */
-export function fleetOnly<T extends { repo: string; number: number }>(rows: T[], ours: { repo: string; number: number }[]): T[] {
-  const mine = new Set(ours.map((o) => `${o.repo.toLowerCase()}#${o.number}`));
-  return rows.filter((x) => mine.has(`${x.repo.toLowerCase()}#${x.number}`));
+/** One open PR in the rows the Fleet Steward's `pr` check reads; `ready_at` is when a draft was last marked ready, where the warehouse saw it. */
+export type OpenPr = { repo: string; number: number; opened_at: string; draft: boolean; ready_at?: string | null; preview_url?: string };
+
+/**
+ * The open PRs the fleet opened: this server's own change requests, and the GitHub ones the kernel's records name (any repo). The two
+ * are read independently: a failed GitHub read still returns the local rows, marked `github_error` so the detector keeps its open
+ * GitHub incidents open instead of reporting them recovered. A PR made by hand has no record and is never listed.
+ */
+export async function openPrs(local: () => Promise<OpenPr[]>, github: () => Promise<OpenPr[]>, warn: (err: unknown) => void): Promise<{ prs: OpenPr[]; github_error?: true }> {
+  const own = await local();
+  try {
+    return { prs: [...(await github()), ...own] };
+  } catch (err) {
+    warn(err);
+    return { prs: own, github_error: true };
+  }
 }
