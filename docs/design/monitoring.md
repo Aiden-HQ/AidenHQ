@@ -67,7 +67,7 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
   all: the last bytes never stay on the scrape as if they were current, a fresh install still gets a file whose mtime
   `HostMetricsStale` reads, and 0 means the breakdown is unknown, never that Docker holds nothing (that would be a size of
   0). A read that succeeds still publishes even if writing the cache fails, and a successful read with no Build Cache row
-  is not a failure: nothing cached means the 20 GB cap holds.
+  is not a failure: nothing cached means the build-cache ceiling holds.
   A planned drain records the units it stopped in `data/fleet-paused.json`, and `aidenhq_unit_failed` stays 0 for them while
   that record exists: `UnitFailed` and `CiRunnersDown` (which also needs `aidenhq_fleet_draining == 0`) page on a crash, not on
   maintenance. They and `CiRunnerRestartLooping` (a unit flipping out of `active` over and over, which `Restart=always`

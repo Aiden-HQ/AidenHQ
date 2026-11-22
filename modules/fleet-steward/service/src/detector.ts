@@ -22,6 +22,15 @@ export function staleSources(rows: SourceRow[], t: number): { key: string; reaso
     .filter((x) => age(x.last_ok, t) > (STALE_FOR[x.source] ?? STALE_MS) || (x.failing && age(x.last_ok, t) > DOWN_MS))
     .map((x) => ({ key: x.source, reason: `source src_${x.source}: last good pass ${x.last_ok ? `${mins(age(x.last_ok, t))} ago` : "never"}${x.failing ? "; its latest pass failed" : ""}` }));
 }
+/** `fleet_ops_ignored_repos` as the service reads it: owner/name entries, lowercased for the detector's case-insensitive match. */
+export function parseIgnoredRepos(raw: string | undefined): string[] {
+  return (raw ?? "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+}
+/** Whether an open `pr` incident's key (`<repo>#<n>`) names a repo `fleet_ops_ignored_repos` now ignores. */
+export const ignoredPr = (key: string, ignored: string[]) => {
+  const m = /^(.*)#\d+$/.exec(key);
+  return Boolean(m && new Set(ignored).has(m[1]!.toLowerCase()));
+};
 const PR_OPEN_MS = 60 * MIN; // a pull request of the agents org or the fleet's own open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
 type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; preview_url?: string };
@@ -129,6 +138,8 @@ export async function stewardOn(kernel: KernelClient, quiet: string | undefined)
 
 /** A check group: its incidents, or undefined when it couldn't be checked (its open incidents stay open). */
 type Check = () => Promise<Incident[] | undefined>;
+/** Incidents a setting now suppresses (a repo added to `fleet_ops_ignored_repos`, say): their keys leave the open set without a recovery note, since nothing came back. */
+type Suppressed = () => string[];
 
 /** The last filing, and the gap before a filing with nothing critical in it (60 check runs a day, most one line). */
 export const QUIET_MS = 30 * MIN;
@@ -139,12 +150,15 @@ export const QUIET_MS = 30 * MIN;
  * of the last filing only a new critical incident files; the rest wait (still unfiled) for a later tick. `jam`: a task for the
  * chief of staff naming the jammed gates' keys (the Steward didn't clear them), never the owner.
  */
-export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>): Promise<void> {
+export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>, suppressed?: Suppressed): Promise<void> {
   const s = detectorState(kv);
   const at = now.toISOString();
   // A retired check group (one this detector no longer runs, e.g. the old Tier 2 `card` reminders) leaves nothing open behind it.
   const groups = Object.keys(checks);
   for (const key of Object.keys(s.open)) if (!groups.some((g) => key.startsWith(`${g}:`))) delete s.open[key];
+  // A setting suppresses its incidents before any check runs (an ignored repo): the decision is the setting's, so it holds
+  // when the check can't answer. Nothing came back, so no recovery note.
+  for (const key of new Set(suppressed?.() ?? [])) delete s.open[key];
   for (const [group, check] of Object.entries(checks)) {
     const found = await check().catch(() => undefined);
     if (!found) continue;
@@ -273,17 +287,22 @@ export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (
   return async (task) => {
     const row = ((await d.kernel.call("GET", `/v1/tasks/state?ids=${encodeURIComponent(task)}`)).tasks ?? [])[0] as StateRow | undefined;
     if (row && ["job_running", "job_queued"].includes(row.reason)) return new Date((d.now ?? Date.now)()).toISOString();
-    const [comments, { holders, auditors }, work] = await Promise.all([
-      d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>,
+    // The two activity sources are independent: one failing must not discard what the other saw, or a persistent failure of
+    // one would let a gate with recent activity on the other look idle. Only when neither can be read is the task unknown.
+    const [people, comments, work] = await Promise.allSettled([
       dir(),
+      d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>,
       d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(task)}`) as Promise<{ jobs?: JobRow[] }>,
     ]);
-    // The holder is a key; an agent no grant maps to (the raw id) is compared as it is.
-    const holder = row?.holder ? holders.get(row.holder) ?? row.holder : undefined;
-    const comment = comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === holder || auditors.has(c.authorAgentId))))?.createdAt;
+    // A comment is only readable as activity with the directory that says whose it is: without it, the comments are unknown.
+    const known = people.status === "fulfilled" && comments.status === "fulfilled";
+    const comment = known
+      ? comments.value.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === (row?.holder ? people.value.holders.get(row.holder) ?? row.holder : undefined) || people.value.auditors.has(c.authorAgentId))))?.createdAt
+      : undefined;
     // A run that started and ended between two ticks left no comment and no current state: its own start and end are the activity.
     let job: string | undefined;
-    for (const j of work?.jobs ?? []) for (const t of [j.started_at, j.ended_at]) if (t && (!job || Date.parse(t) > Date.parse(job))) job = t;
+    if (work.status === "fulfilled") for (const j of work.value.jobs ?? []) for (const t of [j.started_at, j.ended_at]) if (t && (!job || Date.parse(t) > Date.parse(job))) job = t;
+    if (!known && work.status === "rejected") throw work.reason;
     return [comment, job].filter((t): t is string => Boolean(t)).sort((a, b) => Date.parse(b) - Date.parse(a))[0];
   };
 }
@@ -488,7 +507,7 @@ export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
 }
 
 /** The owner's alert list, as checks. `pause` pauses a routine (kernel role kernel.routines). `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
+export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; ignoredRepos?: string[]; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -897,7 +916,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     async pr() {
       const r = await d.apps<{ prs?: PrRow[] }>("/internal/open-prs");
       if (!r.prs) return undefined; // no warehouse or no agents org
-      return stalePrs(r.prs, now());
+      const ignored = new Set(d.ignoredRepos ?? []);
+      return stalePrs(r.prs.filter((x) => !ignored.has(x.repo.toLowerCase())), now());
     },
   };
 }

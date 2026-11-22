@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -139,6 +139,34 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     expect(q1.pending()).toBe(0);
     expect(k.seen.at(-1)!.body).toMatchObject({ connection: "github", need: { cause: "expired" } });
     expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
+  });
+
+  it("a need kept by an older version (no credential recorded) is adopted, not read as a reconnect", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    // The pre-upgrade file: no `gen` on the row, and a token installed since.
+    writeFileSync(file, JSON.stringify([{ key: "expired\u0000\u0000\u0000", need: { cause: "expired", detail: "sign-in expired" } }]));
+    const k = replies([ok()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file, generation: () => "installed" });
+    expect(q.pending(), "kept through the upgrade").toBe(1);
+    await q.flush();
+    expect(k.seen, "and sent once").toHaveLength(1);
+    expect(q.pending()).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
+  });
+
+  it("a restart does not evict a staged need before it is replayed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    // A full queue (the cap) plus the one tell() staged and was posting when the process died.
+    const rows = Array.from({ length: 21 }, (_, n) => ({ key: `restricted\u0000\u0000acme${n}\u0000`, need: { cause: "restricted", org: `acme${n}`, detail: "x" }, gen: "g" }));
+    writeFileSync(file, JSON.stringify(rows));
+    const k = replies([ok()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file, generation: () => "g" });
+    expect(q.pending(), "all 21 are replayed, not capped to 20 up front").toBe(21);
+    await q.flush();
+    expect(k.seen, "every staged need was sent before the cap").toHaveLength(21);
+    expect(q.pending()).toBe(0);
   });
 
   it("a kept need that is not a sign-in failure survives a reconnect", async () => {
