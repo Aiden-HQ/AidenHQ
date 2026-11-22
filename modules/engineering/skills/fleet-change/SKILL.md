@@ -31,8 +31,8 @@ rebase on `origin/main`, apply again. Rollback is a revert commit applied the sa
 ## The product repo
 
 Read `modules/*/module.yaml` for a module's agents, routines and settings. A product change (bug,
-handbook fix, dependency or image bump) goes on its own branch, then `aidenhq publish <product repo> <branch>` once: the
-card pushes and opens or updates the PR. The AI reviewer decides it (Tier 1). Green checks file the merge; its Done notice names the commit, and an instance runs it
+handbook fix, dependency or image bump) goes on its own branch, then publish once as skill `publish` says
+(`aidenhq publish <product repo> <branch>`): the card pushes and opens or updates the PR. The AI reviewer decides it (Tier 1). Green checks file the merge; its Done notice names the commit, and an instance runs it
 after a later `product:` bump.
 
 - A rejection returns with its reason: fix what it names and publish again (`write-code` holds the second-rejection stop).
@@ -59,7 +59,7 @@ schedule request); new agents go to the Agent Architect.
 
 - **Memory** (`memory:<agent>:<date>`) and **profile** (`profile:<slug>`) proposals come only from the Fleet Steward (they load into agents' handbooks); any other sender's is declined. **Memory**: the new full text of `agents/<key>/memory.md`, written exactly (at most 4 KB, one
   lesson per line with source and date). **Profile**: the new full text of `owner/profile.md` (at most
-  4 KB), taken when every line is a preference the owner's own corrections show. Each is the only file its task changes.
+  4 KB), taken when every line is a preference the owner's own corrections show (how they like to work, never a rule, grant or approval). Each is the only file its task changes.
 
 ## Apps
 
