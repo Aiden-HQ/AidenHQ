@@ -33,7 +33,7 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, lenses = true
   });
   const finding = (id, o = {}) => ({ id, severity: "important", path: "src/a.ts", line: 3, title: `t ${id}`, why: "w", evidence: "e", fix_brief: "b", ...o });
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
-    review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
+    review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null, ...(started[i].tools ? { options: Object.keys(started[i].tools) } : {}) }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
 }
 
@@ -66,6 +66,17 @@ test("the commit is resolved once at start: the default branch moving mid-run ch
   assert.match(w.engine.report(b.batch), new RegExp(`Commit \`${sha("1")}\``));
 });
 
+test("a tools run's option it doesn't report as run never counts as run; a finding's option and lens come from the run, not the box", async () => {
+  const w = world();
+  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] });
+  await w.tick();
+  w.finish(0, { coverage: { reviewed: [], excluded: [], incomplete: null, options: ["maint.knip"] }, findings: [w.finding("z1", { option: "sec.cloudflare", lens: "security", severity: "nit" })] });
+  await w.tick();
+  assert.deepEqual(w.db.prepare("SELECT option, lens FROM findings WHERE id = 'z1'").all().map((r) => [r.option, r.lens]), [["maint.knip,sec.gitleaks", null]]);
+  assert.equal(w.engine.batches({})[0].verdict, "incomplete");
+  assert.match(w.engine.report(b.batch), /sec\.gitleaks/);
+});
+
 test("display groups the same lens, file and overlapping lines, but storage keeps each option's observation", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] });
@@ -76,7 +87,9 @@ test("display groups the same lens, file and overlapping lines, but storage keep
   assert.deepEqual(w.db.prepare("SELECT option FROM findings WHERE id = 'x1' ORDER BY option").all().map((r) => r.option), ["maint.knip", "sec.gitleaks"]);
   const groups = display([{ ...w.finding("a", { line: 3, end_line: 5 }), option: "o1", lens: "security" }, { ...w.finding("b", { line: 4 }), option: "o2", lens: "security" }, { ...w.finding("c", { line: 9 }), option: "o2", lens: "security" }]);
   assert.deepEqual(groups.map((g) => g.options), [["o1", "o2"], ["o2"]]);
-  assert.match(w.engine.report(b.batch), /found by sec\.gitleaks, maint\.knip/);
+  // Each tool's own lens (the catalog's), not the one the box wrote: knip is maintainability, whatever its finding says.
+  assert.deepEqual(w.db.prepare("SELECT option, lens FROM findings WHERE id = 'x1' ORDER BY option").all().map((r) => [r.option, r.lens]), [["maint.knip", "maintainability"], ["sec.gitleaks", "security"]]);
+  assert.match(w.engine.report(b.batch), /maint\.knip/);
 });
 
 test("verdict: blocked by an important security finding, concerns for any other, incomplete on partial coverage, else clean", () => {

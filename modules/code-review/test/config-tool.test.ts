@@ -54,3 +54,13 @@ test("mandatory is a combo's (false by default); a gated repo has one at both mo
   assert.match(r.errors.join("\n"), /repos\[3\]: a repo's mandatory is gone/);
   assert.match(r.errors.join("\n"), /repos\[4\]: on_open\[0\]: mandatory is true or false/);
 });
+
+test("an agent's repo review takes an offered model only; any other is the owner's", async () => {
+  const asked = [];
+  const [run] = configTools({ raw: () => ({ repos: [] }), repos: () => ({ repos: [] }), oneoff: async () => ({}), repoReview: async (b) => (asked.push(b), { batch: "b1" }), runs: () => [], file: async () => ({}) });
+  const who = { agent: "a", roles: ["reviewer-manager"] };
+  await assert.rejects(run.run({ repo: "acme/app", combo: { model: "someone/expensive-model", effort: "high" } }, who), /the owner's to choose/);
+  assert.deepEqual(asked, []);
+  await run.run({ repo: "acme/app", combo: { model: "~deepseek/deepseek-flash-latest", effort: "medium" } }, who);
+  assert.equal(asked.length, 1);
+});

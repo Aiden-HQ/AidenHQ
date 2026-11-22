@@ -14,7 +14,7 @@ export type Finding = {
 export type Review = {
   version: 1; repo: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
   incremental_from: string | null; full: boolean;
-  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null; /** tools that failed in a tools run */ failed?: { id: string; why: string }[] };
+  coverage: { reviewed: string[]; excluded: string[]; incomplete: string | null; /** tools that failed in a tools run */ failed?: { id: string; why: string }[]; /** the tools that ran in a tools run */ options?: string[] };
   findings: Finding[];
   withheld: { important: number; nit: number; pre_existing: number };
   cost_usd: number; stale_guidance: string[];

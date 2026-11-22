@@ -68,11 +68,21 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
  * already runs. Any other model is the owner's (as in settings: module.yaml settings.code_review.owner), set on
  * the board, whose one-off keeps full choice.
  */
+const watchedCombos = (repos: () => unknown) => ((repos() as { repos?: { on_open?: unknown[]; on_push?: unknown[] }[] })?.repos ?? []).flatMap((r) => [...(r.on_open ?? []), ...(r.on_push ?? [])]) as Combo[];
+
+/** A repo review's model for an agent: one an engine offers or a watched repo's combos already run; any other is the owner's, from the board. */
+export function agentRepoModel(combo: unknown, repos: () => unknown) {
+  const model = (combo as { model?: unknown } | undefined)?.model;
+  if (combo === undefined || model === undefined) return;
+  const offered = [...Object.values(ENGINES).flatMap((e) => e.models as readonly string[]), ...watchedCombos(repos).map((c) => c.model)];
+  if (!offered.includes(String(model))) throw new Error(`${String(model).slice(0, 100)} is the owner's to choose: they start it from the board's Reviews page, or ask for a model an engine offers`);
+}
+
 export function agentCombos(raw: unknown, repos: () => unknown) {
   if (raw === undefined) return;
   const list = combos(raw, "combos");
   if ("error" in list) throw new Error(list.error);
-  const watched = ((repos() as { repos?: { on_open?: unknown[]; on_push?: unknown[] }[] })?.repos ?? []).flatMap((r) => [...(r.on_open ?? []), ...(r.on_push ?? [])]) as Combo[];
+  const watched = watchedCombos(repos);
   const same = (a: Combo, b: Combo) => a.engine === b.engine && a.model === b.model && a.effort === b.effort;
   for (const c of list) {
     const e = ENGINES[c.engine];
@@ -122,6 +132,7 @@ export function configTools(d: {
       run: async (a) => {
         if (a.repo !== undefined) {
           if (a.pr_url !== undefined) throw new Error("give pr_url (a pull request) or repo (a whole repository), not both");
+          agentRepoModel(a.combo, d.repos);
           return d.repoReview({ target: { repo: a.repo, ...(a.commit ? { commit: a.commit } : {}) }, ...(a.options ? { options: a.options } : {}), ...(a.combo ? { combo: a.combo } : {}) });
         }
         if (typeof a.pr_url !== "string") throw new Error("give pr_url (a pull request) or repo (a whole repository)");

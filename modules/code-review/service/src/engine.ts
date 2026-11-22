@@ -586,14 +586,20 @@ export function createEngine(d: EngineDeps) {
     const count = (s: string) => review.findings.filter((f) => f.severity === s).length;
     const t = (k: "input" | "cached" | "output") => (Number.isInteger(tokens?.[k]) ? tokens![k] : null);
     const lens = new Map(catalogSafe().map((o) => [o.id, o.lens]));
+    // The box's output is data: a finding's option is one this run was asked for (else the run's own), its lens the catalog's for that option.
+    const asked = new Set(r.option!.split(","));
+    review.findings = review.findings.map((f) => {
+      const option = typeof f.option === "string" && asked.has(f.option) ? f.option : r.option!.slice(0, 80);
+      const own = option === f.option;
+      return { ...f, option, lens: lens.get(option) ?? (own ? f.lens : undefined) };
+    });
     tx(() => {
       run("INSERT OR REPLACE INTO reviews (run, json) VALUES (?, ?)", r.id, JSON.stringify(review));
       run("UPDATE runs SET status = 'done', why = NULL, cost_usd = ?, ended = ?, important = ?, nit = ?, pre_existing = ?, tokens_in = ?, tokens_cached = ?, tokens_out = ?, complete = ?, duration_ms = ? WHERE id = ?",
         cost, iso(), count("important"), count("nit"), count("pre_existing"), t("input"), t("cached"), t("output"), review.withheld?.important === 0 && !review.coverage?.incomplete && !review.coverage?.failed?.length ? 1 : 0, r.started ? now() - Date.parse(r.started) : null, r.id);
       for (const f of review.findings) {
-        const option = typeof f.option === "string" ? f.option.slice(0, 80) : r.option!;
         run("INSERT OR IGNORE INTO findings (run, id, repo, number, severity, path, line, title, why, evidence, option, lens) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
-          r.id, f.id, r.repo, f.severity, f.path, f.line, f.title, String(f.why ?? "").slice(0, 1500), String(f.evidence ?? "").slice(0, 1500), option, (typeof f.lens === "string" ? f.lens : lens.get(option)) ?? null);
+          r.id, f.id, r.repo, f.severity, f.path, f.line, f.title, String(f.why ?? "").slice(0, 1500), String(f.evidence ?? "").slice(0, 1500), f.option, typeof f.lens === "string" ? f.lens : null);
       }
     });
     if (setup && r.engine === "deepsec") await fileSetup(r, setup);
@@ -653,12 +659,14 @@ export function createEngine(d: EngineDeps) {
     if (!Object.keys(files).length || batchRow(r.batch)?.setup_tip) return;
     const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
     if (asked !== undefined && now() - asked < SETUP_RETRY) return;
+    // The slot is taken before the await (a request takes minutes), so a concurrent batch asks for no second PR.
+    run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, 'asking') ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now());
     let answer: string;
     try { answer = JSON.stringify(await d.codehost.setup({ repo: r.repo, branch: SETUP_BRANCH, expected_tip: null, files })).slice(0, 1000); } catch (e) {
       answer = `refused: ${String((e as Error).message).slice(0, 300)}`;
       log("deepsec setup PR not asked for", { repo: r.repo, err: answer });
     }
-    run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, ?) ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now(), answer);
+    run("UPDATE setups SET answer = ? WHERE repo = ?", answer, r.repo);
   }
 
   const retries = (r: RunRow, o: Posted) => o.state === "refused" && !!o.retry && (!r.post_tries || (r.post_tries < POST_TRIES && !!prRow(r.repo, r.number)?.open));
