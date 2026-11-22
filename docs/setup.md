@@ -636,7 +636,7 @@ agents); `role` is `member`, `admin` or one of the app's own roles. The gate ref
 same-origin writes; the app decides everything else per role (a `member` can write unless the app says no), keys per-user
 data on `sub`, and treats a role it doesn't know as no more than `member`. Agents arrive as `kind: agent` (`admin` through
 `app_api` by default, for that one method and path; `member` through `app_view`, or through `app_api` with
-`role: "member"` for a signed-in test-user request on a public route).
+`role: "member"` for a signed-in test-user request on a public route, under the same caller grant and access policy).
 
 - **Custom roles:** `aidenhq-app.yaml` at the app's path declares them (`roles: [{ name, meaning }]`, at most 10, and an
   optional `default_role`). apps-mcp checks it on deploy (an invalid one refuses the deploy) and the board reads it at

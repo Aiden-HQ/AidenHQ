@@ -1,9 +1,9 @@
 // app_api: an agent's narrow, audited path into an app's own API. The app declares `api: { callers, paths }`; only those
 // agents, and as admin only under those path prefixes. A caller's entry may instead name one exact route (`POST /api/x/{id}/y`:
 // the method, then `{name}` for one segment), holding it to the routes it uses rather than a namespace. role: "member" is the
-// signed-in test-user identity app_view uses: the same caller gate, but on any route the app serves, so a public POST can be
-// exercised end to end. apps-mcp signs the call's identity token (identity.ts: agent:<key>, bound to this method and path) and
-// adds it to the request; the agent never sees it.
+// signed-in test-user identity app_view uses: the same caller gate and read-access policy, with the caller's own grant kept, so
+// a public POST can be exercised end to end (a plain-string caller reaches any route the app serves). apps-mcp signs the call's
+// identity token (identity.ts: agent:<key>, bound to this method and path) and adds it to the request; the agent never sees it.
 import { IDENTITY_HEADER, memberScope, type Sign } from "./identity.js";
 import type { App } from "./registry.js";
 
@@ -11,6 +11,10 @@ export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type Method = (typeof METHODS)[number];
 export const TIMEOUT_MS = 30_000;
 export const BODY_CAP = 50_000;
+/** An app's answer can carry a live session in these headers; they outlive the 300 s identity token, so the agent never
+ * gets them. Everything else (a `Retry-After`, a content type) is the app's real answer. */
+const SESSION_HEADERS = new Set(["set-cookie", "set-cookie2"]);
+const HEADER_CAP = 4096;
 
 /** An exact route entry: `METHOD /path`, with `{name}` standing for exactly one segment (`POST /api/x/{id}/y`). */
 interface Route { method: Method; segments: (string | undefined)[] } // undefined: a {name}, one non-empty segment
@@ -60,17 +64,20 @@ export function authorize(app: App, callerKey: string, path: string, method?: st
   const c = callerKey ? app.api.callers.find((x) => keyOf(x) === callerKey) : undefined;
   if (!c) throw new Error(`${callerKey || "this agent"} may not call ${app.name}'s API (callers: ${app.api.callers.map(keyOf).join(", ")})`);
   // A member request is a signed-in test-user request to the app's own public route. Keep the caller gate (the app's
-  // api.callers), but not api.paths: those are the app's private agent API, not the public routes this exercises.
+  // api.callers) and, for a caller held to its own routes or prefixes (the object form), that narrower grant too: being
+  // listed for one integration never widens to the app's whole public surface. A plain-string caller is granted any route.
   if (role === "member") {
     plainPath(path);
+    if (typeof c !== "string") checkPath(app, path, c.paths, method);
     return;
   }
   checkPath(app, path, typeof c === "string" ? app.api.paths : c.paths, method);
 }
 
 export interface ApiRequest { url: string; method: Method; headers: Record<string, string>; body?: string; timeout?: number }
+export type ResponseHeaders = Record<string, string | string[]>;
 /** Delivers one request from inside the given container's network namespace (platform.ts: a one-shot container on `--network container:<id>`) and returns status, headers and body text. */
-export type Send = (app: App, req: ApiRequest, container: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+export type Send = (app: App, req: ApiRequest, container: string) => Promise<{ status: number; headers: ResponseHeaders; body: string }>;
 
 /** The service and port app_api targets, from health.url (which must name the app's compose service, e.g. http://app:8080/...). */
 export function apiTarget(app: App): { service: string; protocol: string; port: string } {
@@ -100,9 +107,10 @@ export async function targetContainer(app: App, service: string, resolve: Resolv
   return c.Id;
 }
 
-export async function callApi(app: App, callerKey: string, req: { method: Method; path: string; body?: unknown; role?: "admin" | "member" }, d: { sign: Sign; send: Send; resolve: Resolve; audit?: (o: object) => void }): Promise<{ status: number; headers: Record<string, string>; body: unknown }> {
+export async function callApi(app: App, callerKey: string, req: { method: Method; path: string; body?: unknown; role?: "admin" | "member" }, d: { sign: Sign; send: Send; resolve: Resolve; audit?: (o: object) => void }): Promise<{ status: number; headers: ResponseHeaders; body: unknown }> {
   if (!METHODS.includes(req.method)) throw new Error(`method must be one of ${METHODS.join(", ")}`);
   const role = req.role ?? "admin";
+  if (role !== "admin" && role !== "member") throw new Error(`role must be admin or member, not ${JSON.stringify(req.role)}`);
   authorize(app, callerKey, req.path, req.method, role);
   const t = apiTarget(app);
   const container = await targetContainer(app, t.service, d.resolve);
@@ -117,7 +125,7 @@ export async function callApi(app: App, callerKey: string, req: { method: Method
   const body = req.body === undefined ? undefined : typeof req.body === "string" ? req.body : JSON.stringify(req.body);
   if (body !== undefined) headers["content-type"] = "application/json"; // a string body is taken as JSON already serialized
   const audit = (status: number | string) => d.audit?.({ caller: callerKey, app: app.name, method: req.method, path: req.path, role, status });
-  let res: { status: number; headers: Record<string, string>; body: string };
+  let res: { status: number; headers: ResponseHeaders; body: string };
   try {
     res = await d.send(app, { url: url.href, method: req.method, headers, ...(body !== undefined ? { body } : {}) }, container);
   } catch (e) {
@@ -125,7 +133,13 @@ export async function callApi(app: App, callerKey: string, req: { method: Method
     throw new Error(hide(`${app.name} API call failed: ${String((e as Error).message ?? e)}`));
   }
   audit(res.status);
-  const responseHeaders = Object.fromEntries(Object.entries(res.headers ?? {}).map(([k, v]) => [k, hide(String(v))]));
+  const responseHeaders: ResponseHeaders = {};
+  for (const [k, v] of Object.entries(res.headers ?? {})) {
+    const key = k.toLowerCase();
+    if (SESSION_HEADERS.has(key)) continue;
+    const values = (Array.isArray(v) ? v : [v]).map((x) => hide(String(x))).filter((x) => x.length <= HEADER_CAP);
+    if (values.length) responseHeaders[key] = values.length === 1 ? values[0]! : values;
+  }
   const text = hide(res.body).slice(0, BODY_CAP);
   let parsed: unknown = text;
   try {
@@ -135,4 +149,4 @@ export async function callApi(app: App, callerKey: string, req: { method: Method
 }
 
 /** The one-shot request inside the app's network: reads the request JSON on stdin (never argv), prints only {status, headers, body}. */
-export const SEND_SCRIPT = `let s="";process.stdin.on("data",c=>s+=c).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(r.url,{method:r.method,headers:r.headers,body:r.body,redirect:"manual",signal:AbortSignal.timeout(r.timeout||${TIMEOUT_MS})});const t=await res.text();process.stdout.write(JSON.stringify({status:res.status,headers:Object.fromEntries(res.headers),body:t.slice(0,${BODY_CAP * 2})}))}catch(e){process.stdout.write(JSON.stringify({status:0,headers:{},body:String(e&&e.message||e)}))}})`;
+export const SEND_SCRIPT = `let s="";process.stdin.on("data",c=>s+=c).on("end",async()=>{const r=JSON.parse(s);try{const res=await fetch(r.url,{method:r.method,headers:r.headers,body:r.body,redirect:"manual",signal:AbortSignal.timeout(r.timeout||${TIMEOUT_MS})});const t=await res.text();process.stdout.write(JSON.stringify({status:res.status,headers:(()=>{const h={};for(const [k,v] of res.headers){(h[k]??=[]).push(v)}return h})(),body:t.slice(0,${BODY_CAP * 2})}))}catch(e){process.stdout.write(JSON.stringify({status:0,headers:{},body:String(e&&e.message||e)}))}})`;

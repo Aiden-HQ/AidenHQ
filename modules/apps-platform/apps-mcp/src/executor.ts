@@ -5,6 +5,7 @@
 import { remoteHead } from "./git.js";
 import { callApi, authorize, METHODS, type Method } from "./api.js";
 import { canMutate, type Caller } from "./mcp.js";
+import { canView } from "./view.js";
 import type { Platform } from "./platform.js";
 import { assertOwner, RUN_TIMEOUT_MS } from "./run.js";
 import type { Executor, PlanResult, Requester } from "./aidenhq-sdk/executor.js";
@@ -67,7 +68,12 @@ export function appsExecutor(p: Platform): Executor {
           const a = p.find(String(args?.name ?? ""));
           const method = String(args?.method ?? "") as Method;
           if (!METHODS.includes(method)) throw new Error(`method must be one of ${METHODS.join(", ")}`);
-          const role = args.role === "member" ? "member" : "admin";
+          // The kernel routes recorded arguments here, so the MCP enum is not the gate: only an omitted role defaults.
+          if (args.role !== undefined && args.role !== "admin" && args.role !== "member") throw new Error(`role must be admin or member, not ${JSON.stringify(args.role)}`);
+          const role = args.role ?? "admin";
+          // A member request is what app_view would do: the same caller and the same read-access policy, so an agent that
+          // cannot view a restricted app cannot reach it through app_api either.
+          if (role === "member" && !canView(a, c.roles)) throw new Error(`no access to ${a.name}`);
           authorize(a, c.key, String(args?.path ?? ""), method, role);
           const out = { name: a.name, caller: c.key, method, path: String(args.path), role, ...(args.body !== undefined ? { body: args.body } : {}) };
           return { args: out, card: { details: `${method} ${out.path} as ${role}${args.body !== undefined ? `\nbody (written by the requesting agent): ${JSON.stringify(args.body).slice(0, 2000)}` : ""}` } };

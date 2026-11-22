@@ -11,6 +11,8 @@ const apps: Record<string, App> = {
   web: parseApp({ name: "web", repo: "example-org/web", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: ["keeper"], paths: ["/api/agent"] } }),
   narrow: parseApp({ name: "narrow", repo: "example-org/narrow", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: [{ agent: "keeper", paths: ["GET /api/agent/intake", "POST /api/agent/intake/{reference}/decision"] }], paths: ["/api/agent/intake"] } }),
   db: parseApp({ name: "db", repo: "example-org/db", owner: "app-maintainer", description: "d", stateful: true }),
+  // Restricted to the finance role: app_view refuses an agent without it, and so must a member app_api call.
+  ledger: parseApp({ name: "ledger", repo: "example-org/ledger", owner: "app-maintainer", description: "d", health: { url: "http://app:8080/api/health" }, api: { callers: ["keeper"], paths: ["/api/agent"] }, access: { roles: ["finance"] } }),
 };
 const who = (key: string, roles: string[] = []) => ({ agent: `ag-${key}`, key, name: key, roles, kind: "run" });
 
@@ -72,6 +74,14 @@ describe("apps-platform write kinds", () => {
     // A member request is the signed-in test-user identity on a public route; the caller gate still applies.
     expect((await plan(ex, "api_write", { name: "web", method: "POST", path: "/intake/feedback", role: "member", body: { text: "x" } }, who("keeper"))).args).toEqual({ name: "web", caller: "keeper", method: "POST", path: "/intake/feedback", role: "member", body: { text: "x" } });
     await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/intake/feedback", role: "member" }, who("intruder"))).rejects.toThrow(/may not call web's API/);
+    // A restricted app: member is what app_view would do, so the app's read-access policy applies as well as the caller gate.
+    await expect(plan(ex, "api_write", { name: "ledger", method: "POST", path: "/intake", role: "member" }, who("keeper"))).rejects.toThrow(/no access to ledger/);
+    expect((await plan(ex, "api_write", { name: "ledger", method: "POST", path: "/intake", role: "member" }, who("keeper", ["finance"]))).args).toMatchObject({ role: "member" });
+    // The admin API keeps its own scope: no finance role is needed under the app's api.paths.
+    expect((await plan(ex, "api_write", { name: "ledger", method: "POST", path: "/api/agent/x" }, who("keeper"))).args).toMatchObject({ role: "admin" });
+    // The kernel routes recorded arguments here, so an unknown role is refused rather than signed as admin.
+    await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", role: "Member" }, who("keeper"))).rejects.toThrow(/role must be admin or member/);
+    await expect(plan(ex, "api_write", { name: "web", method: "POST", path: "/api/agent/x", role: "owner" }, who("keeper"))).rejects.toThrow(/role must be admin or member/);
     // A caller held to exact routes: the method is part of the check, so a write plan can't spend its read route.
     expect((await plan(ex, "api_write", { name: "narrow", method: "POST", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).args).toMatchObject({ caller: "keeper", method: "POST" });
     await expect(plan(ex, "api_write", { name: "narrow", method: "DELETE", path: "/api/agent/intake/AB12CD34/decision" }, who("keeper"))).rejects.toThrow(/isn't under narrow's agent API paths/);

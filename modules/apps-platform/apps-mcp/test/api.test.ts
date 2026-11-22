@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { apiTarget, authorize, callApi, targetContainer, type ApiRequest, type Resolve } from "../src/api.js";
+import { apiTarget, authorize, callApi, targetContainer, type ApiRequest, type ResponseHeaders, type Resolve } from "../src/api.js";
 import { agentSigner } from "../src/identity.js";
 import { feedbackOnly } from "../src/mcp.js";
 import { isSensitive, parseApp } from "../src/registry.js";
@@ -98,6 +98,19 @@ describe("a caller's exact routes", () => {
     const outside = app({ api: { callers: [{ agent: "reader", paths: ["GET /api/admin/users"] }], paths: ["/api/agent/intake"] } });
     expect(() => authorize(outside, "reader", "/api/admin/users", "GET")).toThrow(/isn't under/);
   });
+  it("holds a member request to the caller's own grants; a plain-string caller reaches any route the app serves", () => {
+    const asMember = (method: string, path: string, key = "roadmap-feedback") => () => authorize(rk, key, path, method, "member");
+    // The same exact routes it may use as admin, and nothing else: a narrow integration never widens to the public surface.
+    expect(asMember("GET", "/api/agent/intake?status=received")).not.toThrow();
+    expect(asMember("POST", "/api/agent/intake/AB12CD34/decision")).not.toThrow();
+    for (const [m, p] of [["POST", "/intake/feedback"], ["DELETE", "/api/agent/intake"], ["GET", "/admin/intake"], ["POST", "/"]] as const)
+      expect(asMember(m, p), `${m} ${p}`).toThrow(/isn't under/);
+    // The app's own agent is a plain-string caller: listed for the whole app, so member reaches any public route.
+    expect(asMember("POST", "/intake/feedback", "roadmap-keeper")).not.toThrow();
+    expect(asMember("GET", "/admin/intake", "roadmap-keeper")).not.toThrow();
+    // The caller gate still applies.
+    expect(() => authorize(rk, "intruder", "/intake/feedback", "POST", "member")).toThrow(/may not call/);
+  });
   it("leaves the app's own agent, and a bare-path {agent, paths} caller, as prefix callers", () => {
     expect(as("GET", "/api/agent/roadmap/items/3", "roadmap-keeper")).not.toThrow();
     expect(as("DELETE", "/api/agent/intake/x", "roadmap-keeper")).not.toThrow();
@@ -136,7 +149,7 @@ describe("target", () => {
 });
 
 describe("callApi", () => {
-  const setup = async (reply: (r: ApiRequest) => { status: number; headers: Record<string, string>; body: string } | Promise<never>) => {
+  const setup = async (reply: (r: ApiRequest) => { status: number; headers: ResponseHeaders; body: string } | Promise<never>) => {
     const id = await identityFixture();
     const sent: ApiRequest[] = [];
     const into: string[] = [];
@@ -178,7 +191,6 @@ describe("callApi", () => {
     }));
     await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
     const port = (server.address() as { port: number }).port;
-    const send = d.send;
     try {
       const res = await callApi(app(), "roadmap-keeper", { method: "POST", path: "/intake/feedback", body: { text: "canary" }, role: "member" }, { ...d, send: async (a, r, c) => {
         const u = new URL(r.url);
@@ -190,12 +202,22 @@ describe("callApi", () => {
       expect(res).toMatchObject({ status: 201, headers: { "content-type": "application/json", "x-echo": "***" }, body: { ok: true, received: { text: "canary" } } });
       expect(JSON.stringify(res)).not.toContain(seen[0]!.token);
       await expect(callApi(app(), "intruder", { method: "POST", path: "/intake/feedback", body: {}, role: "member" }, d)).rejects.toThrow(/may not call/);
-      const anonymous = await new Promise<number>((ok) => fetch(`http://127.0.0.1:${port}/intake/feedback`, { method: "POST", body: "{}" }).then((r) => ok(r.status)));
+      const anonymous = await fetch(`http://127.0.0.1:${port}/intake/feedback`, { method: "POST", body: "{}" }).then((r) => r.status);
       expect(anonymous).toBe(401);
       expect(seen).toHaveLength(1);
     } finally {
       await new Promise<void>((ok) => server.close(() => ok()));
     }
+  });
+  it("drops session-bearing response headers, keeps the app's real ones and repeats", async () => {
+    const { d } = await setup(() => ({ status: 429, headers: { "retry-after": "37", "set-cookie": ["sid=live; HttpOnly", "csrf=x"], "x-multi": ["a", "b"], "content-type": "text/plain" }, body: "slow down" }));
+    const r = await callApi(app(), "roadmap-keeper", { method: "POST", path: "/intake/feedback", role: "member" }, d);
+    expect(r).toEqual({ status: 429, headers: { "retry-after": "37", "x-multi": ["a", "b"], "content-type": "text/plain" }, body: "slow down" });
+    expect(JSON.stringify(r)).not.toContain("sid=live");
+  });
+  it("rejects a role other than admin or member instead of signing one", async () => {
+    const { d } = await setup(() => ({ status: 200, headers: {}, body: "{}" }));
+    await expect(callApi(app(), "roadmap-keeper", { method: "POST", path: "/api/agent/roadmap", role: "owner" as never }, d)).rejects.toThrow(/role must be admin or member/);
   });
   it("hides the token in errors, refuses before sending, caps text bodies", async () => {
     let seen = "";

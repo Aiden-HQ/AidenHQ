@@ -88,8 +88,9 @@ agent and is redacted from any response that echoes it.
 - `app_api`: `role: admin` (the default), `methods` the call's one method, `path` the exact path. Only agent keys in the app's
   `api.callers` and only under `api.paths`, enforced in apps-mcp. `api` is `{ callers, paths }`; there is no static
   `api.token` (the registry refuses one). With `role: "member"` it reuses `app_view`'s signed-in member identity for that one
-  method and path: the same `api.callers` gate, but on any route the app serves, so an agent can POST to a public route as a
-  test user and read the app's real status, headers and body.
+  method and path: the same `api.callers` gate and the app's read-access policy (`access.roles`), and a caller's own
+  `paths` grant still applies; a plain-string caller is granted the app's whole surface, so an agent can POST to a public
+  route as a test user and read the app's real status, headers and body (session headers such as `Set-Cookie` are withheld).
 - `app_view`: `role: member`, `methods: [GET, HEAD]`.
 
 The key is separate from the gate's because apps-mcp holds the Docker socket and sits on bridge networks the gate's
