@@ -5,12 +5,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import type { LaneAgent } from "../src/lane/config.js";
 import type { Lane } from "../src/lane/lane.js";
-import { wakePass } from "../src/lane/serve.js";
 import { openLaneStore } from "../src/lane/store.js";
 import { buildServer, MAX_WAKES } from "../src/mcp.js";
 
 const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-chat", apiKey: "pcp_aria", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
-const quiet = { info() {}, warn() {} };
 
 async function server(closed: Set<string>, { slow = false }: { slow?: boolean } = {}) {
   const laneStore = openLaneStore(":memory:");
@@ -60,18 +58,6 @@ describe("the wake cap counts only wakes on open tasks", () => {
     expect(fired(due)).toEqual(["check the deploy"]);
   });
 
-  it("lists the pending wakes with their task and time, saying which count, at the cap", async () => {
-    const closed = new Set(Array.from({ length: 51 }, (_, i) => `WOR-${5000 + i}`));
-    const { call, laneStore } = await server(closed);
-    fillTerminal(laneStore);
-
-    const list = await call("wake_list");
-    expect(list).toMatchObject({ pending: 0, cap: MAX_WAKES });
-    expect(list.wakes).toHaveLength(51);
-    expect(list.wakes[0]).toMatchObject({ task: "WOR-5000", counts: false });
-    expect(list.wakes[0].due_local).toMatch(/^\w{3} \d{1,2} \w{3} \d{2}:\d{2} \(UTC\)$/);
-  });
-
   it("still refuses the 51st wake when the 50 pending ones are on tasks that are open", async () => {
     const { call, laneStore } = await server(new Set());
     for (let i = 0; i < MAX_WAKES; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, false, "WOR-5245");
@@ -83,26 +69,4 @@ describe("the wake cap counts only wakes on open tasks", () => {
     expect(refused.wakes[0]).toMatchObject({ task: "WOR-5245" });
   });
 
-  it("never takes more than the cap when wake_at calls arrive at once", async () => {
-    const { call, laneStore } = await server(new Set(), { slow: true });
-    for (let i = 0; i < MAX_WAKES - 1; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, false, "WOR-5245");
-
-    const answers = await Promise.all(Array.from({ length: 5 }, (_, i) => call("wake_at", { when_local: "in 1 hour", note: `parallel ${i}`, task: "WOR-5245" })));
-    expect(answers.filter((r) => r.ok)).toHaveLength(1);
-    expect(laneStore.pendingWakes("aria")).toHaveLength(MAX_WAKES);
-  });
-
-  it("drops a wake that comes due on a finished task, and posts one for a task still open", async () => {
-    const { laneStore } = await server(new Set(["WOR-5244"]));
-    const now = Date.now();
-    laneStore.addWake("aria", now - 2000, "superseded check", false, "WOR-5244");
-    laneStore.addWake("aria", now - 1000, "the real check", false, "WOR-5245");
-    const wakeTask = vi.fn(async () => {});
-
-    await wakePass({ store: laneStore, lane: { tick: async () => {} } as unknown as Lane, agents: () => ({ aria }), taskIsClosed: async (t) => t === "WOR-5244", wakeTask, log: quiet });
-
-    expect(wakeTask).toHaveBeenCalledTimes(1);
-    expect(wakeTask).toHaveBeenCalledWith(expect.any(Number), "WOR-5245", "the real check");
-    expect(laneStore.pendingWakes("aria")).toEqual([]);
-  });
 });

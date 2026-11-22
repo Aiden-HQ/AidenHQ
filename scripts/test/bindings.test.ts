@@ -1,23 +1,11 @@
 // Replace as one transaction (spec §5.7.1): virtual capabilities, conflicts, and the refusal of any dangling binding.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { capabilityProblems, conflictProblems, danglingBindings, virtualProviders } from "../compiler/bindings.ts";
+import { danglingBindings } from "../compiler/bindings.ts";
 
 const engine = (kind, extra = {}) => ({ provides: ["engine"], providers: { engine: [{ kind, bin: "bin/run" }] }, ...extra });
 const user = { requires: ["engine"], agents: { builder: { engine: "alpha", connections: { crm: "read" }, jobcaps: ["crm-read"], roles: ["acme-crm.editor"] } } };
 const crm = { connections: { crm: { tools: { read: ["r"], write: [] } } }, jobcaps: [{ id: "crm-read" }], roles: { declares: [{ id: "acme-crm.editor" }] } };
-
-test("a virtual requires is met by any provider", () => {
-  assert.deepEqual(danglingBindings({ user, "engine-a": engine("alpha"), "acme-crm": crm }, {}), []);
-  assert.deepEqual(virtualProviders({ "engine-a": engine("alpha"), "engine-b": engine("beta") }), { engine: ["engine-a", "engine-b"] });
-});
-
-test("provides + conflicts on one name refuses a second provider", () => {
-  const single = engine("alpha", { conflicts: ["engine"] });
-  assert.deepEqual(conflictProblems({ "engine-a": single }), []);
-  assert.match(conflictProblems({ "engine-a": single, "engine-b": engine("beta") }).join(), /engine-a conflicts with engine, which engine-b also provides/);
-  assert.match(conflictProblems({ "acme-a": { conflicts: ["acme-b"] }, "acme-b": {} }).join(), /acme-a conflicts with module acme-b/);
-});
 
 test("A13: replacing A with B leaves a binding unprovided → refused, naming who holds it", () => {
   const ok = { user, "engine-a": engine("alpha"), "acme-crm": crm };

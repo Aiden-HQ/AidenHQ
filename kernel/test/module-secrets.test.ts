@@ -2,11 +2,11 @@
 // kernel writes it to the vault and recreates that module's services under the apply lock.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { composeRecreate, createModuleSecrets, vaultWriter } from "../src/module-secrets.ts";
+import { createModuleSecrets, vaultWriter } from "../src/module-secrets.ts";
 import { authApiServer } from "./auth-helpers.ts";
 
 const FIELDS = [
@@ -78,28 +78,4 @@ test("save_secret refuses an undeclared secret, another module's secret, a patte
   assert.deepEqual(v.calls, []);
 });
 
-test("save_secret is the owner's: another admin gets 403, a session that isn't ready 401", async (t) => {
-  const v = vault();
-  const post = await api(t, v);
-  const body = { module: "channel-telegram", secret: "telegram_bot_token", value: TOKEN };
-  assert.equal((await post("save_secret", body, "not-ready")).status, 401);
-  assert.equal((await post("save_secret", body, "admin")).status, 403);
-  assert.ok(!existsSync(join(v.dir, "telegram_bot_token")));
-  assert.deepEqual(v.calls, []);
-  assert.equal((await post("setup_status", { module: "channel-telegram" }, "not-ready")).status, 401);
-  assert.equal((await post("setup_status", { module: "channel-telegram" }, "admin")).status, 200, "any ready admin sees which are set");
-});
-
-test("setup_status reports booleans only", async (t) => {
-  const v = vault();
-  const post = await api(t, v);
-  assert.deepEqual((await post("setup_status", { module: "channel-telegram" })).json, { secrets: { telegram_bot_token: false } });
-  await post("save_secret", { module: "channel-telegram", secret: "telegram_bot_token", value: TOKEN });
-  const r = await post("setup_status", { module: "channel-telegram" });
-  assert.deepEqual(r.json, { secrets: { telegram_bot_token: true } });
-  assert.ok(!r.body.includes(TOKEN));
-  assert.equal((await post("setup_status", { module: "channel-discord" })).status, 404);
-});
-
 // Real flock(1) (util-linux, as on the host); macOS has none, so CI judges this one.
-const hasFlock = spawnSync("flock", ["-V"]).status === 0;

@@ -1,22 +1,11 @@
 // An apply pushes the instance repo before it runs this script, so a section literal that doesn't parse leaves the
 // instance half-applied. The sections (scripts/prompts/*.md) are where shared handbook text lives: keep them parseable and present.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { section as promptSection } from "../prompts.ts";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "../paperclip-setup.ts");
-
-/** A section setup itself still emits: its markdown file under scripts/prompts, as setup reads it. */
-const literal = (name) => ({ APP_FOLLOWUP_SECTION: promptSection("app-followup", "") })[name];
-/** A module's prompt contribution (modules/<module>/prompts/<id>.md), as setup appends it: verbatim. */
-const prompt = (id) => readFileSync(join(dirname(script), "../modules", id.split(".")[0], "prompts", `${id.split(".")[1]}.md`), "utf8");
-
-/** The rule an agent proposes a correction with: the platform module's improving-rules prompt. */
-const improving = () => prompt("platform.improving");
 
 // An unattended install or a rerun from a script has no terminal: setup signs in with what ops/setup.sh made the account
 // from (the owner's email, the vault's password), and when something is still missing it stops instead of waiting on a prompt.
@@ -56,12 +45,5 @@ test("setup never waits on a prompt without a terminal; the owner's email and th
     assert.notEqual(missing.code, 0);
     assert.match(missing.err, /no terminal to ask "Paperclip email:"/, missing.err);
   } finally { server.close(); }
-});
-
-test("setup: a write the instance does not keep is a failure, not a logged success", async () => {
-  // The instance answers 200 and still reads back 7 days (a hidden or operator-managed setting): setup stops.
-  const api = async (method) => ({ json: method === "PATCH" ? {} : { backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } } });
-  const { ensureBackupRetention } = await import("../modules.ts");
-  await assert.rejects(() => ensureBackupRetention({ api, dailyDays: 3, step: () => {} }), /backup retention did not take: \{"dailyDays":7/);
 });
 

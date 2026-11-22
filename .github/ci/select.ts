@@ -40,7 +40,8 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
  * they finish together. The packages job's suites each use every CPU (node --test over many files): one at a time; the
  * modules' small suites overlap about two at a time (measured 2026-11-20: a shard took half its suites' sum).
  */
-const MAX_SHARDS = 5, TARGET = 40;
+// At most 3 (owner, 2026-11-22: fewer runner starts after the test trim; each start costs ~20 s of checkout and install).
+const MAX_SHARDS = 3, TARGET = 40;
 export function shard(tests: { name: string; dir: string; run?: string; secs: number }[], parallel: number) {
   const sorted = [...tests].sort((a, b) => b.secs - a.secs || a.name.localeCompare(b.name));
   if (!sorted.length) return [];

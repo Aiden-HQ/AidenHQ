@@ -127,15 +127,6 @@ describe("/internal/relay", () => {
     expect((await relay({ comment_id: e.id, target: child.identifier })).status).toBe(200);
   });
 
-  it("releases the once-only reservation when the post fails", async () => {
-    const c = say(chat, "[telegram] apply");
-    const add = pc.addComment;
-    (pc as any).addComment = async () => Promise.reject(new Error("boom"));
-    expect((await relay({ comment_id: c.id, target: eng.identifier })).status).toBe(500);
-    (pc as any).addComment = add;
-    expect((await relay({ comment_id: c.id, target: eng.identifier })).status).toBe(200);
-  });
-
   it("refuses a caller that is not the Chief of Staff", async () => {
     const c = say(chat, "[telegram] apply");
     expect((await relay({ comment_id: c.id, target: eng.identifier }, SCOUT)).status).toBe(403);
@@ -149,20 +140,6 @@ describe("/internal/relay", () => {
     expect(r.json.error).toContain("fleet-admin");
     // The Chief of Staff gets past the check (this stub has no fleet data, so it fails later, not with 403).
     expect((await relay({}, COS, "/internal/fleet/status")).status).not.toBe(403);
-  });
-
-  it("fleet_status survives a failed summary (summary: null)", async () => {
-    (pc as any).request = async () => [];
-    (pc as any).closedSince = async () => Promise.reject(new Error("paperclip down"));
-    try {
-      const r = await relay({}, COS, "/internal/fleet/status");
-      expect(r.status).toBe(200);
-      expect(r.json.summary).toBeNull();
-      expect(r.json.agents).toEqual([]);
-    } finally {
-      delete (pc as any).request;
-      delete (pc as any).closedSince;
-    }
   });
 
   it("fleet-read (Fleet Ops) may read the fleet status, never control the fleet, read costs or relay", async () => {

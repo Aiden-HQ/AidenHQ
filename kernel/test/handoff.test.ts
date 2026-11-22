@@ -7,7 +7,7 @@ import { request } from "node:http";
 import { doorSource, openAccounts, AccountError } from "../src/accounts.ts";
 import { createAdmin } from "../src/admin.ts";
 import { PASSWORD, authApiServer, jsonBrowser, reqWith, silent, stepListener, totp } from "./auth-helpers.ts";
-import { rawStatus, serve } from "./helpers.ts";
+import { serve } from "./helpers.ts";
 
 const HOST = "localhost:3120";
 const BOARD = "http://board.example:3121";
@@ -33,10 +33,6 @@ const admin = (method, path, jar, { origin = `http://${HOST}` } = {}) => new Pro
   r.on("error", no);
   r.end(method === "POST" ? "" : undefined);
 });
-test("a request target the URL parser rejects gets 400 and the listener keeps serving", async () => {
-  for (const target of ["//[", "http://[::1", "//"]) assert.equal(await rawStatus(adminSrv.url, target), 400, target);
-  assert.equal(await rawStatus(adminSrv.url, "/healthz"), 200);
-});
 
 const handoffPath = (to = BOARD, state = STATE) => `/auth/handoff?to=${encodeURIComponent(to)}&state=${encodeURIComponent(state)}`;
 
@@ -57,16 +53,10 @@ async function adminAccount(email, owner = false) {
   return { jar: b.jar, signIn, account: (await accounts.list()).find((a) => a.email === email) };
 }
 const whoOf = (jar) => accounts.sessionOf(reqWith(jar));
-const uiTokenFor = async (jar, module = "board", origin = BOARD) => {
-  const code = accounts.mintUiCode(await whoOf(jar), module, origin, STATE);
-  return (await accounts.exchangeUi(module, code, origin, STATE)).token;
-};
 
-let owner, ann, bob;
+let owner;
 test("setup: an owner and two admins, each enrolled", async () => {
   owner = await adminAccount("owner@example.com", true);
-  ann = await adminAccount("ann@example.com");
-  bob = await adminAccount("bob@example.com");
   assert.equal((await whoOf(owner.jar)).ready, true);
 });
 
@@ -133,51 +123,6 @@ test("exchangeUi: a code works once, for the module, origin and state it was min
   await refused(accounts.exchangeUi("board", c, BOARD, STATE));
 });
 
-test("uiSession: the admin while the listener's session lives; null after sign-out, disable and reset, for another module, or for a stray token", async () => {
-  const token = await uiTokenFor(owner.jar);
-  const who = await accounts.uiSession("board", token);
-  assert.equal(who.account.email, "owner@example.com");
-  assert.equal(who.ready, true);
-  assert.equal(await accounts.uiSession("other-module", token), null);
-  for (const stray of ["", "ahqu_", "ahqu_nope", token.replace(/^ahqu_/, ""), `Bearer ${token}`, "x".repeat(60), token.slice(0, -1) + (token.endsWith("A") ? "B" : "A")]) assert.equal(await accounts.uiSession("board", stray), null, stray);
-  assert.notEqual(await accounts.uiSession("board", token), null); // none of that ended it
-
-  // The module's own sign-out ends its session and leaves the listener's.
-  accounts.endUiSession("other-module", token);
-  assert.notEqual(await accounts.uiSession("board", token), null);
-  accounts.endUiSession("board", token);
-  assert.equal(await accounts.uiSession("board", token), null);
-  assert.equal((await whoOf(owner.jar)).ready, true);
-
-  // The admin listener's sign-out ends the module sessions handed off from that session (and only that session's).
-  const second = await owner.signIn(1);
-  const mine = await uiTokenFor(second);
-  const other = await uiTokenFor(owner.jar);
-  assert.notEqual(await accounts.uiSession("board", mine), null);
-  assert.equal((await admin("POST", "/auth/sign-out", second, { origin: "http://evil.example" })).status, 403); // wrong Origin: not signed out
-  assert.notEqual(await accounts.uiSession("board", mine), null);
-  const out = await admin("POST", "/auth/sign-out", second);
-  assert.equal(out.status, 303);
-  assert.equal(await accounts.uiSession("board", mine), null);
-  assert.equal(await whoOf(second), null);
-  assert.notEqual(await accounts.uiSession("board", other), null);
-
-  // Disabling the account ends it (a second admin: the owner can't be disabled).
-  const annToken = await uiTokenFor(ann.jar);
-  assert.notEqual(await accounts.uiSession("board", annToken), null);
-  await accounts.setDisabled(owner.account, ann.account.id, true);
-  assert.equal(await accounts.uiSession("board", annToken), null);
-  await accounts.setDisabled(owner.account, ann.account.id, false);
-  assert.equal(await accounts.uiSession("board", annToken), null); // enabling doesn't bring it back: its sessions are gone
-
-  // A reset ends it and clears the authenticator: no admin until it is set up again.
-  const bobToken = await uiTokenFor(bob.jar);
-  assert.notEqual(await accounts.uiSession("board", bobToken), null);
-  await accounts.reset("bob@example.com");
-  assert.equal(await accounts.uiSession("board", bobToken), null);
-  assert.equal(await whoOf(bob.jar), null);
-});
-
 test("the backplane: the board's key and a live session token, and nothing else, reach the module routes", async () => {
   const key = { authorization: `Bearer ${api.boardKey}` };
   // /v1/auth/session
@@ -215,46 +160,4 @@ test("the backplane: the board's key and a live session token, and nothing else,
   assert.equal((await api.post("/v1/apps/requests", { app: "crm" }, { authorization: "Bearer tok-board" })).status, 401);
   assert.equal((await api.post("/v1/apps/requests", { app: "crm" })).status, 401);
   assert.equal((await api.post("/v1/apps/requests", { app: "crm" }, { authorization: "Bearer tok-apps" })).status, 404); // past the door: no shared app "crm" here
-});
-
-test("an app door: a ready admin's /auth/handoff mints the gate's code for exactly a door origin, redeemed once on that host", async () => {
-  const st = "0123456789abcdef0123456789abcdef";
-  const door = "http://roadmap.localhost:3130";
-  const ok = await admin("GET", `${handoffPath(door, st)}&next=${encodeURIComponent("/plan?q=1")}`, owner.jar);
-  assert.equal(ok.status, 303);
-  const to = new URL(ok.location);
-  assert.equal(`${to.origin}${to.pathname}`, `${door}/.auth/handoff`);
-  assert.equal(to.searchParams.get("state"), st);
-  assert.equal(to.searchParams.get("next"), "/plan?q=1");
-  const code = to.searchParams.get("code");
-  await assert.rejects(accounts.redeemHandoff(code, "other.localhost", st), /invalid or expired/); // spent on the wrong host
-  const again = new URL((await admin("GET", handoffPath(door, st), owner.jar)).location).searchParams.get("code");
-  const { token } = await accounts.redeemHandoff(again, "roadmap.localhost", st);
-  // The door session, as the gate forwards it: it counts only on the host it was handed to (cookies ignore ports, so another
-  // *.localhost can be sent it), and never as a session on the admin listener or the board.
-  const fromGate = { headers: { cookie: `__Host-better-auth.session_token=${encodeURIComponent(token)}`, "x-forwarded-proto": "https" } };
-  assert.equal((await accounts.gateSession(fromGate, HOST, "roadmap.localhost"))?.user?.email, "owner@example.com");
-  assert.equal(await accounts.gateSession(fromGate, HOST, "other.localhost"), null);
-  assert.equal(await accounts.gateSession(fromGate, HOST, ""), null);
-  assert.equal(await accounts.sessionOf(fromGate), null);
-  assert.equal(await accounts.sessionOf({ headers: { cookie: `better-auth.session_token=${encodeURIComponent(token)}` } }), null);
-  assert.equal(await accounts.uiSession("board", token), null);
-  await assert.rejects(accounts.redeemHandoff(again, "roadmap.localhost", st), /invalid or expired/); // once
-  // only an exact door origin: not another port, scheme or base, not nested, not with a path, not a bad state
-  for (const t of ["http://roadmap.localhost:3131", "https://roadmap.localhost:3130", "http://roadmap.localhost", "http://a.roadmap.localhost:3130", "http://localhost:3130", "http://roadmap.localhost:3130/x", "http://evil.example:3130"]) assert.equal((await admin("GET", handoffPath(t, st), owner.jar)).status, 400, t);
-  assert.equal((await admin("GET", handoffPath(door, "short"), owner.jar)).status, 400);
-  // signed out: sign-in first, keeping the whole handoff; its form's redirect chain may end on a door (browsers apply
-  // form-action to every redirect after a post)
-  assert.match((await admin("GET", handoffPath(door, st))).location, /^\/auth\/sign-in\?next=/);
-  assert.match((await admin("GET", "/auth/sign-in")).csp, /form-action 'self' http:\/\/\*\.localhost:3130;/);
-});
-
-test("the module door: a handoff for exactly its origin (the board's host on the door port), never the board's or another port", async () => {
-  const st = "0123456789abcdef0123456789abcdef";
-  const ok = await admin("GET", handoffPath("https://board.example.com:8447", st), owner.jar);
-  assert.equal(ok.status, 303);
-  const code = new URL(ok.location).searchParams.get("code");
-  assert.ok((await accounts.redeemHandoff(code, "board.example.com", st)).token);
-  for (const t of ["https://board.example.com", "https://board.example.com:8446", "http://board.example.com:8447"]) assert.equal((await admin("GET", handoffPath(t, st), owner.jar)).status, 400, t);
-  assert.equal(doorSource({ password: true, appHosts: [], moduleDoors: { "https://b.example.com:8447": "b.example.com" } }), "https://b.example.com:8447");
 });

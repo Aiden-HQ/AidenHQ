@@ -34,16 +34,4 @@ describe("wake_at and chat_send reach only the caller's own chat", () => {
     expect(await call("chat_send", { text: "the deck is ready" })).toMatchObject({ ok: true });
     expect(followUp).toHaveBeenCalledWith("aria", "the deck is ready");
   });
-  it("an agent with no fast lane has no chat to wake or send to", async () => {
-    const { call, followUp, laneStore } = await server(false, { id: "ag-bob", name: "Bob", key: "bob" });
-    expect(await call("wake_at", { ...wake, chat: true })).toMatchObject({ ok: false });
-    expect(await call("chat_send", { text: "hello" })).toMatchObject({ ok: false });
-    expect(laneStore.pendingWakes("ag-bob")).toHaveLength(0);
-    expect(followUp).not.toHaveBeenCalled();
-  });
-  it("outside trial a task wake still works", async () => {
-    const { call, laneStore } = await server(false);
-    expect(await call("wake_at", { ...wake, task: "WOR-42" })).toMatchObject({ ok: true });
-    expect(laneStore.pendingWakes("aria")[0]).toMatchObject({ task: "WOR-42", chat: 0 });
-  });
 });

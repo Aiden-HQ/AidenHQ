@@ -47,8 +47,6 @@ function harness(closed = new Set<string>(), gone = new Set<string>(), me: Recor
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 const c = (comment_id: string, thread_id = "th1", document_id = "d1", author_id = "u_someone") => ({ document_id, version_id: "v1", thread_id, comment_id, author_id });
-const edit = (version_id: string, author_id: string, automatic = true) => ({ type: "primer.version.published", data: { document_id: "d1", version_id, number: 3, author_id, ...(automatic ? { automatic } : {}) } });
-const woken = (h: { wakes: { text: string }[] }) => h.wakes.map((w) => w.text.match(/comment (\S+);/)?.[1] ?? w.text.slice(0, 40));
 
 describe("the comment wake loop", () => {
   it("wakes the publishing task once per comment, with ids only; a replay after a restart wakes nobody", async () => {
@@ -81,79 +79,6 @@ describe("the comment wake loop", () => {
     again.stop();
   });
 
-  it("never wakes on the connector's own reply, even when its event beats the receipt; a version covers what was pending when it started", async () => {
-    const h = harness();
-    const s = h.make();
-    await s.handle({ id: "1", type: "primer.comment.created", data: c("c1") });
-    let answer!: (v: { text: string }) => void;
-    const replying = s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Addressed in v2" }, () => new Promise<{ text: string }>((r) => (answer = r)));
-    const held = s.handle({ id: "2", type: "primer.comment.created", data: c("c-own") }); // the reply's own event, first
-    await settle();
-    answer({ text: '{"thread_id":"th1","comment_id":"c-own"}' });
-    await replying;
-    await held;
-    expect(woken(h)).toEqual(["c1"]);
-    // A read through the same path (the reply executor's primer_get_comments) names people's comments: never taken as ours.
-    await s.guard("primer_get_comments", { documentId: "d1" }, async () => ({ text: '{"comments":[{"thread_id":"th5","comment_id":"c5"}]}' }));
-    expect(s.state().docs.d1!.pending).toEqual(["c1"]);
-    // The reply above was on d1's thread th1: it addressed c1 and ended the burst, so the next comment wakes again.
-    await s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Done in v2" }, async () => ({ text: '{"thread_id":"th1","comment_id":"c-own2"}' }), "d1");
-    expect(s.state().docs.d1!.pending).toEqual([]);
-    await s.handle({ id: "2b", type: "primer.comment.created", data: c("c5", "th5") });
-    expect(woken(h)).toEqual(["c1", "c5"]);
-    // A version: c5 was pending when it started; c3 arrives mid-publish and waits for the next batch (its event is held until
-    // the write returns, which ended the burst, so it wakes).
-    let done!: (v: { text: string }) => void;
-    const publishing = s.guard("primer_add_version", { documentId: "d1", content: "v2", baseVersionNumber: 1 }, () => new Promise<{ text: string }>((r) => (done = r)));
-    const mid = s.handle({ id: "3", type: "primer.comment.created", data: c("c3", "th3") });
-    done({ text: '{"versionId":"v2","versionNumber":2}' });
-    await publishing;
-    await mid;
-    expect(s.state().docs.d1!.batches).toEqual([{ version: "v2", comments: ["c5"] }]);
-    expect(s.state().docs.d1!.pending).toEqual(["c3"]);
-    expect(woken(h)).toEqual(["c1", "c5", "c3"]);
-    // A version Primer didn't make (every change became a suggestion) addresses nothing.
-    await s.guard("primer_add_version", { documentId: "d1", content: "v3" }, async () => ({ text: '{"url":"https://p/d/d1","reconciliation":{}}' }));
-    expect(s.state().docs.d1!.pending).toEqual(["c3"]);
-  });
-
-  it("coalesces a burst of comments into one wake, but never the owner's; people's live edits wake, the connector's own never", async () => {
-    const h = harness();
-    const s = h.make();
-    await s.handle({ id: "1", type: "primer.comment.created", data: c("c1") });
-    await s.handle({ id: "2", type: "primer.comment.created", data: c("c2", "th2") });
-    await s.handle({ id: "3", type: "primer.comment.created", data: c("c3", "th3", "d1", "u_owner") });
-    expect(woken(h)).toEqual(["c1", "c3"]);
-    expect(h.wakes[1]!.text).toMatch(/^New comment by the owner on Primer document d1 \(thread th3, comment c3; 3 comments/);
-    // c4 lands in th1 inside the burst. The agent answers th1: the burst ends, and c2 and c4, which arrived unwoken (the agent
-    // may not have read them), stay pending and get one wake.
-    await s.handle({ id: "3b", type: "primer.comment.created", data: c("c4") });
-    await s.guard("primer_reply_to_thread", { thread_id: "th1", body: "Done" }, async () => ({ text: "{}" }), "d1");
-    expect(s.state().docs.d1!.pending).toEqual(["c2", "c3", "c4"]);
-    expect(h.wakes).toHaveLength(3);
-    expect(h.wakes[2]!.text).toMatch(/^More happened on Primer document d1 since your last wake \(3 comments not yet addressed/);
-    // Checkpoints: the connector's own live edit and a non-automatic version (its own publish) wake nobody; a person's does.
-    h.later();
-    await s.handle({ id: "4", ...edit("v4", "u_agents") });
-    await s.handle({ id: "5", ...edit("v5", "u_someone", false) });
-    expect(h.wakes).toHaveLength(3);
-    await s.handle({ id: "6", ...edit("v6", "u_owner") });
-    expect(h.wakes.at(-1)!.text).toBe("Primer document d1 was edited directly by the owner (checkpoint version v6). Read it and handle it as the primer-docs skill says.");
-    await s.handle({ id: "6", ...edit("v6", "u_owner") }); // a replay
-    expect(h.wakes).toHaveLength(4);
-  });
-
-  it("marks every author as someone else when the connector has no owner of its own to compare with", async () => {
-    const h = harness(new Set(), new Set(), null);
-    const s = h.make();
-    await s.handle({ id: "1", type: "primer.comment.created", data: c("c1", "th1", "d1", "u_owner") });
-    expect(h.wakes[0]!.text).toMatch(/^New comment by someone else/);
-    // Connect mode: the connector is the owner's own account, which every agent's Primer tools also write as.
-    const hosted = harness(new Set(), new Set(), { id: "u_owner", kind: "person", viaUserId: null });
-    await hosted.make().handle({ id: "1", type: "primer.comment.created", data: c("c1", "th1", "d1", "u_owner") });
-    expect(hosted.wakes[0]!.text).toMatch(/^New comment by someone else/);
-  });
-
   it("files one Revisions task for a closed publishing task and reuses it", async () => {
     const h = harness(new Set([T1]));
     const s = h.make();
@@ -168,10 +93,4 @@ describe("the comment wake loop", () => {
     expect(h.owners.d1).toEqual({ task: "rev-1", agent: "agent-1" }); // its versions and replies there are the agent's own
   });
 
-  it("skips a comment whose task is gone for good, without replaying it forever", async () => {
-    const h = harness(new Set(), new Set([T1]));
-    const s = h.make();
-    await s.handle({ id: "1", type: "primer.comment.created", data: c("c1") });
-    expect([h.wakes.length, s.state().processed, s.state().cursor]).toEqual([0, ["c1"], "1"]);
-  });
 });

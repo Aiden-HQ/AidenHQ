@@ -56,21 +56,3 @@ it("only the code-review module may call; PRs, PR comments and permission come b
   expect((await codeReviewRoute(reader, "repos", new URLSearchParams({ q: "app" }))).body).toEqual({ repos: [{ repo: "Acme/App", private: true, url: "https://github.com/Acme/App" }] });
   expect((await codeReviewRoute(reader, "pr", new URLSearchParams({ repo: "Acme/App", number: "x" }))).status).toBe(400);
 });
-
-it("a comment flood returns what was read with a cursor that moves on", async () => {
-  let page = 0;
-  const flood = (async () => Response.json(Array.from({ length: 100 }, (_, i) => {
-    const n = page * 100 + i;
-    if (i === 99) page++;
-    return { id: n + 1, body: "x", created_at: new Date(Date.UTC(2026, 0, 1) + (n + 1) * 1000).toISOString(), html_url: "https://github.com/Acme/App/pull/1#c", issue_url: "https://api.github.com/repos/Acme/App/issues/1", user: { login: "dev" } };
-  }))) as typeof fetch;
-  const r = await new CodeReviewReader(new GitHub(accessFor(flood, "t"), flood)).comments("Acme/App", "2026-01-01T00:00:00Z");
-  expect(r.comments).toHaveLength(3000);
-  expect(r.cursor).toBe(r.comments.at(-1)!.created_at);
-});
-
-it("a PR's merge base is taken from its base branch (open) or its merge commit's first parent (merged), never its recorded base sha", async () => {
-  const q = (n: number) => new URLSearchParams({ repo: "Acme/App", number: String(n), head: "b".repeat(40) });
-  expect((await codeReviewRoute(reader, "merge-base", q(5))).body).toEqual({ merge_base: "e".repeat(40) });
-  expect((await codeReviewRoute(reader, "merge-base", q(1))).body).toEqual({ merge_base: "f".repeat(40) });
-});

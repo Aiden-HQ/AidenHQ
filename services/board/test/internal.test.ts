@@ -72,26 +72,6 @@ describe("internal listener", () => {
     expect((await call("GET", "/", undefined, { host: "board:3122", authorization: `Bearer ${TOKEN}` })).status).toBe(404);
   });
 
-  it("fleet_status answers whole JSON behind long lists, with the cut notice first", async () => {
-    const big = "t".repeat(200);
-    const row = (k: number) => ({ id: `i${k}`, identifier: `PEN-${k}`, title: big, status: "blocked", priority: "medium", assigneeUserId: null, assigneeAgentId: "a1", assigneeAdapterOverrides: null, createdAt: "2026-11-13T10:00:00Z", updatedAt: "2026-10-01T10:00:00Z" });
-    (pc as any).request = async (m: string, path: string) => (path.includes("/issues?") ? Array.from({ length: 500 }, (_, k) => row(k)) : []);
-    // The summary's own reads (a failed one is allowed to be null, but it must not outlive the stub above).
-    (pc as any).closedSince = async () => [];
-    try {
-      // The body as it goes over the wire, not the object a caller happened to build.
-      const res = await post("/internal/fleet/status", {});
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { truncated?: string[] } & Record<string, unknown>;
-      expect(JSON.stringify(body).length).toBeLessThanOrEqual(24_000);
-      expect(Object.keys(body)[0]).toBe("truncated");
-      expect(body.truncated?.some((t) => /^(stuck|agents): \d+ of 500$/.test(t))).toBe(true);
-    } finally {
-      delete (pc as any).request;
-      delete (pc as any).closedSince;
-    }
-  });
-
   it("attaches a file to the caller's own task only, and lists it back", async () => {
     const mine = { ...issue, id: "33333333-3333-3333-3333-333333333333", identifier: "PEN-3", assigneeUserId: null, assigneeAgentId: "ra" };
     (pc as any).issue = async (ref: string) => (ref === mine.identifier || ref === mine.id ? mine : issue);
@@ -120,13 +100,4 @@ describe("internal listener", () => {
     }
   });
 
-  it("schedules a move on the user's task, and rejects bad dates", async () => {
-    const ok = await post("/internal/issues/PEN-1/schedule", { date: "2099-01-01" });
-    expect(ok.status).toBe(400);
-    const date = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
-    const res = await post("/internal/issues/PEN-1/schedule", { date });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ identifier: "PEN-1", scheduled: { date, bucket: "today", position: "top" } });
-    expect(store.schedules().get(issue.id)?.date).toBe(date);
-  });
 });

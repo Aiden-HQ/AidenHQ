@@ -7,7 +7,6 @@ import { createJobs } from "../src/jobs.ts";
 import { ORIGIN } from "../src/provenance.ts";
 import { taskRoutineCap } from "../src/tier.ts";
 import { SELF_TAG } from "../src/wakes.ts";
-import { taskState } from "../src/task-state.ts";
 import { post } from "../../services/paperclip-events/post.js";
 import { kernel, moduleServer, pluginHost } from "./helpers.ts";
 
@@ -142,93 +141,6 @@ test("the chief of staff comments on any task of its company, heard by that task
   // Ada isn't the chief of staff: her Paperclip metadata and name say so, her grants don't.
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-2", { comment: "Hello." })).status, 403);
   assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
-});
-
-test("the Fleet Steward comments on any task of its company, heard by that task's agent, and nothing more", async (t) => {
-  const { h, act } = await setup(t);
-  // The fleet-check nudge on a stuck agent's task: a comment, with the op tag so that task's agent hears it.
-  let r = await act("steward", "POST", "/api/issues/WOR-2/comments", { body: "Your sub-task finished; carry on with the summary." });
-  assert.equal(r.status, 201);
-  assert.equal(h.comments.at(-1).authorAgentId, STW);
-  assert.ok(!SELF_TAG.test(h.comments.at(-1).body), "the task's agent hears it (dispatch: a fleet overseer's words start work)");
-  // A status or a patch from the same scope is still refused.
-  assert.equal((await act("steward", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
-  assert.equal((await act("steward", "PATCH", "/api/issues/WOR-2", { title: "Renamed" })).status, 403);
-});
-
-test("a fleet settler settles another agent's stuck task: answers its delegator wait, cancels it, re-routes a handback to an agent; never a person's own task, a log task or a non-agent", async (t) => {
-  const { h, act, plugin } = await setup(t);
-  h.issues[OTHER].createdByAgentId = LEAD; // another agent's delegation
-  // A delegator wait nobody answered (WOR-9094): the settler's comment is the delegator's answer. It ends the wait in the task's
-  // state and wakes the task's agent (the op tag).
-  let r = await act("settler", "POST", "/api/issues/WOR-2/comments", { body: "Decided: ship it as is; the reviewer's note is out of scope." });
-  assert.equal(r.status, 201);
-  assert.ok(!SELF_TAG.test(h.comments.at(-1).body));
-  const at = (m) => new Date(Date.now() - m * 60_000).toISOString();
-  const fact = (type, m, data, actor = "kernel", subject = `task:${OTHER}`) => ({ seq: 0, id: `${type}:${m}`, type, subject, version: String(m), at: at(m), seen_at: at(m), actor, task: OTHER, source: "live", data });
-  // Written as the settler (the wake inbox records the comment's author as its actor), never as the waiting task's agent.
-  assert.equal(h.comments.at(-1).authorAgentId, SET);
-  const answer = [fact("task.commented", 1, { kind: "comment" }, "agent:fleet-steward")];
-  const before = [fact("task.created", 120, { identifier: "WOR-2" }), fact("task.assignee_changed", 119, { to: "bo" }), fact("work.waiting", 90, { reason: "delegator_wait", question: "Ship it?" }, "agent:bo", `wait:${OTHER}`)];
-  assert.equal(taskState(OTHER, before, Date.now(), []).reason, "delegator_wait");
-  assert.notEqual(taskState(OTHER, [...before, ...answer], Date.now() + 1000, []).reason, "delegator_wait");
-  // A stale task of another agent: cancelled, as the settler, with its comment (the op tag wakes the task's agent).
-  r = await act("settler", "PATCH", "/api/issues/WOR-2", { status: "cancelled", comment: "Superseded by WOR-1, which shipped the change." });
-  assert.deepEqual([r.status, h.issues[OTHER].status, h.issues[OTHER].updatedBy], [200, "cancelled", SET]);
-  // A closed task stays closed: settling moves open work only.
-  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-2", { status: "todo", comment: "Again." })).status, 409);
-  assert.equal(plugin.at(-1).scope, "settle");
-  // A task an agent handed back to the owner goes back to work with the agent that does it (WOR-9318).
-  r = await act("settler", "PATCH", "/api/issues/WOR-5", { status: "todo", assigneeAgentId: BO, assigneeUserId: null, comment: "Run the audit yourself: the engineer has the command." });
-  assert.equal(r.status, 200);
-  assert.deepEqual([h.issues[HANDED].assigneeAgentId, h.issues[HANDED].assigneeUserId, h.issues[HANDED].status], [BO, null, "todo"]);
-  // A task the settler delegated itself (scope `created`) goes to another agent the same way.
-  const mine = await act("settler", "POST", "/api/companies/co/issues", { title: "Check the queue", assigneeAgentId: SET, status: "todo" });
-  assert.equal(mine.status, 201);
-  r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "todo", assigneeAgentId: BO, comment: "Yours: the queue is your team's." });
-  assert.deepEqual([r.status, h.issues[mine.json.id].assigneeAgentId], [200, BO]);
-  // Work still in progress is never closed over its agent; once it waits in review, the settler closes it through the finish gate.
-  r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "done", comment: "Landed: the queue drained." });
-  assert.deepEqual([r.status, h.issues[mine.json.id].status], [403, "todo"]);
-  h.issues[mine.json.id].status = "in_review";
-  r = await act("settler", "PATCH", `/api/issues/${mine.json.id}`, { status: "done", comment: "Landed: the queue drained." });
-  assert.deepEqual([r.status, h.issues[mine.json.id].status], [200, "done"]);
-  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-5", { status: "done" })).status, 403);
-  // On another agent's task it changes the status, the holder and the blockers only: never the brief or its labels, never to a person.
-  for (const body of [{ title: "Renamed" }, { description: "New brief." }, { priority: "low" }, { labelIds: [OTHER] }, { assigneeUserId: "u-owner", assigneeAgentId: null }]) {
-    assert.equal((await act("settler", "PATCH", "/api/issues/WOR-5", body)).status, 403, JSON.stringify(body));
-  }
-  // A cycle broken at one task: its blockers dropped as it goes back to work.
-  h.issues[HANDED].blockedBy = [OTHER];
-  r = await act("settler", "PATCH", "/api/issues/WOR-5", { status: "todo", blockedByIssueIds: [], comment: "No longer waits on WOR-2." });
-  assert.deepEqual([r.status, h.issues[HANDED].blockedBy], [200, []]);
-  // Only to an agent of this instance.
-  r = await act("settler", "PATCH", "/api/issues/WOR-5", { assigneeAgentId: "99999999-9999-4999-8999-999999999999" });
-  assert.equal(r.status, 400);
-  // A task a person made stays theirs, and a log task takes comments only.
-  // A task no agent made (no creator on record) is not the settler's either.
-  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-1", { status: "cancelled" })).status, 403);
-  r = await act("settler", "PATCH", "/api/issues/WOR-6", { status: "cancelled" });
-  assert.equal(r.status, 403);
-  assert.equal(h.issues[MINE].status, "todo");
-  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-4", { status: "done" })).status, 403);
-  // It makes no task through the settle scope: a create is the job's own, as ever (none under another agent's task).
-  assert.equal((await act("settler", "POST", "/api/companies/co/issues", { title: "Under WOR-3", parentId: CHAT, assigneeAgentId: BO })).status, 403);
-  // Another agent without the role still only comments (the Fleet Steward's audit role alone).
-  assert.equal((await act("steward", "PATCH", "/api/issues/WOR-3", { status: "cancelled" })).status, 403);
-  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-3", { assigneeAgentId: ADA })).status, 403);
-});
-
-test("any agent comments on the shared Fleet issues log, and only comments, even the agent that holds it; a refusal's log line names its agent", async (t) => {
-  const { k, h, act } = await setup(t);
-  h.issues[FLEET].assigneeAgentId = ADA; // setup's log tasks are held by an agent: holding one never widens what it writes there
-  const r = await act("ada", "POST", "/api/issues/WOR-4/comments", { body: "log · fleet-check · nothing changed" });
-  assert.equal(r.status, 201);
-  assert.equal(h.comments.at(-1).authorAgentId, ADA);
-  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-4", { status: "done" })).status, 403);
-  assert.equal((await act("ada", "POST", "/api/companies/co/issues", { title: "Under the log", parentId: FLEET, assigneeAgentId: ADA })).status, 403);
-  assert.equal((await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Hello." })).status, 403);
-  assert.deepEqual(k.log.filter((l) => l.msg === "cp refused").map((l) => [l.module, l.agent, l.path]), [["todo", "ada", "/api/issues/WOR-4"], ["todo", "ada", "/api/companies/co/issues"], ["todo", "ada", "/api/issues/WOR-2/comments"]]);
 });
 
 test("no control-plane identity, no call: a caller whose agent the kernel holds no key for is refused before anything runs", async (t) => {

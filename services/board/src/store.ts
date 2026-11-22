@@ -34,7 +34,7 @@ export interface UsageRecord {
   issueId?: string | null;
   /** The agent's config revision at the run's first call. */
   rev?: string | null;
-  /** agent | advisor | grader | reviewer | fanout | source: from the gateway route or service key, never the caller. */
+  /** The gateway's call kind (agent, advisor, grader, reviewer, check, ci-code-review, ...): from the gateway route or service key, never the caller. */
   kind?: string | null;
   /** How long the call took. */
   ms?: number | null;
