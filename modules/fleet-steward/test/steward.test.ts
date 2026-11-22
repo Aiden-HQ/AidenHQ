@@ -418,3 +418,9 @@ test("when GitHub could not be read, the pr check keeps GitHub incidents open an
   const c = checks({ kernel: w, kv: kvOf(), apps: async () => ({ prs, github_error: true }), alerts: async () => [], openKeys: () => open, now: () => NOW });
   assert.deepEqual((await c.pr()).map((i) => i.key), ["local/app#3", "acme/app#7"]);
 });
+
+test("an open incident keyed Acme/App#7 and a row acme/app#7 are the same incident", async () => {
+  const prs = [{ repo: "acme/app", number: 7, opened_at: ago(2), draft: false }, { repo: "acme/app", number: 8, opened_at: ago(2), draft: false }];
+  const c = checks({ kernel: world({ prs }), kv: kvOf(), apps: async () => ({ prs }), alerts: async () => [], openKeys: () => ["pr:Acme/App#7"], now: () => NOW });
+  assert.deepEqual((await c.pr()).map((i) => i.key), ["Acme/App#7", "acme/app#8"]);
+});

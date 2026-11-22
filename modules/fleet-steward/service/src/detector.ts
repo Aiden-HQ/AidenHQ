@@ -901,7 +901,9 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     async pr() {
       const r = await d.apps<{ prs?: PrRow[]; github_error?: boolean }>("/internal/open-prs");
       if (!r.prs) return undefined;
-      const found = stalePrs(r.prs, now());
+      // A key is matched to an open incident ignoring case (a repo's spelling differs by source and by release), keeping the open one's spelling.
+      const open = new Map(d.openKeys().filter((k) => k.startsWith("pr:")).map((k) => [k.slice(3).toLowerCase(), k.slice(3)]));
+      const found = stalePrs(r.prs, now()).map((x) => ({ ...x, key: open.get(x.key.toLowerCase()) ?? x.key }));
       // GitHub couldn't be read: its open incidents stay open (not recovered), while this server's own change requests (`local/…`) were read.
       if (r.github_error) for (const k of d.openKeys()) if (k.startsWith("pr:") && !k.startsWith("pr:local/")) found.push({ key: k.slice(3), reason: "" });
       return found;

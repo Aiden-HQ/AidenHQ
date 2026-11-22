@@ -29,7 +29,7 @@ it("a recorded PR the warehouse has no row for gets its state from the code host
   const list = async (repo: string) => (calls.push(repo), repo === "acme/app" ? [{ number: 8, draft: true, created_at: "2026-11-22T09:00:00Z" }, { number: 50, created_at: "2026-11-22T09:00:00Z" }] : [{ number: 3, created_at: "2026-11-22T08:00:00Z" }]);
   const out = await recordedOpenPrs(ours, rows, list, none);
   expect(calls).toEqual(["acme/app", "other/tool"]);
-  expect(out.map((x) => `${x.repo}#${x.number}${x.draft ? " draft" : ""}`)).toEqual(["Acme/App#7", "acme/app#8 draft", "other/tool#3"]);
+  expect(out.map((x) => `${x.repo}#${x.number}${x.draft ? " draft" : ""}`)).toEqual(["acme/app#7", "acme/app#8 draft", "other/tool#3"]);
 });
 
 it("a code host failure for a repo the warehouse doesn't hold fails the GitHub read", async () => {
@@ -59,11 +59,23 @@ it("a full open list is not read as closed: each recorded PR missing from it is 
   expect(out.map((x) => `${x.number}${x.draft ? " draft" : ""}`)).toEqual(["1000", "1 draft"]);
 });
 
-it("a mixed-case repo keeps one incident key whether the code host or the warehouse answers", async () => {
+it("every row's repo is lower-case whichever source answers", async () => {
   const ours = [{ repo: "acme/app", number: 7 }, { repo: "acme/app", number: 8 }];
-  const viaHost = await recordedOpenPrs(ours, [], async () => [{ number: 7, created_at: "2026-11-22T08:00:00Z", repo: "Acme/App" }], async () => null);
-  const viaFull = await recordedOpenPrs([ours[1]!], [], async () => Array.from({ length: 500 }, (_, i) => ({ number: 1000 + i })), async () => ({ nameWithOwner: "Acme/App", state: "OPEN", isDraft: false, createdAt: "2026-11-22T08:00:00Z" }));
-  const viaWarehouse = await recordedOpenPrs(ours, [{ ...row("Acme/App", 7), kind: "pr", state: "open" }, { ...row("Acme/App", 8), kind: "pr", state: "open" }], async () => [], none);
-  expect([...viaHost, ...viaFull].map((x) => `${x.repo}#${x.number}`)).toEqual(["Acme/App#7", "Acme/App#8"]);
-  expect(viaWarehouse.map((x) => `${x.repo}#${x.number}`)).toEqual(["Acme/App#7", "Acme/App#8"]);
+  const viaHost = await recordedOpenPrs(ours, [], async () => [{ number: 7, created_at: "2026-11-22T08:00:00Z" }], async () => null);
+  const viaWarehouse = await recordedOpenPrs(ours, [{ ...row("Acme/App", 7), kind: "pr", state: "open" }], async () => [], none);
+  expect([...viaHost, ...viaWarehouse].map((x) => `${x.repo}#${x.number}`)).toEqual(["acme/app#7", "acme/app#7"]);
+});
+
+it("in a full list's per-PR reads, an unreadable PR skips only itself", async () => {
+  const full = Array.from({ length: 500 }, (_, i) => ({ number: 1000 + i }));
+  const read: number[] = [];
+  const pr = async (_r: string, n: number) => {
+    read.push(n);
+    if (n === 1) throw Object.assign(new Error("gone"), { status: 404 });
+    if (n === 2) throw Object.assign(new Error("the kernel said 502 to read: GitHub GET /repos/far/away/pulls: 410 Gone"), { status: 502 });
+    return { state: "OPEN", isDraft: false, createdAt: "2026-11-21T08:00:00Z" };
+  };
+  const out = await recordedOpenPrs([1, 2, 3].map((number) => ({ repo: "far/away", number })), [], async () => full, pr);
+  expect(read).toEqual([1, 2, 3]);
+  expect(out.map((x) => x.number)).toEqual([3]);
 });
