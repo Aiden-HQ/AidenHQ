@@ -64,9 +64,14 @@ if (!gateway || !token || !workspace) fail("only available inside a job's comput
 const flags = {};
 const words = [];
 const fixes = [];
+const value = (i) => {
+  const v = rest[i + 1];
+  if (v === undefined || v.startsWith("--")) fail(`${rest[i]} needs a value\n${usage}`, 2);
+  return v;
+};
 for (let i = 0; i < rest.length; i++) {
-  if (rest[i] === "--fixes") fixes.push(rest[++i]);
-  else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
+  if (rest[i] === "--fixes") fixes.push(value(i)), i++;
+  else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = value(i), i++;
   else if (rest[i] === "--keep" && command === "clone") flags.keep = true;
   else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
   else words.push(rest[i]);

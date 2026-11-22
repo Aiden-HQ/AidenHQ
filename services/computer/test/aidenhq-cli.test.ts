@@ -70,6 +70,9 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   await aidenhq("publish", "acme/app", "fix-login");
   assert.deepEqual(seen.at(-1).body.args.text, { title: "fix(login): stop the loop" });
   assert.equal("body" in seen.at(-1).body.args.text, false);
+  // A flag with no value is refused instead of silently taking the next flag or nothing.
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
+  await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", "--title", "fix(login): x"), (e) => e.code === 2 && /--body-file needs a value/.test(e.stderr));
   // --fixes without --body-file would send a generated-line-only body as the whole description: refused, and nothing is filed.
   const before = seen.length;
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--fixes", "acme/app#8"), (e) => e.code === 2 && /--fixes needs --body-file/.test(e.stderr));
