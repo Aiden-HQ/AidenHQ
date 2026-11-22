@@ -27,6 +27,10 @@ test("the shared rule: a declared server is emitted only with tools, a connectio
   assert.deepEqual(unemittedServers(["slack"], { slack: ["search"] }, {}), ["slack"]); // no connection entry
   assert.deepEqual(unemittedServers(["slack.mcp"], { "slack.mcp": ["search"] }, { "slack.mcp": {} }), ["slack.mcp"]); // a name Codex refuses
   assert.deepEqual(unemittedServers(["apps", "github", "slack"], tools, conns), ["github", "slack"]);
+  // A name that only exists on Object.prototype is not a present server.
+  assert.deepEqual(unemittedServers(["toString"], {}, conns), ["toString"]);
+  assert.deepEqual(unemittedServers(["constructor"], { constructor: ["x"] }, conns), ["constructor"]);
+  assert.equal(emitsServer("toString", tools, conns), false);
   assert.equal(emitsServer("apps", tools, conns), true);
   assert.equal(emitsServer("github", tools, conns), false);
   // The block and the rule agree: a server it lists is one the predicate calls emitted.

@@ -23,9 +23,11 @@ const toml = (v: unknown): string => (Array.isArray(v) ? `[${v.map(toml).join(",
  * refused by name, never silently dropped.
  */
 export function emitsServer(name: string, tools: Record<string, unknown> | undefined, connections: Record<string, unknown>) {
-  const list = tools?.[name];
+  // Own entries only: a declared name like `toString` must not read Object.prototype and pass as present.
+  if (!tools || !Object.hasOwn(tools, name) || !Object.hasOwn(connections, name)) return false;
+  const list = tools[name];
   const hasTools = Array.isArray(list) ? list.length > 0 : list !== undefined && list !== null;
-  return hasTools && Boolean(connections[name]) && /^[a-z0-9_]+$/.test(name);
+  return hasTools && /^[a-z0-9_]+$/.test(name);
 }
 
 /** The declared servers this job's frozen tools and connections don't emit, in declaration order. */
