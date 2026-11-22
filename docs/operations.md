@@ -400,10 +400,12 @@ exact email match only).
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
 runs pinned syft over the host packages, every running image (each image is read from a `docker save` archive, never
-through a mutable tag: the archive is exported from an immutable id that holds the running platform manifest, or from the
-tag itself only while it still names that manifest, rechecked after the save; keyed by the container's own id, or by its
-tag while the tag still names what runs, so findings already held under that id reconcile; an image nothing can read or
-fit is a `targets.tsv` line naming the id and the error, never a silent gap), the product and instance checkouts and each
+through a mutable tag: the archive is exported on the platform the container itself runs — its `ImageManifestDescriptor`,
+which on the containerd store names the platform manifest the container was created from, not the variant the daemon's own
+platform resolves — from an immutable id that holds that manifest, or from the tag itself only while it still names that
+manifest, rechecked after the save; keyed by the container's own id, or by its tag while the tag still names what runs, so
+findings already held under that id reconcile; an image nothing can read or fit is a `targets.tsv` line naming the id and
+the error, never a silent gap), the product and instance checkouts and each
 app's deployed source, into `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
@@ -411,12 +413,15 @@ noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var
 records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
 `src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/` and keeps each target's
 archive in `data/modules/security/sbom/.archives` until its scan. Every image is saved under the lock, from a reference
-resolved there (an immutable id that holds the running platform manifest, else the tag itself), sized as that same
-reference, and the plan budgets the saves across the whole batch before any writes, charging only the archive retained
+resolved there on the container's own platform (an immutable id that holds its platform manifest, else the tag itself),
+sized as that same reference and platform (an index reports the whole index while a platform save writes one manifest),
+and the plan budgets the saves across the whole batch before any writes, charging only the archive retained
 between scans (each scan's workspace is freed before the next). An image the batch cannot fit beside the archives already
 retained is a line, not a full disk; free space is checked again before each scan, with every archive still on disk. It empties the work dir after every target, keeps 30 GB free, and refuses an image that needs more
 than half the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown
-demand can't be judged to fit). A second pass started while one holds `.lock` skips rather than running two at once.
+demand can't be judged to fit). A container that reports no platform descriptor (an older daemon, or a single-platform
+store) is read on the Docker server platform, and the pass says on stderr how many it did that for. A second pass started
+while one holds `.lock` skips rather than running two at once.
 
 The container enumeration, the image target list and every `docker save` are taken under the host's apply lock
 (`data/apply.lock`), each Docker call bounded by a timeout and the whole phase — from `docker version` before the first

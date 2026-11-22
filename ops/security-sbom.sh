@@ -141,12 +141,33 @@ docker_call() {
   fi
   timeout "$secs" docker "$@"
 }
-# A tag's platform manifest as the daemon answers it, or its top-level id on a daemon without platform resolution.
-pin_of() { # <tag>
-  local id
-  id="$(docker_call 5 image inspect --platform "$platform" -f '{{.Id}}' "$1" 2>/dev/null)"
+# A reference's platform manifest as the daemon answers it for <platform>, or its top-level id on a daemon without
+# platform resolution. <platform> is a container's own (below) when it runs another variant of the image than the daemon's.
+pin_of() { # <ref> [platform]
+  local id plat="${2:-$platform}"
+  id="$(docker_call 5 image inspect --platform "$plat" -f '{{.Id}}' "$1" 2>/dev/null)"
   [ -n "$id" ] || id="$(docker_call 5 image inspect -f '{{.Id}}' "$1" 2>/dev/null)"
   printf '%s' "$id"
+}
+# The platform a container runs, from its `ImageManifestDescriptor`: on the containerd image store the container's `.Image`
+# is the top-level index and the daemon's platform can name another variant of it (an emulated arm64 container on an amd64
+# host), so exporting or sizing through the server platform can hand back a variant the container is not running. The
+# descriptor names the platform manifest the container was created from, which is also its identity. Empty on a daemon
+# that does not report one; the caller then keeps the server platform.
+descriptor_platform() { # <ImageManifestDescriptor json>
+  local p os arch variant
+  [ -n "$1" ] && [ "$1" != null ] || return 1
+  p="$(printf '%s' "$1" | sed -n 's/.*"platform":{\([^}]*\)}.*/\1/p')"
+  [ -n "$p" ] || return 1
+  os="$(printf '%s' "$p" | sed -n 's/.*"os":"\([^"]*\)".*/\1/p')"
+  arch="$(printf '%s' "$p" | sed -n 's/.*"architecture":"\([^"]*\)".*/\1/p')"
+  variant="$(printf '%s' "$p" | sed -n 's/.*"variant":"\([^"]*\)".*/\1/p')"
+  [ -n "$os" ] && [ -n "$arch" ] || return 1
+  if [ -n "$variant" ]; then printf '%s/%s/%s' "$os" "$arch" "$variant"; else printf '%s/%s' "$os" "$arch"; fi
+}
+descriptor_manifest() { # <ImageManifestDescriptor json>: the platform manifest the container runs
+  [ -n "$1" ] && [ "$1" != null ] || return 1
+  printf '%s' "$1" | sed -n 's/.*"digest":"\(sha256:[0-9a-f]*\)".*/\1/p'
 }
 sock_gid="$(stat -c %g /var/run/docker.sock)"
 # The deadline starts with the lock, not with snapshot(): `docker version` and the inspects below run under the same
@@ -175,12 +196,13 @@ platform_refs() { # <platform manifest id> <container .Image>
     [ -n "$ref" ] && [ "$ref" != "<none>:<none>" ] && printf '%s\n' "$ref"
   done < <(docker_call 10 image ls -a --no-trunc --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
 }
-# The first reference that provably holds the platform manifest <pin>: `docker image inspect --platform` on it names <pin>,
-# and it is an image record the daemon can hand to `docker save` (a bare platform manifest inside a multi-platform index is
-# not one, which `docker image inspect` shows). Falls back to the pin itself for a single-platform store that holds the
-# manifest as an image record the inspect doesn't resolve; the save then either works or the next reference runs.
-resolve_ref() { # <pin manifest> <container .Image>
-  local pin="$1" image="$2" candidate
+# The first reference that provably holds the platform manifest <pin>: `docker image inspect --platform <platform>` on it
+# names <pin>, and it is an image record the daemon can hand to `docker save` (a bare platform manifest inside a
+# multi-platform index is not one, which `docker image inspect` shows). Falls back to the pin itself for a single-platform
+# store that holds the manifest as an image record the inspect doesn't resolve; the save then either works or the next
+# reference runs.
+resolve_ref() { # <pin manifest> <container .Image> [platform]
+  local pin="$1" image="$2" plat="${3:-$platform}" candidate
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     # An immutable id (the pin itself, or the container's index) that the daemon holds as an image record is the safest
@@ -192,28 +214,34 @@ resolve_ref() { # <pin manifest> <container .Image>
         fi
         continue ;;
     esac
-    if [ "$(pin_of "$candidate")" = "$pin" ]; then printf '%s' "$candidate"; return 0; fi
+    if [ "$(pin_of "$candidate" "$plat")" = "$pin" ]; then printf '%s' "$candidate"; return 0; fi
   done < <(platform_refs "$pin" "$image")
   printf '%s' "$pin"
 }
 # Export the image <pin> to <dest> from <ref>, the reference resolved and sized under the lock. The ref is re-read first:
 # if it no longer names <pin> (a tag another pull moved, an index a prune dropped) nothing is written, so a different image
 # is never saved under this target. A save from an immutable id cannot name anything but the id; a tag is checked again
-# after the save as well. Returns 1 with export_err.
+# after the save as well. <platform> is the platform the container runs, so a multi-platform index yields exactly its
+# variant. Returns 1 with export_err.
 export_err=""
-export_image() { # <pin manifest> <ref> <dest tar>
-  local pin="$1" ref="$2" dest="$3"
+export_image() { # <pin manifest> <ref> <dest tar> [platform]
+  local pin="$1" ref="$2" dest="$3" plat="${4:-$platform}"
   export_err=""
-  if [ "$ref" != "$pin" ] && [ "$(pin_of "$ref")" != "$pin" ]; then
-    export_err="the reference moved during this pass; not scanning a different image"; return 1
+  # Re-read the reference on the container's platform before writing: a tag another pull moved, or an index whose
+  # platform manifest changed, must not put a different image under this target. A bare platform manifest inside an index
+  # is not an image record, so a reference the daemon does not hold plainly is the resolver's pin and the save decides.
+  if [ "$ref" != "$pin" ] && docker_call 5 image inspect -f '{{.Id}}' "$ref" >/dev/null 2>&1; then
+    if [ "$(pin_of "$ref" "$plat")" != "$pin" ]; then
+      export_err="the reference moved during this pass; not scanning a different image"; return 1
+    fi
   fi
-  if ! export_err="$(docker_call 900 image save --platform "$platform" -o "$dest" "$ref" 2>&1)"; then
+  if ! export_err="$(docker_call 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; then
     rm -f "$dest"; return 1
   fi
   case "$ref" in
     sha256:*|*@sha256:*) export_err=""; return 0 ;;
   esac
-  if [ "$(pin_of "$ref")" = "$pin" ]; then export_err=""; return 0; fi
+  if [ "$(pin_of "$ref" "$plat")" = "$pin" ]; then export_err=""; return 0; fi
   rm -f "$dest"; export_err="the tag moved during this pass; not scanning a different image"; return 1
 }
 # The batch's images, decided from one snapshot of the containers, taken under the host's apply lock: between an apply's
@@ -224,8 +252,9 @@ export_image() { # <pin manifest> <ref> <dest tar>
 plan_target=(); plan_source=(); plan_pin=(); plan_ref=()
 plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); }
 snapshot() {
-  local listing rows cid row image config label want key raw size size_gb avail ref saved candidate archive pin now
-  local -A running=() tags=() manifests=() pinned=()
+  local listing rows cid row image config desc label want key raw size size_gb avail ref saved candidate archive pin now
+  local plat avail_now man nodesc
+  local -A running=() tags=() manifests=() pinned=() plat_of=() desc_man=()
   if ! listing="$(docker_call 10 ps -q 2>&1)"; then
     echo "security-sbom: could not enumerate containers (${listing:-docker ps failed}); keeping the previous batch" >&2
     return 1
@@ -236,11 +265,20 @@ snapshot() {
   local -a cids=()
   while IFS= read -r cid; do [ -n "$cid" ] && cids+=("$cid"); done <<< "$listing"
   local -a missing=()
-  if ! rows="$(docker_call 15 inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' "${cids[@]}" 2>/dev/null)"; then
+  # The platform manifest descriptor is read with the container: on the containerd image store `.Image` is the top-level
+  # index, and the descriptor names the platform manifest (os/arch[/variant] and digest) this container was created from.
+  # It is the last field, because a label is optional (`-` when absent) and a compact JSON value holds no space.
+  local fmt_full='{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{else}}-{{end}} {{json .ImageManifestDescriptor}}'
+  # A daemon that predates `ImageManifestDescriptor` fails the template itself, not just one container. Its containers are
+  # then read with the older template and an empty descriptor, so the pass keeps publishing on the server platform.
+  local fmt_old='{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{else}}-{{end}}'
+  if ! rows="$(docker_call 15 inspect -f "$fmt_full" "${cids[@]}" 2>/dev/null)"; then
     rows=""
     for cid in "${cids[@]}"; do
-      if row="$(docker_call 10 inspect -f '{{.Id}} {{.Image}} {{.Config.Image}} {{with index .Config.Labels "com.docker.compose.image"}}{{.}}{{end}}' "$cid" 2>/dev/null)"; then
+      if row="$(docker_call 10 inspect -f "$fmt_full" "$cid" 2>/dev/null)"; then
         rows+="$row"$'\n'
+      elif row="$(docker_call 10 inspect -f "$fmt_old" "$cid" 2>/dev/null)"; then
+        rows+="$row null"$'\n'
       else
         missing+=("$cid")
       fi
@@ -267,20 +305,36 @@ snapshot() {
     echo "security-sbom: docker inspect answered for no running container; keeping the previous batch" >&2
     return 1
   fi
-  while read -r cid image config label; do
+  nodesc=0
+  while read -r cid image config label desc; do
     [ -n "$cid" ] || continue
+    [ "$label" = - ] && label=""
     case "$config" in *anchore/syft*) continue ;; esac
     running[$image]=1
+    # The platform this container runs, and the manifest it was created from. Without a descriptor (an older daemon, or a
+    # single-platform store) the server platform is the only answer there is, and the pass says how many it read that way.
+    plat="$(descriptor_platform "$desc" || true)"
+    if [ -z "$plat" ]; then plat="$platform"; nodesc=$((nodesc + 1)); fi
+    : "${plat_of[$image]:=$plat}"
+    man="$(descriptor_manifest "$desc" || true)"
+    [ -n "$man" ] && : "${desc_man[$image]:=$man}"
     if [ -n "$label" ]; then : "${manifests[$image]:=$label}"; fi
     [ "${config#sha256:}" = "$config" ] || continue
-    # What the tag names right now, read once: the id the two tests below judge, and the identity carried forward as the
-    # pin. Reading the tag again later would pin whatever it names then, not what the container runs.
-    now="$(docker_call 5 image inspect --platform "$platform" -f '{{.Id}}' "$config" 2>/dev/null)"
-    { [ -n "$label" ] && [ "$now" = "$label" ]; } \
-      || [ "$(docker_call 5 image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ] || continue
+    # What the tag names right now, read once on the container's own platform: the id the two tests below judge, and the
+    # identity carried forward as the pin. Reading the tag again later would pin whatever it names then, not what the
+    # container runs.
+    now="$(docker_call 5 image inspect --platform "$plat" -f '{{.Id}}' "$config" 2>/dev/null)"
+    if { [ -n "$man" ] && [ "$now" = "$man" ]; } || { [ -n "$label" ] && [ "$now" = "$label" ]; }; then
+      :
+    elif [ "$(docker_call 5 image inspect -f '{{.Id}}' "$config" 2>/dev/null)" = "$image" ]; then
+      :
+    else
+      continue
+    fi
     { [ -z "${tags[$image]:-}" ] || [[ "$config" < "${tags[$image]}" ]]; } || continue
-    tags[$image]="$config"; pinned[$image]="$now"
+    tags[$image]="$config"; pinned[$image]="${desc_man[$image]:-$now}"
   done <<< "$rows"
+  [ "$nodesc" -eq 0 ] || echo "security-sbom: $nodesc container(s) report no platform manifest descriptor; read on the Docker server platform $platform" >&2
   plan_target=(); plan_source=(); plan_pin=(); plan_ref=()
   # Archives wait here, not in $work, which each scan empties. Space is budgeted across the whole plan: every archive
   # stays on disk until its scan, so a later image must still fit beside the earlier ones above the floor.
@@ -292,22 +346,28 @@ snapshot() {
     # already held under its id unverified beside the new ones.
     want="${tags[$image]:-${manifests[$image]:-$image}}"
     key="${tags[$image]:-$image}"
-    # The platform manifest this target stands for: the identity the tag check proved (`pinned`), else what compose
-    # recorded, else `pin_of` resolving the container's index to the platform manifest inside it. Never a fresh read of
-    # the tag, which another pull could have moved since the check.
-    if [ -n "${tags[$image]:-}" ]; then pin="${pinned[$image]:-}"; else pin="$(pin_of "$want")"; fi
+    plat="${plat_of[$image]:-$platform}"
+    # The platform manifest this target stands for: the container's own descriptor, the identity the tag check proved
+    # (`pinned`), else what compose recorded, else `pin_of` resolving the container's index to the platform manifest
+    # inside it — all read on the container's own platform. Never a fresh read of the tag, which another pull could have
+    # moved since the check.
+    if [ -n "${desc_man[$image]:-}" ]; then pin="${desc_man[$image]}"
+    elif [ -n "${tags[$image]:-}" ]; then pin="${pinned[$image]:-}"
+    else pin="$(pin_of "$want" "$plat")"; fi
     [ -n "$pin" ] || pin="$want"
     # The reference the save will read, resolved now, while the lock still holds the store still. Discovering it here, not
     # after the size checks, is what lets an image whose own id is gone but whose index another tag holds still be
     # exported instead of dropped as unreadable.
-    if ! ref="$(resolve_ref "$pin" "$image")"; then
+    if ! ref="$(resolve_ref "$pin" "$image" "$plat")"; then
       plan_add "image:$key" "fail:docker save: no local image exports $want" "$pin" "$image"; continue
     fi
-    # Size the reference the save will read, not some other one that happens to answer: a tag pointing at an index that
-    # contains the running platform is sized as that index, which is what `docker save --platform` writes from.
+    # Size the very variant the save will write, through the very reference it will read. `docker image inspect` on an
+    # index reports the index's total, while `docker save --platform` writes one platform manifest, so the size is read
+    # with the same `--platform` resolution the save uses. A daemon that cannot resolve a platform (a single-platform
+    # store) answers the plain inspect instead.
     raw=""; saved=""
-    if raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1
-    fi
+    if raw="$(docker_call 5 image inspect --platform "$plat" -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
+    if [ -z "$saved" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
     if [ -z "$saved" ]; then
       plan_add "image:$key" "fail:docker image inspect: ${raw:-failed}" "$pin" "$image"; continue
     fi
@@ -321,13 +381,18 @@ snapshot() {
     # The archive is what stays on disk beside the others (each scan's workspace is freed before the next, and rechecked
     # against free space right before that scan), so that is what the batch budget is judged on: an image whose save
     # would not fit beside the archives already retained is a line and writes no bytes.
+    # Free space is read again here, with the archives already written: the plan's budget counted them, but another
+    # writer on the same filesystem can have taken room since, and a save that starts below the floor fills the disk the
+    # host runs on. A target that no longer fits is a line and writes no bytes.
+    avail_now=$(( $(free_gb) - min_free_gb ))
+    [ "$avail_now" -lt "$avail" ] && avail="$avail_now"
     if [ "$avail" -lt "$size_gb" ]; then
       plan_add "image:$key" "fail:skipped: ${size_gb} GB image does not fit in the ${avail} GB of room above the ${min_free_gb} GB floor on $out" "$pin" "$ref"; continue
     fi
     # Exported now, under the lock, from the reference resolved above: the archive holds exactly what runs, and nothing
     # that moves after the lock is released can change it. The scan-time path only re-opens archives.
     archive="$archives/${#plan_target[@]}.tar"
-    if export_image "$pin" "$ref" "$archive"; then
+    if export_image "$pin" "$ref" "$archive" "$plat"; then
       plan_add "image:$key" "archive:$archive" "$pin" "$ref"
       # Only the archive is retained between images; each scan's workspace is freed before the next, and is rechecked
       # against free space right before that scan. Charging twice here would reject an image that does fit.

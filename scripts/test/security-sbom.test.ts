@@ -29,6 +29,10 @@ async function run(env = {}, {
   tags = { "aidenhq/board:local": "sha256:1111" },
   manifests = {},
   sizes = {},
+  heldIds = [],
+  noDescriptorField = false,
+  platformManifests = {},
+  platformSizes = {},
   held = null,
   inspectErrors = [],
   saveErrors = {},
@@ -46,11 +50,14 @@ async function run(env = {}, {
   const containersFile = join(dir, "containers");
   const tagsFile = join(dir, "tags");
   const heldFile = join(dir, "held");
+  const heldIdsFile = join(dir, "held-ids");
   const brokenFile = join(dir, "broken");
   const saveErrorsFile = join(dir, "save-errors");
   const sizesFile = join(dir, "sizes");
   const sizeErrorsFile = join(dir, "size-errors");
   const sizeJunkFile = join(dir, "size-junk");
+  const platformManifestsFile = join(dir, "platform-manifests");
+  const platformSizesFile = join(dir, "platform-sizes");
   writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\necho 0\n"); // the Docker socket's group
   // `df -Pk <dir>`: the fake filesystem's free space in 1K blocks, so a test can put the pass near the floor.
   writeFileSync(join(dir, "bin/df"), "#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' \"${FAKE_FREE_KB:-400000000}\"\n");
@@ -107,8 +114,12 @@ case "$1" in
       done
     fi
     case "$3" in
+      # The format is id, .Image, .Config.Image, label (a dash when absent, the with-block's else) and the platform
+      # manifest descriptor (the last field, compact JSON or null). A daemon without the field rejects the template, as
+      # docker does for an unknown property.
+      *ImageManifestDescriptor*) if [ -n "$NO_DESCRIPTOR_FIELD" ]; then echo "template: :1:6: executing \"template\" at <.ImageManifestDescriptor>: can't evaluate field ImageManifestDescriptor" >&2; exit 1; fi; cut -f1,2,3,4,5 "$CONTAINERS" ;;
       # The label column is empty for a container without one, as the format's with-block renders an absent label.
-      *com.docker.compose.image*) cut -f1-4 "$CONTAINERS" ;;
+      *com.docker.compose.image*) cut -f1,2,3,4 "$CONTAINERS" ;;
       *) cut -f1-3 "$CONTAINERS" ;;
     esac ;;
   image)
@@ -141,15 +152,28 @@ case "$1" in
     fi
     if [ "$1" = inspect ]; then
       shift
-      col=2
+      col=2; plat_req=""
+      if [ "$1" = --platform ]; then plat_req="$2"; shift 2; fi
       if [ "$1" = -f ] && [ "$2" = '{{.Size}}' ]; then
         # An image's size on disk, for the room its save and unpack need.
         shift 2
+        # A per-platform size (ref<TAB>platform<TAB>bytes) wins: one index's variants have different sizes.
+        if [ -n "$plat_req" ]; then
+          plat_size="$(awk -F '\\t' -v ref="$1" -v plat="$plat_req" '$1 == ref && $2 == plat { print $3; found = 1 } END { exit !found }' "$PLATFORM_SIZES")" && { printf '%s\\n' "$plat_size"; exit 0; }
+        fi
         junk="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $2; found = 1 }' "$SIZE_JUNK")"
         if [ -n "$junk" ]; then printf '%s\\n' "$junk"; exit 0; fi
+        # The reference is what a save will read: an id that is held, or a tag in the table. A bare platform manifest
+        # inside an index is not an image record, so it does not answer a size.
+        if [ -n "$plat_req" ]; then
+          if ! grep -qxF -- "$1" "$HELD" && [ -z "$(awk -F '\\t' -v ref="$1" '$1 == ref && $3 != "" { print $1 }' "$TAGS")" ]; then
+            echo "Error response from daemon: No such image: $1" >&2; exit 1
+          fi
+        fi
         if grep -qxF -- "$1" "$SIZE_ERRORS"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
         found="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $2; found = 1 }' "$SIZES")"
         if [ -n "$found" ]; then printf '%s\\n' "$found"; exit 0; fi
+        if grep -qxF -- "$1" "$HELD_IDS"; then printf '0\\n'; exit 0; fi
         # A configured tag resolves to the image it names, as the daemon does; the table holds ref<TAB>id<TAB>manifest.
         # An image id in the table's first column is that image, not a tag naming another one.
         by_tag="$(awk -F '\\t' -v ref="$1" '$1 == ref && $3 != "" { print $2; found = 1 }' "$TAGS")"
@@ -158,11 +182,20 @@ case "$1" in
         if grep -qxF -- "$1" "$BROKEN"; then echo "Error response from daemon: cannot inspect $1: unexpected EOF" >&2; exit 1; fi
         echo "Error response from daemon: No such image: $1" >&2; exit 1
       fi
-      plat=""
-      if [ "$1" = --platform ]; then plat=1; col=3; shift 2; fi
-      [ "$1" = -f ] && shift 2
+      plat="$plat_req"
+      if [ -n "$plat" ]; then col=3; fi
+      tmpl=""
+      if [ "$1" = -f ]; then tmpl="$2"; shift 2; fi
       if [ "$#" -eq 0 ]; then cut -f"$col" "$TAGS"; exit 0; fi
-      found="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $'"$col"'; found = 1 }' "$TAGS")"
+      # A per-platform manifest (ref<TAB>platform<TAB>manifest) wins over the tag table's single manifest: a platform read
+      # resolves a tag or an index id to the manifest for that platform.
+      if [ -n "$plat" ]; then
+        per_plat="$(awk -F '\\t' -v ref="$1" -v p="$plat" '$1 == ref && $2 == p { print $3; found = 1 } END { exit !found }' "$PLATFORM_MANIFESTS")" && found="$per_plat"
+      fi
+      # A plain id read (no --platform) answers for an image id the daemon holds, never from the tag table's manifest
+      # column: on the containerd store the platform manifest inside an index is not an image record.
+      if [ -z "$plat" ] && [ "$tmpl" = '{{.Id}}' ] && grep -qxF -- "$1" "$HELD"; then printf '%s\\n' "$1"; exit 0; fi
+      if [ -z "$found" ]; then found="$(awk -F '\\t' -v ref="$1" '$1 == ref { print $'"$col"'; found = 1 }' "$TAGS")"; fi
       # A tag that moves mid-pass: after N reads of its platform manifest it names another image build.
       if [ -n "$plat" ]; then
         n=0; [ -f "$DRIFT_COUNT/$(printf '%s' "$1" | sha256sum | cut -c1-16)" ] && read -r n < "$DRIFT_COUNT/$(printf '%s' "$1" | sha256sum | cut -c1-16)"
@@ -189,9 +222,14 @@ esac
 exit 0
 `);
   for (const f of ["stat", "docker", "df"]) chmodSync(join(dir, "bin", f), 0o755);
-  writeFileSync(containersFile, containers.map((c) => `${c.id}\t${c.image}\t${c.config}\t${c.label ?? ""}`).join("\n") + "\n");
+  // The label column is a dash when absent, as the script's with-block else renders it: an empty field would collapse
+  // when the script splits the inspect output on whitespace.
+  writeFileSync(containersFile, containers.map((c) => `${c.id}\t${c.image}\t${c.config}\t${c.label ?? "-"}\t${c.descriptor === undefined ? "null" : JSON.stringify(c.descriptor)}`).join("\n") + "\n");
+  writeFileSync(platformManifestsFile, Object.entries(platformManifests).map(([ref, m]) => Object.entries(m).map(([p, v]) => `${ref}\t${p}\t${v}`).join("\n")).filter(Boolean).join("\n") + "\n");
+  writeFileSync(platformSizesFile, Object.entries(platformSizes).map(([ref, m]) => Object.entries(m).map(([p, v]) => `${ref}\t${p}\t${v}`).join("\n")).filter(Boolean).join("\n") + "\n");
   writeFileSync(tagsFile, Object.entries(tags).map(([ref, id]) => `${ref}\t${id}\t${manifests[ref] ?? id}\t${sizes[ref] ?? 0}`).join("\n") + "\n");
   writeFileSync(heldFile, (held ?? [...containers.map((c) => c.image), ...Object.values(tags)]).join("\n") + "\n");
+  writeFileSync(heldIdsFile, heldIds.join("\n") + "\n");
   writeFileSync(brokenFile, inspectErrors.join("\n") + "\n");
   writeFileSync(saveErrorsFile, Object.entries(saveErrors).map(([id, err]) => `${id}\t${err}`).join("\n") + "\n");
   writeFileSync(sizesFile, Object.entries(sizes).map(([ref, bytes]) => `${ref}\t${bytes}`).join("\n") + "\n");
@@ -210,8 +248,8 @@ exit 0
       cwd: dirname(scriptPath_),
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
-        AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, BROKEN: brokenFile,
-        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PS_FAILS: psFails ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
+        AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, HELD_IDS: heldIdsFile, BROKEN: brokenFile,
+        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
         DIR: dir, ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
@@ -326,7 +364,7 @@ test("security-sbom: a moved tag with the compose platform manifest is scanned f
   assert.equal(status, 0, out);
   const scanned = targets.find((t) => t[0] === "image:sha256:1111");
   assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.notEqual(scanned[1], "-", "the target reached syft");
+  assert.notEqual(scanned[1], "-", `the target reached syft: ${scanned[2]}`);
   assert.ok(!targets.some((t) => t[0] === "image:sha256:2222"), "the manifest id is not a second key for the same image");
   assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:2222")), `no save of the manifest id:\n${calls.join("\n")}`);
   const call = syft(calls, "image:sha256:1111");
@@ -348,7 +386,7 @@ test("security-sbom: a manifest with no image record of its own is exported from
   assert.equal(status, 0, out);
   const scanned = targets.find((t) => t[0] === "image:sha256:index");
   assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.notEqual(scanned[1], "-", "the target reached syft");
+  assert.notEqual(scanned[1], "-", `the target reached syft: ${scanned[2]}`);
   assert.ok(calls.some((c) => c.startsWith("save ") && c.includes("sha256:index")), `nothing exported the holding index:\n${calls.join("\n")}`);
   assert.match(syft(calls, "image:sha256:index").line, /docker-archive:\/image\.tar/);
   assert.ok(!targets.some((t) => t[0] === "image:sha256:2222"), "the manifest id is not a second key for the same image");
@@ -495,7 +533,7 @@ test("security-sbom: a container whose own id is exportable is scanned from that
   assert.equal(status, 0, out);
   const scanned = targets.find((t) => t[0] === "image:sha256:index");
   assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.notEqual(scanned[1], "-", "it reached syft");
+  assert.notEqual(scanned[1], "-", `it reached syft: ${scanned[2]}\n${calls.join("\n")}`);
   assert.ok(calls.some((c) => c.startsWith("save ") && c.includes("sha256:index")), `the own id was not exported:\n${calls.join("\n")}`);
   assert.match(syft(calls, "image:sha256:index").line, /docker-archive:\/image\.tar/);
   assert.doesNotMatch(scanned[2], /No such image/, "it is not recorded as a gap");
@@ -574,7 +612,7 @@ test("security-sbom: an image is sized through any local reference that can expo
   assert.equal(status, 0, out);
   const scanned = targets.find((t) => t[0] === "image:sha256:gone");
   assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.notEqual(scanned[1], "-", "it reached syft");
+  assert.notEqual(scanned[1], "-", `it reached syft: ${scanned[2]}\n${calls.join("\n")}`);
   assert.doesNotMatch(scanned[2], /no local image exports|No such image/);
   assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" other:local")), `the other tag did not export it:\n${calls.join("\n")}`);
   assert.match(syft(calls, "image:sha256:gone").line, /docker-archive:\/image\.tar/);
@@ -619,4 +657,76 @@ test("security-sbom: an image is sized as the reference that is exported, not an
   assert.equal(line[1], "-", "the oversized export was not scanned");
   assert.match(line[2], /does not fit/);
   assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran for an image that does not fit:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a container's own platform is what is inspected and exported", { skip: NOT_LINUX }, async () => {
+  // An amd64 host running the arm64 variant of a multi-platform image, with no compose label: the daemon resolves the
+  // index to its amd64 manifest, but the container's `ImageManifestDescriptor` names the arm64 one it runs. Exporting or
+  // sizing through the server platform would publish packages for a variant the container is not running.
+  const arm = { digest: "sha256:arm64", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", descriptor: arm }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "sha256:index": "sha256:amd64" },
+    platformManifests: { "sha256:index": { "linux/arm64/v8": "sha256:arm64" } },
+    platformSizes: { "sha256:index": { "linux/arm64/v8": 1024 } },
+    held: ["sha256:index"],
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(scanned[1], "-", `the running image was scanned: ${scanned[2]}`);
+  const save = calls.find((c) => c.startsWith("save "));
+  assert.ok(save, `nothing was exported:\n${calls.join("\n")}`);
+  assert.match(save, /--platform linux\/arm64\/v8 /, `the container's platform was not used:\n${save}`);
+  assert.ok(!calls.some((c) => c.startsWith("save ") && /--platform linux\/amd64 /.test(c)), `the daemon's platform was exported:\n${calls.join("\n")}`);
+  // The compose label is the arm64 manifest the container runs, so the target stays the tag.
+  assert.ok(!targets.some((t) => t[0] === "image:sha256:arm64"), "the manifest id is not a second key for the same image");
+});
+
+test("security-sbom: a moved tag on an emulated container is a line unless the tag names its own platform", { skip: NOT_LINUX }, async () => {
+  // The tag moved to a rebuilt image; the container runs the arm64 variant whose manifest no local reference holds. The
+  // tag resolves to a different arm64 build, so the pass must say so rather than export the amd64 variant the daemon
+  // would otherwise answer.
+  const arm = { digest: "sha256:arm64", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", descriptor: arm }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    manifests: { "aidenhq/board:local": "sha256:9999" },
+    platformManifests: { "aidenhq/board:local": { "linux/arm64/v8": "sha256:other-arm" } },
+    // The container's own index is gone and no reference holds its arm64 manifest.
+    held: ["sha256:some-other-index"],
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "a different arm64 build was not scanned");
+  assert.match(line[2], /No such image|did not resolve|moved/, line[2]);
+  assert.ok(!calls.some((c) => c.startsWith("save ") && /--platform linux\/amd64 /.test(c)), `the daemon's platform was exported:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a daemon without a platform descriptor keeps the server platform and says so", { skip: NOT_LINUX }, async () => {
+  // An older daemon or a single-platform store reports no `ImageManifestDescriptor`. The pass then reads on the server
+  // platform, as before, and prints how many containers it did that for, so a platform assumption is never silent.
+  const { status, out, targets } = await run();
+  assert.equal(status, 0, out);
+  assert.match(out, /1 container\(s\) report no platform manifest descriptor; read on the Docker server platform linux\/amd64/);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+});
+
+test("security-sbom: a daemon whose template has no descriptor field still publishes on the server platform", { skip: NOT_LINUX }, async () => {
+  // `ImageManifestDescriptor` is a field a daemon either has or does not; asking for it on an older one fails the whole
+  // template. The pass must fall back to the older template and read on the server platform, not keep the old batch
+  // forever because docker refuses the format.
+  const { status, out, targets } = await run({ NO_DESCRIPTOR_FIELD: "1" }, {
+    noDescriptorField: true,
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    heldIds: ["sha256:1111"],
+  });
+  assert.equal(status, 0, out);
+  assert.match(out, /1 container\(s\) report no platform manifest descriptor; read on the Docker server platform linux\/amd64/);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
 });
