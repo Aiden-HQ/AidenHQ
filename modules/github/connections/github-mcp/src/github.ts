@@ -93,8 +93,8 @@ export const GRAPHQL = {
   setStatus: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
-  // Comment ids are 64-bit: `databaseId` is the deprecated 32-bit Int, `fullDatabaseId` the BigInt (a JSON string).
-  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 100) { pageInfo { hasNextPage } nodes { databaseId fullDatabaseId url body author { __typename login } } } } } } } }`,
+  // Comment ids are 64-bit: `fullDatabaseId` (a BigInt, a JSON string). `databaseId` is the deprecated 32-bit Int and isn't read.
+  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 100) { pageInfo { hasNextPage } nodes { fullDatabaseId url body author { __typename login } } } } } } } }`,
 } as const;
 /** The most threads one resolve request takes (a post resolves at most 100). */
 export const RESOLVE_MAX = 100;
@@ -103,6 +103,13 @@ const resolveDoc = (n: number) => `mutation(${Array.from({ length: n }, (_, i) =
 const GRAPHQL_DOCS = new Set<string>([...Object.values(GRAPHQL), ...Array.from({ length: RESOLVE_MAX }, (_, i) => resolveDoc(i + 1))]);
 
 export class GitHubRefused extends Error {}
+
+/** A review comment's id from `fullDatabaseId` (a BigInt, sent as a JSON string): GitHub's `databaseId` is 32-bit and deprecated. */
+export function reviewCommentId(c: { fullDatabaseId?: string | null }): number {
+  const id = Number(c.fullDatabaseId);
+  if (!Number.isSafeInteger(id) || id < 1) throw new GitHubRefused(`GitHub didn't return a usable review comment id (fullDatabaseId: ${JSON.stringify(c.fullDatabaseId ?? null)})`);
+  return id;
+}
 
 export function guard(method: string, path: string, body?: unknown): void {
   if (!ROUTES.some((r) => r.method === method && r.path.test(path))) throw new GitHubRefused(`refused a GitHub request that isn't allowed: ${method} ${path}`);
@@ -457,10 +464,8 @@ export class GitHub {
    * GitHub takes a reply only on a thread root, so an id from a reply resolves to its thread's first comment.
    */
   private async threadRoot(ref: Ref, comment: number): Promise<number> {
-    type RawComment = { databaseId: number; fullDatabaseId?: string | null };
-    type Threads = { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { comments: { pageInfo?: { hasNextPage: boolean }; nodes: RawComment[] } }[] } } | null } | null };
+    type Threads = { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { comments: { pageInfo?: { hasNextPage: boolean }; nodes: { fullDatabaseId?: string | null }[] } }[] } } | null } | null };
     type ThreadsPage = NonNullable<NonNullable<Threads["repository"]>["pullRequest"]>["reviewThreads"];
-    const id = (c: RawComment) => Number(c.fullDatabaseId ?? c.databaseId);
     let after: string | null = null;
     // Only an exhaustive read may say the comment is missing: a capped page or a thread whose comments were cut short
     // leaves the answer unknown, and that is reported as such.
@@ -472,7 +477,7 @@ export class GitHub {
       for (const t of threads.nodes) {
         if (t.comments.pageInfo?.hasNextPage) complete = false;
         const [first, ...rest] = t.comments.nodes;
-        if (first && (id(first) === comment || rest.some((c) => id(c) === comment))) return id(first);
+        if (first && (reviewCommentId(first) === comment || rest.some((c) => reviewCommentId(c) === comment))) return reviewCommentId(first);
       }
       if (!threads.pageInfo.hasNextPage) break;
       after = threads.pageInfo.endCursor;

@@ -10,7 +10,7 @@ import type { z } from "zod";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import type { GitHubApp } from "./github-app.js";
-import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, type Ref } from "./github.js";
+import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, reviewCommentId, type Ref } from "./github.js";
 import {
   ACK_HEAD, FINDING_MARK, SCALES, comboText, NoticeArgsSchema, PostArgsSchema, ReplyArgsSchema, RUN_MARK, STATUS_CONTEXT, StatusArgsSchema, anchors, counts, renderNotice,
   renderReview, renderStatus, rightLines, type NoticeArgs, type Placed, type PostArgs, type ReplyArgs, type StatusArgs,
@@ -52,10 +52,9 @@ export interface Thread {
   /** Replies, oldest first, as data (untrusted text). */
   replies: { id: number; author: string; body: string }[];
 }
-/** A comment's id is 64-bit: `fullDatabaseId` (a JSON string), else the deprecated 32-bit `databaseId`. */
-type RawComment = { databaseId: number; fullDatabaseId?: string | null; url: string; body: string; author: { __typename: string; login: string } | null };
+/** A review comment, with its 64-bit id in `fullDatabaseId` (a JSON string; `databaseId` is 32-bit and deprecated). */
+type RawComment = { fullDatabaseId?: string | null; url: string; body: string; author: { __typename: string; login: string } | null };
 type RawThread = { id: string; isResolved: boolean; isOutdated: boolean; viewerCanResolve: boolean; path: string; line: number | null; comments: { nodes: RawComment[] } };
-const commentId = (c: RawComment) => Number(c.fullDatabaseId ?? c.databaseId);
 type GhPr = { state: string; merged?: boolean; draft?: boolean; head: { sha: string }; base: { sha: string } };
 type Kind = "post" | "notice" | "status" | "reply";
 
@@ -154,9 +153,9 @@ export class ReviewPoster {
         const finding = FINDING_MARK.exec(first.body)?.[1] ?? null;
         const author = first.author?.login ?? "";
         out.push({
-          id: n.id, comment: commentId(first), run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
+          id: n.id, comment: reviewCommentId(first), run: RUN_RE.exec(first.body)?.[1] ?? null, resolved: n.isResolved, outdated: n.isOutdated, path: n.path, line: n.line, finding,
           ours: finding !== null && us.some((w) => isWho(w, first.author)), author, bot: first.author?.__typename === "Bot", can_resolve: n.viewerCanResolve, url: first.url,
-          replies: rest.map((c) => ({ id: commentId(c), author: c.author?.login ?? "", body: c.body.slice(0, 2000) })),
+          replies: rest.map((c) => ({ id: reviewCommentId(c), author: c.author?.login ?? "", body: c.body.slice(0, 2000) })),
         });
       }
       if (!t.pageInfo.hasNextPage) break;

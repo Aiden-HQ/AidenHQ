@@ -158,8 +158,8 @@ describe("GitHub", () => {
 
   describe("review thread replies", () => {
     const page = (nodes: unknown[], hasNextPage = false) => ({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage, endCursor: hasNextPage ? "C1" : null }, nodes } } } } });
-    /** A comment's 64-bit id arrives as `fullDatabaseId` (a JSON string); `databaseId` is the deprecated 32-bit one. */
-    const comment = (id: number) => ({ databaseId: id > 2 ** 31 - 1 ? 0 : id, fullDatabaseId: String(id), url: "u", body: "b", author: { __typename: "User", login: "owner1" } });
+    /** A comment's id arrives as `fullDatabaseId` (a BigInt, a JSON string): `databaseId` isn't read. */
+    const comment = (id: number) => ({ fullDatabaseId: String(id), url: "u", body: "b", author: { __typename: "User", login: "owner1" } });
     const node = (first: number, replies: number[] = [], commentsMore = false) => ({ id: "T1", isResolved: false, isOutdated: false, viewerCanResolve: true, path: "src/a.ts", line: 3, comments: { pageInfo: { hasNextPage: commentsMore }, nodes: [first, ...replies].map(comment) } });
     /** A fake GitHub whose review threads are `threads` and whose reply write answers with `answer`. */
     function fakeThreads(threads: unknown[], answer: () => Response = () => new Response(JSON.stringify({ id: 77, html_url: "https://github.com/a/b/pull/7#discussion_r77" }), { status: 201 }), threadPages: unknown[][] = []) {
@@ -225,6 +225,12 @@ describe("GitHub", () => {
     it("a thread whose comments were cut short leaves the id unknown, not missing", async () => {
       const { impl, calls } = fakeThreads([node(100, [101], true)]);
       await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 999, "fixed: abc1234.", "Aiden")).rejects.toThrow(/couldn't confirm whether comment 999 is on a review thread of a\/b#7/);
+      expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
+    });
+
+    it("a comment without a usable fullDatabaseId is refused, not matched as 0", async () => {
+      const { impl, calls } = fakeThreads([{ ...node(100), comments: { pageInfo: { hasNextPage: false }, nodes: [{ fullDatabaseId: null, url: "u", body: "b", author: { __typename: "User", login: "owner1" } }] } }]);
+      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "fixed: abc1234.", "Aiden")).rejects.toThrow(/didn't return a usable review comment id/);
       expect(calls.filter((c) => c.method === "POST" && c.path !== "/graphql")).toHaveLength(0);
     });
 
