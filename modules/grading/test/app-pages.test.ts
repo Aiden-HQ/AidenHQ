@@ -62,6 +62,12 @@ describe("rubricPaths", () => {
     assert.deepEqual(rubricPaths(['see "/items?q=x" then /audit']), ["/", "/items?q=x", "/audit"]);
   });
 
+  it("keeps a quoted value inside a Markdown code span", () => {
+    // A backtick is a code span, not a prose quote: the value inside it is the rubric's.
+    assert.deepEqual(rubricPaths(['`/items?q="Big ETA"` lists it']), ["/", "/items?q=Big%20ETA"]);
+    assert.deepEqual(rubricPaths(['`/items?q="a&b=c"` and `/audit`']), ["/", "/items?q=a%26b%3Dc", "/audit"]);
+  });
+
   it("encodes a quoted value before it joins other query parameters", () => {
     // An `&` inside a quoted value must stay that value, not start a new parameter.
     assert.equal(rubricPaths(['/items?q="a&b=c" lists it'])[1], "/items?q=a%26b%3Dc");

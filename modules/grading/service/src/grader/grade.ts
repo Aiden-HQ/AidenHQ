@@ -218,8 +218,9 @@ export function rubricPaths(rubric: unknown[]): string[] {
       // The sentence's punctuation is stripped before the path is judged plain, so "/audit/.." is a traversal, not "/audit/".
       const raw = m[0];
       const at = m.index + m[0].length;
-      // A URL the rubric wrapped in quotes ends at its own closing quote, so that quote is never read as opening a value.
-      const quotedUrl = /["'`]/.test(text[m.index - 1] ?? "");
+      // A URL the rubric wrapped in quotes ends at its own closing quote, so that quote is never read as opening a value. A
+      // backtick is a Markdown code span, not a quote: the value inside it is the rubric's and is kept.
+      const quotedUrl = /["']/.test(text[m.index - 1] ?? "");
       const found = text[at] === "?" ? queryOf(text, at + 1, quotedUrl) : undefined;
       const query = found?.raw.replace(/[.,:;]+$/, "");
       // Continue where the query's text actually ended in the rubric, so a `/` in it is never read as another route.
