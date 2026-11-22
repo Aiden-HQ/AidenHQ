@@ -778,7 +778,7 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 # queue updates, rebases, retargets, re-runs, deletes or closes: a moved head or base goes back to the PR's own path. Its only
 # other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure, so the code
 # host can only hold a merge, never pass the review). The record is the review in our own repos; a product merge is never
-# Tier 0. Closes (plan.ts): agents org and maintained repos Tier 0; on the product repo only Dependabot's PRs; never the
+# Tier 0. Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"

@@ -98,10 +98,8 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
  * instance repo's PRs are the owner's.
  */
 function closePart(p: Pr, s: State) {
-  if (same(p.repo, s.productRepo)) {
-    return T(0, "product-close", "closing a PR of the product repo is reversible (reopen) and changes no code");
-  }
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close", `${p.repo} is the instance repo: its PRs are the owner's`);
+  if (same(p.repo, s.productRepo)) return T(0, "product-close", "closing a PR of the product repo is reversible (reopen) and changes no code");
   if (inMaintained(p.repo, s)) return T(0, "maintained-close", `closing a PR of ${p.repo} (${LISTED}) is reversible and changes no code`);
   if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close", `${p.repo} is outside the agents org and maintainer_repos`);
   return T(0, "agents-org-close", `closing a PR of ${p.repo} is reversible and changes no code`);
