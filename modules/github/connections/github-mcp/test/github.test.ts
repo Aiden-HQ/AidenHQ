@@ -175,6 +175,21 @@ describe("GitHub", () => {
     });
   });
 
+  describe("a failed closer lookup", () => {
+    it("leaves the issue readable and says the attribution is unavailable", async () => {
+      const impl = (async (input: URL | string) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/graphql") return new Response(JSON.stringify({ message: "rate limited" }), { status: 502 });
+        if (url.pathname.endsWith("/comments")) return new Response("[]", { status: 200 });
+        return new Response(JSON.stringify({ number: 5, state: "closed", html_url: "u", title: "t", comments: 0, labels: [], user: { login: "x" } }), { status: 200 });
+      }) as typeof fetch;
+      const out = (await owner(impl).read({ owner: "a", repo: "b", number: 5 })) as { state: string; closed_by?: unknown; closed_by_error?: string };
+      expect(out.state).toBe("closed");
+      expect(out.closed_by).toBeUndefined();
+      expect(out.closed_by_error).toBeTruthy();
+    });
+  });
+
   describe("review thread replies", () => {
     const PR_URL = "https://api.github.com/repos/a/b/pulls/7";
     const reply = (id: number, parent?: number, pull = PR_URL) => ({ id, pull_request_url: pull, ...(parent === undefined ? { in_reply_to_id: null } : { in_reply_to_id: parent }) });

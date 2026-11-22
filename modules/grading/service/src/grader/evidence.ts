@@ -702,7 +702,8 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const owned = (c: any) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(c?.authorAssociation);
   // The closing comment is the closer's own, up to the close; else the one an owner, member or collaborator (the fleet acts as the
   // owner) leaves after it citing a PR, which is how the Maintainer cites the PR whose Fixes line closed the issue another way.
-  const closing = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) ?? comments.findLast((c) => owned(c) && Date.parse(c.createdAt) > Date.parse(i.closedAt) && findPrs(c.body).length) : undefined;
+  const own = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) : undefined;
+  const closing = findPrs(own?.body).length ? own : i.state === "CLOSED" ? comments.findLast((c) => owned(c) && Date.parse(c.createdAt) > Date.parse(i.closedAt) && findPrs(c.body).length) ?? own : undefined;
   // Anyone with close rights can close an issue: a close counts only through a merged PR in this repo (GitHub's own record of the
   // closer: "Fixes #N"), or a comment by an owner, member or collaborator that cites the PR.
   const by = closedBy(i)?.pull_request;
@@ -716,7 +717,7 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
   else if (closing) {
     const prs = findPrs(closing.body).slice(0, 3);
-    facts.push(prs.length ? `the closing comment (by ${closer}, ${closing.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${closer}, ${closing.createdAt}) cites no PR`);
+    facts.push(prs.length ? `the closing comment (by ${closing.author?.login}, ${closing.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${closing.author?.login}, ${closing.createdAt}) cites no PR`);
     for (const p of prs) {
       if (p.repo.toLowerCase() !== repo.toLowerCase()) { facts.push(`${p.url}: not in ${repo}, so it does not count as this issue's fix`); continue; }
       const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;

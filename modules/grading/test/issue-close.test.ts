@@ -18,6 +18,12 @@ test("an issue closed by a merged PR counts; so does one an owner's later commen
   assert.match(text(later), /acme\/app\/pull\/9: merged at 2026-11-19T10:00:00Z/);
   assert.doesNotMatch(text(later), /does not count/);
 
+  // The closer commented first without citing a PR: the owner's later citation still counts, attributed to its own author.
+  const both = await run({ closedEvents: { nodes: [{ actor: { login: "someone" }, closer: null }] }, comments: { nodes: [
+    { author: { login: "someone" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:00Z", body: "closing" },
+    { author: { login: "aiden" }, authorAssociation: "OWNER", createdAt: "2026-11-19T11:00:00Z", body: "Fixed by https://github.com/acme/app/pull/9." }] } });
+  assert.match(text(both), /closing comment \(by aiden, .*cites https:\/\/github.com\/acme\/app\/pull\/9/);
+
   const bare = await run({ closedEvents: { nodes: [{ actor: { login: "someone" }, closer: null }] }, comments: { nodes: [] } });
   assert.match(text(bare), /the close does not count/);
 });

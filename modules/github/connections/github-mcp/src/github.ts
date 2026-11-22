@@ -329,9 +329,10 @@ export class GitHub {
       comments: shown.map((c) => ({ id: c.id, author: c.user?.login, created_at: c.created_at, url: c.html_url, body: c.body ?? "" })),
     };
     if (!isPr && issue.state === "closed") {
-      const c = await this.graphql<{ repository?: { issue?: Parameters<typeof closedBy>[0] } | null }>("issueCloser", { owner: ref.owner, name: ref.repo, number: ref.number });
-      const by = closedBy(c.repository?.issue);
+      const c = await this.optional(() => this.graphql<{ repository?: { issue?: Parameters<typeof closedBy>[0] } | null }>("issueCloser", { owner: ref.owner, name: ref.repo, number: ref.number }));
+      const by = closedBy(c.value?.repository?.issue);
       if (by) out.closed_by = by;
+      if (c.error) out.closed_by_error = c.error;
     }
     if (isPr) {
       const pr = await this.request<GhPull>("GET", `${base}/pulls/${ref.number}`);
