@@ -18,6 +18,22 @@ const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
 const toml = (v: unknown): string => (Array.isArray(v) ? `[${v.map(toml).join(", ")}]` : JSON.stringify(String(v)));
 
 /**
+ * Whether a declared MCP server reaches the box's Codex config: it has granted tools (a non-empty list), a connection entry,
+ * and a name Codex accepts. `mcpBlock` and the kernel's launch check share this one rule, so a server is either emitted or
+ * refused by name, never silently dropped.
+ */
+export function emitsServer(name: string, tools: Record<string, unknown> | undefined, connections: Record<string, unknown>) {
+  const list = tools?.[name];
+  const hasTools = Array.isArray(list) ? list.length > 0 : list !== undefined && list !== null;
+  return hasTools && Boolean(connections[name]) && /^[a-z0-9_]+$/.test(name);
+}
+
+/** The declared servers this job's frozen tools and connections don't emit, in declaration order. */
+export function unemittedServers(declared: string[], tools: Record<string, unknown> | undefined, connections: Record<string, unknown>): string[] {
+  return declared.filter((name) => !emitsServer(name, tools, connections));
+}
+
+/**
  * The agent's granted connections as Codex config, for the box only: each through the launcher's gateway with the job token
  * as X-Agent-Key (the launcher passes it on to the kernel's proxy). Wrapped in markers so applying it twice replaces it.
  */
@@ -25,7 +41,7 @@ export function mcpBlock(tools: Record<string, unknown> | undefined, connections
   const lines = ["# >>> aidenhq-computer (written by the launcher)"];
   for (const [name, list] of Object.entries(tools ?? {})) {
     const c = connections[name];
-    if (!c || !/^[a-z0-9_]+$/.test(name)) continue;
+    if (!c || !emitsServer(name, tools, connections)) continue;
     lines.push(`[mcp_servers.${name}]`);
     lines.push(`url = ${toml(`${gatewayUrl}/c/${name}/mcp`)}`, `env_http_headers = { "X-Agent-Key" = ${toml(RUN_TOKEN_ENV)} }`);
     lines.push(`enabled_tools = ${toml(list)}`, "startup_timeout_sec = 20", `tool_timeout_sec = ${Number(c.tool_timeout_sec) || 300}`, 'default_tools_approval_mode = "approve"', "");
