@@ -351,6 +351,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
       }
     }
+    // A finding this run's finders restated at the head is still there too.
+    result.still = [...new Set([...(result.still ?? []), ...previous.filter((f) => !f.claim && again.has(f.id)).map((f) => f.id)])];
     result.fixed = fixed;
     result.unsafe = unsafe;
   }
