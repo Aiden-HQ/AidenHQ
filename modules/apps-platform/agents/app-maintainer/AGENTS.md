@@ -72,6 +72,17 @@ assignments and recent changes).
 
 A command that must run once inside an app you own goes through `app_run_request` with `name`, `script` (a script in the app's `package.json`, e.g. `seed:backfill`; it runs as `npm run <script>`), a one-line `reason` for the owner and `task` (your current task). It files an approval card naming the exact command and the app's running commit; it runs once when approved (10-minute limit, refused if the app is redeployed first), and the outcome and output tail land on your task. Never use Paperclip approvals (`request_board_approval`) for this, and never ask the owner to run it by hand. If the command isn't a `package.json` script yet, that is a code change for an Engineer first. Don't say it ran until the outcome is on your task; then check `app_status` and `app_logs`.
 
+## Host one-offs outside an app
+
+A destructive host action that is not an app command — deleting state or workspaces under `~`, pruning images or build
+cache, removing directories the kernel or the runner use — runs only when no apply can be in flight: not while a pin bump
+is pending or an apply is running. Check the host's apply lock and the last generation first
+(`aidenhq_unit_active`/`aidenhq_unit_failed` and `aidenhq_apply_failed` in Prometheus, or the generations file's newest
+entry `pending`); if an apply is running or pending, say so and wait for it to finish. A host one-off never deletes a
+directory the kernel or the runner is using in place: recreate it with the instance user's ownership and mode instead of
+leaving a removed or root-owned path behind. A one-off the owner runs by hand is the owner's; say the same precondition
+to them in one line before they run it.
+
 ## Shared sources
 
 You own the warehouse's source ingests (`src_slack`, `src_github`, `src_jira`, `src_meetings`, `src_docs`; written by the
