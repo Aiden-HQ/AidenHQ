@@ -1073,7 +1073,8 @@ export function createEngine(d: EngineDeps) {
    * One summary per one-off ask, once the runs it asked for have settled: posted, refused, skipped for budget, or failed,
    * naming the PR, what happened and the one action that fixes it. Each asker hears the summary of the runs its own request
    * queued, once: a wake notice on their task (its agent hears it, and its task can act), or to the owner when the request was
-   * the board's or their task has closed. Never one message per run.
+   * the board's, or to the owner when their task has closed and the summary carries an action only the owner can take (see
+   * sendSummaries). Never one message per run.
    */
   function summarise(batch: string, runId?: string) {
     // The askers of this run's batch, and any ask whose own runs include it even when they also came from an earlier batch.
@@ -1130,12 +1131,24 @@ export function createEngine(d: EngineDeps) {
     run("UPDATE askers SET text = ?, pending = ? WHERE batch = ? AND task = ? AND setkey = ?", text, bodyStamp, batch, task, setkey);
   }
 
-  /** Sends each stored, unsent summary to its asker; one whose task has closed goes to the owner instead, once per batch. */
+  /** Whether a summary's runs carry an action only the owner can take: a refusal's Grant or Reconnect link, or the install's spend limit. */
+  function ownerFixable(stamp: string): boolean {
+    let ids: string[] = [];
+    try { ids = Object.keys(JSON.parse(stamp) as object); } catch {}
+    if (!ids.length) return false;
+    return all<RunRow>(`SELECT * FROM runs WHERE id IN (${ids.map(() => "?").join(",")})`, ...ids)
+      .some((r) => !!fixOf(r.need) || (r.status !== "done" && SPEND_LIMIT.test(String(r.why ?? ""))));
+  }
+
+  /**
+   * Sends each stored, unsent summary to its asker. One whose task has closed goes to the owner only when it carries an action
+   * the owner can take (ownerFixable), once per batch; otherwise nobody needs it and it is marked sent.
+   */
   async function sendSummaries() {
     const todo = all<{ batch: string; task: string; setkey: string; requester: string; text: string | null; pending: string; sent: string | null; claim: string | null }>(
       "SELECT batch, task, setkey, requester, text, pending, sent, claim FROM askers WHERE text IS NOT NULL AND (sent IS NULL OR sent != pending) AND claim IS NULL ORDER BY rowid");
     // Tasks that hear nothing (gone, done or cancelled), by the batch and the run set they asked about: the owner is told
-    // instead, once. Askers of one run set share a stamp (`pending`), so they are one message; a distinct run set of the same
+    // instead when there is something to fix, once. Askers of one run set share a stamp (`pending`), so they are one message; a distinct run set of the same
     // batch keeps its own, never another ask's — even when its runs happened to render the same text.
     const closed = new Map<string, { batch: string; stamp: string; text: string; asks: { task: string; setkey: string }[]; who: string[] }>();
     for (const a of todo) {
@@ -1163,8 +1176,14 @@ export function createEngine(d: EngineDeps) {
         log("one-off summary not sent; the next tick tries again", { batch: a.batch, task: a.task, err: String((e as Error).message).slice(0, 200) });
       }
     }
-    // A closed task hears nothing, so the owner gets the message naming every asker whose task is closed, its own key.
+    // A closed task hears nothing: a plain outcome ends here, and one with an owner-fixable action goes to the owner, naming
+    // every asker whose task is closed, under its own key.
     for (const { batch, stamp, text, asks, who } of closed.values()) {
+      if (!ownerFixable(stamp)) {
+        log("one-off summary: an asker's task is closed and nothing needs the owner; dropped", { batch, askers: who });
+        for (const x of asks) run("UPDATE askers SET sent = pending, claim = NULL WHERE batch = ? AND task = ? AND setkey = ?", batch, x.task, x.setkey);
+        continue;
+      }
       log("one-off summary: an asker's task is closed; it goes to the owner", { batch, askers: who });
       // Its own key, of its own run set *and* its own askers: two closed asks of one batch are one message only when they asked the
       // same runs and are the same asks, so a second asker whose runs ended the same way (or an asker joining that set later) is
