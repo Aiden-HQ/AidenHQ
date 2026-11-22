@@ -270,7 +270,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     }
     if (now.returns === "trusted" && was.returns !== "trusted") owner(`connection ${id(c)}: returns trusted (no fencing)`);
     if (now.model_as_caller === true && was.model_as_caller !== true) owner(`connection ${id(c)}: model_as_caller`);
-    if (c in bc && keys(was, now).some((f) => !["tools", "returns", "model_as_caller", "guide", "setup", "health_probes"].includes(f) && !eq(was[f], now[f]))) review(`connection ${id(c)}: changes its endpoint or settings`);
+    if (c in bc && keys(was, now).some((f) => !["tools", "returns", "model_as_caller", "guide", "setup", "health_probes", "events"].includes(f) && !eq(was[f], now[f]))) review(`connection ${id(c)}: changes its endpoint or settings`);
   }
 
   // Services: what they may reach (network, mounts, user, a published port, another module's network) is the owner's.

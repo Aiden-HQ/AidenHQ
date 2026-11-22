@@ -8,11 +8,11 @@ when: { fields: { name: Intake } }
 
 Each batch of live Slack events is decided quickly and cheaply: most become nothing, some a task, and rarely one pages the user. Call `slack_owner` once at the start for the user's Slack user ID (`U…`), written `<me>` below; if no one is paired yet, finish with a note that Slack is not paired.
 
-Tools: `slack_pending_events` (each event has `eventId`, `kind`, `channelId`, `userId`, `threadTs`, `ts`, `text`, `permalink`, `receivedAt`); `notify` (the one way to reach the user, on their phone); `slack_read_user_profile` and `slack_search_channels` for names; tasks `task_search`, `task_create` (idempotent by marker), `task_get`, `task_finish`.
+Tools: `routine_events` (each event has `id` (`<channel>:<ts>`), `resource` (the channel), `kind`, `author` (a Slack user ID), `text`, `url` (the permalink)); `slack_read_thread` for a reply's thread root; `notify` (the one way to reach the user, on their phone); `slack_read_user_profile` and `slack_search_channels` for names; tasks `task_search`, `task_create` (idempotent by marker), `task_get`, `task_finish`.
 
 ## 1. Read the batch
 
-Call `slack_pending_events` with the default limit, and again while it returns a full batch (50), at most 3 times. With no events, finish.
+Call `routine_events` with the batch id from the task (`New events: batch …`). With no events, finish.
 
 ## 2. Decide each event
 
@@ -27,14 +27,14 @@ Judge each event on its own text as soon as you see it, however recent it is: a 
 ## 3. Create a task
 
 - Look up each person with `slack_read_user_profile` and each channel with `slack_search_channels`, and write names ("Reply to Dana Smith: …", "Channel: #payments-launch"). When a lookup fails, write "someone in #channel" or "a DM".
-- `marker`: `source:slack:<channel_id>:<thread_ts or ts>` (the thread root for a reply), the same scheme as the Slack scan, so one conversation keeps one task. `deduplicated: true` means it exists: nothing more to do.
+- `marker`: `source:slack:<channel>:<thread_ts or ts>` (an event's `ts` is the part of its `id` after the colon; for a reply read the thread with `slack_read_thread` and use its root), the same scheme as the Slack scan, so one conversation keeps one task. `deduplicated: true` means it exists: nothing more to do.
 - `title`: `Reply to <person>: <topic>` for needs-response; the owed item and its owner for waiting-on.
 - `priority`: `medium`; `high` only for an explicit deadline today or tomorrow.
 - `description`: the format in your mission.
 
 ## 4. Page the user
 
-Call `notify` with `kind: "alert"`, a one-line `text` (what happened, who, what is needed) ending with the event's `permalink`, and `dedupe_key: "slack:<channelId>:<threadTs or ts>"`: one alert per thread an hour, from you or any other agent.
+Call `notify` with `kind: "alert"`, a one-line `text` (what happened, who, what is needed) ending with the event's `url`, and `dedupe_key: "slack:<channel>:<thread_ts or ts>"`: one alert per thread an hour, from you or any other agent.
 
 - `reason: "duplicate"`: an earlier alert covers the thread. Only when the thread got worse since (it spread, a second incident, customer impact), call again with the `dedupe_key` ending in `:worse` and a `text` that says what changed.
 - `reason: "error"`: create a `needs-response` task for it instead.

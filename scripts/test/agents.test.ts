@@ -104,6 +104,31 @@ test("local agents are validated like module agents, and can't take a module age
   for (const f of ["webhook", "webhook_base", "secrets_prefix", "status"]) assert.throws(() => compile(product, withAgents({ x: { routines: { s: { title: "S", agent: "x", [f]: "apps_incident_webhook" } } } })), new RegExp(`routine s: ${f} isn't allowed`));
 });
 
+test("event routines compile and the lints hold", () => {
+  const ev = (event, extra = {}) => ({ "x-watch": { title: "Watch", agent: "x", description: "Watch, then close this task.", event, ...extra } });
+  const slack = { connection: "slack", resource: "C0ACME", filter: { kind: "message", contains: ["acme"] } };
+  const github = { connection: "github", resource: "acme/widgets", filter: { kind: "issues.opened" } };
+  const compiled = (routines, yaml, modules = ["github", "slack"]) => compile(product, withAgents({ x: { routines, ...(yaml ? { yaml } : {}) } }, modules)).paperclip;
+  for (const e of [slack, github]) {
+    const r = compiled(ev(e)).routines["x-watch"];
+    assert.equal(r.concurrency, "always_enqueue");
+    assert.match(r.description, /New events: batch \{\{batch\}\} \(\{\{count\}\}\)\. Read them with routine_events\(batch\)/);
+  }
+  const refuses = (routines, re, yaml, modules) => assert.throws(() => compiled(routines, yaml, modules), re);
+  refuses(ev({ ...slack, filter: {} }), /routine x-watch: event\.filter is required/);
+  refuses(ev({ ...slack, filter: { color: "red" } }), /event\.filter\.color isn't a filter key of slack/);
+  refuses(ev(slack), /agent x holds none of slack's slack_read_channel/, { connections: { github: "read", paperclip_tasks: ["task_current"] } });
+  refuses(ev(slack, { webhook: true }), /routine x-watch: webhook isn't allowed/);
+  refuses(ev({ ...slack, resource: "*" }), /event\.resource: \* is for product modules/);
+  refuses(ev(slack, { tools: ["x"] }), /routine x-watch: tools isn't allowed/);
+  refuses(ev(slack, { schedules: [{ cron: "*/5 * * * *", label: "often" }] }), /cron minute is one number/);
+  refuses(Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`x-w${i}`, { title: `W${i}`, agent: "x", description: "Go.", event: slack }])), /an agent has at most 20 local routines/);
+  // The bundle's slack-triage is a product event routine: no webhook, no secrets.
+  const r = compile(product, withAgents({}, ["slack", "open-loops"])).paperclip.routines["slack-triage"];
+  assert.deepEqual([r.event.resource, r.concurrency, r.webhook, r.secrets_prefix], ["*", "always_enqueue", undefined, undefined]);
+  assert.match(r.description, /routine_events\(batch\)/);
+});
+
 test("the Architect: max effort, only its own role, no fleet tools, reads every source; it changes the fleet only by delegating", () => {
   const a = compile(product, withAgents({}, ["slack", "github"])).paperclip.agents.architect;
   assert.deepEqual([a.model, a.reasoning_effort], ["~deepseek/deepseek-flash-latest", "max"]);

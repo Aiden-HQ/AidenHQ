@@ -66,6 +66,29 @@ const readYaml = (path: string) => YAML.parse(readFileSync(path, "utf8")) ?? {};
 const fail = (msg: string): never => { throw new Error(msg); };
 
 /**
+ * An event routine (`event: { connection, resource, filter }`): fired by the kernel's event router, so never a webhook, always
+ * `always_enqueue` (each sealed batch is its own run) and told to read its batch. Its filter is non-empty and keyed only by what
+ * the connection declares; its agent holds one of the connection's `reads` tools; `*` as the resource is a product module's.
+ */
+const EVENT_SUFFIX = "New events: batch {{batch}} ({{count}}). Read them with routine_events(batch), then follow the routine above.";
+function eventRoutine(key: string, r: Obj, paperclip: Obj) {
+  const e = r.event;
+  const at = `routine ${key}: event`;
+  if (!e || typeof e !== "object" || Array.isArray(e) || Object.keys(e).some((f) => !["connection", "resource", "filter"].includes(f))) fail(`${at} is { connection, resource, filter }`);
+  if (r.webhook) fail(`${at} and webhook can't both be set`);
+  const ev = paperclip.mcp_servers[e.connection]?.events ?? fail(`${at}: connection ${e.connection} declares no events`);
+  if (typeof e.resource !== "string" || !e.resource) fail(`${at}.resource is a string`);
+  if (e.resource === "*" && r.tier === "local") fail(`${at}.resource: * is for product modules; name the resource`);
+  const filter = e.filter;
+  if (!filter || typeof filter !== "object" || Array.isArray(filter) || !Object.keys(filter).length) fail(`${at}.filter is required (what the routine wants from the stream)`);
+  for (const f of Object.keys(filter)) if (!ev.filter.includes(f)) fail(`${at}.filter.${f} isn't a filter key of ${e.connection} (${ev.filter.join(", ")})`);
+  const held = paperclip.agents[r.agent]?.enabled_tools?.[e.connection] ?? [];
+  if (!ev.reads.some((t: string) => held.includes(t))) fail(`${at}: agent ${r.agent} holds none of ${e.connection}'s ${ev.reads.join(", ")} (it can only subscribe to what it may read)`);
+  r.concurrency = "always_enqueue";
+  r.description = `${String(r.description ?? "").trimEnd()}\n\n${EVENT_SUFFIX}`;
+}
+
+/**
  * What each module still reaches of the root stack until its kernel route lands (scripts/compiler/services.ts `Legacy`).
  * Closed: each list may only shrink (scripts/test/modules.test.ts pins them). `until` is the unit that removes the entry.
  * links: root services a module's services share a network with (board: sign-ins, internal API,
@@ -92,9 +115,8 @@ export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   clickhouse: { until: "3g", to: ["board"] },
   github: { until: "3g", to: ["board", "sources"] },
   primer: { until: "3g", to: ["board"] },
-  // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network and the HMAC-signed triage webhook
-  // into Paperclip (no key), beside the sign-in's board link.
-  slack: { until: "3g", to: ["board", "sources", "paperclip"] },
+  // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network, beside the sign-in's board link.
+  slack: { until: "3g", to: ["board", "sources"] },
   security: { until: "4c", to: ["paperclip", "sources"] },
 };
 /** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
@@ -818,6 +840,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (healthProbeOwners[pn]) fail(`two connections declare health probe ${pn}: ${healthProbeOwners[pn]} and ${k}`);
         healthProbeOwners[pn] = k;
       }
+      // events: what its source module sends the kernel's event router (events.ts): `reads` are the read tools an agent must hold to subscribe a routine, `filter` the keys a routine may filter on.
+      if (c.events != null) {
+        const ev = c.events;
+        if (typeof ev !== "object" || Array.isArray(ev) || !Array.isArray(ev.reads) || !ev.reads.length || ev.reads.some((t: string) => !c.tools.read.includes(t)) || !Array.isArray(ev.filter) || ev.filter.some((f: unknown) => typeof f !== "string")) fail(`connection ${k}: events is { resource, kinds, filter: [keys], reads: [its read tools] }`);
+      }
       if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t: string) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
@@ -1103,8 +1130,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       }
     }
   }
+  const localRoutines = new Map<string, number>();
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) {
-    for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone; // else Paperclip runs it in UTC
+    for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone;
+    if (r.event != null) eventRoutine(key, r, paperclip); // else Paperclip runs it in UTC
     // Its status when setup creates it (docs/design/quiet-start.md); after that, Paperclip owns pause and resume. A local
     // module's routines are the owner's and the agents' own, whichever agent they run as: active. An imported (declared)
     // module's start paused. An official module's scheduled ones start paused under quiet start (a heartbeat the instance
@@ -1114,6 +1143,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     // schedule whose cron minute is a single literal number (no cron parser; events cover anything faster).
     if (r.tier === "local") {
       if (!Array.isArray(r.schedules ?? []) || (r.schedules ?? []).length > 1) fail(`routine ${key}: a local routine has at most one schedule`);
+      localRoutines.set(r.agent, (localRoutines.get(r.agent) ?? 0) + 1);
+      if (localRoutines.get(r.agent)! > 20) fail(`routine ${key}: an agent has at most 20 local routines`);
       const minute = String(r.schedules?.[0]?.cron ?? "0").trim().split(/\s+/)[0]!;
       if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
     }
@@ -1156,6 +1187,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}), ...(c.tools.unreviewed?.length ? { unreviewed: [...c.tools.unreviewed] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
     ...(c.health_probes ? { health_probes: c.health_probes } : {}),
+    ...(c.events ? { events: c.events } : {}),
   }]));
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
