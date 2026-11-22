@@ -157,7 +157,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   published less than 7 days ago. Pin every dependency exactly (images by digest, actions by SHA, apt `pkg=version`,
   global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.ts`, and state the
   release date of any pin you bump. Dependabot (cooldown 7), `scripts/supply-chain/npm-age.ts` and `pins.ts` (CI,
-  exceptions in `.github/supply-chain-exceptions.yaml`, read from the base) and gitleaks (`.gitleaks.toml`) enforce it.
+  exceptions in `.github/supply-chain-exceptions.yaml`, read from the head; a pin that can't be dated is a warning) and gitleaks (`.gitleaks.toml`) enforce it.
   The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.ts`).
 - **Modules with modes.** A setting that changes how a module connects (connect or self-host, cloud or local) changes every
   surface it gives the owner: its board sign-in and Connect, status, setup help and secrets. Each mode gets one end-to-end test

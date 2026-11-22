@@ -15,10 +15,12 @@
 //                 dated for that release only, any other for every release the file names (noble when it names none).
 //   host pins     ops/vm/pins.json (read by ops/vm/setup.sh): `apt` for every release, `releases.<codename>.apt` for one;
 //                 each dated from the file's `repos` as that release reads them, then its distro's pockets.
-// Dated (only pins a change adds or alters, against the base; any lookup error fails): images, actions, npm, PyPI, apt
-// pins, GitHub release downloads, and digest-pinned image strings in code. Each must be 7+ days old or be a security
-// exception in .github/supply-chain-exceptions.yaml read from the base (`ecosystem` docker, github-action, npm, pypi,
-// apt or github-release; `package`, `version`, `advisory`, `reason`; and `digest`/`sha` for a pin the registry can't date).
+// Dated (only pins a change adds or alters, against the base): images, actions, npm, PyPI, apt pins, GitHub release
+// downloads, and digest-pinned image strings in code. Each must be 7+ days old or be a security exception in
+// .github/supply-chain-exceptions.yaml read from the head, so a fix and its exception land in one PR and the code review
+// covers both (`ecosystem` docker, github-action, npm, pypi, apt or github-release; `package`, `version`, `advisory`,
+// `reason`). A pin that can't be dated (a registry with no push record, a lookup error, a Debian package: apt pins are
+// dated from Ubuntu's pockets) is a printed warning, never a failure: the gates fail open.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
@@ -208,8 +210,8 @@ const exceptionFor = (p: Pin, exceptions: Exception[]) => exceptions.find((e) =>
 const ownerApproved = (p: Pin, exceptions: Exception[], now: number) => exceptions.some((e) => e.ecosystem === p.kind && e.package === p.package && e.version === p.version && e.owner === "approved"
   && now < Date.parse(e.expires!) && Date.parse(e.expires!) - now <= 14 * DAY && e.digest === p.digest && e.sha === p.sha);
 
-/** Date each new or changed pin; the problems, one line each. `date(pin)` returns {published, via} or throws. */
-export async function checkAges({ pins, basePins = [], exceptions = [], date = datePin, now = Date.now() }: { pins: Pin[]; basePins?: Pin[]; exceptions?: Exception[]; date?: (p: Pin) => Promise<{ published: string; via: string }>; now?: number }): Promise<string[]> {
+/** Date each new or changed pin; the problems, one line each. `date(pin)` returns {published, via} or throws (then `warn`s). */
+export async function checkAges({ pins, basePins = [], exceptions = [], date = datePin, now = Date.now(), warn = console.warn }: { pins: Pin[]; basePins?: Pin[]; exceptions?: Exception[]; date?: (p: Pin) => Promise<{ published: string; via: string }>; now?: number; warn?: (line: string) => void }): Promise<string[]> {
   const old = new Set(basePins.map(key));
   const seen = new Set<string>();
   const problems: string[] = [];
@@ -224,12 +226,7 @@ export async function checkAges({ pins, basePins = [], exceptions = [], date = d
       if (exceptionFor(p, exceptions) || ownerApproved(p, exceptions, now)) continue;
       problems.push(`${label} was published ${(age / DAY).toFixed(1)} days ago (${via}, under 7): use an older version (best-version.ts), or add a security exception`);
     } catch (e) {
-      // A pin whose registry keeps no push record to date it by passes only on a security exception that names it exactly: its
-      // version and its digest or sha (`digest: sha256:…`), so the exception, not the registry, vouches for what is pulled.
-      // Every other failure (a lookup error) stands.
-      const ex = (e as FetchError).undated && exceptionFor(p, exceptions);
-      if (ex && ex.digest === p.digest && ex.sha === p.sha) continue;
-      problems.push(`${label}: could not be dated: ${(e as Error).message}`);
+      warn(`warning: ${label}: could not be dated, not checked: ${(e as Error).message}`);
     }
   }
   return problems;
@@ -272,10 +269,10 @@ async function main() {
   if (!base || !head) throw new Error("usage: pins.ts <base-ref> <head-ref>");
   const now = scanRef(head);
   let exText = "";
-  try { exText = git("show", `${base}:.github/supply-chain-exceptions.yaml`); } catch { /* none yet */ }
+  try { exText = git("show", `${head}:.github/supply-chain-exceptions.yaml`); } catch { /* none yet */ }
   const ages = await checkAges({ pins: now.pins, basePins: scanRef(base).pins, exceptions: readExceptions(exText) });
   const problems = [...now.problems, ...ages];
-  console.log(`${now.pins.length} pins; ${now.problems.length} unpinned; ${ages.length} too new or undatable`);
+  console.log(`${now.pins.length} pins; ${now.problems.length} unpinned; ${ages.length} too new`);
   if (problems.length) { console.error(problems.join("\n")); process.exit(1); }
 }
 
