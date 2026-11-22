@@ -146,6 +146,13 @@ test("task_list(mine) finds a handed-back chat whose marker was cut from the lis
   assert.deepEqual(out.out?.tasks.map((t) => t.id), ["chat-2"], JSON.stringify(out));
 });
 
+test("task_list(mine) finds a handed-back chat whose marker is followed by a trailing newline", async () => {
+  const chat = { ...row("chat-4", "todo"), assigneeUserId: "owner", description: `hi\n\n<!-- aidenhq-chat-agent:me -->\n`, createdAt: "2026-02-01T00:00:00Z" };
+  const { call } = bridge({ handler: issueBoard({ rows: [chat] }), states: { "chat-4": noAttention("waiting") } });
+  const out = parse(await call("task_list", { mine: true, limit: 5 }));
+  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["chat-4"], JSON.stringify(out));
+});
+
 test("task_list pages overlap so a row pulled up by a task leaving the list is not skipped", async () => {
   // Page one (t-0..t-199) is read, then its first row leaves: every later row moves up one, and a plain offset of 200 would
   // now start at t-201, skipping t-200.

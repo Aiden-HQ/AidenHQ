@@ -1048,9 +1048,12 @@ const TOOLS: Record<string, Tool> = {
           return onEdge();
         }
       };
-      // One source's matches, in Paperclip's order (newest first), read page by page: it yields as it goes, so a caller that
-      // stops at `limit` never reads the pages behind it.
-      const scan = async function* (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline) {
+      /**
+       * One source's matching rows, page by page, in Paperclip's order (newest first). Each page reports the oldest row it
+       * held (`tail`), matches or not, so a merge can tell that no page behind it can be newer than what it already has.
+       */
+      type Page = { rows: (readonly [Json, Json])[]; tail: number };
+      const pagesOf = async function* (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline) {
         const pages = issuePages(query, progress, () => until - Date.now())[Symbol.asyncIterator]();
         for (;;) {
           if (Date.now() > until) {
@@ -1059,36 +1062,51 @@ const TOOLS: Record<string, Tool> = {
           }
           const step = await atEdge(() => pages.next(), () => ({ done: true as const, value: undefined }), until);
           if (step.done) return;
-          const ready = (await atEdge(() => Promise.all(step.value.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[];
-          const matches = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
+          const raw = step.value as Json[];
+          const ready = (await atEdge(() => Promise.all(raw.map((i: Json) => prepare(i, until))), () => [], until)).filter(Boolean) as Json[];
+          const rows = await atEdge(() => matchingStates(ready, kinds, one, until - Date.now()), () => [] as (readonly [Json, Json])[], until);
           // The clock is checked after the reads too: a page that lands at the budget's edge must not pass as complete.
           if (Date.now() > until) complete = false;
-          for (const [i, s] of matches) yield [i, s] as const;
+          const tail = Math.min(...raw.map((i: Json) => Date.parse(String(i.createdAt ?? "")) || 0));
+          yield { rows, tail } as Page;
           if (Date.now() > until) return;
         }
       };
       // The one recency key is Paperclip's own: createdAt, the order the issues list is served in.
-      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.createdAt ?? "")) || 0;
+      function at([i]: readonly [Json, Json]) { return Date.parse(String(i.createdAt ?? "")) || 0; }
       /**
-       * Two newest-first sources as one newest-first stream, each task once. Neither source is capped on its own: the limit is
-       * applied to the merged, deduped stream, so a duplicate (a chat handed back to the agent between the scans) cannot leave
-       * a slot unfilled, and an older row from one source is never dropped while a newer duplicate fills the other's cap.
+       * Two newest-first sources as one newest-first stream, each task once. Both sources' first pages are read together, and a
+       * later page only when its own rows are used up, so a newer match in either source is returned at once and the limit is
+       * applied to the merged, deduped stream (a chat handed back between the scans cannot leave a slot unfilled).
        */
-      const mergeNewest = async function* (a: AsyncIterable<readonly [Json, Json]>, b: AsyncIterable<readonly [Json, Json]>) {
+      const mergeNewest = async function* (a: AsyncIterable<Page>, b: AsyncIterable<Page>) {
         const left = a[Symbol.asyncIterator](), right = b[Symbol.asyncIterator]();
-        let x = await left.next(), y = await right.next();
+        let [pa, pb] = await Promise.all([left.next(), right.next()]);
+        let ia = 0, ib = 0;
         const seen = new Set<string>();
-        while (!x.done || !y.done) {
-          // A tie keeps the assigned (b) snapshot: the one read last.
-          const fromB = x.done || (!y.done && at(y.value) >= at(x.value));
-          const row = (fromB ? y.value : x.value) as readonly [Json, Json];
-          if (!seen.has(row[0].id)) {
-            seen.add(row[0].id);
-            // The row is yielded before its source is advanced, so a caller that stops at `limit` never reads past it.
-            yield row;
+        while (!pa.done || !pb.done) {
+          // Fetch the next page of whichever source is used up, before comparing heads.
+          if (!pa.done && ia >= pa.value.rows.length) {
+            pa = await left.next();
+            ia = 0;
           }
-          if (fromB) y = await right.next();
-          else x = await left.next();
+          if (!pb.done && ib >= pb.value.rows.length) {
+            pb = await right.next();
+            ib = 0;
+          }
+          if (pa.done && pb.done) return;
+          const rowsA = pa.done ? [] : pa.value.rows.slice(ia);
+          const rowsB = pb.done ? [] : pb.value.rows.slice(ib);
+          const headA = rowsA[0], headB = rowsB[0];
+          if (!headA && !headB) return;
+          // A tie keeps the assigned (b) snapshot: the one read last.
+          const fromB = !headA || (Boolean(headB) && at(headB) >= at(headA));
+          const row = (fromB ? headB : headA)!;
+          if (fromB) ib++; else ia++;
+          if (seen.has(row[0].id)) continue;
+          seen.add(row[0].id);
+          // Yielded before either source is read past it: a caller that stops at `limit` never reads on.
+          yield row;
         }
       };
       const take = async (rows: AsyncIterable<readonly [Json, Json]>) => {
@@ -1100,7 +1118,11 @@ const TOOLS: Record<string, Tool> = {
         return out;
       };
       let out: (readonly [Json, Json])[];
-      if (!me) out = await take(scan(q));
+      // The plain list has one source: its rows, page by page, without the merge's bookkeeping.
+      const rowsOf = async function* (pages: AsyncIterable<Page>) {
+        for await (const p of pages) yield* p.rows;
+      };
+      if (!me) out = await take(rowsOf(pagesOf(q)));
       else {
         // Heartbeat runs are the scan itself, never work to catch up on.
         // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
@@ -1115,7 +1137,7 @@ const TOOLS: Record<string, Tool> = {
           theirs.delete("assigneeAgentId");
           theirs.set("assigneeUserId", owner);
           theirs.set("excludeRoutineExecutions", "true");
-          const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\s*$`);
+          const mark = new RegExp(`\n\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
           aChat = async (row: Json, until: number) => {
             if (row.assigneeAgentId) return null;
             // A chat deleted between the list read and this one is skipped (404): the rest of the list still answers, and
@@ -1129,8 +1151,8 @@ const TOOLS: Record<string, Tool> = {
           };
         }
         // Half the scan's budget is held for the assigned history, so neither source can starve the other.
-        const chats = theirs ? scan(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2)) : (async function* () {})();
-        out = await take(mergeNewest(chats, scan(q, mineOnly)));
+        const chats = theirs ? pagesOf(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2)) : (async function* () {})();
+        out = await take(mergeNewest(chats, pagesOf(q, mineOnly)));
       }
       return {
         tasks: await Promise.all(out.map(([i, s]) => brief(i, s))),
