@@ -78,9 +78,11 @@ description: How code is written, tested and published here, in any repository -
 - When a check refuses a PR, read its complaint and fix that cause before filing again.
 - A rejection of a change names a defect: fix it and publish the changed branch, because the same commits stay rejected. The
   rejection arrives as a comment on the task, carried in the next run's prompt with the notes it names, so a run reads an
-  earlier note there. Only the AI reviewer's own rejection of the change counts toward the stop: a `Not reviewed` note (the
-  reviewer answered nothing, so the write went unreviewed) is a failed review to file again, not a defect, and a red check
-  is the check's complaint, not a rejection. When a second rejection of the same change names nothing still wrong with the
+  earlier note there. Only the AI reviewer's own rejection of the change counts toward the stop, and a red check is the
+  check's complaint, not a rejection. Read a `Not reviewed` note before refiling it: when its reason names something to
+  change (instance details to take out, a diff that no longer matches the head), that is a defect to fix first, and an
+  unchanged refile just earns the same refusal. When its reason names none (the reviewer failed, so nothing was reviewed),
+  file the same change once more. When a second rejection of the same change names nothing still wrong with the
   current head (it repeats the first note after that defect was fixed, or names nothing this change can fix), the run
   stops republishing, even though the rejection's own notice still ends "Fix that and file it again": that tail states the
   general case, and this rule is the stop a second repetition without a new defect earns. It `task_wait`s with `for` the

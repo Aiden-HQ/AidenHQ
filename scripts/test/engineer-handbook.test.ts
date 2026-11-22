@@ -54,6 +54,8 @@ test("the write-code skill holds the stop steps, including the wait for the dele
   assert.match(steps, /publishes the next head only once a reply resolves the\s+question/, "no third head before a resolving answer");
   assert.match(steps, /an answer that asks something back, declines, or names no requirement is met\s+with the same question again/, "a non-answer gets the question, not a new head");
   assert.match(steps, /Only the AI reviewer's own rejection of the change counts toward the stop/, "only AI reviewer rejections count");
+  assert.match(steps, /when its reason names something to change \(instance details to take out, a diff that no longer matches the head\), that is a defect to fix first/, "a Not reviewed refusal names a fix, not a refile");
+  assert.match(steps, /When its reason names none \(the reviewer failed, so nothing was reviewed\), file the same change once more/, "reviewer silence is refiled once");
   assert.match(steps, /even though the rejection's own notice still ends "Fix that and file it\s+again": that tail states the\s+general case/, "the live notice is reconciled with the stop");
   assert.doesNotMatch(steps, /accept it as it stands/, "the delegator is asked to clarify, not to accept the change as it is");
 });
