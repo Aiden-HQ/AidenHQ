@@ -13,3 +13,8 @@ it("a failed GitHub read still returns the local rows, marked so the detector ke
   expect(out).toEqual({ prs: [row("local/app", 1)], github_error: true });
   expect(warned).toBe(1);
 });
+
+it("a GitHub read that stalls past the deadline returns the local rows, marked", async () => {
+  const out = await openPrs(async () => [row("local/app", 1)], () => new Promise(() => {}), () => {}, 20);
+  expect(out).toEqual({ prs: [row("local/app", 1)], github_error: true });
+});
