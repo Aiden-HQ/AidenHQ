@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
 import type { Exception, FetchError } from "./best-version.ts";
 
-export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
+export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string; raced?: boolean }
 // Apt repository state. `files` are the source files the stage has (each used for dating, and whether it was removed);
 // `entries` holds the repositories, one string per `deb` line and one `url suite component` per Deb822 stanza, filed
 // under the source file it was written to (`undefined` for a line naming no file, which accumulates); `added` is whether
@@ -43,14 +43,14 @@ export interface Pin { kind: string; name: string; package: string; version?: st
 // have created and may not have: a `cp -n` onto one may replace, so it is neither certainly skipped nor certainly applied.
 // A name in none of them is one the scanner can't see (an image file), which `-n` treats like `maybe` but a replace
 // overwrites.
-interface State { files: Set<string>; empty: Set<string>; maybe: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+interface State { files: Set<string>; empty: Set<string>; maybe: Set<string>; raced: Set<string>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
 // Each repository once, in the order its file first held it: two source files naming the same repository (a `mv -n`
 // that keeps both) are one place to date a pin from.
 const sources = (s: State) => [...new Set([...s.entries.values()].flat())];
 // A fresh filesystem: no source files, no repository.
-const emptyState = (): State => ({ files: new Set(), empty: new Set(), maybe: new Set(), entries: new Map(), added: false, releases: new Set() });
+const emptyState = (): State => ({ files: new Set(), empty: new Set(), maybe: new Set(), raced: new Set(), entries: new Map(), added: false, releases: new Set() });
 // A deep copy, so one stage's later writes never reach another's (a stage inherits a snapshot, not a live view).
-const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), maybe: new Set(s.maybe), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+const cloneState = (s: State): State => ({ ...s, files: new Set(s.files), empty: new Set(s.empty), maybe: new Set(s.maybe), raced: new Set(s.raced), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
 // Whether a stage holds any repository a later install would see: any entry (a `deb` line or a Deb822 stanza, filed under
 // its file or the `undefined` bucket), or a file whose content we can't read. Content, not existence: a repository a
 // guarded write may have left still counts, since an install after it may well see it.
@@ -154,7 +154,7 @@ const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
 // two stdout redirects), and `none` when it adds no bytes without truncating (`tee -a … < /dev/null`), which leaves the
 // file as it was. `text` is the content when we can read it (a here-document's body). A file that ends up empty adds no
 // repository.
-interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none"; text?: string }
+interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none"; text?: string; retain?: boolean; entries?: string[]; raced?: string[] }
 // `>|` is bash's noclobber override: still a truncating write to the file it names.
 const REDIRECT = /(?<!>)(\d*)(>>?\|?)\s*("[^"]+"|'[^']+'|[^\s;|&)<>]+)/g;
 // A command's stdout as the shell leaves it, walked in order: fd 1 starts on the pipe, a file redirect moves it to
@@ -163,16 +163,18 @@ const REDIRECT = /(?<!>)(\d*)(>>?\|?)\s*("[^"]+"|'[^']+'|[^\s;|&)<>]+)/g;
 // truncated but gets no bytes). Returns the index of the redirect fd 1 finally lands on, or "pipe" when nothing took it.
 // An unquoted operand ends at the next redirect: `3>&1>/tmp/log` is two redirects, not one whose file is `1>/tmp/log`.
 const STDOUT_REDIRECT = /(\d*)(>>?\|?|>&)\s*("[^"]*"|'[^']*'|[^\s;|&)<>]+)/g;
-const stdoutTarget = (text: string): "pipe" | number => {
+const stdoutTarget = (text: string, decode: (t: string) => string = (t) => t): "pipe" | number => {
   const target = new Map<number, "pipe" | number>([[1, "pipe"]]);
   for (const m of text.matchAll(STDOUT_REDIRECT)) {
     const fd = m[1] === "" ? 1 : Number(m[1]);
-    // A closed descriptor (`>&-`) or another stream (`1>&2`) is not the pipe, and no file redirect owns it.
-    target.set(fd, m[2] === ">&" ? (/^\d+$/.test(m[3]!) ? target.get(Number(m[3]!)) ?? -1 : -1) : m.index!);
+    // A closed descriptor (`>&-`) or another stream (`1>&2`) is not the pipe, and no file redirect owns it. A quoted
+    // operand is the same number: `1>&"3"` moves stdout to fd 3.
+    const to = decode(m[3]!).replace(/^["']|["']$/g, "");
+    target.set(fd, m[2] === ">&" ? (/^\d+$/.test(to) ? target.get(Number(to)) ?? -1 : -1) : m.index!);
   }
   return target.get(1) ?? "pipe";
 };
-const stdoutFeedsPipe = (text: string) => stdoutTarget(text) === "pipe";
+const stdoutFeedsPipe = (text: string, decode?: (t: string) => string) => stdoutTarget(text, decode) === "pipe";
 // A command's own words, with quoted text blanked: `echo '… rm /etc/apt/sources.list.d/x'` prints a message, it does
 // not remove anything.
 const unquoted = (s: string) => s.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
@@ -233,13 +235,16 @@ const writtenKind = (text: string): Pick<Written, "content" | "text"> => {
 // `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write; `file` is set only for a
 // sources.list.d name, and the caller keeps `.list` and `.sources`, the only names APT loads. `body` is the here-document
 // the logical line carries, which is what `cat > file <<EOF` or `tee file <<EOF` writes.
-function writtenFiles(segment: string, body?: string): Written[] {
+function writtenFiles(segment: string, body?: string, knownSource?: (path: string) => string[] | undefined): Written[] & { racedPaths?: Set<string> } {
   const out: Written[] = [];
+  // Every write's path and the command that made it, so a name two commands write can be spotted as a race.
+  const writes: { path: string; cmd: number }[] = [];
   // An append of nothing adds no bytes: `tee -a file < /dev/null` leaves the file as it was.
-  const add = (path: string, append: boolean, written: Pick<Written, "content" | "text">) => {
+  const add = (path: string, append: boolean, written: Pick<Written, "content" | "text" | "entries">, cmd?: number) => {
     const file = /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(path)?.[1];
     const content = append && written.content === "empty" ? "none" as const : written.content;
-    out.push({ path, ...(file ? { file } : {}), append, content, ...(written.text !== undefined ? { text: written.text } : {}) });
+    out.push({ path, ...(file ? { file } : {}), append, content, ...(written.text !== undefined ? { text: written.text } : {}), ...(written.entries ? { entries: written.entries } : {}) });
+    writes.push({ path, cmd: cmd ?? 0 });
   };
   // Quoted text is data, not shell syntax: `echo 'a > b'` writes nothing. Each quoted run is masked so redirects and
   // operands are read from code alone, keeping its content so a quoted target still resolves to its path.
@@ -254,7 +259,10 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
   // target.
   // Length-preserving, so an index into `clean` is the same index into `code`.
-  const clean = code.replace(/\d*>&\d+/g, (d: string) => " ".repeat(d.length));
+  // A duplication's operand may be quoted or spaced (`2>&"1"` and `2>& 1` are the same as `2>&1`), and a quoted run is
+  // masked here, so the quoted content is read back to tell a descriptor number from an ambiguous redirect, which bash
+  // rejects.
+  const clean = code.replace(/\d*>&[ \t]*(?:\uE000(\d+)\uE001|(\d+))/g, (d: string, q: string | undefined) => (q === undefined || /^\d+$/.test(quoted[Number(q)]!)) ? " ".repeat(d.length) : d);
   // The pipeline elements of the line, with the operator before each: one ends a chain (`;`), the next reads the previous
   // one's stdout (`|`).
   const parts: { text: string; start: number; end: number; op?: string }[] = [];
@@ -278,19 +286,25 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // The command whose stdout reaches this element: the last of a `&&` chain (`a && b | tee f` pipes b's stdout, and
   // `echo x > log && cat | tee f` reads from `cat`, not the earlier command's redirect).
   const lastCommand = (part: string) => part.split(/&&|\|\|/).filter((x) => x.trim()).at(-1) ?? "";
+  // A Dockerfile `RUN` keeps its verb in the text; strip it so the command itself is what gets classified. Dockerfile
+  // instructions are case-insensitive, so `run`, `Run` and `RUN` are the same.
+  const stripVerb = (t: string) => t.replace(/^\s*RUN\s+/i, "");
   // A `cat` (or other copier) whose own fd 0 is a redirect (`cat </dev/null`, `dd if=/dev/null` aside) copies that file
   // rather than its pipe: /dev/null is known-empty, any other file is content we can't read. `<` ends at an unquoted
   // shell operator, so `cat </tmp/x</dev/null` reads /dev/null (the last one applies).
   // What a `cat` command reads, with everything that is not an input dropped: its stdout redirects (`> f`, `>| f`,
   // `2>&1` name where it writes, so `cat > f` fed by a pipe still reads the pipe) and its own name.
   const catRest = (piece: string) => piece
+    // A descriptor duplication (`2>&1`, and its quoted or spaced forms `3>&"1"`, `2>& 1`) names no file, so it goes
+    // with `stdoutTarget`'s syntax rather than leaving its quoted operand to read as one.
+    .replace(/\d*>&[ \t]*(?:\uE000\d+\uE001|\d+)/g, " ")
     // An output redirect and its descriptor go together: `cat /dev/null 2>/tmp/log > f` reads /dev/null, and `2` is
     // not a file. A bare `>` with no descriptor is still one.
-    .replace(/\d*>&\d+|(?<![0-9>])\d*(?:>>?\|?|&>>?)\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
+    .replace(/(?<![0-9>])\d*(?:>>?\|?|&>>?)\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
     // Its stdin redirects name an input, not an operand: `cat 0</dev/null` has no file operand, and `0` is the descriptor.
     .replace(/(?<![0-9<])\d*<(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
     .replace(/^\s*(?:RUN\s+)?cat\b/i, " ");
-  const catInput = (piece: string): Pick<Written, "content"> | undefined => {
+  const catInput = (piece: string): (Pick<Written, "content" | "entries"> & { readsPipe?: boolean }) | undefined => {
     // Its input files: any `<`-redirect and its positional operands (`cat /tmp/x`, `cat </tmp/x`), with flags dropped
     // (`cat -n f`, `cat -- -x`: a lone `--` ends the options, and `-` names stdin).
     const REDIR = /(?<![0-9<])(?:0<|<)(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g;
@@ -312,22 +326,52 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // Its output is known empty only when every input it reads is: each file operand, and stdin when read (a redirect to
     // `/dev/null`, else the pipe — which a bare `cat` passes on by returning nothing here).
     const inputs = [...files, ...(stdin && stdinFile !== undefined ? [stdinFile] : [])];
-    // A file operand or a `<`-redirect to anything but `/dev/null` is content we can't read, whatever the pipe holds.
-    if (inputs.some((f) => f !== "/dev/null")) return { content: "unknown" };
-    // Only `/dev/null` was read. A `-` operand (or no operand at all) reads stdin as well: when nothing overrides stdin
-    // (`cat </dev/null` does), the piped bytes are still its output, so the caller passes them through — a bare list
-    // beside them adds nothing. Otherwise the output is known empty: `cat /dev/null > f` truncates f to nothing.
-    return stdin && stdinFile === undefined ? undefined : { content: "empty" };
+    // The shell opens a command's redirections before it runs, so a truncating redirect to the same path empties it
+    // before `cat` reads it: `cat < f > f` (and `cat f > f`) writes nothing.
+    const truncated = new Set([...piece.matchAll(/(?<![>0-9])\d*>(?!>|&)\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g)].map((n) => unmask(strip(n[1]!))));
+    // A file operand or a `<`-redirect names content we can read only when this stage wrote that file: a source the
+    // scanner holds carries its repositories (`cat vendor.list > dest.list` copies the `deb` line), while a name the
+    // stage never wrote — or one it holds without readable entries (`COPY --from`, a copied `.sources` with no URIs) —
+    // is content we can't read, whatever the pipe holds.
+    const entries: string[] = [];
+    for (const f of inputs) {
+      if (f === "/dev/null" || truncated.has(f)) continue;
+      const held = knownSource?.(f);
+      if (!held?.length) return { content: "unknown" };
+      entries.push(...held);
+    }
+    // A `-` operand (or no operand at all) reads stdin as well, and only a `<`-redirect replaces what that holds: the
+    // caller adds the piped bytes, which are concatenated with whatever files were named. With no file beside it, `cat`
+    // is the pipe itself and the caller passes its bytes through.
+    const readsPipe = stdin && stdinFile === undefined;
+    if (readsPipe && !entries.length) return undefined;
+    if (entries.length) return { content: "deb", entries, readsPipe };
+    // Only `/dev/null` (or files this command truncated) was read: the output is known empty.
+    return { content: "empty" };
+  };
+  // What a copier's stdout carries: the files it read, concatenated with what the pipe feeds it when it also reads
+  // stdin (`cat file -`, in a pipeline or before a redirect). An input either side can't read keeps the write unknown;
+  // with nothing named, `cat` is the pipe itself and `flow` supplies those bytes.
+  const mergeInputs = (
+    read: (Pick<Written, "content" | "entries"> & { readsPipe?: boolean }) | undefined,
+    upstream: Pick<Written, "content" | "text" | "entries">,
+  ): Pick<Written, "content" | "text" | "entries"> => {
+    if (!read) return upstream;
+    if (!read.readsPipe) return read;
+    if (read.content === "unknown" || upstream.content === "unknown") return { content: "unknown" };
+    const piped = upstream.content === "deb" ? (upstream.entries ?? repoEntries(upstream.text ?? "").repos) : [];
+    const all = [...(read.entries ?? []), ...piped];
+    return all.length ? { content: "deb", entries: all } : { content: "empty" };
   };
   // What reaches pipeline element i's stdout: nothing when its own last command redirects it, known content from a
   // here-document, and otherwise the pipeline's earlier command — or, when that is a pass-through (`cat`, `tee`), what
   // feeds it. A redirect deeper in the pipeline therefore empties the file `tee` is actually fed by.
-  const flow = (i: number): Pick<Written, "content" | "text"> => {
+  const flow = (i: number): Pick<Written, "content" | "text" | "entries"> => {
     if (i < 0 || parts[i]!.op !== "|") return { content: "empty" };
-    const piece = lastCommand(parts[i]!.text);
+    const piece = stripVerb(lastCommand(parts[i]!.text));
     // Its own stdout redirect sends the bytes elsewhere, whatever it reads: `tee /tmp/log >/dev/null | tee f` feeds f
     // nothing. Only fd 1 (a bare `>` or `1>`) takes it, though: `echo … 3> /tmp/log | tee f` still feeds f.
-    if (!stdoutFeedsPipe(piece)) return { content: "empty" };
+    if (!stdoutFeedsPipe(piece, unmask)) return { content: "empty" };
     const tee = /\btee\b/.exec(piece);
     if (tee) {
       if (hereText) return hereText;
@@ -343,11 +387,10 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // `cat` passes on what the pipe feeds it.
     // A redirect may touch the name (`cat</dev/null`), which is still `cat` reading /dev/null.
     if (/^\s*cat(?=[\s<]|$)/.test(piece)) {
-      // Its own input decides: `cat</dev/null > f` truncates f where the pipe fed it, so its empty output is reported
-      // rather than the upstream `deb` line's. Only a cat with nothing to read takes the pipe.
-      const input = catInput(piece);
-      if (input) return input;
-      return flow(i - 1);
+      // Its own input decides first: `cat</dev/null > f` truncates f where the pipe fed it, so its empty output is
+      // reported rather than the upstream `deb` line's. A `-` beside file operands concatenates the pipe with them, so
+      // both sets of repositories reach the next stage.
+      return mergeInputs(catInput(piece), flow(i - 1));
     }
     return { content: "deb", text: expand(piece) };
   };
@@ -368,14 +411,20 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // `echo … > vendor.list > /tmp/log` empties vendor.list, and `echo … > vendor.list 3>&1 > /tmp/log 1>&3` does too,
   // because `1>&3` puts stdout back on the log — vendor.list gets no bytes either way.
   const redirects = [...clean.matchAll(REDIRECT)];
+  // A redirect's write, kept until the whole command is read: within one command the shell opens every destination
+  // before it runs it, so a truncation of a path lands before a write that takes stdout there, whatever order the two
+  // were written in. The span records which command it belongs to — writes from different pipeline stages are not
+  // ordered against each other.
+  interface Entry { path: string; append: boolean; takes: boolean; cmd: number; content: Pick<Written, "content" | "text" | "entries"> }
+  const entries: Entry[] = [];
   redirects.forEach((m) => {
     const append = m[2] === ">>";
     const part = parts.findIndex((q) => m.index! >= q.start && m.index! < q.end);
     const [cStart, cEnd] = commandSpan(part, m.index!);
-    const finalTarget = stdoutTarget(code.slice(cStart, cEnd));
+    const finalTarget = stdoutTarget(code.slice(cStart, cEnd), unmask);
     const takes = finalTarget !== "pipe" && cStart + finalTarget === m.index!;
     // The command text before this redirect, with a Dockerfile `RUN` keyword dropped so its first word is the command.
-    const before = lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0))).replace(/^\s*RUN\s+/i, "");
+    const before = stripVerb(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0))));
     // A pass-through (`cat > f`) writes what its pipeline element receives, so a producer that sent its own stdout
     // elsewhere leaves f empty rather than holding a `deb` line.
     const passThrough = /^\s*cat(?=[\s<]|$)/.test(before);
@@ -391,18 +440,27 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // pipe feeds it — `catInput` answers nothing only for that pass-through case.
     const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
     const catRead = passThrough ? catInput(catText) : undefined;
-    const through: Pick<Written, "content" | "text"> | undefined = passThrough
-      ? catRead ?? flow(part - 1)
+    // `cat file -` concatenates the file with what the pipe feeds it, so both sets of repositories reach the file
+    // (`mergeInputs`); an input either side can't read keeps the whole write `unknown`.
+    const through: Pick<Written, "content" | "text" | "entries"> | undefined = passThrough
+      ? mergeInputs(catRead, flow(part - 1))
       : own?.content === "deb" || own?.content === "unknown" ? own : undefined;
-    const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? through;
+    const fed: Pick<Written, "content" | "text" | "entries"> | undefined = hereText ?? through;
     // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with
     // `2> f 1>&2` the `2>` names f and `1>&2` moves stdout there, so f holds the line. When stdout goes elsewhere the
     // file is left empty for a truncating stdout redirect, but a redirect on another descriptor (`2> f`, `3> f`) may
     // still be written by the command's stderr or that descriptor, which we can't read: keep it as unknown rather than
     // claiming it holds nothing.
     const stdoutFd = m[1] === "" || m[1] === "1";
-    add(unmask(strip(m[3]!)), append, takes ? fed ?? { content: silent ? "empty" : "deb" } : { content: stdoutFd ? (append ? "none" : "empty") : "unknown" });
+    entries.push({ path: unmask(strip(m[3]!)), append, takes, cmd: cStart, content: takes ? fed ?? { content: silent ? "empty" : "deb" } : { content: stdoutFd ? (append ? "none" : "empty") : "unknown" } });
   });
+  // Within one command a truncation comes before the write that takes stdout; everything else keeps its written order,
+  // so two commands (pipeline stages, `&&` chains) are never reordered against each other.
+  const rank = (e: Entry) => (e.takes ? 2 : e.append ? 1 : 0);
+  entries
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => (a.e.path === b.e.path && a.e.cmd === b.e.cmd ? rank(a.e) - rank(b.e) || a.i - b.i : a.i - b.i))
+    .forEach(({ e }) => add(e.path, e.append, e.content, e.cmd));
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
   // A `>` glued to a `|` is the noclobber redirect, not a pipe: masked so `tee >| /tmp/log f` keeps the operands after it.
@@ -423,9 +481,37 @@ function writtenFiles(segment: string, body?: string): Written[] {
     const content: Pick<Written, "content" | "text"> = redirect
       ? { content: unmask(strip(redirect)) === "/dev/null" ? "empty" : "unknown" }
       : heredoc ? hereText! : flow(parts.findIndex((p) => m.index! >= p.start && m.index! < p.end) - 1);
-    for (const a of options.filter((a) => !a.startsWith("-"))) add(a, append, content);
+    // The command this `tee` belongs to, so a name another stage writes is spotted as a race.
+    const cmd = parts.find((p) => m.index! >= p.start && m.index! < p.end);
+    for (const a of options.filter((a) => !a.startsWith("-"))) add(a, append, content, cmd?.start ?? -1);
   }
-  return out;
+  // Two pipeline stages writing one file are a race, not a sequence: measured in bash, `a > f | b > f > log` left the
+  // repository in f in about one run in five. Where two commands write a name and either wrote a repository, every
+  // other write to it is unknown instead — a truncation must not be read as clearing a repository a racing stage may
+  // have written. The repository write keeps its text, so the pin is still filed where that write is the last one.
+  const writers = new Map<string, Set<number>>();
+  for (const w of writes) writers.set(w.path, (writers.get(w.path) ?? new Set()).add(w.cmd));
+  const repoWritten = new Set(out.filter((w) => w.content === "deb").map((w) => w.path));
+  const racy = new Set([...writers].filter(([path, cmds]) => cmds.size > 1 && repoWritten.has(path)).map(([path]) => path));
+  // Marked on the write itself: only a racing write may have left the file's earlier repository in place, so only its
+  // entries are kept beside what it brought. Any other `unknown` replaces the file for certain (`cat /tmp/x > f`).
+  for (const w of out) if (racy.has(w.path) && w.content !== "deb" && w.content !== "none") { w.content = "unknown"; w.retain = true; }
+  // Two racing commands may each write a repository and either can be the one bash leaves last (`echo a > f | echo b > f`
+  // kept a in 5 of 40 runs and b in the rest), so the file can end holding whichever ran last: every repository written to
+  // it by a racing command is a possible survivor, and all of them are kept. The file stays present and known, so a pin
+  // can still be dated — dropping one of them would let a version from that repository go unchecked.
+  const racedRepos = new Map<string, string[]>();
+  for (const w of out) {
+    const repos = w.entries ?? (w.content === "deb" ? repoEntries(w.text ?? "").repos : []);
+    if (!racy.has(w.path) || !repos.length) continue;
+    racedRepos.set(w.path, [...new Set([...(racedRepos.get(w.path) ?? []), ...repos])]);
+  }
+  for (const w of out) {
+    const repos = racedRepos.get(w.path);
+    if (repos) { w.entries = repos; w.text = undefined; w.content = "deb"; }
+  }
+  // The caller files these names so a pin they feed can be dated from every possible winner (see `dateApt`).
+  return Object.assign(out, { racedPaths: new Set(racedRepos.keys()) });
 }
 
 // Install commands on one logical line: pins found, problems found.
@@ -492,7 +578,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     const taken = new Map([...state.entries].map(([f, v]) => [f, [...v]] as const));
     const held = new Set(state.files);
     const removed = named.filter((f) => /\.(list|sources)$/.test(f));
-    const blank = new Set(state.empty), unsure = new Set(state.maybe);
+    const blank = new Set(state.empty), unsure = new Set(state.maybe), race = new Set(state.raced);
     // A skipped removal leaves the file it would have dropped, so its entries are back even when the line also
     // rewrote that name (`test -f m && rm x && printf … > x || true` leaves the old repository when the test fails):
     // both possible sources are kept (the safe direction).
@@ -500,16 +586,17 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       for (const [f, v] of taken) state.entries.set(f, [...new Set([...(state.entries.get(f) ?? []), ...v])]);
       held.forEach((f) => state.files.add(f));
       blank.forEach((f) => state.empty.add(f));
+      race.forEach((f) => state.raced.add(f));
       unsure.forEach((f) => state.maybe.add(f));
       state.added = hasRepo(state);
     };
     if (removed.length) {
-      removed.forEach((f) => { state.files.delete(f); state.empty.delete(f); state.maybe.delete(f); state.entries.delete(f); });
+      removed.forEach((f) => { state.files.delete(f); state.empty.delete(f); state.maybe.delete(f); state.raced.delete(f); state.entries.delete(f); });
       state.added = hasRepo(state);
       return undo;
     }
     if (!named.length) {
-      state.entries.clear(); state.files.clear(); state.empty.clear(); state.maybe.clear();
+      state.entries.clear(); state.files.clear(); state.empty.clear(); state.maybe.clear(); state.raced.clear();
       state.added = false;
       return undo;
     }
@@ -544,13 +631,14 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // The repositories a file holds now, to put them back when a guarded change is undone (merged with whatever a later
   // command on the line wrote, so neither is lost).
   const snapshot = (...names: (string | undefined)[]) => {
-    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n), n === undefined ? false : state.empty.has(n), n === undefined ? false : state.maybe.has(n)] as const);
+    const before = names.map((n) => [n, state.entries.get(n) ? [...state.entries.get(n)!] : undefined, n === undefined ? false : state.files.has(n), n === undefined ? false : state.empty.has(n), n === undefined ? false : state.maybe.has(n), n === undefined ? false : state.raced.has(n)] as const);
     return () => {
-      for (const [n, entries, held, blank, unsure] of before) {
+      for (const [n, entries, held, blank, unsure, race] of before) {
         if (entries) state.entries.set(n, [...new Set([...(state.entries.get(n) ?? []), ...entries])]);
         if (held && n !== undefined) state.files.add(n);
         if (blank && n !== undefined) state.empty.add(n);
         if (unsure && n !== undefined) state.maybe.add(n);
+        if (race && n !== undefined) state.raced.add(n);
       }
       state.added = hasRepo(state);
     };
@@ -578,7 +666,12 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     // What a command reads is not what it writes: the file a pipeline's `tee` writes carries its `deb` line, while a
     // source file it only copies for diagnostics adds no repository.
     const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
-    const files = writtenFiles(segment, body);
+    // What a `cat` of a file this stage wrote copies: its filed entries, and undefined for a file it never wrote.
+    const knownSource = (path: string) => { const name = sourceName(path); return name && state.files.has(name) ? (state.entries.get(name) ?? []) : undefined; };
+    const files = writtenFiles(segment, body, knownSource);
+    // A name two racing commands wrote may end holding either one's repositories, which dating must all check.
+    const racedHere = new Set(files.racedPaths ? [...files.racedPaths] : []);
+    for (const path of racedHere) { const name = sourceName(path); if (name) state.raced.add(name); }
     // Only `.list` and `.sources` are loaded: a write to `vendor.list.disabled` is a repository neither APT nor a later
     // install sees, so it neither requires pins nor dates them.
     const loaded = files.filter((w) => w.file && /\.(list|sources)$/.test(w.file));
@@ -602,11 +695,19 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       for (const w of loaded) {
         if (w.content === "none") continue;
         // A here-document's body is what it writes: its `deb` lines and its Deb822 stanzas.
-        const written = w.content === "deb" ? (w.text === undefined ? debs : repoEntries(w.text).repos) : [];
+        const written = w.entries ?? (w.content === "deb" ? (w.text === undefined ? debs : repoEntries(w.text).repos) : []);
         // `>>` to an empty stream (`cat </dev/null >> f`, `tee -a f </dev/null`) leaves the file as it was on disk,
         // entries and presence alike; only a truncating write (`> f`, a plain `tee`) removes it.
         if (w.append && w.content === "empty") continue;
-        state.entries.set(w.file!, w.append ? [...(state.entries.get(w.file!) ?? []), ...written] : written);
+        // Each write has its own mode: `>>` adds to what the file held, a plain `>` replaces it — so a file written
+        // twice on one line takes only the last write's entries when that write replaces, whichever came first. A
+        // racing stage's write (`retain`) is the exception: its output we can't read may have left the earlier
+        // repository in place, so those entries are kept beside whatever this write brought rather than cleared.
+        const prior = w.append || w.retain ? (state.entries.get(w.file!) ?? []) : [];
+        state.entries.set(w.file!, [...new Set([...prior, ...written])]);
+        // A later write that certainly replaces the file leaves exactly what it wrote, so an earlier race over it no
+        // longer leaves another repository possible. A write that is itself part of this line's race keeps the name.
+        if (!w.append && !racedHere.has(w.path)) state.raced.delete(w.file!);
         // A write behind a condition may have been skipped, so it leaves the file as it was (the undo puts back what it
         // held) — or it ran, and the file is as the write left it. Either way a `-n` copy onto it is neither certainly
         // skipped nor certainly applied, so the name is only `maybe` known while a later command may skip it.
@@ -681,7 +782,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
         .replace(/(?:>>?|<<?)\s*(&?\d+|"[^"]*"|'[^']*'|\S+)/g, " "));
       for (const a of args.filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
         const [pkg, ver] = a.split("=") as [string, string | undefined];
-        if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at });
+        if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at, ...(state.raced.size ? { raced: true } : {}) });
         else if (state.added) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
       }
     }
@@ -1020,9 +1121,23 @@ async function datePin(p: Pin) {
  */
 export async function dateApt(p: Pin, lookup: typeof publishedAt = publishedAt) {
   const release = p.release ?? DEFAULT_RELEASE;
-  for (const source of [...p.sources!.map((s) => onRelease(s, release, p.distro)), ...distroSources(release, p.distro)]) {
-    try { return await lookup("apt", p.name, { version: p.version, source }); } catch (e) { if (!(e as FetchError).notListed) throw e; }
+  // A raced source file may end up holding any one of the repositories its commands wrote, so a version it lists must
+  // be old enough in every one of them: the newest publication date across the file's sources is the one that counts.
+  // Otherwise a version a losing stage writes (dated 30 days ago there) would pass on a winner's yesterday record.
+  const own = p.sources!.map((s) => onRelease(s, release, p.distro));
+  let newest: Awaited<ReturnType<typeof publishedAt>> | undefined;
+  for (const source of [...own, ...distroSources(release, p.distro)]) {
+    // Only the file's own sources are race candidates; the distro's pockets are where a pin is dated when none of them
+    // lists it, so the first pocket that does answers it.
+    const inFile = own.includes(source);
+    if (!inFile && newest) break;
+    try {
+      const found = await lookup("apt", p.name, { version: p.version, source });
+      if (!p.raced) return found;
+      if (!newest || found.published > newest.published) newest = found;
+    } catch (e) { if (!(e as FetchError).notListed) throw e; }
   }
+  if (newest) return newest;
   throw new Error(`${p.name}=${p.version}: no apt repository in this file, nor ${release}'s own, lists it`);
 }
 
