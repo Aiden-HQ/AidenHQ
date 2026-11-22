@@ -109,7 +109,8 @@ case "$1" in
   image)
     shift
     if [ "$1" = ls ] || [ "$1" = list ]; then
-      awk -F '\\t' '$3 != "" { print $2 "\t" $1 }' "$TAGS"
+      # docker image ls --format '{{.Repository}}:{{.Tag}}': the references, one per line, as the daemon lists them.
+      awk -F '\\t' '$3 != "" { print $1 }' "$TAGS"
       exit 0
     fi
     if [ "$1" = save ]; then
@@ -527,4 +528,41 @@ test("security-sbom: a long host scan does not expire the apply-lock snapshot bu
   const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(scanned && scanned[1] !== "-", `the tag was not scanned after the snapshot deadline:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   assert.equal(targets.filter((t) => t[0].startsWith("image:")).length, 1, "one line per image, no second manifest key");
+});
+
+test("security-sbom: a tagged image that cannot fit is a line and saves nothing", { skip: NOT_LINUX }, async () => {
+  // 31 GB free, a 30 GB floor: one GB of room above the floor. A tagged image whose archive needs more than that must be
+  // a line before any `docker save` writes, not a save that fills the disk and a check afterwards.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "31000000" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    sizes: { "aidenhq/board:local": 4 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "it was not scanned");
+  assert.match(line[2], /does not fit/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran with one GB above the floor:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an image is sized through any local reference that can export it", { skip: NOT_LINUX }, async () => {
+  // The container's own id is gone and its bare platform manifest is not an image record, but another local tag points at
+  // an index that holds that manifest. Resolving an export reference before the size check keeps the image scanable
+  // rather than recording it as unreadable.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:gone", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:index" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:2222" },
+    held: ["sha256:index"],
+    sizes: { "other:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:sha256:gone");
+  assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", "it reached syft");
+  assert.doesNotMatch(scanned[2], /no local image exports|No such image/);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" other:local")), `the other tag did not export it:\n${calls.join("\n")}`);
+  assert.match(syft(calls, "image:sha256:gone").line, /docker-archive:\/image\.tar/);
 });

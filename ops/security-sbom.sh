@@ -5,9 +5,9 @@
 #                   the homes or this instance's own checkouts (see HOST_EXCLUDES)
 #   image:<ref>     every image a running container uses: the reference it was created with while the tag still names what
 #                   runs, else the container's own id (findings reconcile by target name). Each is saved from Docker under
-#                   the apply lock or just before its scan and read as a docker archive, so the scan follows what runs
-#                   rather than whatever a tag names by the time syft opens it. An image the daemon no longer holds, and
-#                   nothing else can export, is a line saying so, never a silent gap in the batch
+#                   the apply lock, from the reference the lock resolved, and read as a docker archive, so the scan follows
+#                   what runs rather than whatever a tag names by the time syft opens it. An image nothing local can
+#                   export is a line saying so, never a silent gap in the batch
 #   repo:product    this checkout (lockfiles; not data/, node_modules or .git)
 #   repo:instance   the instance checkout
 #   app:<name>      each app's deployed source (data/apps/.platform/<name>/src, what apps-mcp checked out)
@@ -150,37 +150,49 @@ pin_of() { # <tag>
   [ -n "$id" ] || id="$(docker_call 5 image inspect -f '{{.Id}}' "$1" 2>/dev/null)"
   printf '%s' "$id"
 }
-# Export targets for a platform manifest: the container's index first, then every local tag. A platform manifest inside a
-# multi-platform index is not an image record of its own, so a bare digest names nothing to Docker; the index that holds
-# it does, and `docker save --platform` exports exactly the running platform from it.
+# Every reference the daemon holds that might export a platform manifest: the manifest itself, the container's index,
+# then every local tag. A platform manifest inside a multi-platform index is not an image record of its own, so a bare
+# digest names nothing to Docker; the index that holds it does, and `docker save --platform` exports exactly the running
+# platform from it. Immutable references are listed before tags, so a save binds to the first that matches.
 platform_refs() { # <platform manifest id> <container .Image>
   local want="$1" image="$2" ref
-  # A single-platform store (or a plain daemon) may hold the manifest itself as an image record; try it first.
   printf '%s\n' "$want"
   [ -n "$image" ] && printf '%s\n' "$image"
   while IFS= read -r ref; do
     [ -n "$ref" ] && [ "$ref" != "<none>:<none>" ] && printf '%s\n' "$ref"
   done < <(docker_call 10 image ls -a --no-trunc --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
 }
-# Export one image to <dest>, from a reference that provably holds the platform manifest <pin>: a tag or an index only
-# when `docker image inspect --platform <platform>` on it names <pin>. A tag is re-read after the save, so a tag an apply
-# rebuilt in that window is not what the archive holds. Returns 0 and leaves the archive in place, or 1 with
-# export_err saying why (and no file). Immutable ids are tried before tags (platform_refs), so the common case is a save
-# from an id that cannot move.
+# The first reference that provably holds the platform manifest <pin>: `docker image inspect --platform` on it names <pin>,
+# and it is an image record the daemon can hand to `docker save` (a bare platform manifest inside a multi-platform index is
+# not one, which `docker image inspect` shows). Falls back to the pin itself for a single-platform store that holds the
+# manifest as an image record the inspect doesn't resolve; the save then either works or the next reference runs.
+resolve_ref() { # <pin manifest> <container .Image>
+  local pin="$1" image="$2" candidate
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    [ "$candidate" = "$pin" ] && continue
+    if [ "$(pin_of "$candidate")" = "$pin" ] && docker_call 5 image inspect -f '{{.Id}}' "$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"; return 0
+    fi
+  done < <(platform_refs "$pin" "$image")
+  printf '%s' "$pin"
+}
+# Export the image <pin> to <dest>, trying every reference that could hold it (immutable ids before tags), each accepted
+# only when it names <pin>. A save from an immutable id cannot name another image than the one verified; a tag is re-read
+# after the save and the archive dropped if it moved, so a rebuilt tag is never published under the running container's
+# target. Returns 1 with export_err.
 export_err=""
 export_image() { # <pin manifest> <container .Image> <dest tar>
-  local pin="$1" image="$2" dest="$3" candidate got
+  local pin="$1" image="$2" dest="$3" candidate
   export_err=""
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    got="$(pin_of "$candidate")"
-    # The pinned manifest itself, or a reference that resolves to it. A bare manifest can be the export reference on a
-    # single-platform store even though `inspect` doesn't resolve it; the save then says so and the next candidate runs.
-    [ "$candidate" = "$pin" ] || [ "$got" = "$pin" ] || continue
+    # The pin itself may be a saveable image record on a single-platform store, and a reference is accepted only when it
+    # names the pin. Anything else would save a different image under this target.
+    if [ "$candidate" != "$pin" ] && [ "$(pin_of "$candidate")" != "$pin" ]; then continue; fi
     if ! export_err="$(docker_call 900 image save --platform "$platform" -o "$dest" "$candidate" 2>&1)"; then
       rm -f "$dest"; continue
     fi
-    # A tag is mutable: what it named at the first check may not be what the save read. An id cannot move.
     case "$candidate" in
       sha256:*|*@sha256:*) export_err=""; return 0 ;;
     esac
@@ -197,7 +209,7 @@ export_image() { # <pin manifest> <container .Image> <dest tar>
 plan_target=(); plan_source=(); plan_pin=(); plan_ref=()
 plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); }
 snapshot() {
-  local listing rows cid row image config label want key raw size size_gb avail ref err saved candidate archive
+  local listing rows cid row image config label want key raw size size_gb avail ref saved candidate archive pin
   local -A running=() tags=() manifests=()
   # How long the snapshot may hold the apply lock: generous for forty saves, short enough that a daemon that stopped
   # answering can't keep an apply waiting. AIDENHQ_SBOM_SNAPSHOT_SECS is for the tests; a bad value falls back.
@@ -264,52 +276,49 @@ snapshot() {
   avail=$(( $(free_gb) - min_free_gb ))
   for image in $(printf '%s\n' "${!running[@]}" | sort); do
     # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
-    # recorded (the export reference), else the container's own top-level id. The target stays `image:<container id>`
-    # when the tag has moved: the store reconciles findings by target name, so keying the same image by its manifest id
-    # would leave the findings already held under its id unverified beside the new ones.
+    # recorded, else the container's own top-level id. The target stays `image:<container id>` when the tag has moved: the
+    # store reconciles findings by target name, so keying the same image by its manifest id would leave the findings
+    # already held under its id unverified beside the new ones.
     want="${tags[$image]:-${manifests[$image]:-$image}}"
     key="${tags[$image]:-$image}"
+    # The platform manifest this target stands for, pinned here under the lock and the only thing a later save is checked
+    # against. `pin_of` resolves an index to the platform manifest inside it, which is what runs.
+    pin="$(pin_of "$want")"; [ -n "$pin" ] || pin="$want"
+    # The reference the save will read, resolved now, while the lock still holds the store still. Discovering it here, not
+    # after the size checks, is what lets an image whose own id is gone but whose index another tag holds still be
+    # exported instead of dropped as unreadable.
+    if ! ref="$(resolve_ref "$pin" "$image")"; then
+      plan_add "image:$key" "fail:docker save: no local image exports $want" "$pin" "$image"; continue
+    fi
     raw=""; saved=""
-    if raw="$(docker_call 5 image inspect -f '{{.Size}}' "$want" 2>&1)"; then saved=1
-    elif [ "$want" != "$image" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$image" 2>&1)"; then want="$image"; saved=1
+    if raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1
+    elif [ "$ref" != "$image" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$image" 2>&1)"; then ref="$image"; saved=1
     fi
     if [ -z "$saved" ]; then
-      plan_add "image:$key" "fail:docker image inspect: ${raw:-failed}" "" "$image"; continue
+      plan_add "image:$key" "fail:docker image inspect: ${raw:-failed}" "$pin" "$image"; continue
     fi
     # The template prints one number; a warning ahead of it is not the size, so the last line is what is judged. A size
     # nothing answers is unknown, not zero: an unknown demand can't be judged to fit, so the target is recorded.
     size="$(printf '%s\n' "$raw" | tail -1)"
     if [[ ! "$size" =~ ^[0-9]+$ ]]; then
-      plan_add "image:$key" "fail:docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')" "" "$image"; continue
+      plan_add "image:$key" "fail:docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')" "$pin" "$image"; continue
     fi
     size_gb="$(ceil_gb "$size")"
-    # An image read from an archive needs its save and unpack to fit above the floor; one that would not is a line and
-    # writes no bytes. (An image saved under the lock is judged by the whole plan's budget; one exported at scan time is
-    # rechecked against free space immediately before its save.)
-    if [ "$want" = "${tags[$image]:-}" ]; then
-      # The tag still names the running image: scan it through an archive built at scan time from the tag, after
-      # checking the tag still names the pinned manifest. Exported then, not under the lock, so a batch of tags doesn't
-      # hold the apply lock through forty saves nor keep forty archives on disk at once. A tag whose manifest can't be
-      # read under the lock has no pin to verify against, so it is a line rather than an unverified scan.
-      pin="$(pin_of "$want")"
-      if [ -z "$pin" ]; then
-        plan_add "image:$key" "fail:docker image inspect: could not read the tag's image under the apply lock" "" "$image"
-      else
-        plan_add "image:$key" tag "$pin" "$image"
-      fi
-      continue
-    fi
+    # One image's archive and its unpack need about twice its size. An image that cannot fit beside the archives already
+    # planned is a line and writes no bytes; this is judged for every image, tagged or not.
     if [ "$avail" -lt $(( size_gb * 2 )) ]; then
-      plan_add "image:$key" "fail:skipped: ${size_gb} GB image does not fit in the ${avail} GB of room above the ${min_free_gb} GB floor on $out" "" "$image"; continue
+      plan_add "image:$key" "fail:skipped: ${size_gb} GB image does not fit in the ${avail} GB of room above the ${min_free_gb} GB floor on $out" "$pin" "$ref"; continue
     fi
-    # An image whose tag has moved is exported now, under the lock, from a reference that holds its platform manifest:
-    # the archive holds exactly what runs, and a tag that moves after the lock is released can't change it.
+    # Exported now, under the lock, from the reference resolved above: the archive holds exactly what runs, and nothing
+    # that moves after the lock is released can change it. The scan-time path only re-opens archives.
     archive="$archives/${#plan_target[@]}.tar"
-    if export_image "$want" "$image" "$archive"; then
-      plan_add "image:$key" "archive:$archive" "" "$image"
-      avail=$(( avail - size_gb * 2 ))
+    if export_image "$pin" "$image" "$archive"; then
+      plan_add "image:$key" "archive:$archive" "$pin" "$ref"
+      # The archive stays on disk until its scan, so its own size is what the next image must fit beside.
+      saved="$(ceil_gb "$(stat -c %s "$archive")")"
+      avail=$(( avail - saved * 2 ))
     else
-      plan_add "image:$key" "fail:docker save: ${export_err:-no local image exports $want}" "" "$image"
+      plan_add "image:$key" "fail:docker save: ${export_err:-failed}" "$pin" "$ref"
     fi
   done
 }
@@ -318,38 +327,19 @@ if ! snapshot; then
   rm -rf "$next" "$work" "$archives"
   exit 0
 fi
-# From here the target list is fixed; let an apply run and scan. The snapshot deadline bounded the work under the lock,
-# not the scans: a tag recheck after a long host scan must use its own per-call timeout, never look like a moved tag.
+# From here the target list is fixed and every archive holds the image verified under the lock; let an apply run and scan.
+# The snapshot deadline bounded the work under the lock, not the scans.
 SNAPSHOT_DEADLINE=""
 exec 8>&-
 scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
 for i in "${!plan_target[@]}"; do
   target="${plan_target[$i]}"; source="${plan_source[$i]}"
   case "$source" in
-    tag)
-      # The tag named the running image under the lock. Export it now, from an id that holds that manifest when one is
-      # local, else from the tag itself, rechecked after the save: a tag an apply rebuilt in between is a line, never
-      # another build's packages under this target. Exported here, not under the lock, so the lock stays short and one
-      # archive is on disk at a time.
-      pin="${plan_pin[$i]}"; archive="$archives/$i.tar"
-      avail="$(free_gb)"
-      if [ "$avail" -lt "$min_free_gb" ]; then
-        fail "$target" "skipped: ${avail} GB free on $out, under the ${min_free_gb} GB floor"; continue
-      fi
-      if ! export_image "$pin" "${plan_ref[$i]}" "$archive"; then
-        fail "$target" "skipped: ${export_err:-docker save: no local image exports $pin}"; continue
-      fi
-      need="$(ceil_gb "$(stat -c %s "$archive")")"
-      if [ "$need" -gt $(( (avail - min_free_gb) / 2 )) ]; then
-        fail "$target" "skipped: ${need} GB image does not fit in the ${avail} GB free on $out above the ${min_free_gb} GB floor"
-        rm -f "$archive"; continue
-      fi
-      scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
-      rm -f "$archive" ;;
     fail:*) fail "$target" "${source#fail:}" ;;
     archive:*)
-      # Recheck the image's workspace against free space now, with every archive still waiting on disk. The archive
-      # holds the image verified under the lock, so a tag that moved since can't change it.
+      # Recheck this image against free space now, with every archive still waiting on disk: the plan's budget judged it
+      # beside the archives it knew of, and a scan that has since unpacked images can have left less room than that. An
+      # archive that no longer fits is a line, and its bytes go back before the next target.
       archive="${source#archive:}"
       if [ ! -f "$archive" ]; then fail "$target" "docker save: its archive is gone"; continue; fi
       avail="$(free_gb)"; need="$(ceil_gb "$(stat -c %s "$archive")")"
