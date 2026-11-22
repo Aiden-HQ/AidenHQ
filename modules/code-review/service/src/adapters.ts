@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
-import { instanceDetailsIn } from "./aidenhq-sdk/instance-details.ts";
+import { withoutInstanceDetails } from "./aidenhq-sdk/instance-details.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
 import type { CodeHost, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
 
@@ -161,9 +161,8 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     return tasks.get(key)!;
   };
   // A GitHub thread is outside the instance, and a review quotes the PR's own text (a fixture's address, a CI path): the instance's
-  // hosts, home paths and addresses are removed from what is filed, so a quoted one never blocks the post. The kernel's
+  // hosts, home paths and addresses are removed from the comment text it files (not the PR's own names), so a quoted one never blocks the post. The kernel's
   // instance-details check refuses whatever this missed.
-  const filedText = <T>(v: T): T => JSON.parse(JSON.stringify(v), (_k, x) => (typeof x === "string" ? instanceDetailsIn(x).reduce((t, d) => t.split(d).join("[instance detail removed]"), x) : x));
   return {
     async post(p) {
       const t = p.target;
@@ -173,7 +172,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
       const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
-      const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args: filedText(args), task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
+      const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args: withoutInstanceDetails(args), task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
       return { ...settled(r), write: r.id };
     },
     async status(s: Status) {
@@ -181,7 +180,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       return { ...settled(r), write: r.id };
     },
     async reply(p) {
-      const r = (await kernel.call("POST", "/v1/writes", { kind: REPLY_KIND, args: filedText({ repo: p.repo, pr: p.number, head: p.head, comment: p.comment, body: p.body }), task: await taskOf(p.repo, p.number) })) as { id: string; state: string };
+      const r = (await kernel.call("POST", "/v1/writes", { kind: REPLY_KIND, args: withoutInstanceDetails({ repo: p.repo, pr: p.number, head: p.head, comment: p.comment, body: p.body }), task: await taskOf(p.repo, p.number) })) as { id: string; state: string };
       return { ...settled(r), write: r.id };
     },
     async outcome(write) {

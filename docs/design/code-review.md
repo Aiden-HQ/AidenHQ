@@ -133,7 +133,7 @@ model gateway. The service accepts what the recipe runs: each engine's own effor
 
 ## Posting
 
-The service files a `post` write (Tier 0: no AI reviewer reads it; the `instance-details` write.filed check refuses a host, home path or address in the rendered review, which is exactly what is posted) or
+The service files a `post` write (Tier 0: no AI reviewer reads it; the `instance-details` write.filed check refuses a host, home path or address in a post's or reply's comment text; the service removes them first) or
 a `notice` (Tier 0, fixed words) per run and a `status` (Tier 0, fixed words) per verdict change; the github module's poster executes it. One GitHub review per head and combo, always a `COMMENT` on the
 commit it reviewed: a review that finished before the PR moved on still posts (its comments show as outdated where lines
 changed; the acknowledgement is left to the newer head), while a run whose PR moved on while it ran is superseded (Triggers):

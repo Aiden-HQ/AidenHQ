@@ -851,7 +851,7 @@ rreview="modules/ai-reviewer/service/src/review.ts"
   && [ "$(grep -cE '^  (push|pr|merge): \{ args: schemas/[a-z]+\.json, floor: 0, paths: true,' modules/github/module.yaml)" = 3 ] \
   && [ "$(grep -cE '^  \{ action: "(push|pr|merge)", args: [A-Z]+(\(true\))?, paths: true \},$' modules/codehost-local/src/kinds.ts)" = 3 ] \
   && grep -qF '{ module: "codehost-local", floor: 0, ...(paths ? { paths: true } : {}), tools: [], args, card: CARD }' modules/codehost-local/src/kinds.ts \
-  && grep -qF 'const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan, whole.details)];' kernel/src/writes.ts \
+  && grep -qF 'const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];' kernel/src/writes.ts \
   && grep -qF 'if (!run) throw unavailable(`${id} has no code in this kernel`);' kernel/src/writes.ts \
   && grep -qF 'filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck }' kernel/src/main.ts \
   && grep -qF 'export const HARD_GATES = new Set(["platform.product-gate"]);' kernel/src/gates.ts \
