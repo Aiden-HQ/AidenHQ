@@ -28,6 +28,7 @@ function host() {
   fake("systemd-analyze", `case "$*" in *unit-paths*) echo "$UNIT_DIR" ;; esac\nexit 0`);
   fake("systemctl", `case "$*" in
   *"list-units"*) if [ -f "$RUNNING" ]; then cat "$RUNNING"; else echo "aidenhq-ci-runner@3.service loaded active running AidenHQ CI runner"; fi ;;
+  *"is-enabled"*) { [ -f "$MASKED" ] && grep -qxF -- "\${@: -1}" "$MASKED"; } && { echo masked; exit 1; }; echo enabled ;;
   *"list-unit-files"*) if [ -f "$UNIT_FILES" ]; then cat "$UNIT_FILES"; else printf 'aidenhq-ci-runner@.service enabled\\naidenhq-gateway.service enabled\\n'; fi ;;
 esac
 exit 0`);
@@ -35,15 +36,18 @@ exit 0`);
   const data = join(root, "data");
   mkdirSync(join(data, "modules/monitoring/textfile"), { recursive: true });
   const wants = join(unitDir, "default.target.wants");
+  const requires = join(unitDir, "default.target.requires");
   mkdirSync(wants, { recursive: true });
-  // systemd enables an instance by linking the template into a target's .wants dir; the instance has no unit file of its own.
+  mkdirSync(requires, { recursive: true });
+  // systemd enables an instance by linking the template into a target's .wants (or .requires) dir; the instance has no unit
+  // file of its own. `mask` adds the instance to $MASKED, which the fake's is-enabled reports as masked.
   writeFileSync(join(unitDir, "aidenhq-ci-runner@.service"), "");
   const enable = (units) => {
     for (const entry of readdirSync(wants)) unlinkSync(join(wants, entry));
     for (const unit of units) symlinkSync(join(unitDir, "aidenhq-ci-runner@.service"), join(wants, `${unit}.service`));
   };
   enable(["aidenhq-ci-runner@3", "aidenhq-ci-runner@4"]);
-  return { root, bin, data, unitDir, wants, enable };
+  return { root, bin, data, unitDir, wants, requires, enable };
 }
 
 const run = (h, env = {}) => new Promise<string>((resolve, reject) => {
@@ -205,4 +209,26 @@ test("a plain file in the wants dir is not a runner enablement link", async () =
   const text = await run(h);
   assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
   assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a plain file does not enable an instance");
+});
+
+// `systemctl --user add-requires` enables an instance through a target's .requires dir instead of .wants, and systemd reads
+// it as enabled, so it is declared too.
+test("a runner enabled through a requires link is declared", async () => {
+  const h = host();
+  h.enable(["aidenhq-ci-runner@1"]);
+  symlinkSync(join(h.unitDir, "aidenhq-ci-runner@.service"), join(h.requires, "aidenhq-ci-runner@2.service"));
+  const text = await run(h);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@2\.service"\} 1$/m, "a requires link declares the instance");
+});
+
+// A masked instance keeps its enablement link but systemd will not start it, so it no longer counts as declared (and its
+// backoff marker is not republished).
+test("a masked runner instance is not declared", async () => {
+  const h = host();
+  h.enable(["aidenhq-ci-runner@1", "aidenhq-ci-runner@2"]);
+  writeFileSync(join(h.root, "masked"), "aidenhq-ci-runner@2.service\n");
+  const text = await run(h, { MASKED: join(h.root, "masked") });
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
+  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a masked instance is not declared");
 });
