@@ -217,6 +217,12 @@ export function createMerges(d: {
         }
         return wait("review");
       }
+      // Code review passed on this head: the review reason is no longer the record's wait, so it is cleared (a stale "code
+      // review: …" must not sit on a record that is now waiting on something else, or merging).
+      if (p.note !== undefined) {
+        delete p.note;
+        await d.waiting?.(id, null).catch((e: Error) => log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) }));
+      }
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out

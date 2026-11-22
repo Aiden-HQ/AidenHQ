@@ -792,8 +792,8 @@ test("merge queue waits while disconnected", async (t) => {
   assert.deepEqual(github.merges(), [], "nothing merges while GitHub is signed out");
   assert.deepEqual(facts.filter((f) => f.type === "work.waiting").map((f) => [f.subject, f.data.reason]), [["pr:acme-agents/widget#1", "github"]]);
   // The claimed merge card carries the reconnect reason too, not only the queue's own fact: otherwise it reads as a card running
-  // with no reason at all. Its PR is still waiting, so the reason says why.
-  assert.deepEqual(waits.map((w) => [w.id, w.reason]), [["k-00000000000000b9", `https://github.com/acme-agents/widget/pull/1: GitHub is signed out: waiting for the owner to reconnect it`]]);
+  // with no reason at all. The card is the record's, so the reason is the record's: what it waits on, not a line per PR.
+  assert.deepEqual(waits.map((w) => [w.id, w.reason]), [["k-00000000000000b9", "GitHub is signed out: waiting for the owner to reconnect it"]]);
   // Another pass while still signed out posts nothing new (the kernel deduplicates, and the queue does not poll it).
   await handle.stepMerges();
   assert.equal(waits.length, 1, "the same reason is not re-posted every poll");
@@ -822,7 +822,7 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   await merges.step();
   await merges.step();
   await merges.step();
-  assert.deepEqual(waits.map((w) => w.reason), [`${"https://github.com/acme-agents/widget/pull/1"}: code review: 1 important finding open: t (a.ts:3) (fix and push)`], "once per distinct reason, not per poll");
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)"], "once per distinct reason, not per poll");
   assert.equal(merges.status("k-00000000000000h1").state, "running");
   // A week later the same reason: still no second post, and the gate's Infinity limit never stops the wait.
   clock.t += 7 * 24 * 3600_000;
@@ -834,8 +834,8 @@ test("a code review wait posts its reason to the kernel once per distinct reason
   await merges.step();
   await merges.step();
   assert.deepEqual(waits.map((w) => w.reason), [
-    "https://github.com/acme-agents/widget/pull/1: code review: 1 important finding open: t (a.ts:3) (fix and push)",
-    "https://github.com/acme-agents/widget/pull/1: code review: 2 important findings open: t, u (fix and push)",
+    "code review: 1 important finding open: t (a.ts:3) (fix and push)",
+    "code review: 2 important findings open: t, u (fix and push)",
   ]);
   assert.equal(github.merges().length, 0, "never merged while the gate waits");
   verdict = { status: 200, body: { verdict: "pass", reasons: [] } };
