@@ -30,7 +30,7 @@ Without the notes tools (no meetings module), skip step 1.
 3. **Agent memory:** a short page (`agents/<key>/memory.md`, well under 4 KB) injected into every run, there to make the
    next run better: correct what it would get wrong and note what has worked.
    - **Which agents:** every memory inbox (a task the tools return with `memory_inbox: <key>`). Take each agent with a note
-     newer than your last `Curated through` comment on its inbox, work finished since then, or a memory proposal that
+     newer than your last `Curated through` comment on its inbox, a new `coach:<agent key>:memory-<slug>` line on Fleet issues, work finished since then, or a memory proposal that
      closed without changing its file. An agent with a memory proposal still open waits for the next pass.
    - **Read** its memory (`handbook_read`), the new notes, the `coach:<agent key>:memory-<slug>` lines on Fleet issues
      (Coach findings, leads too), and its work (`coach_evidence`, `task_list(state="done",
