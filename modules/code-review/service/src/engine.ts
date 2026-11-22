@@ -74,6 +74,8 @@ export type RunRow = {
   batch: string; recheck: number;
   /** Its combo was mandatory when queued: its review counts toward the head's coverage and its important findings gate merges. */
   mandatory: number;
+  /** It only rechecks the PR's open and answered findings: no finders, no new findings (a claim recheck). */
+  recheck_only: number;
   /** The moment it was queued for. */
   moment: Moment | null;
   /** 1 once its review is stored whole (no important finding withheld); what coverage reads, never its post's fate. */
@@ -205,7 +207,7 @@ export function createEngine(d: EngineDeps) {
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["findings", "claimed_at", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
-    ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
+    ["runs", "recheck_only", "INTEGER NOT NULL DEFAULT 0"], ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
   if (version === 1) {
@@ -325,7 +327,7 @@ export function createEngine(d: EngineDeps) {
    * the PR's queued automatic runs (the push they were for is superseded); the same ask twice (two comments, a double click) is
    * the batch already waiting or running on that head.
    */
-  function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null; moment?: Moment; asker?: Asker } = {}): RunRow[] {
+  function queue(p: Target, list: Combo[], kind: Kind, o: { due?: number; full?: boolean; focus?: string | null; moment?: Moment; asker?: Asker; recheckOnly?: boolean } = {}): RunRow[] {
     const due = o.due ?? now();
     mirrorDue = true;
     if (kind === "auto") {
@@ -345,9 +347,9 @@ export function createEngine(d: EngineDeps) {
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
-      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, focus, full, due, created, author, batch, recheck, mandatory, moment)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind,
-        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0, o.moment ?? "open");
+      run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, focus, full, due, created, author, batch, recheck, mandatory, moment, recheck_only)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, p.repo, p.number, p.head, p.base, c.engine, c.model, c.effort, kind,
+        o.focus ?? null, o.full ? 1 : 0, due, now(), p.author.toLowerCase(), batch, i === checker ? 1 : 0, mand(c) ? 1 : 0, o.moment ?? "open", o.recheckOnly ? 1 : 0);
       return runRow(id)!;
     });
     // Who asked, and the runs this request was answered with (its run set): the same ask twice by two askers shares those runs,
@@ -516,7 +518,7 @@ export function createEngine(d: EngineDeps) {
       const pr = await d.source.get(r.repo, r.number);
       const intent = pr.fork ? "" : [pr.title, pr.body].filter(Boolean).join("\n\n");
       const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus, intent,
-        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
+        incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, recheck_only: !!r.recheck_only, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
       // Nothing ran (no check job), so nothing was billed. One GitHub or the kernel couldn't answer now (a kernel restart, a 5xx)
@@ -1691,7 +1693,7 @@ export function createEngine(d: EngineDeps) {
       const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", cfg.repo, p.number, p.head)
         ?? (openOnly(cfg) && must ? { engine: must.engine, model: must.model } : undefined);
       if (!last || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' AND (created >= ? OR started >= ?)", cfg.repo, p.number, p.head, Date.parse(at), at)) continue;
-      queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push" });
+      queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push", recheckOnly: true });
     }
   }
 

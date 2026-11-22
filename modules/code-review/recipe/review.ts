@@ -359,6 +359,12 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     result.fixed = fixed;
     result.unsafe = unsafe;
   }
+  if (combo.recheck_only) {
+    // A claim recheck: the previous findings only (open ones and answers), no finders and no verifier, so no new findings.
+    await recheck(new Set());
+    result.coverage.incomplete = gaps.join("; ") || null;
+    return bound(result);
+  }
   if (!reviewed.length) {
     // Nothing to review (lockfiles, ignored or binary files only) is no gap; a hiding place the change adds is.
     // The answered findings carried forward are still rechecked at this head (code unchanged since: nothing else to recheck).

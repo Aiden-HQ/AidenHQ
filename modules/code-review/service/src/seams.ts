@@ -101,6 +101,8 @@ export type ReviewSpec = {
   previous: { id: string; severity: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean; claim?: string }[];
   /** Its combo is mandatory (a new important finding of it may restate only a gating one). */
   mandatory: boolean;
+  /** A claim recheck: only the previous findings are rechecked, no finders and no new findings. */
+  recheck_only?: boolean;
   ignore: string[]; max_nits: number;
 };
 /** `box_at`: when its check job got its box (ISO; queueing before it is not the run's work), once it has one. `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and

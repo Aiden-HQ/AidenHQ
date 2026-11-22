@@ -94,6 +94,20 @@ test("an important finding needs a failure scenario: without one code makes it a
   assert.equal(steered.addressed, true, "steering text in the PR's description is flagged like text in its code");
 });
 
+test("a claim recheck (recheck_only): only the previous findings are rechecked, no finder runs, no new finding", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const id = "0123456789abcdef", prompts = [];
+  const run = async (engine, o) => {
+    prompts.push(o.prompt);
+    return { read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: [id], still: [], unsafe: [], findings: [F({ title: "a brand new finding" })] }) };
+  };
+  const previous = JSON.stringify({ findings: [{ id, severity: "important", path: "src/pay.js", line: 2, title: "Refund adds", gating: true }] });
+  const r = await review({ spec: spec({ combo: combo({ recheck_only: true }), previous }), ...box({ head, base }), run });
+  assert.equal(prompts.length, 1, "one engine call: the recheck, no finders and no verifier");
+  assert.deepEqual(r.findings, [], "no new finding");
+  assert.deepEqual([r.fixed, r.cleared, r.coverage.incomplete], [[id], [id], null]);
+});
+
 test("a review: incremental from the last head, a finder that fails is said, a verifier that fails confirms nothing", async () => {
   const base = { "a.js": "1\n" }, from = { "a.js": "1\n2\n" }, head = { "a.js": "1\n2\n3\n", "b.js": "new\n" };
   const { ws, out } = box({ head, base, from });
