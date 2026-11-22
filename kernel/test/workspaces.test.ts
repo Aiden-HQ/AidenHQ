@@ -90,7 +90,7 @@ test("closed and idle tasks' folders go, live ones and the state dir stay; press
   ] as const) {
     const idle = dir(join(work, "tasks/WOR-32"), 9);
     let asked = 0;
-    const down = createDiskSweep({ db, workDir: work, stateDir: state, engines: () => [], stillClosed: (task) => { asked++; return lookup(task); }, now: () => NOW, used: () => 0.5 });
+    const down = createDiskSweep({ db, workDir: work, stateDir: state, engines: () => [], stillClosed: () => { asked++; return lookup(); }, now: () => NOW, used: () => 0.5 });
     await down();
     assert.equal(asked, 1, shape);
     assert.equal(existsSync(idle), false, shape);
