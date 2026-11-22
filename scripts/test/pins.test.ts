@@ -114,6 +114,24 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
     const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.5+dfsg-2\n`).pins.filter((x) => x.kind === "apt");
     assert.deepEqual([p.distro, p.release], ["ubuntu", codename], base);
   }
+  // A retired interim release is served from old-releases only, so a host that answers 404 for it is skipped rather than
+  // ending the lookup: `ubuntu:24.10` still dates from oracular's index on the retirement host.
+  {
+    const [p] = scanFile("Dockerfile", `FROM ubuntu:24.10${d}\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], ["ubuntu", "oracular"]);
+    const tried: string[] = [];
+    const dated = await dateApt(p, async (_k, _n, { source }) => {
+      tried.push(source);
+      if (source.includes("archive.ubuntu.com")) throw Object.assign(new Error("404"), { status: 404 });
+      return { published: day(30), via: "test" };
+    });
+    assert.equal(dated.published, day(30));
+    assert.deepEqual(tried.slice(0, 2), ["http://archive.ubuntu.com/ubuntu oracular-updates main", "http://old-releases.ubuntu.com/ubuntu oracular-updates main"]);
+    // A file's own repository that 404s still fails: only a distro pocket may be skipped.
+    const own = scanFile("Dockerfile", `FROM ubuntu:24.10${d}\nRUN echo "deb [trusted=yes] https://gone.example/apt oracular main" >/etc/apt/sources.list.d/r.list\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt")[0];
+    await assert.rejects(() => dateApt(own, async () => { throw Object.assign(new Error("404"), { status: 404 }); }));
+  }
+
   // A Debian suite deb.debian.org has dropped is read from the archive, where buster's own and security indexes are still
   // served; a current suite keeps deb.debian.org and its debian-security pocket.
   for (const [base, release, sources] of [

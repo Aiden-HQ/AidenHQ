@@ -81,7 +81,10 @@ const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
     // under `${suite}/updates`. Reading the archive is what lets a buster pin still be dated rather than merely undated.
     ? [`http://archive.debian.org/debian ${r} main`, `http://archive.debian.org/debian ${r}-updates main`, `http://archive.debian.org/debian-security ${r}/updates main`]
     : [`http://deb.debian.org/debian ${r} main`, `http://deb.debian.org/debian ${r}-updates main`, `http://deb.debian.org/debian ${r}-security main`]
-  : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
+  // An interim release leaves archive.ubuntu.com for old-releases once it is retired, so both hosts are named: the
+  // archive first, then the retirement host, which answers 404 for a suite it does not hold (dateApt skips those).
+  : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`]
+      .flatMap((s) => [`http://archive.ubuntu.com/ubuntu ${s}`, `http://old-releases.ubuntu.com/ubuntu ${s}`]);
 
 // The distro and codename a Dockerfile FROM installs: Docker Hub's debian:<codename> (sid, bookworm, trixie, …) and
 // ubuntu:<codename> (noble, or a `noble-…` / `…-noble` tag), plus the numeric release tags each suite answers to
@@ -1153,7 +1156,12 @@ export async function dateApt(p: Pin, lookup: typeof publishedAt = publishedAt) 
       const found = await lookup("apt", p.name, { version: p.version, source });
       if (!p.raced) return found;
       if (!newest || found.published > newest.published) newest = found;
-    } catch (e) { if (!(e as FetchError).notListed) throw e; }
+    } catch (e) {
+      // A distro pocket this release is not served from (a retired suite on one host, a pocket the release has no
+      // index for) is not an error: the next candidate may hold it. A file's own repository still fails outright.
+      const missing = !inFile && typeof (e as FetchError).status === "number" && (e as FetchError).status! >= 400 && (e as FetchError).status! < 500;
+      if (!(e as FetchError).notListed && !missing) throw e;
+    }
   }
   if (newest) return newest;
   throw new Error(`${p.name}=${p.version}: no apt repository in this file, nor ${release}'s own, lists it`);
