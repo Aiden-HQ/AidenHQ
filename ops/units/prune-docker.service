@@ -16,10 +16,13 @@ Description=AidenHQ Docker cleanup (build cache over 20 GB, images unused for tw
 # installed (2026-11-21: a deploy logged `buildx Docker CLI plugin not found: falling back to the classic builder`).
 # `--max-used-space` is buildx's; the classic fallback only knows `--keep-storage`. Where one is accepted it caps at
 # 20 GB and the other is a no-op (buildx's `--keep-storage` is its deprecated alias, a floor, never a wider retention).
-ExecStart=-/usr/bin/timeout 15m /usr/bin/docker builder prune -f --max-used-space 20GB
-ExecStart=-/usr/bin/timeout 15m /usr/bin/docker builder prune -f --keep-storage 20GB
+# Each records its status through the same wrapper as the other steps: one failing is expected (`unknown flag` on a CLI
+# that lacks that form), but both failing means no form capped the cache, and the verification must see that even when a
+# cache under its ceiling would otherwise read clean.
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -f --max-used-space 20GB
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -f --keep-storage 20GB
 # The cache as it is once the two builder prunes have finished, read here — before the image and container prunes, which
-# take minutes on a large host — so the verification judges the cap on the result of pruning, not on a snapshot a build
+# take minutes on a large host — so the verification judges the ceiling on the result of pruning, not on a snapshot a build
 # started since has grown. Prefixed like every other step; its status and rows are what the verification reads.
 ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh build-cache /usr/bin/timeout 30 /usr/bin/docker system df --format '{{json .}}'
 # The image prune goes through ops/prune-docker-step.sh, which records its status for the last step: the failure must not
@@ -34,8 +37,9 @@ ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr
 # daemon was unreachable can recover before the verification's own re-listing, and a fresh listing with nothing to remove
 # would then read as a clean scan — the record is how the verification still sees this run's scan never completed.
 ExecStart=-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh
-# Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, cache under 20 GB,
-# no one-off stopped over a day still there — and reads the image and container steps' recorded status, so a prune that did
+# Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, build cache under
+# its 40 GB ceiling (a backstop for a prune that did nothing, above the fleet's 29.9 GB peak, not the 20 GB target), no
+# one-off stopped over a day still there — and reads the image and container steps' recorded status, so a prune that did
 # nothing at all is a failed unit (UnitFailed), not a silent success, while each step above still ran whatever the ones
 # before it did.
 ExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-verify.sh
