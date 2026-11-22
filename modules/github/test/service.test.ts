@@ -319,6 +319,9 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
   assert.equal(plan.json.raise, undefined); // an ordinary branch of an agents-org repo: Tier 0
   assert.equal(plan.json.targets["acme-agents/widget feature"].commit, sha);
+  // The plan names the base its publish will use: a default-branch switch after approval makes the record stale (not an edit of
+  // the PR into the new base).
+  assert.equal(plan.json.targets["acme-agents/widget feature"].base_branch, "main");
   const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdef", kind: "github.push", args, digest: "d", idempotency_key: "i" });
   assert.deepEqual(ex.json, { accepted: true });
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
