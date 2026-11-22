@@ -3,7 +3,7 @@
 // gone; an agent's PR (one this service opened) that conflicts with main wakes its task once, with fixed text only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -299,6 +299,29 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   advanced.set([advanced.agentPr(23, redPr(23))]);
   for (let i = 0; i < 3; i++) { await advanced.watch.tick(); okMain = `k${i + 2}`; }
   assert.equal(advanced.gh.filter((g) => g === "PUT /repos/acme/app/pulls/23/update-branch rebase").length, 1, "main advancing does not re-ask an update GitHub already accepted");
+  // A queue written by the previous version kept the acceptance as "ok" in `updated`: an update in flight across the upgrade is
+  // still waited for, not asked again.
+  const c2 = await rig(t, { behind: 2 });
+  c2.set([c2.agentPr(24, redPr(24))]);
+  writeFileSync(join(c2.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/24:h24:m1": "ok" } } }));
+  await c2.watch.tick(); await c2.watch.tick();
+  assert.equal(c2.gh.filter((g) => g.includes("24/update-branch")).length, 0, "an acceptance the older version recorded is carried over, not re-asked");
+  // But a waiter is not forever: an accepted update GitHub never applied is asked again, and repeated accepts end in the wake.
+  const lost = await rig(t, { behind: 2, update: 201 });
+  lost.set([lost.agentPr(25, redPr(25))]);
+  const stale = new Date(Date.now() - 11 * 60_000).toISOString();
+  writeFileSync(join(lost.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/25:h25:m1": "ok" }, updatedOk: { "https://github.com/acme/app/pull/25:h25": stale } } }));
+  // GitHub keeps accepting (201) and never moves the head; each expired acceptance counts, so a couple of polls reach the wake.
+  const past = Date.now() - 11 * 60_000;
+  for (let i = 0; i < 3; i++) {
+    await lost.watch.tick();
+    const db = JSON.parse(readFileSync(join(lost.cacheDir, "pr-watch.json"), "utf8"));
+    const row = db["acme/app"] ?? {};
+    row.updatedOk = { "https://github.com/acme/app/pull/25:h25": new Date(past).toISOString() };
+    writeFileSync(join(lost.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": row }));
+  }
+  assert.ok(lost.gh.filter((g) => g.includes("25/update-branch")).length >= 1, "an accepted update that never lands is asked for again");
+  assert.equal(lost.woke.length, 1, "and one GitHub keeps accepting without applying wakes the task rather than waiting forever");
   // A refusal that never clears still adds up while main moves under it: the count is the PR head's, not the head of main's.
   let main = "m1";
   const moving = await rig(t, {

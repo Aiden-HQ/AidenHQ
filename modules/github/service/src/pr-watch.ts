@@ -57,6 +57,9 @@ const MAX_WAKES = 3;
 const HALF_HOUR = 30 * 60_000;
 /** Transient update-branch refusals at one head and head of main before the task is woken to rebase it (and GitHub is asked again). */
 const UPDATE_STUCK_AFTER = 3;
+/** How long an accepted branch update is waited for. GitHub moves the head as the update lands (seconds), so one that never shows
+ * after this long was lost: the watcher asks again, and the request counts towards the wake. */
+const UPDATE_OK_WAIT_MIN = 10;
 /** Red rounds on one PR before its task stops being woken for them and its asker is told (the CI breaker). */
 const BREAKER_ROUNDS = 3;
 /** Review-findings wakes per pass (oldest PR first): the replies post as the owner's login, and a burst trips GitHub's secondary rate limit. */
@@ -256,9 +259,23 @@ export function startPrWatch(o: PrWatchOptions) {
       // The stuck count belongs to the PR's head, not to the head of main: main moves every few minutes, and a refusal that never
       // clears must still add up across those moves rather than starting over at each one (and leaving its old key behind).
       const tries = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
+      const priorOk = state.updated[key] === "ok"; // the acceptance an older version recorded in `updated`
       // An accepted update belongs to the PR's head, not to the head of main it was asked at: GitHub may not have shown the new
-      // head yet, and main advancing meanwhile must not send a second request for a head that is already being updated.
-      if (state.updatedOk[tries]) return true; // an update GitHub has not shown yet is waited for, not asked about
+      // head yet, and main advancing meanwhile must not send a second request for a head that is already being updated. A queue
+      // written before this field existed kept "ok" in `updated`: that acceptance is carried over here, so an update in flight
+      // when the module was upgraded is still waited for rather than asked again.
+      if (priorOk) state.updatedOk[tries] ??= new Date().toISOString();
+      const accepted = state.updatedOk[tries];
+      if (accepted && Date.now() - Date.parse(accepted) < UPDATE_OK_WAIT_MIN * 60_000) return true; // waited for, not asked about
+      if (accepted) {
+        // Accepted, but the head never moved: the request was lost. It counts as a try (so a GitHub that keeps accepting and
+        // never applies still ends with the task woken) and the update is asked for again below.
+        delete state.updatedOk[tries];
+        if (priorOk) delete state.updated[key];
+        const verdict = countTry(tries);
+        log("branch update accepted, but the head never moved", { pr: pr.url, head: pr.headRefOid, base, tries: state.updateTries[tries] });
+        if (verdict === "stuck") return "stuck";
+      }
       const prior: string | undefined = state.updated[key];
       if (prior === "final") return false;
       // Still inside the backoff: no call this tick, but the polls spent backing off count too, so a refusal that never clears
@@ -287,7 +304,8 @@ export function startPrWatch(o: PrWatchOptions) {
         // A success answers about the branch too, and it is checked before the refusal classification: a 2xx is not one of the
         // statuses `answered` names, so classifying first would record a real update as "unanswered" and retry it for ever.
         if (r.status < 300) {
-          delete state.updateTries[tries];
+          // The try count is not cleared: it is this head's, and a landed update moves the head, so the next head starts its own.
+          // Clearing it here would let a GitHub that keeps accepting without applying reset the count on every poll.
           delete state.updated[key];
           state.updatedOk[tries] = new Date().toISOString();
           await wake(pr, "");
