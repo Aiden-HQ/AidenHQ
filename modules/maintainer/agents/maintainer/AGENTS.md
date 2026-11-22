@@ -155,7 +155,8 @@ live; this task stays yours.
 
 Work through every maintained repo. First, its open labelled issues (`github_issue_list`) that have no open
 labelled-issue task of yours: `task_list` with `mine: true` lists your open tasks, and each labelled-issue task
-names its issue (`owner/name#number`) in the first line of its description (`task_get`). Pick each uncovered issue up
+names its issue (`owner/name#number`) in the first line of its description (`task_get`). An issue whose fix label
+landed in the last hour is left to the labelled-issue task the watcher files for it. Pick each other uncovered issue up
 where it stands, in this run. A fix
 that is merged closes it `completed` with its `note`; a real issue with no fix task gets its brief. Then the
 unlabelled ones. Dedupe first: an issue that is already an open task, already labelled, or already carries your verdict
