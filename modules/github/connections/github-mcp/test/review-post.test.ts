@@ -356,7 +356,7 @@ describe("posting", () => {
     // rendered comment lacks the run's marker, this fallback cannot name it and the ids are lost.
     const body = renderReview(r1, args.run).comments[0]!.body;
     expect(body).toContain(`<!-- aidenhq-review-run: ${args.run} -->`);
-    w.state.threads = [{ ...thread("T_lost", "f_lost_1", "owner1", 701), comments: { nodes: [{ databaseId: 701, url: "u", body, author: { login: "owner1" } }] } }];
+    w.state.threads = [{ ...thread("T_lost", "f_lost_1", "owner1", 701), comments: { nodes: [{ fullDatabaseId: "701", url: "u", body, author: { login: "owner1" } }] } }];
     const p = new ReviewPoster(new GitHub(accessFor((u, i) => broken(u, i)), broken), accessFor((u, i) => broken(u, i)));
     const out = JSON.parse((await p.execute("post", args)).text);
     expect(out.comments).toEqual([701]);
