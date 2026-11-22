@@ -6,7 +6,6 @@ description: Chases pull requests waiting on a review in the owner's repositorie
 reports_to: architect
 department: outreach # where the board lists it (kernel/defaults.json departments)
 model: ~deepseek/deepseek-flash-latest
-budget: 10 # USD per month
 trial: true
 connections:
   github?: read

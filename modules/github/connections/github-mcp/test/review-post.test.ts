@@ -231,8 +231,8 @@ describe("posting", () => {
   it("a notice is the acknowledgement alone, from fixed words", async () => {
     const w = world();
     const p = poster(w);
-    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "budget_repo" };
-    expect(p.preview("notice", n).facts.details).toMatch(/daily review budget/);
+    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "draft" };
+    expect(p.preview("notice", n).facts.details).toMatch(/draft/);
     await p.execute("notice", n);
     expect(w.state.ack?.body).toMatch(/skipped/);
     expect(w.calls.some((c) => c.path.includes("/statuses/"))).toBe(false);
@@ -253,7 +253,7 @@ describe("posting", () => {
     expect(w.calls.filter((c) => c.path.includes("/statuses/"))).toHaveLength(1);
     await p.execute("status", { ...st, important: 3 });
     expect(w.calls.filter((c) => c.path.includes("/statuses/"))).toHaveLength(2);
-    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "budget_repo" };
+    const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "stopped" };
     const out = JSON.parse((await p.execute("notice", n)).text);
     await p.execute("notice", { ...n, ack: out.ack_id });
     await p.execute("notice", { ...n, ack: out.ack_id });

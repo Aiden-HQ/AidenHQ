@@ -17,4 +17,4 @@ tags, billed to the caller's run), and `advisor_ask` is granted to crew agents b
 
 ## New installs
 
-In the default bundle. Calls count against the install-wide daily spend cap.
+In the default bundle. Calls count against the install's spend limit.

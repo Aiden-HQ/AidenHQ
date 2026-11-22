@@ -250,8 +250,8 @@ the board key (it writes as the owner). Agents never claim something is done unt
 - The asker is whoever created the task. Only the asker's, the owner's and, on an agent-made task, the chief of staff's
   (role `fleet-admin`) comments start work; any other agent is told whom to ask (`modules/dispatch`, `thread.ts`).
 - A routine may set its own `model:` and `reasoning_effort:` (the grants table's `routines`, applied at admission).
-- OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; cap spend with
-  the OpenRouter key limit.
+- OpenRouter runs are unpriced, so any `budgetMonthlyCents` pauses the agent at $0. Keep budgets at 0; spend is limited in the kernel's
+  gateway (`spend_day_usd`, `spend_month_usd`, `task_usd`).
 - Debug a job from its kernel job row (`jobs` in `kernel.db`): its `log` is the run's log file.
 - UI edits to Paperclip config are overwritten by the next apply unless copied into git.
 - For a second opinion from the Codex CLI: `codex exec --skip-git-repo-check -s read-only -C <dir> -o <answer.md>

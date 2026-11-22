@@ -1,11 +1,12 @@
 // Code review's watcher reads (the code-review module's PrSource seam, modules/code-review/service/src/seams.ts): open PRs, one PR,
 // the PR conversation comments since a time, and a login's permission. Read-only, through the same GitHub client as every other read
 // (the owner's sign-in).
+import { createHash } from "node:crypto";
 import { GitHubRefused, type GitHub } from "./github.js";
 
 export type PullRequest = {
   repo: string; number: number; head: string; base: string; base_ref: string; draft: boolean;
-  fork: boolean; author: string; open: boolean; merged: boolean; url: string; title: string;
+  fork: boolean; author: string; open: boolean; merged: boolean; url: string; title: string; body: string;
 };
 export type PrComment = { id: string; number: number; author: string; body: string; created_at: string };
 export type Permission = "admin" | "maintain" | "write" | "triage" | "read" | "none";
@@ -38,7 +39,7 @@ export function sinceArg(v: string | null): string {
 }
 
 type GhPr = {
-  number: number; state: string; merged_at?: string | null; merge_commit_sha?: string | null; title?: string; draft?: boolean; html_url: string; user?: { login?: string } | null;
+  number: number; state: string; merged_at?: string | null; merge_commit_sha?: string | null; title?: string; body?: string | null; draft?: boolean; html_url: string; user?: { login?: string } | null;
   head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
 };
 
@@ -48,8 +49,8 @@ function shape(repo: string, p: GhPr): PullRequest {
   return {
     repo: repo.toLowerCase(), number: p.number, head: String(p.head?.sha), base: String(p.base?.sha), base_ref: String(p.base?.ref),
     draft: Boolean(p.draft), fork: !headRepo || headRepo !== baseRepo, author: p.user?.login ?? "", open: p.state === "open", merged: !!p.merged_at, url: p.html_url,
-    // A stranger's words: shown as plain text on the board, never in a task title or a prompt.
-    title: String(p.title ?? "").slice(0, 200),
+    // A stranger's words: plain text on the board, never in a task title; a review gets title and body only fenced as data.
+    title: String(p.title ?? "").slice(0, 200), body: String(p.body ?? "").slice(0, 2000),
   };
 }
 
@@ -105,6 +106,21 @@ export class CodeReviewReader {
   }
 
   /**
+   * A fingerprint of the change `base`...`head` (from their merge base): each file's status, name and patch, hunk headers
+   * included, so the same edit at another place differs. null when GitHub doesn't show all of it (a file with changes but no
+   * patch (a binary, a mode-only change), or the compare's 300-file cap).
+   */
+  async patchId(repo: string, base: string, head: string): Promise<{ id: string | null }> {
+    const r = await this.github.request<{ files?: { filename: string; previous_filename?: string; status: string; changes?: number; patch?: string }[] }>("GET", `/repos/${repo}/compare/${base}...${head}`, { query: { per_page: 1 } });
+    const files = r.files ?? [];
+    // A file without a patch (a binary, a mode-only change, one too large) can't be compared: no fingerprint.
+    if (!Array.isArray(r.files) || files.length >= 300 || files.some((f) => typeof f.patch !== "string")) return { id: null };
+    const h = createHash("sha256");
+    for (const f of [...files].sort((a, b) => a.filename.localeCompare(b.filename))) h.update(`${f.status}\0${f.previous_filename ?? ""}\0${f.filename}\0${f.patch}\0`);
+    return { id: h.digest("hex") };
+  }
+
+  /**
    * The PR's true merge base with `head`: what the PR changes. GitHub's `base.sha` is the base branch's tip when the PR was last
    * synced (stale for an open PR once the branch moves or is merged into the head, and for a merged one, the tip at merge), so
    * it is never the base. An open PR is compared with its base branch; a merged one with the first parent of its merge commit.
@@ -150,7 +166,7 @@ export class CodeReviewReader {
 }
 
 /** GET /internal/code-review/<op>: the answer for the query, as { status, body }. */
-export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: URLSearchParams): Promise<{ status: number; body: unknown }> {
+export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: URLSearchParams, onError?: (err: unknown) => void): Promise<{ status: number; body: unknown }> {
   try {
     if (op === "repos") return { status: 200, body: { repos: await reader.repos((q.get("q") ?? "").slice(0, 100)) } };
     const repo = repoArg(q.get("repo"));
@@ -158,6 +174,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     if (op === "pr") return { status: 200, body: { pr: await reader.get(repo, numberArg(q.get("number"))) } };
     if (op === "comments") return { status: 200, body: await reader.comments(repo, sinceArg(q.get("since"))) };
     if (op === "compare") return { status: 200, body: await reader.compare(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
+    if (op === "patch-id") return { status: 200, body: await reader.patchId(repo, shaArg(q.get("base")), shaArg(q.get("head"))) };
     if (op === "merge-base") return { status: 200, body: await reader.mergeBase(repo, numberArg(q.get("number")), shaArg(q.get("head"))) };
     if (op === "postable") return { status: 200, body: await reader.postable(repo) };
     // A login that isn't one (a bot's, an empty or deleted user's) has no permission: an answer, never an error to retry.
@@ -168,6 +185,7 @@ export async function codeReviewRoute(reader: CodeReviewReader, op: string, q: U
     }
     return { status: 404, body: { error: "no such operation" } };
   } catch (err) {
+    onError?.(err); // the owner is told of a failure only they can fix (an expired sign-in, an org restriction)
     const detail = (err as Error).message.slice(0, 300);
     if (err instanceof GitHubRefused) return { status: 400, body: { error: "refused", detail } };
     return { status: /GitHub 404 /.test(detail) ? 404 : 502, body: { error: "github_error", detail } };

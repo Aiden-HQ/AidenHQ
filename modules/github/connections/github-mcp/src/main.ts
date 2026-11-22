@@ -18,7 +18,7 @@ import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { GitHub, GitHubRefused, parseRef } from "./github.js";
 import { Maintainer } from "./maintainer.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
-import { isModule } from "./module-caller.js";
+import { isModule, reportNeed } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
 import { createAccess, GitHubNeed, needResult, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
@@ -81,7 +81,7 @@ const maintainer = new Maintainer(access, maintainedRepos, OWNER_TERMS, ours);
 const REPOS = describeRepos(maintainer.list());
 const github = new GitHub(access);
 // Code review's posting (review-post.ts): the code-review module's executor reaches it through /internal/review below.
-const poster = new ReviewPoster(github, access);
+const poster = new ReviewPoster(github, access, tellOwner);
 // Code review's watcher reads (code-review-read.ts), through /internal/code-review below. Reviews post as the owner wherever
 // the owner's account reaches, once GitHub is connected.
 const crReader = new CodeReviewReader(github, async () => (access.connected() ? "owner" : null));
@@ -110,6 +110,11 @@ function failure(err: unknown): { error: "refused" | "github_error"; detail: str
   const detail = err instanceof z.ZodError ? err.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") : (err as Error).message.slice(0, 300);
   log.warn({ detail }, "review route failed");
   return { error: refused ? "refused" : "github_error", detail };
+}
+
+/** A failure only the owner can fix (GitHubNeed) goes to the kernel in the background: no reply waits on it, and nothing in it (the key file, the kernel) can fail one. */
+function tellOwner(err: unknown) {
+  if (err instanceof GitHubNeed) void (async () => { try { await reportNeed(kernelUrl, codehostKey(), err, log); } catch (e) { log.warn({ err: (e as Error).message }, "a connection need report failed"); } })();
 }
 
 function buildServer(caller?: Caller): McpServer {
@@ -625,10 +630,11 @@ const http = createServer(async (req, res) => {
         res.writeHead(200, { "content-type": "application/json" });
         const beat = setInterval(() => res.write(" "), 30_000);
         res.once("close", () => clearInterval(beat)); // the caller went away: the queued write still runs, only the blanks stop
-        try { return void res.end(JSON.stringify(await poster.execute(b.kind, b.args))); } catch (err) { return void res.end(JSON.stringify(failure(err))); } finally { clearInterval(beat); }
+        try { return void res.end(JSON.stringify(await poster.execute(b.kind, b.args))); } catch (err) { tellOwner(err); return void res.end(JSON.stringify(failure(err))); } finally { clearInterval(beat); }
       }
       return send(404, { error: "no such operation" });
     } catch (err) {
+      tellOwner(err);
       const f = failure(err);
       return send(f.error === "refused" ? 400 : 502, f);
     }
@@ -637,7 +643,7 @@ const http = createServer(async (req, res) => {
   if (url.pathname.startsWith("/internal/code-review/")) {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "code-review"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
-    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams);
+    const { status, body } = await codeReviewRoute(crReader, url.pathname.slice("/internal/code-review/".length), url.searchParams, tellOwner);
     return void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();

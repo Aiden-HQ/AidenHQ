@@ -18,7 +18,7 @@ export async function run(cmd: string, args: string[], o: { cwd: string; env: Re
   return { code, stdout, stderr, timedOut };
 }
 export const stopped = (r: { code: number | null; stderr: string; timedOut: boolean }, said = "") =>
-  r.timedOut ? "timed out" : /\b402\b|cap_reached|budget/i.test(said + r.stderr) ? "the run's budget ran out" : `the engine stopped (exit ${r.code})`;
+  r.timedOut ? "timed out" : /\b402\b|cap_reached/i.test(said + r.stderr) ? "the install's spend limit was reached" : `the engine stopped (exit ${r.code})`;
 
 /** A small regular file, never through a link; undefined otherwise. */
 export function readSmall(file: string, max = 20_000) {

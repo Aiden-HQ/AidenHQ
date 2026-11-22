@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=24" },
-  "description": "Code Review: the review state service (watcher, triggers, commands, budgets) and its review recipe.",
+  "description": "Code Review: the review state service (watcher, triggers, commands) and its review recipe.",
   "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts" }
 }

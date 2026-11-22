@@ -1348,6 +1348,11 @@ const TOOLS: Record<string, Tool> = {
       // Read the task before posting any part of the comment: a settler's refusal must leave no trace on it.
       const current = await api("GET", `/api/issues/${issueRef(issue)}`);
       const ownPart = await isOwnPart(current);
+      // A closed part is not handed off: the handoff would post its comment and then move the task to `todo`, reopening work
+      // the owner already closed. Refuse before the comment, naming the paths a closed task has.
+      if (ownPart && ["done", "cancelled"].includes(String(current.status ?? ""))) {
+        throw new Error(`Refused: ${current.identifier ?? current.id} is ${current.status}, and a handoff moves your part to todo, which would reopen it. Leave it closed, file a new task for anything still wanted, or comment on it with task_comment.`);
+      }
       // A fleet settler never reaches the owner through a handoff: its part of the user's task is the one thing it hands
       // off, and anything else it settles itself (or routes to the agent that does the work).
       if (!ownPart && grant().roles.includes(SETTLE)) {

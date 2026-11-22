@@ -106,7 +106,7 @@ test("at capacity or at the agent's max_parallel → 429 and the wake stays clai
   assert.deepEqual(roomy.facts.forTask("task-5").filter((f) => f.type === "job.held").map((f) => f.data.reason), ["max_parallel"]);
 });
 
-test("spend caps used up → 429 and no job", async () => {
+test("the task cap or the install limit used up → 429 and no job", async () => {
   const { adm, wake, db } = setup({ spend: (agent) => (agent === "agent-1" ? [{ scope: "day", cap: 30, spent: 31 }] : []) });
   await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1"))), (e) => e.status === 429 && e.code === "over-cap");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);

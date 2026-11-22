@@ -62,7 +62,7 @@ export interface Run {
   effort: string;
   kind: "auto" | "command" | "oneoff";
   status: RunStatus;
-  /** Why it was skipped or failed: "<reason>: <sentence>" (draft, fork, budget, …). */
+  /** Why it was skipped or failed: "<reason>: <sentence>" (draft, fork, …). */
   why: string | null;
   cost_usd: number;
   tokens_in: number;
@@ -89,7 +89,6 @@ export interface RepoRow {
   repo: string;
   on_open: Combo[];
   on_push: Combo[];
-  day_usd: number;
   day_spent_usd: number;
   /** Why the service can't watch it (no read access, …); null when fine. */
   error?: string | null;
@@ -98,20 +97,17 @@ export interface RepoRow {
 }
 export interface ReposView {
   repos: RepoRow[];
-  day_usd: number;
   day_spent_usd: number;
   errors?: string[];
 }
 /** GET /engines: the catalog the pickers offer (the module's ENGINES). */
 export type Engine = "codex" | "claude-code" | "codegenie" | "codex-native";
-export type EngineCatalog = Record<Engine, { label: string; efforts: string[]; models: string[]; run_usd: number }>;
-/** One review run's reviewer: its engine, model and effort, and the most the run may spend. */
+export type EngineCatalog = Record<Engine, { label: string; efforts: string[]; models: string[] }>;
+/** One review run's reviewer: its engine, model and effort. */
 export interface Combo {
   engine: Engine;
   model: string;
   effort: string;
-  /** The run's cap; unset means the engine's default (the module's ENGINES run_usd). */
-  run_usd?: number;
   /** Its review gates the repo's merges (a gated repo has one at both moments). */
   mandatory?: boolean;
 }
@@ -132,7 +128,6 @@ export const ComboSchema = z
     engine: z.enum(["codex", "claude-code", "codegenie", "codex-native"]),
     model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id, like ~deepseek/deepseek-flash-latest"),
     effort: z.string(),
-    run_usd: z.number().min(0.01).max(20).optional(),
     mandatory: z.boolean().optional(),
   })
   .strict()
@@ -147,7 +142,6 @@ export const RepoSchema = z
     on_push: CombosSchema,
     drafts: z.boolean().optional(),
     forks: z.enum(["manual", "auto"]).optional(),
-    day_usd: z.number().positive().max(10_000).optional(),
     ignore: z.array(PLAIN(200).min(1)).max(50).optional(),
     max_nits: z.number().int().min(0).max(50).optional(),
   })
@@ -159,7 +153,6 @@ export type RepoConfig = z.infer<typeof RepoSchema>;
 export const CodeReviewSchema = z
   .object({
     repos: z.array(RepoSchema).max(100),
-    day_usd: z.number().positive().max(100_000),
   })
   .strict()
   .superRefine((v, ctx) => {
@@ -168,11 +161,10 @@ export const CodeReviewSchema = z
 export type CodeReview = z.infer<typeof CodeReviewSchema>;
 /** A repo's defaults when the owner watches it (the module's REPO_DEFAULTS). */
 export const REPO_DEFAULTS = {
-  on_open: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 5 }] as Combo[],
-  on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low", run_usd: 5 }] as Combo[],
+  on_open: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" }] as Combo[],
+  on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low" }] as Combo[],
   drafts: false,
   forks: "manual" as "manual" | "auto",
-  day_usd: 200,
   max_nits: 5,
 };
 /**
@@ -191,8 +183,7 @@ export function upgradeConfig(raw: unknown): CodeReview | null {
     const use = ok.success ? ok : fallback;
     if (use.success && !repos.some((x) => x.repo.toLowerCase() === use.data.repo.toLowerCase())) repos.push(use.data);
   }
-  const m = v.day_usd;
-  return { repos, day_usd: typeof m === "number" && m > 0 ? m : 100 };
+  return { repos };
 }
 /** A combo's short label: "Codex · deepseek-flash-latest · medium". */
 export const comboLabel = (c: Pick<Combo, "engine" | "model" | "effort">, catalog?: EngineCatalog) =>

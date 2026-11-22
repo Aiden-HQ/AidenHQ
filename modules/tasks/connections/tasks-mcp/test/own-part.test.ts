@@ -184,6 +184,18 @@ test("a fleet settler's refusal does not name a status change on a task no agent
   assert.deepEqual(patches, []);
 });
 
+test("a closed own-part is refused before its comment, so a handoff cannot reopen it", async () => {
+  // The own-part branch moves the part to `todo`: on a part the owner already closed that would reopen their work.
+  for (const status of ["done", "cancelled"]) {
+    const before = waits.length;
+    const { error, patches } = await handoff({ cur: { ...ownPart, status }, par: { ...par } });
+    assert.match(error, new RegExp(`is ${status}, and a handoff moves your part to todo, which would reopen it`));
+    assert.doesNotMatch(error, /task_finish|task_cancel it/);
+    assert.deepEqual(patches, []);
+    assert.equal(waits.length, before);
+  }
+});
+
 test("a fleet settler cannot hand off a part that is not this run's task", async () => {
   const before = waits.length;
   const { error, patches } = await handoff({ other: { ...ownPart, id: "other", identifier: "WOR-3", title: "Another part" }, par: { ...par } }, ["fleet-settle"], "cur", "other");

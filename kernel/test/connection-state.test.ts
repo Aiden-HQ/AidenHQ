@@ -217,3 +217,14 @@ test("a down user sign-in does not mark a sibling connection of the same module 
   assert.equal(w.s.okModule("slack"), 1, "the one waiting task wakes");
   assert.equal(w.s.down("slack"), false);
 });
+
+test("a module's own restricted need is recorded for its org and goes to the digest, once a day", async () => {
+  const w = world({});
+  const need = { cause: "restricted" as const, org: "0xPolygon", url: "https://github.com/settings/connections/applications/cid", detail: "x" };
+  await w.s.report("github", "github", need);
+  await w.s.report("github", "github", need);
+  assert.equal((w.db.prepare("SELECT key FROM connection_state").all() as { key: string }[]).map((r) => r.key).join(), "github:restricted:0xPolygon");
+  assert.equal(w.queued.length, 1);
+  assert.match(w.queued[0].text, /0xPolygon restricts outside apps.*cid/);
+  await assert.rejects(w.s.report("google", "github", need));
+});

@@ -37,10 +37,12 @@ export type TaskState = {
   stage?: string;
   /** The final attempt's grade, only when done. */
   grade?: "pass" | "fail";
-  /** The open owner wait's question. */
+  /** The open owner or delegator wait's question (the ask gate reads it). */
   question?: string;
   /** When the open owner or delegator wait began, whatever the representative reason (only the owner's has a `question`). */
   wait_since?: string;
+  /** The open owner or delegator wait's own deadline (`until`), so a retry of its question reuses the wait instead of re-arming it. */
+  wait_until?: string;
   /** The open wait's own words (task_wait's reason). */
   note?: string;
 };
@@ -227,10 +229,13 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   if (fail) attention.push({ who: "agent", why: "failed", ref: fail.ref });
   for (const o of open) if (o.reason === "module_wait" && now - o.since > MODULE_WAIT_STALLED_MS) attention.push({ who: "agent", why: "stalled_wait", ref: o.ref! });
 
-  const ownerWait = wait && !wait.end && wait.f.data.reason === "owner_wait" ? str(wait.f.data.question) : undefined;
+  // The open wait's question, whichever recipient answers it: the ask gate (escalate.ts) reads this, so a questionless wait
+  // can't pass for an unanswered ask.
+  const waitQuestion = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? str(wait.f.data.question) : undefined;
   const judging = wait && !wait.end && (wait.f.data.reason === "owner_wait" || wait.f.data.reason === "delegator_wait") ? wait.f.at : undefined;
   const openNote = wait && open.some((o) => o.ref === wait!.f.subject) ? str(wait.f.data.note) : undefined;
-  const extra = { ...(ownerWait ? { question: ownerWait } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}) };
+  const openUntil = waitQuestion ? str(wait!.f.data.until) : undefined;
+  const extra = { ...(waitQuestion ? { question: waitQuestion } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);

@@ -9,7 +9,7 @@
 // channel token or the kernel's page). Approved: claimed once → revalidated (a module kind: the same executor and policy,
 // and plan again: the same digest, else stale and refiled) → executed. Before the tier, the modules' write.filed checks on the
 // kind run (config/kernel/checks.json, in process: filedRaises): each raises or refuses the write, never lowers it. A conn.tool record is executed by the proxy itself;
-// kernel.raise_cap and kernel.apply by the kernel.
+// kernel.apply by the kernel.
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { neutral } from "./channels.ts";
@@ -126,7 +126,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   };
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
-  /** The kernel's own executors, by kind (kernel.raise_cap). */
+  /** The kernel's own executors, by kind (kernel.apply). */
   native?: { [kind: string]: (r: Rec) => Promise<{ ok: boolean; text: string }> };
   /** The kernel's planners for its own kinds (kernel.apply): filed through request() like a module kind, planned here. */
   planners?: { [kind: string]: Planner };
@@ -336,7 +336,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
    * An approved record: revalidated, its task still open and (a module kind) planned again, then claimed once and executed.
    * Everything before the claim that fails transiently (the routine trace, the task read, the executor's plan) leaves the
    * record approved, to be run again with backoff capped at 15 minutes (retryApproved), for as long as its task is open: only a real
-   * 4xx, a stale record or a closed task ends it.
+   * 4xx, a stale record or a closed task (an agent's request; a module's write of its own kind runs regardless) ends it.
    * Never throws.
    */
   async function run(id: string): Promise<void> {
@@ -355,7 +355,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const k = pre.kind !== CONN_TOOL && !native[pre.kind] ? registry()[pre.kind] : undefined;
     try {
       if (!(await revalidate(pre))) return void runRetries.delete(id);
-      open = !pre.task || (await onTask.open(pre.task));
+      // A closed task ends an agent's leftover request; a module's write of its own kind (code review's post, filed on a task that
+      // only holds its approvals) is no leftover: it runs whatever became of that task.
+      open = !pre.task || (pre.requester?.kind === "module" && pre.requester.module === pre.module) || (await onTask.open(pre.task));
       if (open && pre.kind !== CONN_TOOL && !native[pre.kind]) {
         // The same executor (module, address and code revision) and policy, or the record is stale (A9). An executor that
         // refuses the plan now (a 4xx) makes it stale; one that can't answer now is tried again.
@@ -547,18 +549,6 @@ export function createWrites({ records, registry, connections, secret, resolver,
       log("merge filed for its task", { record: r.id, kind, task: pr.task, pr: `${repo}#${number}`, head, tier: r.tier, state: r.state });
       if (r.state === "claimed") await execute(r, k);
       return { filed: r };
-    },
-    /**
-     * kernel.raise_cap, filed by the kernel itself (the model gateway): the owner's tap alone, with no reviewer call (the cap it
-     * raises would refuse one, and a failed review fails open: the code spend limit stays the hard stop).
-     */
-    fileNative(kind: string, b: { task: string; identifier?: string; args: unknown; card: Card; reason: string; rule: string }): Rec {
-      const k = kindOf_(kind)!;
-      if (k.args) validate(k.args, b.args);
-      const base = { kind, module: k.module, args: b.args, targets: {}, executor: { module: k.module }, policy: policy(k), card: { ...b.card, reason: b.reason }, requester: { agent: "", key: "", name: "the kernel", roles: [], kind: "kernel" }, task: b.task };
-      const open = records.open(b.task, kind, digestOf(base))[0];
-      if (open) return open;
-      return records.file({ ...base, tier: 2, merit: k.floor, rule: b.rule, identifier: b.identifier ?? null, target: b.card.target ?? null, state: "owner" });
     },
     /**
      * The proxy's record for a conn.tool call. Tier 0 comes back claimed: the proxy forwards it and reports with `outcome`.

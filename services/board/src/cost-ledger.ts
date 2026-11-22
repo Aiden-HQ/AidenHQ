@@ -1,7 +1,7 @@
 // The Costs tab's ledger views: what the model gateway's ledger (pulled into the board's usage table by pullUsage) says was billed,
 // aggregated in SQL so the browser gets groups, never rows.
-//  - summary: the overview (today / 7 / 30 days against the period before, the OpenRouter key's limit, each agent's day against
-//    its cap from the kernel's spend summary, the caps as the gateway enforces them, raises included) and,
+//  - summary: the overview (today / 7 / 30 days against the period before, the OpenRouter key's limit, the install's day and
+//    month against its spend limits, from the kernel's spend summary) and,
 //    over the chosen range, spend by model, by kind of call (lane), by agent and over time by model: one grouped pass (ledgerCube).
 //  - top: one agent's or model's most expensive runs and tasks in the range, for the drill-down.
 import { BadRequest } from "./board.js";
@@ -64,7 +64,7 @@ export interface LedgerDeps {
   store: Pick<Store, "ledgerCube" | "ledgerBy" | "usageSpend" | "usageEarliest" | "taskCount" | "failedCalls" | "longRuns">;
   agents: () => Promise<Agent[]>;
   key: () => Promise<KeyUsage | string>;
-  /** The kernel's spend summary (today against each cap); without it no agent shows a cap. */
+  /** The kernel's spend summary (the install's day and month against its limits); without it no limit shows. */
   spend: () => Promise<SpendSummary | null>;
   /** A task's identifier, title and status (Paperclip); without it the task figures are left out. */
   issue?: (id: string) => Promise<Pick<Issue, "identifier" | "title" | "status">>;
@@ -105,21 +105,22 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
     offset: r.offset,
     earliest,
     overview: {
-      // Today is the UTC day so far (as OpenRouter and the gateway's day caps count), set against yesterday up to the same hour.
+      // Today is the UTC day so far (as OpenRouter and the gateway's day limit count), set against yesterday up to the same hour.
       today: { ...store.usageSpend(iso(midnight), iso(now)), prev: earliest !== null && earliest <= iso(midnight - DAY) ? store.usageSpend(iso(midnight - DAY), iso(now - DAY)).usd : null },
       week: period(now - 7 * DAY, now),
       month: period(now - 30 * DAY, now),
       // OpenRouter's own figures for the key (every caller of it), and its limit when one is set.
       key: typeof key === "string" ? { error: key } : { today: key.usage_daily, month: key.usage_monthly, limit: key.limit, remaining: key.limit_remaining, reset: key.limit_reset },
-      // Today's spend against each agent's day cap, of the agents that spent today, nearest the cap first (the kernel's order).
-      caps: (spend?.agents ?? []).filter((a) => a.spent > 0).map((a) => ({ agentId: a.agent_id, name: nameOf(a.agent_id), usd: a.spent, cap: a.cap })),
+      // The install's day and month against its spend limits (the kernel's sums), and what each agent spent today, most first.
+      limits: spend?.install ?? null,
+      todayByAgent: (spend?.agents ?? []).filter((a) => a.spent > 0).map((a) => ({ agentId: a.agent_id, name: nameOf(a.agent_id), usd: a.spent })),
     },
     totals: { ...metrics(total), prevUsd: range.prev },
     // Models by the last 30 days' spend: the chart's colour order, so a model keeps its colour whatever the range.
     modelOrder: store.ledgerBy("model", iso(now - 30 * DAY), iso(now)).map((x) => x.a!),
     models: rollup(cube, (c) => c.model, all).map(([model, m]) => ({ model, ...metrics(m) })),
     lanes: rollup(cube, (c) => c.lane, all).map(([lane, m]) => ({ lane, ...metrics(m) })),
-    agents: rollup(cube.filter((c) => c.agentId), (c) => c.agentId!, all).map(([agentId, m]) => ({ agentId, name: nameOf(agentId), model: mainModel.get(agentId) ?? null, ...metrics(m), today: today.get(agentId)?.spent ?? 0, dayCap: today.get(agentId)?.cap ?? null })),
+    agents: rollup(cube.filter((c) => c.agentId), (c) => c.agentId!, all).map(([agentId, m]) => ({ agentId, name: nameOf(agentId), model: mainModel.get(agentId) ?? null, ...metrics(m), today: today.get(agentId)?.spent ?? 0 })),
     insights: await ledgerInsights(d, r, cube, agents, key, earliest, now),
     series: rollup(cube, (c) => `${c.t}\n${c.model}`, all)
       .map(([k, m]) => ({ t: k.split("\n")[0]!, model: k.split("\n")[1]!, usd: m.usd, calls: m.calls }))

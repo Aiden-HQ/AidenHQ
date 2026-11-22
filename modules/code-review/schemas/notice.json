@@ -63,14 +63,11 @@
    "enum": [
     "draft",
     "fork",
-    "budget_repo",
-    "budget_instance",
     "superseded",
     "stopped",
     "unchanged",
     "ignored",
-    "no_access",
-    "daily_limit"
+    "no_access"
    ]
   },
   "important": {

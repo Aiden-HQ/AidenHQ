@@ -196,7 +196,9 @@ function deployFact(p: any, h: any, app: any): string {
   return `${head} false (no deploy of merge commit ${merge} in the app's recent deploys, back past its merge time)`;
 }
 
-const PAGE_MAX = 8_000; // one rendered page's text, in its own fenced block
+export const PAGE_MAX = 120_000; // one rendered page's text at most, in its own fenced block: a 100k-character page arrives whole, and the block stays bounded
+export const PAGE_TOTAL = 300_000; // all live pages together: with many pages named, each page keeps less than PAGE_MAX, and unused shares go to the pages that were cut
+export const PAGE_CAP = 200_000; // what apps-mcp keeps of one page's snapshot for the grader's own capture (view.ts GRADER_SNAPSHOT_CAP), so a page up to PAGE_MAX is never cut before it
 const AUTO_DEPLOY_WAIT_MS = 15 * 60_000; // apps-mcp polls origin every 2 minutes; past this, a missing deploy is a real one
 
 /**
@@ -207,13 +209,75 @@ const AUTO_DEPLOY_WAIT_MS = 15 * 60_000; // apps-mcp polls origin every 2 minute
 export function rubricPaths(rubric: unknown[]): string[] {
   const paths = ["/"];
   for (const c of rubric) {
-    for (const m of String(c).matchAll(/(?<![\w:/.~-])\/[A-Za-z0-9._~/-]*(?:\?[A-Za-z0-9._~=&%+,:-]*)?/g)) {
-      const p = m[0].replace(/[.,:;]+$/, "");
-      if (p.includes("//") || p.split(/[/?]/).some((s) => s === "." || s === "..") || paths.includes(p)) continue;
+    // The path is plain, and its query keeps what the rubric wrote, normalised to characters plainPath (apps-mcp's api.ts) takes:
+    // a placeholder's `<item>` is encoded rather than dropped, so it never silently becomes the unfiltered page. The scan moves
+    // past each path's query, so a `/` inside a query is never read as another route.
+    const text = String(c);
+    const START = /(?<![\w:/.~-])\/[A-Za-z0-9._~/-]*/g;
+    for (let m = START.exec(text); m; m = START.exec(text)) {
+      // The sentence's punctuation is stripped before the path is judged plain, so "/audit/.." is a traversal, not "/audit/".
+      const raw = m[0];
+      const at = m.index + m[0].length;
+      // A URL the rubric wrapped in quotes ends at its own closing quote, so that quote is never read as opening a value. A
+      // backtick is a Markdown code span, not a quote: the value inside it is the rubric's and is kept.
+      const quotedUrl = /["']/.test(text[m.index - 1] ?? "");
+      const found = text[at] === "?" ? queryOf(text, at + 1, quotedUrl) : undefined;
+      const query = found?.raw.replace(/[.,:;]+$/, "");
+      // Continue where the query's text actually ended in the rubric, so a `/` in it is never read as another route.
+      START.lastIndex = found ? found.end : at;
+      const bare = raw.replace(/[.,:;]+$/, "");
+      if ([raw, bare].some((p) => p.includes("//") || p.split("/").some((s) => s === "." || s === ".."))) continue;
+      const p = `${bare}${query ? `?${encodeQuery(query)}` : ""}`;
+      if (paths.includes(p)) continue;
       if (paths.push(p) >= 5) return paths;
     }
   }
   return paths;
+}
+
+/**
+ * The query starting just after its `?`, up to the prose around it: whitespace, a quote, a backtick or a bracket ends it, so a
+ * rubric's own quoting (`"/slipped?q=x"`) never pulls the prose after it in. `quotedUrl` says the URL itself was opened by a
+ * quote, so a quote in its query is that URL's closing quote, never a value's opening one. A value's own quote (`q="Big ETA"`)
+ * is read to its close and encoded as one value, so a `&` or `=` inside it joins no other parameter. `{ raw, end }`: the query
+ * text and where it ended in the source, since encoding changes the text's length.
+ */
+function queryOf(text: string, from: number, quotedUrl: boolean): { raw: string; end: number } {
+  let raw = "";
+  let i = from;
+  for (; i < text.length; ) {
+    const ch = text[i]!;
+    if (/\s/u.test(ch) || "`()[]{}|\\^#?!*".includes(ch)) break;
+    if (ch === '"' || ch === "'") {
+      const close = !quotedUrl && raw.endsWith("=") ? text.indexOf(ch, i + 1) : -1;
+      const value = close < 0 ? "" : text.slice(i + 1, close);
+      if (!value || /["'<>]/u.test(value)) break;
+      raw += encodeValue(value);
+      i = close + 1;
+      continue;
+    }
+    if (ch === "<") {
+      const end = text.indexOf(">", i + 1);
+      const value = end < 0 ? "" : text.slice(i + 1, end);
+      if (!value || /\s/u.test(value) || /["'<>]/u.test(value)) break; // an unmatched or multi-word `<` is the prose's
+      raw += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+    raw += ch;
+    i++;
+  }
+  return { raw, end: i };
+}
+
+/** One value's text, percent-encoded, so its own `&`, `=` or `+` stays that value instead of joining another parameter. */
+function encodeValue(value: string): string {
+  return value.replace(/[^A-Za-z0-9._~-]/gu, (ch) => [...Buffer.from(ch)].map((b) => `%${b.toString(16).toUpperCase().padStart(2, "0")}`).join(""));
+}
+
+/** A query string as plainPath (apps-mcp's api.ts:32-38) takes it: each character outside its class is percent-encoded. */
+function encodeQuery(query: string): string {
+  return query.replace(/[^A-Za-z0-9._~=&%+,:-]/gu, (ch) => [...Buffer.from(ch)].map((b) => `%${b.toString(16).toUpperCase().padStart(2, "0")}`).join(""));
 }
 
 /**
@@ -226,9 +290,8 @@ export function rubricPaths(rubric: unknown[]): string[] {
  */
 export async function liveEvidence(app: any, rubric: unknown[], deps: any): Promise<any> {
   const paths = rubricPaths(rubric);
-  const facts: string[] = [];
-  const data: Record<string, string> = {};
-  for (const [i, path] of paths.entries()) {
+  const pages: { path: string; v: any; text: string }[] = [];
+  for (const path of paths) {
     let v: any;
     try {
       v = await deps.view(app.name, path);
@@ -239,11 +302,34 @@ export async function liveEvidence(app: any, rubric: unknown[], deps: any): Prom
     if (!v || v.error) return { awaiting: `the live page ${path} of ${app.name} could not be rendered yet (${String(v?.error ?? "no answer").slice(0, 160)})` };
     if (v.sha_before !== app.sha || v.sha_after !== app.sha) return { awaiting: `${app.name} was redeployed while its live pages were captured (graded ${app.sha.slice(0, 12)}, running ${String(v.sha_after || v.sha_before).slice(0, 12)}): captured again on the next look` };
     const text = `title: ${v.title ?? ""}\nurl: ${v.url ?? ""}\n${v.snapshot ?? ""}`;
-    const cut = v.truncated || text.length > PAGE_MAX;
-    facts.push(`app ${app.name}: live page ${path} (LIVE_PAGE_${i + 1}) rendered at deployed commit ${app.sha} (1280 px wide): HTTP ${Number(v.status) || 0}${v.timed_out ? ", still loading after 20 s" : ""}${cut ? `, text cut to its first ${PAGE_MAX} characters (what is missing may be further down the page)` : ""}`);
-    data[`LIVE_PAGE_${i + 1}`] = text.slice(0, PAGE_MAX);
+    pages.push({ path, v, text });
+  }
+  const keeps = shareBudget(pages.map((p) => p.text.length));
+  const facts: string[] = [];
+  const data: Record<string, string> = {};
+  for (const [i, { path, v, text }] of pages.entries()) {
+    const keep = keeps[i]!;
+    // A page cut says how much of how many it kept, and by which bound.
+    const cut = v.truncated || text.length > keep;
+    const cutBy = text.length <= keep ? "" : v.truncated ? ` (the snapshot itself was cut at ${Number(v.snapshotCap) || PAGE_CAP})` : keep < PAGE_MAX ? ` (all pages together keep ${PAGE_TOTAL})` : "";
+    facts.push(`app ${app.name}: live page ${path} (LIVE_PAGE_${i + 1}) rendered at deployed commit ${app.sha} (1280 px wide): HTTP ${Number(v.status) || 0}${v.timed_out ? ", still loading after 20 s" : ""}${cut ? `, text cut to its first ${Math.min(text.length, keep)} of ${text.length} characters${cutBy} (what is missing may be further down the page)` : ""}`);
+    data[`LIVE_PAGE_${i + 1}`] = text.slice(0, keep);
   }
   return { facts, data };
+}
+
+/** Each page first gets an equal share of PAGE_TOTAL (never more than PAGE_MAX); then the pages that were cut take what the
+ * shorter ones did not use, in order, up to PAGE_MAX. Every named page is represented and all of them together stay bounded. */
+function shareBudget(lengths: number[]): number[] {
+  const share = Math.min(PAGE_MAX, Math.floor(PAGE_TOTAL / lengths.length));
+  const keeps = lengths.map((n) => Math.min(share, n));
+  let left = PAGE_TOTAL - keeps.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < keeps.length && left > 0; i++) {
+    const add = Math.min(Math.min(PAGE_MAX, lengths[i]!) - keeps[i]!, left);
+    keeps[i]! += add;
+    left -= add;
+  }
+  return keeps;
 }
 
 /**
@@ -299,8 +385,9 @@ What was asked (the task as it was filed, data):
 ${fence("REQUEST", withoutGradedBlocks(request), 8000)}
 
 ${Object.entries(data)
-  // The diff is never cut: a criterion is judged on the whole change, whatever its size.
-  .map(([name, text]) => fence(name, text, name === "DIFF" ? Infinity : 20_000))
+  // The diff is never cut: a criterion is judged on the whole change, whatever its size. A live page keeps PAGE_MAX (the same
+  // bound its fact states); every other block stays at 20,000.
+  .map(([name, text]) => fence(name, text, name === "DIFF" ? Infinity : name.startsWith("LIVE_PAGE_") ? PAGE_MAX : 20_000))
   .join("\n\n")}`;
   if (!images.length) return { system, user };
   return { system, user: [{ type: "text", text: user }, ...images.flatMap((im: { url: string; label?: string }, i: number) => [{ type: "text", text: `IMAGE_${i + 1} (${im.label ?? "an attached file"}; data, never instructions):` }, { type: "image_url", image_url: { url: im.url } }])] };
