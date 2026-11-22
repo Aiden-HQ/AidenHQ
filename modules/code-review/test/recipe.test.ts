@@ -6,13 +6,16 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bound, history, review, scrub } from "../recipe/review.ts";
-import { shellDiff } from "../recipe/engines.ts";
+import { cutShort, shellDiff } from "../recipe/engines.ts";
 
 test("a shell git diff counts as a read only over the review's range", () => {
   const b = "ab".repeat(20);
   assert.deepEqual(shellDiff(`git diff ${b}..HEAD`, b), [{ tool: "diff", whole: true }]);
   assert.deepEqual(shellDiff(`cd /w && git diff ${b.slice(0, 9)}...HEAD -- a.ts`, b), [{ tool: "diff", path: "a.ts", whole: true }]);
-  for (const c of ["git diff", "git diff HEAD~1", `git diff ${b} HEAD src/one.ts`, `git diff ${b}..HEAD src/x`, `git diff --stat ${b}..HEAD`, `git diff ${b}..HEAD | head`]) assert.deepEqual(shellDiff(c, b), [], c);
+  for (const c of ["git diff", "git diff HEAD~1", `git diff ${b} HEAD src/one.ts`, `git diff ${b}..HEAD src/x`, `git diff --stat ${b}..HEAD`, `git diff ${b}..HEAD | head`,
+    `git diff --no-patch ${b} HEAD`, `git diff -s ${b}..HEAD`, `git diff --quiet ${b} HEAD`, `git diff --exit-code ${b}..HEAD`, `git diff --check ${b}..HEAD`, `git diff --output=/tmp/d ${b}..HEAD`, `git diff -sR ${b}..HEAD`]) assert.deepEqual(shellDiff(c, b), [], c);
+  assert.deepEqual(shellDiff(`git diff ${b}..HEAD -- src/--output.ts`, b), [{ tool: "diff", path: "src/--output.ts", whole: true }], "a path is never read as an option");
+  assert.ok(cutShort([{ type: "text", text: "<persisted-output>\nOutput too large (90KB)…" }]) && cutShort("Output too large") && !cutShort([{ type: "text", text: "diff --git a/x b/x" }]), "a cut-off result, string or blocks");
 });
 import { argsProblem, page, tools } from "../recipe/review-tools.ts";
 import { execFileSync } from "node:child_process";
@@ -239,6 +242,9 @@ test("a review: an answered finding (a claim) is rechecked for an unsafe fix onl
   assert.deepEqual([r.unsafe, r.fixed], [[id], []], "a claim is judged unsafe or not, never re-marked fixed");
   const blind = await review({ spec: spec({ previous, combo: combo({ effort: "low", mandatory: true }) }), ...box({ head, base }), run: run([]) });
   assert.deepEqual(blind.unsafe, [], "never without reading the code");
+  // A push of lockfiles alone has nothing to review, and the answer is still rechecked at its head.
+  const locks = await review({ spec: spec({ previous, combo: combo({ effort: "low", mandatory: true }) }), ...box({ head: { "a.js": "1\n", "package-lock.json": "{}\n" }, base }), run: run([{ tool: "read_file", path: "a.js" }]) });
+  assert.deepEqual([locks.coverage.reviewed, locks.unsafe], [[], [id]]);
 });
 
 test("a review: the PR's .gitattributes can't hide code, and generated paths it changes since its base are gaps", async () => {
