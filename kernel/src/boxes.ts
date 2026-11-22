@@ -75,7 +75,7 @@ export type Attachments = {
 /** A launcher that can't answer now (a 5xx, a timeout, unreachable): the launch is deferred to the next tick, never failed. */
 const unavailable = (e: Error): never => { throw new JobError(503, "launcher-unavailable", `the computer launcher can't answer now (${String(e.message).slice(0, 200)})`); };
 
-export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, attachments, once, log, boxExec = dockerExec, now = Date.now, stopping = () => false }: {
+export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, handbook, cleanup, clones, identity, attachments, once, log, boxExec = dockerExec, now = Date.now, stopping = () => false, stateNeed }: {
   db: DatabaseSync; attachments: Attachments; once: Once; cfg: SandboxConfig; jobs: Pick<Jobs, "runAdmitted">; call: Call; secret: (name: string) => string; whoami: Whoami;
   /** Who the agent's commits are authored as: its name and its own address (never the owner's). */
   identity: (agent: string) => Promise<{ name: string; email: string; agent?: string }>;
@@ -93,13 +93,15 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
   now?: () => number;
   /** The kernel is draining (main.ts): a launch that got its box gives it back instead of starting the run. */
   stopping?: () => boolean;
+  /** The state root can't be made (a removed or foreign-owned directory): the owner hears it once per episode, not per job. */
+  stateNeed?: (e: Error) => void;
 }) {
 
   /** admission.ts `launch`: the job's token, its engine home and workspace, its box, then the run. */
   async function launch(job: Admitted) {
     const { authority: a } = job;
     const workspace = join(cfg.workDir, "tasks", job.identifier);
-    const state = engineState(cfg, a.engine, `${job.agent}/${job.task}`, a.skills);
+    const state = engineState(cfg, a.engine, `${job.agent}/${job.task}`, a.skills, stateNeed);
     if (!state) throw new JobError(400, "no-engine-home", `the ${a.engine} engine keeps no state folder, so the job can't have its own home`);
     // The agent's compiled handbook is the engine's instructions file (what Paperclip delivered to crew runs).
     const book = handbook(job.agent);

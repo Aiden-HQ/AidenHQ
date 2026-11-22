@@ -13,7 +13,7 @@ import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
 import { REFUSALS_DDL, busyError, refusalColumns, refusalOf, type Refusal } from "./refusals.ts";
 import type { Facts } from "./facts.ts";
-import { SESSION, buildJob, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
+import { SESSION, buildJob, ensureStateDirs, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
 /** What the control plane says about a task. */
 export interface ControlPlane {
@@ -180,7 +180,7 @@ const DDL = `CREATE TABLE IF NOT EXISTS jobs (
   box TEXT, session TEXT, offset INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, exit INTEGER, final TEXT NOT NULL DEFAULT '',
   why TEXT NOT NULL DEFAULT '{}', usage TEXT, progress TEXT NOT NULL DEFAULT '{}', ended INTEGER, full_prompt TEXT, resumed INTEGER)`;
 
-export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () => {}, facts, agentKey = (id) => id }: {
+export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () => {}, facts, agentKey = (id) => id, stateNeed }: {
   /** Flow's fact log (facts.ts): job.started and job.ended. */
   facts?: Facts;
   /** An agent's key (grants), for the facts' actor. */
@@ -188,6 +188,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   /** A job ended (or was found lost): the kernel releases the box it got for it (boxes.ts). */
   onEnd?: (id: string) => void;
   db: DatabaseSync; cfg: SandboxConfig; cp: ControlPlane;
+  /** The state root can't be made: the owner hears it once per episode (main.ts), not once per job. */
+  stateNeed?: (e: Error) => void;
   /** Whether this module dispatches this agent's jobs (compile: config/kernel/modules.json `dispatches`, by agent key). */
   mayDispatch: (module: string, agent: string) => boolean;
   log: (msg: string, fields?: Record<string, unknown>) => void;
@@ -495,7 +497,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     // The prompt a turn runs with when nothing resumes: the caller's full form, else what the row kept at admission, else its own.
     const firstTurn = fullPrompt ?? r.full_prompt ?? prompt;
     const at = Date.now();
-    mkdirSync(cfg.logsDir, { recursive: true });
+    ensureStateDirs(cfg.stateDir, stateNeed);
     // A retry is another run of the same job in the same box: its log (and its .exit beside it) must not be the last run's.
     const stem = join(cfg.logsDir, `${String(label).replace(/[^\w.-]/g, "_").slice(0, 60)}-${at}`);
     let logPath = `${stem}.log`;

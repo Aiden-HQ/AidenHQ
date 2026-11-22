@@ -3,10 +3,10 @@
 // state folder as /codex-home.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { engineState } from "../src/sandbox.ts";
+import { engineState, ensureStateDirs } from "../src/sandbox.ts";
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "k-skills-"));
@@ -37,4 +37,63 @@ test("a skills/ link a previous job planted in its state folder is removed, neve
   assert.deepEqual(readdirSync(outside), ["lint"]); // nothing outside changed
   assert.equal(readFileSync(join(outside, "lint", "SKILL.md"), "utf8"), "host file\n");
   assert.notEqual(statSync(join(outside, "lint", "SKILL.md")).mode & 0o222, 0);
+});
+
+test("a removed state root is recreated 0700, and its logs with it, before the job's own folder", () => {
+  const { cfg, dir } = setup();
+  const root = join(dir, "state");
+  const state = engineState(cfg, "codex", "task-1");
+  // A disk reclaim removes the root between runs: the next launch heals it rather than failing with EACCES.
+  rmSync(root, { recursive: true, force: true });
+  const again = engineState(cfg, "codex", "task-1");
+  assert.equal(again, state);
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  assert.equal(statSync(join(root, "logs")).mode & 0o777, 0o700);
+  assert.equal(statSync(again).mode & 0o777, 0o700);
+  const { logs } = ensureStateDirs(root);
+  assert.equal(logs, join(root, "logs"));
+  assert.equal(statSync(logs).mode & 0o777, 0o700);
+  // A mode the umask narrowed (or a hand-made root) is healed, not left world-readable.
+  chmodSync(root, 0o755);
+  ensureStateDirs(root);
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  assert.equal(statSync(logs).mode & 0o777, 0o700);
+});
+
+test("an unusable state root throws once, naming the absolute path, its owner/mode and the kernel's uid, and reports one need", () => {
+  const { cfg, dir } = setup();
+  const root = join(dir, "state");
+  mkdirSync(root, { recursive: true });
+  chmodSync(root, 0o555); // present but not writable: what a reclaim left, or another user's directory
+  const needs: string[] = [];
+  try {
+    assert.throws(() => engineState(cfg, "codex", "task-1", [], (e) => needs.push(e.message)), (e: Error) => {
+      assert.match(e.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(e.message, /mode 0555/, "the mode found is named");
+      assert.match(e.message, /owner uid=\d+ gid=\d+/, "the owner found is named");
+      if (typeof process.getuid === "function") assert.match(e.message, new RegExp(`kernel runs as uid=${process.getuid()}`));
+      return true;
+    });
+    // Every job on the episode fails, but the owner is told once: the same failure again is the same need.
+    assert.throws(() => engineState(cfg, "codex", "task-2", [], (e) => needs.push(e.message)));
+    assert.equal(needs.length, 1);
+    assert.match(needs[0]!, /runner state directory/);
+    // Healed, the episode clears: a later break is a new need.
+    chmodSync(root, 0o700);
+    ensureStateDirs(root, (e) => needs.push(e.message));
+    chmodSync(root, 0o555);
+    assert.throws(() => engineState(cfg, "codex", "task-3", [], (e) => needs.push(e.message)));
+    assert.equal(needs.length, 2);
+  } finally {
+    chmodSync(root, 0o700);
+  }
+});
+
+test("a symlinked state root is refused, never followed", () => {
+  const { cfg, dir } = setup();
+  const outside = join(dir, "outside");
+  mkdirSync(outside, { recursive: true });
+  symlinkSync(outside, join(dir, "state"));
+  assert.throws(() => engineState(cfg, "codex", "task-1"), /symlink, which is never followed/);
+  assert.deepEqual(readdirSync(outside), []);
 });
