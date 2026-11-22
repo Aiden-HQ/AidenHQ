@@ -2,7 +2,7 @@
 // issues carrying a repo's label, their label events with a trust verdict, the repo tree and one file, and the three writes
 // (comment, label, state). A label is trusted only when a collaborator whose role is one of that repo's `trusted` roles added
 // it (the owner's login is an admin, so its labels count); the issue's text or author never decide trust.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { GitHubRefused } from "./github.js";
 import { GitHubNeed, writeBudgetDeadline, writeBudgetSpent } from "./client.js";
 import { scrubProblems, scrubText } from "./scrub.js";
@@ -647,30 +647,47 @@ export class Maintainer {
     if (key === undefined) return this.applyState(r, number, state, reason);
     return this.withNoteLock(key, async () => {
       const spec: NoteSpec = { text: text!, state, agent };
-      const marker = Maintainer.noteMarker(r, number, spec);
       const earlier = this.noted.get(key);
       // A record with no comment id is a POST whose answer was lost: find it on the issue before considering another one.
       const rec = earlier && earlier.id === 0
         ? await this.reconcilePosted(r, number, key, earlier)
         : earlier && (await this.noteApplies(r, number, earlier))
           ? earlier
-          : await this.postNote(r, number, key, spec, marker);
+          : await this.postNote(r, number, key, spec);
       const out = await this.applyState(r, number, state, reason, rec);
       this.rememberNote(key, { ...rec, confirmed: true });
       return out;
     });
   }
 
-  /** Stable across a retry of the same call: the note's body, the state and the agent. */
+  /** A fresh marker for one POST attempt, carried in its body and kept in its pending record so a retry can find that exact
+   * comment. It must be new for each attempt: an earlier close of the same note (before a reopen) carries its own marker, and a
+   * later attempt must never take that comment for its own. */
   private static noteMarker(r: MaintainedRepo, number: number, spec: NoteSpec) {
-    return createHash("sha256").update(`${r.repo.toLowerCase()}#${number}:${spec.state}:${spec.agent}:${spec.text}`).digest("hex").slice(0, 32);
+    return createHash("sha256").update(`${r.repo.toLowerCase()}#${number}:${spec.state}:${spec.agent}:${spec.text}:${randomUUID()}`).digest("hex").slice(0, 32);
+  }
+
+  /** Every comment on the issue, refusing one longer than the page cap: a part read cannot prove a marker absent, and treating it
+   * as absent would post the note again. */
+  private async allComments(r: MaintainedRepo, number: number): Promise<any[]> {
+    const out: any[] = [];
+    let page = 1;
+    for (; page <= PAGE_CAP; page++) {
+      const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}/comments?per_page=100&page=${page}`);
+      if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number}'s comments (GitHub said ${res.status})`);
+      const items = (Array.isArray(res.body) ? res.body : []) as any[];
+      out.push(...items);
+      if (items.length < 100) break;
+    }
+    if (page > PAGE_CAP) throw new GitHubRefused(`#${number} has more than ${PAGE_CAP * 100} comments, so whether the note is on it can't be read; refusing to post it again`);
+    return out;
   }
 
   /** The comment a marker names, when one is on the issue: a lost POST's answer is reconciled through it rather than posting
-   * the same note a second time. A failed read throws (it cannot prove the note absent). */
+   * the same note a second time. A read that fails or stops at the page cap throws (it cannot prove the note absent). */
   private async findByMarker(r: MaintainedRepo, number: number, marker: string) {
     const tag = `<!-- aidenhq-note:${marker} -->`;
-    const comments = await this.readAll(r, `/issues/${number}/comments`);
+    const comments = await this.allComments(r, number);
     const hit = comments.find((c) => String(c?.body ?? "").includes(tag));
     return hit ? { id: Number(hit.id), url: String(hit.html_url ?? ""), createdAt: String(hit.created_at ?? "") } : undefined;
   }
@@ -682,7 +699,8 @@ export class Maintainer {
 
   /** Posts this call's note and records it (unconfirmed) before the POST answers, so a retry or an overlapping close reuses it.
    * A lost POST answer leaves a record with no comment id, and the retry reconciles it by the marker on the issue. */
-  private async postNote(r: MaintainedRepo, number: number, key: string, spec: NoteSpec, marker: string): Promise<NoteRecord> {
+  private async postNote(r: MaintainedRepo, number: number, key: string, spec: NoteSpec): Promise<NoteRecord> {
+    const marker = Maintainer.noteMarker(r, number, spec);
     const pending: NoteRecord = {
       id: 0,
       url: "",
@@ -711,8 +729,16 @@ export class Maintainer {
   /** Settles a note whose POST answer was lost: the marker's comment is this note if it is on the issue, and only if it is not
    * does the retry post it. A comment read that fails throws (it cannot prove the note absent). */
   private async reconcilePosted(r: MaintainedRepo, number: number, key: string, pending: NoteRecord): Promise<NoteRecord> {
-    const known = await this.findByMarker(r, number, pending.marker);
-    if (!known) return this.postNote(r, number, key, pending.spec, pending.marker);
+    let known: Awaited<ReturnType<Maintainer["findByMarker"]>>;
+    try {
+      known = await this.findByMarker(r, number, pending.marker);
+    } catch (e) {
+      // Without a complete read the note may be on the issue: posting again could duplicate it, so the outcome stays unresolved.
+      throw new Error(`whether the earlier note posted is still unknown, and it can't be checked (${(e as Error).message}); read the issue's comments before retrying`);
+    }
+    // A new POST attempt gets its own marker: the earlier attempt's was proven absent, and reusing it could match a comment
+    // from an earlier close of the same note.
+    if (!known) return this.postNote(r, number, key, pending.spec);
     const rec: NoteRecord = { ...pending, id: known.id, url: known.url, createdAt: known.createdAt, objects: [`${this.ref(r, number)}/comment/${known.id}`] };
     this.rememberNote(key, rec);
     return rec;

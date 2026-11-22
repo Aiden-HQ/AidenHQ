@@ -42,6 +42,8 @@ function fake(opts: {
   losePatchAnswer?: boolean;
   /** Holds each state PATCH until this resolves (a close that is in flight while another waits). */
   holdPatch?: () => Promise<void>;
+  /** Pages of 100 an issue's comment list answers before it looks truncated (more than the page cap is refused). */
+  commentPages?: number;
 }) {
   const calls: Call[] = [];
   const posted: { path: string; body: any }[] = [];
@@ -124,8 +126,12 @@ function fake(opts: {
       ((opts.timelines ??= {})[n] ??= []).push({ event: "commented", id, created_at: at });
       return json(201, { id, html_url: `https://github.com/x#c${id}`, created_at: at });
     }
-    // The comments an earlier call posted: what a retry reads to see whether its note is already there.
-    if (u.pathname.endsWith("/comments") && method === "GET") return json(200, comments);
+    // The comments an earlier call posted: what a retry reads to see whether its note is already there. A test can make the
+    // list longer than the page cap, so a scan stops at the cap instead of reaching every comment.
+    if (u.pathname.endsWith("/comments") && method === "GET") {
+      if (opts.commentPages !== undefined) return json(200, Array.from({ length: 100 }, (_, k) => ({ id: 10000 * Number(u.searchParams.get("page")) + k, html_url: `https://github.com/x#f${k}`, body: "filler", created_at: "2026-01-01T00:00:00Z" })).slice(0, opts.commentPages > 0 ? 100 : 0));
+      return json(200, comments);
+    }
     if (u.pathname.endsWith("/labels") && method === "POST") {
       posted.push({ path: u.pathname, body });
       return json(200, [{ name: "agent-fix" }]);
@@ -617,6 +623,47 @@ it("a note whose POST answer was lost is reconciled on the retry instead of post
   expect(f.comments).toHaveLength(1);
   expect(f.posted.filter((p) => p.path.endsWith("/comments"))).toHaveLength(0);
   expect(f.posted.filter((p) => p.path.endsWith("/issues/1"))).toHaveLength(1);
+});
+
+it("a new close after a reopen gets a fresh marker, so it never takes the earlier close's comment for its own", async () => {
+  // The first close lands, then a reopen, then a later identical close. That later attempt's POST creates nothing and loses its
+  // answer. Its marker must be its own: the earlier close's comment matches the same note text, state and agent, but not this
+  // attempt, so reusing that marker would close the issue without the new note ever being posted.
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note)).toMatchObject({ state: "closed" });
+  expect(await m.state(PRODUCT, 1, "open")).toMatchObject({ state: "open" });
+  // Reach into the instance to fail the later attempt's POST with a lost answer (the comment is never created).
+  const inner = m as unknown as { postComment: (r: any, n: number, t: string) => Promise<unknown> };
+  const real = inner.postComment.bind(inner);
+  inner.postComment = async () => {
+    throw new TypeError("fetch failed");
+  };
+  const err = await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
+  expect((err as Error).message).toMatch(/whether the note posted is unknown/);
+  expect(f.comments).toHaveLength(1);
+  // The retry reconciles by that fresh marker, finds nothing, and posts its own note: not the first close's comment.
+  inner.postComment = real;
+  const out = await m.state(PRODUCT, 1, "closed", "completed", note);
+  expect(out).toMatchObject({ state: "closed" });
+  expect(f.comments).toHaveLength(2);
+  expect(out.objects).toEqual([`github:${PRODUCT}#1/comment/2`]);
+});
+
+it("a lost POST whose comment scan hits the page cap stays unresolved instead of posting a duplicate", async () => {
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const note = "Fixed by acme/product#7, merge 0ba0db1.";
+  const m = maintainer(f);
+  // GitHub creates the note, then the answer is lost.
+  f.opts.loseCommentPost = true;
+  expect(await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e)).toBeInstanceOf(Error);
+  expect(f.comments).toHaveLength(1);
+  // The issue now looks longer than the page cap, so the scan cannot prove the marker absent: the retry must not post again.
+  f.opts.commentPages = 11;
+  const err = await m.state(PRODUCT, 1, "closed", "completed", note).catch((e) => e);
+  expect((err as Error).message).toMatch(/still unknown, and it can't be checked/);
+  expect(f.comments).toHaveLength(1);
 });
 
 it("a close PATCH whose answer was lost says the outcome is unknown, not that the state did not change", async () => {
