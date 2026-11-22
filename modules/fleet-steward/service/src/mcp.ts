@@ -13,6 +13,10 @@ export interface Tool {
 }
 
 const NO_ARGS = { type: "object", properties: {}, additionalProperties: false };
+/** The routing change's nested shapes, published with them: a schema-typed client drops keys of a bare `{ type: "object" }`. The kernel's `routing-tune.ts` still judges the values. */
+const ROUTING_WEIGHTS = { type: "object", properties: { repo: { type: "number" }, continuity: { type: "number" }, load: { type: "number" } } };
+const ROUTING_REPOS = { type: "object", additionalProperties: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] } };
+const ROUTING_REVERT = { type: "object", properties: { metric: { type: "string", enum: ["reopen_rate", "cycle_hours", "blocked_rate"] }, min_sample: { type: "number" }, threshold: { type: "number" }, deadline_days: { type: "number" } } };
 const text = (v: unknown, isError = false) => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }], ...(isError ? { isError: true } : {}) });
 
 export function createMcp(tools: Tool[]) {
@@ -131,14 +135,14 @@ export const fleetTools = (d: {
     name: "routing_replay",
     roles: ["routing-tuner"],
     description: "routing-tuner role: the kernel re-runs a team's recorded decisions of the last `days` days (default 7) with other `weights` ({repo, continuity, load}) or members' `repos` ({member: [owner/name patterns]}) and says which picks would change.",
-    inputSchema: { type: "object", properties: { team: { type: "string" }, weights: { type: "object" }, repos: { type: "object" }, days: { type: "number" } }, required: ["team"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { team: { type: "string" }, weights: ROUTING_WEIGHTS, repos: ROUTING_REPOS, days: { type: "number" } }, required: ["team"], additionalProperties: false },
     run: async (a, caller) => d.routing("replay", a, caller.assertion ?? ""),
   },
   {
     name: "routing_tune",
     roles: ["routing-tuner"],
     description: "routing-tuner role: propose one routing change as an experiment: { base_sha, team, weights?, repos?, decisions (the task ids it rests on), hypothesis (one or two sentences), revert: { metric: reopen_rate | cycle_hours | blocked_rate, min_sample, threshold, deadline_days } }. The kernel writes it and files it as a reviewed apply on your task. One open experiment at a time, one proposal a UTC day.",
-    inputSchema: { type: "object", properties: { base_sha: { type: "string" }, team: { type: "string" }, weights: { type: "object" }, repos: { type: "object" }, decisions: { type: "array", items: { type: "string" } }, hypothesis: { type: "string" }, revert: { type: "object" } }, required: ["base_sha", "team", "decisions", "hypothesis", "revert"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { base_sha: { type: "string" }, team: { type: "string" }, weights: ROUTING_WEIGHTS, repos: ROUTING_REPOS, decisions: { type: "array", items: { type: "string" } }, hypothesis: { type: "string" }, revert: ROUTING_REVERT }, required: ["base_sha", "team", "decisions", "hypothesis", "revert"], additionalProperties: false },
     run: async (a, caller) => d.routing("tune", a, caller.assertion ?? ""),
   },
   {
