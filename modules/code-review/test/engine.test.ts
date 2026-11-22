@@ -1106,21 +1106,26 @@ test("a send a restart cut off is tried again: the claim is cleared at start, so
   assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND claim IS NOT NULL").get(r.batch).n, 0);
 });
 
-test("a summary for a requester's task that is already closed goes to the owner instead", async () => {
-  const w = world();
-  await w.tick();
-  w.pr(7, sha("7"), { open: false, merged: true });
-  const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
-  w.later(1000); await w.tick();
-  w.perms.taskClosed = true;
-  w.finish(0, {}, 0.2);
-  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
-  await w.tick();
-  await w.tick();
-  assert.deepEqual(w.notes.map((n) => n.task), ["WOR-42", undefined], "the closed task first, then the owner");
-  assert.ok(w.notes[1].text.startsWith(w.notes[0].text));
-  assert.match(w.notes[1].text, /\(asked by Reviewer Manager\)/);
-  assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND sent = pending").get(r.batch).n, 1);
+test("a closed asker's plain summary reaches nobody; one with a refusal the owner can fix goes to the owner", async () => {
+  for (const refused of [false, true]) {
+    const w = world();
+    await w.tick();
+    w.pr(7, sha("7"), { open: false, merged: true });
+    const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
+    w.later(1000); await w.tick();
+    w.perms.taskClosed = true;
+    w.finish(0, {}, 0.2);
+    if (refused) w.refusals.set(r.id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
+    w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+    await w.tick();
+    await w.tick();
+    assert.equal(w.db.prepare("SELECT COUNT(*) n FROM askers WHERE batch = ? AND sent = pending").get(r.batch).n, 1, "settled either way");
+    if (!refused) { assert.deepEqual(w.notes.map((n) => n.task), ["WOR-42"], "only the closed task was asked, the owner heard nothing"); continue; }
+    assert.deepEqual(w.notes.map((n) => n.task), ["WOR-42", undefined], "the closed task first, then the owner");
+    assert.ok(w.notes[1].text.startsWith(w.notes[0].text));
+    assert.match(w.notes[1].text, /\(asked by Reviewer Manager\)/);
+    assert.match(w.notes[1].text, /Grant link/);
+  }
 });
 
 test("a closed asker's row is still unsent while the owner's notice is in flight, so a crash there loses nothing", async () => {
@@ -1130,7 +1135,7 @@ test("a closed asker's row is still unsent while the owner's notice is in flight
   const [r] = await w.engine.oneoff({ pr_url: `https://github.com/${REPO}/pull/7`, combos: [CODEX] }, { requester: "Reviewer Manager", task: "WOR-42" });
   w.later(1000); await w.tick();
   w.finish(0, {}, 0.2);
-  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  w.refusals.set(r.id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
   // The post settles and the summary is written, but no notice can go yet: the row is unsent, waiting.
   w.perms.notifyDown = true;
   await w.tick();
@@ -1198,7 +1203,8 @@ test("two owner notices of one batch carry different keys, so the second isn't d
   w.later(1000); await w.tick();
   w.perms.taskClosed = true;
   w.finish(0, {}, 0.2);
-  w.outcomes.set("k-1", { state: "posted", url: "https://github.com/acme/payments/pull/7#pullrequestreview-1" });
+  w.refusals.set(b.id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
+  w.refusals.set(a.id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
   await w.tick();
   await w.tick();
   const owner = w.notes.filter((n) => !n.task);
@@ -1222,8 +1228,8 @@ test("two closed asks of one batch whose text reads alike still reach the owner 
   w.perms.taskClosed = true;
   w.finish(0, {}, 0.2);
   w.finish(1, {}, 0.2);
-  w.outcomes.set("k-1", { state: "posted", url: `${url}#pullrequestreview-1` });
-  w.outcomes.set("k-2", { state: "posted", url: `${url}#pullrequestreview-2` });
+  w.refusals.set(r1.id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
+  w.refusals.set(r2.id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
   await w.tick({ github: false });
   await w.tick({ github: false });
   const owner = w.notes.filter((n) => !n.task);
@@ -1273,14 +1279,15 @@ test("two closed askers of one run set whose tasks were already closed are two o
   w.later(1000); await w.tick();
   w.perms.taskClosed = true;
   w.finish(0, {}, 0.2);
-  w.outcomes.set("k-1", { state: "posted", url: `${url}#pullrequestreview-1` });
+  w.refusals.set(r1.id, { state: "refused", why: "needs_owner restricted", need: { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/cid" } });
   await w.tick({ github: false });
   await w.tick({ github: false });
   const owner = w.notes.filter((n) => !n.task);
   assert.equal(owner.length, 1, "one run set, one owner alert naming both closed askers");
   assert.match(owner[0].text, /asked by Engineer, Reviewer Manager/);
-  // A third asker joining the same runs later is not dropped for being the same set: its own key, its own alert.
-  const pending = JSON.stringify({ [r1.id]: "done|posted||" });
+  // A third asker joining the same runs later is not dropped for being the same set: its own key, its own alert. Its stamp is the
+  // one from before the owner flag existed (no `owner` field), which still reaches the owner.
+  const pending = JSON.stringify({ [r1.id]: "failed|refused||" });
   w.db.prepare("INSERT OR REPLACE INTO askers (batch, task, setkey, requester, runs, text, pending) VALUES (?, 'WOR-44', 'later', 'Checker', ?, ?, ?)")
     .run(r1.batch, JSON.stringify([r1.id]), "**One-off review settled:** acme/payments#7 at 7777777: 1 run, 1 posted.", pending);
   await w.tick({ github: false });
