@@ -43,6 +43,8 @@ contributes:
         Agents act as you on GitHub. Everything they write says so: commits carry `Co-authored-by: AidenHQ <agent name>`, text ends with a link to [AidenHQ](https://aidenhq.ai). Nothing an agent does on GitHub counts as your approval; your word reaches them only through AidenHQ. To keep agent-built repos on GitHub, set **Fleet repos** to an organization you can create repositories in (`github_fleet_org`).
 
         With the CI module on, GitHub asks for one more permission (`admin:org`, to register the org's self-hosted runners): press **Reconnect** on the GitHub card when it says so.
+
+        A change under `.github/workflows/` needs GitHub's `workflow` permission too; a sign-in made before AidenHQ asked for it keeps its old grant, so press **Reconnect** when the card's **Workflow files** row says it needs permission.
   warehouse.sources:
     - schema: src_github
       about: "src_github.issues / projects / project_items / changes / users"
