@@ -507,6 +507,10 @@ type ReviewArgs = ReviewRequest & { ask: Ask; policy?: string };
 export async function review({ card, diff, tool_call: sentToolCall, files = { list: [], leftOut: [] }, chain = "", requesterModel = "", policy = readPolicy(), ask, comments = "" }: ReviewArgs): Promise<Result> {
   const models = judgeModels(requesterModel);
   const failed = (reason: string, model = models[0] ?? LUNA): Result => ({ decision: "escalate", code: "reviewer_failed", reason, model });
+  // Code's own refusal of an unreadable call: `kernel/code` as the model because no model ran, which is also what keeps the
+  // kernel from shadowing it into an owner card below full autonomy (writes.ts exempts only `kernel/code` rejections). A read
+  // failure is the agent's to fix and refile, never the owner's to approve.
+  const unreadableCall = (reason: string): Result => ({ decision: "reject", code: "tool_call_unreadable", reason, model: "kernel/code" });
   if (!models.length) return failed("no reviewer model independent of the requester's");
   // A conn.tool call arrives structured (`tool_call`); the kernel's older details text, when a caller sends it as the diff, is
   // read here so the connection and tool and each argument still reach the reviewer as TOOL_CALL, never under DIFF. Only a
@@ -527,13 +531,13 @@ export async function review({ card, diff, tool_call: sentToolCall, files = { li
   // not the call either. Neither reaches a model: the agent files it again, told which field is missing. These are code's
   // refusals, coded `tool_call_unreadable` rather than `malicious`: the reviewer blocks only malice, and only a malice code
   // refuses the same content again (kernel/src/tier.ts MALICE), so a corrected refile must not be blocklisted.
-  if (toolCall && (!toolCall.connection || !toolCall.tool)) return { decision: "reject", code: "tool_call_unreadable", reason: "the tool call is unreadable: code read no connection or no tool for it, so there is no call to judge. File it again naming the connection and the tool.", model: models[0]! };
-  if (toolCall && unreadableOf(toolCall).includes("arguments") && !Object.keys(toolCall.arguments ?? {}).length) return { decision: "reject", code: "tool_call_unreadable", reason: `the tool call's arguments are unreadable: code could not read an argument object for ${toolCall.connection}.${toolCall.tool}, so there is no call to judge. File it again with its arguments.`, model: models[0]! };
+  if (toolCall && (!toolCall.connection || !toolCall.tool)) return unreadableCall("the tool call is unreadable: code read no connection or no tool for it, so there is no call to judge. File it again naming the connection and the tool.");
+  if (toolCall && unreadableOf(toolCall).includes("arguments") && !Object.keys(toolCall.arguments ?? {}).length) return unreadableCall(`the tool call's arguments are unreadable: code could not read an argument object for ${toolCall.connection}.${toolCall.tool}, so there is no call to judge. File it again with its arguments.`);
   // A call nested past the walk depth, or one whose arguments don't fit the block whole (expanded or compact), would reach the
   // reviewer with a subtree or a tail left out: a partial call is not the call, so it goes back rather than to a model.
-  if (toolCall && argumentDepth(toolCall.arguments) > MAX_TOOL_CALL_DEPTH) return { decision: "reject", code: "tool_call_unreadable", reason: `the tool call's arguments are nested more than ${MAX_TOOL_CALL_DEPTH} levels deep, so they cannot be shown whole to the reviewer: flatten the call's arguments and file it again.`, model: models[0]! };
+  if (toolCall && argumentDepth(toolCall.arguments) > MAX_TOOL_CALL_DEPTH) return unreadableCall(`the tool call's arguments are nested more than ${MAX_TOOL_CALL_DEPTH} levels deep, so they cannot be shown whole to the reviewer: flatten the call's arguments and file it again.`);
   const block = toolCall ? toolCallBlock(toolCall) : undefined;
-  if (toolCall && block && !block.whole) return { decision: "reject", code: "tool_call_unreadable", reason: `the tool call's arguments are too long to show whole (${block.text.length.toLocaleString("en-US")} characters, over the ${MAX_TOOL_CALL.toLocaleString("en-US")}-character limit): shorten the call's arguments and file it again.`, model: models[0]! };
+  if (toolCall && block && !block.whole) return unreadableCall(`the tool call's arguments are too long to show whole (${block.text.length.toLocaleString("en-US")} characters, over the ${MAX_TOOL_CALL.toLocaleString("en-US")}-character limit): shorten the call's arguments and file it again.`);
   const leaked = instanceDetails(card, diff, toolCall);
   if (leaked.length) return { decision: "reject", code: "instance_details", reason: `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.`, model: models[0]! };
   // The diff against the code host's own count of the change (numstat at filing): what is reviewed must be what runs. Without

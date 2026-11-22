@@ -314,6 +314,9 @@ test("an unreadable or oversized call is code's refusal, never a malice blocklis
     const v = await review({ card: { action: "conn.tool" }, diff: "", tool_call: tc, chain: "c", policy: "p", ask: async () => assert.fail("not asked") });
     assert.equal(v.decision, "reject", label);
     assert.equal(v.code, "tool_call_unreadable", `${label}: not a malice code`);
+    // Named as code's own verdict, not a model's: the kernel shadows only a model's reject into an owner card below full
+    // autonomy (writes.ts review), so this must never become one.
+    assert.equal(v.model, "kernel/code", `${label}: code's refusal, not a model's`);
   }
   // It is a code code, so it is part of the shared list the board shows.
   assert.ok(CODE_CODES.includes("tool_call_unreadable"));
