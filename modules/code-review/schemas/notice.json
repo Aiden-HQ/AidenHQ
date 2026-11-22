@@ -67,7 +67,8 @@
     "stopped",
     "unchanged",
     "ignored",
-    "no_access"
+    "no_access",
+    "post_refused"
    ]
   },
   "important": {

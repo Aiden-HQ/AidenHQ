@@ -261,6 +261,8 @@
     "schema writes.json": {"state":"experimental","fp":"{\"req\":true,\"type\":\"object\",\"propertyNames\":{\"pattern\":\"^[a-z][a-z0-9_]{0,40}$\"}}"},
     "schema writes.json.*": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
     "schema writes.json.*.args": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\",\"pattern\":\"^schemas/[\\\\w.-]+\\\\.json$\"}"},
+    "schema writes.json.*.binds": {"state":"experimental","fp":"{\"req\":false,\"type\":\"array\",\"minItems\":1,\"uniqueItems\":true}"},
+    "schema writes.json.*.binds[]": {"state":"experimental","fp":"{\"req\":false,\"enum\":[\"repo\",\"ref\",\"commit\"]}"},
     "schema writes.json.*.card": {"state":"experimental","fp":"{\"req\":false,\"closed\":true,\"type\":\"object\"}"},
     "schema writes.json.*.card.changes": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},
     "schema writes.json.*.card.cost": {"state":"experimental","fp":"{\"req\":false,\"type\":\"string\"}"},

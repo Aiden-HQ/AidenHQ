@@ -16,7 +16,14 @@ an autonomy he set below full.
   (`kernel/src/tier.ts`) is the one function that sets the final tier: merit 0 runs at once, any higher merit is the AI
   reviewer's (Tier 1), and Tier 2 (the owner's) is only his veto on the task, his settings save (`ownerSave`) or autonomy off.
   A request with several parts takes its highest part; anything unrecognised is reviewed. The plan runs when the record is
-  filed and again before it executes; a changed target closes the record as stale and it is filed again.
+  filed and again before it executes; a changed target closes the record as stale and it is filed again. A kind that declares
+  `binds` (a head-bound write, such as a review post of one pull request at one commit) is judged on those target fields alone:
+  a redeployed executor, a moved base or other text on the pull request never stales it while the head it acts on stands. Its
+  kind declaration is still compared (the `policy` hash covers the whole kind, `binds` included: a raised floor or a changed
+  binding holds a record approved under the old one), the record's own targets are compared under the fields it was filed with,
+  and its args are compared too, so changed content is never run under an approval of the old content. A plan that names no
+  bound target is refused at filing rather than carded. Every other kind keeps the full
+  revalidation (executor revision, policy, args and targets).
 - **The records are the audit trail.** Each record stores `tier`, `merit`, `reason` and `decided_by`, which the kernel
   stamps server-side from the credential used (`owner:board`, `owner:telegram`, `owner:reply`, `account:<id>`,
   `reviewer:<model>`, `reviewer:kernel/code`, `auto:<rule>`), never from a caller-supplied field. Lifecycle: `review` or

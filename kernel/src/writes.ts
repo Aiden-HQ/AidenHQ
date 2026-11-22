@@ -26,8 +26,14 @@ import { gateMode } from "./gates.ts";
 import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
-/** One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`. */
-export type Kind = { module: string; floor: Tier; paths?: boolean; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
+/** The target fields a head-bound kind can bind to: what it acts on, per target, instead of its whole plan. */
+export type Bind = "repo" | "ref" | "commit";
+/**
+ * One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`.
+ * `binds`: a head-bound write (a review post on one commit): staleness is judged on these target fields alone, not on the
+ * executor's code revision, the kind's declaration, its args or its other targets (writes.ts `boundOf`).
+ */
+export type Kind = { module: string; floor: Tier; paths?: boolean; binds?: Bind[]; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
 /** A plan (executor@1's, or the kernel's own planner's). */
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string }; review?: ReviewContext };
 /** A write.filed check as config/kernel/checks.json holds it (`<module>.<id>`): the kinds it runs on. */
@@ -187,6 +193,27 @@ export function createWrites({ records, registry, connections, secret, resolver,
   }
 
   /**
+   * What a head-bound kind (`binds`) acts on, from its plan's targets: each target's named fields, keyed as the plan keys it.
+   * Undefined when a target isn't an object or lacks a bound field: a plan that names nothing it binds to is stale, never valid.
+   */
+  function boundOf(targets: Record<string, unknown>, fields: readonly string[]): string | undefined {
+    // No prototype: a planner can key a target `__proto__`, and a plain object would take that assignment as its prototype
+    // instead of an own property, dropping that target from the comparison and letting the record run on a changed commit.
+    const out: Record<string, Record<string, unknown>> = Object.create(null);
+    for (const [key, t] of Object.entries(targets)) {
+      if (!t || typeof t !== "object" || Array.isArray(t)) return undefined;
+      const pick: Record<string, unknown> = Object.create(null);
+      for (const f of fields) {
+        const v = (t as Record<string, unknown>)[f];
+        if (v === undefined || v === null || v === "") return undefined;
+        pick[f] = v;
+      }
+      out[key] = pick;
+    }
+    return Object.keys(out).length ? canonical(out) : undefined;
+  }
+
+  /**
    * Which of the inventory's repositories `repo` is: the product, the official modules repo or another; undefined when it
    * can't be told (not owner/name, or the product repo isn't set here: fails closed).
    */
@@ -246,6 +273,10 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const plan: Plan = own ? await own({ kind, args, requester, task, ...(workspace ? { workspace } : {}) }) : await call(k, "plan", { kind, args, requester, task, ...(evidence !== undefined ? { evidence } : {}) });
     if (k.args) validate(k.args, plan.args);
     const targets = plan.targets ?? {};
+    // A head-bound kind (`binds`) must name what it acts on in its plan: filing one that doesn't would only be staled on its
+    // re-plan, and refiled blank again. A plan that can't say which head it is of is refused here, never carded.
+    if (k.binds?.length && boundOf(targets, k.binds) === undefined)
+      throw fail(422, "refused", `its plan names no ${k.binds.join("/")} target: a ${kind} is of one ${k.binds.join(", ")} and must say which`);
     // The kernel's planner writes its card whole; a module's kind renders its manifest's templates.
     const whole = render(own ? literal(plan.card ?? {}) : k.card ?? {}, { ...(plan.args && typeof plan.args === "object" ? plan.args : {}), ...plan.facts, ...plan.card }, Infinity);
     // Cut for storage only with code's note: an open record's card is shown whole from its context (backplane GET /v1/writes).
@@ -382,11 +413,23 @@ export function createWrites({ records, registry, connections, secret, resolver,
       // only holds its approvals) is no leftover: it runs whatever became of that task.
       open = !pre.task || (pre.requester?.kind === "module" && pre.requester.module === pre.module) || (await onTask.open(pre.task));
       if (open && pre.kind !== CONN_TOOL && !native[pre.kind]) {
-        // The same executor (module, address and code revision) and policy, or the record is stale (A9). An executor that
-        // refuses the plan now (a 4xx) makes it stale; one that can't answer now is tried again.
-        const same = k && k.module === pre.executor.module && k.executor?.url === pre.executor.url && k.executor?.rev === pre.executor.rev && policy(k) === pre.policy;
+        // The same executor (module, address and code revision) and the same kind declaration (policy), or the record is stale
+        // (A9). A kind that declares `binds` is head-bound: it may be redeployed while the head it posts on stands, and a target
+        // field it doesn't bind to (a base sha) may move, so neither its code revision nor those fields are compared. Its
+        // declaration still is: `policy` hashes the whole kind (floor, panel, `binds`), so a raised floor, a new panel
+        // requirement or a changed binding holds a record approved under the old one, and what it will do is still the
+        // approved plan: the same args, under the same bound targets. An executor that refuses the plan now (a 4xx) makes it
+        // stale; one that can't answer now is tried again.
+        const binds = k?.binds?.length ? k.binds : undefined;
+        const same = k && k.module === pre.executor.module && k.executor?.url === pre.executor.url
+          && policy(k) === pre.policy && (binds ? true : k.executor?.rev === pre.executor.rev);
         again = same ? await call(k, "plan", { kind: pre.kind, args: pre.args, requester: pre.requester, task: pre.task, revalidate: true }).catch((e) => { if (transient(e)) throw e; return undefined; }) : undefined;
-        stale = !again || digestOf({ ...pre, args: again.args, targets: again.targets ?? {} }) !== pre.digest;
+        // A head-bound record compares only what it binds to, and a plan that can't name it at all (either side) is stale.
+        const was = binds ? boundOf(pre.targets, binds) : undefined;
+        const now = binds ? boundOf(again?.targets ?? {}, binds) : undefined;
+        // Tolerance for the executor and unbound targets only: what the record was approved to do (its args) still has to be
+        // what it would do now, or the approved content changed under the approval.
+        stale = !again || (binds ? !was || !now || was !== now || canonical(again.args) !== canonical(pre.args) : digestOf({ ...pre, args: again.args, targets: again.targets ?? {} }) !== pre.digest);
       }
     } catch (e) {
       const why = String((e as Error).message ?? e).slice(0, 300);
