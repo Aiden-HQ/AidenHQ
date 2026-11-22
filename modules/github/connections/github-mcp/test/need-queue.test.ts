@@ -103,4 +103,52 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     await q.tell(need());
     expect(q.pending()).toBe(1);
   });
+
+  it("the need is on disk before the first attempt, so a restart inside the wait still sends it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    let onDiskWhenAsked: unknown;
+    const fetcher = (async () => {
+      onDiskWhenAsked = JSON.parse(readFileSync(file, "utf8"));
+      return busy();
+    }) as unknown as typeof fetch;
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher, waitMs: 50, file });
+    await q.tell(need());
+    expect(Array.isArray(onDiskWhenAsked) && onDiskWhenAsked.length, "written before the POST went out").toBe(1);
+    expect(q.pending()).toBe(1);
+  });
+
+  it("a kept sign-in need met on an older credential is dropped, never replayed onto the reconnect", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    let credential = "first";
+    const signIn = () => new GitHubNeed({ cause: "expired" });
+    const k = replies([busy(), ok()]);
+    const q1 = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file, generation: () => credential });
+    await q1.tell(signIn());
+    expect(q1.pending()).toBe(1);
+    // The owner reconnects while it is kept: the next flush must not send it.
+    credential = "second";
+    const before = k.seen.length;
+    await q1.flush();
+    expect(k.seen.length, "no replay onto the fresh credential").toBe(before);
+    expect(q1.pending()).toBe(0);
+    // A need met after the reconnect is sent as usual.
+    await q1.tell(signIn());
+    await q1.flush();
+    expect(q1.pending()).toBe(0);
+    expect(k.seen.at(-1)!.body).toMatchObject({ connection: "github", need: { cause: "expired" } });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
+  });
+
+  it("a kept need that is not a sign-in failure survives a reconnect", async () => {
+    let credential = "first";
+    const k = replies([busy(), busy()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, generation: () => credential });
+    await q.tell(need());
+    credential = "second";
+    await q.flush();
+    expect(q.pending(), "an org restriction is not fixed by reconnecting").toBe(1);
+    expect(k.seen.at(-1)!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
+  });
 });

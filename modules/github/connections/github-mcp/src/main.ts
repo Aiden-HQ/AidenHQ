@@ -3,7 +3,7 @@
 // project with a status), close, label or assign an issue, comment-review a pull request, and re-run failed CI. Every call
 // goes through the owner's one sign-in (client.ts); src/github.ts's guard limits it to those requests, and every posted text
 // is signed with the AidenHQ footer naming the agent.
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Projects, issueLink, parseProductRepo, productTarget, upstreamReport } from "./projects.js";
@@ -91,7 +91,17 @@ const reviewApp = gitHubApp({ dir: join(stateDir, "github-app") });
 const reviewIdentity = reviewAs({ file: join(stateDir, "review-as.json"), app: reviewApp });
 // A failure only the owner can fix (GitHubNeed) goes to the kernel: the reply waits up to a second for it, so a restart in that
 // window can't drop it, and one the kernel didn't take is kept and retried at the start of the next request. Never throws.
-const needs = needQueue({ kernelUrl, key: codehostKey, log, file: join(stateDir, "connection-needs.json") });
+// A kept sign-in need is bound to the credential that met it: the owner's reconnect writes a new token, and an old report replayed
+// after it would mark the fresh sign-in down. The fingerprint (never the token) is only compared, never sent.
+const tokenGeneration = () => {
+  try {
+    const t = JSON.parse(readFileSync(join(stateDir, "token.json"), "utf8")) as { access_token?: unknown };
+    return typeof t.access_token === "string" ? createHash("sha256").update(t.access_token).digest("hex").slice(0, 16) : "";
+  } catch {
+    return "";
+  }
+};
+const needs = needQueue({ kernelUrl, key: codehostKey, log, file: join(stateDir, "connection-needs.json"), generation: tokenGeneration });
 // tellOwner is fire-and-forget (the poster's best-effort reads must not wait); each route awaits `needs.tell(err)` itself where
 // the reply must carry the report. Needs kept from an earlier failure are flushed at the top of those routes, never before auth.
 const tellOwner = (err: unknown) => void needs.tell(err);
