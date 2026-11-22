@@ -116,6 +116,7 @@ export function itemRow(project: string, n: any, refused = false): Row {
 type Gh = Pick<Projects, "request" | "account">;
 
 const BOARD_EVERY = 60 * 60_000;
+const CLOSED_EVERY = 7 * 24 * BOARD_EVERY;
 
 /** One org: issues and PRs since its cursor, then every board. Returns rows written with a difference. */
 export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Date.now(), log?: Pick<Logger, "info">): Promise<number> {
@@ -168,27 +169,25 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
       const scope = `board:${project}`;
       const st = await store.scope(scope);
       await put(PROJECT, { project, org, number: b.number, title: b.title, url: b.url, closed: !!b.closed, source_updated_at: b.updatedAt }, !st.baselined);
-      if (st.baselined && Date.parse(st.cursor ?? "") > 0 && (b.closed || now - Date.parse(st.cursor!) < BOARD_EVERY)) continue;
+      // Open boards are read hourly; a closed one weekly (it rarely changes, and an item whose content was refused is retried then).
+      if (st.baselined && now - Date.parse(st.cursor ?? "") < (b.closed ? CLOSED_EVERY : BOARD_EVERY)) continue;
       const seen = new Set<string>();
-      let partial = false; // an item's content was refused: the board is read again next pass, closed or not
+      const stored = await store.pool.query(`SELECT item_id, content_type FROM src_github.project_item WHERE project = $1 AND NOT removed`, [project]);
+      const unread = new Set<string>(stored.rows.filter((x: any) => x.content_type === null).map((x: any) => x.item_id)); // stored without its content: its first read is a backfill, not a change
       let cur: string | null = null;
       do {
         const p = await gh.request(org, "POST", "/graphql", { query: ITEMS, variables: { org, number: b.number, after: cur } });
         const items = p.data?.organization?.projectV2?.items;
         cost += p.data?.rateLimit?.cost ?? 0;
         const refused = new Set<number>((Array.isArray(p.errors) ? p.errors : []).filter(isContentRefusal).map((e: any) => e.path.at(-2)));
-        partial ||= refused.size > 0;
         for (const [i, n] of (items?.nodes ?? []).entries()) {
           seen.add(n.id);
-          await put(ITEM, itemRow(project, n, refused.has(i)), !st.baselined);
+          await put(ITEM, itemRow(project, n, refused.has(i)), !st.baselined || (unread.has(n.id) && !refused.has(i)));
         }
         cur = items?.pageInfo?.hasNextPage ? items.pageInfo.endCursor : null;
       } while (cur);
-      const ours = await store.pool.query(`SELECT item_id FROM src_github.project_item WHERE project = $1 AND NOT removed`, [project]);
-      for (const { item_id } of ours.rows) if (!seen.has(item_id)) await put(ITEM, { project, item_id, removed: true }, false);
-      // The inventory is complete either way, so the board is baselined (later changes are recorded); a partial read keeps the epoch as
-      // its cursor, which is read again next pass even on a closed board.
-      await store.saveScope(scope, new Date(partial ? 0 : now).toISOString(), true);
+      for (const { item_id } of stored.rows) if (!seen.has(item_id)) await put(ITEM, { project, item_id, removed: true }, false);
+      await store.saveScope(scope, new Date(now).toISOString(), true);
     }
     after = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
   } while (after);
