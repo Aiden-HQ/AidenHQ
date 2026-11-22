@@ -40,11 +40,12 @@ Every run of a monitor ends by arming its next check with `task_wait` — `until
 the run's last act: it parks the task and dispatches the next run, where `task_finish` would settle the task and leave
 the wake nothing to resume. When a brief line has the monitor leave itself in `backlog` at the end of a run, this rule
 supersedes it: the run re-arms and says what it will check, including when nothing qualifies. When something
-qualifies, the run wakes its fix task with `task_route`. A fix task another agent holds goes back to `todo` and its
-agent starts. A fix task the Steward itself holds is handed to the agent that does the work (`to`), because routing it
-back to itself moves nothing once it has run and the Steward's own comment on its task starts nothing. When no fix task
-exists yet, or the earlier one is done or cancelled, the run files a new fix task and routes that, since `task_route`
-moves open work only. Then it re-arms.
+qualifies, the run wakes the fix task its brief names with `task_route`. A fix task another agent holds goes back to
+`todo` and its agent starts. A fix task the Steward itself holds is handed to the agent that does the work (`to`),
+because routing it back to itself moves nothing once it has run and the Steward's own comment on its task starts
+nothing. When that fix task is done or cancelled, the run files a new fix task and routes that, since `task_route`
+moves open work only. A brief that names no fix task takes the qualifying result in the run's comment — the condition,
+the measurement and what would fix it — since filing the fix is its author's. Then it re-arms.
 
 ## Done
 
