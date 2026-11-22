@@ -32,6 +32,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
     comments: async (repo, since) => (await get("comments", { repo, since })) as { comments: PrComment[]; cursor: string },
     permission: async (repo, login) => ((await get("permission", { repo, login })) as { permission: Permission }).permission,
     compare: async (repo, base, head) => (await get("compare", { repo, base, head })) as { merge_base: string; status: "ahead" },
+    patchId: async (repo, base, head) => (await get("patch-id", { repo, base, head })) as { id: string | null },
     mergeBase: async (repo, number, head) => (await get("merge-base", { repo, number, head })) as { merge_base: string },
     postable: async (repo) => (await get("postable", { repo })) as { identity: "owner" | null; org: string },
     repos: async (q) => ((await get("repos", { q })) as { repos: { repo: string; private: boolean; url?: string }[] }).repos,
@@ -52,6 +53,8 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base: s.merge_base, incremental_from: s.incremental_from ?? s.merge_base, pr: String(s.number),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
+    // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
+    intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
     budget_usd: Math.max(0.0001, s.budget_usd).toFixed(4), previous: JSON.stringify({ findings: s.previous }),
   };
 }

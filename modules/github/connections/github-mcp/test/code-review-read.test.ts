@@ -56,3 +56,20 @@ it("only the code-review module may call; PRs, PR comments and permission come b
   expect((await codeReviewRoute(reader, "repos", new URLSearchParams({ q: "app" }))).body).toEqual({ repos: [{ repo: "Acme/App", private: true, url: "https://github.com/Acme/App" }] });
   expect((await codeReviewRoute(reader, "pr", new URLSearchParams({ repo: "Acme/App", number: "x" }))).status).toBe(400);
 });
+
+it("a PR's change fingerprint: the same files and patches over another merge base match; an edit elsewhere or a missing patch doesn't", async () => {
+  const file = (patch?: string) => ({ filename: "a.ts", status: "modified", changes: 2, ...(patch === undefined ? {} : { patch }) });
+  const files: Record<string, unknown[]> = {
+    ["1".repeat(40)]: [file("@@ -1,2 +1,2 @@\n-a\n+b\n c")],
+    ["2".repeat(40)]: [file("@@ -1,2 +1,2 @@\n-a\n+b\n c")], // rebased: a new base, the same change
+    ["3".repeat(40)]: [file("@@ -7,2 +7,2 @@\n-a\n+b\n c")], // the same lines edited elsewhere
+    ["4".repeat(40)]: [file()], // GitHub left the patch out (too large)
+  };
+  const f = (async (input: URL | string) => Response.json({ status: "ahead", files: files[String(input).split("...")[0]!.slice(-40)] })) as typeof fetch;
+  const r = new CodeReviewReader(new GitHub(accessFor(f, "t"), f));
+  const id = async (b: string) => ((await codeReviewRoute(r, "patch-id", new URLSearchParams({ repo: "Acme/App", base: b.repeat(40), head: "b".repeat(40) }))).body as { id: string | null }).id;
+  expect(await id("1")).toMatch(/^[0-9a-f]{64}$/);
+  expect(await id("2")).toBe(await id("1"));
+  expect(await id("3")).not.toBe(await id("1"));
+  expect(await id("4")).toBeNull();
+});

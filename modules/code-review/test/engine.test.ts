@@ -18,7 +18,7 @@ function world(settings = {}) {
   const results = new Map();
   const outcomes = new Map();
   const rewritten = new Set(), closed = [], fails = [];
-  const threads = new Map(), commits = new Map();
+  const threads = new Map(), commits = new Map(), patches = new Map();
   const { db: _db, ...rest } = settings;
   const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
   const db = settings.db ?? new DatabaseSync(":memory:");
@@ -33,6 +33,8 @@ function world(settings = {}) {
       permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
       compare: async (_r, base, head) => ({ merge_base: sha("m"), status: rewritten.has(base) ? "diverged" : "ahead", head }),
+      // Each head's own change is its own unless the test says two heads make the same one (a bare rebase).
+      patchId: async (_r, _base, head) => ({ id: patches.get(head) ?? head }),
       mergeBase: async () => { const f = fails.shift(); if (f) throw Object.assign(new Error(`github-mcp merge-base: ${f}`), { status: f }); return { merge_base: sha("m") }; },
       repos: async () => [],
       threads: async (_r, n) => threads.get(n) ?? [],
@@ -52,7 +54,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { db, engine, statuses, threads, commits, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
+  return { db, engine, statuses, threads, commits, patches, fails, rewritten, closed, outcomes, perms, prs, pr, say, started, posted, acks, facts, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", run_usd: 1 };
@@ -421,19 +423,37 @@ test("a partial mandatory review still lets the head pass, but never makes it a 
   }
 });
 
-test("the owner makes a reviewer mandatory: an open PR gets its mandatory run at its head (its advisory run never counts) and doesn't pass on the old coverage", async () => {
+test("a changed setting or a deploy never re-reviews an open head: the owner adds a mandatory reviewer and it reviews from the next push", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST, CLAUDE], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
   w.finish(0, NONE); w.finish(1, NONE); await w.tick();
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
-  const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [MUST_PUSH] }] });
-  g.pr(2, sha("2"));
-  assert.deepEqual(codes(g.engine.verdict(REPO, 2, sha("2"))), ["running"]);
-  await g.tick();
-  assert.deepEqual(g.started.map((s) => [s.head, label(s)]), [[sha("2"), "claude-code/high"]], "only the missing reviewer");
-  g.finish(0, NONE); await g.tick();
+  // Old rows as an earlier version left them (2026-11-21: columns added later were NULL), then a restart with a new mandatory set.
+  w.db.exec("UPDATE runs SET moment = NULL");
+  const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [{ ...CLAUDE, mandatory: true }] }] });
+  g.pr(2, sha("2")); await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
+  assert.deepEqual(g.started, [], "nothing re-reviewed");
   assert.equal(g.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+  g.pr(2, sha("3")); await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
+  assert.deepEqual(g.started.map((s) => [label(s), s.incremental_from]), [["claude-code/high", sha("2")]], "the next push: the new reviewer, incremental");
 });
+
+test("a bare rebase carries the review and its verdict unrun; a changed diff, or main moving on, is reviewed incrementally", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick(); // f1 open, gating
+  // Rebased onto a newer main: a new head and base, the same change.
+  w.patches.set(sha("2"), "same").set(sha("3"), "same");
+  w.pr(2, sha("3"), { base: sha("c") }); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 1, "no review ran");
+  const carried = w.engine.runs({ repo: REPO }).find((r) => r.head === sha("3"));
+  assert.deepEqual([carried.head, carried.status, carried.cost_usd, carried.why?.startsWith("carried: a bare rebase")], [sha("3"), "done", 0, true]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "its findings carried with it");
+  // A real change after it (main's sha moved again too): incremental from the carried head, never full.
+  w.pr(2, sha("4"), { base: sha("d") }); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started.slice(1).map((s) => s.incremental_from), [sha("3")]);
+});
+
 test("a mandatory run is never skipped for budget; the owner dismisses an open finding and the merge may go", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], day_usd: 0.01 }], day_usd: 0.01 });
   await opened(w, 2, sha("2"));

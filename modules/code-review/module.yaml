@@ -29,7 +29,7 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 180
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json }
+    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, budget_usd: usd, previous: json, intent: text }
     # max_usd is the ceiling (the shared run cap is enforced by the service); budget_usd, the run's own cap, is what a token gets.
     model: { max_usd: 100 }
     result: true
