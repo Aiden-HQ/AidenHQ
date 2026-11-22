@@ -105,3 +105,33 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
   await dateApt(ownPin, async (_k, _n, { source }) => { triedOwn.push(source); if (triedOwn.length === 1) throw Object.assign(new Error("not listed"), { notListed: true }); return { published: day(30), via: "test" }; });
   assert.deepEqual(triedOwn, ["https://repo.example/apt trixie main", "http://deb.debian.org/debian trixie main"]);
 });
+
+test("pins: a Dockerfile FROM that names an Object.prototype key is just an unknown base", () => {
+  const d = "@sha256:" + "f".repeat(64);
+  for (const name of ["constructor", "__proto__", "toString"]) {
+    const [p] = scanFile("Dockerfile", `FROM ${name}:sid-slim${d}\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt");
+    assert.equal(p.release, "noble", name);
+    assert.equal(p.distro, undefined, name);
+  }
+});
+
+test("pins: apt repositories and install rules are scoped to their own Docker stage", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const text = [
+    `FROM debian:trixie-slim${d} AS tools`,
+    `RUN echo "deb [trusted=yes] https://repo.example/apt trixie main" >/etc/apt/sources.list.d/r.list`,
+    "RUN apt-get install -y tool=2.0 unpinned-tool",
+    `FROM ubuntu:jammy${d}`,
+    "RUN apt-get install -y jq=1.6.1-1 unpinned-ok",
+  ].join("\n");
+  const r = scanFile("Dockerfile", text);
+  const [tool, jq] = r.pins.filter((p) => p.kind === "apt");
+  assert.deepEqual([tool.sources, tool.distro, tool.release], [["https://repo.example/apt trixie main"], "debian", "trixie"]);
+  assert.deepEqual([jq.sources, jq.distro, jq.release], [[], "ubuntu", "jammy"]);
+  // The earlier stage's repo doesn't leak: its unpinned install is a problem, the later stage's isn't.
+  assert.equal(r.problems.length, 1);
+  assert.match(r.problems[0], /unpinned-tool/);
+  const tried = [];
+  await dateApt(jq, async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
+  assert.equal(tried[0], "http://archive.ubuntu.com/ubuntu jammy-updates main");
+});
