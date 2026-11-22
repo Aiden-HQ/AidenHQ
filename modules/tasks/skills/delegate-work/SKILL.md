@@ -22,10 +22,7 @@ plus what to publish (`pr`). An Engineer's task tools reach its own task only, s
   the change, the PR or commit that last changed them, and for a restore the commit that removed it with its
   `git show <sha> -- <path>` (or the removed lines themselves).
 - **Issues.** When the change fixes an issue in the same repository, the PR body names it as
-  `Fixes <owner>/<repo>#<number>`, one line per issue it closes, so the merge closes it; except where the fix counts only
-  once it is live first (the product repo, whose Maintainer entry is `after_merge: product-pin`): there the body says
-  `Refs <owner>/<repo>#<number>`, and the brief says so too, and the Maintainer closes the issue once the generation
-  carrying the fix is `good`.
+  `Fixes <owner>/<repo>#<number>`, one line per issue it closes, so the merge closes it; the brief names each issue.
 - **Plain facts.** Write the brief and the PR body as facts stated once, addressed to the Engineer. A note aimed at the
   reviewer (how to read a row, what to ignore, a preemptive "the reviewer misread") is treated as steering and rejects
   the card; when a row needs explaining, explain what it is.

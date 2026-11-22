@@ -69,7 +69,7 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   assert.deepEqual(calls, ["reopen"], "an open issue sends the task back");
 
   gh = { ...gh, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-19T10:05:00Z", closedEvents: { nodes: [{ actor: { __typename: "User", login: "owner" } }] },
-    comments: { nodes: [{ author: { login: "owner" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: "Fixed by https://github.com/acme/app/pull/9 (merged)." }] } };
+    comments: { nodes: [{ author: { login: "owner" }, authorAssociation: "OWNER", createdAt: "2026-11-19T10:04:50Z", body: `Fixed by acme/app#9 (merge ${"b".repeat(40)})` }] } };
   issue.status = "in_review";
   Date.now = realNow;
   completionGate(grades, "t1", "finish_turn"); // finished again, the issue now closed
@@ -78,6 +78,6 @@ test("a module-filed task with a rubric is graded: an open issue reopens it, a c
   await loop.runGrades();
   assert.deepEqual(calls, ["reopen", "ok"]);
   assert.match(prompts.at(-1), /closed as completed at 2026-11-19T10:05:00Z by owner/);
-  assert.match(prompts.at(-1), /acme\/app\/pull\/9: merged at 2026-11-19T10:00:00Z/, "the cited PR's merge is read by code");
+  assert.match(prompts.at(-1), /acme\/app\/pull\/9 merged at b{40}: merged at 2026-11-19T10:00:00Z/, "the cited PR's merge is read by code");
   assert.equal(grades.get("t1").state, "satisfied");
 });

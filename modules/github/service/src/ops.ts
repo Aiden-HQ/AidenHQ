@@ -9,6 +9,7 @@ import type { Readable } from "node:stream";
 import { join } from "node:path";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { withFooter, withTrailer } from "./aidenhq-sdk/attribution.ts";
+import { CLOSED_EVENT_SELECTION } from "./aidenhq-sdk/closed-event.ts";
 
 export type OpsContext = {
   access: GitHubAccess;
@@ -53,7 +54,7 @@ const ISSUE_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
       number url state stateReason closedAt labels(first: 20) { nodes { name } }
-      closedEvents: timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { actor { __typename login } closer { __typename ... on PullRequest { number url state mergedAt mergeCommit { oid } repository { nameWithOwner } } } } } }
+      ${CLOSED_EVENT_SELECTION}
       comments(last: 10) { nodes { author { login } authorAssociation createdAt body } }
     }
   }

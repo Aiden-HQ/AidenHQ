@@ -1,5 +1,5 @@
 name: maintainer
-description: "Watches, triages and fixes the GitHub repos you list (setting maintainer_repos): validates each issue labelled for a fix, hands the fix to an engineer, and sees it through to a merged PR and whatever the repo's after_merge says follows. Per repo you can also have it label feature requests and build the ones you mark agent-build, and nudge then close quiet contributor PRs."
+description: "Watches, triages and fixes the GitHub repos you list (setting maintainer_repos): validates each issue labelled for a fix, hands the fix to an engineer, and sees it through to a merged PR that closes the issue. Per repo you can also have it label feature requests and build the ones you mark agent-build, and nudge then close quiet contributor PRs."
 # The repo list is the github module's setting maintainer_repos (github-mcp reads it), so the Maintainer's tools need it.
 requires:
   - github
@@ -60,10 +60,10 @@ routines:
       then triage the open issues that carry no fix label yet, as "Each run — external triage" in your instructions says.
       This run is asked to write on each issue it triages with the GitHub tools, one verdict per issue, each write its own
       tool call (a close and its note are one call): label a credible report with the repo's label and a comment naming the code path; comment on one that
-      isn't credible with exactly what is missing; close an already-fixed one as completed with a note citing the fix (its
-      PR, merge commit and, for product-pin, the pinned product commit that carries it); close a duplicate as not_planned
-      with a note linking the issue it duplicates; close an out-of-scope one as not_planned with a note naming where it
-      belongs. Close this task with one verdict line per issue you considered.
+      isn't credible with exactly what is missing; close an already-fixed one as completed with a note carrying the line
+      `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`; close a duplicate as not_planned
+      with a note carrying the line "Duplicate of <owner>/<repo>#<n>"; close an out-of-scope one as not_planned with a note carrying the line
+      "Not fixing: <where it belongs>". Close this task with one verdict line per issue you considered.
     concurrency: skip_if_active
     schedules:
       - { cron: "30 7 * * *", timezone: "${settings.timezone}", label: "daily" }

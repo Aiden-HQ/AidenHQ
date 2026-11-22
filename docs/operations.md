@@ -161,15 +161,14 @@ It is idempotent. The Engineer runs it for you after you approve a change.
 - The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): every
   `maintainer_poll_minutes` (default 5; it reads `MAINTAINER_POLL_MINUTES`) the watcher asks
   github-mcp for the issues labelled since each repo's cursor on every repo in the github setting `maintainer_repos`
-  (`[{ repo, label, trusted, after_merge }]`; github-mcp holds the list, the watcher only its cursors) and files one
+  (`[{ repo, label, trusted }]`; github-mcp holds the list, the watcher only its cursors) and files one
   task for the Maintainer per trusted issue (`POST /v1/tasks`, source `maintainer-issue:<repo>#<number>`: the same issue is
   never two tasks; the text names the repo and number only, never the issue's title). A label from anyone
   else is logged once and starts nothing; one repo's failed read holds up no other. Each repo's cursor and fired issues
   are in the watcher's data file (`data/modules/maintainer/state.json`), so a restart repeats and skips none. A fix is its merged PR, and
   the list grants no merge authority: product and official-modules PRs (and agents-org repos) merge on their approved
   card, while a PR on any other maintained repo goes through that repo's own GitHub review and its maintainers merge it.
-  An entry's `after_merge` is `done` (the merge closes the issue) or `product-pin` (the pin bump, its apply and a `good`
-  generation close it). It reads the host's
+  A fix PR closes its issue itself through `Fixes <owner>/<repo>#<n>` in its body (`aidenhq publish --fixes`). It reads the host's
   `generations.jsonl` read-only (`AIDENHQ_STATE_DIR`, its mirror in `board/` mounted at `/generations`) for the
   `fleet_generation_status` tool (now the fleet-steward service's, from the kernel): the current pin (the newest generation that got past validation) and the last 20
   generations, newest first. The watcher runs once the module's own token (`maintainer_token`, `MAINTAINER_TOKEN_FILE`) has its content; github-mcp lets that token open its one issue read (`/internal/maintainer/issues`, never `/mcp`) by asking the kernel's `/v1/whoami`, so the github module shares no secret with it. Each tick reads the token file again: the watcher logs "maintainer issue watcher waiting" until it is filled, then "maintainer issue watcher on", with no restart. With the maintainer module's

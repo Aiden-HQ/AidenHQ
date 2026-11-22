@@ -71,11 +71,9 @@ settings:
     default: issues
     values: ["off", "issues"]
   # The repos the Maintainer watches, triages and fixes, each reachable by the owner's GitHub sign-in:
-  # [{ repo: owner/name, label: agent-fix, trusted: [admin, maintain], after_merge: done }]. `label` is the label that asks
+  # [{ repo: owner/name, label: agent-fix, trusted: [admin, maintain] }]. `label` is the label that asks
   # for a fix (default agent-fix). `trusted` is who may vouch for it (the owner's login is an admin): admin, maintain or write (default
-  # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. `after_merge` is what follows a fix's merge: done (default: the
-  # merged PR is the fix) or product-pin (this instance's product pin bump, its apply and the generation's health, for the
-  # AidenHQ product repo this instance runs). Duties, each per repo: `issues` (default true: validate `label` issues and see
+  # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. Duties, each per repo: `issues` (default true: validate `label` issues and see
   # fixes through), `features` (default false: triage feature requests, label feature-request, and build those the owner or
   # a trusted collaborator labels agent-build), `dependabot` (default false: every open Dependabot PR has an Engineer task),
   # `contributor_prs` (default false: nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
@@ -86,7 +84,7 @@ settings:
     default: []
     entry: repo
     pattern: '^[\w.-]+/[\w.-]+$'
-    # Adding a repo, a duty switched on, or any change to a listed entry (its label, trusted roles, after_merge) is the owner's:
+    # Adding a repo, a duty switched on, or any change to a listed entry (its label, trusted roles) is the owner's:
     # a repo can be listed as a bare "owner/name", which `*.repo` can't reach, so `*` covers every entry's own value too.
     owner:
       - { path: "*", new: true }

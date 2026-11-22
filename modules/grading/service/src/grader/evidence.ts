@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { findPrs, staleHead } from "./text.ts";
 import { GATE_CHECK, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
+import { closedBy } from "../aidenhq-sdk/closed-event.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
 
@@ -686,10 +687,10 @@ export function appEvidence(app: any, name: string | undefined): any {
 }
 
 /**
- * A GitHub issue ("owner/name#number") as evidence: its state and how it closed, its labels, and the PR its closing comment
- * cites, each read by code (state, merge). The closing comment is the closer's newest comment up to the close; the newest comments
- * go fenced as ISSUE_COMMENTS (strangers' words, data), each with its author's association so an owner's word shows. An open issue
- * is evidence too: its criteria are unmet, and the task goes back. deps.issue(repo, n), deps.pr(repo, n).
+ * A GitHub issue ("owner/name#number") as evidence: its state and how it closed (GitHub's own closer, or the Maintainer's one
+ * `Fixed by <owner>/<repo>#<n> (merge <sha>)` line), its labels, and whether the PR it names is merged at that sha, each read by
+ * code. The newest comments go fenced as ISSUE_COMMENTS (strangers' words, data), each with its author's association so an owner's
+ * word shows. An open issue is evidence too: its criteria are unmet, and the task goes back. deps.issue(repo, n), deps.pr(repo, n).
  */
 export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const [, repo = "", n = ""] = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref) ?? [];
@@ -698,31 +699,45 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   if (!i) return { awaiting: `issue ${ref || "(none)"} can't be read yet` };
   const comments: any[] = i.comments?.nodes ?? [];
   const closer = i.closedEvents?.nodes?.[0]?.actor?.login;
-  const closing = i.state === "CLOSED" ? comments.findLast((c) => c.author?.login === closer && Date.parse(c.createdAt) <= Date.parse(i.closedAt) + 120_000) : undefined;
-  // Anyone with close rights can close an issue: a close counts only by an owner, member or collaborator (the fleet acts as the owner).
-  // GitHub's own close through a merged PR's closing keyword ("Fixes #N"): the close event's `closer` is that PR, structured, so
-  // it counts as closed and cited by it when it merged in this issue's repo, whoever merged it.
-  const by = i.closedEvents?.nodes?.[0]?.closer;
-  const keywordPr = i.state === "CLOSED" && by?.__typename === "PullRequest" && by.state === "MERGED" && String(by.repository?.nameWithOwner ?? "").toLowerCase() === repo.toLowerCase() ? by : undefined;
-  const trusted = Boolean(keywordPr) || Boolean(closer) && ["OWNER", "MEMBER", "COLLABORATOR"].includes(closing?.authorAssociation);
+  const owned = (c: any) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(c?.authorAssociation);
+  // Path (b): the one machine line the Maintainer leaves, `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`, in a comment by an
+  // owner, member or collaborator (the fleet acts as the owner), since the latest reopen. Only that line counts, and only for a PR the code
+  // host reads as merged at that sha: no other text or link is scanned.
+  // Only a line posted at or after the issue's latest reopen belongs to this closure: an earlier close-and-reopen cycle's doesn't.
+  const reopened = Date.parse(i.reopenedEvents?.nodes?.[0]?.createdAt ?? "") || 0;
+  const FIXED_BY = /^Fixed by ([\w.-]+\/[\w.-]+)#(\d+) \(merge ([0-9a-f]{40})\)\s*$/gm;
+  const lines = i.state === "CLOSED" ? comments.filter((c) => owned(c) && Date.parse(c.createdAt) >= reopened).flatMap((c) => [...String(c.body ?? "").matchAll(FIXED_BY)].map((m) => ({ c, repo: m[1]!, number: Number(m[2]), sha: m[3]! }))) : [];
+  // Anyone with close rights can close an issue: a close counts only through a merged PR that GitHub records as its closer ("Fixes
+  // owner/repo#N", in this repo or another), or that line.
+  const by = closedBy(i)?.pull_request;
+  const keywordPr = i.state === "CLOSED" && by?.merged ? { ...by, url: `https://github.com/${by.repo}/pull/${by.number}` } : undefined;
+  // A close that is not a completion (not planned, a duplicate) carries no PR: it counts when a comment by its closer (the close event's actor), an owner, member or collaborator
+  // (the fleet acts as the owner), within two minutes of the close, since the latest reopen, carries the line `Not fixing: <reason>`
+  // or `Duplicate of <owner>/<repo>#<n>`. No other comment is a reason.
+  const REASON = /^(?:Not fixing: \S.*|Duplicate of [\w.-]+\/[\w.-]+#\d+)\s*$/m;
+  const reasoned = i.state === "CLOSED" && i.stateReason !== "COMPLETED" && Boolean(closer) && comments.some((c) => owned(c) && c.author?.login === closer && REASON.test(String(c.body ?? "")) && Date.parse(c.createdAt) >= reopened && Math.abs(Date.parse(c.createdAt) - Date.parse(i.closedAt)) <= 120_000);
+  const trusted = Boolean(keywordPr) || lines.length > 0 || reasoned;
   const facts = [`${ref}: ${i.state === "CLOSED" ? `closed${i.stateReason ? ` as ${String(i.stateReason).toLowerCase()}` : ""} at ${i.closedAt}${closer ? ` by ${closer}` : ""}` : "open"}; labels: ${(i.labels?.nodes ?? []).map((l: any) => l.name).join(", ") || "none"}`];
   const merges: string[] = [];
   if (keywordPr) {
-    merges.push(keywordPr.mergeCommit?.oid ?? "");
-    facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.mergedAt ? ` at ${keywordPr.mergedAt}` : ""}${keywordPr.mergeCommit?.oid ? ` (merge commit ${keywordPr.mergeCommit.oid})` : ""}`);
-  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: ${closer ?? "its closer"} is not the instance's App, and no comment shows them as an owner, member or collaborator, so the issue is treated as not resolved`);
-  else if (closing) {
-    const prs = findPrs(closing.body).slice(0, 3);
-    facts.push(prs.length ? `the closing comment (by ${closer}, ${closing.createdAt}) cites ${prs.map((p) => p.url).join(", ")}` : `the closing comment (by ${closer}, ${closing.createdAt}) cites no PR`);
-    for (const p of prs) {
-      if (p.repo.toLowerCase() !== repo.toLowerCase()) { facts.push(`${p.url}: not in ${repo}, so it does not count as this issue's fix`); continue; }
-      const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
-      if (pr?.state === "MERGED") merges.push(pr.mergeCommit?.oid ?? pr.headRefOid);
-      facts.push(`${p.url}: ${!pr ? "could not be read just now" : pr.state === "MERGED" ? `merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ""}${pr.mergeCommit?.oid ? ` (merge commit ${pr.mergeCommit.oid})` : ""}` : pr.state === "OPEN" ? "open, not merged" : "closed without merging"}`);
+    merges.push(keywordPr.merge_commit_sha ?? "");
+    facts.push(`closed by GitHub through the closing keyword of ${keywordPr.url}, which cites it as the fix: ${keywordPr.url}: merged${keywordPr.merge_commit_sha ? ` (merge commit ${keywordPr.merge_commit_sha})` : ""}`);
+  } else if (i.state === "CLOSED" && !trusted) facts.push(`the close does not count: it was not closed by a merged PR, and no comment by an owner, member or collaborator carries a "Fixed by <owner>/<repo>#<n> (merge <sha>)" line, and a not-planned or duplicate close has no \"Not fixing: <reason>\" or \"Duplicate of <owner>/<repo>#<n>\" line from one of them within two minutes of it, so the issue is treated as not resolved`);
+  else {
+    const seen = new Set<string>();
+    for (const l of lines) {
+      const url = `https://github.com/${l.repo}/pull/${l.number}`;
+      if (seen.has(`${url}@${l.sha}`)) continue;
+      seen.add(`${url}@${l.sha}`);
+      if (l.repo.toLowerCase() !== repo.toLowerCase()) { facts.push(`${url}: not in ${repo}, so it does not count as this issue's fix`); continue; }
+      const pr = (await deps.pr(l.repo, l.number).catch(() => null))?.repository?.pullRequest;
+      const ok = pr?.state === "MERGED" && pr.mergeCommit?.oid === l.sha;
+      if (ok) merges.push(l.sha);
+      facts.push(`the comment by ${l.c.author?.login} (${l.c.createdAt}) says ${url} merged at ${l.sha}: ${!pr ? "could not be read just now" : ok ? `merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ""}, merge commit ${l.sha}` : pr.state === "MERGED" ? `merged, but at ${pr.mergeCommit?.oid ?? "another commit"}, not that sha` : pr.state === "OPEN" ? "open, not merged" : "closed without merging"}`);
     }
-  } else if (i.state === "CLOSED") facts.push(`no comment by ${closer} just before the close: nothing is cited`);
+  }
   const text = comments.slice(-5).map((c) => `--- ${c.author?.login ?? "ghost"} (${c.authorAssociation}) ${c.createdAt} ---\n${String(c.body ?? "").slice(0, 2000)}`).join("\n\n");
-  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(closing?.body ?? "")}` : "open";
+  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(lines.map((l) => `${l.repo}#${l.number}@${l.sha}`).join("\n"))}` : "open";
   return { version: `${ref}@${closed}`.slice(0, 200), facts, data: { ISSUE_COMMENTS: text || "(none)" } };
 }
 

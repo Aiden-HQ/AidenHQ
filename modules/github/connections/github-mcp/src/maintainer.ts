@@ -304,7 +304,7 @@ export class Maintainer {
       }
       if (pageIssues.length < 100) break;
     }
-    return { repo: r.repo, label: asked, trusted_roles: r.trusted, after_merge: r.after_merge, features: r.features, issues };
+    return { repo: r.repo, label: asked, trusted_roles: r.trusted, features: r.features, issues };
   }
 
   /** Every page of a GET list (capped), as the owner. */

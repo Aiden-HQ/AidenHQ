@@ -156,6 +156,40 @@ describe("GitHub", () => {
 
   });
 
+  describe("what closed an issue", () => {
+    const closed = (node: unknown) => {
+      const impl = (async (input: URL | string, init?: RequestInit) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/graphql") return new Response(JSON.stringify({ data: { repository: { issue: { closedEvents: { nodes: [node] } } } } }), { status: 200 });
+        if (url.pathname.endsWith("/comments")) return new Response("[]", { status: 200 });
+        return new Response(JSON.stringify({ number: 5, state: "closed", html_url: "u", title: "t", comments: 0, labels: [], user: { login: "x" } }), { status: 200 });
+      }) as typeof fetch;
+      return owner(impl).read({ owner: "a", repo: "b", number: 5 }) as Promise<{ closed_by?: unknown }>;
+    };
+
+    it("github_issue_read names the merged PR whose Fixes line closed it, or the commit", async () => {
+      expect((await closed({ actor: { login: "bot" }, closer: { __typename: "PullRequest", number: 9, state: "MERGED", mergeCommit: { oid: "abc" }, repository: { nameWithOwner: "a/b" } } })).closed_by)
+        .toEqual({ actor: "bot", pull_request: { repo: "a/b", number: 9, merged: true, merge_commit_sha: "abc" } });
+      expect((await closed({ actor: { login: "me" }, closer: { __typename: "Commit", oid: "def" } })).closed_by).toEqual({ actor: "me", commit: "def" });
+      expect((await closed({ actor: { login: "me" }, closer: null })).closed_by).toEqual({ actor: "me" });
+    });
+  });
+
+  describe("a failed closer lookup", () => {
+    it("leaves the issue readable and says the attribution is unavailable", async () => {
+      const impl = (async (input: URL | string) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/graphql") return new Response(JSON.stringify({ message: "rate limited" }), { status: 502 });
+        if (url.pathname.endsWith("/comments")) return new Response("[]", { status: 200 });
+        return new Response(JSON.stringify({ number: 5, state: "closed", html_url: "u", title: "t", comments: 0, labels: [], user: { login: "x" } }), { status: 200 });
+      }) as typeof fetch;
+      const out = (await owner(impl).read({ owner: "a", repo: "b", number: 5 })) as { state: string; closed_by?: unknown; closed_by_error?: string };
+      expect(out.state).toBe("closed");
+      expect(out.closed_by).toBeUndefined();
+      expect(out.closed_by_error).toBeTruthy();
+    });
+  });
+
   describe("review thread replies", () => {
     const PR_URL = "https://api.github.com/repos/a/b/pulls/7";
     const reply = (id: number, parent?: number, pull = PR_URL) => ({ id, pull_request_url: pull, ...(parent === undefined ? { in_reply_to_id: null } : { in_reply_to_id: parent }) });
