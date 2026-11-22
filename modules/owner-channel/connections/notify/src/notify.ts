@@ -4,7 +4,7 @@
 // Duplicates are dropped, muted and routine ones go to the board or the digest, and while every channel is down the
 // message waits and goes once one is back.
 import { createHash } from "node:crypto";
-import { attend, queueDigest, type AttentionConfig } from "./attention.js";
+import { attend, goneNeeds, queueDigest, type AttentionConfig } from "./attention.js";
 import { clip, TOLD_MAX, type Store, type Told } from "./store.js";
 
 /**
@@ -193,7 +193,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       out = await deliver(d, m, to);
       // The kernel's, the board's and the runner's messages have no chat to land on: they also wait for a channel to be set up.
       if (out === "off" && !caller) out = "down";
-      if (out === "down") d.store.wait({ m, to, at: now, keep: !caller, ...(onChat ? {} : { told }) });
+      if (out === "down") d.store.wait({ m, to, at: now, keep: !caller, ...(a.dedupe_key ? { need: a.dedupe_key } : {}), ...(onChat ? {} : { told }) });
     }
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
@@ -223,15 +223,17 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
  * still undelivered after a day is dropped (by then the board shows what it was about).
  */
 let retrying = false;
-export async function retry(d: Pick<Deps, "send" | "store">, now = Date.now()): Promise<number> {
+export async function retry(d: Pick<Deps, "send" | "store">, now = Date.now(), liveNeeds?: () => Promise<string[]>): Promise<number> {
   if (retrying) return 0; // one pass at a time: an overlapping one would send and record the same waiting message twice
   retrying = true;
-  try { return await retryPass(d, now); } finally { retrying = false; }
+  try { return await retryPass(d, now, liveNeeds); } finally { retrying = false; }
 }
-async function retryPass(d: Pick<Deps, "send" | "store">, now: number): Promise<number> {
+async function retryPass(d: Pick<Deps, "send" | "store">, now: number, liveNeeds?: () => Promise<string[]>): Promise<number> {
   let n = 0;
   for (const w of d.store.waiting()) {
-    const { m, to, at, keep, told } = w.msg as { m: Message; to: string[]; at: number; keep?: boolean; told?: Told };
+    const { m, to, at, keep, told, need } = w.msg as { m: Message; to: string[]; at: number; keep?: boolean; told?: Told; need?: string };
+    // A connection need that recovered while every channel was down is dropped, not delivered late.
+    if ((await goneNeeds([need], liveNeeds)).size) { d.store.done(w.id); continue; }
     const out = now - at > 24 * 60 * MIN ? "off" : await deliver(d, m, to);
     if (out === "down" || (out === "off" && keep && now - at <= 24 * 60 * MIN)) continue;
     d.store.done(w.id);

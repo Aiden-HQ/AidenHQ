@@ -142,7 +142,7 @@ const take = async () => {
 };
 setInterval(() => void take(), 10_000).unref();
 void take();
-setInterval(() => void retry(d).catch((err) => log.warn({ err: String(err) }, "retry failed")), 30_000).unref();
+setInterval(() => void retry(d, Date.now(), () => kernel.liveNeeds()).catch((err) => log.warn({ err: String(err) }, "retry failed")), 30_000).unref();
 // The digest of routine crew messages: one message per slot.
 setInterval(() => void flushDigest(store, d.attention!, (text) => sendDigest(d, text), Date.now(), () => kernel.liveNeeds()).catch(() => undefined), 5 * 60_000).unref();
 startWatch({ work: kernel.activity, api: (p) => kernel.read(p), store, notify: async (text, kind) => (await notify(d, { kind, text })).sent }, log);

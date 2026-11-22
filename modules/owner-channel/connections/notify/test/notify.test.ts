@@ -45,6 +45,23 @@ describe("notify", () => {
     expect(sent).toEqual([{ to: "channel-telegram", m: { kind: "decision", text: "WOR-2 needs you" } }]);
   });
 
+  it("a connection need that recovered while every channel was down is dropped on retry, not delivered late", async () => {
+    const { d, sent, up } = world({ "slack": "off", "channel-telegram": "down" });
+    expect(await notify(d, { kind: "fyi", text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" })).toMatchObject({ queued: true });
+    up["channel-telegram"] = "up";
+    expect(await retry(d, Date.now(), async () => [])).toBe(0);
+    expect(sent).toEqual([]);
+    expect(await retry(d, Date.now(), async () => [])).toBe(0);
+  });
+
+  it("a connection need still down is delivered on retry", async () => {
+    const { d, sent, up } = world({ "slack": "off", "channel-telegram": "down" });
+    await notify(d, { kind: "fyi", text: "GitHub isn't connected", dedupe_key: "connect:github:not_connected" });
+    up["channel-telegram"] = "up";
+    expect(await retry(d, Date.now(), async () => ["github:not_connected"])).toBe(1);
+    expect(sent).toHaveLength(1);
+  });
+
   it("an agent's question reaches the owner only where they talk to it (the kernel says so); otherwise the chief of staff gets it and nothing is sent", async () => {
     const { d, sent, posted } = world();
     d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });
