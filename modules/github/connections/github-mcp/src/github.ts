@@ -93,7 +93,8 @@ export const GRAPHQL = {
   setStatus: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
-  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 20) { nodes { databaseId url body author { __typename login } } } } } } } }`,
+  // Comment ids are 64-bit: `databaseId` is the deprecated 32-bit Int, `fullDatabaseId` the BigInt (a JSON string).
+  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 100) { pageInfo { hasNextPage } nodes { databaseId fullDatabaseId url body author { __typename login } } } } } } } }`,
 } as const;
 /** The most threads one resolve request takes (a post resolves at most 100). */
 export const RESOLVE_MAX = 100;
@@ -456,20 +457,28 @@ export class GitHub {
    * GitHub takes a reply only on a thread root, so an id from a reply resolves to its thread's first comment.
    */
   private async threadRoot(ref: Ref, comment: number): Promise<number> {
-    type Threads = { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { comments: { nodes: { databaseId: number }[] } }[] } } | null } | null };
+    type RawComment = { databaseId: number; fullDatabaseId?: string | null };
+    type Threads = { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: { comments: { pageInfo?: { hasNextPage: boolean }; nodes: RawComment[] } }[] } } | null } | null };
     type ThreadsPage = NonNullable<NonNullable<Threads["repository"]>["pullRequest"]>["reviewThreads"];
+    const id = (c: RawComment) => Number(c.fullDatabaseId ?? c.databaseId);
     let after: string | null = null;
+    // Only an exhaustive read may say the comment is missing: a capped page or a thread whose comments were cut short
+    // leaves the answer unknown, and that is reported as such.
+    let complete = true;
     for (let page = 0; page < 10; page++) {
       const d: Threads = await this.graphql<Threads>("reviewThreads", { owner: ref.owner, name: ref.repo, number: ref.number, after });
       const threads: ThreadsPage | null = d.repository?.pullRequest?.reviewThreads ?? null;
       if (!threads) throw new GitHubRefused(`couldn't read ${ref.owner}/${ref.repo}#${ref.number}'s review threads to resolve comment ${comment}`);
       for (const t of threads.nodes) {
+        if (t.comments.pageInfo?.hasNextPage) complete = false;
         const [first, ...rest] = t.comments.nodes;
-        if (first && (first.databaseId === comment || rest.some((c: { databaseId: number }) => c.databaseId === comment))) return first.databaseId;
+        if (first && (id(first) === comment || rest.some((c) => id(c) === comment))) return id(first);
       }
       if (!threads.pageInfo.hasNextPage) break;
       after = threads.pageInfo.endCursor;
+      if (page === 9) complete = false;
     }
+    if (!complete) throw new GitHubRefused(`couldn't confirm whether comment ${comment} is on a review thread of ${ref.owner}/${ref.repo}#${ref.number}: its review threads or a thread's comments run past the one read this resolves from`);
     throw new GitHubRefused(`comment ${comment} isn't on a review thread of ${ref.owner}/${ref.repo}#${ref.number} at its current head (a standalone file comment, a comment on a force-pushed or closed review, or another pull request's): there is no thread to reply on`);
   }
 
