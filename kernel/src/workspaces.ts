@@ -1,17 +1,18 @@
-// The host's disk stays bounded (docs/operations.md "Task workspaces and disk"): what the kernel's jobs and checks leave on disk goes once it is
-// no longer used, so `/` never grows without bound. One pass, every 15 minutes and soon after start, walks what is ON DISK:
+// The host's disk stays bounded (docs/operations.md "Task workspaces and disk"): what jobs and checks leave on disk goes
+// once nothing uses it. One pass, every 15 minutes and soon after start, walks what is ON DISK:
 //   <workDir>/tasks/<identifier>         a task's workspace (boxes.ts), kept between its jobs;
-//   <workDir>/.cache-layers/<identifier> its jobs' copy-on-write build-cache overlays;
-//   <stateDir>/<engine>/<agent>_<task>   a job's engine home (sandbox.ts engineState: the Codex home, its sessions), for
-//                                        engines with per-task state. The stateDir itself (default ~/.local/state/aidenhq-runner,
-//                                        despite the name the kernel's own) is never removed: only these per-task homes;
-//   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left behind by a kernel that died mid-check.
-// A folder goes when nothing live uses it (no admitted or running job on it, no box not yet released; no running check of
-// that attempt) and
-// either its task has been done or cancelled for CLOSED_DAYS, or it has been idle (its last job's end, or the folder's own
-// mtime when no job names it) for IDLE_DAYS, whatever the task's state: an idle task that resumes clones again, and its next
-// job starts a fresh session. Over PRESSURE of a disk used, both limits drop (a day idle, closed at all). What was published
-// is in its repository already; what wasn't goes with the folder. Docker's growth is prune-docker.timer's (ops/units).
+//   <workDir>/.cache-layers/<identifier> legacy copy-on-write build-cache overlays;
+//   <stateDir>/<engine>/<agent>_<task>   a job's engine home (sandbox.ts engineState: the Codex home and its sessions), for
+//                                        engines with per-task state. stateDir (default ~/.local/state/aidenhq-runner) is the
+//                                        kernel's LIVE job state despite its name: it and each engine folder in it are never
+//                                        removed, only these per-task homes, which the next job's engineState makes again;
+//   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left by a kernel that died mid-check.
+// A folder goes when nothing live uses it (no admitted or running job, no box released less than a day ago; no running check
+// of that attempt) and either its task has been done or cancelled for CLOSED_DAYS with no job started since, or it has been
+// idle (its last job's end, or the folder's mtime when no job names it) for IDLE_DAYS whatever the task's state: an idle task
+// that resumes clones again, and its next job starts a fresh session. When a disk is over PRESSURE used, the limits drop (a
+// day idle, closed at all). What was published is in its repository; what wasn't goes with the folder. Docker's growth is
+// prune-docker.timer's (ops/units).
 //
 // Each folder is checked and renamed into its root's .trash in one synchronous step (no admission can slip in between),
 // and the trash is then removed off the event loop, so a 100 GB first pass never stalls the gateway.
@@ -27,6 +28,8 @@ export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8;
 const DAY = 86_400_000;
 const CLOSED = new Set(["done", "cancelled"]);
 const execFileP = promisify(execFile);
+/** engineState's folder name for an agent's task (sandbox.ts; the launcher checks the same). */
+const homeName = (agent: string, task: string) => `${agent}/${task}`.replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_");
 
 /** The fraction of each filesystem used (as `df` and the DiskSpaceLow rule count it), the fullest one. */
 export const diskUsed = (paths: string[]) => Math.max(...paths.map((p) => { try { const s = statfsSync(p); return 1 - s.bavail / s.blocks; } catch { return 0; } }));
@@ -45,9 +48,14 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
   const use = (rows: Row[]): Use | undefined => rows.length ? { pairs: rows.map(({ agent, task }) => ({ agent, task })), last: Math.max(...rows.map((r) => r.last)), started: Math.max(...rows.map((r) => r.started)) } : undefined;
   // Read in the folder's own synchronous step, so a job that ended while the pass yielded counts.
   const useIdent = (identifier: string) => use(db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE identifier = ? GROUP BY agent, task").all(identifier) as Row[]);
-  // An engine home is named `<agent>_<task>` (sandbox.ts engineState): its jobs are those of each split of the name at a `_`,
-  // read now, so a first job admitted for it during the pass counts.
-  const useHome = (name: string) => use([...name.matchAll(/_/g)].flatMap(({ index }) => db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE agent = ? AND task = ? GROUP BY agent, task").all(name.slice(0, index), name.slice(index + 1)) as Row[]));
+  // An engine home's name is engineState's normalization of its (agent, task); the pairs a name stands for are the known ones
+  // (`homes`, at the start of the pass) and any live now, so a first job admitted for it during the pass counts.
+  type Pair = { agent: string; task: string };
+  const byName = (rows: Pair[]) => { const m = new Map<string, Pair[]>(); for (const r of rows) m.set(homeName(r.agent, r.task), [...(m.get(homeName(r.agent, r.task)) ?? []), r]); return m; };
+  const useHome = (homes: Map<string, Pair[]>) => (name: string) => {
+    const pairs = [...(homes.get(name) ?? []), ...(byName(db.prepare(`SELECT DISTINCT agent, task FROM jobs WHERE ${LIVE()}`).all() as Pair[]).get(name) ?? [])];
+    return use(pairs.flatMap(({ agent, task }) => db.prepare("SELECT agent, task, MAX(COALESCE(ended, at)) AS last, MAX(at) AS started FROM jobs WHERE agent = ? AND task = ? GROUP BY agent, task").all(agent, task) as Row[]));
+  };
   // In use: a job admitted or running, or one that ended within a day whose box is not released yet (release still reads the
   // workspace and the box keeps its mounts until then, boxes.ts tend; a release stuck for longer pins nothing).
   const LIVE = () => `(state IN ('admitted', 'running') OR (box IS NOT NULL AND (released IS NULL OR released < 0) AND COALESCE(ended, at) > ${Math.floor(now() - DAY)}))`;
@@ -63,6 +71,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
     const until = now() + budgetMs;
     const pressure = used() >= PRESSURE;
     const idleMs = (pressure ? 1 : IDLE_DAYS) * DAY, closedMs = pressure ? 0 : CLOSED_DAYS * DAY;
+    const homes = byName(db.prepare("SELECT DISTINCT agent, task FROM jobs").all() as Pair[]);
     const running = () => { try { return new Set((db.prepare("SELECT id, at FROM checks WHERE state = 'running'").all() as { id: string; at: number }[]).map((r) => checkAttempt(r.id, r.at))); } catch { return new Set<string>(); } };
     // Its sessions went with it: the next job starts fresh instead of resuming one whose files are gone (boxes.ts lastSession).
     const fresh = (u: Use, engine?: string) => { for (const { agent, task } of u.pairs) db.prepare(`UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = COALESCE(?, engine) AND NOT ${LIVE()}`).run(agent, task, engine ?? null); };
@@ -71,7 +80,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, log = () => {}
       { root: join(workDir, ".cache-layers"), use: useIdent, busy: liveIdent },
       { root: join(workDir, "checks"), use: () => undefined, busy: (n) => running().has(n) },
       ...engines().map((kind) => ({
-        root: join(stateDir, kind), use: useHome, busy: (n: string) => livePair(useHome(n)),
+        root: join(stateDir, kind), use: useHome(homes), busy: (n: string) => livePair(useHome(homes)(n)),
         gone: (u: Use) => fresh(u, kind),
       })),
     ];

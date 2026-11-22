@@ -42,12 +42,12 @@ test("closed and idle tasks' folders go, live ones and the state dir stay; press
   const liveCheck = dir(join(work, "checks", checkAttempt("chk", NOW - 9 * DAY)), 9), leftCheck = dir(join(work, "checks/c-0000000000000000"), 5);
   const home1 = dir(join(state, "codex-openrouter/a1_t1"), 9), home3 = dir(join(state, "codex-openrouter/a1_t3"), 2);
   const logs = dir(join(state, "logs"), 30);
-  // An old home whose first job is admitted while the pass runs: the job is read when the sweep reaches the home.
-  const home20 = dir(join(state, "codex-openrouter/a2_t20"), 9);
+  // An old home whose first job is admitted while the pass runs (a task id engineState normalizes): read when the sweep reaches it.
+  const home20 = dir(join(state, "codex-openrouter/a2_task_20"), 9);
 
   let used = 0.5;
   const sweep = createDiskSweep({ db, workDir: work, stateDir: state, engines: () => ["codex-openrouter"], now: () => NOW, used: () => used,
-    log: (m, f) => { if (m === "unused folder removed" && String(f?.dir).endsWith("WOR-1")) job("j20", "a2", "t20", "WOR-20", "admitted", null); } });
+    log: (m, f) => { if (m === "unused folder removed" && String(f?.dir).endsWith("WOR-1")) job("j20", "a2", "task:20", "WOR-20", "admitted", null); } });
   const first = await sweep();
   assert.deepEqual(first, { removed: 7, pressure: false });
   for (const gone of [wor1, wor2, wor6, wor11, orphanLayer, leftCheck, home1]) assert.equal(existsSync(gone), false, gone);
