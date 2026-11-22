@@ -48,13 +48,18 @@ export interface ReviewRequest {
 }
 export interface Verdict { decision: "approve" | "reject" | "escalate"; code?: string; reason: string; model: string }
 /**
- * Whether a dotted quad is a version number rather than an address: `v1.2.3.4` after a `v`, or under a label that names one
- * on the same line (`Affected versions: 1.2.3.4`) or on the line just above (`Affected versions:` then `1.2.3.4`). A bug
- * report's version is not instance data, and the decoded scan below now sees a newline the JSON-escaped text used to hide, so
- * the label is what tells the two apart. An address under a host or settings line is unaffected and still refused.
+ * Whether a dotted quad is a version number rather than an address: under a label that names one on the same line
+ * (`Affected versions: 1.2.3.4`) or on the line just above (`Affected versions:` then the number). A bug report's version is
+ * not instance data, and the decoded scan below now sees a newline the JSON-escaped text used to hide, so the label is what
+ * tells the two apart. An address under a host or settings line is unaffected and still refused, and so is
+ * a private-range address under a version label: the label is the agent's text and must not excuse the instance's own LAN.
  */
 function versionNumber(text: string, at: number): boolean {
-  if (/[vV]$/.test(text.slice(Math.max(0, at - 1), at))) return true;
+  // A version label is the agent's own text, so it is never allowed to excuse an address a LAN or tailnet is actually reached
+  // on: a call that writes `versions:` above `192.168.x.y`, `10.x.y.z` or a `100.64-127.x.y` (tailscale's own range) still
+  // names the instance, and no real version number needs one. Only a quad outside those ranges can be a version.
+  const [a, b = 0] = text.slice(at).split(".").map(Number);
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)) return false;
   const before = text.slice(0, at);
   const lineStart = before.lastIndexOf("\n") + 1;
   const label = /(?:^|[\s>*_-])[^:\n]{0,40}?\b(?:versions?|release|build|tag)\b[^:\n]{0,20}:\s*$/i;
