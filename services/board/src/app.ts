@@ -33,7 +33,7 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { CodeReviewSchema, CombosSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
+import { CodeReviewSchema, CombosSchema, TreeRequestSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
 import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
 import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
@@ -1677,7 +1677,10 @@ export function createApp(opts: AppOptions): Server {
         return reviewsCall(async (r) => insightsOf((await r.list({ limit: 500 })).runs, days));
       },
     },
-    { method: "POST", path: /^\/api\/reviews$/, handle: async (_m, body) => reviewsCall((r) => r.run(parse(OneOffSchema, body))) },
+    { method: "GET", path: /^\/api\/reviews\/catalog$/, handle: async (_m, _b, url) => reviewsCall((r) => r.catalog(parse(CatalogQuerySchema, { repo: url.searchParams.get("repo") ?? "", ...(url.searchParams.get("commit") ? { commit: url.searchParams.get("commit") } : {}) }))) },
+    { method: "GET", path: /^\/api\/reviews\/report\/([\w-]{1,80})$/, handle: async (m) => reviewsCall((r) => r.report(m[1]!)) },
+    // One POST, two targets: a PR link (a one-off PR review) or a tree target (a whole-repo review). Signed-in admins only, like every route.
+    { method: "POST", path: /^\/api\/reviews$/, handle: async (_m, body) => reviewsCall<unknown>((r) => (typeof body === "object" && body !== null && "target" in body ? r.runTree(parse(TreeRequestSchema, body)) : r.run(parse(OneOffSchema, body)))) },
     // The owner's dismissal of an open finding (signed in: every admin is an owner); recorded as theirs, with their reason.
     { method: "POST", path: /^\/api\/reviews\/dismiss$/, handle: async (_m, body) => reviewsCall((r) => r.dismiss({ ...parse(DismissSchema, body), by: "owner (board)" })) },
     {
@@ -1979,6 +1982,7 @@ export function createApp(opts: AppOptions): Server {
     settings: () => readSources(settingsFiles()).compiled?.settings,
     file: fileSettingsChange,
     // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
+    onSetupChange: () => store.events.emit("setup"),
     signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),
     scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
     signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",
@@ -2496,5 +2500,6 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
 const OneOffSchema = z.object({ pr_url: PR_URL, combos: CombosSchema.min(1).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
+const CatalogQuerySchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), commit: z.string().regex(/^[0-9a-f]{7,40}$/i).optional() }).strict();
 const ReviewConfigSchema = z.object({ value: z.unknown() }).strict();
 const DismissSchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), number: z.number().int().min(1), id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), reason: z.string().trim().min(1).max(1000) }).strict();

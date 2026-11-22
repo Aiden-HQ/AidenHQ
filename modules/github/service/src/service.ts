@@ -40,11 +40,18 @@ type Changed = { path: string; add?: number; del?: number };
 import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
 import { notePrTask } from "./pr-watch.ts";
+
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
 import { copyBoxBundle } from "./aidenhq-sdk/box-bundle.ts";
 import { noteKept } from "./tidy.ts";
 import * as setupWrite from "./setup.ts";
+
+/**
+ * The requester of a planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and args: it
+ * recovers the asker of a held write after a restart, and the task a merge queue's record is for (its already-merged evidence).
+ */
+export const askerKey = (kind: string, args: unknown) => createHash("sha256").update(JSON.stringify([kind, args ?? {}])).digest("hex");
 
 const run = promisify(execFile);
 
@@ -327,7 +334,7 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
-      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {});
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier);
       // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
       if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
@@ -341,7 +348,7 @@ export function createService(o: Options) {
     },
   };
   /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
-  async function run1(rec: { id: string; kind: string; args: any }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+  async function run1(rec: { id: string; kind: string; args: any; task?: string }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     {
       const a = rec.args ?? {};
       const objects: string[] = [];
@@ -384,7 +391,7 @@ export function createService(o: Options) {
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
-      if (action === "merge") return merges.enqueue(rec.id, a);
+      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier);
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
@@ -425,7 +432,6 @@ export function createService(o: Options) {
   // The requester of each planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and
   // args, for the held re-check. The last 500 only.
   const askersFile = join(o.cacheDir, "askers.json");
-  const askerKey = (kind: string, args: unknown) => createHash("sha256").update(JSON.stringify([kind, args ?? {}])).digest("hex");
   const readAskers = (): Record<string, Asker> => { try { return JSON.parse(readFileSync(askersFile, "utf8")); } catch { return {}; } };
   function noteAsker(kind: string, args: unknown, who: Asker) {
     const all = readAskers();
@@ -504,7 +510,7 @@ export function createService(o: Options) {
   async function kernel(method: "GET" | "POST", path: string, b?: unknown) {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, ...(b ? { "content-type": "application/json" } : {}) }, ...(b ? { body: JSON.stringify(b) } : {}), signal: AbortSignal.timeout(30_000) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`);
+    if (!r.ok) throw Object.assign(new Error(`the kernel's ${path.split("/").slice(0, 3).join("/")} answered ${r.status}: ${String(j?.error?.message ?? j?.error ?? "").slice(0, 200)}`), { status: r.status });
     return j;
   }
   // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
@@ -539,7 +545,15 @@ export function createService(o: Options) {
     git: (dir, args) => git(dir, args),
   });
   const merges = createMerges({
-    flow,
+    flow, taskOf: (repo, n) => flow.taskOf(repo, n),
+    // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
+    identifierOf: async (record) => {
+      // A record that is gone (404) has no identifier to find; any other failure is transient (the kernel restarting), and the
+      // queue must retry it rather than settle a legacy queue without the evidence the identifier would have proven.
+      const r = await kernel("GET", `/v1/work?record=${encodeURIComponent(record)}`).catch((e: Error & { status?: number }) => { if (e.status === 404) return undefined; throw e; });
+      const ident = String((r as { identifier?: unknown })?.identifier ?? "");
+      return ident || undefined;
+    },
     designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,

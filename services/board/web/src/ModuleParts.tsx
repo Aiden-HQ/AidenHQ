@@ -1,25 +1,26 @@
 // Shared by the Modules list and a module's page: the on/off switch with its turn-off confirm, the Turn on card, a
 // module's state in one word, its facts, and which modules need setup.
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useEvents } from "./events";
-import { flows, forgetFlows, pairingNext, type Flow } from "./SetupButton";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { pairingNext, useFlows, type Flow } from "./SetupButton";
 import { ChangePreview, IN_FLIGHT, useChanges, useFiled } from "./settings-ui";
 import type { Advisory, BrowseModule, FiledChange, ModuleRow } from "./types";
 import { StatusDot, Switch, type StatusTone } from "./ui";
 
-/** The setup flows as this page last read them; read once, and again after a pairing (`connections`). */
-function useFlowList(): Flow[] {
-  const [list, setList] = useState<Flow[]>([]);
-  const reread = useCallback(() => (forgetFlows(), void flows().then(setList)), []);
-  useEvents(["connections"], reread);
-  useEffect(() => void flows().then(setList), []);
-  return list;
+/** The installed modules whose setup flow isn't done, and the unfinished ones whose next step is pairing. */
+export function useSetupState(): { needed: Set<string>; pairing: Set<string> } {
+  const list = useFlows() ?? [];
+  return useMemo(
+    () => ({
+      needed: new Set(list.filter((f) => !f.done).map((f) => f.module)),
+      pairing: new Set(list.filter((f) => !f.done && pairingNext(f)).map((f) => f.module)),
+    }),
+    [list],
+  );
 }
 
 /** Installed modules whose setup flow isn't done (GET /api/setup-flows; absent or failing: none). */
 export function useSetupNeeded(): Set<string> {
-  const list = useFlowList();
-  return useMemo(() => new Set(list.filter((f) => !f.done).map((f) => f.module)), [list]);
+  return useSetupState().needed;
 }
 
 /** What an enabled but unpaired module's action says: pair the phone, then its setup is done. */
@@ -30,8 +31,7 @@ export const PAIR_ACTION = "Pair your phone";
  * that is left. A flow still asking for a secret or a sign-in needs that first, not "Pair your phone".
  */
 export function useSetupPairing(): Set<string> {
-  const list = useFlowList();
-  return useMemo(() => new Set(list.filter((f) => !f.done && pairingNext(f)).map((f) => f.module)), [list]);
+  return useSetupState().pairing;
 }
 
 type Toggled = Pick<ModuleRow, "name" | "agents" | "routines" | "neededBy" | "state">;

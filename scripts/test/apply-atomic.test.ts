@@ -110,7 +110,9 @@ const [cmd, ...rest] = a.slice(i + 1);
 process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process.env, ...env } }).status ?? 1);
 `,
   df: `#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfake 1 1 999999999 1%% /\\n'\n`,
-  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;; esac\nexit 0\n`,
+  // list-unit-files is empty unless ctrl/runners names a count: then the CI runner template is enabled (the apply keeps it in
+  // step with the checkout).
+  systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in *is-enabled*) exit 1 ;; *list-unit-files*) [ -f "$CTRL/runners" ] && echo "aidenhq-ci-runner@.service enabled" ; exit 0 ;; esac\nexit 0\n`,
   "systemd-run": `#!/usr/bin/env bash\nprintf 'systemd-run %s\\n' "$*" >> "$CALLS"\n`,
   curl: `#!/usr/bin/env bash\n[ -f "$CTRL/kernel-down" ] && exit 7\necho ok\n`,
   // npm ci --prefix <dir> installs the one package the fake kernel/src/apply.ts imports.
@@ -136,10 +138,10 @@ function world() {
   for (const f of REAL) exe(d("pw", f), readFileSync(join(repo, f), "utf8"));
   for (const [f, t] of Object.entries(FAKES)) { mkdirSync(dirname(d("pw", f)), { recursive: true }); writeFileSync(d("pw", f), t); }
   for (const [f, t] of Object.entries(SCRIPTS)) exe(d("pw", f), t);
-  for (const u of ["aidenhq-kernel.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer", "aidenhq-security-sbom.service", "aidenhq-security-sbom.timer"]) {
+  for (const u of ["aidenhq-kernel.service", "aidenhq-apply-recover.service", "aidenhq-backup.service", "aidenhq-backup.timer", "aidenhq-host-metrics.service", "aidenhq-host-metrics.timer", "aidenhq-security-sbom.service", "aidenhq-security-sbom.timer", "aidenhq-ci-runner@.service"]) {
     mkdirSync(d("pw", "ops/units"), { recursive: true });
-    // The host-metrics and security-sbom units are the product's own: the apply compares the installed copy with them.
-    writeFileSync(d("pw", "ops/units", u), /^aidenhq-(host-metrics|security-sbom)\./.test(u) ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
+    // The host-metrics, security-sbom and CI runner units are the product's own: the apply compares the installed copy with them.
+    writeFileSync(d("pw", "ops/units", u), /^aidenhq-(host-metrics|security-sbom|ci-runner@?)\./.test(u) ? readFileSync(join(repo, "ops/units", u), "utf8") : `[Unit]\nDescription=${u}\n`);
   }
   // The one service image the product builds, from svc/ (the fake compose config names it as the build context).
   mkdirSync(d("pw", "svc"));
@@ -371,6 +373,37 @@ test("the security sbom timer follows the applied checkout and is removed when t
   assert.match(w.calls(), /systemctl --user disable --now --quiet aidenhq-security-sbom\.timer/);
   assert.ok(!existsSync(join(units, "aidenhq-security-sbom.service")) && !existsSync(join(units, "aidenhq-security-sbom.timer")));
   assert.ok(!existsSync(w.d("home/.config/aidenhq-security-sbom.env")));
+});
+
+// The runner template the enabled units run is the checkout's, kept in step by the apply: a rollout lands the ExecStartPre
+// backoff with the scripts it calls, and an installed copy from another product is replaced (rollback included) rather than
+// left calling a helper this checkout may not have. A host with no runner unit enabled keeps the template it has.
+test("the CI runner unit template follows the applied checkout, only while runner units are declared", async () => {
+  const w = world();
+  const units = w.d("home/.config/systemd/user");
+  mkdirSync(units, { recursive: true });
+  // An enabled runner instance (queue) and a template an older product installed.
+  writeFileSync(w.d("ctrl/runners"), "");
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=old\nExecStart=/usr/bin/env bash ${AIDENHQ_DIR}/ops/ci-runner.sh %i\n");
+  writeFileSync(join(units, "aidenhq-ci-runner@1.service"), "[Unit]\n");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), readFileSync(join(repo, "ops/units/aidenhq-ci-runner@.service"), "utf8"), "the template is the product's");
+  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /ops\/ci-runner-backoff\.sh %i/, "and carries the ExecStartPre backoff");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@1.service"), "utf8"), "[Unit]\n", "the instance's own unit is untouched");
+  // The data dir the unit's scripts resolve (they read no .env themselves) comes from this env file, which the apply writes
+  // from the host's settings; the template reads it last, so it wins.
+  assert.match(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), /EnvironmentFile=-%h\/\.config\/aidenhq-ci-runner\.env/, "the template reads the per-apply data dir");
+  assert.match(readFileSync(w.d("home/.config/aidenhq-ci-runner.env"), "utf8"), /^AIDENHQ_DATA_DIR=\/.*\/data$/m, "an absolute data dir, from the apply's .env");
+  // Nothing changed: no rewrite, no reload.
+  const before = w.calls();
+  assert.equal((await w.run()).status, 0);
+  assert.doesNotMatch(w.calls().slice(before.length), /ci runner unit template installed\/updated/, "an unchanged template is not rewritten");
+  // Runners retired from the config: the installed template stays as the operator left it.
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=kept\n");
+  rmSync(w.d("ctrl/runners"));
+  assert.equal((await w.run()).status, 0);
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=kept\n", "no runner units declared: the apply leaves the template alone");
 });
 
 test("a staged compile failure leaves the running config byte-identical, both checkouts restored and nothing restarted", async () => {
