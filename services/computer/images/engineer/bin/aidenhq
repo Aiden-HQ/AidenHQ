@@ -38,6 +38,7 @@
 // kernel with the token: /v1/writes, /v1/jobtools, /c/<connection>/mcp), AIDENHQ_RUN_TOKEN (the job's `ahqj_` token, which
 // names the job: the kernel takes the job, its task and its workspace from it, never from the request) and
 // AIDENHQ_TASK_WORKTREE (the task's workspace folder, whose clones <name> or <org>--<name> the code host pushes from).
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -165,7 +166,7 @@ const needSelfReview = (repo, branch) => {
   const sha = shaOf(repo, branch);
   let seen;
   try {
-    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), `self-review-${Buffer.from(branch).toString("hex")}.json`), "utf8")).head;
+    seen = JSON.parse(readFileSync(join(execFileSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim(), `self-review-${createHash("sha256").update(branch).digest("hex")}.json`), "utf8")).head;
   } catch {}
   checked.set(`${repo} ${branch}`, sha);
   if (seen !== sha) fail(`${repo} ${branch} at ${sha.slice(0, 12)} has no self-review. With the branch checked out in ${dir}, run \`node /opt/aidenhq/code-review/self-review.ts <base-branch> ${branch}\` and publish again (nothing was published)`, 2);

@@ -12,6 +12,7 @@
 // What the reviewer's Codex gets: an env of PATH (the job's, without its /opt/aidenhq wrappers), its own empty HOME and CODEX_HOME, and
 // the run token as its model key (CI_REVIEW_KEY, for model calls through the gateway); its shell inherits none of it (the engine's
 // shell_environment_policy) and runs read-only. No other credential or variable of the job is passed on.
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,7 +48,7 @@ async function main(): Promise<{ out: string[]; code: number }> {
   let ref = "";
   try { ref = ln("symbolic-ref", "-q", "HEAD"); } catch {}
   if (ref !== `refs/heads/${asked}`) return { out: ["self-review: incomplete: the branch argument is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone", detail(`branch argument: ${asked}`)], code: 2 };
-  const branch = asked, memo = join(ln("rev-parse", "--path-format=absolute", "--git-common-dir"), `self-review-${Buffer.from(asked).toString("hex")}.json`); // shared by linked worktrees; aidenhq publish reads the same file
+  const branch = asked, memo = join(ln("rev-parse", "--path-format=absolute", "--git-common-dir"), `self-review-${createHash("sha256").update(asked).digest("hex")}.json`); // shared by linked worktrees; aidenhq publish reads the same file
   // One file per branch (a branch is checked out in one worktree at a time, so no two runs write one file), so reviewing another branch in
   // the same clone doesn't reset this one's incremental review.
   const last: { base?: string; head?: string; open?: number } = (() => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } })();

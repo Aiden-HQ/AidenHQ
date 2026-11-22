@@ -1,5 +1,6 @@
 // The in-box `aidenhq` commands against a fake computers' gateway: git writes are write records filed with the job's token
 // (the kernel takes the job and its workspace from it), task reads go through the tool proxy, next-turn requests through /v1/jobtools.
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -55,7 +56,7 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   // Publish needs a self-review record for the head (any outcome); with none, or one for an older head, nothing is filed.
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login"), (e) => e.code === 2 && /no self-review.*self-review\.ts <base-branch> fix-login/.test(e.stderr));
   assert.equal(seen.length, 0);
-  writeFileSync(join(ws, "app", ".git", `self-review-${Buffer.from("fix-login").toString("hex")}.json`), JSON.stringify({ base: sha, head: sha, open: -1 }));
+  writeFileSync(join(ws, "app", ".git", `self-review-${createHash("sha256").update("fix-login").digest("hex")}.json`), JSON.stringify({ base: sha, head: sha, open: -1 }));
 
   // The args are the kind's schema's, with no workspace: the kernel names the job's own.
   // The title is the branch's first commit's subject; one that isn't a Conventional Commit is refused.
