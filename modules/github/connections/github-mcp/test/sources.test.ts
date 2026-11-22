@@ -105,5 +105,8 @@ it("src_github: a closed board with a refused item is read again weekly, and an 
   granted = true;
   await syncOrg(store, gh as any, "o", Date.parse("2026-11-19T00:00:01Z"));
   expect(reads).toBe(2);
-  expect(writes.filter((w) => w.table === "project_item").at(-1)).toMatchObject({ row: { title: "T" }, baseline: true });
+  const last = writes.filter((w) => w.table === "project_item").slice(-2);
+  expect(last[0]).toMatchObject({ baseline: false }); // the board's own columns: normal change logging
+  expect("title" in last[0]!.row).toBe(false);
+  expect(last[1]).toMatchObject({ row: { title: "T" }, baseline: true }); // the content: backfill
 });
