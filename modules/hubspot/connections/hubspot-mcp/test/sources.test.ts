@@ -18,7 +18,7 @@ function fakeStore() {
 }
 const json = (o: unknown) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
 // HubSpot's search answer as seen live: numeric ids, `total`, and `offset` = where the next page starts.
-const answer = (results: unknown[], offset = results.length, total = results.length) => json({ results, total, offset, urlTemplate: "https://app.hubspot.com/contacts/20572069/record/0-3/{id}?utm_source=mcp" });
+const answer = (results: unknown[], offset = results.length, total = results.length) => json({ results, total, offset, urlTemplate: "https://app.hubspot.com/contacts/1234567/record/0-3/{id}?utm_source=mcp" });
 const deal = (id: string, updated: string, extra: Record<string, unknown> = {}) => ({
   id, properties: { dealname: "Acme renewal", pipeline: "default", dealstage: "contractsent", amount: "12000.50", hubspot_owner_id: "77", hs_lastmodifieddate: updated, ...extra },
 });
@@ -36,7 +36,7 @@ it("deals: the first pass is baseline from history_days, later passes from the c
   };
   await syncObject(store, call, "deals", opts());
   expect(Number(sinceSeen)).toBe(NOW - 30 * 86_400_000);
-  expect(writes[0]).toMatchObject({ table: "deal", baseline: true, row: { deal_id: "1", name: "Acme renewal", stage: "contractsent", amount: 12000.5, owner_id: "77", company_ids: [], contact_ids: [], url: "https://app.hubspot.com/contacts/20572069/record/0-3/1" } });
+  expect(writes[0]).toMatchObject({ table: "deal", baseline: true, row: { deal_id: "1", name: "Acme renewal", stage: "contractsent", amount: 12000.5, owner_id: "77", company_ids: [], contact_ids: [], url: "https://app.hubspot.com/contacts/1234567/record/0-3/1" } });
   expect(scopes.get("deals")).toEqual({ baselined: true, cursor: "2026-11-10T10:00:00.000Z" });
 
   writes.length = 0;
