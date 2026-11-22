@@ -12,7 +12,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
 
-export type NoticeOpts = { parent?: boolean; close?: "done" | "cancelled" };
+export type NoticeOpts = { parent?: boolean; close?: "done" | "cancelled"; /** Distinguishes two notices with the same text (a wait's reason), so neither shadows the other; never shown. */ tag?: string };
 const LEASE_MS = 2 * 60_000;
 const MAX_MS = 30 * 60_000;
 const GIVE_UP_MS = 24 * 3600_000;
@@ -95,9 +95,12 @@ export function createNotices({ db, api, alert, log = () => {}, now = Date.now }
   let running: Promise<void> | undefined, again = false;
 
   return {
-    /** Queues a notice; the same text for the same task is one notice. */
+    /** Queues a notice; the same text for the same task is one notice (unless a `tag` says it is a different one). */
     queue(task: string, body: string, o: NoticeOpts = {}) {
-      const key = createHash("sha256").update(JSON.stringify([task, body, Boolean(o.parent)])).digest("hex").slice(0, 32);
+      // An untagged notice's key is exactly what it was before tags existed, so one queued by an older kernel and re-queued by
+      // this one is still the same notice (not posted twice).
+      const id = o.tag === undefined ? [task, body, Boolean(o.parent)] : [task, body, Boolean(o.parent), o.tag];
+      const key = createHash("sha256").update(JSON.stringify(id)).digest("hex").slice(0, 32);
       db.prepare("INSERT OR IGNORE INTO task_notices (key, task, body, parent, at, next, close) VALUES (?, ?, ?, ?, ?, 0, ?)").run(key, task, body, o.parent ? 1 : 0, now(), o.close ?? null);
     },
     /** Sends every notice that is due (main.ts, every few seconds, and once a notice is queued): one loop at a time. */

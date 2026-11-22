@@ -281,8 +281,8 @@ export interface Approval {
   cost: string;
   details: string;
   requestedBy: string;
-  /** auto: a Tier 0 run, already made; an audit row only. */
-  state: "pending" | "approved" | "rejected" | "stale" | "expired" | "used" | "unknown" | "auto";
+  /** auto: a Tier 0 run, already made; an audit row only; running: claimed and in flight, with its wait reason in `wait`. */
+  state: "pending" | "approved" | "rejected" | "stale" | "expired" | "running" | "used" | "unknown" | "auto";
   /** 0 ran at once, 1 the AI reviewer decides, 2 the owner decides. */
   tier: 0 | 1 | 2;
   reason: string;
@@ -302,6 +302,8 @@ export interface Approval {
   decidedByName?: string;
   outcome: "applied" | "failed" | null;
   outcomeText: string | null;
+  /** Why the record is still running, while it is `running` (the executor's words, shown as data); null once it ends. */
+  wait: string | null;
   createdAt: string;
   replaced: boolean;
 }

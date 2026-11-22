@@ -89,7 +89,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     return (await kernel("POST", "/v1/wakes", { task: issue.parentId, text })).posted === true;
   };
   const recordsOn = async (issue: Json) => ((await work(issue.id)).records ?? []).map((r: Json) => ({
-    id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "claimed" || r.state === "done" || r.state === "failed" ? "used" : r.state,
+    id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "done" || r.state === "failed" ? "used" : r.state,
     outcome: r.state === "done" || r.state === "failed" ? { ok: r.ok } : undefined, usedAt: r.updated_at, decidedAt: r.decided_at, createdAt: r.created_at, args: r.args ?? {},
     // What an apply's card carries beyond its args (evidence.ts applyEvidence): the committed diff (APPLY_CHANGE) and the
     // apply's own log tail (APPLY_OUTCOME). The kernel's task read sends the diff for apply records only.

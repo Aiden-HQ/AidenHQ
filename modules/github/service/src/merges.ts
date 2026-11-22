@@ -24,10 +24,17 @@ type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: nu
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
 type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string };
+type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
+/** What a PR's record-level wait says while GitHub is signed out: the reason the card shows for a merge that cannot move yet. */
+const CONNECTED_WAIT = "GitHub is signed out: waiting for the owner to reconnect it";
+/** The same while the App migration holds merges (migrate.ts): reconnecting GitHub cannot lift it, so it never claims a sign-out. */
+export const MIGRATION_WAIT = "GitHub App migration in progress: merges are held until it finishes";
+/** The record-level reasons the queue itself sets and clears (never a PR's own wait or a failure's note). */
+const HOLD_WAITS = [CONNECTED_WAIT, MIGRATION_WAIT];
+const isHoldWait = (note?: string) => note !== undefined && HOLD_WAITS.includes(note);
 const says = (e: unknown) => String((e as Error)?.message ?? e).split("\n").pop()!.slice(0, 300);
 /** The fixed start of a merge outcome's first line: the PRs merged at their bound head, this queue's or already (finish). */
 export const MERGED_LINE = "merged-prs: ";
@@ -39,6 +46,13 @@ export function createMerges(d: {
   gh: Gh;
   /** Whether GitHub is connected: while it isn't, every pending PR waits (work.waiting reason github) and nothing is called. */
   connected?: () => boolean;
+  /**
+   * Whether merges are held although GitHub is connected (the App migration, migrate.ts): the hold is a decision, never a
+   * message, so a blank reason can never lift it.
+   */
+  hold?: () => boolean;
+  /** What the hold says on the record (own reason, never the reconnect's: reconnecting cannot lift a migration hold). Blank: the default. */
+  holdReason?: () => string | null | undefined;
   fleetOrg: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
   maintained?: string[];
@@ -54,6 +68,8 @@ export function createMerges(d: {
   identifierOf?: (record: string) => Promise<string | undefined>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
+  /** Tells the kernel why a claimed record is still running (POST /v1/writes/:id/wait), so its task hears the reason. */
+  waiting?(id: string, reason: string | null): Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   now?: () => Date;
   everyMs?: number;
@@ -114,8 +130,8 @@ export function createMerges(d: {
   const mergeToken = () => `queue-${randomUUID()}`;
 
   /** One poll of one PR, then its wait as facts: a wait and its end (a new reason, a merge, a failure) are work.waiting and work.resumed. */
-  async function pollAndTime(q: Queue, p: Pr, merged: Set<string>) {
-    await poll(q, p, merged);
+  async function pollAndTime(id: string, q: Queue, p: Pr, merged: Set<string>) {
+    await poll(id, q, p, merged);
     timeWait(p, p.status === "pending" && p.wait ? waitReason(p.wait.key) : undefined);
   }
   function timeWait(p: Pr, reason: string | undefined) {
@@ -132,7 +148,7 @@ export function createMerges(d: {
     log("merged without code review's verdict", { pr: p.url, why: p.bypass.slice(0, 300) });
     d.flow?.reviewBypassed(p.repo, p.number, p.head, p.bypass);
   };
-  async function poll(q: Queue, p: Pr, merged: Set<string>) {
+  async function poll(id: string, q: Queue, p: Pr, merged: Set<string>) {
     const t = now().getTime();
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
@@ -151,6 +167,9 @@ export function createMerges(d: {
     // Outside the fleet org, the product repo and maintainer_repos the code host is PR-only: it merges nothing there (a repo taken
     // off the list after its record was approved included).
     if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(`\`${p.repo}\` is outside the fleet org, the product repo and maintainer_repos, where the code host only opens PRs: merge it there`);
+    // A review reason belongs to the poll that found the PR still waiting on code review: an earlier gate taking the PR over (checks
+    // rerun, a design wait, a refusal) means the review is no longer what holds it, so the reason goes before this poll decides.
+    if (p.note !== undefined && !isHoldWait(p.note)) delete p.note;
     try {
       const data = await readPr(p.repo, p.number);
       const uiReview = inFleetOrg(p.repo);
@@ -205,10 +224,14 @@ export function createMerges(d: {
       if (review && "bypass" in review) p.bypass = review.bypass;
       else delete p.bypass;
       if (review && "wait" in review) {
+        // Why this PR still waits: the record's own reason is built from every PR still waiting after the poll (publishWait), so
+        // one PR leaving its wait never clears another's.
         if (p.note !== review.wait) log("merge waits for code review", { pr: p.url, why: review.wait.slice(0, 500) });
         p.note = review.wait;
         return wait("review");
       }
+      // Code review passed on this head: this PR no longer waits on it (the queue publishes whatever the others still wait on).
+      delete p.note;
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
@@ -332,20 +355,58 @@ export function createMerges(d: {
     void d.report(id, q.outcome!).then(() => { q.reported = true; save(); }, (e) => log("merge outcome not delivered", { record: id, err: says(e) })).finally(() => delivering.delete(id));
   }
 
+  /**
+   * The record's wait for the whole queue: the reasons of every PR still waiting after the poll, in the record's order, published
+   * once per distinct text (never once per poll) and cleared when nothing waits. The record is one card for every PR the merge
+   * names, so a reason belongs to it, not to whichever PR was polled last.
+   */
+  async function publishWait(id: string, q: Queue) {
+    const reasons = [...new Set(q.prs.filter((p) => p.status === "pending" && p.note).map((p) => p.note!))];
+    const reason = reasons.length === 0 ? null : reasons.length === 1 ? reasons[0]! : q.prs.filter((p) => p.status === "pending" && p.note).map((p) => `${p.url}: ${p.note}`).join("\n");
+    // `undefined` is "we don't know what the record has" and is never equal to a target, so a queue written by an older
+    // implementation (no `waitSent`) or one that restarted before the kernel answered republishes on its first poll instead of
+    // trusting a reason that may never have arrived. `null` is a clear the kernel took.
+    if (q.waitSent !== undefined && q.waitSent === reason) return;
+    try {
+      await d.waiting?.(id, reason);
+      q.waitSent = reason;
+      // Persisted only after the kernel took it: a restart between the call and the write republishes, never assuming delivery.
+      save();
+    } catch (e) {
+      // The kernel didn't take it (a restart): leave the delivery unknown so the next poll sends the same text again.
+      q.waitSent = undefined;
+      log("merge wait not delivered", { record: id, err: says(e).slice(0, 300) });
+    }
+  }
+
   let busy = false;
   /** One poll: every pending PR of every running queue, at most one merge per repository. */
   async function step() {
     if (busy) return;
     busy = true;
     try {
-      // Signed out: every pending PR waits for the reconnect (reason github; its other wait starts over), and GitHub isn't called.
-      if (d.connected && !d.connected()) {
-        for (const q of Object.values(s.queues)) if (q.state === "running" && !q.outcome) for (const p of q.prs) if (p.status === "pending") { delete p.wait; timeWait(p, "github"); }
+      // Held (signed out, or the App migration): every pending PR waits (reason github; its other wait starts over) and GitHub
+      // isn't called. The two are told apart: only a sign-out can be lifted by reconnecting, so the migration has its own reason.
+      // The hold decides first and its text second (`hold()` true with a blank reason still holds: the reason only says why).
+      const held = d.hold?.() ? (d.holdReason?.() ?? "").trim() || MIGRATION_WAIT : (d.connected && !d.connected()) ? CONNECTED_WAIT : undefined;
+      if (held) {
+        for (const [id, q] of Object.entries(s.queues)) {
+          if (q.state !== "running" || q.outcome) continue;
+          for (const p of q.prs) if (p.status === "pending") {
+            // The record's card shows why it cannot move: the hold's reason, once, and only while it stays held.
+            p.note = held;
+            delete p.wait;
+            timeWait(p, "github");
+          }
+          await publishWait(id, q);
+        }
         return;
       }
       const merged = new Set<string>();
       for (const [id, q] of Object.entries(s.queues)) {
         if (q.state !== "running" || q.outcome) continue;
+        // Not held any more: the hold's reason ends here, and this poll's own reasons replace it (publishWait, below).
+        for (const p of q.prs) if (isHoldWait(p.note)) delete p.note;
         // A queue written before this process kept the task's identifier has only the record's task id, and a running queue is
         // never handed `execute` again: read the identifier from the record so an already-merged PR is still found to be this
         // task's. A read that failed (kernel briefly unavailable) is not a record without an identifier: only keep `recovered`
@@ -361,7 +422,9 @@ export function createMerges(d: {
         // The identifier an already-merged PR must be proven against is still unknown and its read failed: the PRs may be read,
         // but the queue is not finished, so a poll that comes back after the kernel does can still credit the evidence.
         const unrecovered = Boolean(q.task && !q.taskIdentifier && !q.recovered && d.identifierOf);
-        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(q, p, merged);
+        for (const p of q.prs) if (p.status === "pending" && !merged.has(p.repo.toLowerCase())) await pollAndTime(id, q, p, merged);
+        // The record's reason now: every PR still waiting, or nothing (a finished queue clears it before its outcome lands).
+        await publishWait(id, q);
         if (!q.prs.some((p) => p.status === "pending") && !unrecovered) finish(id, q);
       }
     } finally {
@@ -381,7 +444,9 @@ export function createMerges(d: {
       if (had?.outcome) return Promise.resolve(had.outcome);
       if (!had) {
         const prs = args.prs.map((p) => ({ repo: p.repo, number: p.number, head: p.head, url: `https://github.com/${p.repo}/pull/${p.number}`, status: "pending" }));
-        s.queues[id] = { id, state: "running", startedAt: now().toISOString(), prs, said: [], ...(task ? { task } : {}), ...(identifier ? { taskIdentifier: identifier } : {}) };
+        // A record this queue just took has no wait from it yet: `waitSent: null` is that known clear. A queue read from disk
+        // without the field is unknown (`undefined`) and reconciles on its first poll instead.
+        s.queues[id] = { id, state: "running", startedAt: now().toISOString(), prs, said: [], waitSent: null, ...(task ? { task } : {}), ...(identifier ? { taskIdentifier: identifier } : {}) };
         save();
         log("merges queued", { record: id, prs: prs.length });
       }

@@ -25,7 +25,7 @@ import { AccountError, forwardedProto, type AccountSession, type KernelAuth } fr
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
 import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
-import { kernelRecords, type Approval, type Records, type SettingsCredential } from "./records.js";
+import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
@@ -129,10 +129,10 @@ export interface AppOptions {
   accounts?: KernelAuth;
 }
 
-/** What the board and agents see of a card; the executor's args stay in the kernel. */
+/** What the board and agents see of a card; the executor's args stay in the kernel, and a wait reason is bounded here. */
 const approvalView = (approval: Approval) => {
   const { args: _args, ...a } = approval;
-  return a;
+  return { ...a, ...(a.wait !== null ? { wait: shownWait(a.wait) } : {}) };
 };
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
@@ -266,6 +266,8 @@ export function createApp(opts: AppOptions): Server {
     return id ? { ...a, identifier: id } : a;
   }
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
+  /** The last complete live read: a failed page falls back to it, never to a short list that would drop a blocked card. */
+  let liveCache: Approval[] | undefined;
 
   const sessionOf = liveActivity(opts.sessions);
   const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
@@ -1472,9 +1474,22 @@ export function createApp(opts: AppOptions): Server {
       path: /^\/api\/approvals$/,
       handle: async () => {
         const names = await bylines();
-        const [cards, all] = await Promise.all([cardsOf("recent", { limit: 100 }), cardsOf("recent", { limit: 100, tier0: true })]);
-        const ran = all.filter((a) => a.state === "auto" && !cards.some((c) => c.id === a.id));
-        return { approvals: [...cards, ...ran].map((a) => shownApproval(names, a)) };
+        // Live records (`approved`, and `claimed` ones an executor holds) are read apart from the capped history, in their own
+        // read with no tier filter (a Tier 0 merge held on review is claimed too), paged to the last one: a hundred newer writes
+        // must never push a blocked merge out of the list the owner watches, and neither may the kernel's own page size. The
+        // wider recent list adds the ended Tier 0 audit rows.
+        // A page of the live read that fails (the kernel restarting) is not "no live records": the cached page is kept instead
+        // of publishing a short list that would drop an old blocked merge off the cards. The kernel-down fallback below still
+        // answers what the capped reads have.
+        const [cards, all, live] = await Promise.all([
+          cardsOf("recent", { limit: 100 }),
+          cardsOf("recent", { limit: 100, tier0: true }),
+          records.live().then((rows) => Promise.all(rows.map(named))).then((rows) => ((liveCache = rows), rows), () => liveCache ?? []),
+        ]);
+        const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
+        const seen = new Set(cards.map((c) => c.id));
+        const rest = held.filter((a) => !seen.has(a.id) && (seen.add(a.id), true));
+        return { approvals: [...cards, ...rest].map((a) => shownApproval(names, a)) };
       },
     },
     {
