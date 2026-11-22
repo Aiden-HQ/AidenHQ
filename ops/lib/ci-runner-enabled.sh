@@ -18,28 +18,35 @@
 # masks the template under that name makes a `.wants` link of it read `masked` (confirmed on systemd 262 with
 # `systemctl --root`, a `.wants/...` link to `/dev/null` reads enabled). Such a link enables nothing, so both are skipped.
 #
-# systemd applies the same precedence across unit dirs to every name: the first dir in `unit-paths` that has the name
-# wins. So a mask at a higher-priority dir (`~/.config/systemd/user/default.target.wants/aidenhq-ci-runner@3.service ->
-# /dev/null`, or a plain file there) cancels a lower-priority install link (`/etc/systemd/user/...` or `.../user.control`)
-# while `is-enabled` still reads the instance `enabled` (confirmed on systemd 262 with `systemctl --root`: a plain file in
-# the higher-priority dir reads `static`). So the walk goes dir by dir and stops at the first dir holding the name; the
-# instance counts only if that entry is a link whose target is not `/dev/null`.
+# systemd applies the same precedence across unit dirs to every file: the first dir in `unit-paths` that has it wins. The
+# entry, not the instance, is what is compared, so precedence is per dependency path: `default.target.wants/...` and
+# `timers.target.wants/...` are different files, and a mask of one does not hide the other. So a mask at a higher-priority
+# dir (`~/.config/systemd/user/default.target.wants/aidenhq-ci-runner@3.service -> /dev/null`, or a plain file there)
+# cancels the same path's lower-priority install link (`/etc/systemd/user/...` or `.../user.control`), while a link in
+# another target's dir still enables the instance. `is-enabled` only reads the instance, so it sees `enabled` for a
+# shadowed path (confirmed on systemd 262 with `systemctl --root`: a plain file in the higher-priority dir reads
+# `static`). The walk goes dir by dir, takes the first entry for a given relative path, and the instance counts if any
+# target's winning entry is a link whose target is not `/dev/null`.
 ci_runner_enabled_units() { # one enabled runner instance per line
-  local unit_dir link name target
-  local -a paths=() seen=()
+  local unit_dir link rel name target other
+  local -a paths=() names=() seen=()
   mapfile -t paths < <(systemd-analyze --user unit-paths 2>/dev/null)
   for unit_dir in "${paths[@]}"; do
     for link in "$unit_dir"/*.wants/aidenhq-ci-runner@*.service "$unit_dir"/*.requires/aidenhq-ci-runner@*.service; do
       [ -e "$link" ] || [ -L "$link" ] || continue
-      name="${link##*/}"
+      rel="${link#"$unit_dir"/}"
+      [[ " ${seen[*]} " == *" $rel "* ]] && continue
+      seen+=("$rel")
+      name="${rel##*/}"
       [ "$name" != aidenhq-ci-runner@.service ] || continue
-      [[ " ${seen[*]} " == *" $name "* ]] && continue
-      seen+=("$name")
+      # Same instance already counted through another target's dir.
+      for other in "${names[@]}"; do [ "$other" = "$name" ] && continue 2; done
       # A plain file is not an install link: systemd loads no dependency from it.
       [ -L "$link" ] || continue
       target="$(readlink -f "$link" 2>/dev/null)" || continue
       [ -e "$target" ] && [ "$target" != /dev/null ] || continue
       case "$(systemctl --user is-enabled "$name" 2>/dev/null)" in masked|masked-runtime) continue ;; esac
+      names+=("$name")
       printf '%s\n' "$name"
     done
   done

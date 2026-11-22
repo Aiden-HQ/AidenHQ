@@ -370,18 +370,6 @@ test("the CI runner unit template follows the applied checkout, only while runne
 // shell, so the helper must already be loaded: sourcing it after the checkout would abort on a missing file (a failed
 // source under errexit) and the rollback would never land. That ordering is what this pins; it cannot be observed end to
 // end without building a pre-change product, which would itself need the old script.
-// A pin rollback ("revert the pin and apply") also reaches the hand-over: an older product that predates the helper but
-// supports AIDENHQ_APPLY_BEFORE would be re-exec'd, and its list-unit-files gate never fires, so the newer template would
-// stay installed and the next runner start would name an ExecStartPre script that product removed. The helper is
-// therefore not in the hand-over list; the change to this script is what triggers it.
-test("the runner helper is not in the apply hand-over list", () => {
-  const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
-  const line = text.split("\n").find((l) => l.includes("git diff --quiet \"$before\" \"$product\" -- ops/apply-config.sh"));
-  assert.ok(line, "the hand-over list is found");
-  assert.ok(!line.includes("ops/lib/ci-runner-enabled.sh"), `the helper does not re-exec an older worker: ${line}`);
-  assert.ok(line.includes("ops/apply-config-work.sh"), "this script is still in it, so its own change hands over");
-});
-
 test("the runner helper is loaded before any checkout, so a rollback to a product without it still applies", () => {
   const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
   const main = text.slice(text.indexOf("\nmain() {"), text.indexOf("\n# Step 3:", text.indexOf("\nmain() {")));
@@ -390,6 +378,66 @@ test("the runner helper is loaded before any checkout, so a rollback to a produc
   assert.ok(source > 0, "main() loads the runner helper");
   assert.ok(checkout > 0, "main() checks out the product");
   assert.ok(source < checkout, "and does so before the checkout");
+});
+
+// A pin rollback ("revert the pin and apply") also reaches the hand-over: an older product that predates the helper but
+// supports AIDENHQ_APPLY_BEFORE would be re-exec'd, and its list-unit-files gate never fires, so the newer template would
+// stay installed and the next runner start would name an ExecStartPre script that product removed. The hand-over is
+// therefore guarded on the target carrying the helper.
+test("the apply hand-over requires the target to carry the runner helper", () => {
+  const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const line = text.split("\n").find((l) => l.includes("git diff --quiet \"$before\" \"$product\" -- ops/apply-config.sh"));
+  assert.ok(line, "the hand-over list is found");
+  assert.ok(line.includes("ops/lib/ci-runner-enabled.sh"), "the helper is in it, so a change to it alone hands over");
+  assert.ok(line.includes("ops/apply-config-work.sh"), "this script is still in it, so its own change hands over");
+  const guard = text.split("\n").find((l) => l.includes("git cat-file -e \"$product:ops/lib/ci-runner-enabled.sh\""));
+  assert.ok(guard, "and the hand-over is guarded on the target having the helper");
+});
+
+// A pin rollback ("revert the pin and apply") reaches the hand-over with this script still running: the product checked
+// out is the older one, whose own apply-config-work.sh differs, so without a guard it would be re-exec'd — and a product
+// from before the helper gates with list-unit-files, which never fires, leaving the newer runner template installed and
+// the next start naming an ExecStartPre script that product may not have. The hand-over therefore requires the target to
+// carry the helper; an older product stays in this apply, which installs its own template.
+test("a pin rollback to a product without the runner helper runs this apply, not the older worker", async () => {
+  const w = world();
+  const script = w.d("pw/ops/apply-config-work.sh");
+  const current = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const templateFile = w.d("pw/ops/units/aidenhq-ci-runner@.service");
+  const units = w.d("home/.config/systemd/user");
+  const wants = join(units, "default.target.wants");
+  mkdirSync(wants, { recursive: true });
+  // An enabled runner instance, as `systemctl --user enable` leaves one.
+  symlinkSync(join(units, "aidenhq-ci-runner@.service"), join(wants, "aidenhq-ci-runner@3.service"));
+  writeFileSync(w.d("ctrl/runners"), "aidenhq-ci-runner@3.service\n");
+
+  // P2: the product from before the helper, with its own template.
+  const old = current
+    .replace("  . ops/lib/ci-runner-enabled.sh\n", "")
+    .replace('  if [ -n "$(ci_runner_enabled_units)" ]; then', "  if systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null | grep -q '^aidenhq-ci-runner@'; then");
+  assert.ok(!old.includes("ci_runner_enabled_units") && !old.includes(". ops/lib/ci-runner-enabled.sh"), "the old product has neither the helper nor a call to it");
+  assert.notEqual(old, current, "and its script differs from this product's");
+  writeFileSync(script, old);
+  rmSync(w.d("pw/ops/lib/ci-runner-enabled.sh"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p2\n");
+  const p2 = w.commitProduct("2");
+  w.commitInstance(p2);
+  // P3: this change, with a newer template.
+  writeFileSync(script, current);
+  writeFileSync(w.d("pw/ops/lib/ci-runner-enabled.sh"), readFileSync(join(repo, "ops/lib/ci-runner-enabled.sh"), "utf8"));
+  writeFileSync(templateFile, "[Unit]\nDescription=p3\n");
+  const p3 = w.commitProduct("3");
+  w.commitInstance(p3);
+  // The host runs P3 with its template installed.
+  writeFileSync(join(units, "aidenhq-ci-runner@.service"), "[Unit]\nDescription=p3\n");
+  assert.equal((await w.run("--force")).status, 0);
+
+  // The pin rollback: the instance's main goes back to P2, and an apply runs from the P3 checkout.
+  w.commitInstance(p2);
+  const rolled = await w.run();
+  assert.equal(rolled.status, 0, rolled.out);
+  assert.equal(git(w.d("prod"), "rev-parse", "HEAD"), p2, "P2 is what runs");
+  assert.equal(readFileSync(join(units, "aidenhq-ci-runner@.service"), "utf8"), "[Unit]\nDescription=p2\n", "P2's own template is installed, not left at P3's");
 });
 
 // A copied runner template systemd never reloaded is not what runs: a failed daemon-reload fails the switch, so the

@@ -22,7 +22,10 @@ function host() {
   const unitDir = high;
   const wants = join(high, "default.target.wants");
   const requires = join(high, "default.target.requires");
-  for (const d of [bin, wants, requires, join(low, "default.target.wants"), join(low, "default.target.requires")]) mkdirSync(d, { recursive: true });
+  // Two targets, so precedence is exercised per dependency path (default.target vs timers.target).
+  const timers = join(high, "timers.target.wants");
+  const lowTimers = join(low, "timers.target.wants");
+  for (const d of [bin, wants, requires, join(low, "default.target.wants"), join(low, "default.target.requires"), timers, lowTimers]) mkdirSync(d, { recursive: true });
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
   fake("systemd-analyze", `case "$*" in *--user*unit-paths*) printf '%s\\n' "${high}" "${low}" ;; esac`);
   // list-unit-files lists only the template, as `indirect enabled`, so --state=enabled prints nothing; a masked instance
@@ -34,7 +37,7 @@ esac
 exit 0`);
   writeFileSync(join(unitDir, "aidenhq-ci-runner@.service"), "[Unit]\n");
   const link = (name, dir = wants) => symlinkSync(join(unitDir, "aidenhq-ci-runner@.service"), join(dir, `${name}.service`));
-  return { root, bin, unitDir, low, wants, requires, link };
+  return { root, bin, unitDir, low, wants, requires, timers, lowTimers, link };
 }
 
 /** The names ci_runner_enabled_units prints, through the real library. */
@@ -107,6 +110,15 @@ test("a higher-priority mask cancels a lower-priority install link", async () =>
   assert.deepEqual(await enabled(h), ["aidenhq-ci-runner@3.service"], "the lower link declares it while nothing shadows it");
   symlinkSync("/dev/null", join(h.wants, "aidenhq-ci-runner@3.service"));
   assert.deepEqual(await enabled(h), [], "a /dev/null mask at a higher-priority dir wins");
+});
+
+// Precedence is per dependency file, not per instance: masking default.target's dependency leaves a valid timers.target
+// dependency, which still enables the runner.
+test("a mask of one target's dependency does not hide another target's link", async () => {
+  const h = host();
+  symlinkSync("/dev/null", join(h.wants, "aidenhq-ci-runner@3.service"));
+  h.link("aidenhq-ci-runner@3", h.timers);
+  assert.deepEqual(await enabled(h), ["aidenhq-ci-runner@3.service"], "the instance is still enabled through timers.target");
 });
 
 test("a higher-priority plain file cancels a lower-priority install link", async () => {

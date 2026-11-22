@@ -150,10 +150,12 @@ main() {
   # through the entry point, which re-takes the lock on fd 9 for the new process; the lock is held across the exec, so
   # no other apply can slip in between. Pinned to the instance commit just checked. A script that predates the hand-over
   # (a rollback) can't take `before`, so this one carries on instead.
-  # ops/lib/ci-runner-enabled.sh is deliberately not in this list: a product that predates the helper has a gate that
-  # reads list-unit-files (never true on a live host), and handing over to it during a pin rollback would leave the newer
-  # runner template installed. New products gate with this helper and are in the list through this script's own change.
-  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh \
+  # A product that predates ops/lib/ci-runner-enabled.sh cannot gate the runner template (its gate reads list-unit-files,
+  # never true on a live host), so hand over only when the target has the helper. Hammering its scripts while it is the
+  # running product leaves the newer template in place; the next apply from a product that has the helper fixes it, and
+  # because this script itself differs the direct upgrade still hands over (the helper is in the list too).
+  if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && git cat-file -e "$product:ops/lib/ci-runner-enabled.sh" 2>/dev/null \
+     && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh ops/lib/ci-runner-enabled.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
     local again=("$want"); [ "$force" = 0 ] || again+=(--force)
