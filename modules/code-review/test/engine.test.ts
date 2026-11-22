@@ -562,7 +562,7 @@ test("an `aiden review` at a head never drops the push reviewers still running t
 test("a repo no longer gated retires its status once: a pending write is settled by its id, never filed again", async () => {
   const g = gatedWorld();
   await opened(g, 2, sha("2"));
-  await g.tick(); // its status settled: the PR has one
+  g.finish(0, NONE); await g.tick(); await g.tick(); // its review done, its status settled: the PR has one
   const w = world({ db: g.db, repos: [{ repo: REPO }] });
   w.pr(2, sha("2"));
   w.outcomes.set("s-1", { state: "pending" });
