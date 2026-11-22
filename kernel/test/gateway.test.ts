@@ -331,40 +331,71 @@ test("gateway: a reviewer token's own cap (REVIEW_USD): calls go ahead while its
   assert.deepEqual(filed, [], "a review's cap is never filed for raising: the review escalates to the owner instead");
 });
 
-test("gateway: an in-stream provider error is retried before the first byte and never billed; a stream with no usage settles free", async (t) => {
+test("gateway: in-stream provider errors: a transient first-event error is retried before the first byte; a failed stream with a generation waits for OpenRouter's record, one without is free", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   writeFileSync(join(dir, "gateway.json"), "{}");
-  const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+  const sse = (events) => events.map((e) => `data:${JSON.stringify(e)}\n\n`).join(""); // no space after the colon: valid SSE
   const ok = sse([{ type: "response.created", response: { id: "gen-ok" } }, { type: "response.completed", response: { id: "gen-ok", model: "m", usage: { input_tokens: 10, output_tokens: 5, cost: 0.02 } } }]);
-  const boom = sse([{ type: "error", error: { code: "server_error", message: "boom" } }]);
-  let answers = [];
+  const error = (code, gen) => (res) => { res.writeHead(200, { "content-type": "text/event-stream", ...(gen ? { "x-generation-id": gen } : {}) }); res.end(`: OPENROUTER PROCESSING\n\n${sse([{ type: "error", error: { code, message: "secret prompt text" } }])}`); };
+  const send = (body, headers = {}) => (res) => { res.writeHead(200, { "content-type": "text/event-stream", ...headers }); res.end(body); };
+  let answers = [], posts = 0;
   const upstream = await serve((req, res) => { req.resume(); req.on("end", () => {
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    res.end(`: OPENROUTER PROCESSING\n\n${answers.shift()}`);
+    if (req.method === "GET") return res.writeHead(404).end(); // OpenRouter has no record of the generation
+    posts++;
+    answers.shift()(res);
   }); });
   const logged = [];
-  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, retryDelaysMs: [0], log: (m, f) => logged.push([m, f]) });
+  let now = Date.parse("2026-11-21T18:00:00Z");
+  const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, retryDelaysMs: [0], streamIdleMs: 300, firstEventMs: 30, now: () => now, log: (m, f) => logged.push([m, f]) });
   const front = await serve((req, res) => gw.handle(req, res));
-  t.after(() => { upstream.s.close(); front.s.close(); gw.close(); });
+  t.after(() => { upstream.s.closeAllConnections?.(); upstream.s.close(); front.s.close(); gw.close(); });
   const token = mintToken("job-secret", { kind: "reviewer" });
   const call = async () => { const r = await fetch(`${front.url}/api/v1/responses`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ model: "m", stream: true, input: [] }) }); return { status: r.status, text: await r.text() }; };
-  const rows = () => gw.db.prepare("SELECT status, cost_usd, input, output FROM calls ORDER BY rowid").all().map((x) => ({ ...x }));
+  const rows = () => gw.db.prepare("SELECT status, cost_usd, gen FROM calls ORDER BY rowid").all().map((x) => [x.status, x.cost_usd > 0 && x.cost_usd < 0.001 ? "reserved" : x.cost_usd, x.gen]);
+  const fresh = () => gw.db.exec("DELETE FROM calls");
 
-  // The first event is an error: retried before any byte reaches the caller; the call bills only the answer that completed.
-  answers = [boom, ok];
+  // A transient error as the first event: retried before any byte reaches the caller. The discarded attempt named a
+  // generation, so it holds its reservation until OpenRouter's record settles it; the answer bills what OpenRouter billed.
+  answers = [error("server_error", "gen-boom"), send(ok)];
   const retried = await call();
   assert.equal(retried.status, 200);
-  assert.doesNotMatch(retried.text, /boom/);
+  assert.doesNotMatch(retried.text, /secret prompt/);
   assert.match(retried.text, /response\.completed/);
-  assert.deepEqual(rows(), [{ status: "ok", cost_usd: 0.02, input: 10, output: 5 }]);
-  assert.match(logged.find(([m]) => m === "upstream retry")[1].stream_error, /boom/);
+  assert.deepEqual(rows(), [["ok", 0.02, "gen-ok"], ["stream_failed", "reserved", "gen-boom"]]);
+  assert.equal(logged.find(([m]) => m === "upstream retry")[1].stream_error, "server_error");
 
-  // Errors on every attempt: passed through once retries run out, settled free as an upstream error.
-  answers = [boom, boom];
-  assert.match((await call()).text, /boom/);
-  // A stream that ends cleanly with neither usage nor a finish event: free, and its last data line logged.
-  answers = [sse([{ type: "response.created", response: { id: "gen-gone" } }])];
+  // A permanent error (a string code) goes straight through: one request. It named a generation: held, then settled free once
+  // OpenRouter still has no record of it after the true-up window.
+  fresh(); posts = 0;
+  answers = [error("invalid_prompt", "gen-bad")];
+  assert.match((await call()).text, /invalid_prompt/);
+  assert.equal(posts, 1);
+  assert.deepEqual(rows(), [["stream_failed", "reserved", "gen-bad"]]);
+  await gw.trueUp();
+  assert.equal(rows()[0][0], "stream_failed", "inside the window OpenRouter's record may still appear");
+  now += 31 * 60_000;
+  await gw.trueUp();
+  assert.deepEqual(rows(), [["upstream_error", 0, "gen-bad"]]);
+  assert.doesNotMatch(JSON.stringify(logged), /secret prompt/, "provider and model text stay out of the journal");
+
+  // A clean end with neither usage nor a finish, no generation named: free, its last event's type logged.
+  fresh();
+  answers = [send(sse([{ type: "response.created", response: { id: "resp-1" } }]))];
   assert.equal((await call()).status, 200);
-  assert.deepEqual(rows().slice(1), [{ status: "upstream_error", cost_usd: 0, input: 0, output: 0 }, { status: "upstream_error", cost_usd: 0, input: 0, output: 0 }]);
-  assert.match(logged.filter(([m]) => m === "upstream stream error").at(-1)[1].last, /gen-gone/);
+  assert.deepEqual(rows(), [["upstream_error", 0, null]]);
+  assert.equal(logged.filter(([m]) => m === "upstream stream error").at(-1)[1].reason, "no usage or finish; last event: response.created");
+
+  // Keep-alives past firstEventMs: the stream is passed through as it comes, and still bills.
+  fresh();
+  answers = [(res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.write(": OPENROUTER PROCESSING\n\n"); setTimeout(() => res.end(ok), 100); }];
+  const slow = await call();
+  assert.match(slow.text, /^: OPENROUTER PROCESSING[\s\S]*response\.completed/);
+  assert.deepEqual(rows(), [["ok", 0.02, "gen-ok"]]);
+
+  // A stall before the first event is a cut like any other: settled at its reservation with the header's generation id.
+  fresh();
+  answers = [(res) => { res.writeHead(200, { "content-type": "text/event-stream", "x-generation-id": "gen-stall" }); res.write(":\n\n"); }];
+  await call().catch(() => {});
+  for (let i = 0; i < 100 && gw.inflight() > 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(rows(), [["upstream_aborted", "reserved", "gen-stall"]]);
 });
