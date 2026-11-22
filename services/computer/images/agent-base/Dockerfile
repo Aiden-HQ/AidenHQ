@@ -7,10 +7,10 @@ FROM ${BASE}
 # file, binutils (strings, readelf) and sqlite3: the commands Engineer jobs reached for most and didn't find (job logs,
 # 2026-11-16: file 42 times, strings 11, sqlite3 4). bubblewrap and socat: Claude Code's sandbox for a code review's Bash
 # (modules/code-review/recipe/engines.ts).
-# krb5 1.22.3-1 fixes seven high GSS-API/RPC CVEs (CVE-2026-107778, -112314, -112320, -112321, -112322, -112323, -119079).
-# The browser base already carries 1.22.1-3, and naming an installed package is what upgrades it, so all four the image
-# carries are named: libkrb5-3 asks for libk5crypto3 >= 1.20, not 1.22.3, so it does not come up through the others. The
-# build then fails rather than ship a stale mirror's copy.
+# krb5 1.22.3-1 (uploaded 2026-11-21; the security fix takes it inside the 7-day rule) fixes seven high GSS-API/RPC CVEs
+# (CVE-2026-107778, -112314, -112320, -112321, -112322, -112323, -119079). The browser base already carries 1.22.1-3, and
+# naming an installed package is what upgrades it, so all four the image carries are named: libkrb5-3 asks for libk5crypto3
+# >= 1.20, not 1.22.3, so it does not come up through the others. The build then fails rather than ship a stale mirror's copy.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq ripgrep ffmpeg python3 python3-venv procps less file binutils sqlite3 bubblewrap socat \
       libkrb5-3 libgssapi-krb5-2 libkrb5support0 libk5crypto3 \
