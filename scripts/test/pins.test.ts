@@ -98,6 +98,73 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
     assert.deepEqual(sources, ["http://archive.ubuntu.com/ubuntu noble-updates main"], why);
   }
 
+  // A numeric suite tag is that suite: `debian:12` is bookworm and `ubuntu:24.04` is noble, so neither falls to the
+  // default. Without this a Debian 12 stage was dated from Ubuntu's noble pockets — the same mis-dating the FROM base fixes.
+  // A point release keeps its suite: Debian by its major (`12.7`), Ubuntu by its year.minor (`24.04.1`).
+  for (const [base, distro, codename] of [
+    ["debian:12", "debian", "bookworm"], ["debian:12-slim", "debian", "bookworm"], ["debian:13", "debian", "trixie"],
+    ["debian:12.7", "debian", "bookworm"], ["debian:12.7-slim", "debian", "bookworm"], ["debian:13.1", "debian", "trixie"],
+    ["ubuntu:24.04", "ubuntu", "noble"], ["ubuntu:22.04", "ubuntu", "jammy"], ["ubuntu:24.04.1", "ubuntu", "noble"],
+  ]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], [distro, codename], base);
+  }
+  // An end-of-life LTS still maps by its number: `ubuntu:18.04` is bionic, and the archive still serves it.
+  for (const [base, codename] of [["ubuntu:18.04", "bionic"], ["ubuntu:18.04.6", "bionic"], ["ubuntu:16.04", "xenial"]]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.5+dfsg-2\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], ["ubuntu", codename], base);
+  }
+  // A retired interim release is served from old-releases only, so a host that answers 404 for it is skipped rather than
+  // ending the lookup: `ubuntu:24.10` still dates from oracular's index on the retirement host.
+  {
+    const [p] = scanFile("Dockerfile", `FROM ubuntu:24.10${d}\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], ["ubuntu", "oracular"]);
+    const tried: string[] = [];
+    const dated = await dateApt(p, async (_k, _n, { source }) => {
+      tried.push(source);
+      // The archive has no oracular index at all; old-releases does.
+      if (source.includes("archive.ubuntu.com")) throw Object.assign(new Error("404"), { status: 404, noIndex: true });
+      return { published: day(30), via: "test" };
+    });
+    assert.equal(dated.published, day(30));
+    assert.deepEqual(tried.slice(0, 2), ["http://archive.ubuntu.com/ubuntu oracular-updates main", "http://old-releases.ubuntu.com/ubuntu oracular-updates main"]);
+    // Only a missing index is skipped: a package the index lists but whose .deb cannot be fetched still fails, so the
+    // age check reports a real lookup failure instead of warning that nothing lists the version.
+    const [latent] = scanFile("Dockerfile", `FROM ubuntu:24.04${d}\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt");
+    let n = 0;
+    await assert.rejects(() => dateApt(latent, async (_k, _n, { source }) => {
+      n++;
+      if (source.includes("noble-updates main") && !source.includes("universe")) throw Object.assign(new Error("404 from the .deb"), { status: 404 });
+      throw Object.assign(new Error("no such pocket"), { status: 404, noIndex: true });
+    }), /404 from the \.deb/);
+    assert.ok(n > 0);
+
+    // A file's own repository that 404s still fails: only a distro pocket may be skipped.
+    const own = scanFile("Dockerfile", `FROM ubuntu:24.10${d}\nRUN echo "deb [trusted=yes] https://gone.example/apt oracular main" >/etc/apt/sources.list.d/r.list\nRUN apt-get install -y jq=1.7.1-3\n`).pins.filter((x) => x.kind === "apt")[0];
+    await assert.rejects(() => dateApt(own, async () => { throw Object.assign(new Error("404"), { status: 404 }); }));
+  }
+
+  // A Debian suite deb.debian.org has dropped is read from the archive, where buster's own and security indexes are still
+  // served; a current suite keeps deb.debian.org and its debian-security pocket.
+  for (const [base, release, sources] of [
+    ["debian:10", "buster", ["http://archive.debian.org/debian buster main", "http://archive.debian.org/debian buster-updates main", "http://archive.debian.org/debian-security buster/updates main"]],
+    ["debian:12", "bookworm", ["http://deb.debian.org/debian bookworm main", "http://deb.debian.org/debian bookworm-updates main", "http://deb.debian.org/debian bookworm-security main"]],
+  ]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6-1\n`).pins.filter((x) => x.kind === "apt");
+    const tried = [];
+    // Nothing lists the version: the run ends undated, but every candidate was consulted in order.
+    await assert.rejects(() => dateApt(p, async (_k, _n, { source }) => { tried.push(source); throw Object.assign(new Error("not listed"), { notListed: true }); }));
+    assert.deepEqual([p.distro, p.release], ["debian", release], base);
+    assert.deepEqual(tried, sources, base);
+  }
+
+  // An unknown number keeps the default: a tag the map doesn't list is not guessed at, and neither is a non-numeric one
+  // that happens to name an Object.prototype key.
+  for (const base of ["debian:99", "debian:12a", "debian:constructor", "ubuntu:__proto__", "ubuntu:toString", "ubuntu:24.04.1.5x"]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], [undefined, "noble"], base);
+  }
+
   // The last FROM is the stage the pin runs in: an earlier Debian base doesn't date a later Ubuntu one, and vice versa.
   const [last] = scanFile("Dockerfile", `FROM debian:bookworm${d} AS tools\nFROM ubuntu:jammy${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
   assert.deepEqual([last.distro, last.release], ["ubuntu", "jammy"]);
