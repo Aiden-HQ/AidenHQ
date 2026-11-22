@@ -297,6 +297,14 @@ test("pins: only a file a pipeline writes counts, not one it copies", () => {
   assert.match(fdQuotedResult.problems[0], /install foo/);
   const fdQuotedPin = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>&"1" /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
   assert.deepEqual(scanFile("Dockerfile", fdQuotedPin).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  // The shell accepts whitespace between the duplication operator and its operand, so `2>& 1` and `2>& "1"` are the
+  // same redirect as `2>&1` and neither ends the operand list.
+  const fdSpaced = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>& 1 /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  const fdSpacedResult = scanFile("Dockerfile", fdSpaced);
+  assert.equal(fdSpacedResult.problems.length, 1);
+  assert.match(fdSpacedResult.problems[0], /install foo/);
+  const fdSpacedQuoted = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | tee 2>& "1" /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", fdSpacedQuoted).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
   const unfed = `FROM debian:bookworm${d}\nRUN echo 'deb https://discarded.example/apt bookworm main' | tee /etc/apt/sources.list.d/vendor.list < /dev/null\nRUN apt-get install -y foo=1.0\n`;
   const unfedResult = scanFile("Dockerfile", unfed);
   assert.deepEqual(unfedResult.problems, []);
@@ -646,6 +654,17 @@ test("pins: a quoted descriptor restores stdout, a RUN verb is any case, and rac
   assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN ${D} > ${src} | true > ${src}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
   // A later write the scanner can't read but which certainly replaces the file (not a race) clears the earlier URL.
   assert.deepEqual(scanFile("Dockerfile", `${base}\nRUN ${D} > ${src}\nRUN cat /tmp/vendor.list > ${src}\nRUN apt-get install -y foo=1.0\n`).pins.filter((p) => p.kind === "apt")[0].sources, []);
+  // A `cat` that copies a file this stage wrote carries that file's repositories: the destination takes the vendor URL
+  // the source held, so a pin is still dated from it after the source is removed.
+  const dir = "/etc/apt/sources.list.d";
+  const copied = [
+    `RUN ${D} > ${dir}/vendor.list`,
+    `RUN ${D} > ${dir}/other.list`,
+    `RUN cat ${dir}/vendor.list > ${dir}/other.list`,
+    `RUN rm ${dir}/vendor.list`,
+    "RUN apt-get install -y foo=1.0",
+  ].join("\n");
+  assert.deepEqual(scanFile("Dockerfile", `${base}\n${copied}\n`).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
 });
 
 test("pins: a removal's reach ends at each install, not at any later ||", () => {

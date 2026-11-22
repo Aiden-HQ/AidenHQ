@@ -147,7 +147,7 @@ const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
 // two stdout redirects), and `none` when it adds no bytes without truncating (`tee -a … < /dev/null`), which leaves the
 // file as it was. `text` is the content when we can read it (a here-document's body). A file that ends up empty adds no
 // repository.
-interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none"; text?: string; retain?: boolean }
+interface Written { path: string; file?: string; append: boolean; content: "deb" | "unknown" | "empty" | "none"; text?: string; retain?: boolean; entries?: string[] }
 // `>|` is bash's noclobber override: still a truncating write to the file it names.
 const REDIRECT = /(?<!>)(\d*)(>>?\|?)\s*("[^"]+"|'[^']+'|[^\s;|&)<>]+)/g;
 // A command's stdout as the shell leaves it, walked in order: fd 1 starts on the pipe, a file redirect moves it to
@@ -228,15 +228,15 @@ const writtenKind = (text: string): Pick<Written, "content" | "text"> => {
 // `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write; `file` is set only for a
 // sources.list.d name, and the caller keeps `.list` and `.sources`, the only names APT loads. `body` is the here-document
 // the logical line carries, which is what `cat > file <<EOF` or `tee file <<EOF` writes.
-function writtenFiles(segment: string, body?: string): Written[] {
+function writtenFiles(segment: string, body?: string, knownSource?: (path: string) => string[] | undefined): Written[] {
   const out: Written[] = [];
   // Every write's path and the command that made it, so a name two commands write can be spotted as a race.
   const writes: { path: string; cmd: number }[] = [];
   // An append of nothing adds no bytes: `tee -a file < /dev/null` leaves the file as it was.
-  const add = (path: string, append: boolean, written: Pick<Written, "content" | "text">, cmd?: number) => {
+  const add = (path: string, append: boolean, written: Pick<Written, "content" | "text" | "entries">, cmd?: number) => {
     const file = /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(path)?.[1];
     const content = append && written.content === "empty" ? "none" as const : written.content;
-    out.push({ path, ...(file ? { file } : {}), append, content, ...(written.text !== undefined ? { text: written.text } : {}) });
+    out.push({ path, ...(file ? { file } : {}), append, content, ...(written.text !== undefined ? { text: written.text } : {}), ...(written.entries ? { entries: written.entries } : {}) });
     writes.push({ path, cmd: cmd ?? 0 });
   };
   // Quoted text is data, not shell syntax: `echo 'a > b'` writes nothing. Each quoted run is masked so redirects and
@@ -252,9 +252,10 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
   // target.
   // Length-preserving, so an index into `clean` is the same index into `code`.
-  // A duplication's operand may be quoted too (`2>&"1"` is the same as `2>&1`), and a quoted run is masked here, so
-  // the quoted content is read back to tell a descriptor number from an ambiguous redirect, which bash rejects.
-  const clean = code.replace(/\d*>&(?:\uE000(\d+)\uE001|(\d+))/g, (d: string, q: string | undefined) => (q === undefined || /^\d+$/.test(quoted[Number(q)]!)) ? " ".repeat(d.length) : d);
+  // A duplication's operand may be quoted or spaced (`2>&"1"` and `2>& 1` are the same as `2>&1`), and a quoted run is
+  // masked here, so the quoted content is read back to tell a descriptor number from an ambiguous redirect, which bash
+  // rejects.
+  const clean = code.replace(/\d*>&[ \t]*(?:\uE000(\d+)\uE001|(\d+))/g, (d: string, q: string | undefined) => (q === undefined || /^\d+$/.test(quoted[Number(q)]!)) ? " ".repeat(d.length) : d);
   // The pipeline elements of the line, with the operator before each: one ends a chain (`;`), the next reads the previous
   // one's stdout (`|`).
   const parts: { text: string; start: number; end: number; op?: string }[] = [];
@@ -293,7 +294,7 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // Its stdin redirects name an input, not an operand: `cat 0</dev/null` has no file operand, and `0` is the descriptor.
     .replace(/(?<![0-9<])\d*<(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g, " ")
     .replace(/^\s*(?:RUN\s+)?cat\b/i, " ");
-  const catInput = (piece: string): Pick<Written, "content"> | undefined => {
+  const catInput = (piece: string): Pick<Written, "content" | "entries"> | undefined => {
     // Its input files: any `<`-redirect and its positional operands (`cat /tmp/x`, `cat </tmp/x`), with flags dropped
     // (`cat -n f`, `cat -- -x`: a lone `--` ends the options, and `-` names stdin).
     const REDIR = /(?<![0-9<])(?:0<|<)(?![<&])\s*("[^"]*"|'[^']*'|[^\s<>&|;]+)/g;
@@ -315,11 +316,21 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // Its output is known empty only when every input it reads is: each file operand, and stdin when read (a redirect to
     // `/dev/null`, else the pipe — which a bare `cat` passes on by returning nothing here).
     const inputs = [...files, ...(stdin && stdinFile !== undefined ? [stdinFile] : [])];
-    // A file operand or a `<`-redirect to anything but `/dev/null` is content we can't read, whatever the pipe holds.
-    if (inputs.some((f) => f !== "/dev/null")) return { content: "unknown" };
-    // Only `/dev/null` was read. A `-` operand (or no operand at all) reads stdin as well: when nothing overrides stdin
-    // (`cat </dev/null` does), the piped bytes are still its output, so the caller passes them through — a bare list
-    // beside them adds nothing. Otherwise the output is known empty: `cat /dev/null > f` truncates f to nothing.
+    // A file operand or a `<`-redirect names content we can read only when this stage wrote that file: a source the
+    // scanner holds carries its repositories (`cat vendor.list > dest.list` copies the `deb` line), while a name the
+    // stage never wrote — or one it holds without readable entries (`COPY --from`, a copied `.sources` with no URIs) —
+    // is content we can't read, whatever the pipe holds.
+    const entries: string[] = [];
+    for (const f of inputs) {
+      if (f === "/dev/null") continue;
+      const held = knownSource?.(f);
+      if (!held?.length) return { content: "unknown" };
+      entries.push(...held);
+    }
+    // Only `/dev/null` and tracked files were read. A `-` operand (or no operand at all) reads stdin as well: when nothing
+    // overrides stdin (`cat </dev/null` does), the piped bytes are still its output, so the caller passes them through — a
+    // bare list beside them adds nothing. Otherwise the output is exactly those files, known empty when they were empty.
+    if (entries.length) return { content: "deb", entries };
     return stdin && stdinFile === undefined ? undefined : { content: "empty" };
   };
   // What reaches pipeline element i's stdout: nothing when its own last command redirects it, known content from a
@@ -375,7 +386,7 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // before it runs it, so a truncation of a path lands before a write that takes stdout there, whatever order the two
   // were written in. The span records which command it belongs to — writes from different pipeline stages are not
   // ordered against each other.
-  interface Entry { path: string; append: boolean; takes: boolean; cmd: number; content: Pick<Written, "content" | "text"> }
+  interface Entry { path: string; append: boolean; takes: boolean; cmd: number; content: Pick<Written, "content" | "text" | "entries"> }
   const entries: Entry[] = [];
   redirects.forEach((m) => {
     const append = m[2] === ">>";
@@ -400,10 +411,10 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // pipe feeds it — `catInput` answers nothing only for that pass-through case.
     const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
     const catRead = passThrough ? catInput(catText) : undefined;
-    const through: Pick<Written, "content" | "text"> | undefined = passThrough
+    const through: Pick<Written, "content" | "text" | "entries"> | undefined = passThrough
       ? catRead ?? flow(part - 1)
       : own?.content === "deb" || own?.content === "unknown" ? own : undefined;
-    const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? through;
+    const fed: Pick<Written, "content" | "text" | "entries"> | undefined = hereText ?? through;
     // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with
     // `2> f 1>&2` the `2>` names f and `1>&2` moves stdout there, so f holds the line. When stdout goes elsewhere the
     // file is left empty for a truncating stdout redirect, but a redirect on another descriptor (`2> f`, `3> f`) may
@@ -602,7 +613,9 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
     // What a command reads is not what it writes: the file a pipeline's `tee` writes carries its `deb` line, while a
     // source file it only copies for diagnostics adds no repository.
     const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
-    const files = writtenFiles(segment, body);
+    // What a `cat` of a file this stage wrote copies: its filed entries, and undefined for a file it never wrote.
+    const knownSource = (path: string) => { const name = sourceName(path); return name && state.files.has(name) ? (state.entries.get(name) ?? []) : undefined; };
+    const files = writtenFiles(segment, body, knownSource);
     // Only `.list` and `.sources` are loaded: a write to `vendor.list.disabled` is a repository neither APT nor a later
     // install sees, so it neither requires pins nor dates them.
     const loaded = files.filter((w) => w.file && /\.(list|sources)$/.test(w.file));
@@ -624,7 +637,7 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       for (const w of loaded) {
         if (w.content === "none") continue;
         // A here-document's body is what it writes: its `deb` lines and its Deb822 stanzas.
-        const written = w.content === "deb" ? (w.text === undefined ? debs : repoEntries(w.text).repos) : [];
+        const written = w.entries ?? (w.content === "deb" ? (w.text === undefined ? debs : repoEntries(w.text).repos) : []);
         // `>>` to an empty stream (`cat </dev/null >> f`, `tee -a f </dev/null`) leaves the file as it was on disk,
         // entries and presence alike; only a truncating write (`> f`, a plain `tee`) removes it.
         if (w.append && w.content === "empty") continue;
