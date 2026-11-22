@@ -105,9 +105,8 @@ API-posted check: such a check is filed in the head's older check suite for the 
 the posting run; and it has no job, so its `detailsUrl` is its own `/runs/<check id>` page rather than
 `…/actions/runs/<run>/job/<job>`. Requiring either refuses every real per-suite check (measured on PR #1243 at
 `d275911`, and at `5c9381c`). The residual class — a same-repo PR that otherwise reaches a workflow token with
-`checks: write` and posts a check at another head — is the owner's accepted policy
-([PR #1281](https://github.com/Aiden-HQ/AidenHQ/pull/1281)'s merge note,
-[PR #1291](https://github.com/Aiden-HQ/AidenHQ/pull/1291)); this binding does not claim to be unforgeable.
+`checks: write` and posts a check at another head — is stated here rather than hidden: this binding does not claim to
+be unforgeable.
 
 ## `POST /v1/tasks` — file a task
 

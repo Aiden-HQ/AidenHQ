@@ -79,7 +79,7 @@ const withTimeout = <T>(p: () => Promise<T>, ms: number): Promise<T | null | und
  * reads the trusted base-map plan and runs no PR code, and the practical forgery path — a PR adding a `checks: write` step to
  * its own run — needs a `ci.yml` edit, which the `.github/` guard below refuses. This is deliberately not called unforgeable:
  * a same-repo PR that otherwise reaches a workflow token with `checks: write` can post a check at any head, and no field on a
- * check record separates that from CI's own. That class is the owner's accepted policy (PR #1281's merge note, PR #1291).
+ * check record separates that from CI's own.
  *
  * Two bindings that would look stronger are not usable, and their absence is deliberate, not an oversight. A check posted
  * through the API is filed by GitHub under the head's existing check suite for the posting App — on this repo, `community.yml`'s
