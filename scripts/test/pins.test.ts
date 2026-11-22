@@ -369,6 +369,14 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
   assert.deepEqual(scanFile("Dockerfile", drained).problems, []);
   const carried = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
   assert.equal(scanFile("Dockerfile", carried).problems.length, 1);
+  // A copy-only stage passes on what the pipe gives it, repository line included, so a pin after it still dates from
+  // that repository rather than from nothing.
+  const copied = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo=1.0\n`;
+  assert.deepEqual(scanFile("Dockerfile", copied).pins.filter((p) => p.kind === "apt")[0].sources, ["https://repo.example/apt bookworm main"]);
+  // Descriptor duplication is read in shell order: `3>&1 … 1>&3` puts stdout back on the pipe, so the copy stage holds
+  // the repository and the next unpinned install is a problem.
+  const restored = `FROM debian:bookworm${d}\nRUN echo 'deb https://repo.example/apt bookworm main' 3>&1 >/tmp/log 1>&3 | cat > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`;
+  assert.equal(scanFile("Dockerfile", restored).problems.length, 1);
   // A quoted `;` or `&&` is text: it does not start a new command, so a message naming `rm` removes nothing.
   for (const message of [`echo 'note; rm -f /etc/apt/sources.list.d/vendor.list'`, `echo 'test && rm -f /etc/apt/sources.list.d/vendor.list'`])
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${message}\nRUN apt-get install -y foo\n`).problems.length, 1, message);
