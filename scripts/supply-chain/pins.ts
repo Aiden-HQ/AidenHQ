@@ -69,12 +69,18 @@ const DEFAULT_RELEASE = "noble"; // a host file that names no release: Ubuntu 24
 // and {codename}).
 const onRelease = (s: string, release: string, distro = "ubuntu") => s.replace(/\{(distro|codename)\}/g, (x: string, k: string) => (k === "distro" ? distro : release)).replace(/\$\{?(\w+)\}?/g, (x: string, k: string) => (({ codename: release, VERSION_CODENAME: release, arch: "amd64" }) as Record<string, string>)[k] ?? x).replace(/"?\$\(\.\s*\/etc\/os-release.*$/, release);
 // The release's own repositories, tried after any the file adds: where a pinned distro package (fail2ban=…) is dated.
+// A suite deb.debian.org no longer carries (`DEBIAN_ARCHIVE`) is read from archive.debian.org instead.
 // Debian's point releases fold some fixes into the release suite, while the rest live in its -updates pocket and in the
 // -security pocket (served from debian-security, which best-version.ts reads for that suite name); both publish their
 // amd64 index as Packages.xz only, decoded with the system `xz`. A release with no such pocket (sid) has no index there,
 // and the pin then warns as undated.
+const DEBIAN_ARCHIVE = new Set(["buster", "stretch", "jessie"]);
 const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
-  ? [`http://deb.debian.org/debian ${r} main`, `http://deb.debian.org/debian ${r}-updates main`, `http://deb.debian.org/debian ${r}-security main`]
+  ? DEBIAN_ARCHIVE.has(r)
+    // A suite deb.debian.org has stopped serving lives on at the archive only, and its -security pocket is reached
+    // under `${suite}/updates`. Reading the archive is what lets a buster pin still be dated rather than merely undated.
+    ? [`http://archive.debian.org/debian ${r} main`, `http://archive.debian.org/debian ${r}-updates main`, `http://archive.debian.org/debian-security ${r}/updates main`]
+    : [`http://deb.debian.org/debian ${r} main`, `http://deb.debian.org/debian ${r}-updates main`, `http://deb.debian.org/debian ${r}-security main`]
   : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
 
 // The distro and codename a Dockerfile FROM installs: Docker Hub's debian:<codename> (sid, bookworm, trixie, …) and
@@ -82,7 +88,7 @@ const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
 // (`debian:12` is bookworm, `ubuntu:24.04` is noble). Anything else, a local stage or an unread codename: none.
 const DISTRO_TAGS = new Map<string, [string, string[], Map<string, string>]>([
   ["debian", ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"], new Map([["12", "bookworm"], ["13", "trixie"], ["11", "bullseye"], ["10", "buster"], ["14", "forky"]])]],
-  ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "oracular", "plucky", "questing", "resolute"], new Map([["24.04", "noble"], ["22.04", "jammy"], ["20.04", "focal"], ["24.10", "oracular"], ["25.04", "plucky"], ["25.10", "questing"], ["26.04", "resolute"]])]],
+  ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "bionic", "xenial", "oracular", "plucky", "questing", "resolute"], new Map([["24.04", "noble"], ["22.04", "jammy"], ["20.04", "focal"], ["18.04", "bionic"], ["16.04", "xenial"], ["24.10", "oracular"], ["25.04", "plucky"], ["25.10", "questing"], ["26.04", "resolute"]])]],
 ]);
 // A numeric tag names its suite by its leading number: Debian's whole major covers its point releases (`12.7` is
 // bookworm), and Ubuntu's year.minor covers its point releases (`24.04.1` is noble). A tag of any other shape is not one.

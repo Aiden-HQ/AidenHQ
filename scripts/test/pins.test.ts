@@ -109,6 +109,25 @@ test("pins: a Dockerfile apt pin is dated from its FROM base's distro and codena
     const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6.1-1\n`).pins.filter((x) => x.kind === "apt");
     assert.deepEqual([p.distro, p.release], [distro, codename], base);
   }
+  // An end-of-life LTS still maps by its number: `ubuntu:18.04` is bionic, and the archive still serves it.
+  for (const [base, codename] of [["ubuntu:18.04", "bionic"], ["ubuntu:18.04.6", "bionic"], ["ubuntu:16.04", "xenial"]]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.5+dfsg-2\n`).pins.filter((x) => x.kind === "apt");
+    assert.deepEqual([p.distro, p.release], ["ubuntu", codename], base);
+  }
+  // A Debian suite deb.debian.org has dropped is read from the archive, where buster's own and security indexes are still
+  // served; a current suite keeps deb.debian.org and its debian-security pocket.
+  for (const [base, release, sources] of [
+    ["debian:10", "buster", ["http://archive.debian.org/debian buster main", "http://archive.debian.org/debian buster-updates main", "http://archive.debian.org/debian-security buster/updates main"]],
+    ["debian:12", "bookworm", ["http://deb.debian.org/debian bookworm main", "http://deb.debian.org/debian bookworm-updates main", "http://deb.debian.org/debian bookworm-security main"]],
+  ]) {
+    const [p] = scanFile("Dockerfile", `FROM ${base}${d}\nRUN apt-get install -y jq=1.6-1\n`).pins.filter((x) => x.kind === "apt");
+    const tried = [];
+    // Nothing lists the version: the run ends undated, but every candidate was consulted in order.
+    await assert.rejects(() => dateApt(p, async (_k, _n, { source }) => { tried.push(source); throw Object.assign(new Error("not listed"), { notListed: true }); }));
+    assert.deepEqual([p.distro, p.release], ["debian", release], base);
+    assert.deepEqual(tried, sources, base);
+  }
+
   // An unknown number keeps the default: a tag the map doesn't list is not guessed at, and neither is a non-numeric one
   // that happens to name an Object.prototype key.
   for (const base of ["debian:99", "debian:12a", "debian:constructor", "ubuntu:__proto__", "ubuntu:toString", "ubuntu:24.04.1.5x"]) {
