@@ -10,7 +10,7 @@ unless: { fields: { module: engineering } }
 
 Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them under `engineers`). The task itself carries the full repository (`owner/name`), the branch, each change with how to verify it, and what to publish (`pr`): Engineers can't read other tasks. You read, update and close every other task yourself, from the Engineer's report.
 
-- State each change once; say what the code already does as what it must keep doing.
+- State each change once; say what the code already does as what it must keep doing. Leave "only X changes" claims out of a brief that also changes that part (the reviewer rejects the contradiction).
 - Give the files (and lines) and the PR or commit that last changed them; for a restore, the removing commit.
 - The PR body names each issue it closes as `Fixes <owner>/<repo>#<number>`, one line each.
 - Brief and PR body are plain facts addressed to the Engineer; a note aimed at the reviewer is treated as steering and rejects the card.
@@ -43,8 +43,8 @@ Work for the Engineer, DevOps Engineer and UI/UX Designer is graded however you 
   - app: deployed at the merged commit, healthy, no open incident, the asked behaviour visible;
   - apply: the apply card applied, the change is the asked one;
   - file: attached, holds what was asked, says where it came from.
-- **Evidence the grader can read:** the diff, CI checks by name, a test in the diff, behaviour as a page path, a branch or PR (not a sha). It runs nothing. Express absence as a diff ("removes every `X` line from docs/a.md"); name the PR merged into its base for merge-commit changes and a "deployed at the merged commit" for post-merge behaviour. `task_amend_rubric` replaces an unsatisfiable filed rubric while the grade is unsettled.
-- **Pages:** a list, board or feed item needs the path that isolates it (`/slipped?q=CMBT`); captures hold 120,000 characters a page and 300,000 across the rubric.
+- **Evidence the grader can read:** the diff, CI checks by name, a test in the diff, behaviour as a page path, a branch or PR (not a sha). It runs nothing. Express absence as a diff ("removes every `X` line from docs/a.md"); for what a merge commit alone changes, a check that exists only on the merge, or a file in another repository, name the in-scope equivalent (the PR merged into its base, "deployed at the merged commit"). `task_amend_rubric` replaces an unsatisfiable filed rubric while the grade is unsettled.
+- **Pages:** a list, board or feed item needs the path that isolates it as a bare path with its query (`/slipped?q=CMBT`; hosts and anchors are dropped); captures hold 120,000 characters a page and 300,000 across the rubric.
 - **Merge jobs:** criteria on what the merge shows (PR merged into its base, head and merge commit, the gate's reply), never a card id.
 - A graded task you finish yourself waits for the grader; an assignee's is closed by its grade.
 
