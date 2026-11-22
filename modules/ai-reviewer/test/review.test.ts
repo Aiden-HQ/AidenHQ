@@ -92,6 +92,74 @@ test("the prompt asks for malice only and to approve when unsure", () => {
   assert.match(system, /Scope, design, quality and bugs are code review's and CI's job/);
 });
 
+test("the prompt says the card's reason is code's description of the plan and gate, not the change under review", () => {
+  const { system } = reviewPrompt({ policy: "p", card, diff: "+x", chain: "c" });
+  assert.match(system, /CARD block is code's own account of this write/);
+  assert.match(system, /reason:.* is code describing the plan and the gate for it/s);
+  assert.match(system, /not the change under review and not a request from the agent/);
+  assert.match(system, /never by itself a disabled check, a bypassed gate, injection followed or sabotage/);
+  assert.match(system, /A diff that weakens a check with no stated reason, or hides it, is still rejected/);
+  // The explained check change stays ordinary work, and the summary is not exempted with the reason.
+  assert.match(system, /a gate change that says what it does and why is ordinary work/);
+  assert.match(system, /summary or a label that hides what the change does is the sabotage/);
+});
+
+test("a finding quoting only the card's own reason is dropped; the change, the request and the card summary still count", async () => {
+  // The product's own gate sentence rides the card (issue #1449): it is not the change, so it cannot be a finding's quote.
+  const sentence = "once every named check has passed (skipped counts as passed)";
+  const carded = { ...card, sentence: "Merge 1 pull request", reason: `acme/aidenhq#39: On its head: 22 named checks, 21 passed, 1 skipped. Code merges it only at that head, ${sentence}` };
+  const answer = (findings) => ({ content: JSON.stringify({ decision: "reject", reason_code: "malicious", reason: "it skips a check", findings }) });
+  const fromCard = { issue: "skipped counts as passed", quote: "(skipped counts as passed)" };
+  const fromChain = { issue: "asked for it", quote: "merge it once its checks are green" };
+  const diff = "diff --git a/scripts/supply-chain/pins.ts b/scripts/supply-chain/pins.ts\n+    if (problems.length >= 0) continue;";
+  const chain = "Platform Engineer: fix one docs line, open the product PR and merge it once its checks are green.";
+  const out = await review({ card: carded, diff, chain, policy: "p", ask: async () => answer([fromCard]) });
+  assert.deepEqual([out.decision, out.findings], ["reject", []], "only the card's reason: dropped, the reject stays a reject");
+  const kept = await review({ card: carded, diff, chain, policy: "p", ask: async () => answer([fromCard, fromChain]) });
+  assert.deepEqual(kept.findings, [fromChain]);
+  // A summary that hides what the change does is the sabotage rule's own case, so its quote survives.
+  const sabotaging = { ...carded, sentence: "Routine docs tidy-up, no behaviour change" };
+  const summaryQuote = { issue: "the summary hides the weakened check", quote: "Routine docs tidy-up, no behaviour change" };
+  assert.deepEqual((await review({ card: sabotaging, diff, chain, policy: "p", ask: async () => answer([summaryQuote]) })).findings, [summaryQuote]);
+  // The same quote read with a tool (a large change's line, never inline) survives too: the tool answers are what the
+  // reviewer read, so a finding quoting one is kept.
+  const quoting = { issue: "skips every pin", quote: "if (problems.length >= 0) continue;" };
+  const huge = `diff --git a/scripts/supply-chain/pins.ts b/scripts/supply-chain/pins.ts\n+${Array.from({ length: 1200 }, () => `export const row = "${"v".repeat(120)}";`).join("\n+")}\n+    if (problems.length >= 0) continue;`;
+  assert.ok(huge.length > MAX_DIFF);
+  let asked = 0, user = "";
+  const tooled = await review({ card: carded, diff: huge, chain, policy: "p", ask: async (_m, p) => {
+    user = p.user; asked++;
+    assert.ok(!p.user.includes("if (problems.length >= 0) continue;"), "the target line is not inline");
+    p.tools.diff.run({ path: "scripts/supply-chain/pins.ts", from: 1150 });
+    return answer([quoting]);
+  } });
+  assert.deepEqual([tooled.decision, tooled.findings, asked], ["reject", [quoting], 1]);
+  assert.ok(user.includes("<<<CARD\n"), "the card block is unchanged");
+});
+
+test("a reject that rested only on the card's reason is re-asked with that line withheld, and the second answer stands", async () => {
+  const carded = { ...card, reason: "acme/aidenhq#39: Code merges it only at that head (skipped counts as passed)" };
+  const diff = "diff --git a/docs/glossary.md b/docs/glossary.md\n@@ -1 +1 @@\n-**Pinned**\n+**Pinned dependency**";
+  const chain = "Fix one docs line and merge it once its checks are green.";
+  const cardOnly = (findings) => ({ content: JSON.stringify({ decision: "reject", reason_code: "malicious", reason: "it skips a check", findings }) });
+  const prompts = [];
+  const v = await review({ card: carded, diff, chain, policy: "p", ask: async (_m, p) => (prompts.push(p.user), prompts.length === 1 ? cardOnly([{ issue: "skipped", quote: "(skipped counts as passed)" }]) : ok) });
+  assert.deepEqual([v.decision, v.code], ["approve", "clean"], "the false reject does not block the merge");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0]!, /reason: acme\/aidenhq#39: Code merges it only at that head \(skipped counts as passed\)/);
+  assert.match(prompts[1]!, /reason: \(withheld: code's own description of the plan and gate, never the change\)/);
+  // A quote of the whole displayed `reason: …` line is still the card's own line: it triggers the same retry, never a block.
+  let shownPrompts = 0;
+  const rendered = await review({ card: carded, diff, chain, policy: "p", ask: async (_m, p) => (shownPrompts++, shownPrompts === 1 ? cardOnly([{ issue: "skipped", quote: `reason: ${carded.reason}` }]) : ok) });
+  assert.deepEqual([rendered.decision, shownPrompts], ["approve", 2]);
+  // A real finding's quote from the change is a real reject: never re-asked.
+  const real = { issue: "skips every pin", quote: "if (problems.length >= 0) continue;" };
+  const realDiff = "diff --git a/scripts/supply-chain/pins.ts b/scripts/supply-chain/pins.ts\n+    if (problems.length >= 0) continue;";
+  let n = 0;
+  const rejected = await review({ card: carded, diff: realDiff, chain, policy: "p", ask: async () => (n++, cardOnly([real])) });
+  assert.deepEqual([rejected.decision, rejected.code, n, rejected.findings], ["reject", "malicious", 1, [real]]);
+});
+
 const fileDiff = (path, n, word = "row") => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1,${n} @@\n${Array.from({ length: n }, (_, i) => `+export const ${word}${i} = "${"v".repeat(60)}";`).join("\n")}`;
 
 test("a change over one call's budget: what fits is inline, the rest is named for the tools, and every line is reachable", () => {

@@ -78,7 +78,8 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
   const parts: Part[] = [];
   // A byte-identical copy of the product's CI template (checked in the runner's own clone) is Tier 0; any other `.github/`
   // change is the reviewer's (who flags one that weakens a check for the second reviewer).
-  if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir", `it changes ${workflow}`));
+  // A count, never the path: a file name is repo-controlled text, and the reviewer reads this reason as code's own account.
+  if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir", `it changes ${b.files.filter((f) => GITHUB.test(f)).length} file(s) under .github/`));
   if (inAgents) {
     if (b.empty) parts.push(T(1, "empty-repo", `${b.repo} is empty: the first push lands on its default branch`));
     // Straight onto the branch apps deploy from or merge into, past the PR and its checks: weakens the merge gate.
@@ -170,7 +171,8 @@ function mergeParts(p: Pr, s: State): Part[] {
   if (friction) return [friction];
   const parts: Part[] = [];
   const workflow = p.files.find((f) => GITHUB.test(f));
-  if (workflow && p.ciTemplate !== true) parts.push(T(1, "github-dir", `${ref} changes ${workflow}${listed ? ` (${LISTED})` : ""}`));
+  // A count, never the path (as above): the card reason is code's account, and a file name is repo-controlled text.
+  if (workflow && p.ciTemplate !== true) parts.push(T(1, "github-dir", `${ref} changes ${p.files.filter((f) => GITHUB.test(f)).length} file(s) under .github/${listed ? ` (${LISTED})` : ""}`));
   // Existing sensitivity alone doesn't make every merge the owner's: the reviewer reads it (and flags new reach).
   if (p.sensitive) parts.push(T(1, "sensitive-app", `${ref} is a sensitive app's repo (access, caps or connects to paperclip)`));
   // A head the runner didn't push (a fork, someone else's push, Dependabot's): the reviewer reads the diff first.
@@ -198,7 +200,9 @@ function productMergePart(p: Pr, ref: string) {
   if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
   const friction = mergeFriction(p, ref);
   if (friction) return friction;
-  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head, once every named check has passed (skipped counts as passed)`;
+  // Plain wording, and no "skipped counts as passed": the reviewer reads this line as code's description of the gate, and a
+  // sentence that reads as a weakened check made every product merge card a false reject (issue #1449).
+  const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head and only after every named check has finished without failure`;
   if (p.ownHead) return T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`);
   return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
 }
