@@ -79,6 +79,22 @@ which drops it. In every other mode (`local`, `public`, `cloudflare`, or tailsca
 app's port are the host's loopback and Docker bridges, so the app requires a signed identity and the deploy's identity
 probe requires it to refuse a token-less request.
 
+**An app that is not expected to serve HTTP** (not exposed, not shared, no `health.url`, no `api`; a database is the shape)
+does not have its ports fail the deploy for silence. A database answers its own protocol and hangs up on an HTTP request, so
+its `closed`/`silent` socket is recorded as a non-hard "not probed" finding naming that app-level reason, and the deploy is
+not rolled back for it. The skip is refused for any app that is exposed, shared, has a `health.url` or has an `api`: those
+apps could serve HTTP, and their silence fails closed exactly as before.
+
+The plaintext look cannot tell a database from a TLS listener that hangs up on a GET, so every socket that answered no HTTP
+gets a TLS ClientHello, on every app shape. A socket that answers with a TLS record is "answers HTTPS" and hard before any
+skip; only a socket that answered **neither HTTP nor TLS** is skipped, and only on an app the skip may cover. A socket that
+answered HTTP bytes at all — plaintext, over TLS, or without a counted status — is judged, never skipped, on every app shape.
+Every skipped port is a recorded non-hard finding, never a silent pass.
+
+**New installs.** Nothing to configure: the skip is decided from the registry alone, so it applies to an app the moment its
+registry entry has no `expose`, no `share.host`, no `health.url` and no `api`. An existing app that gains any of them takes
+the ordinary gate on its next deploy. There is no migration and no field to add.
+
 ## Agents (app_api, app_view)
 
 apps-mcp mints the agent's token itself (`modules/apps-platform/apps-mcp/src/identity.ts`) with its own Ed25519 key
