@@ -43,10 +43,9 @@ async function main(): Promise<{ out: string[]; code: number }> {
   if (ref !== `refs/heads/${asked}`) return { out: [`self-review: incomplete: ${asked} is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone`], code: 2 };
   const branch = asked, memo = join(git("rev-parse", "--absolute-git-dir"), "self-review.json");
   // One record per branch, so reviewing another branch in the same clone doesn't reset this one's incremental review.
-  let all: Record<string, { base?: string; head?: string; open?: number }> = {};
-  try { all = JSON.parse(readFileSync(memo, "utf8")); } catch {}
-  const last = all[branch] ?? {};
-  const remember = (open: number) => writeFileSync(memo, JSON.stringify({ ...all, [branch]: { base, head, open } }));
+  const records = (): Record<string, { base?: string; head?: string; open?: number }> => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } };
+  const last = records()[branch] ?? {};
+  const remember = (open: number) => writeFileSync(memo, JSON.stringify({ ...records(), [branch]: { base, head, open } })); // reread: another branch's record may have landed meanwhile
   const rerun = last.base === base && !!last.head && last.head !== head && (() => { try { git("merge-base", "--is-ancestor", last.head!, head); return true; } catch { return false; } })();
   const incremental = rerun && last.open === 0, from = incremental ? last.head! : base, effort = rerun ? AGAIN : FIRST;
   const at = `branch ${branch} base ${from.slice(0, 12)} (${incremental ? "since the last review" : "merge base"}) head ${head.slice(0, 12)}`;
