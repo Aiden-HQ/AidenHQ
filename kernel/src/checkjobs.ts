@@ -68,8 +68,8 @@ export const KINDS = {
   slug: /^[\w.-]{1,100}\/[\w.-]{1,100}$/,
   policy: /^[0-9a-f]{7,64}$/,
   dir: /^(\.|(?!.*(^|\/)\.\.(\/|$))[\w.-]+(\/[\w.-]+)*)$/,
-  /** A whole number (a PR's). */
-  int: /^[1-9][0-9]{0,9}$/,
+  /** A whole number (a PR's; 0: none yet, a pre-publish review's). */
+  int: /^(0|[1-9][0-9]{0,9})$/,
   /** Dollars, up to 4 decimals. */
   usd: /^[0-9]{1,4}(\.[0-9]{1,4})?$/,
   /** Short text with no control characters but newline and tab (data for the recipe, never a command). */
@@ -138,8 +138,12 @@ class CapReached extends Error {
   readonly cap: string;
   constructor(cap: string, reason: string) { super(reason); this.cap = cap; }
 }
-/** codehost-github's snapshot op: `repo` at commit `ref`, extracted into the empty folder `into` (no .git, no credentials). */
-export type Snapshot = (repo: string, ref: string, into: string) => Promise<void>;
+/** codehost-github's snapshot op: `repo` at commit `ref`, extracted into the empty folder `into` (no .git, no credentials).
+ * `from`: the commit is a job's unpublished branch, read from the bundle its box left in that workspace (box-bundle.ts). */
+export type Snapshot = (repo: string, ref: string, into: string, from?: Source) => Promise<void>;
+/** Where a check's head comes from when it isn't on the code host yet: a job's workspace (its task's identifier) and branch. */
+export type Source = { workspace: string; branch: string };
+const SOURCE = { workspace: /^[A-Za-z][A-Za-z0-9]*-\d+$/, branch: /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/ };
 
 export class CheckError extends Error {
   status: number;
@@ -365,6 +369,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   // Which spend limit the attempt ended at ("day", "month", …): a budget outcome, not the change's failure (a later ask runs
   // it again); NULL when it didn't end at one.
   if (!cols.has("capped")) db.exec("ALTER TABLE checks ADD COLUMN capped TEXT");
+  // Where its head comes from when a job's box handed it over unpublished (Source, JSON); NULL: the code host has it.
+  if (!cols.has("source")) db.exec("ALTER TABLE checks ADD COLUMN source TEXT");
   const facts = openFacts(db);
   /** The end of the attempt that started at `started` and its check.ended fact, in one transaction (a re-run reuses the id: its
    * start time is the version). False when a newer attempt has taken the row: this one's end is dropped. */
@@ -435,10 +441,11 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
 
   /** A recipe on `repo@head` (and its `base`, when the spec has one); passed on exit 0. Whether a declared check must run is the
    * base's to say, never the change's: a head that drops it, or whose package.json can't be read, fails. */
-  async function code(id: string, snapshot: Snapshot, r: Recipe, run: Run, repo: string, head: string, spec: Record<string, string>, dir: string, prior: number, minted: (runKey: string) => void, launched: Launch) {
+  async function code(id: string, snapshot: Snapshot, r: Recipe, run: Run, repo: string, head: string, spec: Record<string, string>, dir: string, prior: number, minted: (runKey: string) => void, launched: Launch, from?: Source) {
     const ws = join(dir, "ws"), was = join(dir, "base");
     mkdirSync(ws);
-    await snapshot(repo, head, ws);
+    // The head from its job's bundle when it isn't published yet; every other commit the spec names (its base) is the code host's.
+    await snapshot(repo, head, ws, from);
     // Each other commit the spec names, once: its tree for the recipe's history.
     const trees: Record<string, string> = {}, seen = new Set<string>();
     for (const [field, kind] of Object.entries(r.spec)) {
@@ -614,7 +621,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
         rmSync(dir, { recursive: true, force: true });
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         const snap = snapshot(r.module);
-        v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir, launched, caps) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at), launched);
+        v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir, launched, caps) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at), launched, r.source ? JSON.parse(r.source) as Source : undefined);
       }
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString(), ...(v.result !== undefined ? { result: resultHash(v.result) } : {}) });
       // A judged run's spend is its ledger's, every pass of it: recorded with the verdict so the check's total doesn't drop back to
@@ -649,11 +656,15 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   };
 
   return {
-    /** A check of `repo@head`: the one already asked for with this spec (running or done), else a new run. */
-    start(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown; task?: unknown }): CheckView {
+    /** A check of `repo@head`: the one already asked for with this spec (running or done), else a new run. `from`: the head is a
+     * job's unpublished branch (Source), which a module names from the job's own caller assertion. */
+    start(module: string, b: { repo?: unknown; head?: unknown; run?: unknown; spec?: unknown; task?: unknown; from?: unknown }): CheckView {
       const repo = String(b?.repo ?? ""), head = String(b?.head ?? ""), run = String(b?.run ?? "") as Run;
       const recipe = recipes()[run];
       if (b?.task !== undefined && !(typeof b.task === "string" && /^[\w-]{1,100}$/.test(b.task))) throw new CheckError(400, "bad-request", "task is a task id");
+      const f = b?.from as Partial<Source> | undefined;
+      if (f !== undefined && !(f && typeof f === "object" && SOURCE.workspace.test(String(f.workspace)) && SOURCE.branch.test(String(f.branch)))) throw new CheckError(400, "bad-request", "from is {workspace: a task's identifier, branch}");
+      const source = f ? JSON.stringify({ workspace: f.workspace, branch: f.branch }) : null;
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) throw new CheckError(400, "bad-request", `send {repo: owner/name, head: <commit sha>, run: ${Object.keys(recipes()).join("|") || "(no module declares one)"}, spec}`);
       const spec = checkSpec(run, recipe, b.spec);
       const hash = specHash(spec, recipe);
@@ -665,8 +676,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
-      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, capped = NULL, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
-      else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null);
+      if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), source = ?, state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, capped = NULL, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, source, now(), id);
+      else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null, source);
       log("check started", { check: id, module, repo, head, run });
       execute(id, recipe).catch((e: Error) => log("WARNING: check run failed outside its own handling", { check: id, err: String(e?.message ?? e).slice(0, 300) }));
       return view(row(id)!);

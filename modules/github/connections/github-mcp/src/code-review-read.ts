@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { GitHubRefused, type GitHub } from "./github.js";
 
 export type PullRequest = {
-  repo: string; number: number; head: string; base: string; base_ref: string; draft: boolean;
+  repo: string; number: number; head: string; base: string; base_ref: string; head_ref: string; draft: boolean;
   fork: boolean; author: string; open: boolean; merged: boolean; url: string; title: string; body: string;
 };
 export type PrComment = { id: string; number: number; author: string; body: string; created_at: string };
@@ -40,14 +40,14 @@ export function sinceArg(v: string | null): string {
 
 type GhPr = {
   number: number; state: string; merged_at?: string | null; merge_commit_sha?: string | null; title?: string; body?: string | null; draft?: boolean; html_url: string; user?: { login?: string } | null;
-  head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
+  head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null }; base?: { sha?: string; ref?: string; repo?: { full_name?: string } | null };
 };
 
 function shape(repo: string, p: GhPr): PullRequest {
   const baseRepo = (p.base?.repo?.full_name ?? repo).toLowerCase();
   const headRepo = p.head?.repo?.full_name?.toLowerCase();
   return {
-    repo: repo.toLowerCase(), number: p.number, head: String(p.head?.sha), base: String(p.base?.sha), base_ref: String(p.base?.ref),
+    repo: repo.toLowerCase(), number: p.number, head: String(p.head?.sha), base: String(p.base?.sha), base_ref: String(p.base?.ref), head_ref: String(p.head?.ref ?? ""),
     draft: Boolean(p.draft), fork: !headRepo || headRepo !== baseRepo, author: p.user?.login ?? "", open: p.state === "open", merged: !!p.merged_at, url: p.html_url,
     // A stranger's words: plain text on the board, never in a task title; a review gets title and body only fenced as data.
     title: String(p.title ?? "").slice(0, 200), body: String(p.body ?? "").slice(0, 2000),

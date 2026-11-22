@@ -141,7 +141,7 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     assert.deepEqual(writes, [], k);
   }
   // An Engineer gets no tools added: it has exactly what it grants itself, which includes attaching its own task's file, finishing it and recording its wait.
-  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply"], code_review: ["code_review_findings", "code_review_resolve"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait"] });
+  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply"], code_review: ["code_review_findings", "code_review_resolve", "code_review_prepublish"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });

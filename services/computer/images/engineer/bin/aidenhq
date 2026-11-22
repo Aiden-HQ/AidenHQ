@@ -12,6 +12,10 @@
 //   aidenhq review <org/repo> <branch>... [--title <title>] [--body-file <file>]
 //                                                    what the AI reviewer would say of publishing these branches, before
 //                                                    publishing: nothing is filed; up to 3 a job (each is a reviewer call)
+//   aidenhq code-review <org/repo> <branch> [--base <branch>]
+//                                                    the repo's mandatory code review of the branch at its commit, before
+//                                                    publishing it (code_review_prepublish): the whole change from its merge base
+//                                                    with origin/<base> (default the default branch); nothing is posted
 //   aidenhq merge <PR link> <head sha>...            merge each PR only at that head: one codehost.merge write each
 //   aidenhq close <PR link>...                       close superseded or duplicate PRs: one codehost.close write each
 //   aidenhq create-repo [<org>/]<name>               a new app's repository (no org: the instance's default agents org):
@@ -43,8 +47,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
-const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | code-review <org/repo> <branch> [--base <branch>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
+const COMMANDS = ["publish", "review", "code-review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -64,7 +68,7 @@ const words = [];
 const fixes = [];
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--fixes") fixes.push(rest[++i]);
-  else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
+  else if (["--title", "--body-file", "--file", "--base"].includes(rest[i])) flags[rest[i].slice(2)] = rest[++i];
   else if (rest[i] === "--keep" && command === "clone") flags.keep = true;
   else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
   else words.push(rest[i]);
@@ -156,9 +160,10 @@ const firstSubject = (repo, branch) => {
   const dir = cloneOf(repo).have;
   return execFileSync("git", ["-C", dir, "log", "--reverse", "--format=%s", `refs/heads/${branch}`, "--not", "--remotes"], { encoding: "utf8" }).split("\n")[0];
 };
-/** One tool of tasks-mcp, through the kernel's tool proxy as this job (its frozen tools), as the box's own MCP config calls it. */
-async function tool(name, args) {
-  const path = "/c/paperclip_tasks/mcp";
+/** One tool of a connection (tasks-mcp's by default), through the kernel's tool proxy as this job (its frozen tools), as the box's
+ * own MCP config calls it. */
+async function tool(name, args, connection = "paperclip_tasks") {
+  const path = `/c/${connection}/mcp`;
   const first = await call(path, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "aidenhq", version: "1" } } }, { "x-agent-key": token });
   const answer = await fetch(new URL(path, gateway), {
     method: "POST",
@@ -211,6 +216,19 @@ if (command === "publish" || command === "review") {
       lines.push(`${repo} ${branch}: ${v.text}${said((v.reason ?? "").trim())}`);
     }
   }
+} else if (command === "code-review") {
+  if (words.length !== 2) fail("usage: aidenhq code-review <org/repo> <branch> [--base <branch>]", 2);
+  const [repo, branch] = words;
+  const head = commitOf(repo, branch);
+  // What the change is: everything since it left the base branch, as its pull request will show it.
+  const base = `refs/remotes/origin/${flags.base ?? "HEAD"}`;
+  let mergeBase;
+  try {
+    mergeBase = execFileSync("git", ["-C", cloneOf(repo).have, "merge-base", base, head], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    fail(`no merge base of \`${branch}\` with ${base.replace("refs/remotes/", "")}: refresh it with \`aidenhq clone ${repo}\`, or name the base with --base <branch>`, 2);
+  }
+  lines.push(await tool("code_review_prepublish", { repo, branch, head, merge_base: mergeBase }, "code_review"));
 } else if (command === "merge") {
   if (!words.length || words.length % 2) fail("name the pull requests to merge as <PR link> <head sha> pairs, in order", 2);
   for (let i = 0; i < words.length; i += 2) {

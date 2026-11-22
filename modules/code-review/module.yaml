@@ -31,7 +31,7 @@ check_jobs:
     argv: [ node, /aidenhq-out/recipe/review.ts ]
     timeout_min: 180
     title: the code review
-    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, previous: json, intent: text }
+    spec: { base: sha, incremental_from: sha, pr: int, combo: json, focus: text, previous: json, intent: text } # pr 0: a pre-publish review (no PR yet)
     model: true
     result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
@@ -112,7 +112,7 @@ connections:
     returns: untrusted
     tools:
       read: [ code_review_config, code_review_runs, code_review_findings ]
-      write: [ code_review_run, code_review_configure, code_review_resolve ]
+      write: [ code_review_run, code_review_configure, code_review_resolve, code_review_prepublish ]
 # Posting: this service files a record per post, per acknowledgement and per status and executes it (executor@1) through
 # github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post is Tier 1 (the AI reviewer
 # reads the whole rendered review first); a

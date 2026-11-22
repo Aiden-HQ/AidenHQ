@@ -217,8 +217,9 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
   /** A code host op's 2xx answer: the owner's sign-in served it, so a full need GitHub had clears (main.ts). */
   clearNeed?: (module: string) => void;
 }) {
-  /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, a bundle, or a snapshot's tarball). */
-  async function ask(module: string, op: string, b: Record<string, unknown>): Promise<Answer> {
+  /** Checks `module`'s grant and asks the code host: its answer as it came (JSON, a bundle, or a snapshot's tarball). `from`: a
+   * check's head that a job's box handed over unpublished (checkjobs.ts Source): the kernel's own say, never a request body's. */
+  async function ask(module: string, op: string, b: Record<string, unknown>, from?: { workspace: string; branch: string }): Promise<Answer> {
     if (!Object.hasOwn(GRANT_KEY, op)) throw fail(404, `no codehost operation ${op}`);
     const g = grants().find((x) => x.module === module);
     const k = kind();
@@ -238,9 +239,11 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     const key = KIND_GRANT[kindOf] ?? GRANT_KEY[op]!;
     const grant = g?.[key as "snapshot"];
     if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${key} grant on ${repo}`);
+    if (from && op !== "snapshot") throw fail(400, "only a snapshot reads a job's branch");
     if (onLocal) {
       const ref = String(b.ref ?? "");
       if (op !== "snapshot" && op !== "bundle") throw fail(404, `codehost-local has no ${op} operation`);
+      if (from) throw fail(404, "codehost-local doesn't read a job's unpublished branch");
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       const l = local();
       if (!l) throw fail(404, "codehost-local isn't enabled here");
@@ -260,6 +263,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       const ref = String(b.ref ?? "");
       if (!REF.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch or a commit`);
       out.ref = ref;
+      if (from) out = { ...out, workspace: from.workspace, branch: from.branch };
     } else {
       out = { ...out, ...shape(op, b, (g as OpsGrant).commit?.paths, (g as OpsGrant).setup?.paths) };
       // A `file` read names its path here too: the evidence grant lists the exact ones it may read, never a prefix.

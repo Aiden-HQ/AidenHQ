@@ -12,7 +12,7 @@ export interface Tool {
   inputSchema: object;
   /** Roles of which the caller must hold one. */
   roles?: string[];
-  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string; task?: string }) => Promise<unknown>;
+  run: (args: Dict, caller: { agent: string; name?: string; roles: string[]; assertion?: string; task?: string; workspace?: string }) => Promise<unknown>;
 }
 
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
@@ -114,8 +114,16 @@ export function configTools(d: {
   resolve: (b: Dict) => unknown;
   /** A PR's open gating findings with ids. */
   findings: (repo: string, number: number) => unknown;
+  /** The engine's pre-publish review of the calling job's unpublished branch (its task and workspace from the verified caller). */
+  prepublish: (b: Dict, asker: { requester: string; task?: string; workspace?: string }) => Promise<{ text: string }>;
 }): Tool[] {
   return [
+    {
+      name: "code_review_prepublish",
+      description: "The repo's mandatory code review of your unpublished branch at one commit, before you publish it: { repo: owner/name, branch, head (its full sha), merge_base (the full sha it branches from) }. Run it through `aidenhq code-review <org/repo> <branch>` in your box, which hands the commit over and fills these in. Nothing is posted; the findings come on your task, each with its id, and the same commit asked again answers with them. A pull request opened (or pushed) at a commit it found clean counts as reviewed.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" }, branch: { type: "string" }, head: { type: "string" }, merge_base: { type: "string" } }, required: ["repo", "branch", "head", "merge_base"], additionalProperties: false },
+      run: async (a, caller) => (await d.prepublish(a, { requester: caller.name || caller.agent, ...(caller.task ? { task: caller.task } : {}), ...(caller.workspace ? { workspace: caller.workspace } : {}) })).text,
+    },
     {
       name: "code_review_findings",
       description: "A pull request's open important findings that hold its merge, each with the id code_review_resolve takes: { repo: owner/name, number }. The merge's wait reason lists ids too, but cuts long lists.",

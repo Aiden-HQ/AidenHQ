@@ -26,7 +26,9 @@ export type Review = {
 
 /** An open (or just closed) pull request as the watcher needs it. `base` is the base branch's commit the PR is against. */
 export type PullRequest = {
-  repo: string; number: number; head: string; base: string; base_ref: string; draft: boolean;
+  repo: string; number: number; head: string; base: string; base_ref: string;
+  /** Its branch (a fork's is in the fork). */
+  head_ref: string; draft: boolean;
   /** Its head is in another repository (a fork). */
   fork: boolean; author: string; open: boolean; url: string;
   /** A closed PR that was merged. */
@@ -80,6 +82,8 @@ export type ReviewSpec = {
   /** Its combo is mandatory (a new important finding of it may restate only a gating one). */
   mandatory: boolean;
   ignore: string[]; max_nits: number;
+  /** A pre-publish review's head, not on GitHub yet: the asking job's workspace and branch, whose bundle the kernel reads. */
+  from?: { workspace: string; branch: string };
 };
 /** `box_at`: when its check job got its box (ISO; queueing before it is not the run's work), once it has one. `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
  * the run is charged nothing. `waiting`: its check job has no computer yet. A running one's is its spend so far. */

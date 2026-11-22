@@ -7,7 +7,9 @@ import { createPublicKey, verify, type JsonWebKey } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
 /** The calling agent, as the kernel resolved it. `agent` is its control-plane id, `key` its agent key, `call` the call id. */
-export interface Caller { agent: string; key: string; name: string; roles: string[]; task?: string; run?: string; tool: string; call: string; kind: string }
+export interface Caller { agent: string; key: string; name: string; roles: string[]; task?: string; run?: string;
+  /** A kernel job's workspace (its task's identifier): where its box leaves the branch bundles it hands over. */
+  workspace?: string; tool: string; call: string; kind: string }
 export type JWK = JsonWebKey & { kid?: string };
 export type JWKS = { keys: JWK[] };
 
@@ -55,6 +57,7 @@ export async function verifyCaller(req: IncomingMessage | { headers: Record<stri
     roles: Array.isArray(claims.roles) ? claims.roles.map(String) : [],
     ...(str(claims.task) ? { task: str(claims.task) } : {}),
     ...(str(claims.run) ? { run: str(claims.run) } : {}),
+    ...(str(claims.workspace) ? { workspace: str(claims.workspace) } : {}),
     tool: str(claims.tool) ?? "",
     call: str(claims.jti) ?? "",
     kind: str(claims.kind) ?? "run",

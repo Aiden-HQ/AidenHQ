@@ -54,8 +54,9 @@ export function imageTags(productDir: string, names: string[]) {
 const PUBLIC_APPS = new Set(["app_list", "app_status", "app_view", "app_check", "web_view"]);
 /** The tasks bridge's tools that read no other task's text and write only on the job's own task: its file, its finish and its wait. */
 const PUBLIC_TASKS = new Set(["task_file_upload", "task_finish", "task_wait"]);
-/** Code review's open findings with ids, and its answer to one: it writes only code review's own store. */
-const PUBLIC_CODE_REVIEW = new Set(["code_review_findings", "code_review_resolve"]);
+/** Code review's open findings with ids, its answer to one (it writes only code review's own store), and the review of the job's
+ * own unpublished branch (what it reads back is about that code). */
+const PUBLIC_CODE_REVIEW = new Set(["code_review_findings", "code_review_resolve", "code_review_prepublish"]);
 export const privateGrants = (tools: Record<string, string[]> = {}) =>
   Object.entries(tools).flatMap(([conn, list]) =>
     conn === "github" ? [] : conn === "apps" ? list.filter((t) => !PUBLIC_APPS.has(t)).map((t) => `apps.${t}`) : conn === "paperclip_tasks" ? list.filter((t) => !PUBLIC_TASKS.has(t)).map((t) => `${conn}.${t}`) : conn === "code_review" ? list.filter((t) => !PUBLIC_CODE_REVIEW.has(t)).map((t) => `${conn}.${t}`) : list.map((t) => `${conn}.${t}`),

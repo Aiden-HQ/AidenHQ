@@ -230,7 +230,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     const to = await resolver.resolve(conn.url).catch((e: Error) => { done(false, e.message); throw fail(502, "bad_upstream", e.message); });
     let jti: string | undefined;
     if (tool) {
-      const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
+      const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), ...(who.workspace ? { workspace: who.workspace } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
       jti = signed.jti;
       headers["x-aidenhq-caller"] = signed.jwt;
       asserter.begin(jti, { credential: who.credential, ...(who.kind === "run" ? { bearer: callerToken } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);

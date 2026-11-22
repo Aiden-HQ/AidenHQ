@@ -1703,3 +1703,43 @@ test("a reply on a finding's thread posted before the service recorded its threa
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "bob's answer counts; mallory (no write access) still doesn't");
   assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "fixed: moved the check into pay()");
 });
+
+test("pre-publish review: its findings reach the asking task; a PR opened, then pushed, at commits it found clean passes with no new mandatory run", async () => {
+  const w = gatedWorld();
+  await w.tick();
+  // The branch leaves main at sha("a"), as GitHub will say once its PR is open.
+  for (const h of ["2", "3", "4"]) w.bases.set(sha(h), sha("a"));
+  const asker = { requester: "Engineer", task: "t-1", workspace: "PEN-7" };
+  const ask = (head) => w.engine.prepublish({ repo: REPO, branch: "fix/x", head, merge_base: sha("a") }, asker);
+  // Only a job's own call names the workspace its bundle is in.
+  await assert.rejects(w.engine.prepublish({ repo: REPO, branch: "fix/x", head: sha("1"), merge_base: sha("a") }, { requester: "x", task: "t-1" }), /aidenhq code-review/);
+  assert.match((await ask(sha("1"))).text, /mandatory reviewer/);
+  await w.tick();
+  assert.deepEqual(w.started.map((s) => [s.number, s.head, s.full, s.combo.effort, s.from]), [[0, sha("1"), true, "medium", { workspace: "PEN-7", branch: "fix/x" }]]);
+  w.finish(0); await w.tick();
+  assert.deepEqual(w.notes.map((n) => n.task), ["t-1"]);
+  assert.match(w.notes[0].text, /1 important finding[\s\S]*`f1` a\.ts:3/);
+  assert.equal(w.posted.length, 0);
+  // The same commit asked again: its findings whole, nothing run again.
+  assert.match((await ask(sha("1"))).text, /Why: w/);
+  assert.equal(w.started.length, 1);
+  // The fix, found clean.
+  await ask(sha("2")); await w.tick();
+  w.finish(1, NONE); await w.tick();
+  assert.match(w.notes.at(-1).text, /: clean\./);
+  // The PR opens at that commit: covered and passing, with no new review run and nothing posted.
+  w.later(1000); w.pr(2, sha("2"), { head_ref: "fix/x" }); await w.tick();
+  assert.equal(w.started.length, 2);
+  assert.deepEqual(w.engine.verdict(REPO, 2, sha("2")), { verdict: "pass", reasons: [] });
+  assert.equal(w.posted.length, 0);
+  // Before a push to the open PR it reviews with the push's mandatory combo; the push it found clean carries too.
+  await ask(sha("3")); await w.tick();
+  assert.equal(w.started[2].combo.effort, "low");
+  w.finish(2, NONE); await w.tick();
+  w.pr(2, sha("3"), { head_ref: "fix/x" }); await w.tick(); w.later(DEBOUNCE); await w.tick();
+  assert.equal(w.started.length, 3);
+  assert.deepEqual(w.engine.verdict(REPO, 2, sha("3")), { verdict: "pass", reasons: [] });
+  // A head no pre-publish review saw gets the normal review.
+  w.pr(2, sha("4"), { head_ref: "fix/x" }); await w.tick(); w.later(DEBOUNCE); await w.tick();
+  assert.deepEqual([w.started.length, w.started[3].number, w.started[3].incremental_from], [4, 2, sha("3")]);
+});

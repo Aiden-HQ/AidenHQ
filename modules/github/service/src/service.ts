@@ -735,7 +735,11 @@ export function createService(o: Options) {
       name = String(r.body?.default_branch ?? "");
     }
     if (!BRANCH.test(name)) throw fail(400, "name a branch or a commit");
-    const { dir, sha } = await fetchRemote(s, name);
+    // A check's head a job's box handed over unpublished (the kernel names its workspace and branch, never a module): read from
+    // that bundle the one way publish reads it, so the commit is exactly the one asked for.
+    const { dir, sha } = b.workspace !== undefined && op === "snapshot"
+      ? { ...(await fromWorkspace(String(b.workspace), { repo: s.slug, branch: String(b.branch ?? ""), sha: name })), sha: name }
+      : await fetchRemote(s, name);
     if (op === "snapshot") {
       // git archive: the tree only, no .git and no credentials; no filter runs (no config defines one). The whole tree: the repo's
       // own .gitattributes don't apply (no export-ignore, no export-subst), since a check reads every tracked file. In the bare

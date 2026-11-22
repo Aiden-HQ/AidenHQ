@@ -112,6 +112,19 @@ test("bundle: the kernel asks it under the clone grant; a module's call is refus
   assert.deepEqual(seen.at(-1), { path: "/ops/bundle", auth: "Bearer ch-key", body: { module: "apps-platform", repo: "acme-agents/x", ref: "HEAD" } });
 });
 
+// A check's head from a job's unpublished branch (a pre-publish review): only the kernel's own check path names the workspace; a
+// module's snapshot op never reaches a job's bundle by naming one in its body.
+test("a job's branch is snapshotted only on the kernel's say, never a module body's", async (t) => {
+  const { call, seen, op } = await setup(t);
+  const head = "a".repeat(40);
+  assert.equal((await call("github", "snapshot", { repo: "acme-agents/x", ref: head, workspace: "PEN-7", branch: "fix" })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme-agents/x", ref: head });
+  const r = await op.ask("github", "snapshot", { repo: "acme-agents/x", ref: head }, { workspace: "PEN-7", branch: "fix" });
+  for await (const _ of r);
+  assert.deepEqual(seen.at(-1).body, { module: "github", repo: "acme-agents/x", ref: head, workspace: "PEN-7", branch: "fix" });
+  await assert.rejects(op.ask("github", "fetch", { repo: "acme-agents/x", ref: "refs/heads/main" }, { workspace: "PEN-7", branch: "fix" }), (e) => e.status === 400);
+});
+
 test("dot-only repo segments and hostile refs never reach the code host", async (t) => {
   const { call, seen } = await setup(t);
   assert.equal((await call("github", "read", { repo: "acme/..", kind: "prs" })).status, 400);

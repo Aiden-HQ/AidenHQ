@@ -16,7 +16,10 @@ at watched repos.
 ## What agents get
 
 - The `code_review` connection. Read: `code_review_config`, `code_review_runs`. Write: `code_review_run`,
-  `code_review_configure`.
+  `code_review_configure`, `code_review_prepublish`.
+- Engineers get `code_review_prepublish` (through `aidenhq code-review <org/repo> <branch>` in their box): the repo's mandatory
+  review of their unpublished branch at one commit, posted nowhere, its findings sent to their task. A pull request opened or
+  pushed at a commit it found clean (same combo, same merge base) counts as reviewed: its mandatory run carries, at no cost.
 - The `reviewer-manager` agent is conversation only: it reads review threads, holds no code tools and no delegation, and
   also gets `github_pr_threads` and `github_issue_comment`.
 

@@ -15,7 +15,7 @@ import { writeFileSync } from "node:fs";
 import { posix } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Answer } from "./codehost.ts";
-import { BOX_WORKSPACE, createChecks, type BoxOut, type BoxRun, type CheckBox, type Recipes, type Snapshot } from "./checkjobs.ts";
+import { BOX_WORKSPACE, createChecks, type BoxOut, type BoxRun, type CheckBox, type Recipes, type Snapshot, type Source } from "./checkjobs.ts";
 import { mintToken } from "./gateway/token.ts";
 import type { Pool } from "./pool.ts";
 import { alive, exitStatus, logTail, runAlive, spawnDetached } from "./jobs.ts";
@@ -128,8 +128,8 @@ function untar(body: NodeJS.ReadableStream, into: string): Promise<void> {
 
 /** codehost-github's snapshot op through the kernel's broker (codehost.ts), under `module`'s own `codehost:` snapshot grant. */
 export function snapshots(ask: Ask): (module: string) => Snapshot {
-  return (module) => async (repo, ref, into) => {
-    const res = await ask(module, "snapshot", { repo, ref });
+  return (module) => async (repo, ref, into, from) => {
+    const res = await ask(module, "snapshot", { repo, ref }, from);
     if (res.statusCode !== 200) {
       let text = "";
       for await (const c of res) { text += c; if (text.length > 400) break; }
@@ -140,7 +140,7 @@ export function snapshots(ask: Ask): (module: string) => Snapshot {
     await untar(res, into);
   };
 }
-type Ask = (module: string, op: string, body: Record<string, unknown>) => Promise<Answer>;
+type Ask = (module: string, op: string, body: Record<string, unknown>, from?: Source) => Promise<Answer>;
 
 /** The kernel's check jobs (checkjobs.ts) on these: the launcher's check boxes, the snapshot provider, `check` model tokens. */
 export function checkJobsFrom({ db, pool, secret, recipes, ask, call, workDir, gatewayUrl, spent, tokens, refused, log, spawnRun, pollMs }: {

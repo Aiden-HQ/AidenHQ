@@ -66,7 +66,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
 export function kernelRunner(kernel: KernelClient): ReviewRunner {
   return {
     async start(s) {
-      const v = await kernel.call("POST", "/v1/checks", { repo: s.repo, head: s.head, run: RECIPE, spec: checkSpec(s) });
+      const v = await kernel.call("POST", "/v1/checks", { repo: s.repo, head: s.head, run: RECIPE, spec: checkSpec(s), ...(s.from ? { from: s.from } : {}) });
       return { check: String(v.id) };
     },
     async result(check): Promise<RunResult> {

@@ -105,6 +105,15 @@ description: How code is written, tested and published here, in any repository -
   once a reply resolves the question by saying what the change must do; an answer that asks something back, declines, or
   names no requirement is met with the same question again, not a new head. A note that names a defect still present is
   answered by a changed branch, not by a wait.
+- Review your own branch before you publish it, so the pull request's review finds nothing: before each `aidenhq
+  publish` (a new PR, or a push to an open one), commit and run `aidenhq code-review <org/repo> <branch>` (add
+  `--base <branch>` when the PR targets a branch other than the default). It runs the repository's mandatory code review
+  on that commit and posts nothing. Where the repository has none it says so: publish. Otherwise end the turn; the
+  findings come on the task, each with its id (asking again at the same commit shows them whole). Fix every important
+  finding in a new commit and run it again until it reports clean, then publish exactly that commit: its pull request's
+  mandatory review then counts as done without running again. A finding you judge wrong: publish, and answer it as
+  below once the pull request's review raises it. After three rounds on a branch it tells you to publish. This is the
+  code review; `aidenhq review` is the AI reviewer's view of the publish write itself.
 - Aiden's code review findings: the merge waits on each important one until it is answered. Find them (with their ids) in
   the merge's wait reason, `code_review_findings` or the review (`github_pr_threads`: `finding`), then answer each with `code_review_resolve`
   (`repo`, `number`, `id`, `word`, `reason`), which writes nothing to GitHub: after fixing it and publishing the fix, word

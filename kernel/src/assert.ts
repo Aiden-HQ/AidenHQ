@@ -8,7 +8,9 @@ import { dirname } from "node:path";
 import { verifyCaller, type Caller, type JWKS } from "../sdk/src/caller.ts";
 
 export const TTL_S = 60;
-export type CallerClaims = { agent: string; key: string; name: string; roles: string[]; task?: string; run?: string; tool: string; aud: string; kind: string };
+export type CallerClaims = { agent: string; key: string; name: string; roles: string[]; task?: string; run?: string;
+  /** A kernel job's workspace (its task's identifier, from its row): a module reads the job's own branch bundle by it (a pre-publish review). */
+  workspace?: string; tool: string; aud: string; kind: string };
 /** What a call in flight holds: the caller's own credential (the kernel acts with it at /v1/cp/agent/*) and whom it was for. */
 export type InFlight = {
   credential: string;
