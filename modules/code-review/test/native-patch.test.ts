@@ -409,3 +409,11 @@ test("self-review takes the exact remote-tracking ref as the base, whatever a ta
   });
   assert.ok(out.includes(`base ${base.slice(0, 12)} (merge base)`), out);
 });
+
+test("a file name that starts with a byte order mark keeps it in the change list", () => {
+  const { repo, base } = repoWith({ "\ufeffbom.txt": (v) => `v${v}\n` });
+  assert.equal(gitListed(repo, ["diff", "--no-renames", "--name-only", "-z", base, "HEAD"]), "\ufeffbom.txt\0");
+  const g = patchGroups(repo, base, ["\ufeffbom.txt"]);
+  assert.deepEqual(g.oversize, []);
+  assert.ok(g.groups[0]!.text.includes("a/\ufeffbom.txt"), "the patch names the file with its mark");
+});
