@@ -340,6 +340,13 @@ test("a run that started and ended between two ticks is activity the comment and
   // A newer qualifying comment still wins over the job.
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-eng", body: "on it", createdAt: minsAgo(5) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(5));
+  // Job history failing must not discard a comment that was read: the two sources are independent.
+  const call = kernel.call;
+  kernel.call = async (m, p) => (p.startsWith("/v1/work") ? Promise.reject(new Error("kernel 503")) : call(m, p));
+  assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), minsAgo(5), "the comment the successful lookup saw");
+  // Both unreadable is unknown activity, so tick can defer on it.
+  kernel.read = async () => { throw new Error("control plane 503"); };
+  await assert.rejects(gateActivity({ kernel, now: () => NOW })("t1"));
 });
 
 test("a failed activity lookup defers the jam by a bounded window, and keeps escalating when it keeps failing past it", async () => {
