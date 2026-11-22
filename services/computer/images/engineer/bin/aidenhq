@@ -52,8 +52,9 @@ const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
   process.exit(code);
 };
-// Help is answered here: asking how a command works never reaches the kernel as a request.
-if (!command || ["help", "-h", "--help"].includes(command) || rest.some((w) => w === "-h" || w === "--help")) {
+// Help is answered here: asking how a command works never reaches the kernel as a request. A `--help` after a command is
+// read by the parser below, so only one in option position (never one that is an option's value) shows it.
+if (!command || ["help", "-h", "--help"].includes(command)) {
   console.log(usage);
   process.exit(0);
 }
@@ -72,11 +73,20 @@ const value = (i) => {
   return v;
 };
 for (let i = 0; i < rest.length; i++) {
-  if (rest[i] === "--fixes") fixes.push(value(i)), i++;
-  else if (["--title", "--body-file", "--file"].includes(rest[i])) flags[rest[i].slice(2)] = value(i), i++;
-  else if (rest[i] === "--keep" && command === "clone") flags.keep = true;
-  else if (rest[i].startsWith("--")) fail(`unknown option ${rest[i]}\n${usage}`, 2);
-  else words.push(rest[i]);
+  const arg = rest[i];
+  // `--opt=value` names a value unambiguously, even one spelled like this CLI's own option (`--body-file=--help`).
+  const inline = /^(--fixes|--title|--body-file|--file)=(.*)$/.exec(arg);
+  if (arg === "-h" || arg === "--help") {
+    console.log(usage);
+    process.exit(0);
+  } else if (inline) {
+    if (inline[1] === "--fixes") fixes.push(inline[2]);
+    else flags[inline[1].slice(2)] = inline[2];
+  } else if (arg === "--fixes") fixes.push(value(i)), i++;
+  else if (["--title", "--body-file", "--file"].includes(arg)) flags[arg.slice(2)] = value(i), i++;
+  else if (arg === "--keep" && command === "clone") flags.keep = true;
+  else if (arg.startsWith("--")) fail(`unknown option ${arg}\n${usage}`, 2);
+  else words.push(arg);
 }
 
 async function call(path, body, auth = { authorization: `Bearer ${token}` }) {

@@ -78,6 +78,12 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   writeFileSync(join(ws, "--notes.md"), "A file named like a flag.");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file", "--notes.md");
   assert.equal(seen.at(-1).body.args.text.body, "A file named like a flag.");
+  // A value spelled exactly like this CLI's help flag is still a value with `=`, never a request for help.
+  writeFileSync(join(ws, "--help"), "A help-named body.");
+  await aidenhq("publish", "acme/app", "fix-login", "--body-file=--help");
+  assert.equal(seen.at(-1).body.args.text.body, "A help-named body.");
+  // `-h` after a command is still help.
+  assert.match(await aidenhq("publish", "acme/app", "fix-login", "-h"), /^usage: aidenhq publish/);
   // An explicitly empty body file is refused too: it would leave a stale description behind a new head.
   writeFileSync(join(ws, "empty.md"), " \n");
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "empty.md")), (e) => e.code === 2 && /is empty/.test(e.stderr));
