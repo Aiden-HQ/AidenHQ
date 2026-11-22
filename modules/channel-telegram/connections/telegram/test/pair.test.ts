@@ -69,6 +69,16 @@ describe("pairing", () => {
     expect(sent).toEqual([["77", expect.stringMatching(/didn't work/)] ]);
     expect(logged).toEqual([{ fields: { chatId: 77, reason: "wrong" }, msg: "pairing code rejected" }]);
 
+    // A chat over its wrong-try limit is told to wait, not that its code was wrong.
+    logged.length = 0;
+    sent.length = 0;
+    const fresh = pairing.mint();
+    for (let i = 0; i < 5; i++) await handleStart(start(88, `wrong${i}`), pairing, store, async () => undefined);
+    expect(await handleStart(start(88, fresh), pairing, store, send, log)).toBe(true);
+    expect(sent).toEqual([["88", expect.stringMatching(/Too many tries/)] ]);
+    expect(logged).toEqual([{ fields: { chatId: 88, reason: "limited" }, msg: "pairing code rejected" }]);
+    expect(store.ownerChat()).toBe("42");
+
     // A group never pairs, and says it in one line.
     logged.length = 0;
     expect(await handleStart(start(99, pairing.mint(), "group"), pairing, store, send, log)).toBe(true);

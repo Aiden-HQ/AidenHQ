@@ -77,7 +77,14 @@ export async function handleStart(update: unknown, pairing: Pairing, store: Pair
   const outcome = pairing.redeem(m[1]!, chatId);
   if (outcome !== "paired") {
     log?.info({ chatId, reason: outcome }, "pairing code rejected");
-    await say(String(chatId), outcome === "expired" ? "That code expired. Make a new one on the board and tap its link." : "That code didn't work. Make a new one on the board and tap its link.");
+    // Each refusal says what to do next: wait out the minute, make a new code, or check the code.
+    const why =
+      outcome === "expired"
+        ? "That code expired. Make a new one on the board and tap its link."
+        : outcome === "limited"
+          ? "Too many tries from this chat. Wait a minute, then send the code again."
+          : "That code didn't work. Make a new one on the board and tap its link.";
+    await say(String(chatId), why);
     return true;
   }
   log?.info({ chatId }, "chat paired");

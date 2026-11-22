@@ -314,6 +314,9 @@ export function Steps({ text }: { text: string }) {
 /** A pairing time (the service's ISO string, or ms) as ms. */
 const ms = (t: string | number | undefined) => (typeof t === "number" ? (t < 1e12 ? t * 1000 : t) : t ? Date.parse(t) : NaN);
 
+/** The code's life when the response omits it: what every pairing module keeps (the board sends the channel's own value). */
+const PAIR_TTL_S = 15 * 60;
+
 export function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: () => Promise<void>; fail: (e: unknown) => void }) {
   // `was`: paired already when minted. Then only a pairing time after the mint shows the re-pair; with no time, keep waiting.
   // `ends`: when this code dies by this browser's clock, from the lifetime the channel gave; `minted_at` stays the board's
@@ -346,7 +349,7 @@ export function Pairing({ flow, reload, fail }: { flow: SetupFlowView; reload: (
     const t = setInterval(() => void check(), 2000);
     return () => (clearInterval(t), clearTimeout(last));
   }, [live, pair, flow.module, reload]);
-  const mint = () => api.setupPair(flow.module).then((r) => (setExpired(false), setPair({ ...r, ends: Date.now() + (r.expires_in ?? 15 * 60) * 1000, was: flow.paired })), fail);
+  const mint = () => api.setupPair(flow.module).then((r) => (setExpired(false), setPair({ ...r, ends: Date.now() + (r.expires_in ?? PAIR_TTL_S) * 1000, was: flow.paired })), fail);
   if (pair && expired) {
     return (
       <div className="setup-actions">
