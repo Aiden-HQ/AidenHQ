@@ -327,16 +327,26 @@ function writtenFiles(segment: string, body?: string): Written[] {
     // to a log must not have its repository credited here too (`echo a > /tmp/log ; echo b > vendor.list`).
     const own = takes && !passThrough ? writtenKind(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) : undefined;
     // A `cat` reading a file other than the pipe writes that file's content, which we can't read, or nothing for
-    // /dev/null — the same rule `tee` follows above.
-    const catInput = passThrough ? stdinOf(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) : undefined;
+    // /dev/null — the same rule `tee` follows above. Its fd 0 is looked up over the whole command, not just the text
+    // before this redirect: `cat > f </dev/null` names the stdin override after the write.
+    const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
+    const catInput = passThrough ? stdinOf(catText) : undefined;
+    // A bare `cat` with a file operand reads that file, not the pipe: `echo a | cat /tmp/v.list > vendor.list` copies
+    // /tmp/v.list, so the upstream `a` does not reach vendor.list.
+    const catOperand = passThrough && !catInput ? /^\s*cat\s+([^\s<>|;&]+)/.exec(catText)?.[1] : undefined;
     const through: Pick<Written, "content" | "text"> | undefined = passThrough
-      ? catInput ? { content: unmask(strip(catInput)) === "/dev/null" ? "empty" : "unknown" } : flow(part - 1)
-      : own?.content === "deb" || own?.content === "unknown" ? { ...own, text: own.text ?? expand(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) } : undefined;
+      ? catOperand ? { content: unmask(strip(catOperand)) === "/dev/null" ? "empty" : "unknown" }
+        : catInput ? { content: unmask(strip(catInput)) === "/dev/null" ? "empty" : "unknown" }
+        : flow(part - 1)
+      : own?.content === "deb" || own?.content === "unknown" ? { ...own, text: own.text ?? expand(lastCommand(code.slice(cStart, cEnd))) } : undefined;
     const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? through;
     // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with
-    // `2> f 1>&2` the `2>` names f and `1>&2` moves stdout there, so f holds the line; with `2> f` alone nothing reaches
-    // it and it is left empty.
-    add(unmask(strip(m[3]!)), append, takes ? fed ?? { content: "deb" } : { content: append ? "none" : "empty" });
+    // `2> f 1>&2` the `2>` names f and `1>&2` moves stdout there, so f holds the line. When stdout goes elsewhere the
+    // file is left empty for a truncating stdout redirect, but a redirect on another descriptor (`2> f`, `3> f`) may
+    // still be written by the command's stderr or that descriptor, which we can't read: keep it as unknown rather than
+    // claiming it holds nothing.
+    const stdoutFd = m[1] === "" || m[1] === "1";
+    add(unmask(strip(m[3]!)), append, takes ? fed ?? { content: "deb" } : { content: stdoutFd ? (append ? "none" : "empty") : "unknown" });
   });
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.

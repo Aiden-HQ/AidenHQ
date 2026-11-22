@@ -828,11 +828,19 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
   // A `cat` whose own fd 0 a redirect moved reads that file, not the pipe: `</dev/null` writes nothing, so the file adds
   // no repository. A file it can't read is content we can't rule out, so that one still counts.
   assert.deepEqual(apt(`${D} | cat </dev/null > /etc/apt/sources.list.d/vendor.list`), []);
-  assert.deepEqual(apt(`${D} | cat /tmp/x > /etc/apt/sources.list.d/vendor.list`), ["https://repo.example/apt bookworm main"]);
+  // A `cat` with a file operand reads that file, which we can't read: the file it writes is unknown content, not the
+  // upstream line.
+  assert.deepEqual(apt(`${D} | cat /tmp/x > /etc/apt/sources.list.d/vendor.list`), []);
   // The file that takes the bytes is the one fd 1 ends on, not the one the redirect was opened with: `2> f 1>&2` writes
   // the line to f, while `2> f` alone sends stdout nowhere near it.
   assert.deepEqual(apt(`${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2`), ["https://repo.example/apt bookworm main"]);
-  assert.deepEqual(apt(`${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2 >/dev/null`), []);
+  // A `2>` destination may still be fed by the command's stderr, which we can't read, so it counts as an added
+  // repository rather than being claimed empty when stdout goes elsewhere.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 2>/etc/apt/sources.list.d/vendor.list 1>&2 >/dev/null\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // A `cat` with its own file operand reads that file, not the pipe.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /tmp/vendor.list > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // Its fd 0 is read over the whole command, so a `</dev/null` after the write still empties the file.
+  assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat > /etc/apt/sources.list.d/vendor.list </dev/null\nRUN apt-get install -y foo\n`).problems, []);
   // `>|` is noclobber, not the end of `tee`'s operand list: the file after it is still written.
   assert.deepEqual(apt(`${D} | tee >| /tmp/log /etc/apt/sources.list.d/vendor.list`), ["https://repo.example/apt bookworm main"]);
 });
