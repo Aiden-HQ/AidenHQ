@@ -106,15 +106,19 @@ export function isoOf(v: unknown): string | null {
   return Number.isFinite(n) && n > 0 ? new Date(n).toISOString() : null;
 }
 
-/** Every owner, active or not (records keep pointing at people who left), a page of 100 at a time, until `deadline`. HubSpot gives no email. */
-export async function listOwners(call: CallHubSpot, deadline = Infinity): Promise<{ id: string; name: string | null }[]> {
-  const out: { id: string; name: string | null }[] = [];
-  for (let offset: number | undefined; ; ) {
+/**
+ * Owners, active or not (records keep pointing at people who left), a page of 100 at a time from `from` until `deadline`;
+ * `next` is where to resume when the deadline stopped the scan short. HubSpot gives no email.
+ */
+export async function listOwners(call: CallHubSpot, deadline = Infinity, from?: number): Promise<{ owners: { id: string; name: string | null }[]; next?: number }> {
+  const owners: { id: string; name: string | null }[] = [];
+  for (let offset = from; ; ) {
     const o = toolJson(await call("search_owners", { limit: 100, ...(offset != null ? { offset } : {}) }), "search_owners");
     if (!Array.isArray(o?.owners)) throw new Error(`unexpected search_owners answer: ${JSON.stringify(o).slice(0, 200)}`);
-    for (const x of o.owners) if (x?.ownerId != null) out.push({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null });
-    if (!o.hasMore || o.offset == null || o.offset === offset || Date.now() >= deadline) return out;
+    for (const x of o.owners) if (x?.ownerId != null) owners.push({ id: String(x.ownerId), name: String(x.name ?? "").trim() || null });
+    if (!o.hasMore || o.offset == null || o.offset === offset) return { owners };
     offset = Number(o.offset);
+    if (Date.now() >= deadline) return { owners, next: offset };
   }
 }
 
