@@ -11,6 +11,7 @@
 //                                                           GITHUB_TOKEN; another org's: PACKAGES_READ_TOKEN), plus the digest to pin; never the image's
 //                                                           own `created` time
 //   node best-version.ts apt <package> --source "<url> <dist> <component>"   the .deb's Last-Modified in that repo
+//                                                           (Packages.gz, or Packages.xz decoded by the system `xz`)
 //   node best-version.ts apt-gvisor runsc                  the same, from gVisor's release repo
 //   options: --min-days 7 (default), --json
 //
@@ -18,6 +19,7 @@
 // Security comes first: a package listed in .github/supply-chain-exceptions.yaml (Security Watch keeps it) gets its
 // listed version, and a version with a known vulnerability (OSV) gets the lowest release that fixes it, even when that is
 // under 7 days old; the line then ends with the advisory ids and what to record.
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -208,15 +210,38 @@ export function aptIndex(source: string): Promise<AptPackage[]> {
   if (!aptIndexes.has(source)) aptIndexes.set(source, readAptIndex(source).catch((e) => { aptIndexes.delete(source); throw e; }));
   return aptIndexes.get(source)!;
 }
-async function readAptIndex(source: string): Promise<AptPackage[]> {
-  const [url, dist, comp = "main"] = source.trim().split(/\s+/) as [string, string, string?];
-  const dir = `${url.replace(/\/$/, "")}/dists/${dist}/${comp}/binary-amd64/Packages`;
-  let text: string;
+export async function readAptIndex(source: string): Promise<AptPackage[]> {
+  const [named, dist, comp = "main"] = source.trim().split(/\s+/) as [string, string, string?];
+  // Debian serves its -security suite from the debian-security archive, even when a sources line names deb.debian.org;
+  // the caller's scheme is kept (https stays https).
+  const url = /^(https?):\/\/deb\.debian\.org\/debian\/?$/.test(named) && /-security$/.test(dist)
+    ? named.replace(/^(https?):\/\/deb\.debian\.org\/debian\/?$/, "$1://deb.debian.org/debian-security") : named;
+  // A suite ending in `/` is a flat repository: APT reads Packages under that exact path, with no component or
+  // architecture segments (`Suites: /` is the repository root).
+  // Joined with a separator either way: `Suites: /` reads `Packages` at the URL itself, while a relative suite
+  // (`URIs: …/apt/`, `Suites: stable/`) reads `…/apt/stable/Packages` — never `…/aptstable`.
+  const dir = /\/$/.test(dist) ? `${url.replace(/\/$/, "")}/${dist.replace(/^\//, "")}Packages` : `${url.replace(/\/$/, "")}/dists/${dist}/${comp}/binary-amd64/Packages`;
   // zlib, not DecompressionStream: Ubuntu 22.04's release-pocket indexes end in zero padding, which the stream rejects.
-  try { text = gunzipSync(Buffer.from(await (await fetchRetry(`${dir}.gz`, { timeout: 120000 })).arrayBuffer())).toString("utf8"); } catch {
-    text = await (await fetchRetry(dir, { timeout: 120000 })).text();
-  }
-  return text.split(/\n\n+/).map((s) => Object.fromEntries(s.split("\n").filter((l) => /^\S+: /.test(l)).map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 2)])))
+  try { return aptPackages(gunzipSync(Buffer.from(await (await fetchRetry(`${dir}.gz`, { timeout: 120000 })).arrayBuffer())).toString("utf8"), url); } catch { /* not a .gz: try the next form */ }
+  // Debian publishes its -updates and -security indexes as Packages.xz only. Node has no xz decoder and this script takes
+  // no dependency, so the host's `xz` binary decodes it; with no `xz`, or a bad archive, the plain index is next, and only
+  // when no form can be read is the index reported as unreadable (the caller then warns, never fails).
+  let xz: Error | undefined;
+  try {
+    const raw = Buffer.from(await (await fetchRetry(`${dir}.xz`, { timeout: 120000 })).arrayBuffer());
+    return aptPackages(decodeXz(raw), url);
+  } catch (e) { xz = e as Error; }
+  try { return aptPackages(await (await fetchRetry(dir, { timeout: 120000 })).text(), url); } catch { throw xz; }
+}
+// The system `xz -dc` (PATH lookup, input on stdin): throws when none is installed or it cannot decode the bytes.
+const decodeXz = (raw: Buffer): string => {
+  const r = spawnSync("xz", ["-dc", "-T0"], { input: raw, maxBuffer: 1 << 30 });
+  if (r.error) throw Object.assign(new Error(`Packages.xz needs the system \`xz\` binary: ${r.error.message}`), { undated: true });
+  if (r.status !== 0) throw Object.assign(new Error(`Packages.xz could not be decoded: ${r.stderr?.toString().trim() || `xz exited ${r.status}`}`), { undated: true });
+  return r.stdout.toString("utf8");
+};
+function aptPackages(text: string, url: string): AptPackage[] {
+  return text.split(/\n\n+/).filter((s) => /^Package: /m.test(s)).map((s) => Object.fromEntries(s.split("\n").filter((l) => /^\S+: /.test(l)).map((l) => [l.slice(0, l.indexOf(":")), l.slice(l.indexOf(":") + 2)])))
     .map((p) => ({ ...p, url }) as AptPackage);
 }
 
