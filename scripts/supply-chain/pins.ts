@@ -203,12 +203,19 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
   // writes, appends to or removes; one naming no file is kept apart and its entries accumulate.
   // Two questions per removal. Does it run before a later command in this line? `rm x && apt install` runs the install
   // only if the removal succeeded, so x is gone — but `test -f m && rm x || true && apt install` reaches the install with
-  // x untouched, and `test -f x || rm x` skips it when the test passes. So a removal applies to the rest of its line only
-  // when it follows `&&` and no `||` comes after it. Does it survive the line? Only an unconditional removal — the first
-  // command, or one after `;` — does; anything else may have been skipped, so the file is put back when the line ends.
+  // x untouched, and `test -f x || rm x` skips it when the test passes. So a removal applies to the rest of its own
+  // `&&`/`||` chain only when it follows `&&` and no `||` comes later *in that chain* — a `;` starts a fresh chain, so
+  // `rm x && apt install …; echo done || true` keeps the install's guarantee. Does it survive the line? Only an
+  // unconditional removal — the first command, or one after `;` — does; anything else may have been skipped, so the file
+  // is put back when the line ends.
   const parts = cmd.split(/(&&|\|\||;)/);
   const opBefore = (i: number) => parts[i - 1];
-  const laterOr = (i: number) => parts.slice(i + 1).some((q) => q === "||");
+  // Operators from `i` up to (not including) the next `;` — one `&&`/`||` chain.
+  const laterOr = (i: number) => {
+    const chain = parts.slice(i + 1);
+    const end = chain.indexOf(";");
+    return (end < 0 ? chain : chain.slice(0, end)).includes("||");
+  };
   const applies = (i: number) => opBefore(i) === "&&" && !laterOr(i);
   let restore: (() => void) | undefined;
   for (let i = 0; i < parts.length; i += 2) {

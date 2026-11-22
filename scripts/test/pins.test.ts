@@ -340,6 +340,10 @@ test("pins: a removal runs only where the shell runs it, and redirects are not a
     [`test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list && apt-get install -y foo`, 1],
   ] as const)
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${write}\nRUN ${line}\nRUN apt-get install -y foo\n`).problems.length, count);
+  // A `;` starts a fresh chain, so a `||` after it doesn't reopen a path past the install it follows:
+  // `rm x && apt install …; echo done || true` still guarantees the removal before the install.
+  const newChain = `FROM debian:bookworm${d}\nRUN ${write}\nRUN test -f /tmp/marker && rm -f /etc/apt/sources.list.d/vendor.list && apt-get install -y foo; echo done || true\n`;
+  assert.deepEqual(scanFile("Dockerfile", newChain).problems, []);
   // A redirect on the install line is not a package to pin.
   const redirected = `FROM debian:bookworm${d}\nRUN ${write}\nRUN apt-get install -y example=1.2 >/dev/null 2>&1\n`;
   assert.deepEqual(scanFile("Dockerfile", redirected).problems, []);
