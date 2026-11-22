@@ -23,7 +23,7 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** The second design-review ask's refusals for this head (nobody holds the role): the deadline is never moved by one, and after a few the review is advisory for the head rather than a wait nobody can end. */ reviewRefused?: { head: string; n: number }; /** The head each design-review marker was confirmed for: a marker is trusted only when its own entry names this head. Kept per marker (`once`/`again`) because a delivered second ask says nothing about a first ask an older version recorded unconfirmed; a marker from an older version (including the single number this type used to hold) has no entry and is reconciled by asking again. */ reviewMarked?: { once?: string; again?: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** The second design-review ask's refusals for this head (nobody holds the role): the deadline is never moved by one, and after a few the review is advisory for the head rather than a wait nobody can end. */ reviewRefused?: { head: string; n: number }; /** The head each design-review marker was confirmed for: a marker is trusted only when its own entry names this head. Kept per marker (`once`/`again`) because a delivered second ask says nothing about a first ask an older version recorded unconfirmed; a marker from an older version (including the single number this type used to hold) has no entry and is reconciled by asking again. */ reviewMarked?: { once?: string; again?: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -282,8 +282,12 @@ export function createMerges(d: {
         const sha = String(pull?.mergeCommit?.oid ?? "");
         const ours = sha ? mergedBy(pull?.mergeCommit, sha, p.mergeCalls) : undefined;
         if (sha && !ours && p.mergeCalls?.length) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
+        // The branches travel with the message: finish() decides from them whether the merge could credit the task, rather than
+        // trusting a cached message whose destination it cannot see.
+        const base = String(pull?.baseRefName ?? "");
+        const defaultBranch = String(data.repository.defaultBranchRef?.name ?? "");
         if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
-        else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
+        else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha, ...(base && defaultBranch ? { mergeCredit: { message: String(pull?.mergeCommit?.message ?? ""), base, defaultBranch } } : {}) } : {}) });
         delete p.mergeCalls;
         delete p.refusal;
         delete p.wait;
@@ -426,7 +430,26 @@ export function createMerges(d: {
       const row = d.taskOf?.(p.repo, p.number);
       return Boolean(row) && Boolean((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
     };
-    const evidence = (p: Pr) => settled(p) && typeof p.sha === "string" && (p.status === "merged" || linked(p));
+    // A PR the fleet never opened has no row to link, so the merge commit that landed on the default branch is what can credit
+    // it: its message names the task this merge is for. The facts that make that true are checked here, not taken on trust: the
+    // merge must have landed on the default branch, and a cached row without both branches (an older queue) credits nothing. The
+    // message is not independent of the PR: a squash merge builds it from the PR's title and body, so the attribution is whatever
+    // the PR's author supplied. It is accepted because it is the merge that actually reached the default branch and it is refused
+    // when another task's row already claims the PR; a title or a body alone is never read. Whole-token only: a longer identifier
+    // sharing the prefix (WOR-99381 for WOR-9938) names another task, and an unknown identifier or an absent message keeps
+    // today's answer (not evidence).
+    const namesTask = (p: Pr) => {
+      const c = p.mergeCredit;
+      if (!q.taskIdentifier || !c || c.base !== c.defaultBranch) return false;
+      const token = q.taskIdentifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?<![\\w-])${token}(?![\\w-])`).test(c.message);
+    };
+    // A row that names another task is an answer, not an absence: a message that mentions this task in passing never overrides it.
+    const linkedElsewhere = (p: Pr) => {
+      const row = d.taskOf?.(p.repo, p.number);
+      return Boolean(row) && !((q.task && row === q.task) || (q.taskIdentifier && row === q.taskIdentifier));
+    };
+    const evidence = (p: Pr) => settled(p) && typeof p.sha === "string" && (p.status === "merged" || linked(p) || (!linkedElsewhere(p) && namesTask(p)));
     // The queue's own merges first, then the ones already merged at their bound head, each in the record's order.
     const merged = q.prs.filter(evidence).sort((a, b) => Number(b.status === "merged") - Number(a.status === "merged"))
       .map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha! }));
