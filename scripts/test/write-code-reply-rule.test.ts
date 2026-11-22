@@ -46,7 +46,7 @@ test("the ban permits the non-blocking findings list Checks requires", () => {
   const rule = replyBullet();
   assert.match(rule, /findings still go in the reply under "Non-blocking code-review findings"/, "the required list is permitted");
   assert.match(rule, /a finding is not a verdict/, "a finding is told apart from a verdict");
-  const checks = sectionBullets("Checks").find((b) => b.includes("code-review"));
-  assert.ok(checks, "Checks has the code-review bullet");
-  assert.match(checks, /under "Non-blocking code-review findings"/, "Checks still requires the list");
+  const checks = sectionBullets("Checks").find((b) => b.includes('"Non-blocking code-review findings"'));
+  assert.ok(checks, "Checks has the bullet that names the findings heading");
+  assert.match(checks, /in your reply under "Non-blocking code-review findings"/, "Checks requires the list in the task reply");
 });
