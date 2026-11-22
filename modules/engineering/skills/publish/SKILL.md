@@ -20,9 +20,9 @@ description: Load right before every `aidenhq publish` (a new PR or a push to on
      itself could not finish, judge any findings as for exit 1 and publish with the outcome and its cause.
 
    `aidenhq publish` takes only a head self-review ran on, so run it after every new commit.
-2. **Title:** a Conventional Commit (`fix(scope): …`), from `--title` or the first commit not yet pushed.
-3. **Body:** facts about the change, starting with why. Each publish replaces the title and description, so pass them every
-   time with `--title` and `--body-file` (`gh pr view <url> --json title,body` prints the current ones), and `--fixes
+2. **Title:** a Conventional Commit (`fix(scope): …`): the branch's first commit, or `--title` on every publish.
+3. **Body:** facts about the change, starting with why. Each publish replaces the description, so pass all of it with
+   `--body-file` every time (`gh pr view <url> --json body -q .body` prints the current one), and `--fixes
    <owner>/<repo>#<n>` for each issue it fixes. It ends with `## Evidence`:
    - every `self-review:` line, for each branch;
    - the commands you ran and their results;

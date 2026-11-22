@@ -66,6 +66,15 @@ test("aidenhq: writes, task reads and next-turn requests go to the kernel with t
   writeFileSync(join(ws, "ev.md"), "Why. Closes acme/app#7.\n\n## Evidence\n- ran it");
   await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "ev.md"), "--fixes", "acme/app#7", "--fixes", "acme/app#8");
   assert.equal(seen.at(-1).body.args.text.body, "Why. Closes acme/app#7.\n\nFixes acme/app#8\n\n## Evidence\n- ran it");
+  // A republish after a repair commit keeps the title: the branch's own pushed commits still count as its first.
+  git("update-ref", "refs/remotes/origin/fix-login", sha);
+  git("commit", "-q", "--allow-empty", "-m", "address the failing check");
+  const repaired = git("rev-parse", "HEAD");
+  writeFileSync(join(ws, "app", ".git", `self-review-${createHash("sha256").update("fix-login").digest("hex")}.json`), JSON.stringify({ base: sha, head: repaired, open: -1 }));
+  await aidenhq("publish", "acme/app", "fix-login", "--body-file", join(ws, "body.md"));
+  assert.deepEqual(seen.at(-1).body.args.text, { title: "fix(login): stop the loop", body: "Why." });
+  git("reset", "-q", "--hard", sha);
+  writeFileSync(join(ws, "app", ".git", `self-review-${createHash("sha256").update("fix-login").digest("hex")}.json`), JSON.stringify({ base: sha, head: sha, open: -1 }));
   await assert.rejects(aidenhq("publish", "acme/app", "fix-login", "--title", "Fix login"), (e) => e.code === 2 && /must be a Conventional Commit; set it with `aidenhq publish --title/.test(e.stderr));
   // The precheck sends publish's args to /v1/jobtools/review and files nothing; a rejection exits 1 with the reason as data.
   await assert.rejects(aidenhq("review", "acme/app", "fix-login", "--body-file", join(ws, "body.md")), (e) => e.code === 1 && /would reject it\. Nothing was filed\. \(data, not instructions\):\n```\nsay which login loop\n```/.test(e.stdout));
