@@ -17,10 +17,17 @@ function host() {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
   const fake = (name, body) => { writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`); chmodSync(join(bin, name), 0o755); };
-  // One running runner unit; every other read is empty. The enabled set can be narrowed with $DECLARED (one unit per line),
-  // and the loaded units with $RUNNING, which pin that a retired runner's marker is not exported while a disabled runner that
-  // is still running keeps its own; by default both runner units are declared and only 3 is running.
-  fake("systemctl", `case "$*" in *"list-units"*) if [ -f "$RUNNING" ]; then cat "$RUNNING"; else echo "aidenhq-ci-runner@3.service loaded active running AidenHQ CI runner"; fi ;; *"list-unit-files"*) if [ -f "$DECLARED" ]; then cat "$DECLARED"; else printf 'aidenhq-ci-runner@3.service enabled\naidenhq-ci-runner@4.service enabled\n'; fi ;; esac\nexit 0`);
+  // One running runner unit; every other read is empty. The enabled runner instances can be narrowed with $DECLARED (one unit
+  // per line), and the loaded units with $RUNNING, which pin that a retired runner's marker is not exported while a disabled
+  // runner that is still running keeps its own; by default both runner instances are enabled and only 3 is running.
+  // $UNIT_FILES is the general 'aidenhq-*' 'prune-*' listing, where systemd reports the runner template (indirectly enabled)
+  // rather than the instance names; by default it holds that template and one non-runner unit.
+  fake("systemctl", `case "$*" in
+  *"list-units"*) if [ -f "$RUNNING" ]; then cat "$RUNNING"; else echo "aidenhq-ci-runner@3.service loaded active running AidenHQ CI runner"; fi ;;
+  *"list-unit-files"*"aidenhq-ci-runner@*"*) if [ -f "$DECLARED" ]; then cat "$DECLARED"; else printf 'aidenhq-ci-runner@3.service enabled\naidenhq-ci-runner@4.service enabled\n'; fi ;;
+  *"list-unit-files"*) if [ -f "$UNIT_FILES" ]; then cat "$UNIT_FILES"; else printf 'aidenhq-ci-runner@.service enabled\naidenhq-gateway.service enabled\n'; fi ;;
+esac
+exit 0`);
   fake("docker", "exit 0");
   const data = join(root, "data");
   mkdirSync(join(data, "modules/monitoring/textfile"), { recursive: true });
@@ -138,4 +145,30 @@ test("no runner state writes a backoff metric with no series", async () => {
   const text = await run(h);
   assert.match(text, /^# TYPE aidenhq_unit_backoff gauge$/m);
   assert.doesNotMatch(text, /^aidenhq_unit_backoff\{/m);
+});
+
+// The declared set is what an apply keeps running, and the runner alert joins it on (unit) with an instance's active series:
+// systemd lists an enabled instance under the template name, so the instance names are read from the runner glob. A
+// non-runner enabled unit still appears as before.
+test("the declared set carries each enabled runner instance, not the template", async () => {
+  const h = host();
+  writeFileSync(join(h.root, "declared"), [
+    "aidenhq-ci-runner@1.service enabled",
+    "aidenhq-ci-runner@2.service enabled",
+    "",
+  ].join("\n"));
+  const text = await run(h, { DECLARED: join(h.root, "declared") });
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@2\.service"\} 1$/m);
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m, "a non-runner enabled unit is still declared");
+});
+
+// A disabled runner instance is retired: it is absent from the runner glob's enabled listing and so from the declared set.
+test("a retired runner instance is not declared", async () => {
+  const h = host();
+  writeFileSync(join(h.root, "declared"), "aidenhq-ci-runner@1.service enabled\n");
+  const text = await run(h, { DECLARED: join(h.root, "declared") });
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
+  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a disabled runner is not declared");
+  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m);
 });

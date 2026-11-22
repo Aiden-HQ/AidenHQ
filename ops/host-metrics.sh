@@ -92,11 +92,17 @@ write() { # name: atomic, so node-exporter never reads half a file
   done
   # The declared set: the enabled user units above. A per-unit `is-enabled` reads a unit systemd unloaded after a stop as absent, which
   # would look like a retirement; `list-unit-files` reads the unit files, so a stopped unit still counts as declared.
-  systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-*' 'prune-*' 2>/dev/null \
-    | awk '{print $1}' | clean | while read -r unit; do
+  # An enabled instance of the runner template counts only under its instance name: systemd's listing above reports the
+  # template (`aidenhq-ci-runner@.service`, indirectly enabled), and the alert joins on (unit) with an instance's active
+  # series, so it would never match. The template glob lists the enabled instances themselves.
+  declared="$( {
+    systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-*' 'prune-*' 2>/dev/null
+    systemctl --user list-unit-files --state=enabled --plain --no-legend 'aidenhq-ci-runner@*' 2>/dev/null
+  } | awk '{print $1}' | clean | sort -u)"
+  while read -r unit; do
       [ -n "$unit" ] || continue
       echo "aidenhq_unit_declared{scope=\"user\",unit=\"$unit\"} 1"
-    done
+  done <<< "$declared"
 } | write units.prom
 
 # Every container, whatever started it: compose services and computer boxes carry labels, other containers only a name, and a
