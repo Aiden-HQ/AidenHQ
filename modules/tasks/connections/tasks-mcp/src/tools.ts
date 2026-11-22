@@ -872,7 +872,7 @@ const STEP = PAGE / 2;
  */
 async function* issuePages(q: URLSearchParams) {
   const seen = new Set<string>();
-  let scanned = 0;
+  let repeats = 0;
   for (let offset = 0; ; offset += STEP) {
     const p = new URLSearchParams(q);
     p.set("limit", String(PAGE));
@@ -880,11 +880,15 @@ async function* issuePages(q: URLSearchParams) {
     const page = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${p}`);
     if (!Array.isArray(page) || !page.length) return;
     const fresh = page.filter((i: Json) => !seen.has(i.id));
-    // Nothing new past everything read so far: the end, or a server that ignores `offset` and repeats a page.
-    if (!fresh.length && offset >= scanned) return;
+    if (!fresh.length) {
+      // An overlap page with nothing new is normal while pages overlap; a page that repeats past the overlap is the end,
+      // or a server that ignores `offset`.
+      if (++repeats >= PAGE / STEP) return;
+      continue;
+    }
+    repeats = 0;
     for (const i of fresh) seen.add(i.id);
-    if (fresh.length) yield fresh;
-    scanned = Math.max(scanned, offset + page.length);
+    yield fresh;
     if (page.length < PAGE) return;
   }
 }
@@ -998,8 +1002,9 @@ const TOOLS: Record<string, Tool> = {
           const mark = new RegExp(`\\n\\n<!-- aidenhq-chat-agent:${me.replace(/[^A-Za-z0-9_-]/g, "")} -->\\s*$`);
           const aChat = async (row: Json) => {
             if (row.assigneeAgentId) return null;
-            const full = row.descriptionTruncated ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`) : row;
-            return mark.test(full.description ?? "") ? full : null;
+            // A chat deleted between the list read and this one is skipped: the rest of the list still answers.
+            const full = row.descriptionTruncated ? await api("GET", `/api/issues/${encodeURIComponent(row.id)}`).catch(() => null) : row;
+            return full && mark.test(full.description ?? "") ? full : null;
           };
           chats.push(...(await capped(theirs, aChat)));
         }

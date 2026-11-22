@@ -164,3 +164,23 @@ test("task_list pages overlap so a row pulled up by a task leaving the list is n
   const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["t-200"]);
 });
+
+test("task_list stops when the issues endpoint ignores offset and repeats a page", async () => {
+  const rows = Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo"));
+  let reads = 0;
+  const board = issueBoard({ rows });
+  // A pager that ignores offset and repeats its one page.
+  const ignores = async (req, res) => {
+    if ((req.url ?? "").includes("/issues?")) {
+      reads++;
+      if (reads > 6) throw new Error("kept paging a repeated page");
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(rows));
+      return;
+    }
+    return board(req, res);
+  };
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
+  const { call } = bridge({ handler: ignores, states });
+  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
+  assert.deepEqual(out.out.tasks, []);
+});
