@@ -194,7 +194,6 @@ const brief = async (i: Json, s?: Json) => ({
   labels: (i.labels ?? []).map((l: Json) => l.name),
   ...(await assigneeOf(i)),
   ...(i.parentId ? { parent: i.parentId } : {}),
-  ...(memoryInboxes().has(i.id) ? { memory_inbox: memoryInboxes().get(i.id) } : {}),
   createdAt: i.createdAt,
   updatedAt: i.updatedAt,
 });
@@ -407,26 +406,11 @@ async function boardApi(path: string, body?: Json, timeoutMs = 20_000) {
 
 /**
  * The calling agent, as the kernel asserted it (its roles and trial from the grants table setup writes on the host, never
- * Paperclip metadata, which agents can edit), plus its memory inbox from the directory.
+ * Paperclip metadata, which agents can edit).
  */
 function grant() {
   const { caller, dir } = cx();
-  return { id: caller.agent, key: caller.key, roles: caller.roles.filter((r: Json) => r !== "kernel.trial"), trial: caller.roles.includes("kernel.trial"), memoryInbox: dir.agents[caller.agent]?.memory_inbox };
-}
-// Memory inboxes (memory_note): setup creates them and records each one's issue id in the directory, the only place they
-// are known from. The marker prefix is reserved (no tool creates a task carrying it), and no task tool writes on an inbox
-// except memory_note (and task_comment for the librarian role's "Curated through" line).
-/** Issue id → agent key of every memory inbox in the directory. */
-function memoryInboxes() {
-  return memo("inboxes", () => new Map(Object.values(dirAgents()).filter((g) => g.memory_inbox).map((g) => [g.memory_inbox, g.key])));
-}
-function refuseReservedMarker(...markers: Json[]) {
-  if (markers.some((m) => /memory-inbox/i.test(String(m ?? "")))) throw new Error("Refused: the memory-inbox marker is reserved (memory_note writes to your inbox).");
-}
-async function refuseMemoryInbox(issue: Json, { librarian = false } = {}) {
-  if (!memoryInboxes().size) return;
-  const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-  if (memoryInboxes().has(i.id) && !(librarian && grant().roles.includes("librarian"))) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
+  return { id: caller.agent, key: caller.key, roles: caller.roles.filter((r: Json) => r !== "kernel.trial"), trial: caller.roles.includes("kernel.trial") };
 }
 /** An agent in trial ("draft, don't do") reports only on its own tasks: the current one, or one assigned to it. */
 const TRIAL_OWN_TASK = ["task_comment", "task_handoff", "task_cancel", "task_finish"];
@@ -722,7 +706,6 @@ async function assignTask(me: Json, target: Json, { title, description, parent, 
   const hold = grade || after?.length;
   const origin = `${verb} ${me.name} (agent)${p ? ` from ${p.identifier}` : ""}. This is an agent request, not the owner's words.`;
   let src = "";
-  refuseReservedMarker(marker);
   if (marker) {
     const key = String(marker).trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 80);
     if (!key) throw new Error("invalid marker");
@@ -907,7 +890,7 @@ const TOOLS: Record<string, Tool> = {
       let list = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
       if (me) {
         // Heartbeat runs are the scan itself, never work to catch up on.
-        // Nor setup's log tasks it holds (memory inbox, review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
+        // Nor setup's log tasks it holds (review log, chat, Fleet issues: scripts/modules.ts): logs, not work.
         list = list.filter((i: Json) => i.assigneeAgentId === me && i.id !== CURRENT() && !String(i.title).startsWith("Heartbeat:") && !isLogTask(i));
         // Your chats handed back to the owner: assigned to them, marked as yours when created (the board's chatAgentMarker).
         const owner = await ownerUserId();
@@ -959,7 +942,6 @@ const TOOLS: Record<string, Tool> = {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ title, description, marker, labels, priority, assignee, status, dedupe_closed, related_markers, deliverable, rubric }: Args) => {
       if (!COMPANY()) throw new Error("no company for this agent");
-      refuseReservedMarker(marker, ...(related_markers ?? []));
       const m = String(marker).trim().replace(/^(source:)+/, ""); // agents sometimes include the prefix
       if (!/^[A-Za-z0-9:._\/-]{3,200}$/.test(m)) throw new Error("invalid marker");
       let assigneeAgent, target, origin = "", warning;
@@ -1058,7 +1040,6 @@ const TOOLS: Record<string, Tool> = {
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ agent, title, description, parent, marker, priority, rubric, deliverable, after, wait }: Args) => {
-      refuseReservedMarker(marker);
       if (!COMPANY()) throw new Error("no company for this agent");
       if (wait && !CURRENT()) throw new Error("no current task to wait");
       // Whom this agent may delegate to is the kernel's rule (kernel/src/outcomes.ts delegateIds): its refusal comes back as the error.
@@ -1118,14 +1099,6 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ title, description, marker }: Args) => {
       await requireRole("librarian", "propose rules");
       if (!COMPANY()) throw new Error("no company for this agent");
-      // A memory proposal names the instance repo: an Engineer job clones only the repositories its task names, and the
-      // memory file lives nowhere else, so a proposal without it closes with the file unchanged.
-      if (/^memory:/i.test(String(marker ?? "").trim().replace(/^(source:)+/i, ""))) {
-        const instance = cx().dir.repos?.instance;
-        if (!instance) throw new Error("a memory proposal needs the instance repository, and this kernel's directory names none");
-        if (!String(description ?? "").toLowerCase().includes(instance.toLowerCase()))
-          throw new Error(`A memory proposal must name ${instance} so the job clones it; otherwise the file is never written.`);
-      }
       const me = await api("GET", "/api/agents/me");
       const all = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/agents`);
       const engineer = all.find((a: Json) => a.status !== "terminated" && (dirAgents()[a.id]?.roles ?? []).includes("platform-engineer"));
@@ -1229,8 +1202,6 @@ const TOOLS: Record<string, Tool> = {
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     run: async ({ issue, into }: Args) => {
       await requireAssistant();
-      await refuseMemoryInbox(issue);
-      await refuseMemoryInbox(into);
       return boardApi(`/internal/issues/${issueRef(issue)}/merge`, { into: decodeURIComponent(issueRef(into)) });
     },
   },
@@ -1249,7 +1220,6 @@ const TOOLS: Record<string, Tool> = {
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, title, description, priority }: Args) => {
-      await refuseMemoryInbox(issue);
       const body: Args = {};
       let current;
       if (title) body.title = String(title).slice(0, 200);
@@ -1280,7 +1250,6 @@ const TOOLS: Record<string, Tool> = {
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, rubric }: Args) => {
-      await refuseMemoryInbox(issue);
       // An amendment always names its criteria: there is no template to fall back to when a delegator is correcting a list.
       if (!Array.isArray(rubric) || !rubric.filter((c) => String(c).trim()).length) throw new Error("rubric: an amendment replaces the whole list, 3-8 checkable criteria");
       const i = await api("GET", `/api/issues/${issueRef(issue)}`);
@@ -1430,7 +1399,6 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ issue, comment }: Args) => {
       const owner = await ownerUserId();
       if (!owner) throw new Error("could not determine the task owner");
-      await refuseMemoryInbox(issue);
       // Read the task before posting any part of the comment: a settler's refusal must leave no trace on it.
       const current = await api("GET", `/api/issues/${issueRef(issue)}`);
       const ownPart = await isOwnPart(current);
@@ -1522,7 +1490,6 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ issue, to, unblock, comment }: Args) => {
       await requireRole(SETTLE, "route another agent's task");
       const t = await api("GET", `/api/issues/${issueRef(issue)}`);
-      if (memoryInboxes().has(t.id)) throw new Error("Refused: that task is a memory inbox; only memory_note writes there.");
       if (["done", "cancelled"].includes(t.status)) throw new Error(`Refused: ${t.identifier ?? issue} is ${t.status}: task_route moves open work only. New work is a new task.`);
       let agent = t.assigneeAgentId;
       if (to) {
@@ -1544,7 +1511,6 @@ const TOOLS: Record<string, Tool> = {
     inputSchema: { type: "object", properties: { issue: { type: "string" }, body: { type: "string" }, reopen: { type: "boolean", description: "a closed task you delegated: reopen it with this comment" } }, required: ["issue", "body"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, body, reopen }: Args) => {
-      await refuseMemoryInbox(issue, { librarian: true });
       if (reopen) {
         const t = await requireDelegated(issue);
         if (["done", "cancelled"].includes(t.status)) {
@@ -1589,7 +1555,6 @@ const TOOLS: Record<string, Tool> = {
       // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task.
       const me = dirAgents()[cx().caller.agent];
       if (issue && me?.profile === "engineer" && me.private_reads !== true) throw new Error("Refused: without private reads you finish only the task this run is working on: leave out `issue`.");
-      if (issue) await refuseMemoryInbox(issue);
       // Your part of the user's task stays open for their replies.
       const current = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
       if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
@@ -1616,7 +1581,6 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ blocked_by, comment }: Args) => {
       if (!CURRENT()) throw new Error("no current task");
       if (!Array.isArray(blocked_by) || blocked_by.length < 1 || blocked_by.length > 10) throw new Error("blocked_by takes 1 to 10 tasks");
-      await refuseMemoryInbox(CURRENT());
       const body: Args = { status: "blocked", blockedByIssueIds: await blockerIds(blocked_by) };
       if (comment) body.comment = await postLeadingParts(CURRENT(), comment);
       return brief(await patchIssue(CURRENT(), body));
@@ -1629,7 +1593,6 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ issue, comment }: Args) => {
       const target = issue ?? CURRENT();
       if (!target) throw new Error("no current task");
-      await refuseMemoryInbox(target);
       const t = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
       if (await isOwnPart(t)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
       const leading = await postLeadingParts(target, comment);
@@ -1786,15 +1749,15 @@ Object.assign(TOOLS, {
   },
 });
 
-// Per-run counts (advisor calls, memory notes): one server serves every run, so each run keeps its own, by agent and run.
-const runs = new Map<string, { advisor: number; notes: number; at: number }>();
+// Per-run counts (advisor calls): one server serves every run, so each run keeps its own, by agent and run.
+const runs = new Map<string, { advisor: number; at: number }>();
 function runCounts() {
   const { caller } = cx();
   const k = `${caller.agent}:${caller.run || caller.task || ""}`;
   let r = runs.get(k);
   if (!r) {
     if (runs.size > 5000) for (const [key, v] of runs) if (Date.now() - v.at > 86_400_000) runs.delete(key);
-    runs.set(k, (r = { advisor: 0, notes: 0, at: Date.now() }));
+    runs.set(k, (r = { advisor: 0, at: Date.now() }));
   }
   return r;
 }
@@ -1802,37 +1765,37 @@ function runCounts() {
 // advisor_ask, fanout_map: the gateway bills the asserted caller's run.
 Object.assign(TOOLS, modelTools({ gatewayUrl: process.env.AIDENHQ_GATEWAY_URL || "http://10.231.0.1:8201", headers: authHeaders, used: runCounts }));
 
-// memory_note: an agent's own memory inbox (a task setup keeps per agent, scripts/modules.ts ensureMemoryInboxes). The inbox
-// is found from the caller's directory entry, never from an argument, so an agent can only ever write to its own; the notes
-// become memory only through the Fleet Steward's daily pass and an apply (agents/<key>/memory.md has no other writer).
-const NOTES_PER_RUN = 10;
+// The memory tools (memory_note, memory_forget, memory_read, memory_rewrite): each forwards to the kernel's one writer
+// (POST /v1/memory/<op>, kernel memory.ts) with this call's assertion, so the kernel finds the calling job and its agent
+// itself; nothing here reaches Paperclip.
+async function kernelMemory(op: string, body: Json) {
+  const res = await fetch(`${KERNEL}/v1/memory/${op}`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+  const text = await res.text();
+  let j: Json = {};
+  try { j = JSON.parse(text); } catch {}
+  if (!res.ok) throw new Error(String(j?.error?.message ?? text).slice(0, 500));
+  return j;
+}
+const LINE = { type: "object", properties: { date: { type: "string" }, src: { type: "string" }, fact: { type: "string" } }, required: ["date", "src", "fact"], additionalProperties: false };
+const memoryTool = (description: string, properties: Json, required: string[], op: string, readOnly = false) => ({
+  description,
+  inputSchema: { type: "object", properties, required, additionalProperties: false },
+  annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: readOnly, openWorldHint: false },
+  run: (args: Args) => kernelMemory(op, args),
+});
 Object.assign(TOOLS, {
-  memory_note: {
-    description:
-      `Note one lesson or fact that would help your future runs (a correction the owner made, a way that worked, how a tool or person really behaves, a memory line that has gone stale), for the Fleet Steward to check against your work and fold into your memory. \`fact\`: one plain statement, at most 400 characters; \`source\`: a link or task id that shows it (required). Keep secrets out. At most ${NOTES_PER_RUN} per run. A note is not memory yet: the Fleet Steward curates it, usually within a day.`,
-    inputSchema: {
-      type: "object",
-      properties: { fact: { type: "string" }, source: { type: "string", description: "link or task id that shows the fact" } },
-      required: ["fact", "source"],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    run: async ({ fact, source }: Args) => {
-      const f = String(fact ?? "").replace(/\s+/g, " ").trim();
-      const src = String(source ?? "").replace(/\s+/g, " ").trim();
-      if (!f || f.length > 400) throw new Error("fact is one statement of at most 400 characters");
-      if (!src || src.length > 300) throw new Error("source is required: a link or task id, at most 300 characters");
-      const counts = runCounts();
-      if (counts.notes >= NOTES_PER_RUN) throw new Error(`at most ${NOTES_PER_RUN} memory notes per run`);
-      // The inbox id setup recorded for this agent: never searched for, so a look-alike task can't catch notes.
-      const g = grant();
-      if (!g.memoryInbox) throw new Error(`no memory inbox for ${g.key}: it is made by the next fleet apply`);
-      counts.notes++;
-      const day = new Date().toISOString().slice(0, 10);
-      await api("POST", `/api/issues/${encodeURIComponent(g.memoryInbox)}/comments`, { body: `Memory note ${day}\nfact: ${f.replace(/<!--|-->/g, "")}\nsource: ${src.replace(/<!--|-->/g, "")}` });
-      return { noted: true, note: "the Fleet Steward will check it against your run history" };
-    },
-  },
+  memory_note: memoryTool(
+    "Save one lesson or fact to your memory now: it is in your handbook from your next run. `fact`: one plain statement, at most 500 characters (a correction the owner made, a way that worked, how a tool or person really behaves). `source`: the task id or https: link that shows it (default: your current task). Memory holds facts; a standing rule goes in your handbook. Secrets are stripped. At most 10 memory changes per run; when memory is full, compact it with memory_rewrite.",
+    { fact: { type: "string" }, source: { type: "string", description: "task id or https: link that shows the fact" } }, ["fact"], "note"),
+  memory_forget: memoryTool(
+    "Remove the lines of your memory whose fact contains `match` (at least 3 characters). A forgotten fact isn't learned again.",
+    { match: { type: "string" } }, ["match"], "forget"),
+  memory_read: memoryTool(
+    "Read your memory: its lines (date, src, fact), its size and its digest (memory_rewrite needs it). The librarian role may name another agent's `key`.",
+    { key: { type: "string", description: "another agent's key (librarian only)" } }, [], "read", true),
+  memory_rewrite: memoryTool(
+    "Replace your memory with `facts` (each {date, src, fact}) to compact it: merge, fix or drop lines, given the `digest` from memory_read (a 409 means it changed: read again). Lines you drop are forgotten. The librarian role may name another agent's `key` and only remove lines from it.",
+    { facts: { type: "array", items: LINE }, digest: { type: "string" }, key: { type: "string", description: "another agent's key (librarian only)" } }, ["facts", "digest"], "rewrite"),
 });
 
 export const TOOL_LIST = Object.entries(TOOLS).map(([name, t]) => ({ name, description: t.description, inputSchema: t.inputSchema, annotations: t.annotations }));

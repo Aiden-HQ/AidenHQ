@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fence } from "./aidenhq-sdk/fence.js";
 import { permalink } from "./map.js";
-import { clearMemory, memoryOf, noteTask } from "./memory.js";
+import { clearMemory, channelMemoryOf, noteTask } from "./memory.js";
 import type { Store } from "./store.js";
 
 export const CHANNEL = /^[CG][A-Z0-9]{6,}$/;
@@ -138,6 +138,6 @@ export async function channelContext(store: Store, botToken: string, callerKey: 
   const r = (await (await fetch(`https://slack.com/api/${method}?${q}`, { headers: { authorization: `Bearer ${botToken}` } })).json()) as { ok?: boolean; error?: string; messages?: { user?: string; bot_id?: string; ts?: string; text?: string }[] };
   if (!r.ok) throw new Error(`Slack refused: ${r.error ?? "unknown"} (the bot must be a member of the channel)`);
   const messages = [...(r.messages ?? [])].sort((x, y) => Number(x.ts) - Number(y.ts)).map((m) => ({ ts: m.ts, from: m.user ?? m.bot_id ?? "", text: fence(m.text ?? "", `slack:${a.channel}:${m.user ?? "bot"}`) }));
-  const mem = memoryOf(store, a.channel);
+  const mem = channelMemoryOf(store, a.channel);
   return { channel: a.channel, ...(a.thread_ts ? { thread_ts: a.thread_ts } : {}), messages, memory: { revision: mem.revision, updated_at: mem.updated_at, from: mem.provenance, note: fence(mem.note, `slack-channel-memory:${a.channel}`) } };
 }

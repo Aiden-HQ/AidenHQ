@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureMemoryInboxes, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.ts";
+import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit, routineAutonomyDefault } from "./modules.ts";
 import { busyRemovedMembers, retireUnconfigured } from "./retire-agents.ts";
 import { routineDrift, syncAgents } from "./paperclip-diff.ts";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.ts";
@@ -325,29 +325,21 @@ async function ensureOpsKey(agent: Obj) {
 
 /**
  * The fast chat lane's config (secret `lane_config`, read by the chat-lane module): per agent with a `chat:` block, its id, name,
- * its chat task, its own agent key (`paperclip_lane_key_<agent>`, kept while it still names that agent), its chat settings, handbook,
- * lane tools (connection and tool: called through the kernel's proxy with its own key), and its own Telegram bot token (`chat_<agent>_telegram_bot_token`)
+ * its chat task, its chat settings, handbook, lane tools (connection and tool: called through the kernel's proxy as that agent,
+ * kernel/src/identity.ts laneCaller), and its own Telegram bot token (`chat_<agent>_telegram_bot_token`)
  * when chat.telegram is on. Rewritten in place only when it changes (the lane re-reads it; no restart).
  */
 async function ensureLaneConfig(agents: Record<string, Obj>, chatTasks: Record<string, string>) {
   const out: Obj = {};
   for (const [key, a] of Object.entries<Obj>(cfg.agents ?? {})) {
     if (!a.chat || !agents[key]) continue;
-    const name = `paperclip_lane_key_${key}`;
-    let token = readSecret(name);
-    const res = token ? await fetch(new URL("/api/agents/me", baseUrl), { headers: { authorization: `Bearer ${token}` } }) : undefined;
-    if (!res?.ok || (await res.json()).id !== agents[key].id) {
-      token = (await api("POST", `/api/agents/${agents[key].id}/keys`, { name: "fast-lane" })).json.token;
-      writeSecret(name, token);
-      step(`Created ${a.name}'s fast lane key`);
-    }
     const tools = (a.chat.tools ?? []).map((t: string) => {
       const [connection, tool] = t.split(".");
-      return { connection, name: tool }; // through the kernel's proxy, with the lane agent's own key
+      return { connection, name: tool }; // through the kernel's proxy, as the lane agent
     });
     const telegram = a.chat.telegram ? readSecret(`chat_${key}_telegram_bot_token`) : "";
     if (a.chat.telegram && !telegram) console.warn(`warning: ${a.name} has chat.telegram on but no chat_${key}_telegram_bot_token in the vault; board chat only`);
-    out[key] = { id: agents[key].id, name: a.name, chat_task: chatTasks[key], api_key: token, model: a.chat.model, reasoning: a.chat.reasoning, deadline_s: a.chat.deadline_s, prompt: handbooks[key] ?? "", tools, ...(telegram ? { telegram_token: telegram } : {}) };
+    out[key] = { id: agents[key].id, name: a.name, chat_task: chatTasks[key], model: a.chat.model, reasoning: a.chat.reasoning, deadline_s: a.chat.deadline_s, prompt: handbooks[key] ?? "", tools, ...(telegram ? { telegram_token: telegram } : {}) };
   }
   const text = Object.keys(out).length ? JSON.stringify({ agents: out }) : "";
   if (readSecret("lane_config") === text) return;
@@ -418,7 +410,7 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
   }
   step(`setup: ${work.length} routines changed, ${Object.keys(cfg.routines ?? {}).length - work.length} unchanged`);
   // A routine's autonomy is the kernel's alone (never Paperclip's), so it lands here even when the routine itself is unchanged.
-  writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
+  writeGrants(agents, reviewLogs, chatTasks);
   // One routine's calls are independent of the next one's: a few side by side.
   await mapLimit(work, 4, async ({ key, r, body, routine, webhook }: (typeof work)[number]) => {
     const existed = Boolean(routine);
@@ -427,7 +419,7 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
       step(`Created routine ${r.title}`);
       routineAutonomy[routine.id] = r.autonomy ?? routineAutonomyDefault(r);
       routineKeys[routine.id] = key;
-      writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
+      writeGrants(agents, reviewLogs, chatTasks);
     }
     const triggers: Obj[] = routine.triggers ?? [];
     for (const s of r.schedules ?? []) {
@@ -539,7 +531,7 @@ const routineAutonomy = { ...lastGrants.routines };
 /** Each routine's compiled key by Paperclip routine id: a routine run's wake names it (`routine:<key>`), so its own model applies. */
 const routineKeys = { ...lastGrants.routine_keys };
 
-function writeGrants(agents: Record<string, Obj>, memoryInboxes: Record<string, string> = {}, reviewLogs: Record<string, string> = {}, chatTasks: Record<string, string> = {}) {
+function writeGrants(agents: Record<string, Obj>, reviewLogs: Record<string, string> = {}, chatTasks: Record<string, string> = {}) {
   if (!isWork) return;
   // autonomy: the board and the runner read the tiered-approvals switch here, fresh on every use.
   // A member's roles are its team record's, given at admission: the record alone holds them, so role lookups find the team.
@@ -548,8 +540,6 @@ function writeGrants(agents: Record<string, Obj>, memoryInboxes: Record<string, 
   if (fleetIssues) table.fleet_issues = fleetIssues;
   table.routines = { ...routineAutonomy };
   table.routine_keys = { ...routineKeys };
-  // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.
-  for (const [key, a] of Object.entries(agents)) if (memoryInboxes[key]) table.agents[a.id].memory_inbox = memoryInboxes[key];
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
   for (const [key, a] of Object.entries(agents)) if (reviewLogs[key]) table.agents[a.id].review_log = reviewLogs[key];
   // Each lane agent's chat task (ensureChatTasks): the kernel writes the fast lane's turns there, and only there.
@@ -600,14 +590,13 @@ lap("agents");
 const holders = Object.fromEntries(Object.entries(agents).map(([k, a]) => [k, a.id]));
 const auditor = Object.keys(cfg.agents ?? {}).find((k) => !cfg.agents[k].member_of && cfg.agents[k].roles?.includes("fleet-audit") && agents[k]);
 await holdFleetIssues({ api, identifier: fleetIssues, holder: auditor ? agents[auditor]!.id : "", step });
-const memoryInboxes = await ensureMemoryInboxes({ api, companyId: company.id, step, holders, keys: Object.entries<Obj>(cfg.agents ?? {}).filter(([k, x]) => x.enabled_tools?.paperclip_tasks?.includes("memory_note") && agents[k]).map(([k]) => k) });
 await dropOldSecrets(company.id);
 await ensureReportingLines(agents);
 // The Agent Coach's review log (one task per fleet-audit agent), found again by its setup marker, never by search at run time.
 const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, holders, keys: Object.entries<Obj>(cfg.agents ?? {}).filter(([k, x]) => !x.member_of && x.roles?.includes("fleet-audit") && agents[k]).map(([k]) => k) });
 // The fast chat lane's conversation: one chat task per agent with a `chat:` block (kernel/src/lane.ts writes each turn there).
 const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, holders, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries<Obj>(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
-writeGrants(agents, memoryInboxes, reviewLogs, chatTasks);
+writeGrants(agents, reviewLogs, chatTasks);
 lap("tasks");
 await ensureEventsPlugin({ api, step, version: JSON.parse(readFileSync(join(repo, "services/paperclip-events/package.json"), "utf8")).version }).catch((e) => fail(e.message));
 lap("plugins");

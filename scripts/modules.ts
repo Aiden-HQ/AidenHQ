@@ -1031,8 +1031,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const [c, tool] = t.split(".");
       if (!tools[c]?.includes(tool) && upstreamGranted(paperclip.mcp_servers[c], tool, settings.upstream)) tools[c] = [...(tools[c] ?? []), tool];
     }
-    const memory = memoryOf(instanceDir, key, warnings);
-    if (memory) a.memory = memory;
     delete a.connections;
     // jobcaps: [<id>] (`<id>?`: only when its module is on): the agent's runner jobs read through the gateway with their token.
     if (a.jobcaps != null) {
@@ -1764,10 +1762,8 @@ decide it on its merits. Before you close, read the new items once more and hand
   }
 }
 
-/** An agent's curated memory (agents/<key>/memory.md in the instance repo, written only through the Librarian's apply), at most MEMORY_MAX bytes: longer is cut at a line end, with a warning. */
+/** The owner's working style (owner/profile.md in the instance repo, landed by an apply), at most MEMORY_MAX bytes: longer is cut at a line end, with a warning. */
 export const MEMORY_MAX = 4096;
-export const memoryOf = (instanceDir: string, key: string, warnings: string[] = []) => cappedFile(instanceDir, `agents/${key}/memory.md`, warnings, "the Librarian should prune it");
-/** The owner's working style (owner/profile.md in the instance repo, through the same apply), at most MEMORY_MAX bytes too. */
 export const profileOf = (instanceDir: string, warnings: string[] = []) => cappedFile(instanceDir, "owner/profile.md", warnings, "keep it to how the owner works");
 function cappedFile(instanceDir: string, path: string, warnings: string[], fix: string) {
   const file = join(instanceDir, path);
@@ -1894,16 +1890,6 @@ async function ensureLogTasks({ api, companyId, keys, holders, step, kind, title
   });
   return Object.fromEntries(keys.map((key: string, i: number) => [key, ids[i]]));
 }
-
-/**
- * One "Memory inbox: <key>" task per agent that has `memory_note` (marker memory-inbox:<key>), held by that agent: its notes
- * land there as comments, for the Librarian's daily pass. memory_note and the bridge's inbox guards read its id from the
- * grants table (memory_inbox); nothing searches for the marker at run time.
- */
-export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }: Obj) => ensureLogTasks({
-  api, companyId, keys, holders, step, kind: "memory-inbox", title: (key: string) => `Memory inbox: ${key}`, what: (key: string) => `memory inbox of ${key}`,
-  description: (key: string) => `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.`,
-});
 
 /**
  * One "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>), held by that agent: the fast chat

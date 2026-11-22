@@ -230,7 +230,7 @@ const writes = createWrites({
 });
 // Connect on first use (connection-state.ts): built below once notify, wakes and idle are; the proxy reads it late-bound.
 let connectionState: ConnectionState | undefined;
-const proxy = createProxy({ whoami, connections, asserter, resolver, secret, writes, needs: () => connectionState, log });
+const proxy = createProxy({ whoami, grants: () => grantsTable().agents ?? {}, connections, asserter, resolver, secret, writes, needs: () => connectionState, log });
 replay = proxy.replay as never;
 const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections, kindOf: writes.kindOf, callAs: proxy.callAs, log });
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with

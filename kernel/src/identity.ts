@@ -1,6 +1,7 @@
 // K1 whoami: who a bearer is, from the credential alone. A kernel job's token (`ahqj_`, gateway_job_secret, kind job: its row's
 // frozen authority) or a module's token (its connection's service key, or its own `<module>_token`, which alone carries the
-// module's roles when it has one). Nothing else is a caller.
+// module's roles when it has one). Nothing else is a caller; the fast chat lane's tool calls are its module token speaking for
+// one of its agents (laneCaller).
 // What an agent may do comes from the kernel's records and the grants table setup writes (config/grants/grants.json), never
 // from control-plane metadata, which agents can edit.
 import { timingSafeEqual } from "node:crypto";
@@ -52,6 +53,18 @@ export function heldRoles(agents: Record<string, Grant | undefined> | undefined,
   const g = agents?.[id];
   const record = typeof g?.member_of === "string" ? Object.values(agents ?? {}).find((x) => x?.key === g.member_of && x?.team) : undefined;
   return [...new Set([...(g?.roles ?? []), ...(record?.roles ?? [])])];
+}
+
+/**
+ * The fast chat lane (a module holding kernel.lane) calling a tool for one of its agents, named by id: that agent's grants,
+ * roles and chat task from the grants table, never the request's say-so. An agent without a chat task has no lane. It carries
+ * no job, so nothing only a job may do (memory, settings, waits, model calls billed to a run) is open to it.
+ */
+export function laneCaller(mod: Identity, agent: string, agents: Record<string, Grant>): Identity {
+  if (mod.kind !== "module" || !mod.roles.includes("kernel.lane")) throw new Unknown("only the fast chat lane (role kernel.lane) calls as one of its agents");
+  const g = Object.hasOwn(agents, agent) ? agents[agent] : undefined;
+  if (!g?.key || typeof g.chat_task !== "string" || !g.chat_task) throw new NoGrants(`agent ${agent.slice(0, 60)} has no fast chat lane`);
+  return { kind: "run", agent, key: g.key, name: g.key, roles: rolesOf(g), tools: Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]])), task: g.chat_task, credential: "" };
 }
 
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */

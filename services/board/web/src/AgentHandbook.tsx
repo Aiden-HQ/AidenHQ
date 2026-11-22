@@ -1,5 +1,5 @@
 // An agent's Handbook tab (#/agents/<key>/handbook): Your rules, the main handbook (read-only until the owner opts into
-// their own copy), what the agent really reads, and the history. Reads: services/board/src/agent-handbook.ts; every edit
+// their own copy), what the agent really reads, its memory (read-only: the agent keeps it), and the history. Reads: services/board/src/agent-handbook.ts; every edit
 // is a typed change (rules, handbook, unfork) that goes through the usual review and apply flow.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
@@ -20,6 +20,8 @@ export interface HandbookHistory {
   rows: { sha: string; at: string; subject: string; files: string[]; source: "instance" | "module"; kind?: "rules" | "handbook"; after?: string | null; before?: string | null }[];
   note?: string;
 }
+/** An agent's memory (GET /api/agents/by-key/:key/memory): each fact with its date and source. */
+export interface MemoryData { facts: { date: string; src: string; fact: string }[]; updated: string | null }
 type HandbookChange = Extract<SettingChange, { kind: "rules" | "handbook" | "unfork" }>;
 const kindOf = (c: SettingChange) => c.kind;
 const agentOf = (c: SettingChange) => ("agent" in c ? c.agent : undefined);
@@ -223,10 +225,31 @@ function History({ agentKey, data, onSignIn }: { agentKey: string; data: Handboo
     </div>
   );
 }
+/** The agent's memory, read-only: each fact with its date and its source (a link when it is one). */
+function Memory({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
+  const [m, setM] = useState<MemoryData | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => void api.memory(agentKey).then(setM, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), [agentKey, onSignIn]);
+  if (error) return <p className="fleet-empty">Couldn't load the memory: {error}</p>;
+  if (!m) return <SkeletonLines lines={3} />;
+  if (!m.facts.length) return <p className="fleet-empty">Nothing yet. The agent saves what its work teaches it here; ask it to remember or forget something.</p>;
+  return (
+    <div className="hb">
+      <p className="muted">What {agentKey} has learned, in every run's handbook.{m.updated ? ` Updated ${ago(m.updated)}.` : ""} Ask it to remember or forget something to change it.</p>
+      {m.facts.map((f, i) => (
+        <div key={i} className="hb-row">
+          <span>{f.fact}</span>
+          <span className="muted">{f.date} · {/^https:\/\//.test(f.src) ? <a href={f.src} target="_blank" rel="noreferrer noopener">{f.src}</a> : f.src}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** An instance agent's whole handbook is its rules; a fork's text is a handbook change. */
 const instanceKind = (data: HandbookData, kind: "rules" | "handbook") => (data.kind === "instance" ? "rules" : kind);
 
-const SUBS = [["edit", "Edit"], ["reads", "What it reads"], ["history", "History"]] as const;
+const SUBS = [["edit", "Edit"], ["reads", "What it reads"], ["memory", "Memory"], ["history", "History"]] as const;
 
 export function AgentHandbook({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
   const [data, setData] = useState<HandbookData | null>(null);
@@ -244,6 +267,7 @@ export function AgentHandbook({ agentKey, onSignIn }: { agentKey: string; onSign
       </div>
       {sub === "edit" && <Edit agentKey={agentKey} data={data} />}
       {sub === "reads" && <Reads data={data} />}
+      {sub === "memory" && <Memory agentKey={agentKey} onSignIn={onSignIn} />}
       {sub === "history" && <History agentKey={agentKey} data={data} onSignIn={onSignIn} />}
     </ChangesScope>
   );

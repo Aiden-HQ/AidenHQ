@@ -321,8 +321,8 @@ export function createApp(opts: AppOptions): Server {
    */
   const logTasks = (): Set<string> => {
     try {
-      const g = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")) as { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string }>; fleet_issues?: string };
-      return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.memory_inbox, a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
+      const g = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")) as { agents?: Record<string, { review_log?: string; chat_task?: string }>; fleet_issues?: string };
+      return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
     } catch { return new Set(); }
   };
   /** The tasks the board shows: assigned to the user, the Researcher or an Engineer; never setup's log tasks an agent holds. */
@@ -359,25 +359,7 @@ export function createApp(opts: AppOptions): Server {
     }
   }
 
-  /**
-   * Memory inboxes (memory_note): the grants table names each agent's inbox task, and only the tasks bridge's memory_note
-   * writes there. Every board tool an agent calls on a named task refuses one, before any other check. Read fresh.
-   */
-  async function refuseMemoryInbox(...refs: string[]) {
-    let inboxes: Set<string>;
-    try {
-      const agents = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8"))?.agents ?? {};
-      inboxes = new Set(Object.values(agents as Record<string, { memory_inbox?: string }>).flatMap((g) => (g.memory_inbox ? [g.memory_inbox] : [])));
-    } catch {
-      return;
-    }
-    if (!inboxes.size) return;
-    // A malformed reference is left to the route's own check.
-    for (const ref of refs.filter((r) => REF.test(r))) {
-      const id = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await pc.issue(ref)).id;
-      if (inboxes.has(id)) throw new HttpError(403, "that task is a memory inbox; only memory_note writes there");
-    }
-  }
+
 
   /** A label by name, created on first use. */
   async function labelNamed(ctx: { labels: Label[] }, name: string, color: string): Promise<Label> {
@@ -932,7 +914,6 @@ export function createApp(opts: AppOptions): Server {
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
           if (!REF.test(target)) throw new Refused("refused: target must be a task identifier");
-          await refuseMemoryInbox(target);
           const dest = await pc.issue(target).catch(() => undefined);
           const agent = dest && ctx.assignees.find((a) => a.key === dest.assigneeAgentId);
           if (!dest || !agent || dest.assigneeAgentId === cos.id) throw new Refused("refused: target must be a task assigned to an engineer");
@@ -1011,9 +992,9 @@ export function createApp(opts: AppOptions): Server {
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(dec(m[1]!)), schedule(dec(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(dec(m[1]!)), recurringChange(dec(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(dec(m[1]!), parse(MergeSchema, body).into), merge(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), schedule(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), recurringChange(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), merge(dec(m[1]!), body)) },
     {
       // An agent attaches a file to the task it is working on (a `file` deliverable): only that task, never another's.
       // The body is the browser route's ({name, type, data} base64); the reply is the new file as the board lists it.
@@ -1024,7 +1005,6 @@ export function createApp(opts: AppOptions): Server {
         const agent = await requireAgentTool(req, "task_file_upload");
         const ref = dec(m[1]!);
         if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
-        await refuseMemoryInbox(ref);
         const issue = await pc.issue(ref);
         if (issue.assigneeAgentId !== agent.id) throw new HttpError(403, "a file may be attached only to the task assigned to you");
         const { attachment } = await upload(issue, body);
@@ -1041,7 +1021,6 @@ export function createApp(opts: AppOptions): Server {
       // The Researcher through the tasks bridge.
       handle: async (m, body, _u, req) => {
         await requireAgentTool(req, "task_pass_on", "board-writer");
-        await refuseMemoryInbox(dec(m[1]!));
         const { comment, to, by } = parse(PassSchema, body);
         const { ctx, issue } = await ownIssue(dec(m[1]!));
         const task = await userTaskOf(issue, ctx);
@@ -1331,6 +1310,16 @@ export function createApp(opts: AppOptions): Server {
         const module = typeof agent.metadata?.module === "string" ? agent.metadata.module : "instance";
         const text = await pc.request<{ content?: string }>("GET", `/api/agents/${encodeURIComponent(agent.id)}/instructions-bundle/file?path=AGENTS.md`).then((r) => String(r.content ?? ""), () => null);
         return handbook({ key: m[1]!, module, revision: catalog.find((c) => c.name === module)?.revision?.slice(0, 7), compiled: text, dirs: { modules: process.env.BOARD_MODULES_DIR, instance: process.env.BOARD_INSTANCE_DIR } });
+      },
+    },
+    // The Handbook tab's Memory block: what the agent's memory holds, read-only (the agent and its memory tools change it).
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/memory$/,
+      handle: async (m) => {
+        const memory = work.memory ? await work.memory(m[1]!) : null;
+        if (!memory) throw new HttpError(404, "no such agent");
+        return memory;
       },
     },
     {

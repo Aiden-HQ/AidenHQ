@@ -113,17 +113,6 @@ function briefNeutralityProblems(text) {
 
 const briefNeutralityMessage = (file, p) => `${file}: the product-bug step "${p.section}" must say the body written into the brief, its title and evidence fields, is already neutral, beside the existing "The issue is public" sentence: the github_product_issue card reads the delegating task's text as the request, so a literal internal address, uuid or task id there becomes a detail it demands and refuses, and the filing loops — name a thing by role and leave a task's id out. Missing: ${p.missing.join("; ")}.`;
 
-/**
- * Every memory-proposal step that asks for a `task_propose_rule` without naming the instance repository: the Engineer job
- * clones only the repositories its task names, so the proposal closes with the memory file untouched.
- */
-function memoryProposalProblems(text) {
-  return sections(text)
-    .filter((section) => section.includes("task_propose_rule") && /memory:/.test(section))
-    .filter((section) => !(/(agents org|instance repo|instance's)/i.test(section) && /aidenhq-instance/.test(section)))
-    .map((section) => section.split("\n").find((line) => line.trim())?.replace(/^\W+\s*/, "").slice(0, 60) ?? "section");
-}
-
 /** The `## Monitors` section's own body, whitespace collapsed, or "" when the handbook has none. */
 function monitorsSection(text) {
   const start = text.indexOf("\n## Monitors\n");
@@ -177,8 +166,6 @@ const monitorMessage = (file, { missing, bans, permits }) => [
   ...bans.map((sentence) => `${file}: the monitor rule is written as a ban: "${sentence}"; a handbook rule says what to do (skill \`fleet-change\`)`),
   ...permits.map((sentence) => `${file}: the monitor rule permits the parking it exists to prevent: "${sentence}"; a monitor's run ends by arming its next check`),
 ];
-
-const memoryProposalMessage = (file, section) => `${file}: the memory-proposal step "${section}" must name the instance repository (\`<agents org>/aidenhq-instance\`): a job clones only the repositories its task names, so the proposal closes with the memory file unchanged.`;
 
 const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (task_route), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 
@@ -248,21 +235,6 @@ test("a fleet skill's product-bug step must ask for the issue to be filed", () =
 test("a fleet skill's product-bug step must say the brief body is already neutral", () => {
   const problems = briefNeutralityProblems(fleetCheck).map((p) => briefNeutralityMessage("fleet-check/SKILL.md", p));
   assert.deepEqual(problems, []);
-});
-
-test("a fleet skill's memory-proposal step must name the instance repository", () => {
-  const daily = readFileSync(new URL("knowledge-daily/SKILL.md", skills), "utf8");
-  const problems = memoryProposalProblems(daily).map((s) => memoryProposalMessage("knowledge-daily/SKILL.md", s));
-  assert.deepEqual(problems, []);
-});
-
-test("the memory-repository lint bites: the old bullet fails with the fix", () => {
-  const old = "- The new memory is one fact per line, each ending `(source, date)`, at most 4 KB (4096 bytes). Propose it with one\n  `task_propose_rule` per agent (marker `memory:<agent key>:<date>`, title \"Memory update: <agent>\"), the description\n  holding the agent key and the exact full new text of `agents/<key>/memory.md`, fact lines only (compile adds the\n  heading). Nothing changed, no proposal.\n";
-  const problems = memoryProposalProblems(old);
-  assert.equal(problems.length, 1);
-  assert.match(memoryProposalMessage("old", problems[0]), /must name the instance repository/);
-  const replacement = old.replace("holding the agent key", "holding the agent key, the target repository `<agents org>/aidenhq-instance`");
-  assert.deepEqual(memoryProposalProblems(replacement), []);
 });
 
 test("the filing-ask lint bites: the step without the ask fails with the fix", () => {

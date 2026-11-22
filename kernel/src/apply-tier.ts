@@ -584,7 +584,7 @@ export function createApplyPlanner(h: {
     const c = await h.read(src);
     if (!c.files.length) throw new Refused("the commit changes nothing against the instance's main");
     const stray = strayFiles(c.files);
-    if (stray.length) throw new Refused(`it changes files outside the instance config (${stray.join(", ")}). Only instance.yaml, apps.yaml, agents/<key>.md, agents/<key>/{agent.yaml,AGENTS.md,memory.md} and owner/profile.md can be applied; product code and module handbooks change through an Engineer PR`);
+    if (stray.length) throw new Refused(`it changes files outside the instance config (${stray.join(", ")}). Only instance.yaml, apps.yaml, agents/<key>.md, agents/<key>/{agent.yaml,AGENTS.md} and owner/profile.md can be applied; product code and module handbooks change through an Engineer PR`);
     if (c.diff.length > DIFF_MAX) throw new Refused(`the diff is too large to review (${c.files.length} files, ${c.diff.length} characters): split the change into smaller ones`);
     const untrialed = untrialedNewAgents(c.files, c.texts.base, c.texts.head);
     if (untrialed.length) throw new Refused(`a new agent starts in trial (\`trial: true\` in agents/${untrialed[0]}/agent.yaml, read-only grants, reporting to architect); its write grants come with a second change after the trial`);

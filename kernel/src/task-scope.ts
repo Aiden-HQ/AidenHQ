@@ -4,14 +4,14 @@
 export type TaskIssue = { id: string; identifier?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null; parentId?: string | null; status?: string };
 
 /** The grants table as setup writes it: each agent's log tasks, and the shared Fleet issues log (its identifier). */
-export type LogGrants = { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string } | undefined>; fleet_issues?: string };
+export type LogGrants = { agents?: Record<string, { review_log?: string; chat_task?: string } | undefined>; fleet_issues?: string };
 
 /**
  * Setup's log tasks (scripts/modules.ts ensureLogTasks, ensureFleetIssues), by id or identifier, from the grants table only:
  * an agent holds each, but holding one never widens what it may write there (comments only, cp.ts), and none wakes anyone.
  */
 export function logTasks(g: LogGrants): Set<string> {
-  return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a?.memory_inbox, a?.review_log, a?.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
+  return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a?.review_log, a?.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
 }
 export const isLogTask = (t: { id: string; identifier?: string | null }, logs: Set<string>) => logs.has(t.id) || Boolean(t.identifier && logs.has(t.identifier));
 

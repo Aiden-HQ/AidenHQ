@@ -12,7 +12,7 @@ import { fence } from "../sdk/src/fence.ts";
 import { readNeed, servedSignedIn, SIGNED_IN, type Need } from "../sdk/src/vendor/needs.ts";
 import type { ConnectionState } from "./connection-state.ts";
 import type { Asserter } from "./assert.ts";
-import { NoGrants, type Connection, type Identity, type Whoami } from "./identity.ts";
+import { laneCaller, NoGrants, type Connection, type Grant, type Identity, type Whoami } from "./identity.ts";
 import type { Resolver } from "./net.ts";
 import type { Rec, Requester } from "./records.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
@@ -105,8 +105,10 @@ const servedAccount = (r: unknown) => {
   return typeof v === "string" && v ? v : undefined;
 };
 
-export function createProxy({ whoami, connections, asserter, resolver, secret, writes, needs = () => undefined, log = () => {} }: {
+export function createProxy({ whoami, grants = () => ({}), connections, asserter, resolver, secret, writes, needs = () => undefined, log = () => {} }: {
   whoami: Whoami; connections: () => Record<string, Connection>; asserter: Asserter; resolver: Resolver; secret: (name: string) => string; writes?: Writes;
+  /** The grants table's agents: whom the fast chat lane may speak for (identity.ts laneCaller). */
+  grants?: () => Record<string, Grant>;
   /** The connection state (late-bound: main.ts builds it after the proxy): needs_owner answers, and a success that clears one. */
   needs?: () => Pick<ConnectionState, "hit" | "ok" | "down"> | undefined;
   log?: Log;
@@ -165,6 +167,8 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
     const callerToken = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
     try {
       who = await whoami(callerToken);
+      const lane = req.headers["x-aidenhq-lane-agent"];
+      if (lane !== undefined) who = laneCaller(who, String(lane), grants());
     } catch (e) {
       log("proxy", { connection, outcome: (e as { code?: string }).code ?? "denied_unknown_caller", ms: Date.now() - t0 });
       throw fail(e instanceof NoGrants ? 403 : 401, "unauthorized", (e as Error).message);
@@ -249,7 +253,7 @@ export function createProxy({ whoami, connections, asserter, resolver, secret, w
       const signed = asserter.signCaller({ agent: who.agent ?? "", key: who.key ?? "", name: who.name ?? "", roles: who.roles, ...(who.task ? { task: who.task } : {}), ...(who.run ? { run: who.run } : {}), tool: `${connection}.${tool}`, aud: conn.module, kind: who.kind });
       jti = signed.jti;
       headers["x-aidenhq-caller"] = signed.jwt;
-      asserter.begin(jti, { credential: who.credential, ...(who.kind === "run" ? { bearer: callerToken } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);
+      asserter.begin(jti, { credential: who.credential, ...(who.job ? { bearer: callerToken } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);
     }
     headers.host = new URL(conn.url).host;
     const timeoutMs = (timeout + 30) * 1000;

@@ -272,6 +272,13 @@ function route(method: string, url: URL): [number, unknown] {
   }
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/handbook$/))) return [200, { kind: "module", main: { text: "You run the invoices app for the owner.", source: "module", module: "invoices", revision: "4e1a9c2" }, rules: "Answer in short paragraphs.", compiled: "You run the invoices app for the owner.\n\n## What you've learned\n\n(memory, filled when a run starts)", fork: null }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/handbook\/history$/))) return [200, { rows: [] }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/memory$/))) return [200, mock.empty ? { facts: [], updated: null } : { updated: ago(95), facts: [
+    { date: "2026-11-18", src: "WOR-790", fact: "The invoices app's export runs from the reports page; the owner checks totals there first." },
+    { date: "2026-11-20", src: "https://example.com/acme/invoices/pull/42", fact: "CI on the invoices repo takes about 6 minutes; the flaky date test passes on a re-run." },
+    { date: "2026-11-22", src: "WOR-806", fact: "The owner prefers totals in the account currency, rounded to whole units." },
+  ] }];
   if ((x = m(/^\/api\/approvals\/([^/]+)\/explain$/))) return [200, { explanation: explanation(decodeURIComponent(x[1]!)) }];
   if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1]!, agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]!) }];

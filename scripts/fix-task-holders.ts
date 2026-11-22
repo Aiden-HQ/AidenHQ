@@ -6,7 +6,7 @@
 // What it decides, per open task (backlog, todo, in_progress, in_review, blocked):
 // - Held by the owner: stays, except Security Watch's fix tasks (created by the agent keyed security-watch), which go to the
 //   fleet-audit agent that routes fixes.
-// - Held by nobody: setup's log tasks (memory inbox, review log, chat task, Fleet issues) are left to the next apply, whose setup
+// - Held by nobody: setup's log tasks (review log, chat task, Fleet issues) are left to the next apply, whose setup
 //   hands each to its agent; any other goes to the agent that created it while that agent is live, or to the owner when a person
 //   made it (the board's settings changes, the install cap's card); one whose creating agent is gone is listed, undecided.
 // A todo or in_progress task handed to an agent starts a job of that agent (its `assigned` wake); the count is printed.
@@ -19,7 +19,7 @@ import { paperclipClient } from "../kernel/sdk/src/paperclip.ts";
 interface Task { id: string; identifier?: string; title?: string; status: string; description?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null }
 interface Agent { id: string; key: string; roles?: string[]; owner?: boolean }
 
-const LOG_MARKER = /<!-- source:(memory-inbox|review-log|chat-task):([\w-]+) -->/;
+const LOG_MARKER = /<!-- source:(review-log|chat-task):([\w-]+) -->/;
 
 /**
  * The plan for a company's open tasks. `agents`: its live agents ({id, key, roles}); `owner`: its owner's user id. Returns

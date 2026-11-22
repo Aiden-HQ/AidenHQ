@@ -115,7 +115,7 @@ routines:
     agent: fleet-steward
     description: |
       Today is {{date}}. Follow your knowledge-daily skill: review what is new since yesterday in the notes vault, the
-      people proposals and the agents' memory (their inboxes and recent finished work), fix what the tools allow, note the rest for the weekly report, then
+      people proposals, fix what the tools allow, note the rest for the weekly report, then
       close this task with a short count summary.
     concurrency: coalesce_if_active
     schedules:
@@ -136,8 +136,8 @@ routines:
     title: Librarian weekly lint
     agent: fleet-steward
     description: |
-      Today is {{date}}. Follow your knowledge-lint skill: lint the whole notes vault, the people directory and the
-      agents' rules, then file the one weekly report task. Then close this task with one line saying what you did.
+      Today is {{date}}. Follow your knowledge-lint skill: lint the whole notes vault, the people directory, the
+      agents' rules and the agents' memory files, then file the one weekly report task. Then close this task with one line saying what you did.
     concurrency: coalesce_if_active
     schedules:
       - { cron: "0 7 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
