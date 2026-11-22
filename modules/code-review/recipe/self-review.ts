@@ -37,14 +37,14 @@ async function main(): Promise<{ out: string[]; code: number }> {
   let base = "", head = "";
   // The base: a plain branch name (no `main~1`, `@{-1}` or other revision syntax), looked up as the exact remote-tracking ref.
   let tip = "";
-  try { git("check-ref-format", `refs/remotes/origin/${baseBranch}`); tip = git("show-ref", "--verify", "--hash", `refs/remotes/origin/${baseBranch}`); } catch { return { out: [`self-review: incomplete: ${JSON.stringify(baseBranch.slice(0, 80))} is not a branch name with a remote-tracking ref (run aidenhq clone first)`], code: 2 }; }
-  try { head = git("rev-parse", "HEAD"); base = git("merge-base", tip, head); } catch { return { out: [`self-review: incomplete: no merge base with origin/${baseBranch} (run aidenhq clone first)`], code: 2 }; }
+  try { git("check-ref-format", `refs/remotes/origin/${baseBranch}`); tip = git("show-ref", "--verify", "--hash", `refs/remotes/origin/${baseBranch}`); } catch { return { out: ["self-review: incomplete: the base argument is not a branch name with a remote-tracking ref (run aidenhq clone first)", detail(`base argument: ${baseBranch}`)], code: 2 }; }
+  try { head = git("rev-parse", "HEAD"); base = git("merge-base", tip, head); } catch { return { out: ["self-review: incomplete: no merge base with the base branch (run aidenhq clone first)", detail(`base argument: ${baseBranch}`)], code: 2 }; }
   // The last finished review of this branch (kept in the clone's .git). A re-run needs the same branch and merge base (a rebase or
   // retarget starts over) and a head that descends from it; it covers only what changed since when nothing important is open.
   // The checked-out branch by its full ref (a tag of the same name can't stand in for it); a detached HEAD has none.
   let ref = "";
   try { ref = git("symbolic-ref", "-q", "HEAD"); } catch {}
-  if (ref !== `refs/heads/${asked}`) return { out: [`self-review: incomplete: ${asked} is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone`], code: 2 };
+  if (ref !== `refs/heads/${asked}`) return { out: ["self-review: incomplete: the branch argument is not the checked-out branch; switch to it, the review reads the committed head of the branch in the clone", detail(`branch argument: ${asked}`)], code: 2 };
   const branch = asked, memo = join(git("rev-parse", "--absolute-git-dir"), "self-review.json");
   // One record per branch, so reviewing another branch in the same clone doesn't reset this one's incremental review.
   const records = (): Record<string, { base?: string; head?: string; open?: number }> => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } };
