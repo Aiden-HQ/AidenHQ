@@ -26,6 +26,8 @@ export type Review = {
   unsafe?: string[];
   /** Open findings the recheck was asked about and didn't call still there. */
   cleared?: string[];
+  /** Open findings the recheck was asked about, looked at and called still there. */
+  still?: string[];
   /** deepsec's set-up files when it set the repo up this run (path → content, `.deepsec/` only): filed as a setup PR. */
   setup?: Record<string, string>;
   /** A tree review's target (a whole repo at a commit); a PR review's is the PR. */

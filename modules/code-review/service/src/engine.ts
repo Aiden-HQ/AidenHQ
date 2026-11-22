@@ -439,6 +439,13 @@ export function createEngine(d: EngineDeps) {
   const stillOpen = (repo: string, n: number) => all<Omit<Open, "severity"> & { rank: number }>(
     `SELECT f.id, MIN(CASE f.severity WHEN 'important' THEN 0 WHEN 'nit' THEN 1 ELSE 2 END) rank, f.path, f.line, f.title, f.why, f.evidence, MAX(f.severity = 'important' AND r.mandatory = 1 AND r.posted = 'posted') gating, MAX(f.claim IS NOT NULL) pending, MAX(f.run) run
      FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
+  /** For an open finding carrying an agent's `fixed` claim that the PR's latest mandatory recheck called still there: what that says,
+   * so the agent can tell whether to fix more or dispute (otherwise the finding just stays open with no reason). */
+  const stillNote = (repo: string, n: number) => {
+    const v = one<{ head: string; json: string }>("SELECT r.head, v.json FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.mandatory = 1 AND r.recheck = 1 AND r.status = 'done' ORDER BY r.ended DESC LIMIT 1", repo, n);
+    const still = new Set<string>(v ? (JSON.parse(v.json) as { still?: string[] }).still ?? [] : []);
+    return (f: { id: string; pending: number }) => f.pending && still.has(f.id) ? `the recheck at ${v!.head.slice(0, 7)} says it is still there: fix it or answer disputed with the reason` : undefined;
+  };
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
   /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
@@ -1665,8 +1672,8 @@ export function createEngine(d: EngineDeps) {
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
     else if (posting.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is being posted to GitHub`, unblock: "it resumes by itself once the post lands (a refused post is filed again)" });
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
-    const open = openGating(repo, n);
-    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
+    const open = openGating(repo, n), note = stillNote(repo, n);
+    if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id}${(note(f) ? `; ${note(f)}` : "")})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
       unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
@@ -1743,7 +1750,7 @@ export function createEngine(d: EngineDeps) {
     dismiss,
     resolve,
     /** The PR's open important findings with their ids (what a merge wait's cut text may leave out). */
-    openFindings(repo: string, number: number) { return openGating(repo.toLowerCase(), number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 120) })); },
+    openFindings(repo: string, number: number) { const note = stillNote(repo.toLowerCase(), number); return openGating(repo.toLowerCase(), number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title.slice(0, 120), ...(note(f) ? { note: note(f) } : {}) })); },
     /** A run's repo, PR and head: what a post of it must name (the executor's plan checks it). */
     binding(id: string) {
       const r = runRow(id);
