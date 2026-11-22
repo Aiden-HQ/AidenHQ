@@ -202,6 +202,7 @@ test("a part the owner closes while the handoff's report posts is not reopened",
   const before = waits.length;
   const issues = { cur: { ...ownPart }, par: { ...par } };
   const patches = [];
+  const comments = [];
   let closed = false;
   const handler = (req, res) => {
     let body = "";
@@ -214,13 +215,17 @@ test("a part the owner closes while the handoff's report posts is not reopened",
       const m = /^\/api\/issues\/([^/?]+)(\/comments)?/.exec(url);
       if (m && m[2] && req.method === "POST") {
         // The owner closes the part at the moment the report's first part is posted.
-        closed = true;
-        issues[m[1]].status = "done";
-        return send({ id: "c1" });
+        comments.push(JSON.parse(body).body);
+        if (!closed) {
+          closed = true;
+          issues[m[1]].status = "done";
+        }
+        return send({ id: `c${comments.length}` });
       }
       if (m && m[2]) return send([]);
       if (m && req.method === "PATCH") {
-        if (closed) throw new Error("the handoff must not patch a part the owner closed");
+        // Record the write rather than throwing in the request handler: a throw there kills the test process, so the
+        // assertion below could never report which write slipped through.
         patches.push({ issue: m[1], ...JSON.parse(body) });
         return send(Object.assign(issues[m[1]], JSON.parse(body)));
       }
@@ -233,6 +238,8 @@ test("a part the owner closes while the handoff's report posts is not reopened",
   const error = r.result?.isError ? r.result.content[0].text : undefined;
   assert.match(error, /was done by the time the handoff was applied/);
   assert.deepEqual(patches, []);
+  // The whole report is on the task, including the segment the status write normally carries.
+  assert.match(comments.at(-1) ?? "", /Final line\./);
   assert.equal(issues.cur.status, "done");
   assert.equal(waits.length, before);
 });

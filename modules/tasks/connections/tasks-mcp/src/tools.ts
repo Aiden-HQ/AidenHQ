@@ -1386,7 +1386,10 @@ const TOOLS: Record<string, Tool> = {
         // right before the write: a part closed meanwhile stays closed, and only the report it already posted stands.
         const latest = await api("GET", `/api/issues/${issueRef(issue)}`);
         if (["done", "cancelled"].includes(String(latest.status ?? ""))) {
-          throw new Error(`Refused: ${latest.identifier ?? current.identifier ?? current.id} was ${latest.status} by the time the handoff was applied, so it stays closed: its report is posted, and the part was not moved to todo or made to wait. File a new task for anything still wanted.`);
+          // Post the report's last segment first: `postLeadingParts` holds it back for the status write, so a refusal
+          // here would drop the end of the agent's report on a task the owner can still read.
+          if (body) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body });
+          throw new Error(`Refused: ${latest.identifier ?? current.identifier ?? current.id} was ${latest.status} by the time the handoff was applied, so it stays closed: the whole report is posted, and the part was not moved to todo or made to wait. File a new task for anything still wanted.`);
         }
         const i = await patchIssue(issue, { status: "todo", comment: body });
         // It waits on the user's reply (their comment wakes it): an owner wait carrying the handoff's words, so it isn't idle work.
