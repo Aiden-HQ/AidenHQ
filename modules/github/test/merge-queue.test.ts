@@ -410,3 +410,38 @@ test("the review gate's findings key follows the whole set of reasons, not the c
   const one = await gate("1")("acme/x", 1, "h"), two = await gate("2")("acme/x", 1, "h");
   assert.ok(one && "findingsKey" in one && two && "findingsKey" in two && one.findingsKey !== two.findingsKey);
 });
+
+test("a bypass recorded on a merge confirmed by a later poll (the PUT went unanswered) still emits reviewBypassed, once", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  let timeouts = 1;
+  const gh = async (m, p, b) => {
+    const r = await github.gh(m, p, b);
+    const pull = r.body?.data?.repository?.pullRequest;
+    if (pull?.state === "MERGED") pull.mergeCommit = { oid: "c".repeat(40) };
+    if (m === "PUT" && timeouts-- > 0) throw new Error("The operation was aborted due to timeout");
+    return r;
+  };
+  const clock = { t: Date.now() };
+  const fetchFn = async () => { throw new Error("connect ECONNREFUSED"); };
+  const bypassed = [];
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
+    report: async () => {},
+    flow: { reviewBypassed: (...a) => bypassed.push(a), checksCompleted: () => {}, waiting: () => {}, resumed: () => {}, merged: () => {} },
+    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn, now: () => clock.t }),
+  });
+  void merges.enqueue("k-00000000000000h1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  // Code review is unreachable: a wait, until it has been down over 10 minutes (the queue asks every 30 s).
+  await merges.step();
+  for (let i = 0; i < 21; i++) { clock.t += 30_000; await merges.step(); }
+  assert.equal(merges.status("k-00000000000000h1").state, "running", "an unanswered merge call is no refusal");
+  assert.deepEqual(bypassed, [], "nothing is recorded before the merge is confirmed");
+  assert.equal(github.merges().length, 1, "the merge PUT went out once and was unanswered");
+  await merges.step(); // the re-poll sees it merged at its head: the done path
+  assert.equal(merges.status("k-00000000000000h1").state, "done");
+  assert.deepEqual(bypassed.map(([repo, n, head, why]) => [repo, n, head, /unreachable/.test(why)]), [["acme-agents/widget", 1, HEAD, true]], "recorded once, on the done path");
+  assert.equal(github.merges().length, 1, "the confirmation poll sends no second merge PUT");
+  await merges.step();
+  assert.equal(bypassed.length, 1, "not emitted again");
+});
