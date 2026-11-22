@@ -194,3 +194,23 @@ test("task_search's state filter is applied over pages of ranked hits, not just 
   const out = parse(await call("task_search", { query: "invoice", state: "waiting", limit: 2 }));
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["hit-waiting"]);
 });
+
+test("task_search does not call an exhausted short result set incomplete", async () => {
+  // 450 hits, one matching state deep in the tail: the overlap pages at the end share rows, which is not a repeated page.
+  const rows = Array.from({ length: 450 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open" }));
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "hit-445" ? "waiting" : "working")]));
+  const { call } = bridge({ handler: issueBoard({ rows }), states });
+  const out = parse(await call("task_search", { query: "invoice", state: "waiting", limit: 5 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["hit-445"]);
+  assert.equal(out.out.incomplete, undefined, "the set was read to its end, not cut short");
+});
+
+test("task_list(mine) caps both sources on the recency key it merges on", async () => {
+  // The assigned task was created earlier but is the most recently active; the chat was created later but is stale.
+  const assigned = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", lastActivityAt: "2026-03-01T00:00:00Z" };
+  const chat = { ...row("chat-3", "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z", updatedAt: "2026-02-01T00:00:00Z", lastActivityAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+  const states = { "assigned-2": noAttention("working"), "chat-3": noAttention("waiting") };
+  const { call } = bridge({ handler: issueBoard({ rows: [assigned, chat] }), states });
+  const out = parse(await call("task_list", { mine: true, limit: 1 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["assigned-2"], "the most recently active task is kept by the cap");
+});

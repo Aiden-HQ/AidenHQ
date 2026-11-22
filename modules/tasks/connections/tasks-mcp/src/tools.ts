@@ -884,11 +884,12 @@ async function* issuePages(q: URLSearchParams, progress: { stalled?: boolean } =
     // A page whose ids are exactly the previous page's is a repeated page: the end, or a server ignoring `offset`. Overlapping
     // tail pages share rows but never all of them, so they are not mistaken for it.
     const ids = page.map((i: Json) => i.id).join(",");
-    if (ids === last && ++repeats > 1) {
-      progress.stalled = true;
-      return;
-    }
-    repeats = ids === last ? repeats + 1 : 0;
+    if (ids === last) {
+      if (++repeats > 1) {
+        progress.stalled = true;
+        return;
+      }
+    } else repeats = 0;
     last = ids;
     const fresh = page.filter((i: Json) => !seen.has(i.id));
     if (!fresh.length) continue;
@@ -947,7 +948,7 @@ const TOOLS: Record<string, Tool> = {
       const list: (readonly [Json, Json])[] = [];
       const seen = new Set<string>();
       const deadline = Date.now() + SCAN_MS;
-      let repeats = 0, stopped = false;
+      let repeats = 0, stopped = false, last = "";
       for (let offset = 0; list.length < max; ) {
         if (Date.now() > deadline) {
           stopped = true;
@@ -967,12 +968,16 @@ const TOOLS: Record<string, Tool> = {
         // Every candidate is tracked, whether or not it matches: that catches a repeat even when none of the page matched.
         const fresh = page.filter((i: Json) => !seen.has(i.id));
         for (const i of fresh) seen.add(i.id);
-        // A ranking that ignores `offset` repeats its page: stop rather than search it forever.
-        repeats = fresh.length ? 0 : repeats + 1;
-        if (repeats > 1) {
-          stopped = true;
-          break;
-        }
+        // A ranking that ignores `offset` repeats the same page: stop rather than search it forever. Overlapping tail pages
+        // share rows but are not identical, so reaching the end of a short result set is not mistaken for a stall.
+        const ids = page.map((i: Json) => i.id).join(",");
+        if (ids === last) {
+          if (++repeats > 1) {
+            stopped = true;
+            break;
+          }
+        } else repeats = 0;
+        last = ids;
         if (Date.now() > deadline) {
           stopped = true;
           break;
@@ -1038,7 +1043,9 @@ const TOOLS: Record<string, Tool> = {
           return onEdge();
         }
       };
-      const capped = async (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline) => {
+      // `top` keeps the newest `max` by the merge's own recency key rather than the first `max` in Paperclip's order: both mine
+      // sources are then selected on the key they are merged on, so one source's cap cannot drop a row newer than one kept.
+      const capped = async (query: URLSearchParams, prepare: (i: Json, until: number) => Promise<Json | null> = async (i) => i, until = deadline, top = false) => {
         const kept: (readonly [Json, Json])[] = [];
         const pages = issuePages(query, progress, () => until - Date.now())[Symbol.asyncIterator]();
         for (;;) {
@@ -1054,7 +1061,12 @@ const TOOLS: Record<string, Tool> = {
           if (Date.now() > until) {
             complete = false;
             kept.push(...matches);
-            return kept.slice(0, max);
+            return top ? newestKept(kept) : kept.slice(0, max);
+          }
+          if (top) {
+            kept.push(...matches);
+            if (kept.length > max) kept.splice(0, kept.length, ...newestKept(kept));
+            continue;
           }
           for (const [i, s] of matches) {
             kept.push([i, s]);
@@ -1062,10 +1074,11 @@ const TOOLS: Record<string, Tool> = {
           }
         }
       };
-      // Paperclip's own newest-first order is by createdAt; both sources are merged on that one key, so the cap keeps the
-      // same rows a single newest-first walk would.
-      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.createdAt ?? "")) || 0;
-      /** One row per task, first in Paperclip's order kept. */
+      // The one recency key for the mine merge: the board's own "newest" for a task (lastActivityAt, then updatedAt). Both
+      // sources are capped on it, the same field the final order uses, so the cap keeps the newest rows either way.
+      const at = ([i]: readonly [Json, Json]) => Date.parse(String(i.lastActivityAt ?? i.updatedAt ?? "")) || 0;
+      const newestKept = (rows: (readonly [Json, Json])[]) => [...rows].sort((a, b) => at(b) - at(a)).slice(0, max);
+      /** One row per task; where a task is in both sources the later (newer) snapshot wins. */
       const deduped = (rows: (readonly [Json, Json])[]) => [...new Map(rows.map((r) => [r[0].id, r])).values()];
       let out: (readonly [Json, Json])[];
       if (!me) out = await capped(q);
@@ -1096,9 +1109,9 @@ const TOOLS: Record<string, Tool> = {
             return mark.test(full.description ?? "") ? full : null;
           };
           // Half the scan's budget is held for the assigned history, so neither source can starve the other.
-          chats.push(...(await capped(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2))));
+          chats.push(...(await capped(theirs, aChat, Math.min(deadline, Date.now() + SCAN_MS / 2), true)));
         }
-        const assigned = await capped(q, mineOnly);
+        const assigned = await capped(q, mineOnly, deadline, true);
         // One list, newest first, before the cap: an older assigned task never crowds out a newer chat.
         // A chat handed back to this agent between the two scans is in both: the assigned snapshot is the newer one.
         out = deduped([...chats, ...assigned]).sort((a, b) => at(b) - at(a)).slice(0, max);
