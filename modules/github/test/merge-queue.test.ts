@@ -18,7 +18,7 @@ const HEAD = "a".repeat(40);
 const check = (name, state) => ({ __typename: "CheckRun", name, status: state === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: state === "PENDING" ? null : state });
 const rollup = (state, { names = ["build"], more = false } = {}) => ({ state, contexts: { pageInfo: { hasNextPage: more }, nodes: names.map((n) => check(n, state)) } });
 
-/** GitHub with one open PR per repo (`prs[repo]`: { head, checks, names?, more?, baseNames?, files? }); merges and writes are recorded. */
+/** GitHub with one open PR per repo (`prs[repo]`, or `prs["repo#n"]` for one PR of a repo with several); merges and writes are recorded. */
 function fakeGitHub(prs) {
   const writes = [];
   const gh = async (method, path, body) => {
@@ -70,8 +70,9 @@ function fakeGitHub(prs) {
   return { gh, writes, merges: () => writes.filter((w) => w.method === "PUT" && w.path.endsWith("/merge")) };
 }
 
-async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
+async function setup(t, { prs, connected = { on: true }, hold, holdReason, cacheDir = mkdtempSync(join(tmpdir(), "codehost-merges-")), clock = { t: Date.now() }, checks, putFails = () => false, remoteUrl = (slug) => join(cacheDir, "no-such-remote", slug) }) {
   const outcomes = [];
+  const waits = [];
   const taken = new Set();
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -80,6 +81,9 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     // The kernel takes a record's first outcome and answers 409 to a repeat (the executor and the queue both post it).
     if (m && taken.has(m[1])) return res.writeHead(409).end("{}");
     if (m) { taken.add(m[1]); outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    // A claimed record's live wait (kernel/src/backplane.ts): the task's card reads it while the merge cannot move.
+    const w = /^\/v1\/writes\/([^/]+)\/wait$/.exec(req.url);
+    if (w) { waits.push({ id: w[1], reason: JSON.parse(body || "{}").reason ?? null }); return res.writeHead(200).end(JSON.stringify({ ok: true, new: true })); }
     const reply = checks?.(req.method, req.url, body ? JSON.parse(body) : undefined);
     // A read that failed rather than answered: `{ __status: 503 }` makes the fake kernel answer that status (a restarting kernel).
     if (reply?.__status) return res.writeHead(reply.__status).end(JSON.stringify({ error: { message: `fake kernel ${reply.__status}` } }));
@@ -101,7 +105,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
   };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir, access, fleetOrg: "acme-agents", remoteUrl,
-    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate: async () => undefined,
+    productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate: async () => undefined, ...(hold ? { holdMerges: () => hold.on } : {}), ...(holdReason ? { mergeHoldReason: holdReason } : {}),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -115,7 +119,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
   // must reach the queue (the production shape, where an id and an identifier are never the same string).
   const merge = (id, prsArgs, task = "tsk_0000000000000w9", identifier = "WOR-9") => call("/aidenhq/v1/executor/execute", { id, kind: "github.merge", args: { prs: prsArgs }, digest: "d", idempotency_key: id, ...(task ? { task } : {}), ...(identifier ? { identifier } : {}) });
   const settle = async () => { for (let i = 0; i < 100 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10)); };
-  return { handle, github, outcomes, call, merge, settle, cacheDir, clock };
+  return { handle, github, outcomes, waits, call, merge, settle, cacheDir, clock };
 }
 
 test("an approved agents-org merge waits for green, merges at its bound head, and reports its outcome", async (t) => {
@@ -781,12 +785,18 @@ test("merge queue waits while disconnected", async (t) => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const facts = [];
   const connected = { on: false };
-  const { handle, github, merge, settle, outcomes } = await setup(t, { prs, connected, checks: (m, u, b) => (u === "/v1/facts" ? (facts.push(...b.facts), { recorded: b.facts.length }) : undefined) });
+  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, connected, checks: (m, u, b) => (u === "/v1/facts" ? (facts.push(...b.facts), { recorded: b.facts.length }) : undefined) });
   await merge("k-00000000000000b9", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
   await handle.flushFacts();
   assert.deepEqual(github.merges(), [], "nothing merges while GitHub is signed out");
   assert.deepEqual(facts.filter((f) => f.type === "work.waiting").map((f) => [f.subject, f.data.reason]), [["pr:acme-agents/widget#1", "github"]]);
+  // The claimed merge card carries the reconnect reason too, not only the queue's own fact: otherwise it reads as a card running
+  // with no reason at all. The card is the record's, so the reason is the record's: what it waits on, not a line per PR.
+  assert.deepEqual(waits.map((w) => [w.id, w.reason]), [["k-00000000000000b9", "GitHub is signed out: waiting for the owner to reconnect it"]]);
+  // Another pass while still signed out posts nothing new (the kernel deduplicates, and the queue does not poll it).
+  await handle.stepMerges();
+  assert.equal(waits.length, 1, "the same reason is not re-posted every poll");
   connected.on = true;
   await handle.stepMerges();
   assert.equal(github.merges().length, 1, "merged once connected again");
@@ -796,7 +806,62 @@ test("merge queue waits while disconnected", async (t) => {
   assert.deepEqual(facts.filter((f) => f.type === "work.resumed").map((f) => f.data.reason), ["github"]);
 });
 
-test("a repo code review gates merges only on its pass for the bound head; a wait keeps the merge queued with no time limit; unreachable over 10 minutes lets it go, recorded; other repos never ask", async () => {
+test("a code review wait posts its reason to the kernel once per distinct reason, never per poll, and keeps its no-time-limit wait", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  let verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "fix and push" }] } };
+  const fetchFn = async () => new Response(JSON.stringify(verdict.body), { status: verdict.status });
+  const waits = [];
+  const clock = { t: Date.now() };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(clock.t),
+    evalGate: async () => undefined, report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: createReviewGate({ gated: ["Acme-Agents/Widget"], url: "http://code-review:8098", key: () => "github-module-token", fetchFn }),
+  });
+  void merges.enqueue("k-00000000000000h1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  await merges.step();
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3) (fix and push)"], "once per distinct reason, not per poll");
+  assert.equal(merges.status("k-00000000000000h1").state, "running");
+  // A week later the same reason: still no second post, and the gate's Infinity limit never stops the wait.
+  clock.t += 7 * 24 * 3600_000;
+  await merges.step();
+  assert.equal(waits.length, 1);
+  assert.equal(merges.status("k-00000000000000h1").state, "running");
+  // A materially changed reason is posted once more.
+  verdict = { status: 200, body: { verdict: "wait", reasons: [{ code: "findings", text: "2 important findings open: t, u", unblock: "fix and push" }] } };
+  await merges.step();
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), [
+    "code review: 1 important finding open: t (a.ts:3) (fix and push)",
+    "code review: 2 important findings open: t, u (fix and push)",
+  ]);
+  assert.equal(github.merges().length, 0, "never merged while the gate waits");
+  verdict = { status: 200, body: { verdict: "pass", reasons: [] } };
+  await merges.step();
+  assert.deepEqual(github.merges().map((w) => w.body.sha), [HEAD]);
+  assert.deepEqual(waits.map((w) => w.id), ["k-00000000000000h1", "k-00000000000000h1", "k-00000000000000h1"]);
+  // The wait ended (review passed): the record's reason is cleared, so no stale "code review: …" sits on a merging record.
+  assert.equal(waits.at(-1).reason, null);
+});
+
+test("a PR left unpolled behind another of its repository is never published as a wait of its own", async (t) => {
+  // One merge per repository per poll: the second PR of the repo is skipped this pass and has no reason of its own, so nothing
+  // about it reaches the kernel (it merges on the next poll, with no blocker in between).
+  const prs = { "acme-agents/widget#1": { head: HEAD, checks: "SUCCESS" }, "acme-agents/widget#2": { head: HEAD, checks: "SUCCESS" } };
+  const { handle, github, outcomes, waits, merge, settle } = await setup(t, { prs });
+  await merge("k-00000000000000d1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/widget", number: 2, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge"], "the first PR merged, the second waited its turn");
+  assert.deepEqual(waits.map((w) => w.reason), [], "the second PR has no reason, so no wait is published for it");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(github.merges().map((w) => w.path), ["/repos/acme-agents/widget/pulls/1/merge", "/repos/acme-agents/widget/pulls/2/merge"]);
+});
+
+test("a repo code review gates merges only on its pass for the bound head; wait (unreachable too) keeps the merge queued with no time limit; other repos never ask", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" }, "acme-agents/other": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   const asked = [];
@@ -893,4 +958,181 @@ test("a bypass recorded on a merge confirmed by a later poll (the PUT went unans
   assert.equal(github.merges().length, 1, "the confirmation poll sends no second merge PUT");
   await merges.step();
   assert.equal(bypassed.length, 1, "not emitted again");
+});
+
+test("a migration hold says so, and never claims GitHub is signed out", async (t) => {
+  // An App migration holds merges while GitHub is connected (migrate.ts, service.ts holdMerges): reconnecting cannot lift it, so
+  // the card's reason must be the migration's, never the reconnect's — the owner cannot act on a sign-out that isn't one.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const hold = { on: true };
+  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, hold });
+  await merge("k-00000000000000ba", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(github.merges(), [], "nothing merges while the migration holds");
+  assert.deepEqual(waits.map((w) => [w.id, w.reason]), [["k-00000000000000ba", "GitHub App migration in progress: merges are held until it finishes"]]);
+  assert.ok(!waits.some((w) => /signed out/i.test(String(w.reason))), "a migration hold is never published as a sign-out");
+  // The same reason is not posted again on the next poll.
+  await handle.stepMerges();
+  assert.equal(waits.length, 1, "a repeat of the same hold is not re-posted");
+  // The hold lifts: the reason is cleared before anything else, and the merge proceeds.
+  hold.on = false;
+  await handle.stepMerges();
+  assert.equal(waits.length, 2, "the migration reason is cleared once merges are no longer held");
+  assert.equal(waits[1].reason, null);
+  assert.equal(github.merges().length, 1, "merged once the migration finished");
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
+test("a sign-out still says signed out, and is cleared when GitHub reconnects", async (t) => {
+  // The other half of the split: `connected` false with no hold is a real sign-out, and its reason is the reconnect's.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const connected = { on: false };
+  const { handle, merge, waits } = await setup(t, { prs, connected });
+  await merge("k-00000000000000bb", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(waits.map((w) => w.reason), ["GitHub is signed out: waiting for the owner to reconnect it"]);
+});
+
+test("a review reason is cleared when another gate takes the PR over, not only when the review passes", async () => {
+  // The card's reason belongs to the gate that actually holds the merge: a required check rerun on the same head takes the PR
+  // over from code review, so "code review: …" must not sit on a card that is now waiting on CI.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const waits = [];
+  let review = { wait: "code review: 1 important finding open: t (a.ts:3)" };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(Date.now()),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: async () => review,
+  });
+  void merges.enqueue("k-00000000000000c1", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open: t (a.ts:3)"]);
+  // A required check is rerun on the same head: CI holds the merge now, so the review reason is no longer the record's wait.
+  prs["acme-agents/widget"].checks = "PENDING";
+  await merges.step();
+  assert.equal(waits.at(-1).reason, null, "the review reason is cleared when checks take over");
+  assert.equal(merges.status("k-00000000000000c1").state, "running");
+  // The checks come back green and the review passes: nothing is republished, nothing stale is left.
+  prs["acme-agents/widget"].checks = "SUCCESS";
+  review = undefined;
+  await merges.step();
+  assert.equal(waits.at(-1).reason, null, "no reason is left once nothing waits");
+  assert.equal(github.merges().length, 1);
+});
+
+test("the record's wait is the whole queue's: one PR leaving its wait never clears another PR's reason", async () => {
+  // Both PRs of one merge record wait on code review. The second passes and merges; the first is still blocked, and its reason
+  // must stay on the card (it never changes, so it is not republished: the record must not have been cleared for it).
+  const prs = {
+    "acme-agents/widget": { head: HEAD, checks: "SUCCESS" },
+    "acme-agents/gadget": { head: "d".repeat(40), checks: "SUCCESS" },
+  };
+  const github = fakeGitHub(prs);
+  const waits = [];
+  const passing = new Set();
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(Date.now()),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: async (repo) => (passing.has(repo) ? undefined : { wait: `code review: 1 important finding open: ${repo}` }),
+  });
+  void merges.enqueue("k-00000000000000c2", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }, { repo: "acme-agents/gadget", number: 2, head: "d".repeat(40) }] });
+  await merges.step();
+  // One record, two waiting PRs: one reason naming both, not whichever PR was polled last.
+  const first = waits.at(-1).reason;
+  assert.match(first, /acme-agents\/widget/);
+  assert.match(first, /acme-agents\/gadget/);
+  // The gadget's review passes: it merges, and the widget is still waiting on its own review.
+  passing.add("acme-agents/gadget");
+  await merges.step();
+  await merges.step();
+  assert.equal(github.merges().length, 1, "the gadget merged");
+  assert.equal(merges.status("k-00000000000000c2").state, "running", "the widget still waits");
+  const last = waits.at(-1).reason;
+  assert.equal(typeof last, "string", "the widget's reason is still on the record, never cleared by the other PR");
+  assert.match(last, /acme-agents\/widget/);
+  assert.doesNotMatch(last, /gadget/);
+});
+
+test("a hold is a decision, not its text: a blank custom reason still holds every merge", async (t) => {
+  // `holdMerges()` true with `mergeHoldReason()` empty is still a hold. If the reason doubled as the flag, an empty string would
+  // read as "not held" and the queue would poll and merge during the App migration.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const hold = { on: true };
+  const { handle, github, merge, settle, outcomes, waits } = await setup(t, { prs, hold, holdReason: () => "" });
+  await merge("k-00000000000000bc", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(github.merges(), [], "a blank reason never lifts the hold: nothing merges during the migration");
+  assert.deepEqual(waits.map((w) => w.reason), ["GitHub App migration in progress: merges are held until it finishes"], "the default reason is published");
+  // Its own text, when it has one, replaces the default.
+  hold.on = false;
+  await handle.stepMerges();
+  assert.equal(github.merges().length, 1);
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
+test("a custom hold reason is published as given", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const hold = { on: true };
+  const { handle, merge, waits } = await setup(t, { prs, hold, holdReason: () => "migrating the GitHub App: merges are held" });
+  await merge("k-00000000000000bd", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  assert.deepEqual(waits.map((w) => w.reason), ["migrating the GitHub App: merges are held"]);
+});
+
+test("a queue written by the previous implementation republishes its reason on the first poll, not trusting an absent one", async () => {
+  // The old queue kept the reason per PR and never a `waitSent`. Its record may still carry a stale "code review: …" while CI
+  // holds the merge, so a queue loaded without the field must reconcile: unknown delivery, not "already cleared".
+  const dir = mkdtempSync(join(tmpdir(), "merges-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
+  const github = fakeGitHub(prs);
+  // What the old implementation left on disk: a running queue with a per-PR note and no `waitSent`.
+  writeFileSync(join(dir, "merges.json"), JSON.stringify({ queues: { "k-00000000000000d1": { id: "k-00000000000000d1", state: "running", startedAt: new Date().toISOString(), said: [], prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending", note: "code review: 1 important finding open" }] } } }));
+  const waits = [];
+  const merges = createMerges({
+    dir, gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(),
+    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
+    reviewGate: async () => undefined,
+  });
+  await merges.step();
+  // CI holds the merge now, so the stale review reason must be cleared rather than assumed already delivered.
+  assert.deepEqual(waits.map((w) => w.reason), [null], "the stale reason is cleared on the first poll after the upgrade");
+});
+
+test("a wait is recorded only after the kernel takes it: a restart mid-delivery republishes, never assumes it arrived", async () => {
+  // The save used to run before the call, so a restart between them left `waitSent` on disk for a reason the kernel never got and
+  // every later poll skipped it: a merge blocked indefinitely with no reason on its card. Read the file from inside the delivery —
+  // the moment a restart could land — and it must not yet say delivered.
+  const dir = mkdtempSync(join(tmpdir(), "merges-"));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const onDisk = [];
+  const waits = [];
+  let calls = 0;
+  const merges = createMerges({
+    dir, gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(),
+    report: async () => {},
+    waiting: async (id, reason) => {
+      calls++;
+      const q = JSON.parse(readFileSync(join(dir, "merges.json"), "utf8")).queues[id];
+      onDisk.push(q.waitSent);
+      // The first delivery is a process that dies mid-call: the kernel never got it.
+      if (calls === 1) throw new Error("process restarted mid-delivery");
+      waits.push({ id, reason });
+    },
+    reviewGate: async () => ({ wait: "code review: 1 important finding open" }),
+  });
+  void merges.enqueue("k-00000000000000d2", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  assert.deepEqual(onDisk, [null], "mid-delivery the file says the record has no wait, never that this one was delivered");
+  // The restart's next poll sends the same reason again: it was never recorded as delivered.
+  await merges.step();
+  assert.deepEqual(waits.map((w) => w.reason), ["code review: 1 important finding open"], "a delivery that never landed is retried, not assumed delivered");
+  // And once the kernel took it, the file does say so (the next poll stays quiet).
+  const after = JSON.parse(readFileSync(join(dir, "merges.json"), "utf8")).queues["k-00000000000000d2"];
+  assert.equal(after.waitSent, "code review: 1 important finding open");
+  await merges.step();
+  assert.equal(waits.length, 1, "once acknowledged, the same reason is not re-posted");
 });

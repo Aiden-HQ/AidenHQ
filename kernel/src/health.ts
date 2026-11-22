@@ -1,6 +1,7 @@
 // The host's health probes (POST /v1/health/probe {probe}, the host's health_probe_key): the modules' own (a connection's
 // `health_probes` in module.yaml), each one read tool of that connection with fixed arguments, called as the narrowest agent granted it through the module call a replayed record makes.
 // The caller names a probe and nothing else; it gets back whether the call worked, never what the tool answered.
+import http from "node:http";
 import { fail } from "./proxy.ts";
 import type { Connection, Grant } from "./identity.ts";
 import { rolesOf } from "./identity.ts";
@@ -56,4 +57,58 @@ export function createConnectionHealth({ connections, resolver, timeoutMs = 4000
     }
   };
   return async () => Object.fromEntries(await Promise.all(Object.entries(connections()).filter(([, c]) => c.url).map(async ([n, c]) => [n, await one(c.url)] as const)));
+}
+
+/**
+ * One service's own /healthz: its status and its JSON body, read bounded so a service that stops mid-answer, keeps dribbling or
+ * floods cannot hold the caller up or grow it — the reviewer restart check (reviews.ts `check`) reads a module's /healthz here.
+ * The deadline is wall-clock (`timeoutMs`, 4 s), not a socket-idle timeout: a peer that keeps sending data is cut off too. A body
+ * past `maxBytes` (8 KB) is no answer at all, not a truncated one parsed into an instance. Never throws: an unreachable service
+ * answers `{ status: 0, body: {} }`. Every answer of `status: 0` also forgets the resolved address, the deadline and the size
+ * bound alike: a service replaced by an apply can leave the old address blackholing rather than refusing, and a cached one would
+ * keep answering nothing for the cache's minute — the next probe must resolve the replacement.
+ */
+export async function readHealth({ resolver, url, timeoutMs = 4000, maxBytes = 8192 }: { resolver: Resolver; url: string; timeoutMs?: number; maxBytes?: number }): Promise<{ status: number; body: Record<string, unknown> }> {
+  try {
+    // Asking the root: the /healthz path, with the Host a dispatch to the module carries.
+    const to = await resolver.resolve(new URL("/healthz", url).href);
+    return await new Promise((ok) => {
+      let done = false;
+      let req: http.ClientRequest | undefined;
+      const answer = (status: number, body: Record<string, unknown> = {}) => {
+        if (done) return;
+        done = true;
+        clearTimeout(deadline);
+        // No answer at all (a deadline, a size bound, a broken socket): the address is unproven, so a cached one is dropped and
+        // the next probe resolves the service again. Without this a container recreated at a new address keeps being asked at the
+        // old one, which blackholes rather than refuses, for as long as the resolver's cache holds it.
+        if (status === 0) resolver.forget(url);
+        req?.destroy();
+        ok({ status, body });
+      };
+      // Elapsed time, not socket idleness: `req.setTimeout` only fires when nothing moves, so a peer dribbling bytes would never
+      // time it out and the sweep awaiting this probe would wait as long as it liked.
+      const deadline = setTimeout(() => answer(0), timeoutMs);
+      req = http.request({ host: to.host, port: to.port, path: "/healthz", method: "GET", headers: { host: new URL(url).host } }, (res) => {
+        const chunks: Buffer[] = [];
+        let n = 0;
+        res.on("data", (c: Buffer) => {
+          n += c.length;
+          // Past the bound the answer is unusable: a truncated prefix can still parse and name an instance that never said so.
+          if (n > maxBytes) return answer(0);
+          chunks.push(c);
+        });
+        res.on("end", () => {
+          let j: Record<string, unknown> = {};
+          try { const p = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); if (p && typeof p === "object" && !Array.isArray(p)) j = p; } catch {}
+          answer(res.statusCode ?? 0, j);
+        });
+        res.on("error", () => answer(0));
+      });
+      req.on("error", () => answer(0));
+      req.end();
+    });
+  } catch {
+    return { status: 0, body: {} };
+  }
 }

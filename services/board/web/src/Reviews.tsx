@@ -936,7 +936,7 @@ function ReposTab({ config, repos, engines, onEdit, onWatch }: { config: CodeRev
                 name={r.repo}
                 title={r.repo}
                 onOpen={() => onEdit(r)}
-                status={live?.error ? <StatusDot tone="failed" title={live.error}>Can't watch</StatusDot> : !id ? undefined : <StatusDot tone="info">Posts as you</StatusDot>}
+                status={live?.error ? <StatusDot tone="failed" title={live.error}>Can't watch</StatusDot> : !id ? undefined : <StatusDot tone="info">{id === "app" ? "Posts as the App" : "Posts as you"}</StatusDot>}
                 facts={
                   <Tags>
                     {moment("on_open", "Open")}

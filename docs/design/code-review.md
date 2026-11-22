@@ -80,7 +80,9 @@ Config is one authority: the board and Aiden write it through the normal setting
 is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. Tier 2 (owner) changes, so the
 Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): outside PRs or drafts reviewed
 automatically, a repo in a new org, any change to a moment's combos (another engine or model, one more combo)
-and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches. `always`, `stop` and `focus` are
+and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches, or, where the owner's optional
+GitHub App is installed on the PR's base repo, as that App (one review writer, its own write limit:
+`docs/superpowers/specs/2026-11-22-github-app-review-writer-design.md`). `always`, `stop` and `focus` are
 PR state, not config.
 
 ## Triggers
@@ -176,7 +178,9 @@ it changes (one writer). It is a mirror: the merge queue still asks the service,
 status out of the named checks, so it never becomes a second gate. It is advice for people and agents watching a PR, not a gate:
 a status belongs to a commit, not a PR, so a new PR at a head another PR already passed shows that pass until the next poll. A
 repo admin may still add `aidenhq/review` as a required status in a ruleset (the admin's choice per repo; AidenHQ never changes
-rulesets) knowing that; the merge queue's gate is the verdict.
+rulesets) knowing that; the merge queue's gate is the verdict. Such a required status must accept any source: the App and the
+owner both write it (a ruleset's check with no `integration_id`; classic protection's `app_id: -1`). Adding it in GitHub's UI
+after the App has posted it can pin it to the App, and then a repo without the App never passes.
 
 An infrastructure refusal of a post is a connection problem, not a verdict. github-mcp's review route carries an owner-fixable
 `GitHubNeed` (an org that restricts OAuth apps, an expired sign-in, a missing scope, org SSO) out as the kernel's `needs_owner`
@@ -215,7 +219,11 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   change is a row in `dispositions` (finding, head, state, reason, evidence, who decided).
 - **Answers (owner, 2026-11-21).** A reply on Aiden's own thread (the service's record) for an open gating finding, from the PR's
   author (not a fork's) or someone with write access now, whose first word is `fixed`, `disputed`, `by design` or `won't fix`
-  followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). Any other reply is conversation.
+  followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). An agent records the same answer with the
+  `code_review_resolve` tool (engine `resolve`, the same `answer` path, no GitHub write: a GitHub refusal never holds a merge);
+  an important finding's answer is then replied on its thread by the service (the `code-review.reply` write, Tier 1, queued in
+  the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply
+  still works. Any other reply is conversation.
   The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds
   the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one); unsure, still present or silent never reopens one,
   and a finding answered and reported again stays answered. A reopened finding goes in that run's post, titled as reopened,

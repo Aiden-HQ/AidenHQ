@@ -32,7 +32,7 @@ async function twin(t, { satisfied, settings, onControl, issues, agents: who = a
   const fx = { plans: [], executes: [], target: "c1", satisfied: false, ...(satisfied ? { satisfied } : {}) };
   let handler = () => false;
   const ex = await serve(async (req, res) => { if (fx.down && req.url.endsWith("/plan")) return void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"starting"}'); if (!(await handler(req, res))) res.writeHead(404).end(); });
-  t.after(() => ex.s.close());
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
   const mod = await moduleServer(t, { key: "twin-key", tools: TOOLS, answer: (msg) => ({ content: [{ type: "text", text: `${msg.params.name} done` }] }) });
   const executor = { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "twin_service_key" };
   const verdicts = [];
@@ -349,7 +349,7 @@ test("a replace with a claimed record reconciles it before A stops: its executor
     status.push(b.id);
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(b.id === done ? { state: "done", text: "it went through" } : { state: "unknown" }));
   });
-  t.after(() => ex.s.close());
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
   const k = await kernel(t, { secrets, connections: {}, writes: { "a.post": { module: "a", floor: 1, tools: [], executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
   const base = { kind: "a.post", module: "a", args: {}, targets: {}, executor: { module: "a", url: `${ex.url}/x` }, policy: "", card: { sentence: "", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "", key: "", name: "", roles: [], kind: "run" }, task: "TASK-1", tier: 1 };
   const done = k.records.file({ ...base, state: "claimed" }).id;
@@ -454,6 +454,67 @@ test("a revalidation plan the executor can't answer now leaves the record approv
   assert.equal(k.records.get(q.approval).state, "claimed");
 });
 
+test("a claimed record's wait reason comes from its own module only, and its task hears it once per change", async (t) => {
+  const k = await kernel(t, { repos: { product: "acme/aidenhq", instance: "acme/aidenhq-instance" }, modules: { modules: { github: { token: "github_token" }, other: { token: "other_token" } } }, secrets: { github_token: "github-key", other_token: "other-key" } });
+  const file = (module, executor = module) => k.records.file({ kind: `${module}.post`, module, args: { n: 1 }, targets: {}, executor: { module: executor, url: "http://127.0.0.1:9/aidenhq/v1/executor" }, policy: "p", tier: 1, panel: false, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "claimed" });
+  const r = file("github");
+  const wait = (id, reason, key = "github-key") => k.v1("POST", `/v1/writes/${id}/wait`, { reason }, key);
+  // Its own module's key (the executor's connection key) reports the reason; the task hears it.
+  assert.equal((await wait(r.id, "code review: 1 important finding open")).status, 200, JSON.stringify(k.log.filter((l) => l.msg === "backplane error")));
+  assert.equal(k.records.get(r.id).wait, "code review: 1 important finding open");
+  assert.equal(k.records.get(r.id).state, "claimed");
+  await until(() => k.notices.length === 1);
+  assert.equal(k.notices[0].task, "TASK-1");
+  assert.match(k.notices[0].text, /^\*\*Still running\*\* \(approval k-[0-9a-f]{16}, github\.post\)[\s\S]*```\ncode review: 1 important finding open\n```/);
+  // The notice also carries the wake marker, so dispatch reads the module's words as a notice, never as the owner's own.
+  assert.match(k.notices[0].text, /<!-- aidenhq-wake -->/);
+  // A repeat of the same reason is idempotent and tells nobody again.
+  assert.deepEqual((await wait(r.id, "code review: 1 important finding open")).json, { ok: true, new: false });
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(k.notices.length, 1, "a repeat of the same reason is not a new wait");
+  // A materially changed reason is told once more.
+  assert.equal((await wait(r.id, "code review: 2 important findings open")).json.new, true);
+  await until(() => k.notices.length === 2);
+  assert.match(k.notices[1].text, /2 important findings open/);
+  // A change past the display cap still reaches the task: the whole reason identifies the wait, only what is shown is capped.
+  const long = "x".repeat(2_500);
+  assert.equal((await wait(r.id, `${long} A`)).json.new, true);
+  await until(() => k.notices.length === 3);
+  assert.equal((await wait(r.id, `${long} B`)).json.new, true, "a reason that differs past 2000 characters is a new wait");
+  await until(() => k.notices.length === 4);
+  assert.match(k.notices[3].text, /x{2500} B/);
+  // A reason that recurs (A → B → A) is still a new transition, so the task gets the last A after the B, not a duplicate of the
+  // first one dropped behind it.
+  assert.equal((await wait(r.id, "code review: 1 important finding open")).json.new, true);
+  await until(() => k.notices.length === 5);
+  assert.match(k.notices[4].text, /1 important finding open/);
+  assert.equal(k.records.get(r.id).waits, 5);
+  assert.equal(k.records.get(r.id).wait, "code review: 1 important finding open");
+  // A clear ends the wait, not the claim's history: the count stays, so a reason reported after it still gets a fresh tag (a
+  // reuse would collide with a notice still queued under the same tag, and be dropped as a duplicate).
+  assert.deepEqual((await wait(r.id, "")).json, { ok: true, new: true });
+  assert.equal(k.records.get(r.id).waits, 5, "clearing a wait keeps the claim's count");
+  assert.equal((await wait(r.id, "code review: 1 important finding open")).json.new, true);
+  await until(() => k.notices.length === 6);
+  assert.equal(k.records.get(r.id).waits, 6, "a reason after a clear is a new notice");
+  // Another module's key may not report it (the same guard as the outcome route).
+  assert.equal((await wait(r.id, "not mine", "other-key")).status, 403);
+  // The executor that owns it clears the reason when its wait ends (the review passed): `""` clears, and nobody is told.
+  const before = k.notices.length;
+  assert.deepEqual((await wait(r.id, "")).json, { ok: true, new: true });
+  assert.equal(k.records.get(r.id).wait, null);
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(k.notices.length, before, "clearing a wait is not a notice");
+  assert.deepEqual((await wait(r.id, "")).json, { ok: true, new: false }, "an empty reason on an already-clear record changes nothing");
+  // A record that isn't claimed refuses a wait: an outcome's record, and one still open for review.
+  k.records.finish(r.id, true, "merged");
+  assert.equal((await wait(r.id, "late")).status, 409);
+  const open = k.records.file({ kind: "github.post", module: "github", args: { n: 2 }, targets: {}, executor: { module: "github", url: "http://127.0.0.1:9/aidenhq/v1/executor" }, policy: "p", tier: 1, panel: false, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "review" });
+  assert.equal((await wait(open.id, "not yet claimed")).status, 409);
+  // It leaves `claimed`: the reason is dropped with the record's end.
+  assert.equal(k.records.get(r.id).wait, null);
+});
+
 test("a kernel job's write names its own workspace, whatever its args say", async (t) => {
   const plans = [];
   const ex = await serve(async (req, res) => {
@@ -461,7 +522,7 @@ test("a kernel job's write names its own workspace, whatever its args say", asyn
     if (req.url.endsWith("/plan")) plans.push(b.args);
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(req.url.endsWith("/plan") ? { args: b.args, targets: {} } : { ok: true, text: "pushed" }));
   });
-  t.after(() => ex.s.close());
+  t.after(() => { ex.s.closeAllConnections?.(); ex.s.close(); });
   const rows = { "j-1": { agent: "ag-bo", task: "task-uuid-7", state: "running", identifier: "PEN-7", authority: { tools: { code: ["push"] }, jobcaps: [], writes: [], roles: [], model: "~z-ai/glm-flash-latest" } } };
   const args = { type: "object", additionalProperties: false, required: ["workspace", "branch"], properties: { workspace: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*-[0-9]+$" }, branch: { type: "string" } } };
   const k = await kernel(t, { secrets, grants, connections: {}, job: (id) => rows[id], writes: { "code.push": { module: "code", floor: 1, tools: ["code.push"], args, executor: { url: `${ex.url}/x`, auth_secret: "twin_service_key" } } } });
@@ -585,4 +646,22 @@ test("a conn.tool call naming no task stays on the job's own task", async (t) =>
   const p = await pending(await k.call("twin", k.token("hb"), { method: "tools/call", params: { name: "note_drop", arguments: { id: 7 } } }));
   const rec = k.records.get(p.approval);
   assert.deepEqual([rec.task, rec.identifier, rec.requester.task], ["HB-1", "HB-1", "HB-1"]);
+});
+
+test("GET /v1/writes pages with `after`: a live read walks past the page cap instead of treating it as the whole set", async (t) => {
+  const { k } = await twin(t);
+  const card = { sentence: "s", changes: "", reads: "", cost: "", details: "" };
+  const filed = Array.from({ length: 5 }, (_, i) => k.records.file({ kind: "github.merge", module: "github", args: { n: i }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "approved" }));
+  const read = (q: string) => k.v1("GET", `/v1/writes?state=approved&tier0=1${q}`).then((r) => r.json.records.map((r) => r.id));
+  // Page size 2: 3 pages, newest first, each starting after the last page's last record, every record once.
+  const page1 = await read("&limit=2");
+  const page2 = await read(`&limit=2&after=${page1.at(-1)}`);
+  const page3 = await read(`&limit=2&after=${page2.at(-1)}`);
+  assert.deepEqual([page1.length, page2.length, page3.length], [2, 2, 1]);
+  assert.deepEqual([...page1, ...page2, ...page3], [...filed].reverse().map((r) => r.id), "every record once, newest first");
+  // `after` names a record this state no longer lists (it ended): the cursor is that record's place, not a lost page.
+  assert.equal(k.records.claim(page1[0]!), true);
+  assert.equal(k.records.finish(page1[0]!, true, "merged"), true);
+  const next = await read(`&limit=2&after=${page1[0]}`);
+  assert.deepEqual(next, [filed[3]!.id, filed[2]!.id], "the page after an ended record is the page that follows its place, not a repeat or a skip");
 });

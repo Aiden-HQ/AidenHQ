@@ -14,7 +14,7 @@ function world(settings = {}) {
   const prs = new Map();
   const comments = [];
   const perms = { alice: "write", mallory: "read" };
-  const started = [], posted = [], acks = [], facts = [], statuses = [];
+  const started = [], replied = [], posted = [], acks = [], facts = [], statuses = [];
   const results = new Map();
   const outcomes = new Map();
   const rewritten = new Set(), closed = [], fails = [], notes = [];
@@ -48,7 +48,7 @@ function world(settings = {}) {
       result: async (c) => results.get(c) ?? { state: "running" },
     },
     // A post lands at once unless the test makes it wait (`posts.pending`): only a posted finding gates.
-    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
+    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => void acks.push(a), reply: async (r) => (replied.push(r), { state: "posted", write: `r-${replied.length}` }), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
       notify: async (n) => { if (perms.notifyDown) throw new Error("kernel 502"); notes.push(n); return n.task && perms.taskClosed ? "closed" : "sent"; },
     },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
@@ -60,7 +60,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  return { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, acks, facts, notes, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
+  return { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, later: (ms) => (t += ms), tick: (o) => engine.tick(o) };
 }
 
 const CODEX = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
@@ -843,7 +843,7 @@ test("an important finding gates until a mandatory recheck confirms it fixed; a 
   await w.tick();
   const v = w.engine.verdict(REPO, 2, sha("2"));
   assert.deepEqual(codes(v), ["findings"]);
-  assert.match(v.reasons[0].text, /1 important finding open: t \(a\.ts:3\)/);
+  assert.match(v.reasons[0].text, /1 important finding open: t \(a\.ts:3, id f1\)/);
   // A force-push: the review is full, and still gets f1 to recheck (with its evidence).
   w.rewritten.add(sha("2"));
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
@@ -958,6 +958,33 @@ test("a mandatory run is never skipped; the owner dismisses an open finding and 
   assert.throws(() => w.engine.dismiss({ repo: REPO, number: 2, id: "f1" }), /say why/);
   assert.deepEqual(w.engine.dismiss({ repo: REPO, number: 2, id: "f1", reason: "intended: the lock is held by the caller", by: "owner" }), { dismissed: "f1" });
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+});
+
+test("an agent records `fixed: …` with no GitHub write and the merge gate's open findings drop; the claim is rechecked next head", async () => {
+  const w = gatedWorld();
+  await opened(w, 2, sha("2"));
+  w.finish(0, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }, { id: "n1", severity: "nit", path: "a.ts", line: 4, title: "n", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"]);
+  assert.match(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /id f1/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "" }), /reason says/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed now", reason: "" }), /word is one of/);
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "later", reason: "some reason" }), /word is one of/);
+  assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" }), { resolved: "f1" });
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+  // The reply is posted for the agent (the important finding only, once its thread is known); a nit gets none.
+  w.engine.resolve({ repo: REPO, number: 2, id: "n1", word: "won't fix", reason: "style only, left as is" });
+  await w.tick({ github: false });
+  assert.deepEqual(w.replied, [], "its thread isn't on the PR yet: nothing posted, the outcome stands");
+  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [] }]); w.later(3 * 60_000); await w.tick({ github: false });
+  assert.deepEqual(w.replied.map((r) => [r.comment, r.body]), [[41, "fixed: moved the lock into pay.ts (abc1234)"]]);
+  await w.tick({ github: false });
+  assert.equal(w.replied.length, 1, "posted once");
+  assert.deepEqual(w.engine.openFindings(REPO, 2), [], "nothing left open to list");
+  assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "again, for no reason" }), /isn't open/);
+  const f = w.db.prepare("SELECT outcome, claim FROM findings WHERE id = 'f1'").get();
+  assert.deepEqual({ ...f }, { outcome: "fixed", claim: "fixed: moved the lock into pay.ts (abc1234)" });
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started[1].previous.map((x) => [x.id, x.claim]).sort(), [["f1", "fixed: moved the lock into pay.ts (abc1234)"], ["n1", "won't fix: style only, left as is"]]);
 });
 
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {

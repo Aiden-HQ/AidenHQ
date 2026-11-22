@@ -444,7 +444,7 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   c.set([5, 4, 3, 2, 1].map((n) => c.agentPr(n)));
   await c.watch.tick();
   assert.deepEqual(c.woke.map((w) => w.task), ["ACME-1", "ACME-2", "ACME-3"], "three per tick, oldest first");
-  assert.match(c.woke[0].text, /waiting on open important findings.*```text\ncode review: 1 important finding open.*fixed: <what changed, commit>.*disputed: <reason, file:line>/s);
+  assert.match(c.woke[0].text, /waiting on open important findings.*```text\ncode review: 1 important finding open.*code_review_resolve.*fixed.*<what changed, commit>.*disputed.*<reason, file:line>/s);
   assert.match(c.woke[0].text, /pull\/1/);
   await c.watch.tick();
   assert.deepEqual(c.woke.map((w) => w.task), ["ACME-1", "ACME-2", "ACME-3", "ACME-4", "ACME-5"], "the rest next tick, none twice");
@@ -474,5 +474,5 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   assert.equal(changing.woke.length, 2, "new findings at the same head wake the task again");
   text = `code review: ${"y".repeat(5000)}`;
   await changing.watch.tick();
-  assert.ok(changing.woke[2].text.length <= 2000 && /disputed: <reason, file:line>.*Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
+  assert.ok(changing.woke[2].text.length <= 2000 && /code_review_resolve.*posted for you\. Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
 });

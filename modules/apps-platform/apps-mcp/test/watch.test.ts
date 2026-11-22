@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { NO_SIGN_IN, probeResult } from "../src/checks.js";
 import { createEngine, STOPPED_OPEN } from "../src/deploy.js";
-import { healthTick, reconcileTick, WATCH_MS } from "../src/loops.js";
+import { BUILD_ATTEMPTS, healthTick, reconcileTick, WATCH_MS } from "../src/loops.js";
 import { type Platform } from "../src/platform.js";
 import { parseApp, type App } from "../src/registry.js";
 import { openStore } from "../src/store.js";
@@ -16,7 +16,7 @@ const FIX = "f".repeat(40);
 // `failure` is the reason the probe recorded (a class, or an HTTP error, which is app-side evidence too). `broken` shas fail in
 // `up` like a build or host error does: nothing of that commit ever runs.
 function setup(o: { message?: string } = {}) {
-  const st = { out: "", running: "", good: new Set<string>(), broken: new Set<string>(), open: new Set<string>(), failure: undefined as string | undefined, app: parseApp({ name: "demo", repo: "example-org/x", owner: "a", description: "d" }) as App };
+  const st = { out: "", running: "", good: new Set<string>(), broken: new Set<string>(), open: new Set<string>(), downFails: false, failure: undefined as string | undefined, app: parseApp({ name: "demo", repo: "example-org/x", owner: "a", description: "d" }) as App };
   const t = { now: 0 };
   const src = mkdtempSync(`${tmpdir()}/src-`);
   writeFileSync(`${src}/compose.yaml`, "services:\n  web:\n    image: x\n");
@@ -33,13 +33,14 @@ function setup(o: { message?: string } = {}) {
         if (st.broken.has(st.out)) throw new Error("docker compose -p app-demo failed: buildx Docker CLI plugin not found: falling back to the classic builder");
         st.running = st.out;
       }
+      if (args.includes("down") && st.downFails) throw new Error("docker compose down failed");
       if (args.includes("down")) st.running = "";
       return "";
     },
     checkout: async (_a, sha) => ((st.out = sha ?? "newsha"), { sha: st.out, dir: src }),
     probe: async () => ({ ok: st.good.has(st.running), ms: 1 }),
     // `open` shas answer without the platform's sign-in (an app deployed before the identity gate existed).
-    identity: async () => probeResult("identity", "/", st.open.has(st.running) ? [{ hard: true, what: `app:8080 on 127.0.0.1: ${NO_SIGN_IN} (GET / with no identity answered 200)` }] : []),
+    identity: async () => probeResult("identity", "/", st.open.has(st.running) ? [{ hard: true, verdict: "open", what: `app:8080 on 127.0.0.1: ${NO_SIGN_IN} (GET / with no identity answered 200)` }] : []),
     now: () => t.now,
     sleep: async (ms) => void (t.now += ms),
   });
@@ -131,7 +132,45 @@ describe("post-deploy watch", () => {
     expect(st.running).toBe("v1");
   });
 
-  // A build or host error (the docker CLI plugin missing, a full disk) is not the commit's fault: an auto-deploy that never
-  // got to run must not mark its commit as deployed for good, or nothing retries it and no healthy auto-deploy can exist.
-  // The first deploy of an app has nothing to fall back on, but a host error there is no more the commit's own than any other.
+  it("raises a failed teardown once across retries of the same commit", async () => {
+    const { p, st, store, raised, deployed } = setup();
+    await deployed();
+    st.broken.add("v1").add("v2").add(FIX);
+    st.downFails = true;
+    st.app = { ...st.app, pin: FIX };
+    for (let i = 0; i < BUILD_ATTEMPTS; i++) await reconcileTick(p, quiet);
+    expect(store.lastDeploy("demo")).toMatchObject({ sha: FIX, status: "build_failed", detail: expect.stringContaining("teardown failed") });
+    expect(raised.filter((r) => r.detail.includes("teardown failed"))).toHaveLength(1);
+  });
+
+  // A retry whose outcome is no longer that teardown replaces the incident: the stale warning must not outlive it.
+  it("replaces a teardown incident when a retry's outcome is no longer that teardown", async () => {
+    const { p, st, store, raised, deployed } = setup();
+    await deployed();
+    st.broken.add("v1").add("v2").add(FIX);
+    st.downFails = true;
+    st.app = { ...st.app, pin: FIX };
+    await reconcileTick(p, quiet);
+    expect(store.openIncident("demo")?.detail).toContain("teardown failed");
+    st.downFails = false; // the retry's teardown now succeeds
+    await reconcileTick(p, quiet);
+    expect(raised.filter((r) => r.detail.includes("teardown failed"))).toHaveLength(1);
+    expect(store.openIncident("demo")?.detail).not.toContain("teardown failed");
+  });
+
+  // Dedupe follows the open incident, not the commit: a teardown failure after the app recovered and its incident closed
+  // pages again, even on the same commit.
+  it("raises a torn-down commit again once its incident has closed", async () => {
+    const { p, st, store, raised, deployed } = setup();
+    await deployed();
+    st.broken.add("v1").add("v2").add(FIX);
+    st.downFails = true;
+    st.app = { ...st.app, pin: FIX };
+    await reconcileTick(p, quiet);
+    expect(raised.filter((r) => r.detail.includes("teardown failed"))).toHaveLength(1);
+    store.closeIncident("demo");
+    await reconcileTick(p, quiet);
+    expect(raised.filter((r) => r.detail.includes("teardown failed"))).toHaveLength(2);
+  });
+
 });

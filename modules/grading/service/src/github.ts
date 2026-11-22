@@ -25,5 +25,29 @@ export function createGithub({ kernel, text }: { kernel: KernelCall; text: Kerne
       if (!/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with job ${id} is not a readable Actions job`);
       return read(repo, { kind: "job", id: Number(id) });
     },
+    /** A workflow run's identity (path, event, head, attempt); null when the repo has no such run. */
+    async run(repo: string, id: string | number): Promise<Json> {
+      if (!/^\d{1,20}$/.test(String(id))) throw new Error(`${repo} with run ${id} is not a readable workflow run`);
+      return read(repo, { kind: "run", id: Number(id) });
+    },
+    /** A listed file at an exact commit (`evidence`): its text; a file GitHub has no answer for throws. */
+    file(repo: string, path: string, ref: string): Promise<string> {
+      if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
+      return text("/v1/codehost/read", { repo, kind: "file", path, ref });
+    },
+    /** A commit's parents, first parent first, in the API's own order (`read`): a merged PR's base is its merge commit's first
+     * parent. A commit GitHub has no answer for throws, so the caller mints nothing. */
+    async commit(repo: string, ref: string): Promise<Json> {
+      if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
+      if (!/^[0-9a-f]{40}$/.test(String(ref))) throw new Error(`${repo} with commit ${ref} is not a readable commit`);
+      return read(repo, { kind: "commit", ref });
+    },
+    /** Whether a path is a directory at an exact commit (`exists`, its own grant): false when it is not there, and a read
+     * that fails throws so the caller mints nothing. */
+    async exists(repo: string, path: string, ref: string): Promise<boolean> {
+      if (!SLUG.test(repo)) throw new Error(`${repo} is not owner/name`);
+      const a = await read(repo, { kind: "exists", path, ref });
+      return a?.exists === true;
+    },
   };
 }

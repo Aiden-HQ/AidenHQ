@@ -8,7 +8,7 @@
 // what the owner's account can reach. Never add a route or a GraphQL document without checking what it does.
 
 import { withFooter } from "./aidenhq-sdk/attribution.js";
-import { GitHubNeed, type GitHubAccess } from "./client.js";
+import { GitHubNeed, type GitHubAccess, type Identity } from "./client.js";
 
 const API = "https://api.github.com";
 const NAME = "[A-Za-z0-9_.-]{1,100}";
@@ -93,7 +93,7 @@ export const GRAPHQL = {
   setStatus: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
-  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first: 20) { nodes { databaseId url body author { login } } } } } } } }`,
+  reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 20) { nodes { databaseId url body author { __typename login } } } } } } } }`,
 } as const;
 /** The most threads one resolve request takes (a post resolves at most 100). */
 export const RESOLVE_MAX = 100;
@@ -207,7 +207,14 @@ export class GitHub {
   constructor(
     private readonly access: GitHubAccess,
     private readonly fetchImpl: Fetch = fetch,
+    /** Another identity than the owner's (code review's App installation, review-post.ts reviewWriter); the same guard. */
+    private readonly identity?: Identity,
   ) {}
+
+  /** The same client, every request as `identity`. */
+  as(identity: Identity): GitHub {
+    return new GitHub(this.access, this.fetchImpl, identity);
+  }
 
   available(): boolean {
     return this.access.connected();
@@ -221,13 +228,14 @@ export class GitHub {
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
     if (!opts.text) {
       // Through the owner's client: its rate limiter, and a typed need (client.ts) for what the owner must fix.
-      const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body);
+      const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body, this.identity ? { as: this.identity } : {});
       // GitHub answers 404 for private repositories the account can't see.
       if (r.status >= 300) throw new Error(`GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${JSON.stringify(r.body?.message ?? r.body ?? "").slice(0, 200)}`);
       // DELETE …/labels answers with the remaining labels; some writes answer 201/204 with nothing.
       return (r.body ?? {}) as T;
     }
     // A job's log answers with a redirect to a pre-signed download: asked for with the owner's token, followed once without it.
+    if (this.identity) throw new GitHubRefused("a job log is read as the owner only");
     const res = await this.fetchImpl(url, {
       method,
       redirect: "manual",

@@ -89,7 +89,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
     return (await kernel("POST", "/v1/wakes", { task: issue.parentId, text })).posted === true;
   };
   const recordsOn = async (issue: Json) => ((await work(issue.id)).records ?? []).map((r: Json) => ({
-    id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "claimed" || r.state === "done" || r.state === "failed" ? "used" : r.state,
+    id: r.id, action: r.kind, state: r.state === "review" || r.state === "owner" ? "pending" : r.state === "done" || r.state === "failed" ? "used" : r.state,
     outcome: r.state === "done" || r.state === "failed" ? { ok: r.ok } : undefined, usedAt: r.updated_at, decidedAt: r.decided_at, createdAt: r.created_at, args: r.args ?? {},
     // What an apply's card carries beyond its args (evidence.ts applyEvidence): the committed diff (APPLY_CHANGE) and the
     // apply's own log tail (APPLY_OUTCOME). The kernel's task read sends the diff for apply records only.
@@ -120,7 +120,7 @@ export function createKernelGradeLoop({ db, runner, due, kernel, kernelBytes, ap
       taskMerged: async () => (await records(issue, "merge", ["done"])).flatMap(verifiedMerges),
       // The grant reads only the fleet's own repositories (the agents org and the product): a PR that reads is an own PR.
       ownRepo: () => true,
-      pr: github.pr, issue: github.issue, diff: github.diff,
+      pr: github.pr, issue: github.issue, diff: github.diff, job: github.job, run: github.run, file: github.file, exists: github.exists, commit: github.commit,
       ...appsEvidence(apps),
       assignee: issue.assigneeAgentId,
       delegator: { agentId: issue.createdByAgentId, userId: issue.createdByUserId },

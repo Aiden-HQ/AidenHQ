@@ -132,7 +132,7 @@ export type Posted = {
   /** A refusal that wasn't the AI reviewer's (stale after a restart, a failed GitHub call): filing it again may post it. */
   retry?: boolean;
   /** Once posted (the executor's outcome): the review's link, the threads it resolved, and who posted it. */
-  url?: string; resolved?: number; identity?: "owner";
+  url?: string; resolved?: number; identity?: "owner" | "app";
   /** The comment ids it opened (its threads' first comments): what makes a thread Aiden's own. */
   comments?: number[];
   /** The acknowledgement comment it wrote. */
@@ -150,6 +150,8 @@ export interface Poster {
   status(s: Status): Promise<Posted>;
   /** The one acknowledgement (a Tier 0 write; `ack`: the comment the service recorded, edited in place). Undefined: nothing filed. */
   ack(a: Ack & { ack?: number }): Promise<Posted | undefined>;
+  /** An agent's answer to a finding, replied on its thread (`comment`: the thread's first comment; a Tier 1 write). */
+  reply(p: { repo: string; number: number; head: string; comment: number; body: string }): Promise<Posted>;
   /** A filed post's outcome now (pending until the AI reviewer and the executor are done). */
   outcome(write: string): Promise<Posted>;
   /** Closes the PR's review task (it only holds its posts' approvals) once the PR is closed or a one-off's post is settled. */

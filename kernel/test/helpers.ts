@@ -166,7 +166,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const backplane = createBackplane({ connectionState, routing, work, graderToken, healthProbe, healthKey: () => secret("health_probe_key"), checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log: logf, writes, records, channels, brake, notify, owner, ownerRaw: (p) => fetch(new URL(p, cpServer.url), { headers: { authorization: "Bearer board-key" } }), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviewerKey: () => secret("reviewer_key"), reviews, jobs: jobsApi, admission, outcomes, proxy: (req, res, c) => proxy(req, res, c), cp: createCp({ whoami, asserter, once: createOnce(records.db), plugin: createPluginPost({ controlUrl: cpServer.url, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") }), agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl: cpServer.url, checks, provenance, log: logf }), boardCp: createBoardCp({ controlUrl: cpServer.url, key: () => secret("paperclip_board_key"), log: logf }) });
   const asCaller = createAsCaller({ whoami, connections: connectionsTable, asserter, log: logf });
   const bp = await serve(backplane);
-  t.after(() => { for (const s of [cpServer, bp]) s.s.close(); });
+  t.after(() => { for (const s of [cpServer, bp]) { s.s.closeAllConnections?.(); s.s.close(); } });
   /** One JSON-RPC message to /c/<connection>/mcp on the backplane. */
   const call = (connection, token, body, { accept = "application/json, text/event-stream", headers = {} } = {}) => fetch(`${bp.url}/c/${connection}/mcp`, {
     method: "POST", headers: { ...(token ? { authorization: `Bearer ${tokens[token] ?? token}` } : {}), "content-type": "application/json", accept, ...headers }, body: typeof body === "string" ? body : JSON.stringify({ jsonrpc: "2.0", id: 1, ...body }),
@@ -189,7 +189,7 @@ export async function moduleServer(t, { key, tools = [], answer, sse = false } =
     if (sse) { res.writeHead(200, { "content-type": "text/event-stream" }); return res.end(`event: message\ndata: ${out}\n\n`); }
     res.writeHead(200, { "content-type": "application/json" }).end(out);
   });
-  t.after(() => m.s.close());
+  t.after(() => { m.s.closeAllConnections?.(); m.s.close(); });
   return { ...m, seen };
 }
 

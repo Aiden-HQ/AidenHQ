@@ -39,3 +39,22 @@ test("a notice the control plane can't take now is posted on a later try; a clos
   await n.send();
   assert.equal(posted.length, 2, "nothing left to send");
 });
+
+test("an untagged notice keeps its old identity (no duplicate), while a tag makes the same text a notice of its own", async () => {
+  const posted: string[] = [];
+  const api = async (m: string, p: string, body: { body: string }) => {
+    if (m === "GET" && p.includes("/comments")) return { status: 200, json: [] };
+    if (m === "GET") return { status: 200, json: { status: "in_progress", parentId: null } };
+    posted.push(body.body.replace(/\n\n<!-- aidenhq-kernel-notice:[^>]*-->$/, ""));
+    return { status: 201, json: {} };
+  };
+  const db = new DatabaseSync(":memory:");
+  const n = createNotices({ db, api, alert: () => {} });
+  // Untagged, queued twice: one notice (its key is the hash of [task, body, parent], as before tags existed).
+  n.queue("t-1", "**Done** (approval r-1)");
+  n.queue("t-1", "**Done** (approval r-1)");
+  // The same text with a tag: a notice of its own (a wait that recurs is a new transition).
+  n.queue("t-1", "**Done** (approval r-1)", { tag: "wait:2" });
+  await n.send();
+  assert.deepEqual(posted, ["**Done** (approval r-1)", "**Done** (approval r-1)"]);
+});

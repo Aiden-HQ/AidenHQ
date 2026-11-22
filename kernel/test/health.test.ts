@@ -49,3 +49,38 @@ test("a probe whose tool has a write kind is refused", async (t) => {
   assert.equal(r.status, 409);
   assert.equal(g.seen.filter((s) => s.method === "tools/call").length, 0);
 });
+
+test("readHealth: an 8 KB+ or dribbling answer is no answer", async (t) => {
+  const { readHealth } = await import("../src/health.ts");
+  const { createServer } = await import("node:http");
+  const listen = async (fn) => { const s = createServer(fn).listen(0, "127.0.0.1"); await new Promise((r) => s.once("listening", r)); t.after(() => s.close()); return s.address().port; };
+  // An oversized body whose first 8 KB is a valid health answer: a truncated prefix must never be parsed into an instance.
+  const big = await listen((req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.write('{"ok":true,"instance":"instance-9"}'); res.end(" ".repeat(64 * 1024)); });
+  // A peer that keeps sending, a byte at a time, and never finishes: socket idleness never fires, the wall-clock deadline must.
+  const dribble = await listen((req, res) => { res.writeHead(200, { "content-type": "application/json" }); const i = setInterval(() => res.write(" "), 20); res.on("close", () => clearInterval(i)); });
+  const resolver = { resolve: async (u) => { const x = new URL(u); return { host: "127.0.0.1", port: Number(x.port), path: x.pathname }; }, forget() {} };
+  const at = Date.now();
+  assert.deepEqual(await readHealth({ resolver, url: `http://127.0.0.1:${big}`, timeoutMs: 2_000 }), { status: 0, body: {} }, "an oversized answer is no instance at all");
+  assert.deepEqual(await readHealth({ resolver, url: `http://127.0.0.1:${dribble}`, timeoutMs: 300 }), { status: 0, body: {} }, "a dribbling peer is cut off at the deadline");
+  assert.ok(Date.now() - at < 1_500, "both answered at the bound, never held open");
+});
+
+test("readHealth: a probe that gets no answer forgets the resolved address, so the next one asks where the service is now", async (t) => {
+  const { readHealth } = await import("../src/health.ts");
+  const { createServer } = await import("node:http");
+  const listen = async (fn) => { const s = createServer(fn).listen(0, "127.0.0.1"); await new Promise((r) => s.once("listening", r)); t.after(() => s.close()); return s.address().port; };
+  // A service that blackholes: it accepts the connection and never answers, as a container moved to a new address can; and the
+  // replacement that is serving now.
+  const dead = await listen(() => {});
+  const live = await listen((req, res) => res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true,"instance":"instance-2"}'));
+  // A resolver whose cached address outlives the move unless it is forgotten, as net.ts's does.
+  const forgot = [];
+  const resolver = {
+    resolve: async () => ({ host: "127.0.0.1", port: forgot.length ? live : dead, path: "/healthz" }),
+    forget: (u) => void forgot.push(new URL(u).hostname),
+  };
+  const url = "http://ai-reviewer:8095/aidenhq/v1/reviewer";
+  assert.deepEqual(await readHealth({ resolver, url, timeoutMs: 300 }), { status: 0, body: {} }, "a blackholed probe is no answer");
+  assert.deepEqual(forgot, ["ai-reviewer"], "and its address is forgotten, never held for the cache's minute");
+  assert.deepEqual(await readHealth({ resolver, url, timeoutMs: 2_000 }), { status: 200, body: { ok: true, instance: "instance-2" } }, "the next probe resolves the replacement and names it");
+});

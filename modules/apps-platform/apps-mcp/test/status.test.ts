@@ -110,7 +110,10 @@ describe("doors", () => {
     );
     return { p, dir };
   };
-  const healthy = (p: ReturnType<typeof createPlatform>, app: string) => p.store.addDeploy({ app, sha: "a".repeat(40), images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "" });
+  const healthy = (p: ReturnType<typeof createPlatform>, app: string) => {
+    p.store.addDeploy({ app, sha: "a".repeat(40), images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "" });
+    p.store.setRunning(app, "a".repeat(40)); // every healthy path (apply, rollback) sets it; a confirmed stop clears it
+  };
 
   it("local: http://<app>.localhost:3130 once the app is served; the doors file names only served, exposed apps", async () => {
     const { p, dir } = make({ doors: { base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, origin: { scheme: "http", port: 3130 } });
@@ -123,6 +126,60 @@ describe("doors", () => {
     expect((await p.status(p.find("quiet"))).url).toBeUndefined();
     await p.syncEdge().catch(() => {}); // the apps node isn't there; the doors file is written first
     expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).toEqual({ notes: 8123 });
+  });
+
+  // A target found answering without sign-in stays a `healthy` row (its `down` failed), but it must not be published or
+  // offered as a URL: nothing that failed the identity gate keeps a route.
+  it("withdraws the route of an app whose only healthy deploy is disqualified", async () => {
+    const { p, dir } = make({ doors: { base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, origin: { scheme: "http", port: 3130 } });
+    healthy(p, "notes");
+    await p.syncEdge().catch(() => {});
+    expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).toEqual({ notes: 8123 });
+    p.store.disqualify(p.store.goodDeploys("notes")[0]!.id, "stopped: answers without the platform's sign-in; teardown failed");
+    expect(await p.status(p.find("notes"))).toMatchObject({ url: undefined, unpublished: expect.stringMatching(/deployed healthy/) });
+    await p.syncEdge().catch(() => {});
+    expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).toEqual({});
+  });
+
+  // A `down` that failed may leave an unverified revision serving, and another healthy row in the history proves nothing
+  // about what is up now: the route stays withdrawn until a deploy is recorded healthy.
+  it("withholds the route after a failed teardown, whatever else is in the healthy history", async () => {
+    const { p, dir } = make({ doors: { base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, origin: { scheme: "http", port: 3130 } });
+    healthy(p, "notes");
+    p.store.addDeploy({ app: "notes", sha: "b".repeat(40), images_json: "[]", by: "auto-deploy", at: 2, status: "healthy", detail: "" });
+    expect(p.store.goodDeploys("notes")).toHaveLength(2);
+    p.store.withhold("notes", "teardown failed: it may still be serving");
+    expect(await p.status(p.find("notes"))).toMatchObject({ url: undefined, unpublished: expect.stringMatching(/deployed healthy/) });
+    await p.syncEdge().catch(() => {});
+    expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).toEqual({});
+    p.store.unwithhold("notes"); // a deploy recorded healthy
+    expect(await p.status(p.find("notes"))).toMatchObject({ url: "http://notes.localhost:3130" });
+  });
+
+  // A target that was stopped because its identity could not be confirmed is a confirmed stop: nothing runs, so the app
+  // must not stay published (the edge would point at a compose project that is gone: 502s, and a route to nothing).
+  it("unpublishes an app once its only healthy deploy is disqualified", async () => {
+    const { p } = make({ doors: { base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, origin: { scheme: "http", port: 3130 } });
+    healthy(p, "notes");
+    expect(p.store.publishable("notes")).toBe(true);
+    p.store.disqualify(p.store.goodDeploys("notes")[0]!.id, "stopped: its identity could not be confirmed");
+    expect(p.store.publishable("notes")).toBe(false);
+    expect(await p.status(p.find("notes"))).toMatchObject({ url: undefined });
+  });
+
+  // The doors file is how the gate decides what the app serves: a withheld app must lose its door even when another
+  // app's generated Compose file cannot be read while syncEdge builds the targets.
+  it("closes a withheld app's door even when another app's Compose file cannot be read", async () => {
+    const { p, dir } = make({ doors: { base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, origin: { scheme: "http", port: 3130 } });
+    healthy(p, "notes");
+    await p.syncEdge().catch(() => {});
+    expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).toEqual({ notes: 8123 });
+    p.store.withhold("notes", "teardown failed: it may still be serving");
+    // A second publishable app makes syncEdge read Compose files for its target list, where a read can throw; the doors
+    // file is written first, so the withheld app's door closes regardless.
+    p.store.addDeploy({ app: "quiet", sha: "a".repeat(40), images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "" });
+    await p.syncEdge().catch(() => {});
+    expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).not.toHaveProperty("notes");
   });
 
   it("public: the sslip.io URL only after a verified handshake for that name; until then, why", async () => {

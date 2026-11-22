@@ -83,7 +83,7 @@ const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE), (auth) =
 // filed as the calling job (its assertion goes along).
 const raw = () => { try { const v = JSON.parse(env.CODE_REVIEW_SETTINGS || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
 const mcp = serveMcp(createMcp(configTools({
-  raw, repos: () => engine.repos(), runs: (q) => engine.runs(q), oneoff: (b, asker) => engine.oneoff(b, asker), repoReview: (b) => engine.repoReview(b),
+  raw, repos: () => engine.repos(), runs: (q) => engine.runs(q), oneoff: (b, asker) => engine.oneoff(b, asker), resolve: (b) => engine.resolve(b), findings: (r, n) => engine.openFindings(r, n), repoReview: (b) => engine.repoReview(b),
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
