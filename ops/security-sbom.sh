@@ -200,7 +200,8 @@ for image in $(printf '%s\n' "${!running[@]}" | sort); do
   room_gb=$(( $(free_gb) - min_free_gb ))
   if [ "$room_gb" -ge 0 ] && [ "$size_gb" -gt $(( room_gb / 2 )) ]; then
     plan_add fail "image:$ref" "skipped: ${size_gb} GB image needs more than half the ${room_gb} GB of room above the ${min_free_gb} GB floor on $out"
-  elif [ -n "$tag" ]; then
+  elif [ -n "$tag" ] && [ "$ref" = "$tag" ]; then
+    # The daemon source only for a tag that resolved; a fallback to the manifest or the id is an archive target.
     plan_add tag "image:$ref" "$ref"
   elif err="$(docker save -o "$archives/$archives_n.tar" "$ref" 2>&1)"; then
     # The archive lands under $out, not $work, which each scan empties; it is removed once its scan finishes.
