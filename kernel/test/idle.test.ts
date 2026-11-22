@@ -457,6 +457,17 @@ test("a retry is compared with the same normalization as the stored question", a
   assert.equal(JSON.parse(fact.data).question, "Is this --> the path?", "the wait as it was");
 });
 
+test("a malformed deadline on a new question fails before anything is sent", async (t) => {
+  const w = world(t);
+  // The question must never reach the delegator for a call that then fails: nothing is sent and no ask marker is written.
+  await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", until: "soon", for: "delegator", question: "Which path?" }), { status: 400 });
+  assert.equal(w.asked.notices.length, 0, "nothing was sent");
+  assert.equal(w.db.prepare("SELECT 1 FROM escalations WHERE key = 'ask:t1'").get(), undefined, "no ask marker");
+  // A retry with a good deadline then goes through normally.
+  assert.equal((await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "which path", for: "delegator", question: "Which path?" })).to, "delegator");
+  assert.equal(w.asked.notices.length, 1);
+});
+
 test("a retry of the open question with a stale deadline reuses its wait instead of failing", async (t) => {
   const w = world(t);
   const until = new Date(w.now() + 20 * MIN).toISOString();

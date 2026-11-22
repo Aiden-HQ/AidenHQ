@@ -183,7 +183,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
      * otherwise it goes to the chief of staff. One open ask per task: while a recorded question is unanswered, only a retry of
      * that same question goes through (`same`, nothing sent, the wait untouched); another one is `open` and nothing is sent.
      */
-    async ask(task: string, who: "owner" | "delegator", question: string, asked = false): Promise<{ sent: "asked" | "same" | "recorded" | "open" | "ambiguous" | "gone" | "limit"; to?: AskTo }> {
+    async ask(task: string, who: "owner" | "delegator", question: string, asked = false, beforeSend?: () => void): Promise<{ sent: "asked" | "same" | "recorded" | "open" | "ambiguous" | "gone" | "limit"; to?: AskTo }> {
       const q = neutral(question).trim().slice(0, 1500);
       const t = await issue(task);
       if (!q || !t || CLOSED.includes(String(t.status))) return { sent: "gone" };
@@ -204,6 +204,9 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
         // for an `asked` replay too: the owner got that different question, but it doesn't replace a live ask either.
         return { sent: "open", to: open.to };
       }
+      // The caller's own precondition (a wait that must arm) is checked before anything leaves the kernel: a question a recipient
+      // gets must never arrive for a call that then fails. A retry above returns first, so its caller's stale deadline is moot.
+      beforeSend?.();
       // `asked`: the question already reached the owner (notify's decision, the agent's reply). Nothing is sent here, and with no
       // ask open nothing is replaced: the wait is recorded.
       if (asked && to === "owner") return { sent: "recorded", to };

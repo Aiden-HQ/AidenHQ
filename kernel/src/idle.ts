@@ -339,8 +339,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         if (r.status === 404 || r.json?.id !== caller.task) throw fail(409, "refused", "a wait is recorded on this job's own task only");
       }
       const t = now();
-      // The deadline is checked once the ask is decided: a retry of an open question reuses that wait and its own `until`, so the
-      // caller's (possibly stale) deadline must not fail it.
+      // The deadline is validated before anything is sent: a question the recipient gets must arm a wait, never arrive for a call
+      // that then fails. Its failure is held, though: a retry of the open question reuses that wait and its own `until`, so a
+      // stale or malformed deadline on that retry is not this call's to use.
       const deadline = (): number => {
         let until: number;
         if (b.until !== undefined) {
@@ -352,11 +353,14 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         else throw fail(400, "bad_request", "send until (an ISO time, at most 7 days ahead) or on (the event it waits for)");
         return until;
       };
+      let until = NaN;
+      let deadlineError: Error | undefined;
+      try { until = deadline(); } catch (e) { deadlineError = e as Error; }
       // Asked first: a question that can't be sent now fails the call (the agent tries again), never a silent wait. The
       // kernel picks who settles it (escalate.ts); an `asked` question that may not go to the owner directly goes there too.
       // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
       // on them as before.
-      const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked) : undefined;
+      const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked, () => { if (deadlineError) throw deadlineError; }) : undefined;
       if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task's wait is unchanged. Decide with your handbook, brief and advisor, and note the assumption in your result.");
       // One open ask per task: a different question while the recorded one is unanswered fails the call, actionably (escalate.ask
       // answers only a retry of the same question). A state that can't be read now fails the call too.
@@ -366,9 +370,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // A retry of the question already open reuses that wait: nothing is sent, nothing recorded, and its own deadline stands.
       if (r?.sent === "same") {
         const at = state.read({ ids: [caller.task] }).tasks[0]?.wait_until;
-        return { waiting: true, until: at ?? iso(deadline()), to: r.to as AskTo, asked: true };
+        return { waiting: true, until: at ?? iso(t + MAX_WAIT), to: r.to as AskTo, asked: true };
       }
-      const until = deadline();
+      if (deadlineError) throw deadlineError;
       const to = r?.to ?? (who === "owner" ? "owner" : "delegator");
       // A marker only for a question the kernel actually asked: a handoff, or an ask that found the task gone, records none, so
       // it can't later block a real question as "still open" with a recipient nobody wrote to.
