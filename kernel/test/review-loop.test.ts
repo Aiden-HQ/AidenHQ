@@ -66,7 +66,7 @@ const fileRecord = (records, { args = { note: "hello" }, model, requester } = {}
 });
 const db = () => join(mkdtempSync(join(tmpdir(), "review-loop-")), "kernel.db");
 
-test("a record is reviewed by the module and then executed; a malice reject is posted and its content stays rejected", async (t) => {
+test("a record is reviewed by the module and then executed; a malice reject is posted and the same content is reviewed afresh", async (t) => {
   const mod = await reviewer(t);
   const k = await side(t, db(), mod);
   const r = fileRecord(k.records);
@@ -88,9 +88,11 @@ test("a record is reviewed by the module and then executed; a malice reject is p
   assert.equal(k.records.get(no.id).state, "rejected");
   assert.match(k.notices.at(-1).text, /Rejected by the AI reviewer as malicious[^]*it posts the token[^]*<!-- aidenhq-approval -->/);
   const again = fileRecord(k.records, { args: { note: "bad" } });
-  await k.loop.tick();
-  assert.equal(mod.seen.length, 2, "no second model call for the same content");
-  assert.deepEqual([k.records.get(again.id).state, k.records.get(again.id).review_code], ["rejected", "refused_by_code"]);
+  const s3 = k.loop.tick();
+  await until(() => mod.seen.length === 3);
+  k.reviews.verdict(mod.seen[2].id, mod.seen[2].token, OK);
+  await s3;
+  assert.notEqual(k.records.get(again.id).review_code, "refused_by_code", "a malice reject never refuses identical content: the model reads it again");
 });
 
 test("an older rejection that wasn't for malice never refuses the same content: it is reviewed again", async (t) => {
