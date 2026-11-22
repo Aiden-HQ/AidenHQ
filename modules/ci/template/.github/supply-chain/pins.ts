@@ -10,24 +10,34 @@
 //   commands      (Dockerfile RUN, *.sh, workflow lines) `npm i -g` and `npx -y` at an exact version, `pip install`
 //                 at `==`, no `curl | sh`, and after a script adds an apt repository (sources.list.d) every apt install
 //                 is `pkg=version`. Distro packages installed before that ride on the base image's digest; a
-//                 distro package pinned anyway (`pkg=version`) is dated from the host's Ubuntu pockets. A host script
-//                 pins per Ubuntu release in the arms of `case "$codename" in <release>) …;; esac`: a pin in an arm is
-//                 dated for that release only, any other for every release the file names (noble when it names none).
+//                 distro package pinned anyway (`pkg=version`) is dated from its own base's distro (its stage's FROM
+//                 `debian:<codename>` or `ubuntu:<codename>`; the file's source entries first, then that distro's
+//                 pockets). A stage inherits the repositories a stage it extends (`FROM <stage>`) added, and neither
+//                 its own nor its siblings' additions leak into another stage.
+//                 Where the base's codename can't be read (a host script, scratch, FROM ${ARG}, another image) the
+//                 host's Ubuntu pockets are used. A host script pins per Ubuntu release in the arms of
+//                 `case "$codename" in <release>) …;; esac`: a pin in an arm is dated for that release only, any other
+//                 for every release the file names (noble when it names none).
 //   host pins     ops/vm/pins.json (read by ops/vm/setup.sh): `apt` for every release, `releases.<codename>.apt` for one;
 //                 each dated from the file's `repos` as that release reads them, then its distro's pockets.
 // Dated (only pins a change adds or alters, against the base): images, actions, npm, PyPI, apt pins, GitHub release
 // downloads, and digest-pinned image strings in code. Each must be 7+ days old or be a security exception in
 // .github/supply-chain-exceptions.yaml read from the head, so a fix and its exception land in one PR and the code review
 // covers both (`ecosystem` docker, github-action, npm, pypi, apt or github-release; `package`, `version`, `advisory`,
-// `reason`). A pin that can't be dated (a registry with no push record, a lookup error, a Debian package: apt pins are
-// dated from Ubuntu's pockets) is a printed warning, not a failure (the gates fail open); a pin the registry contradicts (an action's tag is another commit) fails.
+// `reason`). A pin that can't be dated (a registry with no push record, a lookup error, an apt pin in no repository
+// its file or base image lists) is a printed warning, not a failure (the gates fail open); a pin the registry contradicts (an action's tag is another commit) fails.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DAY, parseImage, publishedAt, readExceptions } from "./best-version.ts";
 import type { Exception, FetchError } from "./best-version.ts";
 
 export interface Pin { kind: string; name: string; package: string; version?: string; digest?: string; sha?: string; at: string; sources?: string[]; releases?: string[]; release?: string; distro?: string }
-interface State { repoAdded: boolean; sources: string[]; releases: Set<string>; releaseCase?: boolean; arm?: string[] }
+// Apt repository state: `files` are the source files the stage has (each used for dating, and whether it was removed),
+// `entries` the `deb` lines by source file (`undefined` for a line naming no file, which accumulates) and `added` whether
+// the stage has added any repository at all — a Deb822 `.sources` file adds one without a parseable `deb` line. A stage
+// extending another inherits the files it still has, never one the parent rewrote or removed.
+interface State { files: Map<string, string[]>; entries: Map<string | undefined, string[]>; added: boolean; releases: Set<string>; releaseCase?: boolean; arm?: string[]; base?: { distro: string; release: string } }
+const sources = (s: State) => [...s.entries.values()].flat();
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
@@ -47,6 +57,23 @@ const onRelease = (s: string, release: string, distro = "ubuntu") => s.replace(/
 const distroSources = (r: string, distro = "ubuntu") => distro === "debian"
   ? [`http://deb.debian.org/debian ${r} main`]
   : [`${r}-updates main`, `${r}-updates universe`, `${r}-security main`, `${r}-security universe`, `${r} main`, `${r} universe`].map((s) => `http://archive.ubuntu.com/ubuntu ${s}`);
+
+// The distro and codename a Dockerfile FROM installs: Docker Hub's debian:<codename> (sid, bookworm, trixie, …) and
+// ubuntu:<codename> (noble, or a `noble-…` / `…-noble` tag). Anything else, a local stage or an unread codename: none.
+const DISTRO_TAGS = new Map<string, [string, string[]]>([
+  ["debian", ["debian", ["sid", "bookworm", "trixie", "forky", "bullseye", "buster"]]],
+  ["ubuntu", ["ubuntu", ["noble", "jammy", "focal", "oracular", "plucky", "questing", "resolute"]]],
+]);
+function baseDistro(ref: string): { distro: string; release: string } | undefined {
+  const { host, repo, tag } = parseImage(ref);
+  if (!tag || !repo.startsWith("library/")) return undefined;
+  // A Map, not an object: an image named `constructor` or `__proto__` must read as an unknown image, not Object.prototype.
+  const entry = host === "docker.io" ? DISTRO_TAGS.get(repo.slice("library/".length)) : undefined;
+  if (!entry) return undefined;
+  const [distro, codenames] = entry;
+  const release = tag.split("-").find((part) => codenames.includes(part));
+  return release ? { distro, release } : undefined;
+}
 
 export const wanted = (path: string) => !SKIP.test(path) && (DOCKERFILE.test(path) || COMPOSE.test(path) || WORKFLOW.test(path) || SHELL.test(path) || CODE.test(path) || HOST_PINS.test(path));
 
@@ -68,6 +95,31 @@ const imagePin = (ref: string, at: string): Pin => {
 };
 const strip = (s: string) => s.replace(/^["']|["']$/g, "");
 const words = (s: string) => s.trim().split(/\s+/).map(strip).filter(Boolean);
+// A file a command writes, and whether that command's own output reaches it. `fed` is false for a `2>` (stderr) target
+// and for a `tee` whose stdin is redirected from a file (`< …`) rather than the pipe: the file is still written, but
+// not with this segment's content.
+interface Written { path: string; file?: string; fed: boolean }
+// The destinations a command writes: a `>`/`>>` target and each `tee` operand. A path it only reads, as
+// `cat /etc/apt/sources.list.d/debian.sources | tee /tmp/log` reads one, is not a write; `file` is set only for a
+// sources.list.d name, and the caller keeps `.list` and `.sources`, the only names APT loads.
+function writtenFiles(segment: string): Written[] {
+  const out: Written[] = [];
+  const add = (path: string, fed: boolean) => {
+    const file = /\/etc\/apt\/sources\.list\.d\/([^/\s"']+)$/.exec(path)?.[1];
+    out.push({ path, ...(file ? { file } : {}), fed });
+  };
+  // A descriptor duplication (`2>&1`) names no file: drop it so its `&` neither ends a `tee` operand list nor reads as a
+  // target.
+  const clean = segment.replace(/\d*>&\d+/g, " ");
+  for (const m of clean.matchAll(/(?:^|[^>])(\d*)(>>?)\s*("[^"]+"|'[^']+'|[^\s;|&)]+)/g)) add(strip(m[3]!), m[1] !== "2");
+  // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
+  // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
+  for (const m of clean.matchAll(/\btee\b([^|;&]*)/g)) {
+    const raw = m[1]!.replace(/(?:\d*>>?|\d*<<?|&>>?)\s*(&?\d+|"[^"]*"|'[^']*'|\S+)/g, " ");
+    for (const a of words(raw).filter((a) => !a.startsWith("-"))) add(a, !/\d*<<?/.test(m[1]!));
+  }
+  return out;
+}
 
 // Install commands on one logical line: pins found, problems found.
 function commands(text: string, at: string, state: State, pins: Pin[], problems: string[]): void {
@@ -101,18 +153,51 @@ function commands(text: string, at: string, state: State, pins: Pin[], problems:
       else pins.push({ kind: "pypi", name: p[1]!.replace(/\[.*\]$/, ""), package: p[1]!.replace(/\[.*\]$/, ""), version: p[2], at });
     }
   }
-  if (/sources\.list\.d\//.test(cmd) && /(>|tee\b)/.test(cmd)) state.repoAdded = true;
-  for (const m of cmd.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)) state.sources.push(`${m[1]} ${m[2]} ${m[3]}`);
   // Per-release arms: `case "$codename" in`, a label (`noble)`, `noble|resolute)`) then the arm's commands, `;;`, `esac`.
   if (/^\s*case\s+"?\$\{?(codename|VERSION_CODENAME)\b/.test(cmd)) state.releaseCase = true;
   else if (/^\s*esac\b/.test(cmd)) state.releaseCase = false;
   const label = state.releaseCase && /^\s*([a-z][a-z0-9]*(?:\|[a-z][a-z0-9]*)*)\)/.exec(cmd);
   if (label) { state.arm = label[1]!.split("|"); state.arm.forEach((r) => state.releases.add(r)); }
-  for (const m of cmd.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
-    for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
-      const [pkg, ver] = a.split("=") as [string, string | undefined];
-      if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: state.sources, releases: state.arm, at });
-      else if (state.repoAdded) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
+  // Repository writes and apt installs are applied in the order the line runs them, so each install is checked against
+  // the repositories present at that point: adding a repository is what makes a later unpinned install a problem, and
+  // removing it before an install stops it being one. A `deb` line is filed under the source file its own command
+  // writes, appends to or removes; one naming no file is kept apart and its entries accumulate.
+  for (const segment of cmd.split(/&&|\|\||;/)) {
+    const debs = [...segment.matchAll(/\bdeb\s+(?:\[[^\]]*\]\s+)?(https?:\/\/[^\s"']+)\s+([^\s"']+)\s+([^\s"']+)/g)].map((m) => `${m[1]} ${m[2]} ${m[3]}`);
+    const removes = /\b(rm|unlink)\b/.test(segment) && /sources\.list\.d/.test(segment);
+    // What a command reads is not what it writes: the file a pipeline's `tee` writes carries its `deb` line, while a
+    // source file it only copies for diagnostics adds no repository.
+    const named = [...segment.matchAll(/sources\.list\.d\/([^\s"';|&)]*)/g)].map((m) => m[1]!).filter(Boolean);
+    const files = writtenFiles(segment);
+    // Only `.list` and `.sources` are loaded: a write to `vendor.list.disabled` is a repository neither APT nor a later
+    // install sees, so it neither requires pins nor dates them.
+    const loaded = files.filter((w) => w.file && /\.(list|sources)$/.test(w.file));
+    if (removes) {
+      // `rm` of one file drops that file; `rm` of the directory itself (no name) drops them all. A name APT ignores
+      // removes nothing it loads.
+      const removed = named.filter((f) => /\.(list|sources)$/.test(f));
+      if (removed.length) removed.forEach((f) => { state.files.delete(f); state.entries.delete(f); });
+      else if (!named.length) { state.files.clear(); state.entries.clear(); }
+      state.added = state.files.size > 0 || state.entries.has(undefined);
+    } else if (loaded.length) {
+      // `>>` and `tee -a` add to a file; a plain `>` or `tee` replaces what it held. Any source file counts as added,
+      // Deb822 `.sources` included: its Types/URIs fields carry the repository a `deb` line would. A destination this
+      // segment's output doesn't reach (`2>` stderr, a `tee` fed from `< file`) is still written, but with no `deb`
+      // line, so it holds no repository to date a pin from.
+      const append = />>|\btee\b[^|]*\s-a\b/.test(segment);
+      for (const { file, fed } of loaded) {
+        const written = fed ? debs : [];
+        state.files.set(file!, append ? [...(state.files.get(file!) ?? []), ...written] : written);
+        state.entries.set(file!, append ? [...(state.entries.get(file!) ?? []), ...written] : written);
+      }
+      state.added = state.added || loaded.length > 0;
+    } else if (debs.length && !files.some((w) => w.file)) state.entries.set(undefined, [...(state.entries.get(undefined) ?? []), ...debs]);
+    for (const m of segment.matchAll(/\bapt(?:-get)?\s+(?:-\S+\s+)*install\s+([^;&|]*)/g)) {
+      for (const a of words(m[1]!).filter((x) => !x.startsWith("-") && !x.startsWith("./") && !x.startsWith("/") && !x.startsWith("$"))) {
+        const [pkg, ver] = a.split("=") as [string, string | undefined];
+        if (ver) pins.push({ kind: "apt", name: pkg, package: pkg, version: ver, sources: sources(state), releases: state.arm, ...(state.arm ? {} : state.base), at });
+        else if (state.added) problems.push(`${at}: apt install ${pkg} after an apt repository is added: pin it (${pkg}=<version>) or install it before the repository`);
+      }
     }
   }
   for (const m of cmd.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/download\/([^/\s"'$]+)\//g)) {
@@ -148,10 +233,14 @@ function hostPins(path: string, text: string): { pins: Pin[]; problems: string[]
 export function scanFile(path: string, text: string): { pins: Pin[]; problems: string[] } {
   if (HOST_PINS.test(path)) return hostPins(path, text);
   const pins: Pin[] = [], problems: string[] = [];
-  const state: State = { repoAdded: false, sources: [], releases: new Set() };
+  const fresh = (): State => ({ files: new Map(), entries: new Map(), added: false, releases: new Set() });
+  const clone = (s: State): State => ({ ...s, files: new Map([...s.files].map(([f, v]) => [f, [...v]])), entries: new Map([...s.entries].map(([f, v]) => [f, [...v]])), releases: new Set(s.releases), arm: s.arm && [...s.arm] });
+  let state: State = fresh();
   const at = (n: number) => `${path}:${n}`;
   if (DOCKERFILE.test(path)) {
     const stages = new Set(["scratch"]);
+    // Each named stage's state as its RUN lines leave it, so a stage that extends it starts from the same filesystem.
+    const stageState = new Map<string, State>();
     const syntax = /^#\s*syntax\s*=\s*(\S+)/m.exec(text);
     if (syntax) DIGEST.test(syntax[1]!) ? pins.push(imagePin(syntax[1]!, at(1))) : problems.push(`${at(1)}: # syntax=${syntax[1]} has no digest`);
     for (const { n, text: l } of logical(text)) {
@@ -161,7 +250,17 @@ export function scanFile(path: string, text: string): { pins: Pin[]; problems: s
       if (ref && !ref.includes("$") && !stages.has(ref.toLowerCase()) && (from || /[:/]/.test(ref))) {
         DIGEST.test(ref) ? pins.push(imagePin(ref, at(n))) : problems.push(`${at(n)}: image ${ref} has no digest (name:tag@sha256:…)`);
       }
-      if (from?.[2]) stages.add(from[2].toLowerCase());
+      if (from) {
+        // A stage starts from its own filesystem: a new image from scratch (its own distro, no repositories), a
+        // stage it extends from what that stage had when it finished. Either way the additions stay in this stage.
+        const ref = from[1]!, inherited = stages.has(ref.toLowerCase()) ? stageState.get(ref.toLowerCase()) : undefined;
+        state = inherited ? clone(inherited) : fresh();
+        state.base = ref.includes("$") ? undefined : inherited ? inherited.base : baseDistro(ref);
+      }
+      if (from?.[2]) {
+        stages.add(from[2].toLowerCase());
+        stageState.set(from[2].toLowerCase(), state);
+      }
       if (/^\s*RUN\s/i.test(l)) commands(l, at(n), state, pins, problems);
     }
   } else if (COMPOSE.test(path) || WORKFLOW.test(path)) {
@@ -197,9 +296,10 @@ export function scanFile(path: string, text: string): { pins: Pin[]; problems: s
       for (const m of l.matchAll(/([a-z0-9][\w.\/-]*:[\w.-]+@sha256:[0-9a-f]{64})/g)) pins.push(imagePin(m[1]!, at(i + 1)));
     });
   }
-  // An apt pin once per release it is installed on.
+  // An apt pin once per release it is installed on: an arm's releases (a host script, naming its own distro), else its
+  // own base image's, else DEFAULT_RELEASE.
   const all = state.releases.size ? [...state.releases] : [DEFAULT_RELEASE];
-  return { pins: pins.flatMap(({ releases, ...p }) => (p.kind === "apt" ? (releases ?? all).map((release) => ({ ...p, release })) : [p])), problems };
+  return { pins: pins.flatMap(({ releases, ...p }) => (p.kind === "apt" ? (releases ?? (p.release ? [p.release] : all)).map((release) => ({ ...p, release })) : [p])), problems };
 }
 
 // An apt pin's distro and sources are part of it: the same version from another repository or distro is dated again.
