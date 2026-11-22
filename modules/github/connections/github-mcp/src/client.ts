@@ -255,17 +255,19 @@ export function createAccess(o: {
     return queued(deadline, () => paced(deadline, () => attempt(method, path, body, resource, background, accept, deadline)));
   }
 
-  /** Runs a write behind the one queue: one at a time, a gap apart, and the whole queue waits out a refusal. The caller gets
-   * its answer at its own deadline even while an earlier write still holds the queue; the entry is then marked dead and the
-   * pre-attempt check keeps it from being sent, so no write lands after its caller was told it failed. */
+  /** Runs a write behind the one queue: one at a time, a gap apart, and the whole queue waits out a refusal. A write that is
+   * still queued at the deadline fails there and is marked dead (the pre-attempt check keeps it from being sent), so no write
+   * lands after its caller was told it failed. Once the entry takes its turn, its own budget checks and its fetch's 30 s
+   * timeout govern it: the timer never reports a failure for a request already in flight, which GitHub may have completed. */
   function queued<T>(deadline: number, go: () => Promise<T>): Promise<T> {
     let expired = false;
+    let cancel = () => {};
     const run = writeTail.then(() => {
+      cancel(); // its turn: the queue wait is over, so the queue timer cannot fire into the running request
       if (expired || !fits(deadline)) noBudget();
       return go();
     });
     writeTail = run.catch(() => {});
-    let cancel = () => {};
     const expiry = new Promise<never>((_, reject) => {
       cancel = timer(Math.max(deadline - now(), 0), () => {
         expired = true;
@@ -273,7 +275,7 @@ export function createAccess(o: {
       });
     });
     void expiry.catch(() => {});
-    return Promise.race([run, expiry]).finally(cancel);
+    return Promise.race([run, expiry]).finally(() => cancel());
   }
 
   async function paced<T>(deadline: number, go: () => Promise<T>): Promise<T> {

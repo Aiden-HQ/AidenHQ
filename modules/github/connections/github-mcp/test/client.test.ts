@@ -366,6 +366,27 @@ it("a tool invocation's later writes never start a fresh budget beyond the first
   expect(clock - start).toBeLessThanOrEqual(240_000);
 });
 
+it("a write already running when the clock passes the deadline is not reported busy, so a slow write is never duplicated", async () => {
+  const time = fakeTime();
+  let sent = 0;
+  const access = createAccess({
+    auth: auth(),
+    now: time.now,
+    sleep: time.sleep,
+    timer: time.timer,
+    fetchImpl: async () => {
+      sent++;
+      // GitHub is slow: the request is in flight when the clock passes the queue deadline.
+      await time.sleep(245_000);
+      return answer(201, {});
+    },
+  });
+  const r = await access.rest("POST", "/repos/acme/api/issues", { title: "t" });
+  // It started inside budget (it was the head of the queue, so the timer was cancelled at its turn), so its answer is kept.
+  expect(r.status).toBe(201);
+  expect(sent).toBe(1);
+});
+
 it("outside a tool invocation each write still gets its own budget", async () => {
   let clock = 1_000_000;
   let calls = 0;
