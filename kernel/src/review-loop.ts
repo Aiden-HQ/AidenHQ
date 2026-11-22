@@ -9,6 +9,7 @@
 // author's place in the request), so injected instructions are told from the request. Code decides first where it can: the
 // owner's veto on the task goes to him, and content the reviewer already rejected as malice stays rejected (tier.ts priorDecisions).
 import type { Rec, Records, State } from "./records.ts";
+import type { Reviews } from "./reviews.ts";
 import { MALICE, priorDecisions, priorPart, requestKey, type Prior, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
@@ -200,7 +201,12 @@ export async function reviewInput(r: Rec, { records, task }: { records: Records;
   };
 }
 
-export function createReviewLoop({ records, writes, task, log = () => {} }: { records: Records; writes: Writes; task: TaskApi; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createReviewLoop({ records, writes, task, reviews, log = () => {} }: {
+  records: Records; writes: Writes; task: TaskApi;
+  /** The bound reviewer (reviews.ts): each sweep asks it whether its service restarted (a review it lost is failed, not waited out). */
+  reviews?: Reviews;
+  log?: (msg: string, f?: Record<string, unknown>) => void;
+}) {
   const inFlight = new Set<string>();
 
   async function reviewOne(r: Rec): Promise<void> {
@@ -240,6 +246,9 @@ export function createReviewLoop({ records, writes, task, log = () => {} }: { re
      * burst never starves its first records. Resolves when they are done.
      */
     tick(): Promise<void> {
+      // A reviewer service recreated since a review went out (an apply) lost it: failed now, so the record is retried by its own
+      // backoff once this sweep lets go of it. Asked alongside the sweep, never ahead of it.
+      void reviews?.check().catch((e: Error) => log("reviewer health unread", { err: String(e.message ?? e).slice(0, 200) }));
       const now = Date.now();
       const due = records.list(["review"], null).filter((r) => !inFlight.has(r.id) && !((writes.retryAt(r.id) ?? 0) > now)).reverse().slice(0, 200);
       if (!due.length) return Promise.resolve();

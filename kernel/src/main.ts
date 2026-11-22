@@ -333,7 +333,7 @@ once(updatesTick, 60_000);
 // The kernel's review of every record waiting for the AI reviewer (review-loop.ts).
 let ownerUser: string | undefined;
 const reviewLoop = createReviewLoop({
-  records, writes, log,
+  records, writes, reviews, log,
   task: {
     issue: (id) => cpJson(`/api/issues/${encodeURIComponent(id)}`),
     comments: async (id) => ((await cpJson(`/api/issues/${encodeURIComponent(id)}/comments?order=asc&limit=500`)) as { deletedAt?: string | null }[]).filter((c) => !c.deletedAt),

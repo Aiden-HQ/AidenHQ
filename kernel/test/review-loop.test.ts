@@ -20,9 +20,9 @@ const KIND = "acme.post";
 const OK = { decision: "approve", code: "clean", reason: "fine", model: "~acme/model-a" };
 
 /** A kernel's review side over `file` (a restart is a second one on the same db), with a fake reviewer module. */
-async function side(t, file, module, { comments = [], autonomy = () => "full" } = {}) {
+async function side(t, file, module, { comments = [], autonomy = () => "full", timeoutMs = 5_000, stallMs, probeMs, probeTimeoutMs = 2_000 } = {}) {
   const records = openRecords(file);
-  const reviews = createReviews({ slot: () => ({ module: "ai-reviewer", url: module.url, auth_secret: "reviewer_service_key" }), secret: () => "svc-key", resolver: createResolver(), modelToken: () => "model-token", timeoutMs: 5_000 });
+  const reviews = createReviews({ slot: () => ({ module: "ai-reviewer", url: module.url, auth_secret: "reviewer_service_key" }), secret: () => "svc-key", resolver: createResolver(), modelToken: () => "model-token", timeoutMs, ...(stallMs !== undefined ? { stallMs } : {}), ...(probeMs !== undefined ? { probeMs, probeTimeoutMs } : {}) });
   const ran = [], notices = [];
   const writes = createWrites({
     records, reviews, autonomy, secret: () => "", resolver: createResolver(), connections: () => ({}), replay: async () => ({ ok: false, text: "" }),
@@ -36,16 +36,29 @@ async function side(t, file, module, { comments = [], autonomy = () => "full" } 
     comments: async () => comments, me: async () => "u-owner", notify: async (task, text) => void notices.push({ task, text }),
     delegator: async () => undefined, agent: () => undefined,
   };
-  const loop = createReviewLoop({ records, writes, task });
+  const loop = createReviewLoop({ records, writes, task, reviews });
   return { records, reviews, writes, loop, ran, notices };
 }
 
-/** The reviewer module: each review it accepts is kept ({ id, token, request }). */
+/** The reviewer module: each review it accepts is kept ({ id, token, request }); `instance` is what its /healthz says now. */
 async function reviewer(t) {
   const seen = [];
-  const m = await serve(async (req, res) => { seen.push(JSON.parse(await readBody(req))); res.writeHead(202).end("{}"); });
+  const mod = { instance: "instance-1", healthDelay: 0, health: [], healthBody: undefined, ack: undefined, stall: false, flood: false } as { instance: string; healthDelay: number; health: string[]; healthBody: string | undefined; ack: unknown; stall: boolean; flood: boolean };
+  const m = await serve(async (req, res) => {
+    if (req.method === "GET" && String(req.url).endsWith("/healthz")) {
+      mod.health.push(req.url);
+      if (mod.healthDelay) await new Promise((ok) => setTimeout(ok, mod.healthDelay));
+      // `stall`: the request is held with no headers; `flood`: the body is sent and never ends (its length unbounded).
+      if (mod.stall) return void (req.socket.unref?.(), void 0);
+      if (mod.flood) { res.writeHead(200, { "content-type": "application/json" }); res.write('{"ok":true,"instance":"instance-2","pad":"'); res.write("x".repeat(64 * 1024)); return; }
+      return void res.writeHead(200, { "content-type": "application/json" }).end(mod.healthBody ?? JSON.stringify({ ok: true, instance: mod.instance }));
+    }
+    seen.push(JSON.parse(await readBody(req)));
+    // `ack` is the whole answer when a test sets one (a provider that names no instance), the default otherwise.
+    res.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify(mod.ack ?? { accepted: true, instance: mod.instance }));
+  });
   t.after(() => m.s.close());
-  return { url: `${m.url}/aidenhq/v1/reviewer`, seen };
+  return { url: `${m.url}/aidenhq/v1/reviewer`, seen, mod };
 }
 const fileRecord = (records, { args = { note: "hello" }, model, requester } = {}) => records.file({
   kind: KIND, module: "acme", args, targets: {}, executor: { module: "acme" }, policy: "p", card: { sentence: "Post a note.", changes: "c", reads: "r", cost: "none", details: `note: ${args.note}` },
@@ -134,6 +147,209 @@ test("the owner's own no on the action is his card again, never a model call", a
   await k.loop.tick();
   assert.equal(mod.seen.length, 0);
   assert.deepEqual([k.records.get(r.id).state, k.records.get(r.id).review_code], ["owner", "owner_veto"]);
+});
+
+test("a review that stops making progress is failed inside the progress window, and the record is retried, never held to the hour", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  // The window is 1 s and the total ceiling 60 s: a dispatch the module never answers is cut at the window, not the hour.
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 1_000 });
+  const r = fileRecord(k.records);
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  assert.equal(mod.seen[0].request.card.action, "acme.post", "the review was dispatched");
+  await until(() => k.writes.retryAt(r.id) > 0, 100);
+  assert.ok(Date.now() - (k.writes.retryAt(r.id) - RETRY_MS) < 5_000, "failed at the window, not at the hour");
+  assert.equal(k.records.get(r.id).state, "review", "a failed review is retried by writes.ts, not decided by it");
+  assert.equal(k.records.get(r.id).decided_by, null, "nothing decided it");
+  await sweep;
+});
+
+test("a review that keeps reporting progress is not cut off by the window: a keepalive moves it, and the verdict still decides", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 900 });
+  const r = fileRecord(k.records);
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  const { id, token } = mod.seen[0];
+  // The module's service beats as its work advances: each keepalive moves the window, so a review longer than it still ends.
+  for (let i = 0; i < 4; i++) {
+    assert.equal(k.reviews.verdict(id, token, { keepalive: true }), true);
+    await new Promise((ok) => setTimeout(ok, 400));
+    assert.equal(k.records.get(r.id).state, "review", `still working after ${(i + 1) * 0.4} s`);
+  }
+  assert.equal(k.reviews.verdict(id, token, OK), true);
+  await sweep;
+  await until(() => k.records.get(r.id).state === "done");
+});
+
+test("a beat or a verdict that arrives after the window is refused: it never revives or decides a review the kernel gave up on", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 200 });
+  const r = fileRecord(k.records);
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  const { id, token } = mod.seen[0];
+  await new Promise((ok) => setTimeout(ok, 500)); // past the window, the timer may not have run yet
+  assert.equal(k.reviews.verdict(id, token, { keepalive: true }), false, "a late beat revives nothing");
+  await until(() => k.writes.retryAt(r.id) > 0, 100);
+  assert.equal(k.records.get(r.id).decided_by, null, "the review failed; nothing decided the record");
+  await sweep;
+});
+
+test("a reviewer@1 answer that names no instance is accepted: only the window bounds its reviews, never a 502", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  mod.mod.ack = { accepted: true };
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 30_000, probeMs: 0 });
+  const r = fileRecord(k.records);
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  // It names no instance, so no restart can be told apart: the probe fails nothing and the review waits for its verdict.
+  assert.equal(await k.reviews.check(), 0);
+  assert.equal(k.records.get(r.id).state, "review");
+  assert.equal(k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, OK), true);
+  await sweep;
+  await until(() => k.records.get(r.id).state === "done");
+});
+
+test("a dispatch answer that arrives after the window does not revive the review: it fails at the window, as a late beat does", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  // The module reads the request, then answers 202 only after the stall window has passed: its acknowledgement is too late.
+  const m = await serve(async (req, res) => {
+    await readBody(req);
+    await new Promise((ok) => setTimeout(ok, 400));
+    res.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ accepted: true, instance: "instance-1" }));
+  });
+  t.after(() => m.s.close());
+  const reviews = createReviews({ slot: () => ({ module: "ai-reviewer", url: `${m.url}/aidenhq/v1/reviewer`, auth_secret: "reviewer_service_key" }), secret: () => "svc-key", resolver: createResolver(), modelToken: () => "model-token", timeoutMs: 60_000, stallMs: 200 });
+  const at = Date.now();
+  await assert.rejects(reviews.request({ card: { action: "acme.post" }, diff: "note: x" }), (e: Error & { type?: string }) => e.type === "review_failed" && /ai-reviewer: no progress/.test(e.message));
+  assert.ok(Date.now() - at < 400, "the late acknowledgement never restarts the window");
+});
+
+test("a wall-clock step neither fails a working review nor revives a failed one: the windows run on a monotonic clock", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 300 });
+  const r = fileRecord(k.records);
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  const { id, token } = mod.seen[0];
+  // An hour forward: a wall-clock deadline would call this review a stall, but it is still working and in its window.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 60 * 60_000;
+  try {
+    assert.equal(k.reviews.verdict(id, token, { keepalive: true }), true, "a clock step does not make a live review late");
+    assert.equal(k.records.get(r.id).state, "review");
+  } finally { Date.now = realNow; }
+  // Past the real window with no further beat: the review still fails, and the clock step never held it open.
+  await new Promise((ok) => setTimeout(ok, 450));
+  assert.equal(k.reviews.verdict(id, token, { keepalive: true }), false, "the window still runs out on a real stall");
+  await until(() => k.writes.retryAt(r.id) > 0, 100);
+  assert.equal(k.records.get(r.id).decided_by, null);
+  await sweep;
+});
+
+test("a dispatch that sends its headers and never finishes the answer ends the review at the window, and the record is retried", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  // The module sends 202 and its headers, then never finishes the body (recreated mid-answer): no answer ever ends the dispatch.
+  const m = await serve(async (req, res) => {
+    await readBody(req);
+    res.writeHead(202, { "content-type": "application/json" });
+    res.write('{"accepted": true, "insta');
+  });
+  t.after(() => m.s.close());
+  const reviews = createReviews({ slot: () => ({ module: "ai-reviewer", url: `${m.url}/aidenhq/v1/reviewer`, auth_secret: "reviewer_service_key" }), secret: () => "svc-key", resolver: createResolver(), modelToken: () => "model-token", timeoutMs: 60_000, stallMs: 300 });
+  const at = Date.now();
+  await assert.rejects(reviews.request({ card: { action: "acme.post" }, diff: "note: x" }), (e: Error & { type?: string }) => e.type === "review_failed" && /ai-reviewer: no progress/.test(e.message));
+  assert.ok(Date.now() - at < 5_000, "the window covers the dispatch, so the caller is not left waiting");
+});
+
+test("the restart probe asks the service's own /healthz, and a probe in flight never fails a review answered after it was sent", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 30_000, probeMs: 0 });
+  const r = fileRecord(k.records);
+  mod.mod.instance = "instance-1";
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  // The service restarts, and its /healthz is slow: a second review lands while the probe is in flight. It is covered by the
+  // probe by identity, not by a timestamp, so even an acknowledgement in the same clock tick as the probe is never stale.
+  mod.mod.instance = "instance-2";
+  mod.mod.healthDelay = 300;
+  const probes = k.reviews.check();
+  await until(() => mod.mod.health.length > 0);
+  const second = k.reviews.request({ card: { action: "acme.post" }, diff: "note: second" });
+  // Wait until the kernel has recorded the second review's acknowledgement: `seen` only says the module was sent it.
+  await until(() => k.reviews.held().includes("instance-2"));
+  assert.equal(await probes, 1, "only the review answered before the probe was sent is stale");
+  assert.equal(k.reviews.verdict(mod.seen[1].id, mod.seen[1].token, OK), true, "the live review is never failed by an older probe's answer");
+  await second;
+  assert.ok(k.writes.retryAt(r.id) > 0, "the lost one is retried by its backoff");
+  await sweep;
+  assert.deepEqual([...new Set(mod.mod.health)], ["/healthz"], "the service root, not the provider's review route");
+});
+
+test("a health answer that names no instance (null, a text ok) fails nothing: the window still carries the review", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 30_000, probeMs: 0 });
+  const r = fileRecord(k.records);
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  for (const body of ["null", "ok", '{"ok":true}']) {
+    mod.mod.healthBody = body;
+    assert.equal(await k.reviews.check(), 0, `a body of ${body} names no instance, so it is no restart signal`);
+  }
+  assert.equal(k.records.get(r.id).state, "review", "the live review is untouched");
+  assert.equal(k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, OK), true);
+  await sweep;
+  await until(() => k.records.get(r.id).state === "done");
+});
+
+test("a review that finishes during the restart probe is no restart: check() reports nothing lost and does not throw", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 30_000, probeMs: 0 });
+  const r = fileRecord(k.records);
+  mod.mod.instance = "instance-1";
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  // The service answers its probe slowly, and the review finishes while that answer is still in flight.
+  mod.mod.instance = "instance-2";
+  mod.mod.healthDelay = 300;
+  const probes = k.reviews.check();
+  await until(() => mod.mod.health.length > 0);
+  assert.equal(k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, OK), true);
+  assert.equal(await probes, 0, "a review that ended on its own is not a restart to report");
+  await sweep;
+  await until(() => k.records.get(r.id).state === "done");
+  assert.ok(!k.writes.retryAt(r.id), "it is decided, never retried");
+});
+
+test("a reviewer service recreated mid-review fails its lost reviews at once, so the record is retried instead of waited out", async (t) => {
+  if (t.mock?.timers?.enabled) return t.skip("mocked Date: these windows are real timers");
+  const mod = await reviewer(t);
+  const k = await side(t, db(), mod, { timeoutMs: 60_000, stallMs: 30_000, probeMs: 0 });
+  const r = fileRecord(k.records);
+  mod.mod.instance = "instance-1";
+  const sweep = k.loop.tick();
+  await until(() => mod.seen.length === 1);
+  assert.equal(k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, { keepalive: true }), true, "it is working");
+  // An apply recreates the service: a fresh instance, its in-flight review gone, no verdict ever sent.
+  mod.mod.instance = "instance-2";
+  const at = Date.now();
+  await k.loop.tick();
+  await until(() => k.writes.retryAt(r.id) > 0, 100);
+  assert.ok(Date.now() - at < 5_000, "failed at once, not after the window");
+  assert.ok(k.writes.retryAt(r.id) > Date.now(), "writes.ts retries the record by its backoff");
+  assert.equal(k.records.get(r.id).decided_by, null);
+  // The lost token opens nothing now.
+  assert.equal(k.reviews.verdict(mod.seen[0].id, mod.seen[0].token, OK), false);
+  await sweep;
 });
 
 test("a kernel restart mid-review: the record is reviewed once more, never twice, and the old token opens nothing", async (t) => {
