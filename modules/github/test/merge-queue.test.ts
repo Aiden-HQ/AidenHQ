@@ -91,7 +91,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
     rest: async (m, p, b) => {
       if (!connected.on) throw Object.assign(new Error("GitHub isn't connected"), { need: { cause: "not_connected" } });
-      // A merge call that never answers: GitHub may or may not have merged it (merges.ts p.unanswered).
+      // A merge call that never answers: GitHub may or may not have merged it (merges.ts mergeCalls).
       if (m === "PUT" && p.endsWith("/merge") && putFails()) throw new Error("The operation was aborted due to timeout");
       return { ...(await github.gh(m, p, b)), headers: new Headers() };
     },
@@ -351,6 +351,61 @@ test("an owner's merge at the bound head after an unanswered merge call stays sk
   assert.equal(outcomes[0].objects, undefined, "no object of the owner's merge is named as made here");
 });
 
+test("an unanswered PUT whose merge lands is still credited when the retry is refused while GitHub's read lags", async () => {
+  // The first PUT merges on GitHub's side and never answers. The next poll still reads the PR open (a lag), so the queue sends a
+  // retry; GitHub refuses it because the PR is in fact merged, and its re-read now shows the merge. The merge commit carries the
+  // first call's nonce, so it is this queue's even though the retry's nonce is not in it: attempts, not the last attempt alone.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", lag: 2 } };
+  const github = fakeGitHub(prs);
+  const reports = [];
+  let puts = 0;
+  const gh = async (m, p, b) => {
+    if (m === "PUT" && String(p).endsWith("/merge")) {
+      puts += 1;
+      if (puts === 1) { await github.gh(m, p, b); throw new Error("The operation was aborted due to timeout"); }
+      throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 });
+    }
+    return github.gh(m, p, b);
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-retry-")), gh, fleetOrg: "acme-agents",
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000cb", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step(); // the PUT merges it and goes unanswered: its nonce is kept
+  assert.equal(puts, 1);
+  await merges.step(); // the stale read says open: a retry goes out and is refused; the re-read shows the merge
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(puts, 2, "the queue did try again, and the refusal was not taken as the end of the merge");
+  assert.equal(merges.status("k-00000000000000cb").state, "done");
+  assert.match(reports[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/, "the first call's merge is the queue's");
+  assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"], "named as made here");
+});
+
+test("a refusal with no earlier unanswered attempt is still a failure, and a refused head is never PUT again", async () => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const github = fakeGitHub(prs);
+  const reports = [];
+  let puts = 0;
+  const gh = async (m, p, b) => {
+    if (m === "PUT" && String(p).endsWith("/merge")) { puts += 1; throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 }); }
+    return github.gh(m, p, b);
+  };
+  const merges = createMerges({
+    dir: mkdtempSync(join(tmpdir(), "merges-refused-")), gh, fleetOrg: "acme-agents",
+    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
+  });
+  void merges.enqueue("k-00000000000000cc", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(puts, 1);
+  assert.equal(merges.status("k-00000000000000cc").state, "failed");
+  assert.equal(reports[0].ok, false);
+  assert.match(reports[0].text, /GitHub refused the merge: HTTP 405: Pull request is not mergeable/);
+  await merges.step();
+  assert.equal(puts, 1, "nothing more is sent for a stopped queue");
+});
+
 test("a squash merge someone else made is never the queue's, even when its commit message carries an AidenHQ trailer", async (t) => {
   const cacheDir = mkdtempSync(join(tmpdir(), "codehost-foreign-"));
   writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
@@ -500,7 +555,7 @@ test("a merge call that times out after GitHub merged is reported merged, and an
 test("a merge call is credited by the merge method it was made with, even after the repo's methods change", async () => {
   // The repo allowed squash when the PUT was made; by the next poll only rebase is allowed. The old check re-read the repo's
   // config at poll time and would judge the call by "rebase", drop the queue's own merge, and lose both the credit and the object.
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", lag: 1 } };
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", lag: 2 } };
   const github = fakeGitHub(prs);
   const reports = [];
   let timeouts = 1;
@@ -545,7 +600,7 @@ test("a merge call is persisted before the PUT, so a restart mid-call still prov
   for (let i = 0; i < 50 && !github.merges().length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(github.merges().length, 1, "the PUT was made");
   const saved = JSON.parse(readFileSync(join(dir, "merges.json"), "utf8"));
-  const call = saved.queues["k-00000000000000d3"].prs[0].mergeCall;
+  const call = saved.queues["k-00000000000000d3"].prs[0].mergeCalls?.at(-1);
   assert.equal(typeof call?.token, "string", "the nonce is on disk before GitHub answers");
   assert.equal(call.method, "squash");
   // A new service on the same dir (the old one died mid-PUT): the token is still there, and the merge the PUT made is its own.

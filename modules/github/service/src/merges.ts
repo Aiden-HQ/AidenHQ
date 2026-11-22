@@ -23,7 +23,7 @@ import type { ReviewGate } from "./review-gate.ts";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** The merge call this poll may be looking at: the token this record's commit_message carries (what an unanswered PUT may have made). */ mergeCall?: { token: string; method: string; at: string }; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; wait?: { key: string; since: string }; reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; checked?: string; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
 type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -90,13 +90,18 @@ export function createMerges(d: {
    * commits, does not. The nonce, not the whole message, is what is checked, because GitHub normalises a squash message
    * (co-author lines, whitespace, a `(#N)` suffix) and an exact match would drop a merge the queue really made. It is a random
    * id made for this one call and kept only here, never in the PR's title or body, so a PR author cannot plant it in their text
-   * and have another writer's merge credited: `call` (a PUT that went unanswered) is the only source of it.
+   * and have another writer's merge credited: `calls` (PUTs that went unanswered) are the only source of it.
+   *
+   * Every unanswered attempt is kept, not just the last: when a PUT merges but its answer is lost, a later poll may still read the PR
+   * open (GitHub's read lags) and send another PUT, which replaces the pending call. If the first PUT's merge is what lands, its nonce
+   * is the one in the merge commit, so any attempt's token counts (each was made by this record, at this bound head).
    */
-  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, sha: string, call: { token: string; method: string } | undefined): string | undefined {
-    // The method the PUT was made with, not the repo's config read now: a repo whose allowed methods changed since would otherwise
-    // judge (or skip) a merge that this call made. A rebase merge makes no commit of its own, so it is never claimed.
-    if (!call || call.method === "rebase") return undefined;
-    return call.token && String(mergeCommit?.message ?? "").includes(call.token) ? sha : undefined;
+  function mergedBy(mergeCommit: { oid?: string; message?: string } | null | undefined, sha: string, calls: { token: string; method: string }[] | undefined): string | undefined {
+    if (!calls?.length) return undefined;
+    const message = String(mergeCommit?.message ?? "");
+    // The method each PUT was made with, not the repo's config read now: a repo whose allowed methods changed since would otherwise
+    // judge (or skip) a merge that one of these calls made. A rebase merge makes no commit of its own, so it is never claimed.
+    return calls.some((call) => call.method !== "rebase" && Boolean(call.token) && message.includes(call.token)) ? sha : undefined;
   }
 
   /**
@@ -130,7 +135,7 @@ export function createMerges(d: {
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
       delete p.wait;
-      delete p.mergeCall;
+      delete p.mergeCalls;
       q.said.push(`**Not merged:** ${p.url}: ${why}.`);
     };
     const wait = (key: string) => {
@@ -149,10 +154,11 @@ export function createMerges(d: {
       const uiReview = inFleetOrg(p.repo);
       let v = decide(data, p.head, { uiReview, designAdvisory: p.reviewExpired === p.head });
       const pull = data.repository.pullRequest;
-      // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. The call is kept
-      // across a wait (checks, review, mergeability) while the PR is still open at the bound head: a PUT that merged it may only be
-      // seen as merged a few polls later, and the nonce is what proves that merge this queue's. It is dropped when the call is
-      // answered (a fail clears it, a done read uses it) and when a later PUT replaces it, so an owner's merge is never credited.
+      // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Every unanswered
+      // call is kept across a wait (checks, review, mergeability) while the PR is still open at the bound head: a PUT that merged it
+      // may only be seen as merged a few polls later, and its nonce is what proves that merge this queue's. The attempts are dropped
+      // when the PR is settled (a fail clears them, a done read uses them) or GitHub answers a retry, so an owner's merge is never
+      // credited.
       // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so.
       const named = namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup);
       if (p.checked !== p.head && pull?.headRefOid === p.head && named.length && named.every((c) => !c.pending)) {
@@ -166,11 +172,11 @@ export function createMerges(d: {
         // merge commit is exactly that call's (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge
         // commit at the bound head is evidence; finish() emits it for grading when the PR links to the task the record is for.
         const sha = String(pull?.mergeCommit?.oid ?? "");
-        const ours = sha ? mergedBy(pull?.mergeCommit, sha, p.mergeCall) : undefined;
-        if (sha && !ours && p.mergeCall) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
+        const ours = sha ? mergedBy(pull?.mergeCommit, sha, p.mergeCalls) : undefined;
+        if (sha && !ours && p.mergeCalls?.length) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
         if (ours) Object.assign(p, { status: "merged", sha: ours, mergedAt: pull.mergedAt ?? now().toISOString() });
         else Object.assign(p, { status: "skipped", note: v.why, ...(sha ? { sha } : {}) });
-        delete p.mergeCall;
+        delete p.mergeCalls;
         delete p.wait;
         if (sha) d.flow?.merged(p.repo, p.number, p.head, sha, pull.mergedAt ?? undefined, String(pull.title ?? ""), String(pull.body ?? ""));
         if (ours) { bypassed(p); merged.add(p.repo.toLowerCase()); }
@@ -203,26 +209,52 @@ export function createMerges(d: {
       const method = mergeMethod(data.repository);
       if (!method) return fail(`\`${p.repo}\` allows no merge method I can use`);
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
-      // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy).
+      // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy). It joins the attempts
+      // (earlier unanswered calls too), so a merge the first attempt made before a retry went out is still this queue's.
       const body = String(pull?.body ?? "");
       const token = mergeToken();
-      p.mergeCall = { token, method, at: now().toISOString() };
+      const attempt = { token, method, at: now().toISOString() };
+      p.mergeCalls = [...(p.mergeCalls ?? []), attempt];
       // Persisted before the call: a restart mid-PUT must still hold the nonce that proves whether that PUT merged the PR.
       save();
       try {
         p.sha = await mergePut(p.repo, p.number, p.head, method, body, token);
       } catch (e) {
-        // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does.
-        if (/try the merge again|base branch was modified/i.test(says(e))) { delete p.mergeCall; return wait("retry"); }
+        // Another merge to the same base a moment ago: GitHub asks to try again, which the next poll does. This answer rules out
+        // this attempt's commit only; an earlier PUT that went unanswered may still have landed, so its token is kept.
+        if (/try the merge again|base branch was modified/i.test(says(e))) {
+          p.mergeCalls = (p.mergeCalls ?? []).filter((c) => c !== attempt);
+          return wait("retry");
+        }
         // Only a 4xx is GitHub's answer. A timeout or a 5xx may have merged: the next poll reads the PR and sees which.
         const status = (e as { status?: number }).status ?? 0;
-        if (status >= 400 && status < 500) return fail(`GitHub refused the merge: ${says(e)}`);
+        if (status >= 400 && status < 500) {
+          // A retry can be refused because an earlier unanswered PUT already merged it, while this poll's read still lagged. That
+          // refusal answers this attempt only, so read the PR once more: a commit carrying any of this record's nonces is its own
+          // merge, credited; anything else is a real refusal and fails the PR.
+          if ((p.mergeCalls?.length ?? 0) > 1) {
+            const again = await readPr(p.repo, p.number).catch(() => undefined);
+            const pr = again?.repository?.pullRequest;
+            const mergedSha = String(pr?.mergeCommit?.oid ?? "");
+            const ours = mergedSha && pr?.headRefOid === p.head ? mergedBy(pr.mergeCommit, mergedSha, p.mergeCalls) : undefined;
+            if (ours) {
+              Object.assign(p, { status: "merged", sha: ours, mergedAt: pr?.mergedAt ?? now().toISOString() });
+              delete p.mergeCalls;
+              delete p.wait;
+              bypassed(p);
+              d.flow?.merged(p.repo, p.number, p.head, ours, pr?.mergedAt ?? undefined, String(pr?.title ?? ""), String(pr?.body ?? ""));
+              merged.add(p.repo.toLowerCase());
+              return void q.said.push(`Merged ${p.url}.`);
+            }
+          }
+          return fail(`GitHub refused the merge: ${says(e)}`);
+        }
         log("merge call unanswered", { pr: p.url, err: says(e) });
         return wait("put");
       }
       const mergedAt = now().toISOString();
       Object.assign(p, { status: "merged", mergedAt });
-      delete p.mergeCall;
+      delete p.mergeCalls;
       bypassed(p);
       d.flow?.merged(p.repo, p.number, p.head, String(p.sha ?? ""), mergedAt, String(pull?.title ?? ""), String(pull?.body ?? ""));
       delete p.wait;
@@ -257,7 +289,10 @@ export function createMerges(d: {
     // characters, cutting only the end, so the human summary after the first line is what is capped here — sized to the room the
     // kernel leaves it, never by a constant of its own that could push the line's end past the cut.
     const line = `${MERGED_LINE}${JSON.stringify(merged)}`;
-    const human = [...q.said, headline].join("\n\n").slice(-Math.max(0, OUTCOME_MAX - line.length - 2));
+    const room = OUTCOME_MAX - line.length - 2;
+    // No room (a line longer than the cap on its own): keep the whole evidence line and no summary. slice(-0) is slice(0), which
+    // would keep every word and push the cut back into the evidence.
+    const human = room > 0 ? [...q.said, headline].join("\n\n").slice(-room) : "";
     q.outcome = { ok, text: `${line}\n\n${human}`, ...(objects.length ? { objects } : {}) };
     Object.assign(q, { state: ok ? "done" : "stopped", finishedAt: now().toISOString() });
     log("merges finished", { record: id, ok });
