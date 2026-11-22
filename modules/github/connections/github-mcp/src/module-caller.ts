@@ -87,26 +87,37 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
     }
   };
   // What a previous process kept: the file is this process's own, so a bad one is set aside, never fatal.
+  let migrated = false;
   if (o.file) {
     try {
       const rows = JSON.parse(readFileSync(o.file, "utf8")) as { key?: unknown; need?: unknown; gen?: unknown }[];
       for (const r of Array.isArray(rows) ? rows : []) {
         const need = r?.need as NeedBody["need"] | undefined;
-        if (need && typeof need.cause === "string" && typeof r.key === "string") pending.set(r.key, { need, ...(typeof r.gen === "string" ? { gen: r.gen } : {}) });
+        if (!need || typeof need.cause !== "string" || typeof r.key !== "string") continue;
+        // An entry from before needs carried a credential was not written against a reconnect this process can see: adopt the
+        // installed one (a one-time migration, saved below) rather than reading `undefined` as a mismatch and dropping it.
+        if (typeof r.gen === "string") pending.set(r.key, { need, gen: r.gen });
+        else {
+          pending.set(r.key, { need, gen: gen() });
+          migrated = true;
+        }
       }
     } catch (e) {
       if ((e as { code?: string }).code !== "ENOENT") o.log.warn({ err: (e as Error).message }, "the kept connection needs could not be read");
     }
   }
-  const keep = (k: string, p: Pending) => {
-    pending.set(k, p);
+  /** The cap is applied only after a replay: a staged need the kernel takes is not an entry still waiting. True when it dropped one. */
+  const cap = () => {
+    let evicted = false;
     while (pending.size > PENDING_MAX) {
-      const evicted = pending.keys().next().value!;
-      pending.delete(evicted);
-      o.log.warn({ key: evicted }, "a connection need was dropped from the pending set: more than the cap of 20 were waiting");
+      const k = pending.keys().next().value!;
+      pending.delete(k);
+      evicted = true;
+      o.log.warn({ key: k }, "a connection need was dropped from the pending set: more than the cap of 20 were waiting");
     }
-    save();
+    return evicted;
   };
+  if (migrated) save();
   let flushing = false;
   const flush = async (): Promise<void> => {
     if (flushing || !pending.size) return;
@@ -126,16 +137,19 @@ export function needQueue(o: { kernelUrl: string; key: () => string; log: WarnLo
         pending.delete(k);
         changed = true;
       }
-    } finally { flushing = false; if (changed) save(); }
+    } finally { flushing = false; if (cap() || changed) save(); }
   };
   return {
     /** Report now, bounded; the report is kept on disk before the first attempt, so a restart inside the wait still sends it. */
     tell: async (err: unknown): Promise<void> => {
       if (!(err instanceof GitHubNeed) || !err.ownerFixable) return;
       const body = bodyOf(err), k = needKey(body.need);
-      keep(k, { need: body.need, gen: gen() });
+      // Staged (and on disk) before the attempt; the cap is applied only if this one has to stay, so staging a report the kernel
+      // takes never evicts a kept one.
+      pending.set(k, { need: body.need, gen: gen() });
+      save();
       const r = await reportNeed(o.kernelUrl, o.key(), err, o.log, o.fetcher, waitMs);
-      if (r === "retry") return;
+      if (r === "retry") { cap(); save(); return; }
       if (pending.delete(k)) save();
     },
     flush,

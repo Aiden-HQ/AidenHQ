@@ -273,17 +273,22 @@ export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (
   return async (task) => {
     const row = ((await d.kernel.call("GET", `/v1/tasks/state?ids=${encodeURIComponent(task)}`)).tasks ?? [])[0] as StateRow | undefined;
     if (row && ["job_running", "job_queued"].includes(row.reason)) return new Date((d.now ?? Date.now)()).toISOString();
-    const [comments, { holders, auditors }, work] = await Promise.all([
-      d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>,
+    // The two activity sources are independent: one failing must not discard what the other saw, or a persistent failure of
+    // one would let a gate with recent activity on the other look idle. Only when neither can be read is the task unknown.
+    const [people, comments, work] = await Promise.allSettled([
       dir(),
+      d.kernel.read(`/api/issues/${encodeURIComponent(task)}/comments?order=desc&limit=20`) as Promise<CommentRow[]>,
       d.kernel.call("GET", `/v1/work?task=${encodeURIComponent(task)}`) as Promise<{ jobs?: JobRow[] }>,
     ]);
-    // The holder is a key; an agent no grant maps to (the raw id) is compared as it is.
-    const holder = row?.holder ? holders.get(row.holder) ?? row.holder : undefined;
-    const comment = comments.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === holder || auditors.has(c.authorAgentId))))?.createdAt;
+    // A comment is only readable as activity with the directory that says whose it is: without it, the comments are unknown.
+    const known = people.status === "fulfilled" && comments.status === "fulfilled";
+    const comment = known
+      ? comments.value.find((c) => !c.deletedAt && c.authorType === "agent" && !/<!-- aidenhq-/.test(String(c.body)) && (c.authorAgentId != null && (c.authorAgentId === (row?.holder ? people.value.holders.get(row.holder) ?? row.holder : undefined) || people.value.auditors.has(c.authorAgentId))))?.createdAt
+      : undefined;
     // A run that started and ended between two ticks left no comment and no current state: its own start and end are the activity.
     let job: string | undefined;
-    for (const j of work?.jobs ?? []) for (const t of [j.started_at, j.ended_at]) if (t && (!job || Date.parse(t) > Date.parse(job))) job = t;
+    if (work.status === "fulfilled") for (const j of work.value.jobs ?? []) for (const t of [j.started_at, j.ended_at]) if (t && (!job || Date.parse(t) > Date.parse(job))) job = t;
+    if (!known && work.status === "rejected") throw work.reason;
     return [comment, job].filter((t): t is string => Boolean(t)).sort((a, b) => Date.parse(b) - Date.parse(a))[0];
   };
 }
