@@ -494,3 +494,49 @@ test("the module's evidence grant lists every path the fact reads: the code and 
   for (const path of read) assert.ok(listed.includes(path!), `the evidence grant does not list ${path}, so that read is refused`);
   assert.ok(listed.every((p) => !p.endsWith("/") && !p.includes("*")), "the grant names files exactly, never a directory or a prefix");
 });
+
+// GitHub answering "no such repository" or "no such PR" is an answer, unlike a read that threw: a PR that cannot reappear must
+// not keep a close waiting, while a failed read still must. Both are exercised through `presentNow`, which is what the close's
+// staleness check and escalationFor consult.
+test("a presence lookup GitHub answers as gone is a fact, never an unreadable wait", async () => {
+  const rows = [{ repo: REPO, number: 224, url: url(224) }];
+  const gone = (answer: any) => presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => rows, pr: async () => answer });
+  // The repository node is null: GitHub answered, and there is no PR to wait for.
+  const noRepo = await gone({ repository: null });
+  assert.deepEqual([noRepo.present, noRepo.unknown], [false, false], "a null repository is an answer, not a wait");
+  assert.match(noRepo.facts.join("; "), new RegExp(`${url(224)} no longer exists`));
+  // An explicit `pullRequest: null` beside the repository node is the same answer.
+  const noPr = await gone({ repository: { defaultBranchRef: { name: "main" }, pullRequest: null } });
+  assert.deepEqual([noPr.present, noPr.unknown], [false, false], "an explicit null PR is a definitive absence");
+  assert.match(noPr.facts.join("; "), /no longer exists/);
+  // A field that is simply missing is not that answer: the read did not say what the PR is, so it is unknown and waits.
+  const omitted = await gone({ repository: { defaultBranchRef: { name: "main" } } });
+  assert.deepEqual([omitted.present, omitted.unknown], [false, true], "an omitted PR field is not a definitive absence");
+  assert.match(omitted.facts.join("; "), /could not be read just now/);
+  // A read that threw is unknown too.
+  const threw = await presentNow({ kind: "pr", ref: "" }, { taskPrs: async () => rows, pr: async () => { throw new Error("GitHub answered 502"); } });
+  assert.deepEqual([threw.present, threw.unknown], [false, true], "a failed read is unknown, never 'gone'");
+});
+
+// A deploy history the app read could not complete is not proof that a healthy deploy is absent: the fact must say it is
+// unknown, because the close can quote that fact to the owner as its reason.
+test("an unreadable deploy history is reported as unknown, never as 'no healthy deploy'", async () => {
+  const mergedPr = merged(701, "a", "b");
+  const base = {
+    taskPrs: async () => [{ repo: REPO, number: 701, url: url(701), heads: ["branch-a"] }],
+    pr: async () => ({ repository: { pullRequest: mergedPr } }),
+    appOfRepo: async () => ({ name: "roadmap-keeper", deploys: [] }),
+  };
+  // The history read failed (`deployHistory` threw): deploysOf falls back to the status row's recent entries and says the
+  // history is incomplete. The status row has no entry for this merge commit, which proves nothing.
+  const incomplete = await presentNow({ kind: "pr", ref: "" }, { ...base, deployHistory: async () => { throw new Error("apps-mcp GET /internal/deploys → 504"); } });
+  const fact = incomplete.facts.find((f) => f.startsWith("app roadmap-keeper:"));
+  assert.ok(fact, "the app's deploy fact is present");
+  assert.match(fact, /deploy history could not be read just now/);
+  assert.match(fact, /is unknown/);
+  assert.doesNotMatch(fact, /no healthy deploy/, "a lookup failure is never reported as a missing deploy");
+  // The same read answering with the complete history still says what it found: no healthy deploy is a real answer then.
+  const complete = await presentNow({ kind: "pr", ref: "" }, { ...base, deployHistory: async () => [] });
+  const said = complete.facts.find((f) => f.startsWith("app roadmap-keeper:"));
+  assert.match(String(said), /no healthy deploy/, "a complete history with no healthy row is a real miss");
+});

@@ -13,7 +13,9 @@ function setup(row, over = {}) {
   const rows = [g];
   const err = () => Object.assign(new Error("502"), { status: 502 });
   const loop = createGradeLoop({
-    api: { get: async () => ({ grades: rows.filter((r) => r.state === "pending"), resubmitted: [] }), post: async (path, body) => { posts.push([path, body]); g.state = row; return { state: row, attempts: 1, failures: 0 }; } },
+    // The store's own hash: an amended rubric's hash is not the one a queued verdict names, which is how a stale revision move is
+    // told from a live one. Here the rubric never changes, so the hash is a stable stand-in.
+    api: { get: async (p: string) => (p === "/internal/grades" ? { grades: rows.filter((r) => r.state === "pending"), resubmitted: [] } : { state: "pending" }), post: async (path, body) => { posts.push([path, body]); g.state = row; return { state: row, attempts: 1, failures: 0 }; } },
     pc: {
       issue: async () => ({ id: g.issueId, identifier: over.identifier ?? "T-1", title: over.title ?? "x", status: over.status ?? "in_review", parentId: "p" }),
       agent: async () => undefined,
@@ -24,7 +26,7 @@ function setup(row, over = {}) {
     gather: async () => (over.gather ? over.gather() : { facts: [], version: over.version ?? "v1", ...(over.awaiting ? { awaiting: over.awaiting } : {}), ...(over.missing ? { missing: true } : {}) }), grade: async () => ({ outcome: over.outcome ?? row, model: "m", criteria: [] }),
     escalationFor: over.escalationFor ?? (async () => over.esc ?? {}), presentNow: over.presentNow ?? presentNow, gradeNote: (_g, _r, outcome, o) => (outcome === "ungraded" ? `ungraded: ${o?.reason}` : "note"), template: () => [], gradeDeps: over.gradeDeps ?? (() => ({})),
     tellParent: async (_i, kind, text) => { if (failing.tell-- > 0) throw err(); calls.push(["tell", kind]); tells.push(text); return true; },
-    recordsOn: async () => [], graderAsk: () => undefined, stripHidden: (x) => x, graderSpeaks: () => false, graderMarker: "<!-- aidenhq:grader -->",
+    recordsOn: async () => [], graderAsk: () => undefined, stripHidden: (x) => x, graderSpeaks: () => false, rubricHash: () => "rubric", graderMarker: "<!-- aidenhq:grader -->",
   });
   return { loop, calls, posts, notes, tells, failing, state };
 }
@@ -170,4 +172,25 @@ it("a held close whose deliverable was unreadable says so, never that the delive
     assert.doesNotMatch(String(notes.at(-1)), /deliverable is there/);
   });
 
+});
+
+describe("grade loop presence with several recorded PRs", () => {
+it("a confirmed merged PR makes a versionless close stale even when another PR's read failed", async () => {
+  // presentNow answers both present and unknown here (one PR merged, another unreadable). Presence is proof the close is
+  // stale; waiting out the uncertainty would leave an old close queued over work that already landed.
+  const { loop, calls, posts, failing } = setup("satisfied", {
+    id: "t-mixed", outcome: "cannot_judge", version: "", deliverable: { kind: "pr", ref: "" },
+    gather: () => ({ facts: [], awaiting: "one of its PRs could not be read just now" }),
+    presentNow: async () => ({ present: true, unknown: true, facts: [`its PR 1 is merged`, `its PR 2 could not be read just now`] }),
+  });
+  failing.done = 0;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the close never lands over a merged PR");
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "sent back to grading");
+  // Its grade's own answer was recorded first (the row was satisfied); the stale change then sends it back to grading. What it
+  // must not do is write the gave-up "error" outcome the unreadable wait would have produced.
+  const errors = posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "error");
+  assert.ok(errors.every(([, b]) => b.version !== "" || b.reason !== "gaveUp"), "and never the gave-up close on the unreadable one");
+  assert.ok(!errors.some(([, b]) => String(b.reason ?? "").includes("could not be read")), "no unreadable-close reason is written");
+});
 });

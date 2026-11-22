@@ -433,7 +433,20 @@ export async function presentNow(deliverable: any, deps: any) {
     }
     let merged: { repo: string; sha: string } | undefined;
     for (const p of prs.slice(0, 5)) {
-      const pr = (await deps.pr(p.repo, p.number).catch(() => null))?.repository?.pullRequest;
+      // A read that throws is no answer (unknown, wait); GitHub answering that the repository or the PR is gone is an answer,
+      // and a PR that cannot reappear must not keep the close waiting for it.
+      const answer = await deps.pr(p.repo, p.number).then((r: any) => ({ r }), () => undefined);
+      if (!answer) {
+        unknown = true;
+        facts.push(`${p.url} could not be read just now`);
+        continue;
+      }
+      const node = answer.r?.repository;
+      const pr = node?.pullRequest;
+      if (node === null || (node && "pullRequest" in node && pr === null)) {
+        facts.push(`${p.url} no longer exists`);
+        continue;
+      }
       if (!pr) {
         unknown = true;
         facts.push(`${p.url} could not be read just now`);
@@ -459,9 +472,12 @@ export async function presentNow(deliverable: any, deps: any) {
     // A merged PR is delivered by itself; an app on its repo only adds the "deployed at that commit" fact.
     if (merged && deps.appOfRepo) {
       const app = await deps.appOfRepo(merged.repo).catch(() => null);
-      const rows = app ? (await deploysOf(app, merged.sha, deps)).rows : [];
-      const d = rows.find((r: any) => r.status === "healthy");
-      if (app) facts.push(d ? `app ${app.name}: ${merged.sha.slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: no healthy deploy of ${merged.sha ? merged.sha.slice(0, 12) : "the merge commit"}`);
+      const deploys = app ? await deploysOf(app, merged.sha, deps) : { rows: [], complete: true };
+      const d = deploys.rows.find((r: any) => r.status === "healthy");
+      const at = merged.sha ? merged.sha.slice(0, 12) : "the merge commit";
+      // An incomplete history (the deploy read timed out, so only the status row's recent entries were read) is not the same
+      // answer as "that commit never had a healthy deploy": say the history could not be read, never claim a miss it can't prove.
+      if (app) facts.push(d ? `app ${app.name}: ${at} deployed ${stamp(d.at)} (healthy)` : deploys.complete ? `app ${app.name}: no healthy deploy of ${at}` : `app ${app.name}: its deploy history could not be read just now, so a healthy deploy of ${at} is unknown`);
     }
     return { present: Boolean(merged), unknown, facts };
   }
@@ -470,7 +486,9 @@ export async function presentNow(deliverable: any, deps: any) {
     if (app == null) return { present: false, unknown: app === undefined, facts: [app === undefined ? appUnknown(deliverable.ref) : appNotRun(deliverable.ref)] };
     const deploys = await deploysOf(app, app.sha, deps);
     const d = deploys.rows.find((r: any) => r.status === "healthy");
-    return { present: Boolean(d), unknown: !d && !deploys.complete, facts: [d ? `app ${app.name}: ${String(app.sha).slice(0, 12)} deployed ${stamp(d.at)} (healthy)` : `app ${app.name}: deployed commit ${String(app.sha ?? "(none)").slice(0, 12)} has no healthy deploy`] };
+    const sha = String(app.sha ?? "(none)").slice(0, 12);
+    // Same distinction here: a history that could not be read says so, rather than reporting a healthy deploy as absent.
+    return { present: Boolean(d), unknown: !d && !deploys.complete, facts: [d ? `app ${app.name}: ${sha} deployed ${stamp(d.at)} (healthy)` : deploys.complete ? `app ${app.name}: deployed commit ${sha} has no healthy deploy` : `app ${app.name}: its deploy history could not be read just now, so a healthy deploy of ${sha} is unknown`] };
   }
   if (kind === "apply") {
     const applied = latestCard(((await deps.approvals?.()) ?? []).filter((a: any) => cardAction(a) === "apply" && a.state === "used" && a.outcome));

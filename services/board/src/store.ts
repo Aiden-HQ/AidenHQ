@@ -167,7 +167,7 @@ export class Store {
       DROP TABLE IF EXISTS pairings;
       DROP TABLE IF EXISTS pairing_outbox;
       DROP TABLE IF EXISTS pairing_nonces;
-      CREATE TABLE IF NOT EXISTS scheduled_moves (issue_id TEXT PRIMARY KEY, date TEXT NOT NULL, bucket TEXT NOT NULL, position TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS scheduled_moves (issue_id TEXT PRIMARY KEY, date TEXT NOT NULL, bucket TEXT NOT NULL, position TEXT NOT NULL, created_at TEXT NOT NULL, parked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS repeats (issue_id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, cadence TEXT NOT NULL, time TEXT NOT NULL, anchor INTEGER NOT NULL, repos TEXT NOT NULL);
       -- Model usage with what OpenRouter billed (or the runner's Engineer jobs and AI reviewer, which Paperclip doesn't record):
       -- one row per job or call, by key; agent_id for an agent's calls through the model gateway.
@@ -180,6 +180,9 @@ export class Store {
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
     const usageColumns = (this.db.prepare("PRAGMA table_info(usage)").all() as { name: string }[]).map((c) => c.name);
+    // A move that parks the card where it waits until its date (a snooze): the rollover leaves it to applySchedules().
+    const moveColumns = (this.db.prepare("PRAGMA table_info(scheduled_moves)").all() as { name: string }[]).map((c) => c.name);
+    if (!moveColumns.includes("parked")) this.db.exec("ALTER TABLE scheduled_moves ADD COLUMN parked INTEGER NOT NULL DEFAULT 0");
     if (!usageColumns.includes("agent_id")) this.db.exec("ALTER TABLE usage ADD COLUMN agent_id TEXT");
     // Run attribution (wave 1): which run, task, config revision and caller kind each call was for, and how it went.
     for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"], ["subject", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
@@ -334,13 +337,17 @@ export class Store {
 
   // ---------------------------------------------------------------- scheduled moves
 
-  /** On `date` (local), move the task to the top or bottom of `bucket`. One schedule per task. */
-  schedule(issueId: string, date: string, bucket: Bucket, position: "top" | "bottom" = "top"): void {
+  /**
+   * On `date` (local), move the task to the top or bottom of `bucket`. One schedule per task. `parked` says the schedule also put
+   * the card where it waits until then (a snooze): only such a card is the schedule's to place, so only it is kept out of the
+   * rollover. A move filed from where the card already sits leaves the rollover to move it normally.
+   */
+  schedule(issueId: string, date: string, bucket: Bucket, position: "top" | "bottom" = "top", parked = false): void {
     this.db
       .prepare(
-        "INSERT INTO scheduled_moves (issue_id, date, bucket, position, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET date = excluded.date, bucket = excluded.bucket, position = excluded.position, created_at = excluded.created_at",
+        "INSERT INTO scheduled_moves (issue_id, date, bucket, position, created_at, parked) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET date = excluded.date, bucket = excluded.bucket, position = excluded.position, created_at = excluded.created_at, parked = excluded.parked",
       )
-      .run(issueId, date, bucket, position, new Date().toISOString());
+      .run(issueId, date, bucket, position, new Date().toISOString(), parked ? 1 : 0);
   }
 
   unschedule(issueId: string): boolean {
@@ -418,11 +425,11 @@ export class Store {
       if (last && last < today) {
         this.db.prepare("UPDATE placements SET carried = carried + 1 WHERE bucket = 'today'").run();
         const max = (this.db.prepare("SELECT MAX(rank) AS m FROM placements WHERE bucket = 'today'").get() as { m: number | null }).m ?? -1;
-        // A card with a pending scheduled move is parked where it is until that date (App.tsx's snoozeCard parks a snooze in
-        // Tomorrow with its own move to Today): applySchedules() moves it then. The rollover must not pull it into Today first,
-        // or it lands a day early and applySchedules() has nothing left to move. The date is deliberately not part of this:
-        // a snooze for tomorrow is parked in Tomorrow today, and its move is tomorrow's.
-        const rows = this.db.prepare("SELECT p.issue_id FROM placements p WHERE p.bucket = 'tomorrow' AND NOT EXISTS (SELECT 1 FROM scheduled_moves m WHERE m.issue_id = p.issue_id) ORDER BY p.rank").all() as { issue_id: string }[];
+        // A card a schedule parked where it waits (a snooze parks it in a column with its own move to Today) is
+        // applySchedules()' to move on its date: the rollover must not pull it into Today first, or it lands a day early and
+        // applySchedules() has nothing left to move. Only a parked card is skipped: a move filed from where the card already
+        // sits leaves it to the normal rollover until its date.
+        const rows = this.db.prepare("SELECT p.issue_id FROM placements p WHERE p.bucket = 'tomorrow' AND NOT EXISTS (SELECT 1 FROM scheduled_moves m WHERE m.issue_id = p.issue_id AND m.parked = 1) ORDER BY p.rank").all() as { issue_id: string }[];
         const stmt = this.db.prepare("UPDATE placements SET bucket = 'today', rank = ?, carried = 0, updated_at = ? WHERE issue_id = ?");
         const now = new Date().toISOString();
         rows.forEach((r, i) => stmt.run(max + 1 + i, now, r.issue_id));

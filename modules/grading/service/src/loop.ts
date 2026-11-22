@@ -93,9 +93,12 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // only so long. After the day a grade waits, an answer that never comes closes the task ungraded, saying the
           // deliverable could not be read, rather than letting the close replay forever.
           const presence = !active && Boolean(deps) && !s.version ? await presentNow(s.deliverable, deps) : undefined;
+          // Confirmed presence first: one recorded PR merged is proof the close is stale even when another PR's lookup failed
+          // (`present` and `unknown` are both true then), so the row goes back to grading instead of waiting on the uncertain one.
+          const present = Boolean(presence?.present);
           const { unreadSince, ...plain } = s; // carried only while the wait is unread
           let gaveUp = false;
-          if (presence?.unknown) {
+          if (presence?.unknown && !present) {
             const since = typeof unreadSince === "string" ? unreadSince : new Date().toISOString();
             if (Date.now() - Date.parse(since) < GRADE_WAIT_MS) {
               steps[0] = { ...plain, unreadSince: since };
@@ -105,7 +108,6 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
             gaveUp = true;
             steps[0] = plain;
           }
-          const present = Boolean(presence?.present);
           if (now.status !== "done" && (now.status !== s.status || active || present || (s.version ? found !== s.version : Boolean(found)))) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence" });

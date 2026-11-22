@@ -260,12 +260,17 @@ export function startPrWatch(o: PrWatchOptions) {
         if (r.status === 403) return !/rate limit|abuse/i.test(message);
         return r.status === 404 || (r.status === 422 && /conflict/i.test(message));
       };
+      // No permission, or the PR/repo gone: an answer about this token and endpoint, not about which method was asked. The
+      // other method's own answer doesn't lift it, so it is terminal by itself.
+      const denied = (r: { status: number; body?: any }) => r.status === 404 || (r.status === 403 && permanent(r));
       // An answer is GitHub's word about this branch: a 422, or a 403/404 (a 403 worded as a rate limit is a "try later", not an
       // answer). A 5xx, a timeout or a rate limit is no answer at all, and it leaves the branch's state unknown however the other
       // method answered: a 5xx on the rebase is never made final by a conflict on the merge fallback, and the next tick asks again.
       const answered = (r: { status: number; body?: any }) =>
         r.status === 422 || r.status === 404 || (r.status === 403 && !/rate limit|abuse/i.test(String(r.body?.message ?? "")));
       let unanswered = false;
+      let refused = false;   // no permission, or the PR/repo gone: an answer no retry can change
+      let transient = false; // an answer that says "not now" (a 422 that isn't a conflict): it is asked again
       let last: { status: number; body?: any } | undefined;
       for (const update_method of ["rebase", "merge"]) {
         const r = await gh("PUT", `/repos/${repo}/pulls/${pr.number}/update-branch`, { expected_head_sha: pr.headRefOid, update_method });
@@ -277,11 +282,17 @@ export function startPrWatch(o: PrWatchOptions) {
         }
         log("branch update refused", { pr: pr.url, update_method, status: r.status });
         if (!answered(r)) unanswered = true;
+        // No permission (a 403 that is not a rate limit) or a gone repo/PR is terminal whichever method reported it: the other
+        // method's answer does not give the token a right it lacks. A conflict is terminal only when every method that
+        // answered said so: a "temporarily unavailable" 422 on the rebase is asked again even when the fallback reports a
+        // conflict, since GitHub may allow the rebase again and the fallback is not the only way through.
+        if (answered(r) && denied(r)) refused = true;
+        else if (answered(r) && !permanent(r)) transient = true;
         last = r;
       }
-      // No answer on some method: retry after the backoff, never final for that head. Otherwise the merge fallback's own answer
-      // decides: a conflict (or no permission) on it is terminal, any other 422 ends on a retry.
-      if (unanswered || !last || !permanent(last)) return retryLater(key);
+      // No answer on some method: retry after the backoff, never final for that head. Otherwise a permission/gone refusal, or a
+      // conflict from every method that answered, is terminal; any transient answer keeps the attempt retryable.
+      if (unanswered || !last || !(refused || !transient)) return retryLater(key);
       state.updated[key] = "final";
       save();
       return false;

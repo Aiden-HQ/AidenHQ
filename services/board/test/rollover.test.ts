@@ -26,7 +26,7 @@ describe("rollover", () => {
     expect(s.rollover("2026-10-07")).toBe(0);
     s.setOrder("today", ["t1"]);
     s.setOrder("tomorrow", ["s1"]);
-    s.schedule("s1", "2026-10-09", "today", "top");
+    s.schedule("s1", "2026-10-09", "today", "top", true);
     expect(s.rollover("2026-10-08")).toBe(0);
     expect(s.placements().get("s1")?.bucket).toBe("tomorrow");
     // On its own date, applySchedules moves it to Today in its place.
@@ -39,10 +39,25 @@ describe("rollover", () => {
     const s = new Store(":memory:");
     expect(s.rollover("2026-10-07")).toBe(0);
     s.setOrder("tomorrow", ["l1"]);
-    s.schedule("l1", "2026-10-20", "today", "top");
+    s.schedule("l1", "2026-10-20", "today", "top", true);
     expect(s.rollover("2026-10-08")).toBe(0);
     expect(s.placements().get("l1")?.bucket).toBe("tomorrow");
     expect(s.applySchedules("2026-10-20")).toEqual(["l1"]);
     expect(s.placements().get("l1")?.bucket).toBe("today");
+  });
+
+  it("a card already in Tomorrow with a move filed from there still rolls over normally", () => {
+    // A future move filed without a park leaves the card where it sits. A card in Tomorrow with such a move is not being held
+    // there by it: the normal rollover moves it on the next day like any other card.
+    const s = new Store(":memory:");
+    expect(s.rollover("2026-10-07")).toBe(0);
+    s.setOrder("tomorrow", ["b1", "b2"]);
+    s.schedule("b1", "2026-12-20", "today", "top");
+    expect(s.rollover("2026-10-08")).toBe(2);
+    expect(s.placements().get("b1")?.bucket).toBe("today");
+    expect(s.placements().get("b2")?.bucket).toBe("today");
+    // Its own move still lands on its date (it is simply already there).
+    expect(s.applySchedules("2026-12-20")).toEqual(["b1"]);
+    expect(s.schedules().size).toBe(0);
   });
 });

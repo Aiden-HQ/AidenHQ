@@ -243,13 +243,13 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await denied.watch.tick(); await denied.watch.tick();
   assert.equal(denied.gh.filter((g) => g === "PUT /repos/acme/app/pulls/14/update-branch rebase").length, 1, "no permission is final");
   assert.equal(denied.woke.length, 1);
-  // A 422 on the rebase is not the decision: the merge fallback's own answer is. A non-conflict 422 on rebase and a confirmed
-  // conflict on merge ends final (once), and the task is woken to rebase it.
+  // A non-conflict 422 on the rebase is "not now", not a refusal: the merge fallback's conflict does not end the attempt,
+  // because GitHub may allow the rebase again and that is the method the branch needs.
   const mixed = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 422, body: { message: "Update branch is temporarily unavailable" } }, merge: { status: 422, body: { message: "merge conflict between base and head" } } } });
   mixed.set([mixed.agentPr(15, redPr(15))]);
   await mixed.watch.tick(); await mixed.watch.tick();
-  assert.deepEqual(mixed.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/15/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "both methods tried once, then final: no re-ask");
-  assert.equal(mixed.woke.length, 1);
+  assert.deepEqual(mixed.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/15/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "asked once, then backed off: not re-asked on the next tick");
+  assert.equal(mixed.woke.length, 0, "a temporarily unavailable rebase is retried, not made final");
   // A conflict on the rebase but a retryable answer on the merge fallback is not final: the last method decides.
   const mixedRetry = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 422, body: { message: "merge conflict between base and head" } }, merge: { status: 502, body: {} } } });
   mixedRetry.set([mixedRetry.agentPr(16, redPr(16))]);
@@ -263,6 +263,14 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   await mixedReverse.watch.tick(); await mixedReverse.watch.tick();
   assert.equal(mixedReverse.gh.filter((g) => g === "PUT /repos/acme/app/pulls/17/update-branch rebase").length, 1, "asked once, then backed off");
   assert.equal(mixedReverse.woke.length, 0, "a 5xx on the rebase is retryable: no wake and no final cache");
+  // A permanent refusal on the rebase and a non-permanent one on the merge fallback is still final: the rebase's own answer
+  // (403, no right to update) will not change by asking again, so neither method is re-asked for this head+base. The task is
+  // woken once with what the branch needs.
+  const refused = await rig(t, { behind: 2, updateByMethod: { rebase: { status: 403, body: { message: "Resource not accessible by integration" } }, merge: { status: 422, body: { message: "Update branch is temporarily unavailable" } } } });
+  refused.set([refused.agentPr(18, redPr(18))]);
+  await refused.watch.tick(); await refused.watch.tick();
+  assert.deepEqual(refused.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/18/update-branch")).map((g) => g.split(" ").pop()), ["rebase", "merge"], "both methods tried once, then final: no re-ask");
+  assert.equal(refused.woke.length, 1, "the refused update wakes the task once");
   // A real conflict (422 on both methods) is final at that head+base: no second ask, and the task is woken to rebase it.
   const conflict = await rig(t, { behind: 2, update: 422 });
   conflict.set([conflict.agentPr(13, redPr(13))]);
