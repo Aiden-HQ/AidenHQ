@@ -78,14 +78,23 @@ test("closed and idle tasks' folders go, live ones and the state dir stay; press
   assert.equal(existsSync(layer), false);
   assert.ok(logged.includes("unused folder not removed"));
 
-  // An unreachable control plane is asked once a pass; the closed rule waits, idle folders still go.
+  // A control plane that gives no answer (it throws, it returns none, as for a 5xx, or it hangs) is asked once a pass; the
+  // closed rule waits, idle folders still go.
   chmodSync(join(work, "tasks"), 0o755);
   for (const [j, tk, id] of [["j30", "t30", "WOR-30"], ["j31", "t31", "WOR-31"]]) { job(j, "a1", tk, id, "done", 2); status(tk, "done", 2); dir(join(work, "tasks", id), 2); }
-  const idle = dir(join(work, "tasks/WOR-32"), 9);
-  let asked = 0;
-  const down = createDiskSweep({ db, workDir: work, stateDir: state, engines: () => [], stillClosed: async () => { asked++; throw new Error("paperclip down"); }, now: () => NOW, used: () => 0.5 });
-  await down();
-  assert.equal(asked, 1);
-  assert.equal(existsSync(idle), false);
-  for (const id of ["WOR-30", "WOR-31"]) assert.equal(existsSync(join(work, "tasks", id)), true, id);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const [shape, lookup] of [
+    ["throws", async () => { throw new Error("paperclip down"); }],
+    ["no answer", async () => undefined],
+    ["hangs", () => { setImmediate(() => t.mock.timers.tick(10_000)); return new Promise<boolean>(() => {}); }],
+  ] as const) {
+    const idle = dir(join(work, "tasks/WOR-32"), 9);
+    let asked = 0;
+    const down = createDiskSweep({ db, workDir: work, stateDir: state, engines: () => [], stillClosed: (task) => { asked++; return lookup(task); }, now: () => NOW, used: () => 0.5 });
+    await down();
+    assert.equal(asked, 1, shape);
+    assert.equal(existsSync(idle), false, shape);
+    for (const id of ["WOR-30", "WOR-31"]) assert.equal(existsSync(join(work, "tasks", id)), true, `${shape} ${id}`);
+  }
+  t.mock.timers.reset();
 });

@@ -25,6 +25,8 @@ import { promisify } from "node:util";
 import { checkAttempt } from "./checkjobs.ts";
 
 export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8;
+/** How long the closed rule waits on the control plane's answer before it counts as none. */
+export const LOOKUP_MS = 10_000;
 const DAY = 86_400_000;
 const CLOSED = new Set(["done", "cancelled"]);
 const execFileP = promisify(execFile);
@@ -36,8 +38,8 @@ export const diskUsed = (paths: string[]) => Math.max(...paths.map((p) => { try 
 
 export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, log = () => {}, now = Date.now, used = () => diskUsed([workDir, stateDir, "/"]), stopping = () => false }: {
   db: DatabaseSync; workDir: string; stateDir: string;
-  /** The control plane's word that a task is done or cancelled now (the closed rule's last check; false when unsure). */
-  stillClosed: (task: string) => Promise<boolean>;
+  /** The control plane's word that a task is done or cancelled now (the closed rule's last check): undefined when it gave none. */
+  stillClosed: (task: string) => Promise<boolean | undefined>;
   /** The kernel is draining (main.ts): its pass stops, so only the next kernel's sweep runs beside its admissions. */
   stopping?: () => boolean;
   /** The engine kinds that keep a home per task (config/engines.json `state: task`). */
@@ -113,7 +115,14 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
           // budget: idle folders and the later roots are still swept.
           if (unreachable) continue;
           const tasks = [...new Set(d.u!.pairs.map((p) => p.task))];
-          if (!(await Promise.all(tasks.map((t) => stillClosed(t).catch(() => (unreachable = true, false))))).every(Boolean)) continue;
+          // Unknown is a thrown error, a lookup over LOOKUP_MS, or an answer that isn't one (undefined: a 5xx, a 404).
+          const ask = (t: string) => {
+            let timer: number | NodeJS.Timeout | undefined;
+            return Promise.race([stillClosed(t), new Promise<undefined>((ok) => { timer = setTimeout(ok, LOOKUP_MS); })]).catch(() => undefined).finally(() => clearTimeout(timer));
+          };
+          const answers = await Promise.all(tasks.map(ask));
+          if (answers.some((a) => a === undefined)) unreachable = true;
+          if (!answers.every((a) => a === true)) continue;
           if (stopping()) break; // drained while it waited: the next kernel's sweep decides
           d = decide();
         }
