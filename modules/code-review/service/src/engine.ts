@@ -1762,13 +1762,14 @@ export function createEngine(d: EngineDeps) {
    */
   type TreeRead = { p: Promise<{ sha: string; paths: string[] }>; at: number; sha?: string };
   const treeReads = new Map<string, TreeRead>();
+  const usable = (e?: TreeRead) => Boolean(e) && now() - e!.at <= 120_000;
   async function treeOf(repo: string, ref: string) {
     const key = `${repo}@${ref}`;
     let e = treeReads.get(key);
-    if (!e || now() - e.at > 120_000) {
+    if (!usable(e)) {
       // `at` is when the read settled: one still under way never expires.
       const entry: TreeRead = { p: undefined as never, at: Infinity };
-      entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD" && !treeReads.has(`${repo}@${entry.sha}`)) treeReads.set(`${repo}@${entry.sha}`, entry); });
+      entry.p = d.codehost.tree(repo, ref, (sha) => { entry.sha = sha.toLowerCase(); if (ref === "HEAD" && !usable(treeReads.get(`${repo}@${entry.sha}`))) treeReads.set(`${repo}@${entry.sha}`, entry); });
       e = entry;
       treeReads.set(key, entry);
       entry.p.then((t) => {
