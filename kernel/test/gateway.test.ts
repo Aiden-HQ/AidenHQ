@@ -333,7 +333,8 @@ test("gateway: a reviewer token's own cap (REVIEW_USD): calls go ahead while its
 
 // An in-stream failure as OpenRouter sends it (seen live on 2026-11-22): HTTP 200 and a generation, the answer opened, then failed.
 const sse = (events) => events.map((e) => `data:${JSON.stringify(e)}\n\n`).join(""); // no space after the colon: valid SSE
-const opened = (id) => [{ type: "response.created", response: { id, status: "in_progress", error: null } }, { type: "response.in_progress", response: { id, status: "in_progress", error: null } }];
+// Each opening event echoes the request (Codex's instructions and tools: well over 64 KiB).
+const opened = (id, echo = "") => [{ type: "response.created", response: { id, status: "in_progress", error: null, instructions: echo } }, { type: "response.in_progress", response: { id, status: "in_progress", error: null, instructions: echo } }];
 const failed = (id, code) => ({ type: "response.failed", response: { id, status: "failed", error: { code, message: "secret provider text" } } });
 const streamed = (body) => (res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(`: OPENROUTER PROCESSING\n\n${body}data: [DONE]\n\n`); };
 const completed = sse([...opened("gen-ok"), { type: "response.output_text.delta", delta: "Hi" }, { type: "response.completed", response: { id: "gen-ok", model: "m", usage: { input_tokens: 10, output_tokens: 5, cost: 0.02 } } }]);
@@ -388,9 +389,11 @@ test("gateway: a stream that fails in-band is booked at an estimate, never free:
 test("gateway: an answer that failed before any output is re-run once when its error is transient; one that streamed output or completed never is", async (t) => {
   const rig = await streamRig(t);
 
-  // The incident's shape: opened, then failed (rate limited). Nothing reached the caller, so it is re-run; the caller gets
-  // the completed answer and the failed attempt is booked on its own row at its estimate.
-  rig.answers = [streamed(sse([...opened("gen-x"), failed("gen-x", "rate_limit_exceeded")])), streamed(completed)];
+  // The incident's shape: opened (echoing a large request), then failed (rate limited). Nothing reached the caller, so it is
+  // re-run; the caller gets the completed answer and the failed attempt is booked on its own row at its estimate.
+  rig.answers = [streamed(sse([...opened("gen-x", rig.body.input + "y".repeat(80_000)), failed("gen-x", "rate_limit_exceeded")])), streamed(completed)];
+  rig.body = { ...rig.body, input: rig.body.input + "y".repeat(80_000) };
+  rig.reserved = (Math.ceil(Buffer.byteLength(JSON.stringify(rig.body)) / 3) * price.in) / 1e6;
   const rerun = await rig.call();
   assert.equal(rerun.status, 200);
   assert.doesNotMatch(rerun.text, /gen-x|secret provider text/, "nothing of the failed attempt reaches the caller");

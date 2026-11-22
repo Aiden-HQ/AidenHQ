@@ -749,7 +749,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // A stream is read up to its first output event before any byte reaches the caller (comments such as OpenRouter's
     // keep-alives and the OPENING events held back too), so an answer that failed before any output can be re-run: its chunks
     // and text (replayed to the caller) and its failure, if it failed. Bounded: past firstEventMs (well inside the idle cut) or
-    // PEEK_BYTES it stops looking (`pending`: the read in flight) and the stream is passed through.
+    // PEEK_BYTES beyond what the opening events take (each echoes the request: its instructions and tools) it stops looking
+    // (`pending`: the read in flight) and the stream is passed through.
     type Peeked = { chunks: Uint8Array[]; text: string; failed?: { reason: string; transient: boolean }; pending?: Promise<ReadableStreamReadResult<Uint8Array>> };
     const peek = async (rd: ReadableStreamDefaultReader<Uint8Array>): Promise<Peeked> => {
       const chunks: Uint8Array[] = [], dec = new TextDecoder();
@@ -778,7 +779,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
             if (d === "[DONE]") return { chunks, text, failed: NO_OUTPUT };
             if (d && !OPENING.has(eventType(d) ?? "")) return { chunks, text, failed: streamError(d) };
           }
-          if (text.length > PEEK_BYTES) return { chunks, text };
+          if (text.length > PEEK_BYTES + 4 * raw.length) return { chunks, text };
         }
       } finally { clearTimeout(timer); }
     };
