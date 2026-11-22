@@ -36,6 +36,7 @@ async function run(env = {}, {
   sizeJunk = {},
   seed,
   psFails = false,
+  psFailsFrom = 0,
   inspectFails = [],
   drift = {},
   scriptPath,
@@ -79,13 +80,27 @@ if [ "$1" = run ]; then
 fi
 case "$1" in
   version) printf 'linux/amd64\\n' ;;
-  ps) [ "$PS_FAILS" = 1 ] && { echo "Error response from daemon: cannot list containers" >&2; exit 1; }; printf '%s\\n' ${containers.map((c) => `'${c.id}'`).join(" ")} ;;
+  ps)
+    nps=0; [ -f "$DIR/ps-count" ] && read -r nps < "$DIR/ps-count"; nps=$((nps + 1)); printf '%s\\n' "$nps" > "$DIR/ps-count"
+    if [ "$PS_FAILS" = 1 ] || { [ -n "\${PS_FAILS_NTH:-}" ] && [ "$nps" -ge "$PS_FAILS_NTH" ]; }; then
+      echo "Error response from daemon: cannot list containers" >&2; exit 1
+    fi
+    printf '%s\\n' ${containers.map((c) => `'${c.id}'`).join(" ")} ;;
   inspect)
     [ "$2" = -f ] || exit 1
     # A container the fake daemon cannot answer for, as a daemon that stops mid-enumeration does.
     for bad in \${INSPECT_FAILS:-}; do
       if [ "$bad" = "$4" ] && [ "$PS_FAILS" != 1 ]; then echo "Error response from daemon: cannot inspect $4: EOF" >&2; exit 1; fi
     done
+    # A batched inspect (more than one container id) that names a container the daemon cannot answer for fails whole,
+    # as the daemon's would; the script then re-inspects one by one.
+    if [ "$#" -gt 1 ]; then
+      for bad in \${INSPECT_FAILS:-}; do
+        for arg in "$@"; do
+          if [ "$bad" = "$arg" ]; then echo "Error response from daemon: cannot inspect $arg: EOF" >&2; exit 1; fi
+        done
+      done
+    fi
     case "$3" in
       # The label column is empty for a container without one, as the format's with-block renders an absent label.
       *com.docker.compose.image*) cut -f1-4 "$CONTAINERS" ;;
@@ -187,8 +202,8 @@ exit 0
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, BROKEN: brokenFile,
-        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PS_FAILS: psFails ? "1" : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
-        ...env,
+        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PS_FAILS: psFails ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
+        DIR: dir, ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
@@ -394,9 +409,10 @@ test("security-sbom: an image that cannot fit is a line, and no save is written 
   assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran below the floor:\n${calls.join("\n")}`);
 });
 
-test("security-sbom: a tag that moves before its scan is a line, not the replacement's packages", { skip: NOT_LINUX }, async () => {
+test("security-sbom: a tag that moves mid-pass is read from the image the lock verified", { skip: NOT_LINUX }, async () => {
   // The tag matches the container during the snapshot and is pinned there; after two reads it names a rebuilt image,
-  // by the time syft would open it. The pass must not publish the new build under the running container's target.
+  // by the time the pass would scan it. The image must be read from an immutable reference (the container's own id)
+  // rather than through the tag, so a rebuild in between can't put the replacement's packages under this target.
   const { status, out, targets, calls } = await run({}, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
     tags: { "aidenhq/board:local": "sha256:1111" },
@@ -404,14 +420,16 @@ test("security-sbom: a tag that moves before its scan is a line, not the replace
     drift: { "aidenhq/board:local": { after: 2, then: "sha256:8888" } },
   });
   assert.equal(status, 0, out);
-  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
-  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
-  assert.equal(line[1], "-", "it was not scanned");
-  assert.match(line[2], /tag moved during this pass/);
-  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("docker:aidenhq/board:local")), calls.join("\n"));
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(scanned[1], "-", "the running image was scanned");
+  const call = syft(calls, "image:aidenhq/board:local");
+  assert.match(call.line, /docker-archive:\/image\.tar/, "read from the saved archive, not the mutable tag");
+  assert.ok(!calls.some((c) => c.includes("docker:aidenhq/board:local")), `never the daemon source for a tag:\n${calls.join("\n")}`);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:1111")), `the save was not from the pinned id:\n${calls.join("\n")}`);
 });
 
-test("security-sbom: a tag that stays put is scanned through the daemon", { skip: NOT_LINUX }, async () => {
+test("security-sbom: a tag that stays put is scanned from its own archive", { skip: NOT_LINUX }, async () => {
   const { status, out, targets, calls } = await run({}, {
     containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
     tags: { "aidenhq/board:local": "sha256:1111" },
@@ -420,7 +438,8 @@ test("security-sbom: a tag that stays put is scanned through the daemon", { skip
   assert.equal(status, 0, out);
   const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
   assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
-  assert.ok(calls.some((c) => c.includes("docker:aidenhq/board:local")), calls.join("\n"));
+  assert.match(syft(calls, "image:aidenhq/board:local").line, /docker-archive:\/image\.tar/);
+  assert.ok(!calls.some((c) => c.includes("docker:aidenhq/board:local")), calls.join("\n"));
 });
 
 test("security-sbom: with the lock free the same fixture produces the full target list", { skip: NOT_LINUX }, async () => {
@@ -451,4 +470,61 @@ test("security-sbom: the apply lock is held through the saves and free during ev
   assert.deepEqual(saves, saves.map(() => "save held"), `every save is under the apply lock:\n${locks.join("\n")}`);
   assert.ok(runs.length > 0, locks.join("\n"));
   assert.deepEqual(runs, runs.map(() => "run free"), `no scan holds the apply lock:\n${locks.join("\n")}`);
+});
+
+test("security-sbom: a container whose own id is exportable is scanned from that id, not dropped", { skip: NOT_LINUX }, async () => {
+  // A container started without compose: no label. Its tag moved to another build, but the container's own index is
+  // still held and contains the running platform. `pin_of` resolves that index to the platform manifest, so an equality
+  // test against the manifest alone would reject the very reference that can export the image.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "sha256:index": "sha256:2222" },
+    held: ["sha256:index"],
+    sizes: { "sha256:index": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", "it reached syft");
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.includes("sha256:index")), `the own id was not exported:\n${calls.join("\n")}`);
+  assert.match(syft(calls, "image:sha256:index").line, /docker-archive:\/image\.tar/);
+  assert.doesNotMatch(scanned[2], /No such image/, "it is not recorded as a gap");
+});
+
+test("security-sbom: a failed follow-up listing keeps the previous batch", { skip: NOT_LINUX }, async () => {
+  // The batched inspect fails, one container then inspects fine and another keeps failing, and the re-list that decides
+  // "gone or still running" itself fails. Treating that as an empty list would publish a partial batch.
+  const sentinel = "host\t-\told pass\t\n";
+  const { status, out, batchRaw } = await run({}, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:3333", config: "gate:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:1111", "gate:local": "sha256:3333" },
+    inspectFails: ["c2"],
+    psFailsFrom: 2,
+    seed: (data) => {
+      const dir = join(data, "modules/security/sbom/current");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "targets.tsv"), sentinel);
+    },
+  });
+  assert.equal(status, 0, out);
+  assert.match(out, /could not re-list containers/);
+  assert.equal(batchRaw, sentinel, "the previous batch is the one the scanner still reads");
+});
+
+test("security-sbom: a long host scan does not expire the apply-lock snapshot budget for the tag rechecks", { skip: NOT_LINUX }, async () => {
+  // The snapshot budget is one second, and the host scan outlives it. With the deadline left set, every later tag
+  // export would be refused as "the tag moved"; the deadline must not reach past the snapshot.
+  const { status, out, targets, calls } = await run({ AIDENHQ_SBOM_SNAPSHOT_SECS: "1" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", `the tag was not scanned after the snapshot deadline:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(targets.filter((t) => t[0].startsWith("image:")).length, 1, "one line per image, no second manifest key");
 });

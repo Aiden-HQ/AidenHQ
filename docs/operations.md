@@ -399,30 +399,32 @@ exact email match only).
 `modules/security`: Security Watch (`security-watch`) and the Red Teamer (`red-teamer`), plus `security-scanner`, the
 `src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
 filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
-runs pinned syft over the host packages, every running image (the image each container runs: by its configured tag
-while the tag's platform manifest is still the one the container records; otherwise by that compose-recorded platform
-manifest, exported with `docker save --platform` from a local image that contains it and keyed by the container's own id,
-so findings already held under that id reconcile; an image nothing can read or fit is a `targets.tsv` line naming the id
-and the error, never a silent gap), the product and instance checkouts and each app's deployed source, into
-`data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
+runs pinned syft over the host packages, every running image (each image is read from a `docker save` archive, never
+through a mutable tag: the archive is exported from an immutable id that holds the running platform manifest, or from the
+tag itself only while it still names that manifest, rechecked after the save; keyed by the container's own id, or by its
+tag while the tag still names what runs, so findings already held under that id reconcile; an image nothing can read or
+fit is a `targets.tsv` line naming the id and the error, never a silent gap), the product and instance checkouts and each
+app's deployed source, into `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
 belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
 noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var/lib/dpkg` stay in it. `targets.tsv`
 records the checkout's git HEAD for `repo:product` and `repo:instance`, and the scanner copies it to each target's
 `src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/` and keeps each target's
-archive in `data/modules/security/sbom/.archives` until its scan: one image costs about twice its size, and that space is
-budgeted across the whole batch before any `docker save` writes, so an image the batch cannot fit beside the others is a
-line, not a full disk. It empties the work dir after every target, keeps 30 GB free, and refuses an image that needs more
+archive in `data/modules/security/sbom/.archives` until its scan. An image whose tag has moved is saved under the lock,
+and the plan budgets those saves across the whole batch before any writes, so an image the batch cannot fit beside the
+others is a line, not a full disk; an image still named by its tag is saved at scan time, one archive at a time, with
+free space checked immediately before the save and again before the scan. It empties the work dir after every target, keeps 30 GB free, and refuses an image that needs more
 than half the room above that floor (an image whose size the daemon won't report is recorded and not scanned: an unknown
 demand can't be judged to fit). A second pass started while one holds `.lock` skips rather than running two at once.
 
-The container enumeration, the image target list and the `docker save`s are taken under the host's apply lock
-(`data/apply.lock`), each Docker call bounded by a timeout and the phase by an overall deadline, so an apply neither runs
-against a half-applied snapshot nor waits on an unresponsive daemon. A pass that cannot enumerate (a failing `ps`, or an
-inspect that fails for a still-running container) keeps the previous batch instead of publishing a short one. The lock is
-released before the syft scans; a tag scanned through the daemon is pinned to the platform manifest it named under the
-lock and rechecked immediately before its scan, so a tag that moved in between is a line rather than another build's
-packages under the old target. On 2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%.
+The container enumeration, the image target list and the `docker save`s of images whose tags have moved are taken under
+the host's apply lock (`data/apply.lock`), each Docker call bounded by a timeout and that phase by an overall deadline, so
+an apply neither runs against a half-applied snapshot nor waits on an unresponsive daemon. A pass that cannot enumerate
+(a failing `ps`, an inspect that fails for a still-running container, or a re-list that fails after such an inspect) keeps
+the previous batch instead of publishing a short one. The lock is released before the syft scans, and the snapshot
+deadline ends with the lock so a long host scan can't make a later check look overdue. A tag's image is exported from the
+immutable id the lock verified, or from the tag while it still names that manifest with a second check after the save, so a
+tag rebuilt in between is a line rather than another build's packages under the old target. On 2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%.
 `AIDENHQ_SBOM_MIN_FREE_GB` can raise
 the floor for a smaller disk, never lower it: 30 GB is the least a pass runs with, and a value under it (or not a number) is
 ignored. The scanner matches a new batch within the hour (or daily anyway) and fires Security
