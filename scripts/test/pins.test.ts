@@ -845,6 +845,15 @@ test("pins: noclobber writes and a restored stdout still count as a repository",
     assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat ${operands} > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1, operands);
   // Only `/dev/null` as the sole operand writes nothing.
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /dev/null > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems, []);
+  // `-` reads stdin even beside a `/dev/null` operand, so the line still reaches the file.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat /dev/null - > /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // A quoted descriptor operand is the same number: `1>&"3"` puts stdout back on the pipe, so the tee keeps the line.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} 3>&1 >/tmp/log 1>&"3" | tee /etc/apt/sources.list.d/vendor.list\nRUN apt-get install -y foo\n`).problems.length, 1);
+  // A `cat` in a pipeline stage reads its stdin whatever other redirects it carries: `cat 2>&1` still passes the line.
+  assert.deepEqual(apt(`${D} | cat 2>&1 | tee /etc/apt/sources.list.d/vendor.list`), ["https://repo.example/apt bookworm main"]);
+  // The shell opens every destination before the command runs, so a truncation lands before the write that takes stdout:
+  // `> v.list 3>&1 > v.list 1>&3` still leaves the line in v.list.
+  assert.equal(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} >/etc/apt/sources.list.d/vendor.list 3>&1 >/etc/apt/sources.list.d/vendor.list 1>&3\nRUN apt-get install -y foo\n`).problems.length, 1);
   // Its fd 0 is read over the whole command, so a `</dev/null` after the write still empties the file.
   assert.deepEqual(scanFile("Dockerfile", `FROM debian:bookworm${d}\nRUN ${D} | cat > /etc/apt/sources.list.d/vendor.list </dev/null\nRUN apt-get install -y foo\n`).problems, []);
   // `>|` is noclobber, not the end of `tee`'s operand list: the file after it is still written.

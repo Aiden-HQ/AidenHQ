@@ -154,16 +154,18 @@ const REDIRECT = /(?<!>)(\d*)(>>?\|?)\s*("[^"]+"|'[^']+'|[^\s;|&)<>]+)/g;
 // truncated but gets no bytes). Returns the index of the redirect fd 1 finally lands on, or "pipe" when nothing took it.
 // An unquoted operand ends at the next redirect: `3>&1>/tmp/log` is two redirects, not one whose file is `1>/tmp/log`.
 const STDOUT_REDIRECT = /(\d*)(>>?\|?|>&)\s*("[^"]*"|'[^']*'|[^\s;|&)<>]+)/g;
-const stdoutTarget = (text: string): "pipe" | number => {
+const stdoutTarget = (text: string, decode: (t: string) => string = (t) => t): "pipe" | number => {
   const target = new Map<number, "pipe" | number>([[1, "pipe"]]);
   for (const m of text.matchAll(STDOUT_REDIRECT)) {
     const fd = m[1] === "" ? 1 : Number(m[1]);
-    // A closed descriptor (`>&-`) or another stream (`1>&2`) is not the pipe, and no file redirect owns it.
-    target.set(fd, m[2] === ">&" ? (/^\d+$/.test(m[3]!) ? target.get(Number(m[3]!)) ?? -1 : -1) : m.index!);
+    // A closed descriptor (`>&-`) or another stream (`1>&2`) is not the pipe, and no file redirect owns it. A quoted
+    // operand is the same number: `1>&"3"` moves stdout to fd 3.
+    const to = decode(m[3]!).replace(/^["']|["']$/g, "");
+    target.set(fd, m[2] === ">&" ? (/^\d+$/.test(to) ? target.get(Number(to)) ?? -1 : -1) : m.index!);
   }
   return target.get(1) ?? "pipe";
 };
-const stdoutFeedsPipe = (text: string) => stdoutTarget(text) === "pipe";
+const stdoutFeedsPipe = (text: string, decode?: (t: string) => string) => stdoutTarget(text, decode) === "pipe";
 // A command's own words, with quoted text blanked: `echo '… rm /etc/apt/sources.list.d/x'` prints a message, it does
 // not remove anything.
 const unquoted = (s: string) => s.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
@@ -269,32 +271,33 @@ function writtenFiles(segment: string, body?: string): Written[] {
   // The command whose stdout reaches this element: the last of a `&&` chain (`a && b | tee f` pipes b's stdout, and
   // `echo x > log && cat | tee f` reads from `cat`, not the earlier command's redirect).
   const lastCommand = (part: string) => part.split(/&&|\|\|/).filter((x) => x.trim()).at(-1) ?? "";
-  // What reaches pipeline element i's stdout: nothing when its own last command redirects it, known content from a
-  // here-document, and otherwise the pipeline's earlier command — or, when that is a pass-through (`cat`, `tee`), what
-  // feeds it. A redirect deeper in the pipeline therefore empties the file `tee` is actually fed by.
+  // What a command reads as its stdin: a here-document, its own fd-0 redirect, else the previous pipeline stage.
+  const stdinContent = (piece: string, i: number): Pick<Written, "content" | "text"> => {
+    if (hereText) return hereText;
+    const redirect = stdinOf(piece);
+    if (redirect) return unmask(strip(redirect)) === "/dev/null" ? { content: "empty" } : { content: "unknown" };
+    return flow(i - 1);
+  };
+  // A `cat` reads its file operands (`-` names stdin) or, naming none, its stdin. Every operand counts: `/dev/null` adds
+  // nothing, a file we can't read makes the output unknown, and the pipe's own bytes count when `-` reads it.
+  const catContent = (piece: string, i: number): Pick<Written, "content" | "text"> => {
+    const ops = words(piece.replace(/^\s*cat\b/, "").replace(/(?<!\d)(?:\d+)?(?:<|>>?|>\|)\s*(?:&?-?\d+|\S+)|&>>?\s*\S+/g, " ")).map(unmask);
+    if (!ops.length) return stdinContent(piece, i);
+    const inputs = ops.map((op) => op === "-" ? stdinContent(piece, i)
+      : unmask(strip(op)) === "/dev/null" ? { content: "empty" as const } : { content: "unknown" as const });
+    return inputs.find((x) => x.content === "deb")
+      ?? (inputs.some((x) => x.content === "unknown") ? { content: "unknown" as const } : { content: "empty" as const });
+  };
+  // What reaches pipeline element i's stdout: nothing when its own last command redirects it, and otherwise what that
+  // command reads — a `cat` or `tee` passes its input through, and anything else writes its own `deb` line.
   const flow = (i: number): Pick<Written, "content" | "text"> => {
     if (i < 0 || parts[i]!.op !== "|") return { content: "empty" };
     const piece = lastCommand(parts[i]!.text);
     // Its own stdout redirect sends the bytes elsewhere, whatever it reads: `tee /tmp/log >/dev/null | tee f` feeds f
     // nothing. Only fd 1 (a bare `>` or `1>`) takes it, though: `echo … 3> /tmp/log | tee f` still feeds f.
-    if (!stdoutFeedsPipe(piece)) return { content: "empty" };
-    const tee = /\btee\b/.exec(piece);
-    if (tee) {
-      if (hereText) return hereText;
-      // Only fd 0 (`<`, `0<`) overrides the pipe, and the filename ends at an unquoted shell operator, so a redirect
-      // with no whitespace before it is still one: `tee f < /tmp/x</dev/null` reads /dev/null (the shell applies
-      // `< /dev/null` last), not `/tmp/x</dev/null`; `2<` is another descriptor and `<<`/`<<<` are not `<`.
-      const input = stdinOf(piece.slice(tee.index + 4));
-      return input ? (unmask(strip(input)) === "/dev/null" ? { content: "empty" } : { content: "unknown" }) : flow(i - 1);
-    }
-    // `cat` copies its stdin to its stdout, so an fd-0 redirect overrides the pipe: `echo … | cat </dev/null > f` writes
-    // nothing to f. A bare `cat` passes the pipeline's bytes through, and anything else is a command whose own output the
-    // next element reads (its own stdout redirect, if any, is checked above), so what it writes is a `deb` line.
-    if (/^\s*cat(?:\s|$)/.test(piece)) {
-      const input = stdinOf(piece);
-      if (input) return { content: unmask(strip(input)) === "/dev/null" ? "empty" : "unknown" };
-      if (/^\s*cat\s*$/.test(piece)) return flow(i - 1);
-    }
+    if (!stdoutFeedsPipe(piece, unmask)) return { content: "empty" };
+    if (/\btee\b/.test(piece)) return stdinContent(piece, i);
+    if (/^\s*cat(?:\s|$)/.test(piece)) return catContent(piece, i);
     return { content: "deb", text: expand(piece) };
   };
   // The command containing an index: one `&&`/`||` chain gives each command its own stdout, so `a > f && b > g` sends
@@ -310,50 +313,37 @@ function writtenFiles(segment: string, body?: string): Written[] {
     }
     return [start, end];
   };
-  // A command's stdout goes to wherever fd 1 finally lands, and every `>` before that one truncates its own file:
-  // `echo … > vendor.list > /tmp/log` empties vendor.list, and `echo … > vendor.list 3>&1 > /tmp/log 1>&3` does too,
-  // because `1>&3` puts stdout back on the log — vendor.list gets no bytes either way.
-  const redirects = [...clean.matchAll(REDIRECT)];
-  redirects.forEach((m) => {
+  // A command's stdout goes wherever fd 1 finally lands, and every other `>` truncates its own file. The shell opens
+  // every destination before it runs the command, so a truncation applies before any write to the same path:
+  // `> vendor.list 3>&1 > vendor.list 1>&3` truncates vendor.list and then writes the line to it through the first one.
+  interface Entry { path: string; append: boolean; takes: boolean; content: Pick<Written, "content" | "text"> }
+  const entries: Entry[] = [...clean.matchAll(REDIRECT)].map((m) => {
     const append = m[2] === ">>";
     const part = parts.findIndex((q) => m.index! >= q.start && m.index! < q.end);
     const [cStart, cEnd] = commandSpan(part, m.index!);
-    const finalTarget = stdoutTarget(code.slice(cStart, cEnd));
+    const finalTarget = stdoutTarget(code.slice(cStart, cEnd), unmask);
     const takes = finalTarget !== "pipe" && cStart + finalTarget === m.index!;
-    // A pass-through (`cat > f`) writes what its pipeline element receives, so a producer that sent its own stdout
-    // elsewhere leaves f empty rather than holding a `deb` line.
-    const passThrough = /^\s*cat(?:\s|$)/.test(lastCommand((parts[part]?.text ?? clean).slice(0, m.index! - (parts[part]?.start ?? 0))));
-    // A command that writes its own `deb` line gives the file only that line: another command on the same line writing
-    // to a log must not have its repository credited here too (`echo a > /tmp/log ; echo b > vendor.list`).
-    const own = takes && !passThrough ? writtenKind(lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)))) : undefined;
-    // A `cat` reading a file other than the pipe writes that file's content, which we can't read, or nothing for
-    // /dev/null — the same rule `tee` follows above. Its fd 0 is looked up over the whole command, not just the text
-    // before this redirect: `cat > f </dev/null` names the stdin override after the write.
-    const catText = passThrough ? lastCommand(code.slice(cStart, cEnd)) : "";
-    const catInput = passThrough ? stdinOf(catText) : undefined;
-    // `cat`'s file operands, with redirects and options removed. `-` is stdin by name, so it is dropped here and the
-    // pipe is used only when some operand actually reads it. `echo a | cat /tmp/v.list > vendor.list` copies
-    // /tmp/v.list, so the upstream `a` does not reach vendor.list; `cat /dev/null /tmp/v.list` writes the second file,
-    // not nothing.
-    const catFiles = passThrough
-      ? words(catText.replace(/^\s*cat\b/, "").replace(/(?<!\d)(?:\d+)?(?:<|>|>>?)\s*\S+/g, " ")).map(unmask).filter((a) => a !== "-" && !a.startsWith("-"))
-      : [];
-    const stdinByName = passThrough && /(?:^|\s)-(?:\s|$)/.test(catText.replace(/(?<!\d)(?:\d+)?(?:<|>|>>?)\s*\S+/g, " "));
-    const through: Pick<Written, "content" | "text"> | undefined = passThrough
-      ? catFiles.length === 1 && catFiles[0] === "/dev/null" ? { content: "empty" }
-        : catFiles.length ? { content: "unknown" }
-        : (stdinByName || !catInput) ? flow(part - 1)
-        : catInput === "/dev/null" ? { content: "empty" } : { content: "unknown" }
-      : own?.content === "deb" || own?.content === "unknown" ? { ...own, text: own.text ?? expand(lastCommand(code.slice(cStart, cEnd))) } : undefined;
-    const fed: Pick<Written, "content" | "text"> | undefined = hereText ?? through;
-    // The file that takes the bytes is the one fd 1 finally lands on, whichever descriptor it was opened with: with
-    // `2> f 1>&2` the `2>` names f and `1>&2` moves stdout there, so f holds the line. When stdout goes elsewhere the
-    // file is left empty for a truncating stdout redirect, but a redirect on another descriptor (`2> f`, `3> f`) may
-    // still be written by the command's stderr or that descriptor, which we can't read: keep it as unknown rather than
-    // claiming it holds nothing.
+    const cmdText = lastCommand((parts[part]?.text ?? code).slice(0, m.index! - (parts[part]?.start ?? 0)));
+    const whole = lastCommand(code.slice(cStart, cEnd));
+    // What the command writes: a `cat`/`tee` passes its input through, and anything else writes its own `deb` line — its
+    // own text, so another command on the same line logging a different repository is not credited to this file.
+    const own = writtenKind(expand(cmdText));
+    const written = hereText
+      ?? (/^\s*cat(?:\s|$)/.test(cmdText) ? catContent(whole, part)
+        : /\btee\b/.test(cmdText) ? stdinContent(whole, part)
+        : own.content === "empty" ? { content: "deb" as const } : own);
+    // A redirect on another descriptor (`2> f`, `3> f`) may still be written by the command's stderr or that descriptor,
+    // which we can't read, so its file is unknown rather than claimed empty; a stdout redirect that lost fd 1 is empty.
     const stdoutFd = m[1] === "" || m[1] === "1";
-    add(unmask(strip(m[3]!)), append, takes ? fed ?? { content: "deb" } : { content: stdoutFd ? (append ? "none" : "empty") : "unknown" });
+    const content = takes ? written : { content: stdoutFd ? (append ? "none" as const : "empty" as const) : "unknown" as const };
+    return { path: unmask(strip(m[3]!)), append, takes, content };
   });
+  // Within one path a truncation comes before the write that takes stdout, whatever order the redirects were written.
+  const rank = (e: Entry) => (e.takes ? 2 : e.append ? 1 : 0);
+  entries
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => (a.e.path === b.e.path ? rank(a.e) - rank(b.e) || a.i - b.i : a.i - b.i))
+    .forEach(({ e }) => add(e.path, e.append, e.content));
   // `tee`'s operands are its output files: its options and any redirection are not — `2>&1` must not cut the operand list
   // short at its `&`, and `< file` (which overrides the pipe) is consumed here so it isn't read as a file name.
   // A `>` glued to a `|` is the noclobber redirect, not a pipe: masked so `tee >| /tmp/log f` keeps the operands after it.
