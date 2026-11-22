@@ -270,6 +270,13 @@ describe("identity gate", () => {
     const merged = mergeScans([{ sockets: [k(false)], denied: ["7", "9"] }, { sockets: [k(true)], denied: ["1", "9"] }]);
     expect(merged.sockets).toEqual([k(true)]);
     expect(merged.denied).toEqual(["9"]);
+    // TLS evidence survives whichever scan owns the socket: one uid may read the listener another could not, and the
+    // ClientHello's answer is what decides the skip, so a later owner must not drop an earlier "tls".
+    const t = (listening: boolean, tls: "tls" | "no") => ({ port: 5433, host: "127.0.0.1", listening, tls, statuses: [0, 0] });
+    expect(mergeScans([{ sockets: [t(false, "tls")] }, { sockets: [t(true, "no")] }]).sockets).toEqual([t(true, "tls")]);
+    expect(mergeScans([{ sockets: [t(true, "no")] }, { sockets: [t(false, "tls")] }]).sockets).toEqual([t(true, "tls")]);
+    // A "no" from one scan and no answer from another is still "no"; nothing invented, nothing lost.
+    expect(mergeScans([{ sockets: [t(false, "no")] }, { sockets: [{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0] }] }]).sockets).toEqual([{ port: 5433, host: "127.0.0.1", listening: true, statuses: [0], tls: "no" }]);
   });
 
   it("fails closed on any service without a running container, unless it is a current, port-less one-shot job that finished", () => {

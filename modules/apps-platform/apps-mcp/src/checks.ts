@@ -417,14 +417,17 @@ export function processUids(top: string): number[] {
 
 /**
  * One container's scans, one per uid, merged: a socket listens when any scan attributed it (the first such answer is
- * kept), and a process stays denied only when every scan was refused it.
+ * kept), a process stays denied only when every scan was refused it, and TLS evidence from any scan is kept. The TLS answer
+ * is what decides the app-level skip, so a later scan that owns the socket (one uid can attribute a listener another could
+ * not read) must never drop the "tls" an earlier scan saw, nor may one uid's timeout hide another's answer.
  */
 export function mergeScans(scans: { sockets: { port: number; host: string; listening: boolean; raw?: PortAnswers["raw"]; tls?: PortAnswers["tls"]; statuses: number[] }[]; denied?: string[] }[]) {
   const sockets = new Map<string, (typeof scans)[number]["sockets"][number]>();
   for (const sc of scans) for (const k of sc.sockets) {
     const key = `${k.host} ${k.port}`, had = sockets.get(key);
-    if (!had || (k.listening && !had.listening)) sockets.set(key, k);
-    else if (k.tls === "tls") sockets.set(key, { ...had, tls: "tls" }); // one uid's timeout must not hide another's TLS answer
+    if (!had) { sockets.set(key, k); continue; }
+    const owner = k.listening && !had.listening ? k : had; // the scan that attributed the listener keeps its own fields
+    sockets.set(key, { ...owner, listening: had.listening || k.listening, ...(had.tls || k.tls ? { tls: had.tls === "tls" || k.tls === "tls" ? "tls" : "no" } : {}) });
   }
   const denied = (scans[0]?.denied ?? []).filter((p) => scans.every((sc) => (sc.denied ?? []).includes(p)));
   return { sockets: [...sockets.values()], denied };
