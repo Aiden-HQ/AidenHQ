@@ -221,7 +221,9 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   author (not a fork's) or someone with write access now, whose first word is `fixed`, `disputed`, `by design` or `won't fix`
   followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). An agent records the same answer with the
   `code_review_resolve` tool (engine `resolve`, the same `answer` path, no GitHub write: a GitHub refusal never holds a merge);
-  the thread reply stays valid and optional. Any other reply is conversation.
+  an important finding's answer is then replied on its thread by the service (the `code-review.reply` write, Tier 1, queued in
+  the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply
+  still works. Any other reply is conversation.
   The next mandatory recheck reads each answered finding with its claim and opens it again only when it read the code and finds
   the fix or the reason unsafe (`unsafe`: it hides a real problem or adds one); unsure, still present or silent never reopens one,
   and a finding answered and reported again stays answered. A reopened finding goes in that run's post, titled as reopened,

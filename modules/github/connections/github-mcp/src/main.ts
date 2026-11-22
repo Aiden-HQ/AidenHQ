@@ -633,7 +633,7 @@ const http = createServer(async (req, res) => {
         const r = parseRef({ repo: String(b.repo ?? ""), number: Number(b.number) });
         return send(200, { threads: await poster.threads(r) });
       }
-      if (b.kind !== "post" && b.kind !== "notice" && b.kind !== "status") throw new GitHubRefused("kind is post, notice or status");
+      if (b.kind !== "post" && b.kind !== "notice" && b.kind !== "status" && b.kind !== "reply") throw new GitHubRefused("kind is post, notice, status or reply");
       if (op === "preview") return send(200, poster.preview(b.kind, b.args));
       if (op === "execute") {
         // The post waits in the serial write queue, as long as GitHub's limits take: answer headers now and a blank every 30 s (JSON

@@ -114,7 +114,8 @@ CREATE TABLE IF NOT EXISTS comments (repo TEXT NOT NULL, number INTEGER NOT NULL
 -- a kernel that can't take it now is retried on a later tick and a settled summary is never sent twice. \`claim\` marks a send in
 -- flight: a crash mid-send leaves it set, and the next start clears it so the summary is tried again (at least once, never lost).
 CREATE TABLE IF NOT EXISTS askers (batch TEXT NOT NULL, task TEXT NOT NULL DEFAULT '', setkey TEXT NOT NULL DEFAULT '', requester TEXT NOT NULL,
-  runs TEXT NOT NULL DEFAULT '', text TEXT, pending TEXT, sent TEXT, claim TEXT, PRIMARY KEY (batch, task, setkey));`;
+  runs TEXT NOT NULL DEFAULT '', text TEXT, pending TEXT, sent TEXT, claim TEXT, PRIMARY KEY (batch, task, setkey));
+CREATE TABLE IF NOT EXISTS replies (repo TEXT NOT NULL, number INTEGER NOT NULL, finding TEXT NOT NULL, body TEXT NOT NULL, write TEXT, tries INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL, PRIMARY KEY (repo, number, finding));`;
 /** The data's format (module.yaml data_version). 1: combos and findings; a database from before starts fresh (its runs, its PRs and
  * today's spend counts are dropped: the first look at each repo then records what is open, as on a new install). */
 export const DATA_VERSION = 1;
@@ -915,6 +916,7 @@ export function createEngine(d: EngineDeps) {
         errors.set(cfg.repo, msg);
       }
     }
+    await replies();
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'pending' AND write_id IS NOT NULL")) await settle(r);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE posted = 'retry' AND post_due <= ?", now())) await repost(r);
     for (const [write, t] of [...acking]) {
@@ -1063,8 +1065,36 @@ export function createEngine(d: EngineDeps) {
     if (!m) throw new RequestError("word is fixed, disputed, by design or won't fix, and reason says what changed or why (letters, at most 1500 characters)");
     const p = prRow(repo, n);
     if (!p) throw new RequestError(`no reviewed pull request ${repo}#${n}`);
+    const severity = one<{ severity: string }>("SELECT severity FROM findings WHERE repo = ? AND number = ? AND id = ? AND outcome IS NULL ORDER BY rowid DESC LIMIT 1", repo, n, id)?.severity;
     if (!answer(p, id, m.word, m.reason, String(b.by ?? "agent").slice(0, 100), null, "answered by an agent")) throw new RequestError(`finding ${id} isn't open on ${repo}#${n}`);
+    // An important finding's answer is also replied on its thread (so it shows closed): queued here, posted by `replies` and never holding the outcome. A nit gets none.
+    if (severity === "important") run("INSERT OR IGNORE INTO replies (repo, number, finding, body, due) VALUES (?, ?, ?, ?, ?)", repo, n, id, `${m.word.toLowerCase()}: ${m.reason}`.slice(0, 1600), now());
     return { resolved: id };
+  }
+
+  /** The queued thread replies of recorded answers: filed once the finding's thread is known, their outcome read, a refusal filed again
+   * later (POST_RETRY doubling, POST_TRIES times) while the PR is open; then dropped. Nothing here ever changes a finding's outcome. */
+  async function replies() {
+    for (const q of all<{ repo: string; number: number; finding: string; body: string; write: string | null; tries: number }>("SELECT repo, number, finding, body, write, tries FROM replies WHERE due <= ?", now())) {
+      const key = [q.repo, q.number, q.finding];
+      const open = !!prRow(q.repo, q.number)?.open;
+      let o: Posted;
+      try {
+        if (q.write) o = await d.poster.outcome(q.write);
+        else {
+          const t = (await d.source.threads(q.repo, q.number)).find((x) => x.finding === q.finding);
+          if (!t) o = { state: "refused", why: "its thread isn't on the pull request (yet)", retry: true };
+          else o = await d.poster.reply({ repo: q.repo, number: q.number, head: prRow(q.repo, q.number)!.head, comment: t.comment, body: q.body });
+          if (o.write) run("UPDATE replies SET write = ? WHERE repo = ? AND number = ? AND finding = ?", o.write, ...key);
+        }
+      } catch (e) {
+        o = { state: "refused", why: String((e as Error).message).slice(0, 200), retry: true };
+      }
+      if (o.state === "pending") continue;
+      if (o.state === "posted" || !open || q.tries + 1 >= POST_TRIES) { run("DELETE FROM replies WHERE repo = ? AND number = ? AND finding = ?", ...key); continue; }
+      log("answer reply not posted; filing it once more", { repo: q.repo, pr: q.number, why: String(o.why ?? "").slice(0, 200) });
+      run("UPDATE replies SET write = NULL, tries = tries + 1, due = ? WHERE repo = ? AND number = ? AND finding = ?", now() + POST_RETRY * 2 ** Math.min(q.tries, 4), ...key);
+    }
   }
 
   /**
@@ -1136,7 +1166,7 @@ export function createEngine(d: EngineDeps) {
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n);
     if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
-      unblock: `fix and push (the next review rechecks each), or answer each with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; a reply on the finding's thread starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+      unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 

@@ -474,5 +474,5 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   assert.equal(changing.woke.length, 2, "new findings at the same head wake the task again");
   text = `code review: ${"y".repeat(5000)}`;
   await changing.watch.tick();
-  assert.ok(changing.woke[2].text.length <= 2000 && /disputed: <reason, file:line>.*Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
+  assert.ok(changing.woke[2].text.length <= 2000 && /code_review_resolve.*posted for you\. Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
 });

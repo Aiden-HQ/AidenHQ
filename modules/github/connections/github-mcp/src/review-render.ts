@@ -102,6 +102,15 @@ export const NoticeArgsSchema = z.object({
   review: z.string().regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}\/pull\/\d{1,9}#pullrequestreview-\d{1,15}$/).optional(),
 });
 export type NoticeArgs = z.infer<typeof NoticeArgsSchema>;
+/** An agent's answer to an important finding, replied on its thread (`comment`: the thread's first comment). */
+export const ReplyArgsSchema = z.object({
+  repo: z.string().regex(new RegExp(`^${NAME}/${NAME}$`)),
+  pr: z.number().int().min(1),
+  head: z.string().regex(SHA),
+  comment: z.number().int().min(1),
+  body: z.string().min(1).max(1600),
+});
+export type ReplyArgs = z.infer<typeof ReplyArgsSchema>;
 
 /** The commit status code review mirrors its merge verdict to (code-review computes it, per PR head, from its /v1/verdict). */
 export const STATUS_CONTEXT = "aidenhq/review";

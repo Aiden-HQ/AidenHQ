@@ -104,8 +104,9 @@ description: How code is written, tested and published here, in any repository -
 - Aiden's code review findings: the merge waits on each important one until it is answered. Find them (with their ids) in
   the merge's wait reason or the review (`github_pr_threads`: `finding`), then answer each with `code_review_resolve`
   (`repo`, `number`, `id`, `word`, `reason`), which writes nothing to GitHub: after fixing it and publishing the fix, word
-  `fixed` and the reason `<what changed, commit>`; for one you judge wrong, `disputed` and `<reason, file:line>`. A reply on
-  the finding's thread starting with the same word also answers it, optional.
+  `fixed` and the reason `<what changed, commit>`; for one you judge wrong, `disputed` and `<reason, file:line>`. Recording
+  the outcome is the whole job: code review posts the reply on an important finding's thread for you (later, if GitHub
+  refuses it), and a nit gets no reply. Post no reply yourself.
 
 ## Publishing
 

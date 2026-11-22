@@ -129,6 +129,13 @@ writes:
     floor: 1
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
+  # An agent's recorded answer to an important finding, replied on that finding's thread so it shows closed: the text is the
+  # agent's own (Tier 1, the AI reviewer decides). It never holds the outcome, which is already in the store.
+  reply:
+    args: schemas/reply.json
+    floor: 1
+    tools: []
+    card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
   notice:
     args: schemas/notice.json
     floor: 0
