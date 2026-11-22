@@ -5,8 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.ts";
 
-async function call(name, args, { finish, gradingDown = false, assignee = "cos", feedback, repos } = {}) {
-  const seen = { created: [], filed: [], patches: [], comments: [] };
+async function call(name, args, { finish, gradingDown = false, gradeReadRefused = false, assignee = "cos", feedback, repos } = {}) {
+  const seen = { created: [], filed: [], amended: [], patches: [], comments: [] };
   const handler = (req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -17,6 +17,10 @@ async function call(name, args, { finish, gradingDown = false, assignee = "cos",
       // The grading module: the caller assertion says whose call it is.
       const as = req.headers["x-aidenhq-caller"] ? "caller" : "nobody";
       if (url === "/grades") return (seen.filed.push({ ...json, as }), send({ created: true, state: "open" }));
+      if (url === "/grades/amend") return (seen.amended.push({ ...json, as }), send({ amended: true, state: "open", rubric: json.rubric }));
+      // The filed row, read before an amendment so it validates against the deliverable as filed. `gradeReadRefused` is the
+      // grading module refusing the read (a caller with no claim on the row): the tool must say so, never "no rubric".
+      if (req.method === "GET" && /^\/grades\/[^/]+$/.test(url)) return gradeReadRefused ? send({ error: "only the agent that delegated a task reads its rubric before re-filing it" }, 403) : send({ grade: { issueId: "cur", rubric, deliverable: { kind: "pr", ref: "acme/app" }, state: "open", attempts: 0, verdicts: [] } });
       if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
       if (url.endsWith("/agents")) return send([
         { id: "eng", name: "Kai", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true }, status: "idle" },
@@ -197,5 +201,48 @@ test("a start that fails once is retried; one that keeps failing tells the agent
     if (ok) assert.equal(r.result?.isError, undefined, r.result?.content?.[0]?.text);
     else assert.match(r.result.content[0].text, /WOR-9 is filed but not started: moving it to todo failed.*stays parked in backlog/);
     assert.equal(tries, ok ? 2 : 3);
+  }
+});
+
+// A delegator's criteria can turn out unsatisfiable after filing (the issue's own case: "contain no `Linus`" beside "exactly
+// three lines edited"). A later comment amends the ask, never a criterion, so the amendment lands on the grade row instead.
+test("task_amend_rubric replaces the filed rubric in place, validated as a delegation is", async () => {
+  const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
+  const ok = await call("task_amend_rubric", { issue: "WOR-9", rubric: corrected });
+  assert.equal(ok.r.result?.isError, undefined, ok.text);
+  assert.deepEqual(ok.amended, [{ issue: "cur", rubric: corrected, as: "caller" }]);
+  // It takes the whole list: a rubric with too few criteria is refused before any request.
+  for (const rubric of [["only one"], ["a", "b"]]) {
+    const few = await call("task_amend_rubric", { issue: "WOR-9", rubric });
+    assert.equal(few.r.result?.isError, true, JSON.stringify(rubric));
+    assert.match(few.text, /3-8 checkable criteria/);
+  }
+  assert.equal(ok.amended.length, 1);
+});
+
+test("an absence criterion is refused at filing and at amendment, naming a diff-decidable alternative", async () => {
+  const claims = [
+    "both handbooks contain no `Linus`",
+    "docs/a.md has no old token",
+    "the handbook does not contain the dead delegatee",
+    "the `Linus` line is absent from docs/a.md",
+    "the README does not mention the old CLI flag",
+  ];
+  for (const claim of claims) {
+    const rubric = [claim, "merged into main", "checks green on the head"];
+    const filed = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric });
+    assert.equal(filed.r.result?.isError, true, claim);
+    assert.match(filed.text, /claims file contents are absent/, claim);
+    assert.match(filed.text, /the diff removes every `Linus` line from docs\/a\.md/, claim);
+    assert.equal(filed.created.length, 0, claim);
+    const amended = await call("task_amend_rubric", { issue: "WOR-9", rubric });
+    assert.equal(amended.r.result?.isError, true, claim);
+    assert.match(amended.text, /claims file contents are absent/, claim);
+    assert.equal(amended.amended.length, 0, claim);
+  }
+  // The checkable negatives are about what the grader does observe: they stay allowed.
+  for (const claim of ["no console errors on the totals page", "no open incident on the app", "the tests check is green on the PR's head"]) {
+    const ok = await call("task_amend_rubric", { issue: "WOR-9", rubric: [claim, "merged into main", "the totals page shows the VAT line"] });
+    assert.equal(ok.r.result?.isError, undefined, `${claim}: ${ok.text}`);
   }
 });

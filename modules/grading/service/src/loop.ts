@@ -6,7 +6,7 @@
 import { openCard } from "./grader/cards.ts";
 
 type Json = any;
-export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, emit = () => {} }: {
+export function createGradeLoop({ api, pc, log, state, gather, grade, escalationFor, gradeNote, template, gradeDeps, tellParent, recordsOn, graderAsk, stripHidden, graderSpeaks, rubricHash, emit = () => {} }: {
   api: Json;
   pc: Json;
   log: (...a: unknown[]) => void;
@@ -22,6 +22,8 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
   graderAsk: Json;
   stripHidden: Json;
   graderSpeaks: Json;
+  /** The hash a pass's verdict names (grades.ts rubricHash): the store drops a verdict from a rubric since amended. */
+  rubricHash: (rubric: string[]) => string;
   emit?: (e: Json) => void;
 }) {
   const grading = new Set<string>();
@@ -195,7 +197,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       asked = true;
       v = await grade({ rubric, deliverable: g.deliverable, facts: ev.facts, data: ev.data, request: `${issue.title}\n\n${stripHidden(issue.description ?? "")}`, images: ev.images, authorModel, ask });
     }
-    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
+    // The row's rubric this pass graded, by hash: the store drops the verdict if it was amended while the pass ran. The row's
+    // own list (g.rubric), not the template the pass falls back to, is what the store compares against.
+    const row = await api.post(verdictPath, { version: ev.version, outcome: v.outcome, model: v.model, criteria: v.criteria, rubric: rubricHash(g.rubric ?? []), reason: v.outcome === "grading_failed" ? String(v.reason ?? "") : undefined });
     if (asked) fact("grade.verdict", `grade:${issue.id}:${attempt}`, attempt, issue.id, { pass: v.outcome === "satisfied", attempt, reason_code: String(v.outcome) });
     // A failed pass says why (the grader's call error, or the rule its answer broke): nothing else records it.
     log("graded", { issue: issue.identifier, outcome: v.outcome, state: row.state, attempts: row.attempts, failures: row.failures, model: v.model, version: ev.version.slice(0, 40), ...(v.reason ? { reason: String(v.reason).slice(0, 300) } : {}) });
