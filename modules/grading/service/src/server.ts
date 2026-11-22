@@ -124,8 +124,9 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
   async function amend(req: http.IncomingMessage, body: unknown) {
     let b!: ReturnType<typeof parseAmendment>;
     const { caller, issue } = await amendCaller(req, () => (b = parseAmendment(body)).issue);
-    // Work already finished and held for a grade (in review) is requeued by the amendment: the next pass grades it against the
-    // new list, and the assignee is not asked to finish again for a change they did not make.
+    // Work already finished and held for a grade (in review) is requeued by the amendment: the row still restarts `open`, and
+    // its resume flag has the next pass grade it against the new list, so the assignee is not asked to finish again for a
+    // change they did not make.
     const g = grades.amend(issue.id, b.rubric, { by: `agent:${caller.agent}`, delegator: issue.createdByAgentId ? `agent:${issue.createdByAgentId}` : undefined, closed: isClosed(issue), held: issue.status === "in_review" });
     log("rubric amended", { task: issue.identifier, by: `agent:${caller.agent}`, criteria: g.rubric.length, state: g.state });
     return { amended: true, state: g.state, rubric: g.rubric };

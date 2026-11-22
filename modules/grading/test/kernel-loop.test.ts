@@ -167,6 +167,38 @@ test("a reopen whose grade-state read fails is retried, never replayed or droppe
   assert.equal(issue.status, "todo", "the retried read says needs_revision, so the move lands");
 });
 
+test("an amended rubric on work already in review is graded at once, without another finish", async (t) => {
+  // The row restarts open, as a differing re-file's does. `resume` is what has the runner grade the work already submitted
+  // against the new list: without it the row would sit open until the assignee finished again for a change they did not make.
+  const answers = [];
+  const gateway = http.createServer(async (req, res) => {
+    for await (const _ of req);
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answers.shift()) } }] }));
+  }).listen(0);
+  t.after(() => gateway.close());
+  const issue = { id: "t7", identifier: "WOR-7", title: "report", description: "Report.", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const filed = ["says where Legacy is used", "links each source", "names the next step"];
+  grades.file("t7", filed, { kind: "report", ref: "" });
+  const corrected = ["the report names the Legacy callers", "it links each source", "it names the next step"];
+  // In review, so the amendment restarts the row open and requeues it; the assignee never finishes again.
+  grades.amend("t7", corrected, { by: "agent:cos", delegator: "agent:cos", held: true });
+  assert.equal(grades.get("t7").state, "open");
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due(), resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, github: noGithub, log: () => {} });
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10_000;
+  t.after(() => { Date.now = realNow; });
+  answers.push(answer(["yes", "yes", "yes"]));
+  await loop.runGrades();
+  assert.deepEqual(calls.resolve, ["ok"], "the resumed row is graded and the task closes");
+  const g = grades.get("t7");
+  assert.equal(g.state, "satisfied");
+  assert.equal(g.resume, false, "a settled row is no longer the restarted one the runner had to pick up");
+});
+
 test("a merge counts only as its executor wrote it on a record that ended ok, never by the args an agent filed", () => {
   const a = "a".repeat(40), b = "b".repeat(40);
   const line = `merged-prs: ${JSON.stringify([{ repo: "acme-agents/app", number: 7, head: a, sha: b }])}`;

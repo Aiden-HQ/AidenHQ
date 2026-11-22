@@ -91,15 +91,29 @@ test("a delegator amends a filed rubric in place: the row restarts, the delivera
   const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
   const r = await h.agentAmend("cos", { issue: "t1", rubric: corrected });
   assert.equal(r.status, 200);
-  // The task is in review, so the amendment requeues the row for the grader at once: work already submitted is graded against
-  // the corrected list without the assignee finishing again.
-  assert.deepEqual(r.json, { amended: true, state: "pending", rubric: corrected });
+  // The row restarts open, as a differing re-file's does; the task is in review, so its resume flag has the runner grade the
+  // work already submitted against the corrected list, without the assignee finishing again.
+  assert.deepEqual(r.json, { amended: true, state: "open", rubric: corrected });
   const g = h.grades.get("t1");
   assert.deepEqual(g.rubric, corrected);
   assert.deepEqual(g.deliverable, PR, "the amendment never re-binds the deliverable");
-  assert.equal(g.state, "pending");
+  assert.equal(g.state, "open");
   assert.equal(g.attempts, 0);
   assert.deepEqual(g.verdicts, []);
+  // The runner picks the restarted row up: it is due, so the held work is graded against the new list.
+  assert.ok(h.grades.due().some((x) => x.issueId === "t1"));
+});
+
+test("an amendment to a task that is not in review restarts the row open without requeueing it", async (t) => {
+  const h = await harness(t);
+  h.grades.file("t1", RUBRIC, PR);
+  // Not held: nothing was finished, so the restarted row waits for the next finish, as a filed one does.
+  const g = h.grades.amend("t1", ["the app serves /totals", "no console errors on /totals", "no open incident"], { by: "agent:cos", delegator: "agent:cos" });
+  assert.equal(g.state, "open");
+  assert.equal(g.attempts, 0);
+  assert.deepEqual(g.verdicts, []);
+  assert.equal(g.resume, false);
+  assert.equal(h.grades.due().some((x) => x.issueId === "t1"), false);
 });
 
 test("an amendment is refused for a caller with no claim on the task, and for a settled row", async (t) => {
@@ -216,8 +230,8 @@ test("a verdict computed on a rubric since amended is dropped, leaving the row o
   assert.equal((await h.agentAmend("cos", { issue: "t1", rubric: corrected })).status, 200);
   // The runner's pass that started on the old rubric lands after the amendment: it is not applied to the new list.
   const stale = await h.verdict("t1", { version: "sha1", outcome: "satisfied", model: "glm", criteria: [], rubric: before });
-  // The task was in review, so the amendment requeued the row for the grader (pending); the stale verdict left it there.
-  assert.equal(stale.state, "pending");
+  // The task was in review, so the amendment left the row open with its resume flag set; the stale verdict changed neither.
+  assert.equal(stale.state, "open");
   assert.equal(stale.attempts, 0);
   assert.deepEqual(stale.verdicts, []);
   assert.deepEqual(stale.rubric, corrected);

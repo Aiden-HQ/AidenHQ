@@ -44,6 +44,11 @@ export interface Grade {
   closedReason: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * The row was restarted by an amendment while its work was already submitted (the task in review): the state is `open`, as
+   * every restart is, and this says the runner grades it now rather than waiting for another finish.
+   */
+  resume: boolean;
 }
 
 interface Row {
@@ -58,6 +63,7 @@ interface Row {
   closed_reason: string | null;
   created_at: string;
   updated_at: string;
+  resume: number;
 }
 
 /** Rejected versions before the grade gives up and closes the task done, ungraded (fail open: never parked on anyone). */
@@ -180,7 +186,7 @@ export function prRefAllowed(ref: string, t: KnownRepos): boolean {
   return [...lower(t.agentsOrgs), ...lower(t.orgs)].includes(org) || [...lower(t.maintained), ...lower(t.product ? [t.product] : [])].includes(repo);
 }
 
-const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
+const fromRow =(r: Row): Grade => ({ issueId: r.issue_id, rubric: JSON.parse(r.rubric), deliverable: JSON.parse(r.deliverable), attempts: r.attempts, state: r.state as GradeState, verdicts: JSON.parse(r.verdicts), failures: r.failures ?? 0, failedAt: r.failed_at ?? null, closedReason: r.closed_reason ?? null, createdAt: r.created_at, updatedAt: r.updated_at, resume: Boolean(r.resume) });
 
 export class Grades {
   private events?: { emit: (topic: string, id: string) => void };
@@ -201,6 +207,9 @@ export class Grades {
       if (!columns.includes("failures")) db.exec("ALTER TABLE grades ADD COLUMN failures INTEGER NOT NULL DEFAULT 0");
       if (!columns.includes("failed_at")) db.exec("ALTER TABLE grades ADD COLUMN failed_at TEXT");
       if (!columns.includes("closed_reason")) db.exec("ALTER TABLE grades ADD COLUMN closed_reason TEXT");
+      // A restarted row (an amendment) whose work is already submitted: the state stays `open`, as a restart is, and this
+      // flag is what makes the runner grade it at once rather than wait for another finish.
+      if (!columns.includes("resume")) db.exec("ALTER TABLE grades ADD COLUMN resume INTEGER NOT NULL DEFAULT 0");
       // Why the grader's latest pass on a task failed (the Fleet Steward reads it to tell one component down from many tasks failing).
       db.exec("CREATE TABLE IF NOT EXISTS grade_failures (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL, reason TEXT NOT NULL)");
       // Who filed each row's rubric, in its own table rather than a column on `grades`. A fresh start, not a migration: a row
@@ -291,9 +300,9 @@ export class Grades {
    * A row restarted at a rubric (and, when re-bound, a deliverable): open, no attempts, no verdicts, no failures, no close
    * reason. The grader then checks the next finish against this list, which is the only one it reads.
    */
-  private restart(issueId: string, rubric: string, deliverable?: string): void {
+  private restart(issueId: string, rubric: string, deliverable?: string, { resume = false }: { resume?: boolean } = {}): void {
     const now = new Date().toISOString();
-    const reset = "rubric = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, updated_at = ?";
+    const reset = `rubric = ?, attempts = 0, state = 'open', verdicts = '[]', failures = 0, failed_at = NULL, closed_reason = NULL, resume = ${resume ? 1 : 0}, updated_at = ?`;
     // The deliverable is written only when it is re-bound (a differing re-file); an amendment leaves it as filed.
     if (deliverable === undefined) this.db.prepare(`UPDATE grades SET ${reset} WHERE issue_id = ?`).run(rubric, now, issueId);
     else this.db.prepare(`UPDATE grades SET deliverable = ?, ${reset} WHERE issue_id = ?`).run(deliverable, rubric, now, issueId);
@@ -329,10 +338,10 @@ export class Grades {
       }
       if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict("this task already has another rubric");
       if (closed) throw new Conflict("this task is already closed: its rubric is not replaced, and a closed task's grade is left as it settled");
-      this.restart(issueId, wantRubric);
-      // Work already finished and waiting for a grade (the task is in review) is graded against the new list at once: `open`
-      // is a row nobody has finished yet, and the runner would skip it until another finish, which the task no longer needs.
-      if (held) this.db.prepare("UPDATE grades SET state = 'pending', updated_at = ? WHERE issue_id = ?").run(new Date().toISOString(), issueId);
+      // The row restarts exactly as a differing re-file does: open, no attempts, no verdicts. Work already submitted (the task
+      // in review) is graded against the new list at once: `resume` says so, because `open` alone is a row nobody finished yet
+      // and the runner would wait for another finish the task no longer needs.
+      this.restart(issueId, wantRubric, undefined, { resume: held });
       this.db.exec("COMMIT");
       this.events?.emit("grades", issueId);
       return this.get(issueId)!;
@@ -342,9 +351,12 @@ export class Grades {
     }
   }
 
-  /** The rows the runner grades: a completion path hit the gate, the evidence was still coming, or the grader failed (no verdict yet) and its next retry is due. */
+  /**
+   * The rows the runner grades: a completion path hit the gate, the evidence was still coming, the grader failed (no verdict
+   * yet) and its next retry is due, or an amendment restarted a row whose work was already submitted (`resume`).
+   */
   due(now = Date.now()): Grade[] {
-    return (this.db.prepare("SELECT * FROM grades WHERE state IN ('pending', 'awaiting_evidence', 'grading_failed') ORDER BY updated_at").all() as unknown as Row[])
+    return (this.db.prepare("SELECT * FROM grades WHERE state IN ('pending', 'awaiting_evidence', 'grading_failed') OR (state = 'open' AND resume = 1) ORDER BY updated_at").all() as unknown as Row[])
       .map(fromRow)
       .filter((g) => g.state !== "grading_failed" || !g.failedAt || Date.parse(g.failedAt) + graderRetryDelay(g.failures) <= now);
   }
@@ -383,7 +395,8 @@ export class Grades {
 
   private set(issueId: string, state: GradeState, attempts: number, verdicts: Verdict[], failures: number, failedAt: string | null, now = Date.now()): Grade {
     this.db
-      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, updated_at = ? WHERE issue_id = ?")
+      // A pass settling the row ends the amendment's resume: the row is no longer the restarted one the runner had to pick up.
+      .prepare("UPDATE grades SET state = ?, attempts = ?, verdicts = ?, failures = ?, failed_at = ?, closed_reason = NULL, resume = 0, updated_at = ? WHERE issue_id = ?")
       .run(state, attempts, JSON.stringify(verdicts), failures, failedAt, new Date(now).toISOString(), issueId);
     this.events?.emit("grades", issueId);
     return this.get(issueId)!;
