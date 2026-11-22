@@ -1762,7 +1762,7 @@ export function createEngine(d: EngineDeps) {
    */
   type TreeRead = { p: Promise<{ sha: string; paths: string[] }>; at: number; sha?: string };
   const treeReads = new Map<string, TreeRead>();
-  const usable = (e?: TreeRead) => Boolean(e) && now() - e!.at <= 120_000;
+  const usable = (e: TreeRead | undefined): e is TreeRead => e !== undefined && now() - e.at <= 120_000;
   async function treeOf(repo: string, ref: string) {
     const key = `${repo}@${ref}`;
     let e = treeReads.get(key);
