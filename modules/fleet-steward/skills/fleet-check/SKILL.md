@@ -21,7 +21,7 @@ states what you saw in your own words.
   `pause_routine`/`resume_routine` (a routine id), `pause_agent`/`resume_agent` (an agent id), `stop_run` (a task: its run
   stops, the task stays open), `restart_service` (a module's compose service), `rollback` (`target: last_good`).
   An operation runs only while the task it was filed on is open: until its result says it ran, keep this run's task open and
-  end the run with `task_wait` (`until` 15 minutes ahead, `on` "the operation's outcome"), then check the result and go on.
+  end the run with `task_wait` (`reason` "waiting on <op>", `until` 20 minutes ahead, `on` "its outcome"), then check the result and go on.
 - Fix the source: `self_change` (your own rule), `task_create` `assignee: chief-of-staff` (another agent's rule: the agent,
   the evidence and the exact replacement), `task_create` `assignee: maintainer` (product bug), `task_delegate` to the
   Engineer (a capability to build), `task_create` to an app's owner.

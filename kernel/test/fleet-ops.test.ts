@@ -101,8 +101,11 @@ test("stop, restart and roll back: a run stopped with its task open, only a modu
   const r = await w.ops.execute({ id: "late", requester: STEWARD, args: plan.args, targets: plan.targets });
   assert.deepEqual([r.ok, w.launched.length], [false, 1]);
   assert.match(r.text, /now 7, not the 6/);
-  // After a rollback to 6 (its re-apply is generation 9, lkg 6), the next one goes further back to 5, never forward to 7 or 8.
+  // After a rollback to 6 (its re-apply is generation 9, lkg 6), the next one goes further back to 5, never forward to 7 or 8;
+  // so does one after an auto-revert re-applied 9 (generation 10, lkg 9): the chain counts as 6.
   w.gens.unshift({ n: 9, product: "b".repeat(40), health: "good", lkg: 6 });
+  assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "still bad" })).text, /generation 5/);
+  w.gens.unshift({ n: 10, product: "b".repeat(40), health: "good", lkg: 9 });
   assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "still bad" })).text, /generation 5/);
 });
 
@@ -126,9 +129,10 @@ test("through the write lifecycle: the tool files kernel.fleet_op for the AI rev
   for (let i = 0; i < 100 && records.get(r.id).state !== "done"; i++) await new Promise((ok) => setTimeout(ok, 5));
   assert.deepEqual([records.get(r.id).state, w.routines.r1.status], ["done", "paused"]);
   // A rollback approved after its run task closed never runs: the Steward keeps its task open until the result (fleet-check).
-  open.yes = false;
   const rb = await writes.request(who(["fleet-settle"], { fleet_steward: ["fleet_operate"] }), { kind: "kernel.fleet_op", args: { op: "rollback", target: "last_good", reason: "bad apply" } });
+  open.yes = false;
   await writes.review(rb.id, { verdict: { decision: "approve", reason: "fine", model: "acme/reviewer" }, request: {} });
-  for (let i = 0; i < 100 && records.get(rb.id).state === "approved"; i++) await new Promise((ok) => setTimeout(ok, 5));
+  for (let i = 0; i < 200 && records.get(rb.id).state === "approved"; i++) await new Promise((ok) => setTimeout(ok, 5));
+  assert.deepEqual([records.get(rb.id).state, records.get(rb.id).outcome?.text], ["failed", "Not run: the task is closed, so a leftover request runs nothing."]);
   assert.equal(w.launched.length, 0);
 });

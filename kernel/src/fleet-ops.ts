@@ -129,7 +129,13 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
   function lastGood(): Gen {
     const gens = generations().filter((g) => g.health !== "refused");
     const current = gens[0];
-    const base = current?.lkg ?? current?.n;
+    // Follow the chain: a re-apply of a re-apply counts as the oldest one it stands for. A link the history lacks refuses.
+    let base = current?.n ?? undefined;
+    for (let g: Gen | undefined = current, hops = 0; g?.lkg != null && hops < 50; hops++) {
+      base = g.lkg;
+      g = gens.find((x) => x.n === g!.lkg);
+      if (!g) throw refuse(`generation ${base} isn't in the kept history: roll back by hand (ops/rollback.sh)`);
+    }
     const to = typeof base === "number" ? gens.find((g) => g.health === "good" && typeof g.n === "number" && g.n < base) : undefined;
     if (!current || !to) throw refuse("no earlier good apply generation to roll back to");
     return to;
