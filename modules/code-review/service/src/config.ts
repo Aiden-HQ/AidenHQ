@@ -97,7 +97,7 @@ function repo(raw: unknown): Repo | { error: string } {
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
   // A mandatory on_push combo needs one in on_open (a PR's first head is reviewed by on_open's). on_push without one is fine: the
-  // opening review then stands for every later head, and open findings and claim rechecks still decide.
+  // opening review then stands for every later head, and the findings still open decide.
   if (out.on_push.some((c) => c.mandatory) && !out.on_open.some((c) => c.mandatory)) return { error: "a mandatory on_push combo needs a mandatory on_open one (a PR's first head is reviewed by on_open's)" };
   if (out.push_rounds !== null && !(Number.isInteger(out.push_rounds) && out.push_rounds >= 0)) return { error: "push_rounds is a whole number of pushes reviewed (0 or more), or null for every push" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };

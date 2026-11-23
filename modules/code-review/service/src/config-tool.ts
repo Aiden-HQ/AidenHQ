@@ -102,7 +102,7 @@ const REPO_ENTRY = {
     repo: { type: "string", description: "owner/name" },
     on_open: { ...COMBOS, description: `when a PR opens (default codex, ~deepseek/deepseek-flash-latest, medium). ${COMBOS.description}` },
     on_push: { ...COMBOS, description: `on each push, only the new changes (default codex-native, openai/gpt-6.2-sol, low). ${COMBOS.description}` },
-    push_rounds: { type: ["integer", "null"], minimum: 0, description: "how many pushes of a PR get an on_push review (default 1; null: every push); later pushes are gated by open findings and claim rechecks" },
+    push_rounds: { type: ["integer", "null"], minimum: 0, description: "how many pushes of a PR get an on_push review (default 1; null: every push); later pushes are gated by the findings still open" },
     drafts: { type: "boolean" },
     forks: { type: "string", enum: ["manual", "auto"] },
     ignore: { type: "array", items: { type: "string" } },
@@ -130,7 +130,7 @@ export function configTools(d: {
   return [
     {
       name: "code_review_findings",
-      description: "A pull request's open important findings that hold its merge, each with the id code_review_resolve takes: { repo: owner/name, number }. The merge's wait reason lists ids too, but cuts long lists. A `note` says when the latest recheck called a finding you claimed fixed still there.",
+      description: "A pull request's open important findings that hold its merge, each with the id code_review_resolve takes: { repo: owner/name, number }. The merge's wait reason lists ids too, but cuts long lists.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, number: { type: "integer" } }, required: ["repo", "number"], additionalProperties: false },
       run: async (a) => {
         if (typeof a.repo !== "string" || !REPO.test(a.repo) || !Number.isInteger(a.number)) throw new Error("repo is owner/name and number an integer");

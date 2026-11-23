@@ -1491,7 +1491,7 @@ test("a mandatory run is never skipped; the owner dismisses an open finding and 
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
 });
 
-test("an agent's `fixed: …` is a claim with no GitHub write: the finding stays open and gating until the next review finds it gone", async () => {
+test("an agent's `fixed: …` closes the finding at once, with no GitHub write; the reply is posted for it", async () => {
   const w = gatedWorld();
   await opened(w, 2, sha("2"));
   w.finish(0, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }, { id: "n1", severity: "nit", path: "a.ts", line: 4, title: "n", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
@@ -1501,8 +1501,8 @@ test("an agent's `fixed: …` is a claim with no GitHub write: the finding stays
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed now", reason: "" }), /word is one of/);
   assert.throws(() => w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "later", reason: "some reason" }), /word is one of/);
   assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" }), { resolved: "f1" });
-  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"], "a claim doesn't close it, on any head");
-  assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"]);
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass", "fixed closes it at once, like any answer");
+  assert.deepEqual(w.engine.openFindings(REPO, 2), []);
   // The reply is posted for the agent (the important finding only, once its thread is known); a nit gets none.
   w.engine.resolve({ repo: REPO, number: 2, id: "n1", word: "won't fix", reason: "style only, left as is" });
   await w.tick({ github: false });
@@ -1511,79 +1511,8 @@ test("an agent's `fixed: …` is a claim with no GitHub write: the finding stays
   assert.deepEqual(w.replied.map((r) => [r.comment, r.body]), [[41, "fixed: moved the lock into pay.ts (abc1234)"]]);
   await w.tick({ github: false });
   assert.equal(w.replied.length, 1, "posted once");
-  assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"], "still open: the nit's won't-fix closed, the fixed claim didn't");
   w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  assert.deepEqual(w.started[1].previous.map((x) => [x.id, x.claim]).sort(), [["f1", undefined], ["n1", "won't fix: style only, left as is"]], "the open finding goes to the recheck as open, the claimed nit as a claim");
-  w.finish(1, { findings: [], cleared: ["f1"] }); await w.tick();
-  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "the recheck was asked about it and didn't find it still there (even without listing it fixed): the claim stands, closed as fixed");
-  assert.deepEqual({ ...w.db.prepare("SELECT outcome, claim FROM findings WHERE id = 'f1'").get() }, { outcome: "fixed", claim: null }, "verified: the claim is spent, a later regression isn't inherited as fixed");
-});
-
-test("a fixed claim stays open when the recheck doesn't clear it or the review reports the finding again", async () => {
-  const w = gatedWorld();
-  await opened(w, 2, sha("2"));
-  w.finish(0, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
-  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock (abc1234)", by: "agent:engineer" });
-  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  w.finish(1, { findings: [] }); await w.tick();
-  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "a recheck that didn't clear it (not asked, or unfinished): the claim waits");
-  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  w.finish(2, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }], cleared: ["f1"] }); await w.tick();
-  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["findings"], "reported again: the claim doesn't stand");
-  assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"]);
-});
-
-test("a corrected answer closes a finding that carries a fixed claim, and a recheck's result that comes back after it can't undo it", async () => {
-  const w = gatedWorld();
-  await opened(w, 2, sha("2"));
-  w.finish(0); await w.tick();
-  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
-  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  w.later(1000);
-  assert.deepEqual(w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "by design", reason: "the caller holds the lock" }), { resolved: "f1" });
-  w.finish(1, { findings: [], unsafe: [{ id: "f1", why: "the caller does not hold the lock: refund() takes it in pay.ts:10" }], fixed: ["f1"] }); await w.tick();
-  assert.deepEqual(w.engine.verdict(REPO, 2, sha("3")).reasons, [], "the answer given while the review ran stands");
-  assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "by design: the caller holds the lock");
-  // The same when that review reports the finding again: the correction made while it ran stands.
-  const v = gatedWorld();
-  await opened(v, 2, sha("2"));
-  v.finish(0); await v.tick();
-  v.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
-  v.pr(2, sha("3")); await v.tick(); v.later(DEBOUNCE + 1); await v.tick();
-  v.later(1000);
-  v.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "by design", reason: "the caller holds the lock" });
-  v.finish(1, { findings: [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", why: "w", evidence: "e", fix_brief: "b" }] }); await v.tick();
-  assert.deepEqual(v.engine.verdict(REPO, 2, sha("3")).reasons, [], "reported again by a review that started before the correction: still closed");
-});
-
-test("a pending fixed the latest recheck called still there says so in the wait reason and the open-findings list", async () => {
-  const w = gatedWorld();
-  await opened(w, 2, sha("2"));
-  w.finish(0); await w.tick();
-  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
-  assert.doesNotMatch(w.engine.verdict(REPO, 2, sha("2")).reasons[0].text, /still there/, "no recheck yet: nothing to say");
-  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  w.finish(1, { findings: [], still: ["f1"] }); await w.tick();
-  assert.match(w.engine.verdict(REPO, 2, sha("3")).reasons.at(-1).text, /id f1: the recheck at 3333333 says it is still there: fix it or answer disputed with the reason/);
-  assert.match(w.engine.openFindings(REPO, 2)[0].note, /still there/);
-});
-
-test("a fixed claim recorded after its head's recheck started gets exactly one more recheck of that head, which can clear it", async () => {
-  const w = gatedWorld();
-  await opened(w, 2, sha("2"));
-  w.finish(0); await w.tick();
-  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  assert.equal(w.started.length, 2, "the new head's recheck is running");
-  w.later(1000);
-  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock" });
-  await w.tick();
-  assert.equal(w.started.length, 2, "not while the head's own run is still going");
-  w.finish(1, { findings: [] }); await w.tick(); await w.tick();
-  assert.deepEqual(w.started.map((x) => x.head).slice(1), [sha("3"), sha("3")], "one more recheck, at the same head");
-  assert.deepEqual(w.started[2].previous.map((x) => x.id), ["f1"], "it reads the claim's finding");
-  w.finish(2, { findings: [], cleared: ["f1"] }); await w.tick(); await w.tick();
-  assert.equal(w.started.length, 3, "no loop: the claim is closed and gets no more");
-  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
+  assert.deepEqual(w.started[1].previous.map((x) => [x.id, x.claim]).sort(), [["f1", "fixed: moved the lock into pay.ts (abc1234)"], ["n1", "won't fix: style only, left as is"]], "answers go to the next review as claims, checked only for an unsafe fix or reason");
 });
 
 test("the owner's dismissal of the last open finding refreshes the head's commit status to a pass", async () => {
@@ -1686,25 +1615,6 @@ test("a later reopen with a different reason reopens it, and the same reason aga
   w.pr(2, sha("6")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   w.finish(4, { findings: [], unsafe: [{ id: "f1", why: second, line: 20 }] }); await w.tick();
   assert.equal(w.engine.verdict(REPO, 2, sha("6")).verdict, "pass", "the reason the finding already came back for is no new defect, even after a restatement");
-});
-
-test("a reason a reopen recorded while its run was in flight never suppresses a later, genuine reopen", async () => {
-  const w = gatedWorld();
-  await opened(w, 2, sha("2"));
-  w.finish(0); await w.tick();
-  w.outcomes.set("k-1", { state: "posted", comments: [41] }); await w.tick({ github: false });
-  // A `fixed` claim leaves the finding open, so a later correction can still be recorded while a recheck runs.
-  w.threads.set(2, [{ finding: "f1", comment: 41, replies: [{ id: 50, author: "bob", body: "fixed: moved the lock into the caller" }] }]);
-  await w.tick();
-  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  // A correction lands while the recheck runs: its result can't reopen the finding, so it leaves no reopen history behind either.
-  w.later(1000);
-  w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "disputed", reason: "the lock is taken by the caller, see pay.ts:10" });
-  const why = "the caller does not hold the lock: refund() takes it in pay.ts:10";
-  w.finish(1, { findings: [], unsafe: [{ id: "f1", why }] }); await w.tick();
-  assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass", "the correction made while it ran stands");
-  const opens = w.db.prepare("SELECT count(*) n FROM dispositions WHERE finding = 'f1' AND state = 'open' AND head = ?").get(sha("3")).n;
-  assert.equal(opens, 0, "a suppressed reopen records nothing");
 });
 
 test("an unsafe value that isn't a list is silence, not a run stuck on its own result", async () => {
@@ -1896,10 +1806,10 @@ test("a reply on a finding's thread posted before the service recorded its threa
   w.threads.set(2, [{ finding: "f1", comment: 90, replies: [{ id: 49, author: "mallory", body: "fixed: trust me" }, { id: 50, author: "bob", body: "fixed: moved the check into pay()" }] }]);
   await w.tick();
   assert.equal(w.db.prepare("SELECT claim FROM findings WHERE id = 'f1'").get().claim, "fixed: moved the check into pay()", "bob's answer counts; mallory (no write access) still doesn't");
-  assert.deepEqual(w.engine.openFindings(REPO, 2).map((f) => f.id), ["f1"], "a thread reply's fixed is a claim too");
+  assert.deepEqual(w.engine.openFindings(REPO, 2), [], "a thread reply's fixed closes it too");
 });
 
-test("a gated repo with no mandatory on_push: a push needs no review of its own, so the PR merges once nothing is open; a fixed claim is still rechecked at the pushed head", async () => {
+test("a gated repo with no mandatory on_push: a push needs no review of its own, so the PR merges once nothing is open", async () => {
   assert.deepEqual(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] })).errors, []);
   assert.match(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [MUST_PUSH] }] })).errors[0], /needs a mandatory on_open one/);
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] });
@@ -1910,12 +1820,10 @@ test("a gated repo with no mandatory on_push: a push needs no review of its own,
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["findings"], "the opening review stands; its open finding still holds the merge");
   w.engine.resolve({ repo: REPO, number: 2, id: "f1", word: "fixed", reason: "moved the lock into pay.ts (abc1234)", by: "agent:engineer" });
   await w.tick();
-  assert.deepEqual(w.started.slice(1).map((s) => [s.head, label(s)]), [[sha("3"), "codex/low"]], "the claim's recheck, on the on_open mandatory combo at low effort");
-  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running", "findings"]);
-  w.finish(1, { findings: [], cleared: ["f1"] }); await w.tick();
+  assert.equal(w.started.length, 1, "no recheck of the claim");
   assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  assert.equal(w.started.length, 2, "a later push runs nothing");
+  assert.equal(w.started.length, 1, "a later push runs nothing");
   assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
   assert.deepEqual([w.statuses.at(-1).head, w.statuses.at(-1).reason], [sha("4"), "pass"]);
 });
@@ -1938,7 +1846,7 @@ test("no mandatory on_push: a mandatory opening run a push superseded is run aga
   assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
 });
 
-test("push_rounds 1: a push superseded mid-review isn't a round; after the one push review, later heads get none, its findings still gate, a fixed claim is rechecked at the head and `aiden review` still runs", async () => {
+test("push_rounds 1: a push superseded mid-review isn't a round; after the one push review, later heads get none, its findings gate until answered and `aiden review` still runs", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 1 }] });
   await opened(w, 2, sha("2"));
   w.finish(0); await w.tick(); // f1 open, gating
@@ -1953,9 +1861,8 @@ test("push_rounds 1: a push superseded mid-review isn't a round; after the one p
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("5"))), ["findings"], "the open findings hold the merge; nothing waits on a review of 5");
   for (const id of ["f1", "f2"]) w.engine.resolve({ repo: REPO, number: 2, id, word: "fixed", reason: "fixed in 5", by: "agent:engineer" });
   await w.tick();
-  assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("5"), "codex/low"]], "the claims' recheck at the head");
-  w.finish(3, { findings: [], cleared: ["f1", "f2"] }); await w.tick();
+  assert.equal(w.started.length, 3, "nothing rechecks the claims");
   assert.equal(w.engine.verdict(REPO, 2, sha("5")).verdict, "pass");
   w.later(1000); w.say(2, "alice", "aiden review"); await w.tick();
-  assert.deepEqual(w.started.slice(4).map((s) => [s.head, label(s)]), [[sha("5"), "codex/medium"]], "a writer's ask beats the cap");
+  assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("5"), "codex/medium"]], "a writer's ask beats the cap");
 });

@@ -36,8 +36,9 @@ ${fence(JSON.stringify(reported.map((f) => ({ id: f.id, path: f.path, line: f.li
 }
 
 /** What "important" means, for every engine (the brief is codex-native's developer instructions and every finder's system text). */
-const SEVERITY = `Severity. "important" is a realistic failure: you can name a specific input or state and the wrong result it produces
-(a crash, wrong or lost data, a security hole, a hang). Give that scenario in the finding (failure_scenario; where your answer
+const SEVERITY = `Severity. "important" is a failure reachable in normal use, data loss, or a security hole: you can name a specific
+input or state and the wrong result it produces (a crash, wrong or lost data, a security hole, a hang). An unlikely edge case, a
+scenario that needs several unusual conditions at once, or defensive hardening is a nit, or left out. Give that scenario in the finding (failure_scenario; where your answer
 format has no such field, a line of the finding's text starting "${SCENARIO.trim()}"): an important finding without one is
 reported as a nit. Old and new code count the same: a real failure in code you read is important whether or not this change
 wrote it. "nit" is anything else worth a mention (never formatting or what a linter catches). Style, naming, a missing test or

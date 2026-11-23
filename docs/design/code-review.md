@@ -42,7 +42,7 @@ code_review:
 ```
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
-claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service, the board and the compile all say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge and a `fixed` claim is still rechecked, at the pushed head, by the first mandatory `on_open` combo at low effort; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
+claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service, the board and the compile all say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
 short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
 price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
@@ -92,7 +92,7 @@ The service reads the watched repos every `code_review_poll_seconds` (default 60
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
 queued batch). Only the first `push_rounds` pushes of a PR (default 1; null: every push) get one: a round is a pushed head
 whose push review completed (a superseded one doesn't count); later heads are skipped ("push review cap reached") and gated
-as a repo with no mandatory `on_push` (open findings and claim rechecks); `aiden review` and `aiden review always` still run. One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
+as a repo with no mandatory `on_push` (the findings still open decide); `aiden review` and `aiden review always` still run. One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
 rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR (but a one-off)
 completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
 at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run
@@ -234,7 +234,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   change is a row in `dispositions` (finding, head, state, reason, evidence, who decided).
 - **Answers (owner, 2026-11-21).** A reply on Aiden's own thread (the service's record) for an open gating finding, from the PR's
   author (not a fork's) or someone with write access now, whose first word is `fixed`, `disputed`, `by design` or `won't fix`
-  followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). An agent records the same answer with the
+  followed by a reason, closes it at once (`fixed`, else `dismissed`, keeping the answer as `claim`; owner, 2026-11-23: no recheck of a `fixed` claim). An agent records the same answer with the
   `code_review_resolve` tool (engine `resolve`, the same `answer` path, no GitHub write: a GitHub refusal never holds a merge);
   an important finding's answer is then replied on its thread by the service (the `code-review.reply` write, Tier 0, queued in
   the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply

@@ -25,10 +25,6 @@ export type Review = {
   /** Findings closed by an answer (fixed, disputed, …) whose fix or reason the recheck found unsafe or malicious: open again.
    * Each names the part of the answer that is unsafe and the defect still there at the head (`line`: where it is now). */
   unsafe?: Unsafe[];
-  /** Open findings the recheck was asked about and didn't call still there. */
-  cleared?: string[];
-  /** Open findings the recheck was asked about, looked at and called still there. */
-  still?: string[];
   /** deepsec's set-up files when it set the repo up this run (path → content, `.deepsec/` only): filed as a setup PR. */
   setup?: Record<string, string>;
   /** A tree review's target (a whole repo at a commit); a PR review's is the PR. */
@@ -102,8 +98,6 @@ export type ReviewSpec = {
   previous: { id: string; severity: string; path: string; line: number; title: string; why?: string; evidence?: string; gating?: boolean; claim?: string }[];
   /** Its combo is mandatory (a new important finding of it may restate only a gating one). */
   mandatory: boolean;
-  /** A claim recheck: only the previous findings are rechecked, no finders and no new findings. */
-  recheck_only?: boolean;
   ignore: string[]; max_nits: number;
 };
 /** `box_at`: when its check job got its box (ISO; queueing before it is not the run's work), once it has one. `billed_usd`: what the kernel billed the run's check job (its gateway calls), never anything the box wrote. Absent: unknown, and
