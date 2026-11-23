@@ -42,7 +42,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
    - **Delivered:** `task_comment` on your part — the child `task_join` returns, the one task here you may write on — "Delivered: <evidence link> — left open for the owner to close.", and leave the parent open: a comment on the parent is refused ("isn't yours to change") and a `task_finish` with `issue` on it is refused too ("only this job's own task is finished here"). Report it as "delivered, needs owner close" in the sweep summary; count the part's `done` as delivery to the parent and the parent's `done` as the close the sweep reports. No chase draft once delivery is evidenced, and a chase draft still waiting is dropped in that same comment (say so), so a later "send" does not file it. Post it once: read your part's comments with `task_comments` (`limit: 100`) first and skip the comment when one already carries that exact line.
    - **Not due yet, and recent activity:** leave it.
 
-3. **Chase draft.** If it is overdue, or quiet for 2 workdays and it has no chase draft pending:
+3. **Chase draft.** If it is overdue, or quiet for 2 workdays, it has no chase draft pending and its part carries no delivery report:
    - Post a short draft message in your part, addressed to the person, in the owner's plain, direct voice.
    - Record the pending chase on your part with a one-line `task_comment` (`task_update` has no label field).
    - Call `notify` (`kind: decision`, `task` = the chase draft task): "Chase draft ready: <person>, <thing>".
