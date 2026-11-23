@@ -26,7 +26,7 @@ export const ChangeSchema = z.discriminatedUnion("kind", [
   // A routine's schedules or model (overrides.routines.<key>). Pause and resume are the routine's live controls (fleet.ts).
   z.discriminatedUnion("field", [
     z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("schedules"), value: z.array(SCHEDULE).max(10) }).strict(),
-    z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("model"), value: MODEL }).strict(),
+    z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("model"), value: MODEL.nullable() }).strict(),
   ]),
   // The owner's rules for an agent: agents/<key>.md (a module agent; empty deletes it), or a local agent's whole handbook.
   z.object({ kind: z.literal("rules"), agent: AGENT, text: TEXT(120_000) }).strict(),
@@ -202,7 +202,7 @@ export function describe(ch: Change, compiled: Compiled | null): string {
   if (ch.kind === "pin") return ch.sha ? `pin the ${ch.name} module at ${ch.sha.slice(0, 12)}` : `the ${ch.name} module follows its marketplace`;
   if (ch.kind === "marketplace") return `${ch.op} the ${ch.name} marketplace${ch.source ? ` (${ch.source.repo})` : ""}${ch.sha ? ` at ${ch.sha.slice(0, 12)}` : ""}`;
   if (ch.kind === "share") return `share the ${ch.module} module to ${ch.repo} (${ch.ref})`;
-  if (ch.kind === "routine") return `routine ${compiled?.routines?.[ch.routine]?.title ?? ch.routine}: ${ch.field} → ${ch.field === "schedules" ? ch.value.map((x) => x.label ?? x.cron).join(", ") || "none" : ch.value}`;
+  if (ch.kind === "routine") return `routine ${compiled?.routines?.[ch.routine]?.title ?? ch.routine}: ${ch.field} → ${ch.field === "schedules" ? ch.value.map((x) => x.label ?? x.cron).join(", ") || "none" : ch.value ?? "the agent's model"}`;
   const name = compiled?.agents?.[ch.agent]?.name ?? ch.agent;
   if (ch.kind === "rules") return `${name}'s rules${ch.text.trim() ? "" : " cleared"}`;
   if (ch.kind === "handbook") return `${name}'s own handbook`;

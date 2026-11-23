@@ -124,6 +124,8 @@ export interface CatalogOption {
   /** The words the form shows: a proper name, and what it finds. */
   name: string;
   description: string;
+  /** What past repo reviews of this option cost, by model and effort: the average of `n` finished runs (absent: none yet). */
+  past?: { model: string; effort: string; n: number; usd: number }[];
   /** Why it can't run on this repo (listed last, greyed); absent: it can. */
   unavailable?: string;
   lens: Lens;

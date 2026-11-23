@@ -7,7 +7,9 @@ import { Markdown } from "./markdown";
 import { SkeletonLines } from "./Skeleton";
 import { BUCKETS, BUCKET_NAMES, WEEKDAYS, type Assignee, type Board, type Bucket, type Cadence, type CommentView, type CrewState, type IssueView, type Label, type Models, type Update, type Weekday } from "./types";
 import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, runTime, handleOf, shortName, todayIn, when } from "./util";
-import { StatusDot, type StatusTone } from "./ui";
+import { ModelPicker, StatusDot, type StatusTone } from "./ui";
+import { bare, prefixOf, shortId } from "../../src/model-catalog";
+import { useModelCatalog } from "./useModelCatalog";
 
 interface Props {
   refId: string;
@@ -758,8 +760,7 @@ function Title({ issue, editable, save }: { issue: IssueView; editable: boolean;
 
 function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Assignee; update: (u: Update) => Promise<void> }) {
   const [models, setModels] = useState<Models | null>(null);
-  const [model, setModel] = useState(issue.executor?.model ?? "");
-  useEffect(() => setModel(issue.executor?.model ?? ""), [issue.executor?.model]);
+  const [catalog, refreshCatalog] = useModelCatalog();
   useEffect(() => {
     let live = true;
     api.models(assignee.key).then((m) => live && setModels(m), () => {});
@@ -767,27 +768,23 @@ function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Ass
       live = false;
     };
   }, [assignee.key]);
-  const listId = `models-${assignee.key}`;
-  const commit = () => {
-    if (model.trim() !== (issue.executor?.model ?? "")) void update({ model: model.trim() });
-  };
+  // The agent's engine stores its models with a prefix (openrouter/…): the picker works in catalog ids and adds it back.
+  const model = issue.executor?.model ?? "";
+  const prefix = prefixOf(model || assignee.defaultModel || "");
   return (
     <>
       <div className="prop-name">Model</div>
       <div className="prop-value">
-        <input
-          list={listId}
-          value={model}
-          placeholder={`Default${assignee.defaultModel ? ` (${assignee.defaultModel.replace(/^openrouter\//, "")})` : ""}`}
-          onChange={(e) => setModel(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        <ModelPicker
+          label="Task model"
+          value={bare(model, prefix)}
+          catalog={catalog}
+          recommended={(models?.models ?? []).map((m) => bare(m, prefix))}
+          accepts={{ tools: true }}
+          none={`Default${assignee.defaultModel ? ` (${shortId(bare(assignee.defaultModel, prefix))})` : ""}`}
+          onOpen={refreshCatalog}
+          onChange={(m) => void update({ model: m && prefix + m })}
         />
-        <datalist id={listId}>
-          {models?.models.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
       </div>
       {(assignee.efforts?.length ?? 0) > 0 && (
         <>

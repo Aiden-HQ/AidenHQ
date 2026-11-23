@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { contextText, listing, priceText, shortId, type Accepts, type CatalogModel } from "../../../src/model-catalog";
 import { SearchPicker } from "./SearchPicker";
 
-export function ModelPicker({ value, onChange, catalog, recommended, accepts, label, placeholder, disabled, onOpen }: {
+export function ModelPicker({ value, onChange, catalog, recommended, accepts, label, none, disabled, onOpen }: {
   value: string;
   onChange: (id: string) => void;
   /** null while it loads, [] when it couldn't be read. */
@@ -16,8 +16,8 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
   /** What the engine can run (its module's `accepts`). */
   accepts?: Accepts;
   label: string;
-  /** What the button says while no model is set. */
-  placeholder?: string;
+  /** Words for "no model of its own" (the agent's, a default): a first entry that picks "" (and what the button says while none is set). */
+  none?: string;
   disabled?: boolean;
   /** The picker opened: the place to ask the catalog again. */
   onOpen?: () => void;
@@ -25,7 +25,7 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
   const [query, setQuery] = useState("");
   const [older, setOlder] = useState(false);
   const list = useMemo(() => listing({ catalog: catalog ?? [], recommended, accepts, query, showOlder: older, current: value || undefined }), [catalog, recommended, accepts, query, older, value]);
-  const sections = useMemo(() => list.sections.map((s) => ({
+  const sections = useMemo(() => [...(none && !query ? [{ title: "", items: [{ id: "", node: <span className="ui-mp-id">{none}</span> }] }] : []), ...list.sections.map((s) => ({
     title: s.title,
     items: s.rows.map((r) => {
       const m = r.model;
@@ -41,10 +41,10 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
         ),
       };
     }),
-  })), [list]);
+  }))], [list, none, query]);
   const count = list.sections.reduce((n, s) => n + s.rows.length, 0);
   const unavailable = catalog !== null && !catalog.length;
-  const shown = value ? shortId(value) : placeholder ?? "Choose a model";
+  const shown = value ? shortId(value) : none ?? "Choose a model";
   return (
     <SearchPicker
       label={label}

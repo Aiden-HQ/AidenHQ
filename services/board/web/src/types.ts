@@ -715,7 +715,7 @@ export type SettingChange =
   | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat" | "max_parallel"; value: string | number | boolean }
   | { kind: "module"; name: string; on: boolean }
   | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
-  | { kind: "routine"; routine: string; field: "model"; value: string }
+  | { kind: "routine"; routine: string; field: "model"; value: string | null }
   | { kind: "rules"; agent: string; text: string }
   | { kind: "handbook"; agent: string; text: string }
   | { kind: "unfork"; agent: string }

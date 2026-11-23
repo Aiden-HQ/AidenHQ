@@ -7,18 +7,13 @@ import { api } from "./api";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./types";
+import { bare, prefixOf } from "../../src/model-catalog";
 import { useModelCatalog } from "./useModelCatalog";
 import { ModelPicker, StatusDot } from "./ui";
 
 type Routine = AgentSettings["routines"][number];
 /** An agent works with tools, so only models that call them are offered. */
 const TOOL_MODELS = { tools: true };
-/**
- * A router engine stores its models with a prefix (openrouter/z-ai/glm-5.3) where the catalog lists z-ai/glm-5.3: the prefix is
- * whatever the agent's current model carries before its vendor/name, and the picker adds it back to a pick.
- */
-const prefixOf = (model: string) => model.split("/").slice(0, -2).map((x) => `${x}/`).join("");
-const bare = (model: string, prefix: string) => (prefix && model.startsWith(prefix) ? model.slice(prefix.length) : model);
 const hours = (v: unknown) => (v === true ? "the fleet's heartbeat" : typeof v === "number" ? `every ${v} hour${v === 1 ? "" : "s"}` : "off");
 
 /** One editable row: value (and the module's default beside it), the pending change's stage, the editor, Reset to default. */
@@ -174,7 +169,7 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
   const was: unknown[] = [];
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (!same(sched, r.schedules)) (items.push({ kind: "routine", routine: r.key, field: "schedules", value: sched.map((s) => ({ cron: s.cron.trim(), ...(s.timezone.trim() ? { timezone: s.timezone.trim() } : {}), ...(s.label ? { label: s.label } : {}) })) }), was.push(r.schedules.map((s) => ({ cron: s.cron, timezone: s.timezone }))));
-  if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() }), was.push(r.model ?? null));
+  if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() || null }), was.push(r.model ?? null));
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : r.webhook ? "on an event" : "when asked";
@@ -210,8 +205,7 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
               ))}
               <div className="ui-field">
                 <span className="ui-field-label">Model</span>
-                <ModelPicker label={`${r.title}: model`} value={bare(model, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} placeholder="The agent's model" onOpen={refreshCatalog} onChange={(m) => (setModel(prefix + m), setReview(false))} />
-                {model !== (r.model ?? "") && <button className="btn quiet sm" type="button" onClick={() => (setModel(r.model ?? ""), setReview(false))}>Undo model change</button>}
+                <ModelPicker label={`${r.title}: model`} value={bare(model, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} none="The agent's model" onOpen={refreshCatalog} onChange={(m) => (setModel(m && prefix + m), setReview(false))} />
               </div>
               {review && items.length ? (
                 <ChangePreview items={items} was={was} onCancel={() => setReview(false)} onDone={() => setReview(false)} />

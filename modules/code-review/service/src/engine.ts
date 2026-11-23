@@ -1931,8 +1931,13 @@ export function createEngine(d: EngineDeps) {
     async catalogFor(q: { repo?: unknown; commit?: unknown }) {
       const { repo, tree } = await readTree(q.repo, q.commit);
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
+      // What past repo reviews cost, per option, model and effort (finished runs of one option; the board's cost hint reads it).
+      const past = new Map<string, { model: string; effort: string; n: number; usd: number }[]>();
+      for (const r of all<{ option: string; model: string; effort: string; n: number; usd: number }>("SELECT option, model, effort, COUNT(*) n, AVG(cost_usd) usd FROM runs WHERE target = 'tree' AND status = 'done' AND cost_usd > 0 GROUP BY option, model, effort")) {
+        past.set(r.option, [...(past.get(r.option) ?? []), { model: r.model, effort: r.effort, n: r.n, usd: r.usd }]);
+      }
       // Every option, the ones that can't run here with why (the board lists them last, greyed).
-      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
+      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
     },
     /**
      * A repo review: `target` { repo, commit? } (no commit: the default branch's head, resolved once now and kept), its options

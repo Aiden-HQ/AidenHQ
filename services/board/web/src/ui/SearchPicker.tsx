@@ -5,7 +5,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 
 export interface PickItem { id: string; node: ReactNode; title?: string; disabled?: boolean }
-export interface PickSection { title: string; items: PickItem[] }
+export interface PickSection { /** empty: no heading (a first entry) */ title: string; items: PickItem[] }
 
 interface Place { left: number; width: number; top?: number; bottom?: number; maxHeight: number }
 
@@ -129,8 +129,8 @@ export function SearchPicker({ label, triggerLabel, value, display, sections, qu
           </div>
           <div className="ui-mp-list" id={`${id}-list`} role="listbox" aria-label={label}>
             {sections.map((s) => (
-              <div key={s.title} role="group" aria-label={s.title}>
-                <div className="ui-mp-head" aria-hidden>{s.title}</div>
+              <div key={s.title || "first"} role="group" aria-label={s.title || undefined}>
+                {s.title && <div className="ui-mp-head" aria-hidden>{s.title}</div>}
                 {s.items.map((it) => (
                   <div key={it.id} id={optId(it.id)} role="option" aria-selected={it.id === value} aria-disabled={it.disabled || undefined} className="ui-mp-opt" data-active={active?.id === it.id} title={it.title} onMouseDown={(e) => e.preventDefault()} onMouseMove={() => !it.disabled && setActiveId(it.id)} onClick={() => !it.disabled && pick(it.id)}>
                     <span className="ui-mp-check">{it.id === value && <Check />}</span>

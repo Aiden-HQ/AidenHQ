@@ -5,7 +5,7 @@ import type { FiledChange } from "./types";
 import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type Catalog, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, ModelPicker, Page, PageHeader, SearchPicker, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
 import { useModelCatalog } from "./useModelCatalog";
-import { costText, optionCost } from "../../src/model-catalog";
+import { costText, estimate } from "../../src/model-catalog";
 import { agoLabel, elapsed } from "./util";
 import { Markdown } from "./markdown";
 import "./reviews.css";
@@ -828,7 +828,7 @@ function OptionRow({ o, on, onToggle, cost }: { o: CatalogOption; on: boolean; o
       {!off && (
         <span className="rv-opt-side">
           {o.runs_code && <Tag tone="needs" title="Runs the repo's own code in a sandbox">Runs code</Tag>}
-          <span className={`rv-opt-cost${o.cost === "free" ? "" : " paid"}`} title={o.cost === "free" ? "No model calls: free" : `Calls a model (${o.cost} cost), run with the model below`}>{o.cost === "free" ? "Free" : cost ?? `${o.cost === "low" ? "Low" : "High"} cost`}</span>
+          <span className={`rv-opt-cost${o.cost === "free" ? "" : " paid"}`} title={o.cost === "free" ? "No model calls: free" : cost ? "About what past reviews with this check cost on the chosen model" : "Calls the chosen model. No past review to estimate from yet"}>{o.cost === "free" ? "Free" : cost ?? "Model cost"}</span>
           {src && <a className="rv-opt-src" href={src} target="_blank" rel="noreferrer" title={`${o.source.repo} ${o.source.version}, ${o.source.licence}`}>Source</a>}
         </span>
       )}
@@ -893,10 +893,14 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   const cant = options?.filter((o) => o.unavailable) ?? [];
   const chosen = can.filter((o) => ticked.has(o.id));
   const paid = chosen.filter((o) => o.cost !== "free");
-  const guess = paid.reduce((n, o) => n + optionCost(o.cost, model), 0);
-  const e = c ? engines[c.engine] : undefined;
   // Any check may run on any engine (Codex, Claude Code, ...): the efforts they all take.
   const efforts = Object.values(engines).map((x) => x.efforts).reduce((a, b) => a.filter((x) => b.includes(x)));
+  // A check's cost on the chosen model comes from what it cost before (the service's `past`); none yet: no number.
+  const effort = c ? efforts.includes(c.effort) ? c.effort : "medium" : "medium";
+  const guess = (o: CatalogOption) => (c ? estimate(o.past, c.model, effort, models ?? []) : null);
+  const known = paid.filter((o) => guess(o) !== null);
+  const total = known.reduce((n, o) => n + guess(o)!, 0);
+  const e = c ? engines[c.engine] : undefined;
   const run = async () => {
     if (!c || !sha || !chosen.length) return;
     setBusy(true);
@@ -965,7 +969,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
                       <span className="rv-muted">{opts.filter((o) => ticked.has(o.id)).length} of {opts.length}</span>
                     </header>
                     <p className="rv-muted">{LENS_WORDS[lens][1]}</p>
-                    {opts.map((o) => <OptionRow key={o.id} o={o} on={ticked.has(o.id)} onToggle={() => toggle(o.id)} cost={o.cost === "free" || !model ? null : `~${costText(optionCost(o.cost, model))}`} />)}
+                    {opts.map((o) => <OptionRow key={o.id} o={o} on={ticked.has(o.id)} onToggle={() => toggle(o.id)} cost={o.cost === "free" || guess(o) === null ? null : `~${costText(guess(o)!)}`} />)}
                   </section>
                 );
               })}
@@ -997,7 +1001,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       </Card>
       <div className="rv-form-actions">
         <span className="rv-form-sum rv-muted">
-          {chosen.length ? <>{chosen.length} check{chosen.length === 1 ? "" : "s"}{paid.length ? <>, {paid.length} on the model{model && <> (rough cost <b>{costText(guess)}</b>)</>}</> : ", all free"}</> : "No checks selected"}
+          {chosen.length ? <>{chosen.length} check{chosen.length === 1 ? "" : "s"}{paid.length ? <>, {paid.length} on the model: {known.length ? <>about <b>{costText(total)}</b> from past runs{known.length < paid.length && <> + {paid.length - known.length} without history</>}</> : "no cost history yet"}</> : ", all free"}</> : "No checks selected"}
         </span>
         <Button variant="quiet" onClick={() => (location.hash = "#/reviews/reviews")}>Cancel</Button>
         <Button variant="primary" disabled={!repo || !commitOk || !sha || !chosen.length || !c || !MODEL_ID.test(c.model) || busy} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
