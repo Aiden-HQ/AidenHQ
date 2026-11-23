@@ -479,7 +479,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async (_r, n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async (_r, n) => ({ served: n.startsWith("slack_search_public"), confirmed: true }), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
@@ -546,7 +546,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => false, readKey: "rd", caller: async () => ({}) }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => ({ served: false, confirmed: true }), readKey: "rd", caller: async () => ({}) }),
     });
     const strictBase = await listen(strict);
     const res = await fetch(`${strictBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
@@ -569,7 +569,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => false, serviceKey: "svc", caller: async () => ({}) }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => ({ served: false, confirmed: true }), serviceKey: "svc", caller: async () => ({}) }),
     });
     const unlistedBase = await listen(unlisted);
     const res = await fetch(`${unlistedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
@@ -618,7 +618,7 @@ describe("interception through the proxy", () => {
         serviceKey: "svc",
         readKey: "rd",
         caller: async () => ({}),
-        served: async (readOnly, n) => { seenEndpoints.push(readOnly); return n.startsWith("slack_search_public"); },
+        served: async (readOnly, n) => { seenEndpoints.push(readOnly); return { served: n.startsWith("slack_search_public"), confirmed: true }; },
         fetchImpl: (async (url: string | URL) => {
           if (new URL(String(url)).pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
           return Response.json(page([item("C1", "1.1")]));
@@ -631,6 +631,38 @@ describe("interception through the proxy", () => {
     expect(payload(await call("/mcp/read", "rd")).messages).toHaveLength(1);
     expect(seenEndpoints).toEqual([false, true]);
     perEndpoint.close();
+  });
+
+  it("says admission couldn't be confirmed when the catalog probe fails, not that the tool isn't a read", async () => {
+    const unconfirmed = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      serviceKey: "svc",
+      readKey: "rd",
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => ({ served: false, confirmed: false }), serviceKey: "svc", readKey: "rd", caller: async () => ({}) }),
+    });
+    const base = await listen(unconfirmed);
+    const res = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(payload(body)).toMatchObject({ error: "admission_unknown", set: "unknown" });
+    unconfirmed.close();
+  });
+
+  it("refuses a continuation reused for a different emoji, instead of skipping that search's messages", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      if (new URL(String(url)).pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
+      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
+    }) as unknown as typeof fetch;
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    const cursor = (first as { nextCursor: string }).nextCursor;
+    expect(await scanMyReactions({ emoji: "eyes", limit: 1, cursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("different reaction search") });
+    // The same search may resume with it.
+    expect(await scanMyReactions({ emoji: "pushpin", limit: 1, cursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C2" }] });
   });
 
   it("returns an explicit unsupported error for has:: and for hasmy:: with an extra modifier, never an empty page", async () => {
@@ -731,7 +763,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({}), authState: () => "expired", served: async () => false, readKey: "rd", caller: async () => ({}) }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({}), authState: () => "expired", served: async () => ({ served: false, confirmed: true }), readKey: "rd", caller: async () => ({}) }),
     });
     const signedOutBase = await listen(signedOut);
     const readRes = await fetch(`${signedOutBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });

@@ -47,13 +47,15 @@ const post = async (path: string, key: string, body: unknown): Promise<Record<st
   }).catch(() => undefined);
   return res?.ok ? ((await res.json().catch(() => undefined)) as Record<string, any> | undefined) : undefined;
 };
-const servedTool = async (readOnly: boolean, name: string): Promise<boolean> => {
+const servedTool = async (readOnly: boolean, name: string): Promise<{ served: boolean; confirmed: boolean }> => {
   const key = readToken(readOnly ? process.env.MCP_READ_TOKEN_FILE : process.env.MCP_TOKEN_FILE);
-  if (!key) return false;
+  if (!key) return { served: false, confirmed: false };
   const list = await post(readOnly ? "/mcp/read" : "/mcp", key, { jsonrpc: "2.0", id: 1, method: "tools/list" });
-  if (!Array.isArray(list?.result?.tools)) return false; // unconfirmed: refuse
+  // No list at all (a 5xx, a timeout, an unreadable answer): admission is unconfirmed, not refused.
+  if (!Array.isArray(list?.result?.tools)) return { served: false, confirmed: false };
   const entry = list.result.tools.find((t: { name?: unknown }) => String(t?.name ?? "") === name) as { annotations?: unknown } | undefined;
-  return Boolean(entry && entry.annotations && typeof entry.annotations === "object");
+  // The list answered: it is a live entry (annotated) or the tool isn't there, both confirmed.
+  return { served: Boolean(entry && entry.annotations && typeof entry.annotations === "object"), confirmed: true };
 };
 
 const http = createVendorProxy({

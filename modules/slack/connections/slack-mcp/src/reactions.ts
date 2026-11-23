@@ -205,7 +205,7 @@ export type ScanResult =
 // page, and resuming from a saved page could skip a match that moved earlier. Identity is the only stable key. A walk
 // that itself began at a caller-supplied Slack cursor keeps it (`from`): its earlier results are unknown, so restarting
 // at the head could repeat them.
-type Position = { n: number; seen: string[]; from?: string };
+type Position = { n: number; seen: string[]; from?: string; e: string; pub: boolean };
 const POSITION = "aidenhq:pos:";
 const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
 function decodePosition(value: string): Position | undefined {
@@ -217,7 +217,10 @@ function decodePosition(value: string): Position | undefined {
     if (!Number.isInteger(n) || n <= 0) return undefined;
     const seen = Array.isArray(v.seen) ? v.seen.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length < 300) : [];
     const from = typeof v.from === "string" && v.from ? v.from : undefined;
-    return { n, seen, ...(from ? { from } : {}) };
+    const e = typeof v.e === "string" ? v.e : undefined;
+    const pub = v.pub === true;
+    if (e === undefined) return undefined;
+    return { n, seen, ...(from ? { from } : {}), e, pub };
   } catch {
     return undefined;
   }
@@ -262,6 +265,12 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const visibility = new Map<string, boolean>();
   const start = plan.cursor ?? "";
   const position = decodePosition(start);
+  // A continuation names the search that issued it: reused against a different emoji or scope it would skip that other
+  // search's messages (the identities are channel + ts, not emoji), so it is refused rather than answered short.
+  const scopeKey = { e: plan.emoji, pub: Boolean(plan.publicOnly) };
+  if (position && (position.e !== scopeKey.e || position.pub !== scopeKey.pub)) {
+    return { ok: false, detail: "the cursor belongs to a different reaction search (another emoji or channel scope); start it without a cursor" };
+  }
   // A continuation token walks from the start; any other cursor value is Slack's own, resumed where it names.
   let cursor = position ? position.from ?? "" : start;
   // Resume skips by identity, not position: an item is dropped when it was already returned, so a reaction removed from an
@@ -344,7 +353,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       if (seen.has(key)) continue;
       if (full) {
         // The limit was reached on an earlier page and this is the first match after it: there is more to return.
-        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
+        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
       }
       seen.add(key);
       messages.push(message);
@@ -373,7 +382,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
   // A Slack cursor still advances: hand it back inside a continuation that carries what was returned, so a capped walk
   // continues past this page and a message Slack lists again after it isn't returned twice.
-  return { ok: true, messages, nextCursor: cursor ? encodePosition({ n: pageSize, seen: [...seen], from: cursor }) : null };
+  return { ok: true, messages, nextCursor: cursor ? encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, from: cursor }) : null };
 }
 
 /** The search tool's result shape, with the end-of-set marker the scan reads: `next_cursor: null` only when complete. */
@@ -422,6 +431,14 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
         } catch {
           /* nothing read yet: the proxy reads the stream as it is */
         }
+      } else if (out.kind !== "message") {
+        // The stream has ended, so the bytes can't be pushed back onto it. The proxy reads its body by async iteration
+        // (readJson), so hand that the buffered bytes instead: a pass-through request keeps its body.
+        const body = Buffer.concat(chunks);
+        req[Symbol.asyncIterator] = async function* () {
+          if (body.length) yield body;
+          return undefined;
+        };
       }
       resolve(out);
     };
@@ -436,10 +453,12 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
     };
     // The body's last non-whitespace byte, tracked from each chunk alone so a large pass-through body isn't recopied.
     let tail: number | undefined;
-    // When the request declares its length, the body is complete exactly at that many bytes: only then is a `}` the end
-    // of the whole body, so a later chunk can't carry trailing bytes the proxy would reject.
+    // Only a request that declares its length can be known complete mid-stream: then the body ends at exactly that many
+    // bytes, so a `}` can't be a prefix with trailing bytes to come. A chunked body without one is settled only at `end`,
+    // where the whole thing has arrived and the proxy's own JSON validation would see the same bytes.
     const declared = Number(req.headers["content-length"]);
-    const complete = () => Number.isFinite(declared) && declared >= 0 ? size >= declared : tail === 0x7d || tail === 0x5d;
+    const hasLength = Number.isFinite(declared) && declared >= 0;
+    const complete = () => hasLength && size >= declared;
     const onData = (chunk: Buffer) => {
       chunks.push(chunk);
       size += chunk.length;
@@ -454,6 +473,8 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       }
       // A whole JSON value ends at a `}` (an object) or `]` (a batch array), trailing whitespace aside.
       if (tail !== 0x7d && tail !== 0x5d) return;
+      // No declared length: wait for `end`, so a chunk that ends in `}` but has more coming isn't taken as the whole body.
+      if (!hasLength) return;
       if (!complete()) return;
       const out = parse();
       if (out) settle(out);
@@ -485,7 +506,7 @@ export interface InterceptOptions {
    * Whether the proxy admits `name` on the endpoint the call came to (`readOnly`): the same rule the proxy applies there,
    * asked of the proxy itself, so the reaction path can't answer where the proxy would refuse.
    */
-  served?: (readOnly: boolean, name: string) => Promise<boolean>;
+  served?: (readOnly: boolean, name: string) => Promise<{ served: boolean; confirmed: boolean }>;
   /** The kernel's bearer on /mcp. */
   serviceKey?: string;
   /** The kernel's read bearer on /mcp/read. */
@@ -546,9 +567,16 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
       return true;
     }
   }
-  if (o.served && !(await o.served(readOnly, name).catch(() => false))) {
+  const admission = o.served ? await o.served(readOnly, name).catch(() => ({ served: false, confirmed: false })) : { served: true, confirmed: true };
+  if (!admission.served) {
     // Signed out, the proxy lists nothing: that is a sign-in to fix, not a tool that isn't served.
     if (o.authState() !== "ok") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
+    // A probe that couldn't answer says nothing about the tool: that is a retry, not a policy refusal.
+    if (!admission.confirmed) {
+      o.log?.({ tool: name }, "couldn't confirm tool admission");
+      send(res, 200, answer(message.id, reactionError("admission_unknown", `The reaction set is unknown: the Slack connection couldn't confirm that ${name} is available right now; retry shortly.`)));
+      return true;
+    }
     const detail = readOnly ? `Tool ${name} is not a read: the read endpoint serves reads only.` : `The reaction set is unknown: Slack doesn't offer ${name} right now.`;
     o.log?.({ tool: name }, "refused a tool the proxy would not serve");
     send(res, 200, answer(message.id, reactionError("refused", detail)));
