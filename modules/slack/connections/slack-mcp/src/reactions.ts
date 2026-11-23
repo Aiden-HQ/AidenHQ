@@ -333,6 +333,8 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       settled = true;
       req.off("data", onData);
       req.off("end", onEnd);
+      req.off("close", onClose);
+      req.off("error", onClose);
       req.pause();
       try {
         if (chunks.length) req.unshift(Buffer.concat(chunks));
@@ -374,9 +376,13 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       if (!chunks.length) return settle({ kind: "pass" }); // no body: the proxy answers it as it always has
       settle(parse() ?? { kind: "invalid" });
     };
+    // A client that goes away mid-body never emits `end`: settle so the route ends and its listeners are removed.
+    const onClose = () => settle({ kind: "pass" });
     // No pause first: an explicitly paused stream doesn't flow when a `data` listener is added.
     req.on("data", onData);
     req.on("end", onEnd);
+    req.on("close", onClose);
+    req.on("error", onClose);
   });
 }
 
@@ -388,11 +394,11 @@ export interface InterceptOptions {
   /** The sign-in's state, as the proxy reads it: a transient refresh failure is not the owner's to fix. */
   authState: () => string;
   /**
-   * Whether the proxy serves `name` on the endpoint the call came to: `/mcp/read`'s manifest tag and the upstream's
-   * read-only hint, or `/mcp`'s upstream catalog. Asked of the proxy itself, so the reaction path can't answer where the
-   * proxy would refuse.
+   * Whether the proxy admits `name` now: a live upstream catalog that carries it, the manifest's read tag and the
+   * upstream's read-only hint (asked of the proxy's own `/mcp/read`, which lists nothing when either is missing). A tool
+   * admitted there is admitted on `/mcp` too, so the reaction path can't answer where the proxy would refuse.
    */
-  served?: (readOnly: boolean, name: string) => Promise<boolean>;
+  served?: (name: string) => Promise<boolean>;
   /** The kernel's bearer on /mcp. */
   serviceKey?: string;
   /** The kernel's read bearer on /mcp/read. */
@@ -449,10 +455,10 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
       return true;
     }
   }
-  if (o.served && !(await o.served(readOnly, name).catch(() => false))) {
+  if (o.served && !(await o.served(name).catch(() => false))) {
     // Signed out, the proxy lists nothing: that is a sign-in to fix, not a tool that isn't served.
     if (o.authState() !== "ok") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
-    const detail = readOnly ? `Tool ${name} is not a read: the read endpoint serves reads only.` : `The reaction set is unknown: Slack doesn't offer ${name}.`;
+    const detail = readOnly ? `Tool ${name} is not a read: the read endpoint serves reads only.` : `The reaction set is unknown: Slack doesn't offer ${name} right now.`;
     o.log?.({ tool: name }, "refused a tool the proxy would not serve");
     send(res, 200, answer(message.id, reactionError("refused", detail)));
     return true;
