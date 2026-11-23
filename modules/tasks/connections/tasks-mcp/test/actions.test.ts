@@ -114,7 +114,8 @@ test("task_approvals reads the run's own cards for an Engineer without private d
         { id: "k-1", action: "merge", state: "running", live: true, target: "https://github.com/a/b/pull/1", prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }], outcome: null, wakes: true, createdAt: "2026-11-23T00:00:00Z" },
         { id: "k-3", action: "apply", state: "used", target: "instance", outcome: "applied", wakes: true, outcomeText: `{"record":"${"z".repeat(600)}"}`, createdAt: "2026-11-21T00:00:00Z" },
         { id: "k-2", action: "merge", state: "used", target: "https://github.com/a/b/pull/1", outcome: "applied", wakes: false, outcomeText: `merged-prs: [{"repo":"a/b","number":1,"head":"${"a".repeat(40)}","sha":"${"b".repeat(40)}"}]\n\nMerged https://github.com/a/b/pull/1.\n${"x".repeat(500)}`, createdAt: "2026-11-22T00:00:00Z" },
-        { id: "k-4", action: "merge", state: "rejected", target: "https://github.com/a/b/pull/2", outcome: null, wakes: true, review: "the base moved: rebase and ask again", createdAt: "2026-11-23T01:00:00Z" },
+        { id: "k-4", action: "merge", state: "rejected", target: "https://github.com/a/b/pull/2", outcome: null, wakes: true, review: "the base moved: rebase and ask again", ownerReason: null, createdAt: "2026-11-23T01:00:00Z" },
+        { id: "k-5", action: "merge", state: "rejected", target: "https://github.com/a/b/pull/3", outcome: null, wakes: true, review: "a review note", ownerReason: "merge it only after the release", createdAt: "2026-11-23T02:00:00Z" },
       ] }));
     });
   };
@@ -142,8 +143,9 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   assert.deepEqual(asked, ["cur"], "the run's own task, named explicitly");
   // Whether a card wakes the task, and the whole `merged-prs` line the rule's evidence is.
   const byId = (id: string) => own.approvals.find((a: { id: string }) => a.id === id);
-  assert.deepEqual(own.approvals.map((a: { id: string; wakes: boolean }) => [a.id, a.wakes]), [["k-1", true], ["k-3", true], ["k-2", false], ["k-4", true]]);
+  assert.deepEqual(own.approvals.map((a: { id: string; wakes: boolean }) => [a.id, a.wakes]), [["k-1", true], ["k-3", true], ["k-2", false], ["k-4", true], ["k-5", true]]);
   assert.match(byId("k-4").reason, /^<untrusted-card-reason source="merge card k-4, rejected">\nthe base moved: rebase and ask again\n<\/untrusted-card-reason>$/, "a rejected card says what to change, fenced as data");
+  assert.match(byId("k-5").reason, /\nthe owner: merge it only after the release\n/, "an owner's own reason is the one reported");
   assert.deepEqual(byId("k-1").prs, [{ repo: "a/b", number: 1, head: "a".repeat(40) }], "the card says which PR and head it is bound to");
   assert.equal(byId("k-1").live, true, "a live card says so, whatever its state word");
   assert.equal(byId("k-3").live, undefined, "an ended card carries no live flag");

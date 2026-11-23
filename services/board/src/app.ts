@@ -159,6 +159,8 @@ const mergeView = (a: Approval) => {
   return { ...approvalView(a), ...(prs.length ? { prs } : {}) };
 };
 
+/** Pages of a task's merge history one approval read walks (500 records a page): far past any task's real history. */
+const HISTORY_PAGES = 20;
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;
 /** How long a board read waits for the parents outside its inventory (Agent work's "part of" links). */
@@ -1143,11 +1145,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // approved or claimed run), so neither newer writes nor a full page of ended merges can hide the card that matters.
         const kinds = ["github.merge", "codehost-local.merge"];
         const mine = (a: Approval) => a.issueId === task || a.identifier === task;
-        // The history read is one newest-first page filtered to the merge kinds, so hundreds of a long task's past merges never
-        // page up and its other cards never crowd them out; the live read is paged, and only in-flight merges are that many.
+        // The history read pages newest-first filtered to the merge kinds, so a merge that landed a while ago is still found
+        // behind newer writes, while its other cards can never crowd it out. Only merges are paged up: a bounded number of
+        // pages, well past a task's plausible history, and any page failing throws rather than reading as "no merge".
         const [recent, history, live] = await Promise.all([
           cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
-          cardsOf("recent", { task, limit: 20, tier0: true, strict: true, kinds }),
+          records.allOf("recent", kinds, task, HISTORY_PAGES),
           records.allOf("live", kinds, task),
         ]);
         // The reads run side by side, and one card can be in two of them: the later snapshot wins, so an ended card's

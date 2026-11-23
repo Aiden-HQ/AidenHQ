@@ -44,6 +44,9 @@ export interface Approval {
   createdAt: string;
   /** The kernel's `updated_at`: two snapshots of one card are reconciled by which the kernel wrote later, never by state name. */
   updatedAt: string;
+  /** The owner's own typed reason when they reject a card (the kernel's `owner_reason`): untrusted words, and what a run needs
+   * to change a rejected request. Null when the owner gave none. */
+  ownerReason: string | null;
   replaced: boolean;
   panel: boolean;
   reviewFirst: "final" | "owner" | null;
@@ -64,6 +67,7 @@ type KernelRecord = {
   review_code?: string | null; review_first?: "final" | "owner" | null; rule?: string | null; decided_by: string | null; decided_at?: string | null; replaced?: boolean;
   outcome: { ok: boolean; text: string } | null; wait?: string | null; created_at: string; updated_at: string;
   card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string; filed_by?: string };
+  owner_reason?: string | null;
 };
 const KIND: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
 // `claimed` has a state of its own: it is live, and `used` is only ever an end (done/failed/unknown).
@@ -89,6 +93,12 @@ function targetOf(r: KernelRecord): string {
   return r.kind === "conn.tool" && a.connection && a.tool ? `${a.connection}.${a.tool}` : String(a.name ?? r.kind);
 }
 
+/** An open record past the kernel's cutoff is shown as `expired` (its own shownState), which expires it with no notice. The
+ * kernel answers only its shown state, so a state of `approved` here means it has not yet been swept: a card at that cutoff is
+ * about to be closed by the code, not by its executor. */
+const CUTOFF_MS = 7 * 86_400_000;
+const expired = (r: KernelRecord) => Date.parse(r.state === "review" || r.state === "owner" ? r.decided_at ?? r.created_at : r.created_at) <= Date.now() - CUTOFF_MS;
+
 export function recordApproval(r: KernelRecord): Approval {
   return {
     id: r.id, issueId: r.task, identifier: r.identifier || r.task, action: KIND[r.kind] ?? r.kind.replace(/^(runner|kernel)\./, ""), target: r.card.target ?? targetOf(r),
@@ -97,8 +107,8 @@ export function recordApproval(r: KernelRecord): Approval {
     // A claimed record is `running` whatever its tier: Tier 0 is only the audit word for one that has ended (or is approved
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
-    usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner", "unknown", "cancelled"].includes(r.state), live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
+    ownerReason: r.owner_reason ?? null, usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner", "unknown", "cancelled"].includes(r.state) && !(r.state === "approved" && expired(r)), live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
   };
 }
 
@@ -118,7 +128,7 @@ export type Records = {
   live(): Promise<Approval[]>;
   /** Every page of a state (`live` is every state a record can still act in), for one task and optionally one kind: a card
    * moving between states mid-read is never missed, and it is never behind the page cap, however many records follow it. */
-  allOf(state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string): Promise<Approval[]>;
+  allOf(state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages?: number): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -165,11 +175,11 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
    * Every page of a state, walked with `after`: a bounded read that must not lose a record behind the page cap. `live` is the
    * kernel's own read of every approved and claimed record, one query, so a card moving between the states mid-read is not missed.
    */
-  const allOf = async (state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string): Promise<Approval[]> => {
+  const allOf = async (state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages = PAGES_MAX): Promise<Approval[]> => {
     const out: Approval[] = [];
     const seen = new Set<string>();
     let after = "";
-    for (let i = 0; i < PAGES_MAX; i++) {
+    for (let i = 0; i < maxPages; i++) {
       // The kernel's live list is one read of both states; the page params still apply (its default page is 100).
       const page = await list(state, { limit: PAGE, tier0: true, strict: true, ...(task ? { task } : {}), ...(kinds?.length ? { kinds } : {}), ...(after ? { after } : {}) });
       const fresh = page.filter((a) => !seen.has(a.id));

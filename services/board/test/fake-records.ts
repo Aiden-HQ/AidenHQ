@@ -4,7 +4,7 @@ import type { Approval, Records } from "../src/records.js";
 export const card = (o: Partial<Approval> & { id: string }): Approval => ({
   issueId: "t1", identifier: "WOR-1", action: "apply", target: "x", digest: "d".repeat(40), args: {}, sentence: "s", reads: "", changes: "c", cost: "", details: "", requestedBy: "r", requesterId: null,
   tier: 2, reason: "", reasonCode: null, review: null, reviewCode: null, state: "pending", decidedBy: null, decidedAt: null, usedAt: null, outcome: null, outcomeText: null, wait: null,
-  createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:00:00.000Z", replaced: false, panel: false, reviewFirst: null, wakes: true, live: false, ...o,
+  createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:00:00.000Z", ownerReason: null, replaced: false, panel: false, reviewFirst: null, wakes: true, live: false, ...o,
 });
 
 export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval[]; settings: { task: string; changes: unknown[]; credential?: unknown }[] } {
@@ -19,7 +19,7 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
   // The paged live read (records.ts `live`): every approved or running card, whatever its tier, in one page here.
   const live: Records["live"] = async () => cards.filter((a) => a.state === "approved" || a.state === "running");
   // `recent` is every state, as the kernel's own list is; `live` is the states a card can still act in.
-  const allOf: Records["allOf"] = async (state, kinds, task) =>
+  const allOf: Records["allOf"] = async (state, kinds, task, _maxPages) =>
     cards
       .filter((a) => !task || a.issueId === task || a.identifier === task)
       .filter((a) => (state === "recent" ? true : state === "pending" ? a.state === "pending" : state === "approved" ? a.state === "approved" || a.state === "running" : a.state === "pending" || a.state === "approved" || a.state === "running"))

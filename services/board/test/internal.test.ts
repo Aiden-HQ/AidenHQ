@@ -151,6 +151,28 @@ describe("internal listener", () => {
     }
   });
 
+  it("an older ended merge is still found behind more than a page of newer merges, and an owner's reason reaches the read", async () => {
+    // 2,000 newer merge cards, so the newest merge-kind page cannot hold the one that landed this PR.
+    const landed = card({ id: "k-0000000000000090", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: true, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":6,"head":"${"9".repeat(40)}"}]`, ownerReason: "merge it only after the release", createdAt: "2026-01-01T10:00:00.000Z" });
+    const newer = Array.from({ length: 2000 }, (_, i) => card({ id: `k-0000000000000${String(1000 + i)}`, issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", outcome: "applied", createdAt: `2026-11-${String((i % 28) + 1).padStart(2, "0")}T10:00:00.000Z` }));
+    const records = fakeRecords([landed, ...newer]);
+    const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
+    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
+    const portB = (board.address() as AddressInfo).port;
+    try {
+      const out = await new Promise<{ approvals: { id: string; ownerReason?: string | null }[] }>((resolve, reject) => {
+        request({ host: "127.0.0.1", port: portB, method: "GET", path: `/internal/approvals?issue=${issue.identifier}`, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve(JSON.parse(text)));
+        }).on("error", reject).end();
+      });
+      expect(out.approvals.find((a) => a.id === "k-0000000000000090")).toMatchObject({ ownerReason: "merge it only after the release" });
+    } finally {
+      board.close();
+    }
+  });
+
   it("an ended merge behind 50 newer cards is still read, by its kind, from the task's history", async () => {
     // The merge ended long ago; 60 newer apply cards follow it, so the newest-50 read cannot hold it. The kind-filtered
     // history read must, or a run's check for the merge that landed its PR would find nothing.
