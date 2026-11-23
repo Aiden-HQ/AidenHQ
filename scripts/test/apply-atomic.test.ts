@@ -908,7 +908,7 @@ test("A14: a post-apply health failure reverts to the LKG's product, keeps what 
   assert.equal(git(w.d("inst"), "symbolic-ref", "--short", "HEAD"), "main");
 });
 
-test("an auto-revert whose data restore fails stops there: the older code never starts on that data", async () => {
+test("an auto-revert whose data restore fails stops there, and the rollback its alert names puts the data back", async () => {
   const w = world();
   // Module acme's data at data_version 0, then a product that migrates it to 1 and fails its health check.
   mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
@@ -927,6 +927,15 @@ test("an auto-revert whose data restore fails stops there: the older code never 
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), p2);
   assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed .* putting acme's data back from .* failed, so generation 2 was not re-applied/);
   assert.doesNotMatch(readFileSync(w.d("state/apply-3.log"), "utf8"), /was reverted to generation 2/);
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /run ops\/rollback\.sh 2 from the owner's shell/);
+  // What the alert says to do, once the cause is fixed: the rollback puts acme's data back from generation 3's snapshot.
+  rmSync(w.d("ctrl/badrestore"));
+  rmSync(w.d("ctrl/break"));
+  const back = await w.sh("ops/rollback.sh", "2");
+  assert.equal(back.status, 0, back.out);
+  assert.equal(w.gens().at(-1).health, "good");
+  assert.equal(w.head("prod"), w.p1);
+  assert.equal(readFileSync(w.d("prod/data/modules/acme/state/db.txt"), "utf8"), "v0\n", "acme's data is back to before the migration");
 });
 
 // A /healthz timeout names what blocked the kernel: the curl exit (7 = nothing listening, 28 = request timed out) and the
