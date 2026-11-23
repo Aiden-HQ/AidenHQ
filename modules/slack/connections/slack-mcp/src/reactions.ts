@@ -339,7 +339,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
 
   // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives. A
   // continuation always starts again at the first page and skips by identity, so a feed that shifted can't hide a match.
-  let numbered = cursor ? undefined : 1;
+  // Cursor pagination is the modern shape (and the only one without Slack's 100-page ceiling): ask for it first, with
+  // `limit` as the page size, and fall back to `count`+`page` only when Slack answers numbered pages instead.
+  let numbered: number | undefined;
   // The upstream page size is the caller's `limit` when that is larger than the default (so a big ask reads fewer pages),
   // and never smaller than the default: a small result limit must not turn one scan into hundreds of one-item requests.
   // It is fixed for the whole walk and carried in every continuation, so page boundaries don't move.
@@ -352,11 +354,18 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // Once the limit is reached, the rest of the feed is only walked to find out whether one more match exists: the answer
   // says the set is complete when it doesn't, so a continuation is never an empty page (which a caller reads as unknown).
   let full = false;
+  // What this answer hands back when it stops early: everything returned so far, and the identity that resumes past it.
+  const continuation = () => encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) });
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
-    // `count` is Slack's per-page size; `limit` there means a maximum for the whole call, which would truncate the walk.
-    const r = await get("reactions.list", { full: "true", count: String(pageSize), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
-    if (!r.ok) return r;
+    // The page-size parameter follows the shape: `limit` with a cursor, `count` with a numbered page (Slack's two
+    // paginations take different names for it).
+    const paging: Record<string, string> = numbered !== undefined ? { count: String(pageSize), page: String(numbered) } : { limit: String(pageSize), ...(cursor ? { cursor } : {}) };
+    const r = await get("reactions.list", { full: "true", ...paging });
+    // A later page failing after the caller's limit was already met must not throw away matches this answer holds: the
+    // set read so far is real, and the continuation says it isn't complete. With nothing new to hand back, though, the
+    // honest answer is the failure itself, never an empty page behind a cursor that would keep returning it.
+    if (!r.ok) return full && messages.length ? { ok: true, messages, nextCursor: continuation() } : r;
     const { json } = r;
     // A page without an item list isn't an empty page: it is an answer this scan can't read, so the set is unknown.
     if (!Array.isArray(json.items)) return { ok: false, detail: "reactions.list answered without an item list" };
@@ -375,13 +384,13 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       }
       if (full) {
         // The limit was reached on an earlier page and this is the first match after it: there is more to return.
-        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
+        return { ok: true, messages, nextCursor: continuation() };
       }
       // The answer's own budget: one message always goes in, so a single oversized message can't loop forever, but the
       // rest is handed back as a continuation rather than growing an answer the kernel would reject outright.
       const size = Buffer.byteLength(JSON.stringify(message), "utf8") + 1;
       if (messages.length && bytes + size > budget) {
-        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
+        return { ok: true, messages, nextCursor: continuation() };
       }
       seen.add(key);
       messages.push(message);
@@ -577,9 +586,16 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   // hook (src/slack.ts) rather than sent upstream, so a batch can't get the empty page either.
   if (peeked.kind === "pass" || peeked.message.method !== "tools/call") return false;
   const message = peeked.message;
-  // The same envelope rules the SDK applies: a request carries `jsonrpc: "2.0"` and an id, and only a request is answered.
-  // Anything else (a notification, a malformed message) goes to the proxy, which answers it as it answers every other tool.
-  if (message.jsonrpc !== "2.0" || !("id" in message)) return false;
+  // The same envelope rules the SDK applies: a request carries `jsonrpc: "2.0"` and a string-or-integer id, and only a
+  // request is answered. Anything else (a notification, a malformed message) goes to the proxy, which answers it as it
+  // answers every other tool, so this path can never succeed where the transport would refuse the same request.
+  if (message.jsonrpc !== "2.0") return false;
+  if (typeof message.id !== "string" && !Number.isInteger(message.id)) return false;
+  // The transport's own media checks: without both accepted types and a JSON body it answers 406/415, and this route
+  // must not answer a call the rest of the connection would refuse. (`accept` is a list, so a substring check is right.)
+  const accept = String(req.headers.accept ?? "");
+  if (!accept.includes("application/json") || !accept.includes("text/event-stream")) return false;
+  if (!/^application\/(?:[\w.+-]+\+)?json\b/i.test(String(req.headers["content-type"] ?? ""))) return false;
   const name = nameOf(message);
   const plan = planReactionSearch(name, argsOf(message));
   if (plan.kind === "pass") return false;
