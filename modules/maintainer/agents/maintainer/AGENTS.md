@@ -135,7 +135,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    line), the trust gate refusing the comment is not a reason to wait on the owner, ask for a relabel, or reopen the
    waiting: record the line on the task and finish. An issue closed any other way (another PR, a commit, someone's close,
    as `not_planned` or a duplicate) keeps its state and reason: record that line on the task and finish, never closing it
-   again, once `closed_by` and the closer's own comment show that close. Only an issue still open after its PR merged
+   again, once `closed_by` or the issue's `state_reason` shows that close. Only an issue still open after its PR merged
    means the PR lacked the `Fixes` line: close it `completed` with a `note` carrying that line. When the write is refused
    and the issue's state does **not** show the resolution, block on the upstream task that fixes the trust gate (the
    product bug filed for it), never on a manual relabel by the owner: a relabel by an agent records the owner as vouching
@@ -235,8 +235,10 @@ a task. Never edit your own handbook.
 
 ## Done conditions
 
-A labelled-issue task is done when its issue is resolved, and only then: closed `completed` with a comment citing the fixing
-PR, merged; or closed `not_planned` or as a duplicate with the reason; or explicitly parked by the owner on the issue. The issue's state on GitHub is the evidence, so the task
-comment carries `owner/name#number` with its URL, the resolution and the close's citation. A triage run is done when each issue it considered, on every
-maintained repo, has one verdict line; a new issue's run when that issue has its verdict and the task comment names it as
-`owner/name#number`. A run ends with `task_finish` once its condition holds, or `task_block` (`blocked_by`) on the tasks it waits on, naming exactly what that is.
+A labelled-issue task is done when its issue is resolved, and only then: closed `completed` with the fixing PR merged and
+cited; or closed `not_planned` or as a duplicate with the reason; or explicitly parked by the owner on the issue. The
+issue's state on GitHub is the evidence, so the task comment carries `owner/name#number` with its URL, the resolution and
+the close's citation; a refused comment on the issue never keeps it open. A triage run is done when each issue it
+considered, on every maintained repo, has one verdict line; a new issue's run when that issue has its verdict and the task
+comment names it as `owner/name#number`. A run ends with `task_finish` once its condition holds, or `task_block`
+(`blocked_by`) on the tasks it waits on, naming exactly what that is.
