@@ -222,12 +222,12 @@ export function createEngine(d: EngineDeps) {
       COMMIT;`);
   }
   // 2 → 3: a `fixed` answer closes its finding at once (no claim recheck): the claims still pending close as fixed, and a claim
-  // recheck still queued or running is retired (it ran no finder, so it never covers a head).
+  // recheck still queued or running is retired (it ran no finder, so it never covers a head, and no longer gates one).
   if (version >= 1 && version < 3) {
     const at = new Date((d.now ?? Date.now)()).toISOString();
     db.prepare("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE outcome IS NULL AND claim LIKE 'fixed:%'").run(at);
     if ((db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).some((c) => c.name === "recheck_only"))
-      db.prepare("UPDATE runs SET status = 'skipped', why = 'retired: claim rechecks are gone', ended = ? WHERE recheck_only = 1 AND status IN ('queued', 'running')").run(at);
+      db.prepare("UPDATE runs SET status = 'skipped', mandatory = 0, why = 'retired: claim rechecks are gone', ended = ? WHERE recheck_only = 1 AND status IN ('queued', 'running')").run(at);
     db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
   }
   // A send a restart cut off (its claim still set) is tried again: the summary is recoverable, never dropped.
@@ -338,8 +338,9 @@ export function createEngine(d: EngineDeps) {
     const due = o.due ?? now();
     mirrorDue = true;
     if (kind === "auto") {
-      // The push they were for is superseded; a retry that already spent keeps its charge, as a skipped run.
-      for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued' AND billed_prior > 0", p.repo, p.number)) skipQueued(q.id, "superseded: a newer push");
+      // The push they were for is superseded; a retry (it already ran once, and may have spent) stays as a skipped run, so its
+      // head's batch never reads as finished (pushRounds).
+      for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued' AND (billed_prior > 0 OR attempts > 0)", p.repo, p.number)) skipQueued(q.id, "superseded: a newer push");
       run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
     }
     const batch = `b-${randomBytes(6).toString("hex")}`;
