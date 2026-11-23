@@ -706,13 +706,13 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // Settled once, however the call ends: at what OpenRouter billed (usage.cost; tokens x list price if a usage block lacks it,
     // never 0); nothing when the upstream refused before any output or a stream failed in-band (`free`: OpenRouter bills
     // neither; the latter as `stream_error`, so it stays visible); else the reservation (a stream cut or ended without final
-    // usage, a restart); an answer that began without final usage is closed as `unsettled`, which trueUp settles at what
-    // OpenRouter billed when it has a generation id.
+    // usage, a restart); an answer that began (or has a generation id) without final usage is closed as `unsettled`, which
+    // trueUp settles at what OpenRouter billed when it has a generation id.
     live++;
     const settle = (status: string, u?: Usage, free = false) => {
       live--;
       const billed = u ? (u.costUsd ?? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6) : free ? 0 : r.usd;
-      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, !u && !free && up?.ok ? "unsettled" : status, id];
+      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, !u && !free && (up?.ok || gen) ? "unsettled" : status, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
@@ -792,15 +792,15 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
           // `stream_error` when it failed in-band; one that just ended before any output may be billed, so it holds the input
           // estimate as `unsettled`, trued up from its generation.
           const held = `gw:${randomUUID()}`;
-          const spent = failed === NO_OUTPUT ? inUsd : 0;
+          const billable = failed === NO_OUTPUT, spent = billable ? inUsd : 0;
           if ("over" in reserve(who, t0, held, body.model, spent, 0, 1, r.usd - spent)) break;
           rerun = true;
           const tk = usageTap(true);
           tk.feed(peeked?.text ?? "");
           const ku = tk.done();
-          const g = spent ? genOf(up, peeked?.text ?? "") : "";
+          const g = billable ? genOf(up, peeked?.text ?? "") : "";
           if (g) q.gen.run(g, held);
-          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, spent, now() - t0, spent ? "unsettled" : "stream_error", held);
+          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, spent, now() - t0, billable ? "unsettled" : "stream_error", held);
         }
         const after = Number(up?.headers.get("retry-after"));
         const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
