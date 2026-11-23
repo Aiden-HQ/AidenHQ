@@ -708,11 +708,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // neither; the latter as `stream_error`, so it stays visible); else the reservation (a stream cut or ended without final
     // usage, a restart); an answer that began (2xx) without final usage is closed as `unsettled`, which trueUp settles at
     // what OpenRouter billed when it has a generation id. An error answer keeps its `upstream_<status>` (the board counts it
-    // as an error) at the reservation.
+    // as an error) at the input estimate: an error answer carries no output.
     live++;
     const settle = (status: string, u?: Usage, free = false) => {
       live--;
-      const billed = u ? (u.costUsd ?? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6) : free ? 0 : r.usd;
+      const billed = u ? (u.costUsd ?? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6) : free ? 0 : up && !up.ok ? inUsd : r.usd;
       const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, !u && !free && up?.ok ? "unsettled" : status, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
