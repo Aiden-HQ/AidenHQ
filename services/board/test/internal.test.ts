@@ -129,12 +129,17 @@ describe("internal listener", () => {
       ...Array.from({ length: 60 }, (_, i) => card({ id: `k-00000000000005${String(i).padStart(2, "0")}`, issueId: issue.id, identifier: issue.identifier, action: "conn.tool", tier: 0, state: "used", outcome: "applied", createdAt: `2026-11-2${i % 4}T10:00:00.000Z` })),
     ]);
     const seen: { tier0?: boolean }[] = [];
+    const liveKinds: (string[] | undefined)[] = [];
     const records: typeof inner = {
       ...inner,
       list: async (state, o = {}) => {
         seen.push({ tier0: o.tier0 });
         const all = await inner.list(state, { ...o, limit: 1000 });
         return all.slice().sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, o.limit ?? 100);
+      },
+      allOf: async (state, k, t, m) => {
+        if (state === "live") liveKinds.push(k);
+        return inner.allOf(state, k, t, m);
       },
     };
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
@@ -151,8 +156,11 @@ describe("internal listener", () => {
       const ids = (await res.json()).approvals.map((a) => a.id);
       expect(ids).toContain("k-0000000000000041");
       expect(ids).toContain("k-0000000000000042");
-      // The newest page is the reviewed cards alone; the Tier 0 merge arrives through the merge read.
+      // The newest page is the reviewed cards alone; the Tier 0 merge arrives through the merge read, and the live read is
+      // every kind so a pending deploy can never be crowded out either.
       expect(seen.every((o) => o.tier0 !== true)).toBe(true);
+      expect(liveKinds.length).toBeGreaterThan(0);
+      expect(liveKinds.every((k) => k === undefined)).toBe(true);
     } finally {
       board.close();
     }

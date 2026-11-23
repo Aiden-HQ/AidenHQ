@@ -1153,11 +1153,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const mine = (a: Approval) => refs.some((r) => a.issueId === r || a.identifier === r);
         // The history read pages newest-first filtered to the merge kinds, so a merge that landed a while ago is still found
         // behind newer writes, while its other cards can never crowd it out. Only merges are paged up: a bounded number of
-        // pages, well past a task's plausible history, and any page failing throws rather than reading as "no merge".
+        // pages, well past a task's plausible history, and any page failing throws rather than reading as "no merge". The live
+        // read is every kind: a card still waiting on the reviewer or the owner blocks the task whatever it is (a deploy, an
+        // apply), and a full page of newer writes must never hide it.
         const [recent, history, live] = await Promise.all([
           Promise.all(refs.map((r) => cardsOf("recent", { task: r, limit: 50, strict: true }))).then((p) => p.flat()),
           Promise.all(refs.map((r) => records.allOf("recent", kinds, r, HISTORY_PAGES))).then((p) => p.flat()),
-          Promise.all(refs.map((r) => records.allOf("live", kinds, r))).then((p) => p.flat()),
+          Promise.all(refs.map((r) => records.allOf("live", undefined, r))).then((p) => p.flat()),
         ]);
         // The reads run side by side, and one card can be in two of them: the later snapshot wins, so an ended card's
         // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished, and a card approved
@@ -1168,7 +1170,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const seen = byId.get(a.id);
           if (!seen || newer(a, seen)) byId.set(a.id, a);
         }
-        const shown = [...byId.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        // Newest first, and equal stamps keep the kernel's own order (it answers newest first by rowid): a stable sort that
+        // returns 0 for a tie never reverses which of two attempts filed in the same millisecond is the current one.
+        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(mergeView) };
       },
     },
