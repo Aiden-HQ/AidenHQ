@@ -25,9 +25,10 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
   assert.doesNotMatch(bullet, /task_finish`?\s*(?:\(\s*)?`?issue/, "the bullet never pairs `task_finish` with an `issue`");
   assert.match(bullet, /a task the owner holds is theirs to close/, "an owner-held task is the owner's to close");
   assert.match(bullet, /never `task_finish` it/, "the bullet names the refused call only to forbid it");
+  assert.match(bullet, /A task assigned to your run that is not your part of the owner's task is `task_finish`/, "a task the run holds is still finished");
   assert.match(bullet, /`task_comment` with what was done and leave it open/, "a task the run filed gets a comment and stays open");
   assert.match(bullet, /a task it filed is also `task_cancel` with its `issue` when they say drop it \(its part of the owner's task never: `task_cancel` refuses it\)/, "cancel is for a task the run filed, never its part of the owner's");
-  assert.match(bullet, /On a task this run may write on \(assigned to it, its part of the owner's task, or one it filed\)/, "the bullet names the tasks the run may write on");
+  assert.match(bullet, /On a task you can write on \(assigned to it, its part of the owner's task, or one it filed\)/, "the bullet names the tasks the run may write on");
   assert.match(bullet, /Any other task is refused \("isn't yours to change"\) for a comment and a cancel alike/, "a task the run cannot write on is left open, not commented");
 });
 
