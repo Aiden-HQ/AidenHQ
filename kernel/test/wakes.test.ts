@@ -756,6 +756,27 @@ test("a finished chat's owner comment whose event was lost is still found by the
   assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
 });
 
+test("a comment missed on a finished chat while the kernel was down is found after a long restart", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.wakes.claim("dispatch");
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick();
+  const closed = "2026-11-18T10:00:10.000Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.poll(); // the cursor now sits at this poll
+  w.wakes.claim("dispatch");
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  // The kernel is away three hours; the reply lands early in the outage and its event is lost.
+  w.tick(60 * 60_000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  w.tick(2 * 60 * 60_000);
+  await w.wakes.poll();
+  assert.equal(w.issues.chat.status, "todo", "the durable cursor still covers the outage");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+});
+
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
   const w = world();
   w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });

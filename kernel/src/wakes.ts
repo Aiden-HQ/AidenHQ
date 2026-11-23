@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS wake_dispatchers (module TEXT PRIMARY KEY, since INTE
 CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
   state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
-CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);`;
+CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS chat_poll (company TEXT PRIMARY KEY, at INTEGER NOT NULL);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
@@ -322,8 +323,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       // Said before the move: the comment read is a snapshot, and the owner may have cancelled the chat since. Only a task still
       // `done` is reopened (a cancelled chat stays closed), and a read that fails writes nothing.
       const fresh = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
-      if (fresh.status !== 200) { log("wake chat reopen read failed", { task: issue.id, status: fresh.status }); return; }
-      if (String(fresh.json?.status) !== "done") { issue = { ...issue, ...(fresh.json as Issue) }; }
+      if (fresh.status !== 200) {
+        // A read that failed says nothing either way: keep the task on the retry list so a transient failure can't strand it.
+        q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+        log("wake chat reopen read failed", { task: issue.id, status: fresh.status });
+        return;
+      }
+      if (String(fresh.json?.status) !== "done") { issue = { ...issue, ...(fresh.json as Issue) }; q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id); }
       else {
         const p = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo" });
         // A failed reopen leaves this scan's cursor where it was and the task on the poll's retry list, so the next scan reads
@@ -612,8 +618,15 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   }
 
   const companies = new Map<string, string>();
-  /** When the last poll began: the window a finished chat's missed comment is looked for in. */
-  let lastPoll = 0;
+  /**
+   * Since when each company's finished chats are re-read (chat_poll): a durable cursor, so a comment missed while the kernel is
+   * down is still found after it restarts, however long it was away.
+   */
+  const chatSince = (company: string) => {
+    const row = q("SELECT at FROM chat_poll WHERE company = ?").get(company) as { at: number } | undefined;
+    return row ? row.at : now() - 10 * 60_000;
+  };
+  const setChatSince = (company: string, at: number) => q("INSERT INTO chat_poll (company, at) VALUES (?, ?) ON CONFLICT(company) DO UPDATE SET at = excluded.at").run(company, at);
   /** The wait-park reconcile, once idle.ts has it (it is made after this inbox): a task's own event re-parks a restored wait at
    *  once, so the recovery sweep's tick never gets to see a settled wait in a status it scans. */
   let settleOn: ((issue: Issue) => Promise<unknown>) | undefined;
@@ -645,9 +658,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       try { q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run(); } catch (e) { log("wake poll failed", { step: "close ended wakes", err: (e as Error).message }); }
       const listed = new Set<string>();
       // A finished chat's comment can be missed with its event (a kernel restart, a lost delivery): every poll re-reads the chats
-      // that closed since the last one, so the scan can reopen and wake them. The first poll looks back a little further.
-      const since = iso(lastPoll ? lastPoll - 60_000 : now() - 10 * 60_000);
-      lastPoll = now();
+      // whose activity is newer than the company's durable cursor, so the scan can reopen and wake them.
+      const polledAt = now();
       for (const agent of polled().keys()) {
         try {
           if (!companies.has(agent)) {
@@ -667,13 +679,17 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
             await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
           }
-          const d = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=done&limit=200&assigneeAgentId=${encodeURIComponent(agent)}&updatedSince=${encodeURIComponent(since)}`);
+          const company = companies.get(agent)!;
+          const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=done&limit=200&assigneeAgentId=${encodeURIComponent(agent)}&updatedSince=${encodeURIComponent(iso(chatSince(company)))}`);
           if (d.status !== 200 || !Array.isArray(d.json)) throw new Error(`control plane GET done issues → ${d.status}`);
           for (const issue of d.json as Issue[]) {
             if (listed.has(issue.id) || !isChat(issue)) continue;
             listed.add(issue.id);
             await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
           }
+          // The cursor moves only once every polled agent of the company took its turn: a later agent failing must not hide the
+          // earlier window from the next poll.
+          if (agent === [...polled().keys()].filter((a) => companies.get(a) === company).at(-1)) setChatSince(company, polledAt);
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
         }
