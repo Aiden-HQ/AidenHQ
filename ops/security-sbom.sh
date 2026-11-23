@@ -580,6 +580,15 @@ save_wave() { # <wave>
     avail_now=$(( $(free_gb) - min_free_gb ))
     top=$(( sz > written_big ? sz : written_big ))
     if [ $(( sz + top )) -gt "$avail_now" ]; then
+      # This wave's own archives are held in `free` already, so a save that no longer fits may only be waiting on them.
+      # Once this wave is scanned those bytes come back: give the image a wave of its own after this one instead of
+      # recording a skip that would repeat on every pass. With nothing written yet the disk itself lacks the room (or
+      # another writer took it), and the same check would fail again, so that one is a line.
+      if [ "$written" -gt 0 ]; then
+        wave_of[$idx]=$((wave_count + 1)); wave_count=$((wave_count + 1))
+        echo "security-sbom: image:$key deferred to wave ${wave_of[$idx]}: $(space_need "$written" "$sz" "$top" "$avail_now" $(( sz + top - avail_now )))" >&2
+        continue
+      fi
       fail "image:$key" "skipped: ${sz} GB image does not fit: $(space_need "$written" "$sz" "$top" "$avail_now" $(( sz + top - avail_now )))"
       continue
     fi
@@ -646,7 +655,7 @@ scan_wave() { # <first plan index>
         if [ $(( 2 * bytes_of[$k] )) -gt "$capacity" ]; then
           i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$k]}"
           room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
-          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining_bytes - bytes_of[$i] )) "$size_gb" "$largest_gb" "$(( room_now / 1073741824 ))" $(( (2 * bytes_of[$i] - capacity + 1073741823) / 1073741824 )))"
+          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - bytes_of[$i] )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (2 * bytes_of[$i] - capacity + 1073741823) / 1073741824 )))"
           rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); continue
         fi
         keep+=("$k")
@@ -659,7 +668,7 @@ scan_wave() { # <first plan index>
         done
         i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
         room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
-        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining_bytes - drop_bytes )) "$size_gb" "$largest_gb" "$(( room_now / 1073741824 ))" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"
+        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"
         rm -f "$archive"; remaining_bytes=$(( remaining_bytes - drop_bytes ))
         local -a dropped=()
         for k in "${rest[@]}"; do [ "$k" = "$drop" ] || dropped+=("$k"); done
