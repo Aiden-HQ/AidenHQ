@@ -1341,8 +1341,12 @@ const TOOLS: Record<string, Tool> = {
           // A rejection's reason is the reviewer's or the owner's words, which may quote the diff: fenced and labelled, so a run
           // that finds the card on a later check knows what to change without reading them as an instruction.
           // An owner's own rejection reason comes first: it is what the run must change, where a review's note may only explain.
-          const said = a.ownerReason ? `the owner: ${a.ownerReason}` : String(a.review ?? a.reason ?? "");
-          const why = a.state === "rejected" ? `<untrusted-card-reason source="${a.action} card ${a.id}, ${a.state}">\n${inert(said).slice(0, 300)}\n</untrusted-card-reason>` : "";
+          // The owner's own reason is the condition for refiling, so it is returned whole (the kernel caps it at 500 characters
+          // when it is written); a reviewer's note is only an explanation, and is cut with a mark where it was.
+          const owner = a.ownerReason ? String(a.ownerReason) : "";
+          const said = owner ? `the owner: ${owner}` : String(a.review ?? a.reason ?? "");
+          const cut = owner ? inert(said) : inert(said).slice(0, 300);
+          const why = a.state === "rejected" ? `<untrusted-card-reason source="${a.action} card ${a.id}, ${a.state}">\n${cut}\n</untrusted-card-reason>` : "";
           return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(evidence !== undefined ? { mergedPrs: evidence } : {}), ...(why ? { reason: why } : {}), createdAt: a.createdAt };
         }),
       };

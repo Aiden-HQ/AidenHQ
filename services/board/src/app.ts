@@ -1145,17 +1145,17 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         if (grant.profile === "engineer" && grant.private_reads !== true && task !== caller.task) {
           throw new HttpError(403, "refused: without private reads an Engineer reads only the task its run is working on");
         }
-        // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
-        // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". This task's merges are read
-        // by kind: the newest page, and every page of the states one can still be in (the reviewer's or owner's wait, and the
-        // approved or claimed run), so neither newer writes nor a full page of ended merges can hide the card that matters.
+        // `strict`: a kernel that didn't answer must not read as "no cards". This task's merges are read by kind, over every
+        // page of the states one can still be in (the reviewer's or owner's wait, and the approved or claimed run): a Tier 0
+        // merge the fleet filed for a green PR reaches the read there, so the newest page stays the reviewed cards alone and a
+        // run of Tier 0 writes can never push a decision that still blocks the task out of it.
         const kinds = ["github.merge", "codehost-local.merge"];
         const mine = (a: Approval) => refs.some((r) => a.issueId === r || a.identifier === r);
         // The history read pages newest-first filtered to the merge kinds, so a merge that landed a while ago is still found
         // behind newer writes, while its other cards can never crowd it out. Only merges are paged up: a bounded number of
         // pages, well past a task's plausible history, and any page failing throws rather than reading as "no merge".
         const [recent, history, live] = await Promise.all([
-          Promise.all(refs.map((r) => cardsOf("recent", { task: r, limit: 50, tier0: true, strict: true }))).then((p) => p.flat()),
+          Promise.all(refs.map((r) => cardsOf("recent", { task: r, limit: 50, strict: true }))).then((p) => p.flat()),
           Promise.all(refs.map((r) => records.allOf("recent", kinds, r, HISTORY_PAGES))).then((p) => p.flat()),
           Promise.all(refs.map((r) => records.allOf("live", kinds, r))).then((p) => p.flat()),
         ]);

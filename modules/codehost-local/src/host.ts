@@ -131,14 +131,15 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       if (!tree) throw fail(409, `${changeUrl(repo, n)} conflicts with ${def} as it is now: rebase it and publish again`);
       const message = `${String(c.meta.title ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 300) || c.meta.branch} (change ${n})\n\n${await g(repo, ["log", "-1", "--format=%B", head])}`;
       const sha = await g(repo, ["commit-tree", tree.split("\n")[0]!, "-p", c.main, "-m", message], { env: IDENTITY });
-      // Compare-and-swap on the base ref: a base that moved under the merge is refused, never overwritten (its checks were run
-      // against the base read above, and nobody reviewed a merge onto another).
-      await g(repo, ["update-ref", `refs/heads/${def}`, sha, c.main]).catch(async (e: { code?: number }) => {
+      // Compare-and-swap on the base ref, and the merged marker, in one transaction: a base that moved under the merge is refused,
+      // never overwritten (its checks were run against the base read above, and nobody reviewed a merge onto another), and a
+      // commit that reached the default branch always leaves the marker that says the change landed. A marker written on its
+      // own could fail after the branch moved, leaving a landed change that still reads open.
+      await refs(repo, [`update refs/heads/${def} ${sha} ${c.main}`, `create refs/changes/${n}/merged ${sha}`]).catch(async (e: { code?: number }) => {
         const clash = baseMoved(changeUrl(repo, n), c.main, await rev(repo, `refs/heads/${def}`));
         if (clash) throw fail(409, clash);
         throw e;
       });
-      await refs(repo, [`create refs/changes/${n}/merged ${sha}`]);
       await g(repo, ["update-ref", "-d", `refs/heads/${c.meta.branch}`, head]).catch(() => {});
       return sha;
     });
