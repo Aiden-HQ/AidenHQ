@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { servedTool, type Ask } from "./admission.js";
 import { interceptReactionSearch } from "./reactions.js";
 import { READ_SCOPES, slackAnswer, upstreamArgs, WRITE_SCOPES } from "./slack.js";
 import { oauth } from "./vendor/oauth.js";
@@ -32,25 +33,17 @@ const auth = oauth({
   tokenAnswer: slackAnswer,
 });
 
-// Whether the proxy serves a tool, asked of the proxy's own `/mcp/read` tools/list: that lists only tools in the live
-// upstream catalog that carry the manifest's read tag and the upstream's read-only hint, and lists nothing at all when
-// the upstream is unreachable or the sign-in is gone (the `/mcp` list would answer cached stand-ins instead). So a name
-// found there is admitted by the proxy on both endpoints, and the search tools this path answers are reads. It is asked
-// on every reaction search rather than cached: a sign-in or catalog that changed since the last call changes the answer,
-// and a tool whose admission can't be confirmed now is refused, never served on an old answer.
+// The loopback address of this connection, for the admission probe below.
 const port = Number(process.env.PORT ?? 8082);
-const servedTool = async (name: string): Promise<boolean> => {
-  const key = readToken(process.env.MCP_READ_TOKEN_FILE);
-  if (!key) return false;
-  const res = await fetch(`http://127.0.0.1:${port}/mcp/read`, {
+/** One JSON-RPC call to this connection's own port, for the admission probe. */
+const post: Ask = async (path, key, body) => {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   }).catch(() => undefined);
-  const body = res?.ok ? ((await res.json().catch(() => undefined)) as { result?: { tools?: { name?: unknown }[] } } | undefined) : undefined;
-  if (!body?.result?.tools) return false; // unconfirmed: refuse
-  return body.result.tools.some((t) => String(t?.name ?? "") === name);
+  return res?.ok ? ((await res.json().catch(() => undefined)) as Record<string, any> | undefined) : undefined;
 };
 
 const http = createVendorProxy({
@@ -73,7 +66,7 @@ const http = createVendorProxy({
       tokenFile,
       headers: () => auth.headers(),
       authState: () => auth.status().state,
-      served: servedTool,
+      served: (readOnly, name) => servedTool(readOnly, name, post, (r) => readToken(r ? process.env.MCP_READ_TOKEN_FILE : process.env.MCP_TOKEN_FILE)),
       serviceKey: readToken(process.env.MCP_TOKEN_FILE),
       readKey: readToken(process.env.MCP_READ_TOKEN_FILE),
       caller,

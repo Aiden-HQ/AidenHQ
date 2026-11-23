@@ -104,7 +104,7 @@ export function WorkCardView({ c, board }: { c: WorkCard; board: Board }) {
         <span className="aw-who">{who}</span>
         {c.crewIds.length > 0 && <span className="aw-crew" title={c.crewIds.map((id) => board.assignees.find((a) => a.key === id)?.name ?? "Agent").join(", ")}>+{c.crewIds.length}</span>}
         <span className="aw-sp" />
-        <span className="aw-age" title={lane === "working" ? "Running for" : "Last activity"}>{age}</span>
+        <span className="aw-age" title={lane === "working" ? "Running for" : lane === "done" ? "Closed" : "Last activity"}>{age}</span>
         {run && (
           <a className="aw-run" href={`#/r/${run}`} onClick={stop} title="Open the run" aria-label="Open the run">
             ↗
@@ -115,13 +115,14 @@ export function WorkCardView({ c, board }: { c: WorkCard; board: Board }) {
   );
 }
 
-function LaneColumn({ lane, cards, board, loading }: { lane: Lane; cards: WorkCard[]; board: Board; loading?: boolean }) {
+function LaneColumn({ lane, cards, board, loading, searching, more }: { lane: Lane; cards: WorkCard[]; board: Board; loading?: boolean; searching?: boolean; more?: () => void }) {
   const [shown, setShown] = useState(PAGE);
+  const title = lane === "done" && searching ? "Done, any time" : LANE_TITLE[lane];
   return (
-    <section className={`aw-lane l-${lane}`} aria-label={LANE_TITLE[lane]}>
+    <section className={`aw-lane l-${lane}`} aria-label={title}>
       <header className="aw-lane-h">
-        <h2>{LANE_TITLE[lane]}</h2>
-        <span className="aw-n" title="matching cards">{loading ? "" : cards.length}</span>
+        <h2>{title}</h2>
+        <span className="aw-n" title={more ? "matching cards read so far" : "matching cards"}>{loading ? "" : `${cards.length}${more ? "+" : ""}`}</span>
       </header>
       <div className="aw-cards">
         {loading ? (
@@ -135,9 +136,9 @@ function LaneColumn({ lane, cards, board, loading }: { lane: Lane; cards: WorkCa
           <p className="aw-empty-lane">No tasks in {LANE_NAMES[lane]}</p>
         )}
       </div>
-      {cards.length > shown && (
-        <button type="button" className="aw-more" onClick={() => setShown(shown + PAGE * 4)}>
-          Show {cards.length - shown} more
+      {(cards.length > shown || more) && (
+        <button type="button" className="aw-more" onClick={() => { setShown(shown + PAGE * 4); if (cards.length <= shown + PAGE * 4) more?.(); }}>
+          {cards.length > shown ? `Show ${cards.length - shown} more` : "Show more"}
         </button>
       )}
     </section>
@@ -166,14 +167,14 @@ function byLane(cards: WorkCard[]): Record<Lane, WorkCard[]> {
   return out;
 }
 
-export function AgentWork({ board, cards, groupBy, mobile, filtered, onClear }: { board: Board; cards: WorkCard[]; groupBy: "none" | "agent"; mobile: boolean; filtered: boolean; onClear: () => void }) {
+export function AgentWork({ board, cards, groupBy, mobile, filtered, searching, moreDone, onClear }: { board: Board; cards: WorkCard[]; groupBy: "none" | "agent"; mobile: boolean; filtered: boolean; /** A search is on: Done holds every matching close, not the last 48 hours. */ searching: boolean; /** Reads more older closed matches (search.ts); absent when none remain. */ moreDone?: () => void; onClear: () => void }) {
   const lanes = useMemo(() => byLane(cards), [cards]);
   const first = LANES.find((l) => lanes[l].length) ?? "needs_you";
   // A phone shows one lane: the first populated one until the owner picks another (kept, even when it empties).
   const [phoneLane, setPhoneLane] = useState<Lane | null>(null);
   const current = phoneLane ?? first;
 
-  if (!board.work.length)
+  if (!board.work.length && !searching)
     return (
       <div className="aw-empty">
         <b>Nothing is running yet.</b>
@@ -183,7 +184,12 @@ export function AgentWork({ board, cards, groupBy, mobile, filtered, onClear }: 
   if (!cards.length && filtered)
     return (
       <div className="aw-empty">
-        <b>No tasks match these filters</b>
+        <b>{moreDone ? "Nothing matches in what was read so far" : "No tasks match these filters"}</b>
+        {moreDone && (
+          <button type="button" className="btn" onClick={moreDone}>
+            Look further back
+          </button>
+        )}
         <button type="button" className="btn" onClick={onClear}>
           Clear all
         </button>
@@ -201,15 +207,25 @@ export function AgentWork({ board, cards, groupBy, mobile, filtered, onClear }: 
           ))}
         </nav>
         <main className="aw-lanes phone" aria-label="Agent work">
-          <LaneColumn key={current} lane={current} cards={lanes[current]} board={board} />
+          <LaneColumn key={current} lane={current} cards={lanes[current]} board={board} searching={searching} more={current === "done" ? moreDone : undefined} />
         </main>
       </>
     );
-  if (groupBy === "agent") return <Swimlanes cards={cards} board={board} />;
+  if (groupBy === "agent")
+    return (
+      <>
+        <Swimlanes cards={cards} board={board} />
+        {moreDone && (
+          <button type="button" className="aw-more aw-more-done" onClick={moreDone}>
+            Show more of Done
+          </button>
+        )}
+      </>
+    );
   return (
     <main className="aw-lanes" aria-label="Agent work">
       {LANES.map((l) => (
-        <LaneColumn key={l} lane={l} cards={lanes[l]} board={board} />
+        <LaneColumn key={l} lane={l} cards={lanes[l]} board={board} searching={searching} more={l === "done" ? moreDone : undefined} />
       ))}
     </main>
   );

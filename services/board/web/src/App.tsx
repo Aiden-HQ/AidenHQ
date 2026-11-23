@@ -40,8 +40,9 @@ import { ago, dayDate, keepsSecureCookies, parkBucket, todayIn } from "./util";
 import { panelsOf } from "./sidebar";
 import { BottomBar, Palette, SubNav, TopNav, hrefOf, type NavView } from "./Shell";
 import { AgentWork, AgentWorkLoading } from "./AgentWork";
+import { NOTE_TEXT, useTaskSearch } from "./search";
 import { BoardTabs, ConflictBanner, FilterChips, FilterSheet, SaveButton, useTaskBoard } from "./TaskTools";
-import { applyFilters, isEmpty } from "./filters";
+import { applyFilters, cardMatches, isEmpty } from "./filters";
 import { Banner, Segmented } from "./ui";
 import { setBoardTimezone } from "./ui/TaskState";
 import "./shell.css";
@@ -63,6 +64,8 @@ const PageLoading = () => <main className="page wide" aria-busy="true" />;
 type Items = Record<Bucket, Card[]>;
 type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string; /** One approval card (#/approvals/<id>). */ card?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean };
 
+/** My day's Done column: cards shown before "Show more". */
+const DONE_PAGE = 10;
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
   today: "",
@@ -229,6 +232,8 @@ export function App() {
     [],
   );
   const [showDone, setShowDone] = useState(false);
+  // My day's Done column pages its cards (a search can bring hundreds); a new query starts it over.
+  const [doneShown, setDoneShown] = useState(DONE_PAGE);
   const [showRecurring, setShowRecurring] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -289,6 +294,10 @@ export function App() {
   const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "view" && route.view === "board" ? route.saved ?? null : undefined, toast, go });
   const query = tb.filters.text ?? "";
   const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
+  // The search field's answer (search.ts): the hits every filter's text term reads, and the closed hits Done shows.
+  // My day shows only what its own Done would (the owner's and the crew's); Agent work shows every hit.
+  const found = useTaskSearch(query, (c) => (tb.layout === "work" || c.mine !== false) && cardMatches(c, { ...tb.filters, text: "" }), view === "board", !tb.filters.state?.length || tb.filters.state.includes("done"));
+  useEffect(() => setDoneShown(DONE_PAGE), [query]);
   const filtering = !isEmpty(tb.filters);
   const [saveOpen, setSaveOpen] = useState(0);
 
@@ -557,8 +566,8 @@ export function App() {
   const visibleBuckets: Bucket[] = mobile ? [tab] : BUCKETS;
   const filtered = useMemo(() => {
     if (!items) return null;
-    return Object.fromEntries(BUCKETS.map((b) => [b, applyFilters(items[b], tb.filters)])) as Items;
-  }, [items, tb.filters]);
+    return Object.fromEntries(BUCKETS.map((b) => [b, applyFilters(items[b], tb.filters, found.hits)])) as Items;
+  }, [items, tb.filters, found.hits]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -688,7 +697,16 @@ export function App() {
   const work = tb.layout === "work";
   // The cards the filter menu counts over: the layout's own, unfiltered.
   const filterCards: Card[] = work ? board.work : [...BUCKETS.flatMap((b) => items[b]), ...board.recurring, ...board.done];
-  const workCards = applyFilters(board.work, tb.filters);
+  // While a search is on, Done also holds the matching tasks closed before its 48 hours (the board doesn't hold those).
+  // A search answer is in force (the first one for a query keeps the board as it was until it lands).
+  const searching = !!query.trim() && found.hits !== undefined;
+  const held = new Set([...board.work, ...board.done].map((c) => c.id));
+  const older = searching ? found.done.filter((c) => !held.has(c.id)) : [];
+  const workCards = applyFilters([...board.work, ...older], tb.filters, found.hits);
+  const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false && !c.recent)], tb.filters, found.hits);
+  // My day's Done column: when asked for, or while a search answer has matches there.
+  const doneColumn = showDone || (searching && (doneCards.length > 0 || found.hasMore));
+
 
   return (
     <div className={`app${mobile ? " mobile" : ""}${view === "chat" ? " on-chat" : ""}`}>
@@ -716,8 +734,9 @@ export function App() {
           {onBoard && <span className="topbar-title">Tasks</span>}
           <div className="topbar-tools">
             {onBoard && (
-              <div className="search">
+              <div className={`search${found.busy ? " busy" : ""}`}>
                 <input ref={searchRef} type="search" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} />
+                {found.busy && <span className="search-busy" role="status" aria-label="Searching" />}
               </div>
             )}
             {onBoard && (
@@ -746,9 +765,9 @@ export function App() {
             <BoardTabs tb={tb} ready={!!session?.account} mobile={false} saveSignal={saveOpen} />
             <span className="spacer" />
             {work && <AsOf board={board} stale={!!error} />}
-            <div className="search">
-              <input ref={searchRef} type="search" placeholder="Filter tasks" value={query} onChange={(e) => setQuery(e.target.value)} />
-              <kbd>/</kbd>
+            <div className={`search${found.busy ? " busy" : ""}`}>
+              <input ref={searchRef} type="search" placeholder="Search tasks" value={query} onChange={(e) => setQuery(e.target.value)} />
+              {found.busy ? <span className="search-busy" role="status" aria-label="Searching" /> : <kbd>/</kbd>}
             </div>
             {!work && board.recurring.length > 0 && (
               <button className={`btn${showRecurring ? " on" : ""}`} aria-pressed={showRecurring} onClick={() => setShowRecurring(!showRecurring)} title="Recurring tasks (r)">
@@ -766,6 +785,7 @@ export function App() {
           </div>
           <div className="tt-row tt-filters">
             <FilterChips tb={tb} board={board} cards={filterCards} />
+            {found.note && <span className="search-note">{NOTE_TEXT[found.note]}</span>}
             <span className="spacer" />
             {work && (
               <span className="tt-group">
@@ -786,6 +806,7 @@ export function App() {
             <FilterSheet tb={tb} board={board} cards={filterCards} />
             <SaveButton tb={tb} onSave={() => setSaveOpen((n) => n + 1)} />
           </div>
+          {found.note && <p className="search-note">{NOTE_TEXT[found.note]}</p>}
         </header>
       )}
       {onBoard && <ConflictBanner tb={tb} onSaveNew={() => setSaveOpen((n) => n + 1)} />}
@@ -820,8 +841,8 @@ export function App() {
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
-      {view === "board" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} onClear={() => tb.setFilters({})} />}
-      <main className={`columns${showDone || showRecurring ? " extra" : ""}`} hidden={view !== "board" || work}>
+      {view === "board" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} searching={searching} moreDone={found.hasMore ? found.more : undefined} onClear={() => tb.setFilters({})} />}
+      <main className={`columns${doneColumn || showRecurring ? " extra" : ""}`} hidden={view !== "board" || work}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
             <Column
@@ -854,25 +875,30 @@ export function App() {
               <span className="hint">Runs land on top of Today</span>
             </header>
             <div className="col-body">
-              {applyFilters(board.recurring, tb.filters).map((c) => (
+              {applyFilters(board.recurring, tb.filters, found.hits).map((c) => (
                 <CardView key={c.id} card={c} assignees={board.assignees} onOpen={openCard} />
               ))}
               {!board.recurring.length && <p className="empty">Nothing repeats yet. Open a task and use Repeats.</p>}
             </div>
           </section>
         )}
-        {showDone && (
+        {doneColumn && (
           <section className="column column-done">
             <header className="col-head">
               <h2>Done</h2>
-              <span className="count">{board.done.length}</span>
-              <span className="hint">Last 48 hours</span>
+              <span className="count">{searching ? `${doneCards.length}${found.hasMore ? "+" : ""}` : board.done.length}</span>
+              <span className="hint">{searching ? "Any time" : "Last 48 hours"}</span>
             </header>
             <div className="col-body">
-              {applyFilters(board.done, tb.filters).map((c) => (
+              {doneCards.slice(0, doneShown).map((c) => (
                 <CardView key={c.id} card={c} assignees={board.assignees} closed onOpen={openCard} />
               ))}
-              {!board.done.length && <p className="empty">Nothing closed recently.</p>}
+              {(doneCards.length > doneShown || (searching && found.hasMore)) && (
+                <button type="button" className="more-done" onClick={() => { setDoneShown(doneShown + DONE_PAGE * 2); if (doneCards.length <= doneShown + DONE_PAGE * 2) found.more(); }}>
+                  {doneCards.length > doneShown ? `Show ${doneCards.length - doneShown} more` : "Show more"}
+                </button>
+              )}
+              {!board.done.length && !searching && <p className="empty">Nothing closed recently.</p>}
             </div>
           </section>
         )}

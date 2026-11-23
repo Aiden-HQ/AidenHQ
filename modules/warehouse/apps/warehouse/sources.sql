@@ -18,7 +18,8 @@ SELECT set_config('aidenhq.pw_src_slack', :'pw_src_slack', false),
        set_config('aidenhq.pw_src_meetings', :'pw_src_meetings', false),
        set_config('aidenhq.pw_src_docs', :'pw_src_docs', false),
        set_config('aidenhq.pw_src_security', :'pw_src_security', false),
-       set_config('aidenhq.pw_src_hubspot', :'pw_src_hubspot', false);
+       set_config('aidenhq.pw_src_hubspot', :'pw_src_hubspot', false),
+       set_config('aidenhq.pw_src_tasks', :'pw_src_tasks', false);
 
 DO $$
 DECLARE
@@ -49,6 +50,38 @@ END $$;
 SELECT set_config('aidenhq.pw_src_slack', '', false), set_config('aidenhq.pw_src_github', '', false), set_config('aidenhq.pw_src_jira', '', false),
        set_config('aidenhq.pw_src_meetings', '', false), set_config('aidenhq.pw_src_docs', '', false), set_config('aidenhq.pw_src_security', '', false), set_config('aidenhq.pw_src_hubspot', '', false);
 
+-- Task search (the warehouse module's search service, docs/design/task-search.md): src_tasks writes one row per Paperclip task, with an embedding, and
+-- answers the board's searches. Not a source agents read: no agents_open grant (never raw rows for agents).
+-- The extension ships with the warehouse image: an older image still running (the app redeploys on its own schedule) skips it,
+-- and task search answers "unavailable" until the new image runs and this runs again; nothing else here waits on it.
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_available_extensions WHERE name = 'vector') THEN CREATE EXTENSION IF NOT EXISTS vector;
+  ELSE RAISE NOTICE 'pgvector is not in this warehouse image yet: task search waits for the new image';
+  END IF;
+END $$;
+DO $$
+DECLARE
+  pw text := current_setting('aidenhq.pw_src_tasks');
+BEGIN
+  IF pw <> '' THEN
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'src_tasks') THEN
+        EXECUTE format('CREATE ROLE src_tasks LOGIN PASSWORD %L IN ROLE writers', pw);
+      ELSE
+        EXECUTE format('ALTER ROLE src_tasks PASSWORD %L', pw);
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE EXCEPTION 'setting the login of src_tasks failed (SQLSTATE %)', SQLSTATE;
+    END;
+    CREATE SCHEMA IF NOT EXISTS src_tasks AUTHORIZATION src_tasks;
+    REVOKE ALL ON SCHEMA src_tasks FROM PUBLIC;
+    -- The extension's types and operators live in public, which init revokes from PUBLIC: this role alone may use them.
+    GRANT USAGE ON SCHEMA public TO src_tasks;
+    ALTER ROLE src_tasks SET search_path = src_tasks, src_meta, public;
+  END IF;
+END $$;
+SELECT set_config('aidenhq.pw_src_tasks', '', false);
+
 CREATE SCHEMA IF NOT EXISTS src_meta;
 REVOKE ALL ON SCHEMA src_meta FROM PUBLIC;
 GRANT USAGE ON SCHEMA src_meta TO writers, agents_open;
@@ -73,8 +106,12 @@ ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS commit text;
 -- A non-error marker for a scope that was not a normal pass (e.g. security's "retired": a target no longer in the
 -- inventory whose replacement was scanned cleanly). status is null for a normal pass; error stays the failure signal.
 ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS status text;
+-- A completed scope's reliable count (SourceStore.run): total = what the source reported for it, fetched = distinct records the
+-- pass read. Null when the pass stopped early, resumed mid-scope or the API gives no total.
+ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS total integer;
+ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS fetched integer;
 CREATE INDEX IF NOT EXISTS ingest_run_source ON src_meta.ingest_run (source, finished_at DESC);
-COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, hubspot, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed, commit for a repo target (the checkout''s git HEAD, so the row says which tree the pass read), status for a non-error marker (e.g. retired).';
+COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, hubspot, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed, commit for a repo target (the checkout''s git HEAD, so the row says which tree the pass read), status for a non-error marker (e.g. retired), total and fetched for a completed scope whose API gave a reliable count (fetched below total = records missed).';
 GRANT INSERT ON src_meta.ingest_run TO writers;
 GRANT USAGE ON SEQUENCE src_meta.ingest_run_id_seq TO writers;
 GRANT SELECT ON src_meta.ingest_run TO agents_open;

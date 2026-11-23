@@ -1,6 +1,7 @@
 // What Slack's connection adds to the pass-through (src/vendor/proxy.ts): Slack's own OAuth shapes, the draft tool's argument
 // pin, and the search folded into one query (Slack drops reaction filters from `filters`). A filters-only `hasmy::`
 // reaction search is answered from reactions.list instead (src/reactions.ts).
+import { planReactionSearch } from "./reactions.js";
 
 /** User token scopes the owner may grant on Connect. The reads are pre-selected; the writes let agents act as the owner. */
 export const READ_SCOPES = [
@@ -45,7 +46,9 @@ const SEARCH_TOOLS = new Set(["slack_search_public", "slack_search_public_and_pr
 function searchQuery(args: Record<string, unknown>): string | undefined {
   const own = typeof args.query === "string" ? args.query : undefined;
   const keywords = Array.isArray(args.keywords) ? args.keywords.filter((k): k is string => typeof k === "string" && Boolean(k.trim())).map((k) => k.trim()) : [];
-  const filters = typeof args.filters === "string" ? args.filters.trim() : "";
+  // `filters` as the tool documents it (a string); an array is accepted too, as some clients send one, so the fold reads
+  // it the same way the reaction planner does and no modifier is silently lost before it reaches Slack.
+  const filters = typeof args.filters === "string" ? args.filters.trim() : Array.isArray(args.filters) ? args.filters.filter((f): f is string => typeof f === "string" && Boolean(f.trim())).map((f) => f.trim()).join(" ") : "";
   const natural = typeof args.natural_language_query === "string" ? args.natural_language_query.trim() : "";
   if (!own?.trim() && !keywords.length && !natural) return own;
   return [own?.trim(), ...keywords, filters, natural].filter(Boolean).join(" ");
@@ -59,6 +62,21 @@ export function upstreamArgs(name: string, args: Record<string, unknown>): Recor
     return args;
   }
   if (!SEARCH_TOOLS.has(name)) return args;
+  // A filters-only reaction search has no term clause Slack can match, so sending it upstream is the empty, uncursored
+  // page this module exists to replace. The interceptor answers it before this hook runs; anything that still reaches
+  // here (a batched call, or a direct proxy call) is refused outright rather than answered with that misleading page.
+  const plan = planReactionSearch(name, args);
+  if (plan.kind !== "pass") throw new Error(`a filters-only ${plan.filter} search is answered from reactions.list, not sent upstream; call it on its own`);
   const query = searchQuery(args);
-  return query === undefined || query === args.query ? args : { ...args, query };
+  // `filters` is documented as a string; an array was folded into the query above, so forward it as the same string
+  // rather than leaving an array an upstream that follows the schema would refuse.
+  const joined = Array.isArray(args.filters) ? args.filters.filter((f): f is string => typeof f === "string" && Boolean(f.trim())).map((f) => f.trim()).join(" ") : undefined;
+  // An array with nothing usable has no string form: the field is dropped, not sent as `filters: ""`.
+  const next: Record<string, unknown> = { ...args, ...(query !== undefined && query !== args.query ? { query } : {}) };
+  if (joined !== undefined) {
+    if (joined) next.filters = joined;
+    else delete next.filters;
+  }
+  const same = Object.keys(args).length === Object.keys(next).length && Object.keys(next).every((k) => next[k] === args[k]);
+  return same ? args : next;
 }

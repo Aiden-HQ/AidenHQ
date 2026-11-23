@@ -56,6 +56,10 @@ export interface WorkCard extends Card {
   /** The agents working in its sub-tasks (agent ids). */
   crewIds: string[];
   closedAt: string | null;
+  /** An older search hit (search.ts): whether My day may show it (assigned to the owner or a crew agent). */
+  mine?: boolean;
+  /** An older search hit's close is inside the board's window (Agent work may lack the task; My day never does). */
+  recent?: boolean;
 }
 
 /** A saved board (services/board/src/views.ts): its filters and layout, ids never names; `rev` guards every write. */

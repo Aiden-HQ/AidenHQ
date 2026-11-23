@@ -1,0 +1,23 @@
+{
+  "name": "warehouse-search",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "description": "The warehouse module's task search service: one src_tasks row per task, and the board's hybrid search over them.",
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.16",
+    "@electric-sql/pglite-pgvector": "0.0.17",
+    "@types/node": "24.19.1",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3"
+  }
+}

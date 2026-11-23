@@ -60,8 +60,10 @@ export type Rec = {
   wait?: string | null;
   /** How many accepted waits this claim has had: each is its own notice, so a reason that recurs (A → B → A) still arrives. */
   waits?: number;
+  /** The files the write changes, as its plan named them (`repo:path`): task search reads them; never part of the digest. */
+  paths?: string[] | null;
 };
-const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context"] as const;
+const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context", "paths"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
 /** Records past this are expired: decided within a week of filing, and run within a week of the approval (an approved record retries a transient failure meanwhile). */
 export const TTL_MS = 7 * 86_400_000;
@@ -101,7 +103,7 @@ export function openRecords(file: string, now = () => new Date()) {
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
-  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"], ["paths", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
   // a task by its identifier (a fact's task, facts.ts; a task's records)
   db.exec("CREATE INDEX IF NOT EXISTS records_identifier ON records (identifier)");
   const facts = openFacts(db, now);
@@ -175,9 +177,9 @@ export function openRecords(file: string, now = () => new Date()) {
           cancelled(o, "replaced");
         }
         const replaced = old.length;
-        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap, context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        db.prepare("INSERT INTO records (id, kind, module, args, targets, executor, policy, digest, tier, merit, panel, card, requester, task, state, created_at, updated_at, review_first, rule, identifier, replaced, target, content, chain, cap, context, paths) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(id, r.kind, r.module, JSON.stringify(r.args ?? null), JSON.stringify(r.targets), JSON.stringify(r.executor), r.policy, digest, r.tier, r.merit ?? r.tier, 0, JSON.stringify(r.card), JSON.stringify(r.requester), r.task, r.state, at, at,
-            null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null);
+            null, r.rule ?? null, r.identifier ?? null, replaced ? 1 : 0, r.target ?? null, r.content ?? null, null, r.cap ? JSON.stringify(r.cap) : null, r.context ? JSON.stringify(r.context) : null, r.paths?.length ? JSON.stringify(r.paths) : null);
         const requester = r.requester.key || r.requester.module || "";
         fact(id, "record.filed", "filed", r.requester.key ? `agent:${r.requester.key}` : r.requester.module ? `module:${r.requester.module}` : "kernel", () => ({ kind: r.kind, tier: r.tier, requester, state: r.state, ...prOf(r.args) }));
         db.exec("COMMIT");
