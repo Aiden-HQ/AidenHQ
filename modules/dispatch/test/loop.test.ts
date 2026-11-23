@@ -234,14 +234,14 @@ test("a task-closed refusal on a wake is never dropped silently: the owner is to
   k.inbox.push(wake("comment:c1", "comment"));
   await k.dispatch.tick();
   assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "dropped only after it was surfaced");
-  assert.deepEqual(k.notes.map((n) => n.wake), ["comment:c1"], "the refusal is said on the task, where the owner reads it");
-  assert.match(k.notes[0].body, /This wake was not started/);
-  assert.match(k.notes[0].body, /task-closed/);
-  assert.match(k.notes[0].body, /The task is closed, so nothing was started for it; its message stays on the task\./);
-  // The notice not landing (its post fails, and the owner's fallback too): the wake is kept for its lease, never dropped silently.
+  assert.deepEqual(k.notes, [], "a finished task is never written to");
+  assert.deepEqual(k.notified.map((n) => [n.task, n.dedupe_key]), [["WOR-5", "refused-wake:comment:c1"]], "the owner hears it, the task named by its identifier");
+  assert.match(k.notified[0].text, /A wake on WOR-5 was not started/);
+  assert.match(k.notified[0].text, /task-closed/);
+  assert.match(k.notified[0].text, /The task is closed, so nothing was started for it; its message stays on the task\./);
+  // The notice not landing: the wake is kept for its lease, never dropped silently.
   comments.push({ id: "c2", authorType: "user", body: "And another.", createdAt: "2026-11-18T10:01:00Z" });
   k.inbox.push(wake("comment:c2", "comment"));
-  k.kernel.note = async () => { throw new KernelError(409, "no task"); };
   k.kernel.notify = async () => { throw new KernelError(502, "upstream"); };
   await k.dispatch.tick();
   assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "kept for its lease");

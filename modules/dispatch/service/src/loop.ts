@@ -332,19 +332,23 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
   }
 
+  /** The owner's fallback for a wake nobody else hears (false when it didn't land: the wake must stay for its lease). */
+  async function tellOwner(w: Wake, e: KernelError): Promise<boolean> {
+    // The owner's notice names its task by identifier (WOR-123): the kernel refuses a Paperclip id there.
+    const id = (await kernel.task(w.task).catch(() => undefined))?.identifier;
+    return kernel.notify({ kind: "decision", ...(id ? { task: id } : {}), dedupe_key: `refused-wake:${w.key}`, text: refusalForOwner(id ?? w.task, e) }).then(() => true, (err: Error) => {
+      log("refused wake: the owner's notice wasn't posted", { wake: w.key, task: w.task, err: err.message });
+      return false;
+    });
+  }
+
   /** A refused wake's one word: its task's notice, else the owner (false when neither landed: the wake must stay for its lease). */
   async function sayRefusal(w: Wake, e: KernelError): Promise<boolean> {
     const noted = await kernel.note(w.key, refusalNotice(e)).then(() => true, (err: Error) => {
       log("refused wake: its notice wasn't posted, telling the owner", { wake: w.key, task: w.task, err: err.message });
       return false;
     });
-    if (noted) return true;
-    // The owner's notice names its task by identifier (WOR-123): the kernel refuses a Paperclip id there.
-    const id = (await kernel.task(w.task).catch(() => undefined))?.identifier;
-    return kernel.notify({ kind: "decision", ...(id ? { task: id } : {}), dedupe_key: `refused-wake:${w.key}`, text: refusalForOwner(id ?? w.task, e) }).then(() => true, (err: Error) => {
-      log("refused wake: the owner's notice wasn't posted either", { wake: w.key, task: w.task, err: err.message });
-      return false;
-    });
+    return noted || tellOwner(w, e);
   }
 
   return {
@@ -373,7 +377,10 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           // hands (the notice says which). The task's notice first, else the owner's. Neither landed: keep the row for its lease.
           // One that already said its piece (an earlier drop that failed) says nothing more and only retries the drop.
           if (!next.noticed) {
-            if (!(await sayRefusal(w, e))) return log("wake refused: neither its notice nor the owner's landed, kept for its lease", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, err: e.message.slice(0, 200) });
+            // A closed task takes no notice (one on it would reopen it, and a finished task is never written to), so its owner
+            // hears the refusal directly; any other refusal goes on the task first.
+            const told = e.body?.type === "task-closed" ? await tellOwner(w, e) : await sayRefusal(w, e);
+            if (!told) return log("wake refused: neither its notice nor the owner's landed, kept for its lease", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, err: e.message.slice(0, 200) });
             next.noticed = true;
           }
           await gone();

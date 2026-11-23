@@ -688,6 +688,42 @@ test("an owner comment on a done chat reopens it to todo, its agent kept, before
   assert.equal(w.issues.chat2.status, "cancelled", "a cancelled chat is not reopened");
 });
 
+test("a reopen the control plane refuses is retried on the next scan, and files no wake on the closed task", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  const closed = "2026-11-18T10:00:02.500Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.event({ issueId: "chat" });
+  w.wakes.claim("dispatch");
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  w.fail.moves = 1; // the reopen's PATCH times out
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.issues.chat.status, "done", "nothing moved");
+  assert.deepEqual(w.rows("chat"), [], "no wake filed on a task admission would refuse");
+  await w.wakes.poll(); // its cursor still sits before the comment, so the same scan tries again
+  assert.equal(w.issues.chat.status, "todo");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+});
+
+test("a finished chat's owner comment whose event was lost is still found by the poll", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.tick();
+  const closed = "2026-11-18T10:00:02.500Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  w.wakes.claim("dispatch");
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" }); // no event reaches the kernel
+  await w.wakes.poll();
+  assert.equal(w.issues.chat.status, "todo", "the poll's finished-chat pass reopened it");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+});
+
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
   const w = world();
   w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });

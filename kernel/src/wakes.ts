@@ -217,10 +217,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   /** A chat: the `chat` label when the read has labels, else the chat flag its facts recorded. */
   const isChat = (issue: Issue) => (Array.isArray(issue.labels) ? issue.labels.some((l) => l.name === "chat") : chatOf(lastFacts(issue.id)) === true);
   /**
-   * The owner's own word on a task: a person's comment, never an agent's, a kernel notice, a wake notice or a bridge's relay
-   * (all posted under the owner's key but not said by them).
+   * The owner's own word on a task: a person's comment, never an agent's or any kernel-written tag (a kernel notice, a wake
+   * notice, a bridge's relay: all posted under the owner's key but not said by them).
    */
-  const ownerWord = (c: Comment) => !c.authorAgentId && Boolean(c.authorUserId) && !/<!-- aidenhq(:|-(wake|for-others|notice|approval))/.test(c.body ?? "");
+  const ownerWord = (c: Comment) => !c.authorAgentId && Boolean(c.authorUserId) && !String(c.body ?? "").includes("<!-- aidenhq");
   /**
    * The issue as its facts need it: a list row may lack the description a first fact reads (a module's markers) or the labels a
    * chat flag reads, so a task with no created fact, or one whose chat flag nobody recorded, is read once whole.
@@ -319,14 +319,14 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     let reopenedHere = false;
     if (String(issue.status ?? "") === "done" && isChat(issue) && all.some((c) => !c.deletedAt && ms(c.createdAt) > finishedAt && ownerWord(c))) {
       const p = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo" });
-      if (p.status >= 300) log("wake chat reopen failed", { task: issue.id, status: p.status });
-      else {
-        // Recorded before the wake it lets start: task state reads the chat open when its run begins. The status is the one the
-        // reopened task has now, from the control plane's answer or the move this scan just made.
-        const moved = { ...issue, status: "todo", updatedAt: iso(now()) };
-        taskFacts(moved, source, actor);
-        reopenedHere = true;
-      }
+      // A failed reopen leaves this scan's cursor where it was, so the next one reads the same comment and tries the move again;
+      // filing its wake on the closed task would only be refused.
+      if (p.status >= 300) { log("wake chat reopen failed", { task: issue.id, status: p.status }); return; }
+      // The issue is the reopened task from here on: its row below records `todo`, so the next scan files no status wake for the
+      // move. Its facts are written before the wake it lets start, so task state reads the chat open when its run begins.
+      issue = { ...issue, ...(p.json && typeof p.json === "object" ? p.json : {}), status: "todo", updatedAt: typeof p.json?.updatedAt === "string" ? p.json.updatedAt : iso(now()) };
+      taskFacts(issue, source, actor);
+      reopenedHere = true;
     }
     for (const c of all) {
       if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
@@ -599,6 +599,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   }
 
   const companies = new Map<string, string>();
+  /** When the last poll began: the window a finished chat's missed comment is looked for in. */
+  let lastPoll = 0;
   /** The wait-park reconcile, once idle.ts has it (it is made after this inbox): a task's own event re-parks a restored wait at
    *  once, so the recovery sweep's tick never gets to see a settled wait in a status it scans. */
   let settleOn: ((issue: Issue) => Promise<unknown>) | undefined;
@@ -629,6 +631,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     async poll() {
       try { q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run(); } catch (e) { log("wake poll failed", { step: "close ended wakes", err: (e as Error).message }); }
       const listed = new Set<string>();
+      // A finished chat's comment can be missed with its event (a kernel restart, a lost delivery): every poll re-reads the chats
+      // that closed since the last one, so the scan can reopen and wake them. The first poll looks back a little further.
+      const since = iso(lastPoll ? lastPoll - 60_000 : now() - 10 * 60_000);
+      lastPoll = now();
       for (const agent of polled().keys()) {
         try {
           if (!companies.has(agent)) {
@@ -647,6 +653,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           for (const issue of b.json as Issue[]) {
             await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
             await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
+          }
+          const d = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=done&limit=200&assigneeAgentId=${encodeURIComponent(agent)}&updatedSince=${encodeURIComponent(since)}`);
+          if (d.status !== 200 || !Array.isArray(d.json)) throw new Error(`control plane GET done issues → ${d.status}`);
+          for (const issue of d.json as Issue[]) {
+            if (listed.has(issue.id) || !isChat(issue)) continue;
+            listed.add(issue.id);
+            await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
           }
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
