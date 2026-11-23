@@ -346,8 +346,8 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
 
   /**
    * The search: keyword and meaning in one statement over every live row. Keyword: every typed term, its words as a phrase
-   * (`task_wait` is `task` then `wait`, not both anywhere; `code-review` is `code` then `review`, so "code review" matches;
-   * the compound token keeps its place, so `task_code-review` still finds itself),
+   * (`task_wait` is `task` then `wait`, not both anywhere), either as typed or with its compounds' words spaced
+   * (`code-review` also finds "code review"),
    * the last one's as prefixes, so a half-typed word or identifier matches. Meaning: cosine to the query's embedding at least
    * the model's threshold. Each side brings its best PER_SIDE (keyword by `ts_rank_cd`, meaning by cosine), among the hits
    * and among the older closes each, so neither takes the other's room. A task whose identifier is the query ranks first,
@@ -368,13 +368,11 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     if (o.after && !o.keyword && !v) throw Object.assign(new Error("meaning search failed on a later page; ask again"), { status: 503 });
     const rows = (await s.query(`WITH q AS (
         SELECT (SELECT string_agg(phrase, ' & ' ORDER BY ord)::tsquery FROM (
-                  SELECT ord, string_agg(CASE WHEN prev IS NULL THEN '' ELSE '<' || (p - prev) || '> ' END || quote_literal(lexeme)
-                    || CASE WHEN ord = cardinality($1::text[]) THEN ':*' ELSE '' END, ' ' ORDER BY p) AS phrase
-                  FROM (SELECT ord, lexeme, p, lag(p) OVER (PARTITION BY ord ORDER BY p) AS prev FROM (
-                          SELECT ord, alias, lexemes[1] AS lexeme, row_number() OVER (PARTITION BY ord ORDER BY tok) AS p
-                          FROM unnest($1::text[]) WITH ORDINALITY AS u(term, ord), ts_debug('simple', term) WITH ORDINALITY AS d(alias, description, token, dictionaries, dictionary, lexemes, tok)
-                          WHERE cardinality(lexemes) > 0) w
-                        WHERE alias NOT IN ('asciihword', 'hword', 'numhword')) l
+                  SELECT ord, '(' || string_agg(w, ' <-> ' ORDER BY tok) FILTER (WHERE NOT compound) || ' | ' || string_agg(w, ' <-> ' ORDER BY tok) || ')' AS phrase
+                  FROM (SELECT ord, tok, alias IN ('asciihword', 'hword', 'numhword') AS compound,
+                          quote_literal(lexemes[1]) || CASE WHEN ord = cardinality($1::text[]) THEN ':*' ELSE '' END AS w
+                        FROM unnest($1::text[]) WITH ORDINALITY AS u(term, ord), ts_debug('simple', term) WITH ORDINALITY AS d(alias, description, token, dictionaries, dictionary, lexemes, tok)
+                        WHERE cardinality(lexemes) > 0) l
                   GROUP BY ord) t) AS tq,
                $2::vector AS v),
       m AS (

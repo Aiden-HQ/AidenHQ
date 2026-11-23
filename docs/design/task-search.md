@@ -86,8 +86,8 @@ status, routine runs included), with three separate rules:
 
 1. Embed `q` (timeout 2.5 s). A failure, timeout or spend refusal sets `semantic: false` and the query goes on keyword only.
 2. One SQL statement over every live row: the typed terms ANDed, each term's words as a phrase (`task_wait` is `task`
-   then `wait`, not both anywhere in the task; `code-review` is `code` then `review`, so "code review" matches too, the
-   compound token keeping its place so `task_code-review` still finds itself) and the
+   then `wait`, not both anywhere in the task; a term matches as typed or with its compounds' words spaced,
+   so `code-review` also finds "code review") and the
    last term's as prefixes (so `WOR-12`, `dispat`, `code-rev` and `kernel/src/jo` match as typed), OR `1 − (embedding <=> v) ≥ threshold` (calibrated per model by the eval's negative
    queries). Exact cosine over ~11k rows is tens of milliseconds.
 3. **Each side brings at most its best 50** (`PER_SIDE`): the keyword matches by `ts_rank_cd`, the meaning matches by
@@ -96,7 +96,7 @@ status, routine runs included), with three separate rules:
    (`WOR-10957`), it ranks first and meaning brings nothing: an identifier's meaning is noise.
 4. Rank by reciprocal-rank fusion (k 60) of the keyword rank and the cosine rank, each over the returned rows (a keyword
    match below the cosine floor still gets its cosine rank: meaning orders the keyword matches; a vote only from the side
-   that picked a row scored 0.682 nDCG@10 against 0.709).
+   that picked a row scored 0.682 nDCG@10 against 0.709 when measured).
 5. Answer `{ids, done, next, semantic}`: `ids`, every match not closed before `closed_before`, ranked (ids only: the board
    holds those cards, and the answer stays far under the board API's 4 MB); `recent`, on the first page, the matches closed
    since `closed_before` as cards (the board may lack one: a close with no task state yet); `done`, the matches closed before it, newest close first, a page of `limit` after the cursor `after`
@@ -209,14 +209,14 @@ duplicate group is) and the 12 negatives, the after column from the shipped SQL 
 
 | Set | Matches, mean (max) | Precision@all | Recall at the result count | R@10 | nDCG@10 |
 | --- | --- | --- | --- | --- | --- |
-| All 45 | 636 (5,948) → 46 (100) | 0.439 → 0.599 | 0.713 → 0.403 | 0.725 → 0.725 | 0.680 → 0.709 |
-| Paraphrase (16) | 255 → 43 | 0.244 → 0.314 | 0.491 → 0.331 | 0.362 → 0.356 | 0.342 → 0.337 |
-| Identifier, path (13) | 335 → 34 | 0.471 → 0.536 | 0.819 → 0.703 | 0.850 → 0.857 | 0.809 → 0.860 |
-| Area word (10) | 1,236 → 64 | 0.673 → 0.922 | 0.764 → 0.175 | 0.990 → 0.980 | 0.942 → 0.949 |
-| Half-typed (6) | 1,308 → 51 | 0.497 → 0.954 | 0.989 → 0.327 | 0.983 → 1.000 | 0.870 → 0.972 |
+| All 45 | 636 (5,948) → 46 (100) | 0.439 → 0.598 | 0.713 → 0.405 | 0.725 → 0.723 | 0.680 → 0.707 |
+| Paraphrase (16) | 255 → 43 | 0.244 → 0.315 | 0.491 → 0.335 | 0.362 → 0.356 | 0.342 → 0.337 |
+| Identifier, path (13) | 335 → 34 | 0.471 → 0.534 | 0.819 → 0.703 | 0.850 → 0.857 | 0.809 → 0.860 |
+| Area word (10) | 1,236 → 64 | 0.673 → 0.920 | 0.764 → 0.175 | 0.990 → 0.970 | 0.942 → 0.941 |
+| Half-typed (6) | 1,308 → 51 | 0.497 → 0.951 | 0.989 → 0.326 | 0.983 → 1.000 | 0.870 → 0.972 |
 
 Negatives with any match: 0/12 → 0/12. The owner's queries: "review module" 1,378 → 75, "slack reactions" 4,582 → 63,
-"code review recheck" 2,063 → 67, "approval card on the board" 475 → 89, "task search" 628 → 98, "kernel spend cap" 16 →
+"code review recheck" 2,063 → 66, "approval card on the board" 475 → 89, "task search" 628 → 98, "kernel spend cap" 16 →
 16, "warehouse pgvector" 13 → 13, "telegram bot" 46 → 46, "WOR-10957" 92 → 1 (itself). Recall at the result count falls by
 construction where the relevant set is in the hundreds (an area word): those are the matches past the best 50 on each side.
 The baseline here is below the encoder table's (0.725 against 0.763 R@10): it runs on the live index with summaries, and

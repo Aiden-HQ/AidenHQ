@@ -145,6 +145,7 @@ test("a task whose identifier is the query ranks first and meaning brings nothin
     ["t-22", issue("t-22", "Code review lenses", { identifier: "WOR-22" })],
     ["t-23", issue("t-23", "task_wait answers early", { identifier: "WOR-23" })],
     ["t-24", issue("t-24", "A task that should wait_code-review", { identifier: "WOR-24" })],
+    ["t-25", issue("t-25", "Wait for code review", { identifier: "WOR-25" })],
   ]);
   const { search, drain } = await setup({ issues });
   for (const id of issues.keys()) search.mark(id);
@@ -152,9 +153,9 @@ test("a task whose identifier is the query ranks first and meaning brings nothin
   // "REVIEW-1" is near WOR-22 in (fake) meaning; its own task and the tasks citing it are what it finds.
   assert.deepEqual((await search.search("REVIEW-1")).hits.map((h) => h.identifier), ["REVIEW-1", "REVIEW-10"]);
   assert.deepEqual((await search.search("task_wait")).hits.map((h) => h.identifier), ["WOR-23"], "not task and wait anywhere");
-  assert.deepEqual((await search.search("code-rev", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24"], "a half-typed compound is a prefix");
-  assert.deepEqual((await search.search("wait_code-review", { keyword: true })).hits.map((h) => h.identifier), ["WOR-24"], "a compound inside a term keeps its place");
-  assert.deepEqual((await search.search("code-review", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24"], "a compound finds its words spaced too");
+  assert.deepEqual((await search.search("code-rev", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24", "WOR-25"], "a half-typed compound is a prefix");
+  assert.deepEqual((await search.search("wait_code-review", { keyword: true })).hits.map((h) => h.identifier), ["WOR-24"], "as typed, not with a gap");
+  assert.deepEqual((await search.search("code-review", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24", "WOR-25"], "a compound finds its words spaced too");
 });
 
 test("live changes go before the backfill, and a fresh edit pulls a backed-off retry forward", async () => {
