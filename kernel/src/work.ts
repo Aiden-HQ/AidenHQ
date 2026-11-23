@@ -86,8 +86,8 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
     since(from: string, to = new Date().toISOString()) {
       const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
       // Confirmed spend only: a `reserved` call's amount is an estimate, an `unsettled` one the gateway's fail-closed hold, and a call
-      // that settled with no tokens seen (a stream cut or gone quiet, `upstream_aborted`) was closed at its reservation. A billed call has tokens.
-      const settled = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL AND (input > 0 OR cached > 0 OR output > 0)";
+      // that settled with no tokens seen (a stream cut or gone quiet, `upstream_aborted`) was closed at its reservation. A billed call has tokens (a free refusal, at $0, is confirmed too).
+      const settled = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL AND (cost_usd = 0 OR input > 0 OR cached > 0 OR output > 0)";
       const usage = rows(`SELECT agent_id AS agent, day, COALESCE(SUM(CASE WHEN ${settled} THEN cost_usd END), 0) AS cost_usd, COUNT(*) AS calls, COUNT(CASE WHEN ${settled} THEN 1 END) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day`, from, to);
       // What the spend was on, per day: the five costliest components and subjects (a check run's `code-review:<run>`, a task) of each day,
       // so a spike names its cause (the Fleet Steward's spend check reads them with the totals above).
