@@ -43,4 +43,14 @@ it("starts on the organisation applied to the module, not on a saved one that ha
     await new Promise((r) => setTimeout(r, 20));
   });
   expect(el.querySelector("button")?.textContent).toBe("Use this organisation");
+  // A saved organisation that left the catalog is not picked either, on the Settings picker.
+  body.chosen = "gone";
+  body.suggested = null as never;
+  act(() => root!.unmount());
+  root = createRoot(el);
+  await act(async () => {
+    root!.render(createElement(OrganisationPicker, {}));
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  expect(el.textContent).toContain("None of these");
 });

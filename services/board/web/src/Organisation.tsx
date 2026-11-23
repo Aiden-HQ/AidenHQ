@@ -10,13 +10,16 @@ import "./setup-flow.css";
 const list = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
 
 /**
- * The organisation a picker starts on. A setup page (`bare`, for its `module`) starts on the organisation applied to that module,
- * else the saved or email-suggested one only if it has an app for the module (the dropdown lists no other); never a hidden id.
+ * The organisation a picker starts on: only one the catalog still lists (a saved id may have left it). A setup page (`bare`, for
+ * its `module`) starts on the one applied to that module, else the saved or suggested one if it has an app for the module (the
+ * dropdown lists no other).
  */
 function initialPick(d: Organisations, module: string | undefined, bare: boolean | undefined): string | null {
-  if (!bare || !module) return d.chosen ?? d.suggested;
-  const offers = (id: string | null | undefined) => (d.organisations.find((o) => o.id === id)?.connections.includes(module) ? id! : null);
-  return offers(d.applied?.[module]) ?? offers(d.chosen) ?? offers(d.suggested);
+  const listed = (id: string | null | undefined) => {
+    const o = d.organisations.find((x) => x.id === id);
+    return o && (!bare || !module || o.connections.includes(module)) ? o.id : null;
+  };
+  return (bare && module ? listed(d.applied?.[module]) : null) ?? listed(d.chosen) ?? listed(d.suggested);
 }
 
 /**
