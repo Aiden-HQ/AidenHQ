@@ -20,7 +20,7 @@ import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
-import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
+import { KERNEL_KINDS, KERNEL_ROLES, repoKey } from "../kernel/src/kinds.ts";
 import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
 
 // Manifests, instance files and Paperclip data are YAML/JSON read at run time: their shapes are described by the docs, not by types here.
@@ -414,9 +414,8 @@ export function productsOf(v: unknown): Record<string, string[]> {
     if (!name.trim() || name.length > 100) fail(`projects: "${name}" is not a project name (1 to 100 characters)`);
     if (!Array.isArray(repos) || !repos.length) fail(`projects.${name}: a list of repos (owner/name)`);
     out[name] = (repos as unknown[]).map((r) => {
-      // As the kernel compares repos (kinds.ts repoKey): lower-case, without a trailing slash or .git.
-      const k = String(r).trim().toLowerCase().replace(/\/+$/, "").replace(/\.git$/, "");
-      if (!/^[\w.-]+\/[\w.-]+$/.test(k)) fail(`projects.${name}: ${String(r)} is not a repo (owner/name)`);
+      // As the kernel compares repos (kinds.ts repoKey).
+      const k = repoKey(r) ?? fail(`projects.${name}: ${String(r)} is not a repo (owner/name)`);
       if (seen.has(k) && seen.get(k) !== name) fail(`projects: ${k} is listed under both ${seen.get(k)} and ${name}`);
       seen.set(k, name);
       return k;

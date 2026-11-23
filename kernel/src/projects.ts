@@ -36,10 +36,12 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
   log?: (msg: string, f?: Record<string, unknown>) => void;
   now?: () => number;
 }) {
-  db.exec(`CREATE TABLE IF NOT EXISTS project_repos (company TEXT NOT NULL, repo TEXT NOT NULL, project TEXT NOT NULL, PRIMARY KEY (company, repo));
+  // `product`: the row came from the products map (1), else it is the repo's own project (0).
+  db.exec(`CREATE TABLE IF NOT EXISTS project_repos (company TEXT NOT NULL, repo TEXT NOT NULL, project TEXT NOT NULL, product INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (company, repo));
     CREATE TABLE IF NOT EXISTS project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL)`);
   // The tasks PRs touched before this table existed: from the fact log's pr.opened, once (a repo's own facts name it lower-case).
-  try { db.exec("INSERT OR IGNORE INTO project_tasks (task, repo) SELECT task, lower(json_extract(data, '$.repo')) FROM facts WHERE type = 'pr.opened' AND task IS NOT NULL AND json_extract(data, '$.repo') IS NOT NULL"); } catch { /* no fact log here */ }
+  // Only the facts the live path takes (backplane's /v1/facts): a code host's own, recorded live, first one per task.
+  try { db.exec("INSERT OR IGNORE INTO project_tasks (task, repo) SELECT task, lower(json_extract(data, '$.repo')) FROM facts WHERE type = 'pr.opened' AND source = 'live' AND (version LIKE 'github/%' OR version LIKE 'codehost-local/%') AND task IS NOT NULL AND json_extract(data, '$.repo') IS NOT NULL ORDER BY seq"); } catch { /* no fact log here */ }
   let chain: Promise<unknown> = Promise.resolve();
   /** One write at a time, in order. */
   const serial = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -84,7 +86,7 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
     const row = db.prepare("SELECT project FROM project_repos WHERE company = ? AND repo = ?").get(company, repo) as { project: string } | undefined;
     if (row) return row.project;
     const project = await projectFor(company, repo);
-    db.prepare("INSERT OR IGNORE INTO project_repos (company, repo, project) VALUES (?, ?, ?)").run(company, repo, project);
+    db.prepare("INSERT OR IGNORE INTO project_repos (company, repo, project, product) VALUES (?, ?, ?, ?)").run(company, repo, project, productOf(repo) ? 1 : 0);
     return project;
   }
 
@@ -115,8 +117,10 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
     sync: () => serial(async () => {
       const map = JSON.stringify(products());
       if (map === synced) return;
-      const rows = db.prepare("SELECT company, repo, project FROM project_repos").all() as { company: string; repo: string; project: string }[];
+      const rows = db.prepare("SELECT company, repo, project, product FROM project_repos").all() as { company: string; repo: string; project: string; product: number }[];
       for (const r of rows) {
+        // A repo's own project stays as it is while no product lists it.
+        if (!r.product && !productOf(r.repo)) continue;
         const to = await projectFor(r.company, r.repo);
         if (to === r.project) continue;
         let moved = 0;
@@ -130,7 +134,7 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
           ok(await owner("PATCH", `/api/issues/${enc(i.id)}`, { projectId: to }), "moving a task");
           moved++;
         }
-        db.prepare("UPDATE project_repos SET project = ? WHERE company = ? AND repo = ?").run(to, r.company, r.repo);
+        db.prepare("UPDATE project_repos SET project = ?, product = ? WHERE company = ? AND repo = ?").run(to, productOf(r.repo) ? 1 : 0, r.company, r.repo);
         log("repo moved to the project the map gives it", { company: r.company, repo: r.repo, from: r.project, to, moved });
       }
       synced = map;
