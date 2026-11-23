@@ -374,7 +374,7 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     if (lane === "owner" && r.ok && (created || changed)) {
       try {
         const issue = JSON.parse(out.toString("utf8")) as { id?: unknown };
-        if (typeof issue.id === "string" && created) ownerFiled(issue.id);
+        if (typeof issue.id === "string" && created && !(issue as { deduplicated?: unknown }).deduplicated) ownerFiled(issue.id);
         if (typeof issue.id === "string") await observe?.(issue as { id: string }, account ? `account:${account}` : "unknown");
       } catch (e) { log("observe failed", { path, err: (e as Error).message }); }
     }
