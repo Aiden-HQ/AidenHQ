@@ -229,6 +229,9 @@ test("the restated skill list is read in order and must cover every skill", () =
   const r = { message: "", read: true };
   assert.match(String(skillOutcome({ ...r, message: ran(true) }, ["/p:one", "/p:two"]).cause), /didn't say/);
   assert.equal(skillOutcome({ ...r, message: "```json\n" + ran(true, true) + "\n```" }, ["/p:one", "/p:two"]).read, true);
+  // A line of prose before the JSON (the live restate of a 13-minute run) is still its answer; JSON that doesn't run to the end isn't.
+  assert.equal(skillOutcome({ ...r, message: "I've checked the cited lines. Here is the restated set.\n\n" + ran(true, true) }, ["/p:one", "/p:two"]).read, true);
+  assert.match(String(skillOutcome({ ...r, message: `${ran(true, true)}\nand more words` }, ["/p:one", "/p:two"]).cause), /didn't say/);
 });
 
 test("Claude Code runs with its own sandbox off (gVisor refuses its network namespace), in the recipe's jail instead", async () => {
