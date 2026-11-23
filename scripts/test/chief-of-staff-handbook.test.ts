@@ -27,6 +27,7 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
   assert.match(bullet, /never `task_finish` it/, "the bullet names the refused call only to forbid it");
   assert.match(bullet, /`task_comment` with what was done and leave it open/, "a task the run filed gets a comment and stays open");
   assert.match(bullet, /`task_cancel` with its `issue` when they say drop it/, "a task the run filed is cancelled on the owner's word");
+  assert.match(bullet, /On a task this run may write on \(assigned to it, its part of the owner's task, or one it filed\)/, "the bullet names the tasks the run may write on");
   assert.match(bullet, /Any other task is refused \("isn't yours to change"\) for a comment and a cancel alike/, "a task the run cannot write on is left open, not commented");
 });
 
@@ -34,7 +35,7 @@ test("the daily brief's \"Still open\" close path does not `task_finish` an owne
   const agents = read("modules/chief-of-staff/agents/chief-of-staff/AGENTS.md");
   const line = block(agents, /\*\*Still open:\*\*/);
   assert.doesNotMatch(line, /task_finish/, "the close path names no `task_finish`");
-  assert.match(line, /"close" is `task_comment` with their reply as the evidence line, leaving the task open for them to close/, "close is a comment: the owner closes the task");
+  assert.match(line, /"close" is `task_comment` with their reply as the evidence line, leaving the task open for them — tell them it is theirs to close/, "close is a comment that says the task stays for the owner");
   assert.match(line, /when they say drop it, `task_cancel` with `issue`, falling back to that comment when the cancel is refused/, "a drop cancels where the agent may, else comments");
   assert.match(line, /"snooze" is `fleet_followup_snooze`/, "snooze is unchanged");
   assert.match(line, /"delegate to X" is `task_delegate`/, "delegate is unchanged");
