@@ -1079,15 +1079,16 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const asked = !ask && agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me);
           if (!asked) assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
           // Once per message, whatever the target (per task for an ask): reserved before posting, released if the post fails.
-          const key = asked ? `relayed:${comment_id}:${dest.id}` : `relayed:${comment_id}`;
-          if (store.meta(key)) throw new Refused("refused: that message was already relayed");
-          store.setMeta(key, new Date().toISOString());
+          // Every delivery also marks its own task, so a message reaches a task at most once whichever path it took.
+          const keys = [`relayed:${comment_id}:${dest.id}`, ...(asked ? [] : [`relayed:${comment_id}`])];
+          if (keys.some((k) => store.meta(k))) throw new Refused("refused: that message was already relayed");
+          for (const k of keys) store.setMeta(k, new Date().toISOString());
           const from: DeliveredFrom = { identifier: source.chat.identifier, commentId: source.comment.id, note: `Written in chat on ${source.chat.identifier}.` };
           let posted: Comment;
           try {
             posted = await pc.addComment(dest.id, `${deliveredText(words, from)}\n\n${fromMarker(from)}\n${RELAY_MARKER}`);
           } catch (err) {
-            store.delMeta(key);
+            for (const k of keys) store.delMeta(k);
             throw err;
           }
           log.info({ chat: source.chat.identifier, task: dest.identifier }, "chat message relayed");
