@@ -246,10 +246,10 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
   const todo = convs.filter((c) => cycleStart === null || at(c.id) < cycleStart).sort((a, b) => at(a.id) - at(b.id));
   let handled = 0;
 
-  // A message this pass newly inserted (not the baseline, not a reconcile re-read) goes to the event router like a live one, only late;
+  // A message this pass newly inserted (not the baseline, not a reconcile's re-read of older ones) goes to the event router like a live one, only late;
   // the event id is the message's, so the router drops one that also arrived live. Best effort: a failure is logged, never fails the pass.
-  const replay = async (id: string, type: string | undefined, m: Record<string, any>, r: string, baseline: boolean) => {
-    if (!forward || baseline || reconcile || r !== "new" || m.subtype === "tombstone") return;
+  const replay = async (id: string, type: string | undefined, m: Record<string, any>, r: string, baseline: boolean, fresh: boolean) => {
+    if (!forward || baseline || !fresh || r !== "new" || m.subtype === "tombstone") return;
     const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] });
     if (e) await forward(e).catch((err: unknown) => log?.warn({ err: String(err) }, "gap replay failed"));
   };
@@ -261,7 +261,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
       const w = messageWrite(id, m, type);
       const r = await writeMessage(store, w.table, w.row, baseline);
       if (r !== "same") written++;
-      await replay(id, type, m, r, baseline);
+      await replay(id, type, m, r, baseline, !reconcile);
     }
   };
 
@@ -307,7 +307,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
       const w = messageWrite(id, m, type);
       const r = await writeMessage(store, w.table, w.row, baseline);
       if (r !== "same") written++;
-      await replay(id, type, m, r, baseline);
+      await replay(id, type, m, r, baseline, !reconcile || Number(m.ts) > Number(st.cursor ?? 0));
       if (Number(m.ts) > Number(newest)) newest = m.ts;
       if (m.reply_count && Number(m.latest_reply) > Number(oldest)) threads.add(m.ts);
     }
