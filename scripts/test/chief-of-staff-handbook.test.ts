@@ -25,7 +25,7 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
   assert.doesNotMatch(bullet, /task_finish`?\s*(?:\(\s*)?`?issue/, "the bullet never pairs `task_finish` with an `issue`");
   assert.match(bullet, /a task the owner holds is theirs to close/, "an owner-held task is the owner's to close");
   assert.match(bullet, /never `task_finish` it/, "the bullet names the refused call only to forbid it");
-  assert.match(bullet, /one this run filed for them takes `task_cancel` with its `issue` only when they say drop it/, "a task the run filed for them takes a cancel only on a drop");
+  assert.match(bullet, /one this agent filed for them takes `task_cancel` with its `issue` only when they say drop it/, "a task this agent filed takes a cancel only on a drop (`createdByAgentId`, across runs)");
   assert.match(bullet, /Anything it cannot write on is refused \("isn't yours to change"\)/, "a task the run cannot write on is left open, not commented");
 });
 
@@ -38,7 +38,8 @@ test("the daily brief's \"Still open\" close path does not `task_finish` an owne
   const agents = read("modules/chief-of-staff/agents/chief-of-staff/AGENTS.md");
   const line = block(agents, /\*\*Still open:\*\*/);
   assert.doesNotMatch(line, /task_finish/, "the close path names no `task_finish`");
-  assert.match(line, /"close" is `task_cancel` with `issue` on a task this agent filed \(the only close an owner-held task takes from an agent\), with their reply as the evidence line, and on any other task \(the owner's own, or one another agent filed\) `task_comment` with their reply, leaving it open for them to close — say so/, "close cancels what the agent filed and comments on everything else, which stays open");
+  assert.match(line, /"close" is `task_comment` with their reply as the evidence line, leaving the task open for them to close — say so, and if the comment is refused tell them in the reply/, "close comments and leaves the task for the owner; a refused comment is said in the reply");
+  assert.match(line, /"drop it" is `task_cancel` with `issue` on a task this agent filed/, "cancel is reserved for a drop, on a task this agent filed");
   assert.match(line, /"snooze" is `fleet_followup_snooze`/, "snooze is unchanged");
   assert.match(line, /"delegate to X" is `task_delegate`/, "delegate is unchanged");
 });
