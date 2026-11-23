@@ -290,6 +290,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       }
       if (action === "merge") {
         const merged: { repo: string; number: number; head: string; sha: string }[] = [];
+        // The evidence line for whatever landed, on a failure as much as on success: a batch that landed one change before the
+        // next failed must not read as "nothing merged".
+        const evidence = () => (merged.length ? `merged-prs: ${JSON.stringify(merged)}\n` : "");
         for (const p of a.prs) {
           const c = await readChange(p.repo, Number(p.number));
           const t0 = Date.now(), task = (c.meta.task as string | undefined) ?? null;
@@ -300,15 +303,19 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
           fact({ type: "pr.checks_completed", subject: `${subject(p.repo, c.n)}@${p.head}`, version: `${p.head}:1`, at, task, data: { head: p.head, conclusion: why ? "failure" : "success", failed: why ? ["checks"] : [] } });
           // A batch that landed some of its PRs before one refused still reports them as merged: the evidence line comes first,
           // as the success text's does, so a run reading the outcome knows which heads did land.
-          if (why) return { ok: false, text: `${merged.length ? `merged-prs: ${JSON.stringify(merged)}\n` : ""}${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
-          const sha = await land(p.repo, c.n, p.head);
+          if (why) return { ok: false, text: `${evidence()}${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
+          // A land can throw after the checks passed (the base moved under it). The kernel keeps only an exception's message as
+          // the outcome, so the evidence line goes in the message too, or a run would read the batch as "nothing merged".
+          const sha: string = await land(p.repo, c.n, p.head).catch((e: Error) => {
+            throw new Error(`${evidence()}${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; ${String(e?.message ?? e).slice(0, 200)}`);
+          });
           fact({ type: "pr.merged", subject: subject(p.repo, c.n), version: p.head, at: new Date().toISOString(), task: (c.meta.task as string | undefined) ?? null, data: { sha, head: p.head } });
           void churnLocal(p.repo).catch(() => {}); // churn never delays or fails a merge
           merged.push({ repo: p.repo, number: c.n, head: p.head, sha });
           done.push(`${changeUrl(p.repo, c.n)} as ${sha.slice(0, 12)}`);
         }
         // The first line as codehost-github's merge queue writes it (merges.ts MERGED_LINE): what the grader reads as merged.
-        return { ok: true, text: `merged-prs: ${JSON.stringify(merged)}\nMerged: ${done.join(", ")}` };
+        return { ok: true, text: `${evidence()}Merged: ${done.join(", ")}` };
       }
       if (action === "close") {
         for (const p of a.prs) {

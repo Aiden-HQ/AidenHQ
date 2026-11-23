@@ -145,9 +145,10 @@ const newer = (a: Approval, b: Approval) => {
   if (Number.isNaN(ta)) return false;
   return Number.isNaN(tb) || ta > tb;
 };
-/** A merge kind's action: the kernel's own kinds (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
- * A card of any other kind says only what the board's own view says, whatever its args hold. */
-const isMergeKind = (action: string) => action === "merge" || action.endsWith(".merge");
+/** The registered merge kinds: the two code hosts' (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
+ * A card of any other kind — a module's own `.merge`, say — says only what the board's own view says, whatever its args hold. */
+const MERGE_KINDS = ["merge", "github.merge", "codehost-local.merge"];
+const isMergeKind = (action: string) => MERGE_KINDS.includes(action);
 /** A merge card's view: the PRs and heads it is bound to (never the args whole), so a run can match the head it published. */
 const mergeView = (a: Approval) => {
   // A module's own args are its own shape: only an array of well-formed bindings is read, so one odd record never fails the
@@ -1131,9 +1132,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         if (!issue) throw new HttpError(400, "issue=<task>");
         const { caller, grant } = await requireAgentToolCaller(req, "task_approvals");
         // A lookup that failed is not a task with no cards: the run's check for a merge card must be able to tell them apart.
-        const task = await pc.issue(issue).then((i) => i.id, (e: Error) => {
+        const found = await pc.issue(issue).then((i) => i, (e: Error) => {
           throw new HttpError(502, `couldn't read ${issue}: ${String(e?.message ?? e).slice(0, 200)}`);
         });
+        const task = found.id;
+        // The kernel stores a record under the task its filer named, which is a run's workspace *identifier* for a merge it files
+        // itself (kernel/src/localmerge.ts) and the task id for a tool call. Reading by both finds either; authorization above
+        // is on the id alone.
+        const refs = [...new Set([task, found.identifier].filter((r): r is string => Boolean(r)))];
         // An Engineer without private reads reads only the task its run is working on: the check is against the grants table as
         // it is now, not a bridge's cached copy, so revoking that access takes effect on the next call.
         if (grant.profile === "engineer" && grant.private_reads !== true && task !== caller.task) {
@@ -1144,14 +1150,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // by kind: the newest page, and every page of the states one can still be in (the reviewer's or owner's wait, and the
         // approved or claimed run), so neither newer writes nor a full page of ended merges can hide the card that matters.
         const kinds = ["github.merge", "codehost-local.merge"];
-        const mine = (a: Approval) => a.issueId === task || a.identifier === task;
+        const mine = (a: Approval) => refs.some((r) => a.issueId === r || a.identifier === r);
         // The history read pages newest-first filtered to the merge kinds, so a merge that landed a while ago is still found
         // behind newer writes, while its other cards can never crowd it out. Only merges are paged up: a bounded number of
         // pages, well past a task's plausible history, and any page failing throws rather than reading as "no merge".
         const [recent, history, live] = await Promise.all([
-          cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
-          records.allOf("recent", kinds, task, HISTORY_PAGES),
-          records.allOf("live", kinds, task),
+          Promise.all(refs.map((r) => cardsOf("recent", { task: r, limit: 50, tier0: true, strict: true }))).then((p) => p.flat()),
+          Promise.all(refs.map((r) => records.allOf("recent", kinds, r, HISTORY_PAGES))).then((p) => p.flat()),
+          Promise.all(refs.map((r) => records.allOf("live", kinds, r))).then((p) => p.flat()),
         ]);
         // The reads run side by side, and one card can be in two of them: the later snapshot wins, so an ended card's
         // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished, and a card approved
