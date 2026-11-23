@@ -268,8 +268,12 @@ export function startPrWatch(o: PrWatchOptions) {
         const asked: { at: string; accepted: boolean; job: number } | undefined = state.wedged[name];
         const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head, check: String(c.name ?? "").slice(0, 100) }); continue; }
+        // A refused or unanswered read backs off before anything else, so an Actions outage is not hit on every tick.
         const prior: string | undefined = state.reran[`${url}:${head}:${jobId}`];
-        if (!asked && prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) continue;
+        if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) {
+          if (asked) out.push({ at: Date.parse(asked.at), accepted: asked.accepted });
+          continue;
+        }
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         let job: { status: number; body: any };
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
@@ -284,13 +288,15 @@ export function startPrWatch(o: PrWatchOptions) {
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== head || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt) || Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a fresh job's check run can lag
-        // The ask's clock already runs: the check is reported from it, and one GitHub took is not re-run again. One GitHub
-        // refused is asked again once its backoff has passed.
-        if (asked) {
-          out.push({ at: Date.parse(asked.at), accepted: asked.accepted });
-          if (asked.accepted) continue;
-          if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) continue;
-        }
+        // The ask's clock already runs: the check is reported from it (refreshed below if this tick's retry is taken), and
+        // one GitHub took is not re-run again. One GitHub refused is asked again once its backoff has passed.
+        if (asked?.accepted) { out.push({ at: Date.parse(asked.at), accepted: true }); continue; }
+        const tell = () => {
+          const now = { at: Date.parse(state.wedged[name].at), accepted: state.wedged[name].accepted };
+          const i = out.findIndex((o) => o.at === now.at);
+          if (i >= 0) out[i] = now; else out.push(now);
+        };
+        if (asked) tell();
         // The first ask starts the report's clock and is not moved by a refusal.
         state.wedged[name] ??= { at: new Date().toISOString(), accepted: false, job: Number(jobId) };
         let r: { status: number };
@@ -307,6 +313,7 @@ export function startPrWatch(o: PrWatchOptions) {
         // marked as handled with its check run still wedged.
         state.reran[`${url}:${head}:${jobId}`] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
         save();
+        tell(); // this tick's answer, not the one before it
       }
       return out;
     }
