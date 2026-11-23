@@ -47,6 +47,10 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
   assert.equal(made()[0].auth, "Bearer k");
   assert.deepEqual([made()[0].body.role, made()[0].body.source, made()[0].body.title], ["platform-engineer", "dependabot:acme/app/10", "Dependabot PR acme/app#10"]);
   assert.match(made()[0].body.description, /pull\/10/);
+  // The brief points at the skill, which owns the decision: an inline "close it if it is a major jump" sent agents to close a
+  // group PR while its replacement was still open, so the replacement closed unmerged and its bumps never landed.
+  assert.doesNotMatch(made()[0].body.description, /close it if it is a major jump/);
+  assert.match(made()[0].body.description, /as the .dependabot. skill says/);
 
   open = [];
   await watch.tick();
