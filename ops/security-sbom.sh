@@ -401,8 +401,11 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
 # each wave's saves then happen under a lock hold and its scans after the lock is released (the driver below), so an apply
 # waits only for one wave's saves. Returns 1 when the enumeration itself failed: the caller keeps the previous batch
 # rather than publish a short one.
-plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=(); plan_idx=()
-plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}"); plan_idx+=("${6:-0}"); }
+plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=(); plan_space=(); plan_idx=()
+plan_add() { # <target> <source> <pin> <ref> <size GB> <survey idx> [workspace bytes]
+  plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}")
+  plan_idx+=("${6:-0}"); plan_space+=("${7:-0}")
+}
 # The units this pass resolved and sized, indexed alike for the wave driver below. The sizes are known before any bytes
 # are written; the driver decides each wave from them, so a later wave never needs to look at the daemon again for size.
 p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=()
@@ -678,7 +681,7 @@ save_wave() { # <wave>
         fail "image:$key" "$why"
         continue
       fi
-      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx"
+      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx" "${p_bytes[$idx]}"
       # The resident bytes are the archive's measured size; the workspace a scan needs is the image's own size, which an
       # archive of compressed layers can be much smaller than. Both are kept: a scan unpacks layers, not the tar.
       written=$(( written + szb )); [ "${p_bytes[$idx]}" -gt "$written_big" ] && written_big="${p_bytes[$idx]}"
@@ -720,7 +723,7 @@ scan_wave() { # <first plan index>
     sz_bytes="$(stat -c %s "$archive" 2>/dev/null || echo 0)"
     # Resident bytes are the archive's; the workspace a scan unpacks is the image's own size, which a compressed archive
     # can be much smaller than. A scan must have room for both the archive and that workspace above the floor.
-    bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; space_of[$i]="${plan_size[$i]}"
+    bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; space_of[$i]="${plan_space[$i]}"
     [ "${space_of[$i]}" -gt 0 ] || space_of[$i]="$sz_bytes"
     remaining_bytes=$(( remaining_bytes + sz_bytes ))
   done
@@ -730,10 +733,11 @@ scan_wave() { # <first plan index>
       target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
       if [ ! -f "$archive" ]; then remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); fail "$target" "docker save: its archive is gone"; continue; fi
       avail_bytes="$(free_bytes)"; room_bytes=$(( avail_bytes - floor_bytes ))
-      # The archive stays on disk while this image is unpacked beside it: the room must hold the held archives' bytes plus
-      # this scan's workspace (the image's size), which is the same model the plan admitted waves with.
+      # The archive stays on disk while this image is unpacked beside it: the room must hold every archive still held plus
+      # this scan's workspace (the image's size), which is the model the plan admitted waves with. `avail_bytes` already has
+      # the archives' written bytes subtracted, so `remaining_bytes` is not added again; it is only the pool a prune frees.
       workspace="${space_of[$i]}"
-      if [ "$avail_bytes" -lt "$floor_bytes" ] || [ $(( remaining_bytes + workspace )) -gt "$room_bytes" ]; then rest+=("$i"); continue; fi
+      if [ "$avail_bytes" -lt "$floor_bytes" ] || [ "$workspace" -gt "$room_bytes" ]; then rest+=("$i"); continue; fi
       scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
       rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] ))
     done
@@ -749,14 +753,15 @@ scan_wave() { # <first plan index>
       local largest_gb=0
       for k in "${rest[@]}"; do [ "${bytes_of[$k]}" -gt "$largest_bytes" ] && largest_bytes="${bytes_of[$k]}"; done
       largest_gb="$(ceil_gb "$largest_bytes")"
-      # First drop every archive no round can scan (its own bytes twice over exceed the capacity): giving it room would
-      # only crowd out an image that can. This runs before any viable archive is considered, so a wave that starts below
-      # the floor still keeps its scannable images.
+      # First drop every archive no round can scan (the workspace its scan unpacks exceeds the room the whole pool can
+      # ever provide): giving it room would only crowd out an image that can. The workspace is the image's own size, not
+      # the archive's, since compressed layers expand. This runs before any viable archive is considered, so a wave that
+      # starts below the floor still keeps its scannable images.
       for k in "${rest[@]}"; do
-        if [ $(( 2 * bytes_of[$k] )) -gt "$capacity" ]; then
+        if [ "${space_of[$k]}" -gt "$capacity" ]; then
           i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$k]}"
           room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
-          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - bytes_of[$i] )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (2 * bytes_of[$i] - capacity + 1073741823) / 1073741824 )))"
+          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - bytes_of[$i] )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (space_of[$i] - capacity + 1073741823) / 1073741824 )))"
           rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); continue
         fi
         keep+=("$k")
@@ -773,8 +778,8 @@ scan_wave() { # <first plan index>
         room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
         # The survey index travels with the archive: two containers on different indexes can share one target name, so
         # looking the name up would defer (and re-export) the other one and leave this unit never retried.
-        if [ -z "${plan_idx[$i]:-}" ] || ! defer_to_next_wave "${plan_idx[$i]}" "$(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"; then
-          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"
+        if [ -z "${plan_idx[$i]:-}" ] || ! defer_to_next_wave "${plan_idx[$i]}" "$(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (space_of[$i] - room_now + 1073741823) / 1073741824 )))"; then
+          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (space_of[$i] - room_now + 1073741823) / 1073741824 )))"
         fi
         rm -f "$archive"; remaining_bytes=$(( remaining_bytes - drop_bytes ))
         local -a dropped=()
