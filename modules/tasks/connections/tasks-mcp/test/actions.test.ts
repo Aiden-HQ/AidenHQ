@@ -143,7 +143,7 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   // Whether a card wakes the task, and the whole `merged-prs` line the rule's evidence is.
   const byId = (id: string) => own.approvals.find((a: { id: string }) => a.id === id);
   assert.deepEqual(own.approvals.map((a: { id: string; wakes: boolean }) => [a.id, a.wakes]), [["k-1", true], ["k-3", true], ["k-2", false], ["k-4", true]]);
-  assert.equal(byId("k-4").reason, "the base moved: rebase and ask again", "a rejected card says what to change");
+  assert.match(byId("k-4").reason, /^<untrusted-card-reason source="merge card k-4, rejected">\nthe base moved: rebase and ask again\n<\/untrusted-card-reason>$/, "a rejected card says what to change, fenced as data");
   assert.deepEqual(byId("k-1").prs, [{ repo: "a/b", number: 1, head: "a".repeat(40) }], "the card says which PR and head it is bound to");
   assert.equal(byId("k-1").live, true, "a live card says so, whatever its state word");
   assert.equal(byId("k-3").live, undefined, "an ended card carries no live flag");

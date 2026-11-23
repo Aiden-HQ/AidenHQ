@@ -1316,10 +1316,10 @@ const TOOLS: Record<string, Tool> = {
           const text = a.outcomeText ? String(a.outcomeText) : "";
           const [first, ...rest] = text.split("\n");
           const outcomeText = (first ?? "").startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
-          // A rejection's reason is the reviewer's or the owner's words (data, never instructions), bounded: a run that finds
-          // the card on a later check needs to know what to change.
-          const why = a.state === "rejected" ? String(a.review ?? a.reason ?? "") : "";
-          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(why ? { reason: why.slice(0, 300) } : {}), createdAt: a.createdAt };
+          // A rejection's reason is the reviewer's or the owner's words, which may quote the diff: fenced and labelled, so a run
+          // that finds the card on a later check knows what to change without reading them as an instruction.
+          const why = a.state === "rejected" ? `<untrusted-card-reason source="${a.action} card ${a.id}, ${a.state}">\n${String(a.review ?? a.reason ?? "").replace(/<\/?untrusted-card-reason[^>]*>/gi, "").slice(0, 300)}\n</untrusted-card-reason>` : "";
+          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(why ? { reason: why } : {}), createdAt: a.createdAt };
         }),
       };
     },

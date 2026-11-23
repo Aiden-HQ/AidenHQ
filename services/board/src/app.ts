@@ -1143,9 +1143,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // approved or claimed run), so neither newer writes nor a full page of ended merges can hide the card that matters.
         const kinds = ["github.merge", "codehost-local.merge"];
         const mine = (a: Approval) => a.issueId === task || a.identifier === task;
+        // The history read is one newest-first page filtered to the merge kinds, so hundreds of a long task's past merges never
+        // page up and its other cards never crowd them out; the live read is paged, and only in-flight merges are that many.
         const [recent, history, live] = await Promise.all([
           cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
-          records.allOf("recent", kinds, task),
+          cardsOf("recent", { task, limit: 20, tier0: true, strict: true, kinds }),
           records.allOf("live", kinds, task),
         ]);
         // The reads run side by side, and one card can be in two of them: the later snapshot wins, so an ended card's
