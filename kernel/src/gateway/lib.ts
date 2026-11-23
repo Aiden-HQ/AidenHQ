@@ -34,8 +34,9 @@
 // holding the call's estimated input cost plus its granted output (output price x the bound it got), so calls in flight
 // count in full: concurrent calls share one room instead of each buying all of it. Settlement replaces the row's cost with what
 // OpenRouter billed (the answer's usage.cost, which it always sends; tokens x list price only if a usage block lacks it). No
-// final usage (a stream cut or ended without one, an upstream failure) leaves the estimate; with a generation id (`gen`) the
-// row is closed as `unsettled` and settled from OpenRouter's record of that generation as `interrupted`, at what it billed. A
+// final usage (a stream cut or ended without one, an upstream failure) leaves the estimate; an answer that began without one
+// is closed as `unsettled` (a hold, not a bill, for the board) and, with a generation id (`gen`), settled from OpenRouter's
+// record of that generation as `interrupted`, at what it billed. A
 // reservation whose kernel died (its `owner`, boot and pid) is closed as `unsettled` at that amount (fail closed) and trued up
 // the same way. A restart lets calls in flight
 // finish in the old kernel (main.ts drain), so the next kernel never closes a live peer's reservation. Past a limit every
@@ -705,12 +706,13 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // Settled once, however the call ends: at what OpenRouter billed (usage.cost; tokens x list price if a usage block lacks it,
     // never 0); nothing when the upstream refused before any output or a stream failed in-band (`free`: OpenRouter bills
     // neither; the latter as `stream_error`, so it stays visible); else the reservation (a stream cut or ended without final
-    // usage, a restart), closed as `unsettled` when the answer has a generation id so trueUp books what OpenRouter billed.
+    // usage, a restart); an answer that began without final usage is closed as `unsettled`, which trueUp settles at what
+    // OpenRouter billed when it has a generation id.
     live++;
     const settle = (status: string, u?: Usage, free = false) => {
       live--;
       const billed = u ? (u.costUsd ?? (u.input * price.in + u.cached * price.cached_in + u.output * price.out) / 1e6) : free ? 0 : r.usd;
-      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, !u && !free && gen ? "unsettled" : status, id];
+      const row = [new Date(now()).toISOString(), String(u?.model || body.model).slice(0, 120), u?.input ?? 0, u?.cached ?? 0, u?.output ?? 0, billed, now() - t0, !u && !free && up?.ok ? "unsettled" : status, id];
       try { q.settle.run(u?.key ?? id, ...row); } catch { q.settle.run(id, ...row); } // a generation id already used keeps the reservation's key
     };
     let up: Response;
@@ -784,19 +786,21 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const transient = err ? !["ECONNREFUSED", "ENOTFOUND"].includes(String(((err as Error).cause as { code?: string } | undefined)?.code)) : failed ? failed.transient && !rerun : RETRY_STATUS.has(up.status);
         if (!transient || n >= retryDelaysMs.length) { if (err) throw err; break; }
         if (failed) {
-          // The re-run is cap-checked like any call, in the call's own periods and not against its own hold, which already
-          // covers it (refused: this attempt goes to the caller and settles on the call's own row). The discarded attempt keeps
-          // its own `stream_error` row with the token counts it reported: free when it failed in-band; one that just ended
-          // before any output is booked at the input estimate, or trued up from its generation (`unsettled`).
+          // The re-run is cap-checked like any call, in the call's own periods: against everything but its own hold (which
+          // covers the re-run) and with the discarded attempt's own cost (refused: this attempt goes to the caller and settles
+          // on the call's own row). The discarded attempt keeps its own row with the token counts it reported: free
+          // `stream_error` when it failed in-band; one that just ended before any output may be billed, so it holds the input
+          // estimate as `unsettled`, trued up from its generation.
           const held = `gw:${randomUUID()}`;
-          if ("over" in reserve(who, t0, held, body.model, 0, 0, 1, r.usd)) break;
+          const spent = failed === NO_OUTPUT ? inUsd : 0;
+          if ("over" in reserve(who, t0, held, body.model, spent, 0, 1, r.usd - spent)) break;
           rerun = true;
           const tk = usageTap(true);
           tk.feed(peeked?.text ?? "");
           const ku = tk.done();
-          const g = failed === NO_OUTPUT ? genOf(up, peeked?.text ?? "") : "";
+          const g = spent ? genOf(up, peeked?.text ?? "") : "";
           if (g) q.gen.run(g, held);
-          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, failed === NO_OUTPUT ? inUsd : 0, now() - t0, g ? "unsettled" : "stream_error", held);
+          q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, spent, now() - t0, spent ? "unsettled" : "stream_error", held);
         }
         const after = Number(up?.headers.get("retry-after"));
         const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
@@ -847,7 +851,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const failed = sse ? tap.failure() : undefined;
       if (failed) log("upstream stream error", { model: body.model, gen, reason: failed.reason });
       if (failed?.inBand && status === "ok") settle("stream_error", u && { ...u, costUsd: 0 }, true);
-      else if (failed) settle(status === "ok" ? "stream_error" : status);
+      else if (failed) settle(status);
       else settle(status, u, !up.ok && !sse && status !== "upstream_aborted"); // free: a definite error answer, no stream started
     }
     if (!res.destroyed) res.end();

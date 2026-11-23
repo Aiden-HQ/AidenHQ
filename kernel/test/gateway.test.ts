@@ -394,12 +394,12 @@ test("gateway: a stream that fails in-band is booked free as stream_error (OpenR
   rig.answers = [(res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { model: "m", total_cost: 0.0042, native_tokens_prompt: 10_000, native_tokens_completion: 3 } }))];
   await rig.gw.trueUp();
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["interrupted", 0.0042]]);
-  // Without a generation id it stays at the reservation, never $0.
+  // Without a generation id it stays at the reservation, never $0, still `unsettled` (a hold, not a bill, for the board).
   rig.fresh();
   rig.answers = [streamed(sse([{ type: "response.output_text.delta", delta: "Hi" }]))];
   await rig.call();
   [row] = rig.rows();
-  assert.deepEqual([row.status, row.cost_usd > 0.01], ["stream_error", true]);
+  assert.deepEqual([row.status, row.cost_usd > 0.01], ["unsettled", true]);
   assert.doesNotMatch(JSON.stringify(rig.logged), /secret provider text/, "provider and model text stay out of the journal");
 });
 
@@ -468,6 +468,12 @@ test("gateway: an answer that failed before any output is re-run once when its e
   assert.match((await capped.call()).text, /response\.failed/);
   assert.equal(capped.posts, 1);
   assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error", "ok"]); // the call, then the other spend
+  // An attempt that ended before any output may be billed: its own input estimate ($0.01) past the limit refuses the re-run.
+  capped.fresh();
+  capped.answers = [streamed(sse(opened("gen-q"))), streamed(completed)];
+  await capped.call();
+  assert.equal(capped.posts, 1);
+  assert.deepEqual(capped.rows().map((x) => x.status), ["unsettled"]);
 
   // An attempt that just ended before any output (no error event) is re-run too, but not booked free: its row keeps the input
   // estimate, trued up from its generation.
