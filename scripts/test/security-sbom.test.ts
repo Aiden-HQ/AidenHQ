@@ -36,6 +36,7 @@ async function run(env = {}, {
   held = null,
   inspectErrors = [],
   saveErrors = {},
+  saveGrow = {},
   sizeErrors = [],
   sizeJunk = {},
   seed,
@@ -53,12 +54,15 @@ async function run(env = {}, {
   const heldIdsFile = join(dir, "held-ids");
   const brokenFile = join(dir, "broken");
   const saveErrorsFile = join(dir, "save-errors");
+  const growFile = join(dir, "save-grow");
   const sizesFile = join(dir, "sizes");
   const sizeErrorsFile = join(dir, "size-errors");
   const sizeJunkFile = join(dir, "size-junk");
   const platformManifestsFile = join(dir, "platform-manifests");
   const platformSizesFile = join(dir, "platform-sizes");
-  writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\necho 0\n"); // the Docker socket's group
+  // The Docker socket's group for `stat -c %g /var/run/docker.sock`; everything else is the real stat, so a size read on
+  // an archive (`stat -c %s`) is the archive's own, as on the host.
+  writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\nif [ \"$1\" = -c ] && [ \"$2\" = %g ]; then echo 0; exit 0; fi\nexec /usr/bin/stat \"$@\"\n");
   // `tar -xOf <archive> <member>` for the archive check: with FAKE_ARCHIVE_SLEEP it stops answering, as a multi-GB archive
   // on slow storage does, so a test can prove the read is bounded by the snapshot deadline. Otherwise the real tar runs.
   writeFileSync(join(dir, "bin/tar"), `#!/usr/bin/env bash
@@ -67,8 +71,14 @@ if [ "$1" = -xOf ] && [ -n "\${FAKE_ARCHIVE_SLEEP:-}" ]; then
 fi
 exec /usr/bin/tar "$@"
 `);
-  // `df -Pk <dir>`: the fake filesystem's free space in 1K blocks, so a test can put the pass near the floor.
-  writeFileSync(join(dir, "bin/df"), "#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' \"${FAKE_FREE_KB:-400000000}\"\n");
+  // `df -Pk <dir>`: the fake filesystem's free space in 1K blocks, so a test can put the pass near the floor. FAKE_FREE_KB
+  // is the free space with no archives; the archives directory's bytes are subtracted, as a real filesystem would, so a
+  // test can model free space falling as archives are written and rising again as scans free them.
+  writeFileSync(join(dir, "bin/df"), `#!/usr/bin/env bash
+used="$(find "\${AIDENHQ_DATA_DIR:-.}/modules/security/sbom/.archives" -type f -printf '%s\\n' 2>/dev/null | awk '{ s += $1 } END { printf "%d", s / 1024 }')"
+kb=$(( \${FAKE_FREE_KB:-400000000} - \${used:-0} ))
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' "$kb"
+`);
   writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
 # A fake daemon: containers (id<TAB>.Image<TAB>.Config.Image<TAB>compose image label\`), the tag table (ref<TAB>
 # top-level id<TAB>platform manifest) and the image ids it holds. Every syft run and save is logged.
@@ -209,6 +219,10 @@ case "$1" in
             ( cd "$d" && tar -cf "$file" $(find . -type f | sed 's|^\./||') )
             rm -rf "$d"
           fi
+          # An archive whose bytes differ from the size the daemon reported: FAKE_SAVE_GROW ref<TAB>bytes makes that
+          # reference's archive exactly that many bytes, as a save's real bytes can exceed the inspect size a little.
+          grow="$(awk -F '\t' -v ref="$id" '$1 == ref { print $2; found = 1 }' "$SAVE_GROW" 2>/dev/null)"
+          [ -n "$grow" ] && truncate -s "$grow" "$file"
         fi
         : > "$SAVED"; exit 0
       fi
@@ -296,6 +310,7 @@ exit 0
   writeFileSync(heldIdsFile, heldIds.join("\n") + "\n");
   writeFileSync(brokenFile, inspectErrors.join("\n") + "\n");
   writeFileSync(saveErrorsFile, Object.entries(saveErrors).map(([id, err]) => `${id}\t${err}`).join("\n") + "\n");
+  writeFileSync(growFile, Object.entries(saveGrow).map(([id, bytes]) => `${id}\t${bytes}`).join("\n") + "\n");
   writeFileSync(sizesFile, Object.entries(sizes).map(([ref, bytes]) => `${ref}\t${bytes}`).join("\n") + "\n");
   writeFileSync(sizeErrorsFile, sizeErrors.join("\n") + "\n");
   writeFileSync(sizeJunkFile, Object.entries(sizeJunk).map(([ref, out]) => `${ref}\t${out}`).join("\n") + "\n");
@@ -313,7 +328,7 @@ exit 0
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, HELD_IDS: heldIdsFile, BROKEN: brokenFile,
-        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
+        SAVE_ERRORS: saveErrorsFile, SAVE_GROW: growFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
         DIR: dir, ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
@@ -932,6 +947,32 @@ test("security-sbom: an apply that takes the lock between waves leaves those ima
   assert.match(out, /an apply took the apply lock between waves/);
   // The later wave wrote no bytes, and the pass still swapped its batch in.
   assert.equal(calls.filter((c) => c.startsWith("save ")).length, scanned.length);
+});
+
+test("security-sbom: an archive too large for its wave is retried after the others are freed, not skipped", { skip: NOT_LINUX }, async () => {
+  // 55 GB free, a 30 GB floor: 25 GB of room. The daemon reports 7 GB and 9 GB, so one wave admits both (16 GB of
+  // archives plus a 9 GB workspace = 25 GB). The 9 GB image's archive is really 10 GB. The two archives therefore hold
+  // 17 GB, leaving only 8 GB above the floor: unpacking the 10 GB image beside the 7 GB archive needs 17 GB, so the
+  // largest scan fails its first check. It must be retried, not dropped: once the 7 GB archive is scanned and removed,
+  // its own 10 GB archive plus 10 GB to unpack fits in the 15 GB that are then free above the floor.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: String(55 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 9 * 1024 ** 3, "sha256:b2": 7 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 10 * 1024 ** 3, "sha256:b2": 7 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  for (const name of ["image:big1:local", "image:big2:local"]) {
+    const row = targets.find((t) => t[0] === name);
+    assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+    assert.notEqual(row[1], "-", `${name} was not scanned: ${row[2]}`);
+  }
+  const scans = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:"));
+  assert.equal(scans.length, 2, `both images were scanned:\n${calls.join("\n")}`);
 });
 
 test("security-sbom: an archive is admitted only when its own scan has workspace left", { skip: NOT_LINUX }, async () => {

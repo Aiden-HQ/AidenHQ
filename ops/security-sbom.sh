@@ -595,10 +595,14 @@ save_wave() { # <wave>
 # Scan one wave's archives, largest first, and delete each as its scan ends. At the first scan every archive of the wave
 # is on disk and this image is unpacked beside them; each later scan has fewer archives waiting. The space check repeats
 # before each scan, since a scan that has already unpacked images (or another writer) can have left less room than the
-# plan expected. An archive that no longer fits is a line and its bytes go back before the next target.
+# plan expected. An archive that does not fit beside the rest is deferred rather than dropped: after the wave's other
+# archives have gone back, it is retried smallest first, so each gets the room the others freed. (An archive can be a
+# little larger than the size the plan saw, so a target that fit the plan can miss the first check and still fit alone
+# later; failing it at the first check would skip it every pass on an otherwise stable host.) Only one that still does
+# not fit with nothing else held is a line, and its bytes go back before the next target.
 scan_wave() { # <first plan index>
-  local first="$1" i k target archive avail size_gb remaining=0 room_now largest=0 sz_bytes
-  local -a order=() sizes=()
+  local first="$1" i k r target archive avail size_gb remaining=0 room_now largest=0 sz_bytes rk
+  local -a order=() sizes=() retry=()
   if [ "${#plan_target[@]}" -le "$first" ]; then return 0; fi
   while IFS=$'\t' read -r _ i; do [ -n "$i" ] && order+=("$i"); done \
     < <(for i in "${!plan_target[@]}"; do [ "$i" -ge "$first" ] && printf '%s\t%s\n' "${plan_size[$i]}" "$i"; done | sort -rn)
@@ -614,10 +618,21 @@ scan_wave() { # <first plan index>
       remaining=$(( remaining - size_gb )); fail "$target" "docker save: its archive is gone"; continue
     fi
     # `free` already has this wave's archives subtracted, so the extra room this scan needs is this archive's own size
-    # again to unpack it; the other waiting archives are stated in the line but are not charged twice.
+    # again to unpack it; the others are named in a line but are not charged twice.
     avail="$(free_gb)"; room_now=$(( avail - min_free_gb ))
     if [ "$avail" -lt "$min_free_gb" ] || [ "$size_gb" -gt "$room_now" ]; then
-      fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_now" $(( size_gb - room_now )))"
+      retry+=("$k"); continue
+    fi
+    scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
+    rm -f "$archive"; remaining=$(( remaining - size_gb ))
+  done
+  # Smallest first, so each has every byte the others freed before it is judged.
+  for (( r = ${#retry[@]} - 1; r >= 0; r-- )); do
+    k="${retry[$r]}"; i="${order[$k]}"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${sizes[$k]}"
+    if [ ! -f "$archive" ]; then remaining=$(( remaining - size_gb )); fail "$target" "docker save: its archive is gone"; continue; fi
+    avail="$(free_gb)"; room_now=$(( avail - min_free_gb ))
+    if [ "$avail" -lt "$min_free_gb" ] || [ "$size_gb" -gt "$room_now" ]; then
+      fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$size_gb" "$room_now" $(( size_gb - room_now )))"
       rm -f "$archive"; remaining=$(( remaining - size_gb )); continue
     fi
     scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
