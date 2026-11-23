@@ -89,7 +89,9 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
     // A repo the map names (or named) follows the map, so a fill during a move lands where the move goes; a project archived or
     // deleted in Paperclip since is no home: the repo's project is found again.
     if (row && !row.product && !productOf(repo) && (await catalog(company)).some((p) => p.id === row.project)) return row.project;
-    if (row) return projectFor(company, repo);
+    // A repo the map names follows it here; its row moves with its tasks in sync, never ahead of them.
+    if (row && (row.product || productOf(repo))) return projectFor(company, repo);
+    // New, or its own project archived since: found (or made) again and remembered.
     const project = await projectFor(company, repo);
     db.prepare("INSERT OR REPLACE INTO project_repos (company, repo, project, product) VALUES (?, ?, ?, ?)").run(company, repo, project, productOf(repo) ? 1 : 0);
     return project;
@@ -98,9 +100,11 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
   /** One fill: the task joins the repo's project unless it has one. Throws when it can't be done now. */
   const fill = (task: string, key: string) => serial(async () => {
     const issue = ok(await owner("GET", `/api/issues/${enc(task)}`), "reading the task") as Issue;
+    // The repo a task's project came from: the first PR's while another set it, the filling one's once it fills.
     db.prepare("INSERT OR IGNORE INTO project_tasks (task, repo) VALUES (?, ?)").run(issue.id, key);
     if (issue.projectId) return;
     const project = await forRepo(issue.companyId, key);
+    db.prepare("INSERT OR REPLACE INTO project_tasks (task, repo) VALUES (?, ?)").run(issue.id, key);
     ok(await owner("PATCH", `/api/issues/${enc(issue.id)}`, { projectId: project }), "setting the task's project");
     log("task joined its repo's project", { task: issue.id, repo: key, project });
   });
@@ -149,10 +153,22 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
         if (map === synced) return;
         let failed = false;
         const rows = db.prepare("SELECT company, repo, project, product FROM project_repos").all() as { company: string; repo: string; project: string; product: number }[];
+        const names = new Set(Object.keys(products()).map((n) => n.trim().toLowerCase()));
+        const named = new Map<string, Map<string, string>>(); // per company: project id → its name
         for (const r of rows) {
           const product = productOf(r.repo) ? 1 : 0;
-          // A repo's own project stays as it is while no product lists it.
-          if (!r.product && !product) continue;
+          // A repo's own project stays as it is while no product lists it, unless a product now has its name: then the repo
+          // moves to a project named in full, and the name is the product's.
+          if (!r.product && !product) {
+            try {
+              if (!named.has(r.company)) named.set(r.company, new Map((await serial(() => catalog(r.company))).map((p) => [p.id, p.name.trim().toLowerCase()])));
+            } catch (e) {
+              failed = true;
+              log("project catalog unreadable; trying again in a minute", { company: r.company, err: (e as Error).message });
+              continue;
+            }
+            if (!names.has(named.get(r.company)!.get(r.project) ?? "")) continue;
+          }
           try {
             const to = await serial(() => projectFor(r.company, r.repo));
             let moved = 0;

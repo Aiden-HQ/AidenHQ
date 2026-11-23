@@ -75,4 +75,21 @@ test("moving a repo into a product moves its open and recent tasks, leaves older
   assert.equal(projects.find((x) => x.id === hiring).name, "Hiring");
   projects.push({ id: "p-y", name: "hiring", archivedAt: null });
   await assert.rejects(p.named("co", "Hiring"), /2 projects are named/);
+
+});
+
+test("a product named like a repo's own project takes the name; that repo moves to a project named in full", async () => {
+  const { p, projects, issues, map } = fake();
+  await p.touch("t1", "acme/api");
+  const own = issues.t1.projectId;
+  assert.equal(projects.find((x) => x.id === own).name, "api");
+  map.products = { API: ["acme/backend"] };
+  await p.sync();
+  const moved = projects.find((x) => x.id === issues.t1.projectId);
+  assert.equal(moved.name, "acme/api");
+  await p.touch("t3", "acme/backend");
+  assert.equal(issues.t3.projectId, "p-set");
+  issues.t2.projectId = null;
+  await p.touch("t2", "acme/backend");
+  assert.equal(projects.find((x) => x.id === issues.t2.projectId).name, "api");
 });
