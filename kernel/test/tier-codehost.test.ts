@@ -1,6 +1,5 @@
-// A code host's write kinds are the bare actions (review-loop.ts actionOf): `github.pr` is a `pr`, so the rejected-content
-// check and the merge carry key on the content the card names, as the code hosts' own plan.ts reads them. Only a rejection
-// for malice refuses the same content again (owner, 2026-11-22): an older scope rejection never strands a resubmission.
+// A code host's write kinds are the bare actions (review-loop.ts actionOf): `github.pr` is a `pr`, so the owner-veto
+// check and the merge carry key on the content the card names, as the code hosts' own plan.ts reads them.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { actionOf } from "../src/review-loop.ts";
@@ -19,17 +18,10 @@ test("the code host's kinds read as bare actions; other module kinds by their ow
   assert.deepEqual([actionOf("acme.post"), actionOf("primer.publish"), actionOf("apps-platform.deploy")], ["acme.post", "primer.publish", "deploy_app"]);
 });
 
-test("the same head rejected as malice is refused on any branch; other content, or an older scope rejection, is reviewed", () => {
-  const records = [rejectedPr("b1", HEAD, "2026-11-19T10:00:00.000Z")];
+test("a reviewer's malice reject never refuses the same content again; it is reviewed afresh", () => {
   const renamed = target("b3", HEAD);
   assert.equal(requestKey("pr", renamed), requestKey("pr", { branches: renamed.only }));
-  const part = priorPart(priorDecisions(records, "pr", requestKey("pr", renamed)));
-  assert.deepEqual([part?.rule, part?.reject], ["rejected-content", true]);
-  assert.equal(priorPart(priorDecisions(records, "pr", requestKey("pr", target("b2", NEW)))), undefined, "new content is reviewed");
-  // Rejections from before the malice-only reviewer (out_of_scope, policy_other, unsure, a panel split) never refuse it again.
-  for (const code of ["out_of_scope", "policy_other", "reviewer_unsure", "panel_split", null]) {
-    assert.equal(priorPart(priorDecisions([rejectedPr("b1", HEAD, "2026-11-19T10:00:00.000Z", code)], "pr", requestKey("pr", renamed))), undefined, String(code));
-  }
+  assert.equal(priorPart(priorDecisions([rejectedPr("b1", HEAD, "2026-11-19T10:00:00.000Z")], "pr", requestKey("pr", renamed))), undefined);
 });
 
 test("the owner's own no on the action is his veto until his yes", () => {

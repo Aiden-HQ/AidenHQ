@@ -3,8 +3,8 @@
 //   as the Maintainer's issue read is), as the owner's GitHub sign-in github-mcp holds.
 // - Review runs: the kernel's credential-free check job `code-review` (POST /v1/checks; the recipe is lane E's), its Review read
 //   from the finished check.
-// - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post (Tier 1, the AI reviewer
-//   decides), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
+// - Posting: kernel write records (POST /v1/writes) of this module's kind code-review.post and .reply (Tier 0, the
+//   instance-details check refuses leaked hosts and addresses), code-review.notice and .status (Tier 0, fixed words), which this service executes (executor@1) through github-mcp's
 //   /internal/review routes.
 // - The code host through the kernel (/v1/codehost/:op, this module's `codehost:` grant): snapshots (a tree's paths and the commit
 //   it resolved; a pending deepsec setup branch's files) and the deepsec setup PR (`setup`: github files its own Tier 1 write).
@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { withoutInstanceDetails } from "./aidenhq-sdk/instance-details.ts";
 import type { Executor } from "./aidenhq-sdk/executor.ts";
 import type { CodeHost, Permission, Posted, Poster, PrComment, PrSource, PullRequest, Review, ReviewRunner, ReviewSpec, RunResult, Status, Thread } from "./seams.ts";
 
@@ -110,8 +111,8 @@ export function reasonOf(why: string | undefined): "post_refused" | "draft" | "f
 }
 
 /**
- * Posting as kernel write records of this module's own kinds (module.yaml writes): `code-review.post` (Tier 1: the AI reviewer
- * decides, so it is filed on the PR's task, one per PR for the Reviewer Manager) and `code-review.notice` (Tier 0, fixed words).
+ * Posting as kernel write records of this module's own kinds (module.yaml writes): `code-review.post` (Tier 0, filed on
+ * the PR's task, one per PR for the Reviewer Manager) and `code-review.notice` (Tier 0, fixed words).
  * The target (repo, pr, head) is always the run's, never the review body's.
  */
 /** The need a refused post's outcome named, when github-mcp carried one (needs_owner: restricted, expired, sso, scope). */
@@ -159,6 +160,17 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
     }
     return tasks.get(key)!;
   };
+  // A GitHub thread is outside the instance, and a review quotes the PR's own text (a fixture's address, a CI path): the instance's
+  // hosts, home paths and addresses are removed from the comment text it files (not the repo or a finding's path, which anchors the comment), so a quoted one never blocks the post. The kernel's
+  // instance-details check refuses whatever this missed.
+  // The instance-details check's denial is deterministic: asking again files the same text, so it is final (no `retry`). Any other
+  // failure to file is retried as before.
+  const filed = async (file: () => Promise<{ id: string; state: string }>): Promise<Posted> => {
+    try { const r = await file(); return { ...settled(r), write: r.id }; } catch (e) {
+      if ((e as { status?: number }).status === 422 && /check \(instance-details\)/.test(String((e as Error).message))) return { state: "refused", why: String((e as Error).message).slice(0, 300) };
+      throw e;
+    }
+  };
   return {
     async post(p) {
       const t = p.target;
@@ -168,16 +180,14 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
       const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
-      const r = (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args, task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string };
-      return { ...settled(r), write: r.id };
+      return filed(async () => (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args: withoutInstanceDetails(args), task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string });
     },
     async status(s: Status) {
       const r = (await kernel.call("POST", "/v1/writes", { kind: STATUS_KIND, args: { repo: s.repo, pr: s.number, head: s.head, reason: s.reason, important: s.important, running: s.running.slice(0, 8), ...(s.partial ? { partial: true } : {}) } })) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null };
       return { ...settled(r), write: r.id };
     },
     async reply(p) {
-      const r = (await kernel.call("POST", "/v1/writes", { kind: REPLY_KIND, args: { repo: p.repo, pr: p.number, head: p.head, comment: p.comment, body: p.body }, task: await taskOf(p.repo, p.number) })) as { id: string; state: string };
-      return { ...settled(r), write: r.id };
+      return filed(async () => (await kernel.call("POST", "/v1/writes", { kind: REPLY_KIND, args: withoutInstanceDetails({ repo: p.repo, pr: p.number, head: p.head, comment: p.comment, body: p.body }), task: await taskOf(p.repo, p.number) })) as { id: string; state: string });
     },
     async outcome(write) {
       return settled((await kernel.call("GET", `/v1/writes/${write}`)) as { id: string; state: string; outcome?: { ok: boolean; text: string } | null });
