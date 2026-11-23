@@ -108,13 +108,14 @@ test("a plugin skill is a plugin folder, invoked by its spec", () => {
 // tool call, when set) and answers the restate turn with `restate`.
 function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: string }) {
   const root = mkdtempSync(join(tmpdir(), "cr-repo-")), bin = mkdtempSync(join(tmpdir(), "cr-claude-")), scratch = mkdtempSync(join(tmpdir(), "cr-scratch-"));
-  const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: root, encoding: "utf8" }).trim();
+  const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: root, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   git("init", "-q");
   writeFileSync(join(root, "a.txt"), "one\n");
   git("add", "."); git("commit", "-qm", "base");
   const base = git("rev-parse", "HEAD");
   writeFileSync(join(root, "a.txt"), "two\n");
-  git("commit", "-qam", "head");
+  writeFileSync(join(root, "b.txt"), "new\n");
+  git("add", "."); git("commit", "-qm", "head");
   const head = git("rev-parse", "HEAD");
   mkdirSync(join(root, "plugins", "p"), { recursive: true });
   const log = join(bin, "log");
@@ -152,7 +153,7 @@ test("a skill runs in a checkout of the head; one that reads uncommitted changes
   assert.ok(one!.cwd!.endsWith("/repo"));
   assert.equal(readFileSync(join(one!.cwd!, "a.txt"), "utf8"), "two\n", "the head's files");
   assert.match(one!.task!, /^\/p:one base:[0-9a-f]{7}/);
-  assert.deepEqual([one!.at, one!.dirty], [f.base, "a.txt"], "uncommitted: HEAD at the base, the change uncommitted");
+  assert.deepEqual([one!.at, one!.dirty], [f.base, "a.txt b.txt"], "uncommitted: HEAD at the base, the change (an added file too) uncommitted");
   assert.deepEqual([two!.at, two!.dirty, two!.cwd], [f.head, "", one!.cwd], "the next skill: the head, clean, same checkout");
   assert.deepEqual([restate!.at, restate!.dirty], [f.head, ""]);
 });
@@ -172,8 +173,9 @@ test("a skill that didn't review the code is never a clean review", async () => 
     assert.match(String(r.cause), /didn't say whether each skill reviewed the code/);
     assert.equal(r.read, false);
   }
-  // A skill that called no tool read nothing; one Claude Code doesn't list, or a run that lists none, didn't run.
-  assert.match(String((await fakeRun({ tool: false, restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /p:one called no tool/);
+  // A skill that called no tool read nothing, whatever the restate claims; one Claude Code doesn't list, or a run that lists none,
+  // didn't run.
+  assert.match(String((await fakeRun({ tool: false, restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /no skill reviewed the code \(\/p:one: it called no tool/);
   assert.match(String((await fakeRun({ commands: ["other"], restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /has no skill p:one/);
   assert.match(String((await fakeRun({ commands: null, restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /has no skill p:one/);
 });

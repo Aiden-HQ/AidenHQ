@@ -156,8 +156,8 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
 /** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
 /** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). `uncommitted`: it finds the change as the checkout's uncommitted changes (`git status`, `git diff`), so for its turn the checkout's HEAD and index are the base, its files still the head's. */
 export interface SkillRef { skill: string; args: string; also?: string[]; uncommitted?: boolean }
-/** `cwd`: the run's throwaway checkout of `head` (skillEngine), where it runs. */
-export interface Skill { invocations: string[]; uncommitted: boolean[]; skillDirs: string[]; pluginDirs: string[]; cwd?: string; head?: string }
+/** `cwd`: the run's throwaway checkout of `head` (skillEngine), where it runs. `idle`: the turns (by index) that called no tool. */
+export interface Skill { invocations: string[]; uncommitted: boolean[]; skillDirs: string[]; pluginDirs: string[]; cwd?: string; head?: string; idle?: Set<number> }
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
 const SKILLS_ROOT = "/opt/review";
 
@@ -213,9 +213,9 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
   if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
   const cwd = join(mkdtempSync(join(i.scratch, "skill-")), "repo"), head = gitSafe(i.root, ["rev-parse", "--verify", `${i.head ?? "HEAD"}^{commit}`]).trim();
   snapshot(i.root, head, cwd);
-  const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd }, i.skillsRoot), cwd, head };
+  const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd }, i.skillsRoot), cwd, head, idle: new Set<number>() };
   const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
-  return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!));
+  return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!), sk.idle);
 }
 
 /**
@@ -223,11 +223,12 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
  * that didn't (it stopped, failed, asked, found nothing to review) leaves the review incomplete; none that did, or an answer that
  * doesn't say, is no review at all. A run that reviewed counts as read and says its coverage isn't tracked.
  */
-export function skillOutcome(r: EngineResult, names: string[]): EngineResult {
+export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>()): EngineResult {
   const said = answer(r.message)?.skills as { ran?: unknown; why?: unknown }[] | undefined;
   if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean")) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
-  const why = (i: number) => `${names[i]}: ${String(said[i].why ?? "no reason given").slice(0, 150)}`;
-  const not = names.flatMap((_, i) => (said[i].ran ? [] : [why(i)]));
+  // A turn that called no tool read no code, whatever the restate says of it.
+  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i].why ?? "no reason given").slice(0, 150)}`;
+  const not = names.flatMap((_, i) => (said[i].ran && !idle.has(i) ? [] : [why(i)]));
   if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
   return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(not.length ? { incomplete: `a skill didn't review the code (${not.join("; ")})` } : {}) };
 }
@@ -237,9 +238,16 @@ const restate = (prompt: string, sk?: Skill) => `Now restate every finding of th
 Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "why": ""} when it reviewed the code and finished, or "ran": false with a one-line "why" when it didn't: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed, skipped or partial status.` : ""}
 ${prompt}`;
 
-/** Before a skill's turn: the checkout's HEAD and index at the base for a skill that reads uncommitted changes, else at the head. */
+/**
+ * Before a skill's turn: the checkout's HEAD and index at the base for a skill that reads uncommitted changes (the files the change
+ * adds marked intent-to-add, so `git diff` lists them too), else at the head.
+ */
 function stage(sk: Skill, n: number, base: string) {
-  if (sk.cwd && sk.head) gitSafe(sk.cwd, ["reset", "--quiet", "--mixed", sk.uncommitted[n] ? base : sk.head]);
+  if (!sk.cwd || !sk.head) return;
+  gitSafe(sk.cwd, ["reset", "--quiet", "--mixed", sk.uncommitted[n] ? base : sk.head]);
+  if (!sk.uncommitted[n]) return;
+  const added = gitSafe(sk.cwd, ["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", base, sk.head]);
+  if (added) execFileSync("git", ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"], { cwd: sk.cwd, input: added, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "ignore", "ignore"] });
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
@@ -281,8 +289,8 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
       stage(sk, n, base);
       const t = await turn(inv, session);
       if (!t.done || !(t.thread ?? session)) return { message: "", read: false, calls, cause: t.done ? "codex gave no thread to continue" : stopped(t.r, t.said) };
-      // A skill that ran no command or tool read no code: no review, whatever it answered.
-      if (!t.acted) return { message: "", read: false, calls, cause: `${inv.split(" ")[0]} ran no command or tool, so it reviewed nothing` };
+      // A skill that ran no command or tool read no code: it counts as not run (skillOutcome).
+      if (!t.acted) sk.idle?.add(n);
       session ??= t.thread;
     }
     stage(sk, -1, base);
@@ -329,6 +337,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: "1", CLAUDE_CODE_EFFORT_LEVEL: effort,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", // its Bash never sees the token
+    ...gitEnv(), // its Bash's git reads no attributes or config of the branch's (the same diff as ours)
   };
   const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", ["Agent", "Bash", ...(tools ?? [])].join(","),
     ...(sk?.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]), "--allowedTools", ["Agent", "Bash", ...(tools ?? []), ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
@@ -361,11 +370,11 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
       if (sk) stage(sk, n, base);
       const t = await turn(task, session);
       if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
-      // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. So is one that read
-      // nothing (no tool call): it stopped before the code.
+      // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. One that called no
+      // tool read nothing: it counts as not run (skillOutcome), and the next skill still runs.
       const name = sk ? task.slice(1).split(" ")[0]! : "";
       if (name && !t.commands?.includes(name)) return { message: "", read: false, calls, cause: `Claude Code has no skill ${name} (it lists ${t.commands?.length ?? 0} commands)` };
-      if (name && !t.acted) return { message: "", read: false, calls, cause: `${name} called no tool, so it reviewed nothing` };
+      if (sk && !t.acted) sk.idle?.add(n);
       if (!t.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
       session = t.end.session_id;
     }
