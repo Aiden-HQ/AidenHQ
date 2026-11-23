@@ -50,6 +50,13 @@ test("a new write kind, privileged entry, secret, role, write tool, services.gra
   }
 });
 
+test("a name every object inherits (constructor, hasOwnProperty) is still new: a new write kind so named is the owner's", () => {
+  for (const kind of ["constructor", "hasOwnProperty"]) {
+    const owners = authorityDiff("acme-crm", base, with_({ writes: { [kind]: { floor: 1 } } }), false).changes.filter((c) => c.owner).map((c) => c.what);
+    assert.deepEqual(owners, [`adds write kind ${kind}`], kind);
+  }
+});
+
 test("a retag is judged by the highest tag on either side: an agent's list grant on a tool once tagged write stays a write", () => {
   const conn = base.connections.crm;
   const retag = with_({ connections: { crm: { ...conn, tools: { read: ["crm_search", "crm_note"], write: [] } } }, agents: { closer: { model: "m", connections: { crm: ["crm_search", "crm_note"] } } } });
