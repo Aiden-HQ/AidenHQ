@@ -9,7 +9,7 @@ export const LENSES = ["correctness", "security", "maintainability", "performanc
 export const MODES = ["one_off", "continuous"] as const;
 export const KINDS = ["tool", "skill", "engine"] as const;
 /** How a tool's output is read: SARIF, a named JSON/text mapper (sarif.ts), or `findings` (a skill or engine restates its own). */
-export const OUTPUTS = ["sarif", "knip", "vulture", "scc", "gcc", "findings"] as const;
+export const OUTPUTS = ["sarif", "vulture", "scc", "gcc", "findings"] as const;
 export type Lens = (typeof LENSES)[number];
 export type Mode = (typeof MODES)[number];
 
@@ -20,7 +20,7 @@ export type Mode = (typeof MODES)[number];
  * failed tool, report or not), a skill's harness, `skills` (each a spec and its arguments, run in order in one session: engines.ts parseSkill; its `tree`
  * contract is what a whole-repo review, the one_off mode, runs instead: other arguments, or false to leave a change-only skill out) and the extra Claude Code `tools` they need (e.g. Skill), or an engine's id. `runs_code`:
  * the tool can run the repo's code (a JS config it imports): only a tool, never on a fork's PR, after the others (tools.ts). `severity: "nit"` caps a tool whose
- * output marks everything an error (ruff, fallow); an option with `unavailable` (the reason) is never run. `name`, `description` and `needs` are the board's words for it (the service's catalog.ts reads them). `source.version` is the pin: a release tag,
+ * output marks everything an error (ruff); an option with `unavailable` (the reason) is never run. `name`, `description` and `needs` are the board's words for it (the service's catalog.ts reads them). `source.version` is the pin: a release tag,
  * package version or commit.
  */
 export interface Option {
