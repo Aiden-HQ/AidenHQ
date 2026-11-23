@@ -188,6 +188,8 @@ export function createAccess(o: {
   env?: Record<string, string | undefined>;
   /** Each content-creating write, by identity (how much of the owner's limit code review's App takes off it). */
   log?: (msg: string, f: Record<string, unknown>) => void;
+  /** The owner's GraphQL org query answered with no errors: the org's sso/restricted need is the owner's fix made. */
+  onOrgOk?: (org: string) => void;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
@@ -203,11 +205,17 @@ export function createAccess(o: {
   let granted: string[] | undefined;
   /** The sign-in's scopes as they stood when the API gave `granted`: a reconnect that changes them makes the cache stale. */
   let grantedFor: string | undefined;
-  /** `at`: when a GraphQL refusal last came (those warnings expire, see PROBLEM_TTL_MS); REST's are cleared by an org call that works. */
+  /** `at`: when a GraphQL refusal last came (those warnings expire, see PROBLEM_TTL_MS); an org's GraphQL answer that works clears it. */
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string; at?: number }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
+
+  /** An org's GraphQL answer came back with no errors: the restriction is lifted, so the card's warning and the kernel's row go. */
+  const orgOk = (org: string) => {
+    problems.delete(org.toLowerCase());
+    try { o.onOrgOk?.(org); } catch { /* a report never breaks the call it reports */ }
+  };
 
   async function token(): Promise<string> {
     if (!o.auth.signedIn()) fail({ cause: "not_connected" });
@@ -218,7 +226,9 @@ export function createAccess(o: {
   }
 
   function fail(n: Need, refusedAt?: number): never {
-    if (n.cause === "sso" || n.cause === "restricted") problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url, ...(n.message ? { message: n.message } : {}), ...(refusedAt ? { at: refusedAt } : {}) });
+    if (n.cause === "sso" || n.cause === "restricted") {
+      problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url, ...(n.message ? { message: n.message } : {}), ...(refusedAt ? { at: refusedAt } : {}) });
+    }
     throw new GitHubNeed(n, (n.cause === "sso" || n.cause === "restricted") && n.message ? `${needText(n)}. GitHub said: ${n.message}` : undefined);
   }
 
@@ -401,7 +411,6 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && problems.get(ownerOf(path)!.toLowerCase())?.at === undefined) problems.delete(ownerOf(path)!.toLowerCase());
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -436,6 +445,9 @@ export function createAccess(o: {
         if (fatal) fail(need, now());
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
       }
+      // The org query is what an org's restriction blocks (a search or a public read answers anyway), so its answer with no
+      // errors is the one that says the org is reachable again. `partial-results` still means the org's SSO filtered it.
+      if (org && !(Array.isArray(body?.errors) && body.errors.length) && !/^partial-results/i.test(res.headers.get("x-github-sso") ?? "")) orgOk(org);
       return body;
     },
     async identity() {

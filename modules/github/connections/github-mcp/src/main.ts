@@ -20,7 +20,7 @@ import { GitHub, GitHubRefused, parseRef } from "./github.js";
 import { Maintainer } from "./maintainer.js";
 import { graduate } from "./graduate.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
-import { isModule, needQueue } from "./module-caller.js";
+import { isModule, needQueue, reportOrgOk } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
 import { createAccess, GitHubNeed, needResult, withWriteBudget, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
@@ -64,7 +64,7 @@ const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim();
 const auth = signIn({ clientId, mcpUrl, stateDir, ci: process.env.GITHUB_CI === "1" });
 const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const codehostKey = () => { const f = process.env.CODEHOST_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
-const access = createAccess({ auth, clientId, log: (msg, f) => log.info(f, msg) });
+const access = createAccess({ auth, clientId, log: (msg, f) => log.info(f, msg), onOrgOk: (org) => { needs.forget(org); reportOrgOk(kernelUrl, codehostKey(), "github", org, log); } });
 /** Whether a GitHub object (`github:<repo>#<n>[/comment/<id>]`) is in AidenHQ's records; a failed read is "no". */
 const ours = async (ref: string): Promise<boolean> => {
   const r = await fetch(`${kernelUrl}/v1/objects?ref=${encodeURIComponent(ref)}`, { headers: { authorization: `Bearer ${codehostKey()}` }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);

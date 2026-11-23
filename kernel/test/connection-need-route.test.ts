@@ -45,3 +45,19 @@ test("a failure recording the need is a 5xx, never a 400, so the module retries 
   fault(k.records.db, false);
   assert.equal((await k.v1("POST", "/v1/connections/need", { connection: "github", need }, "github-key")).status, 200);
 });
+
+test("POST /v1/connections/ok clears one org's need for its module, and refuses a bad body or another module's connection", async (t) => {
+  const k = await kernel(t, { connect: true, modules, secrets, connections });
+  const post = (body, token = "github-key") => k.v1("POST", "/v1/connections/ok", body, token);
+  assert.equal((await k.v1("POST", "/v1/connections/need", { connection: "github", need }, "github-key")).status, 200);
+  const row = k.records.db.prepare("SELECT key FROM connection_state").get() as { key: string } | undefined;
+  assert.equal(row?.key, "github:restricted:acme");
+  assert.equal((await post({ connection: "github", org: "ACME" })).status, 200);
+  assert.equal(k.records.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get()!.n, 0, "the org's row is gone, whatever its casing");
+  assert.equal((await post({ connection: "github", org: "Acme" })).json.woken, 0);
+  assert.equal((await post({ connection: "github" })).status, 400, "no org");
+  assert.equal((await post({ connection: "github", org: "not an org" })).status, 400, "a malformed org");
+  assert.equal((await post({ org: "acme" })).status, 400, "no connection");
+  assert.equal((await post({ connection: "slack", org: "acme" })).status, 400, "a connection of another module");
+  assert.equal((await post({ connection: "github", org: "acme" }, "gh-key")).status, 403, "a connection's own key holds none of the module's roles");
+});

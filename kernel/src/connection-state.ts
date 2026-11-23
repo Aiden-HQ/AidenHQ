@@ -10,7 +10,9 @@
 //   row, so a restart's blip clears itself and never reaches the owner.
 // The agent always gets the kernel's fixed words, never the module's text. ok() clears a connection (a successful call with no account; the board's Connect clears every connection of its module, okModule) and wakes every task waiting on it; a multi-account need names its account, and only that
 // account's rows and waits clear, so a healthy account's call never wakes work that failed on another one.
-// Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them.
+// Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them,
+// except that a success naming an org (`ok(connection, { org })`) clears that org's sso and restricted rows: GitHub logins are
+// case-insensitive, so the org part of the key is lowercased (the connection's name is matched exactly).
 import type { DatabaseSync } from "node:sqlite";
 import type { Cause, Need } from "../sdk/src/vendor/needs.ts";
 import { ownerWroteAt } from "./escalate.ts";
@@ -28,8 +30,9 @@ export const CONNECTED_CAUSE = "connected";
 type Issue = { id: string; identifier?: string; title?: string; parentId?: string | null; assigneeAgentId?: string | null; description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown };
 type Comment = Parameters<typeof ownerWroteAt>[1][number] & Parameters<typeof ownerVia>[1][number];
 type Row = { key: string; module: string; cause: Cause; account: string; detail: string; url: string | null; since: number; told: number };
-/** What a success clears: `account` narrows it to that account's rows and waits; absent, the full rows of the module. */
-export type Clear = { account?: string; fullOnly?: boolean };
+/** What a success clears: `account` narrows it to that account's rows and waits; absent, the full rows of the module.
+ * `org` clears only that org's partial (sso, restricted) rows and their waits. */
+export type Clear = { account?: string; fullOnly?: boolean; org?: string };
 
 const FULL = new Set<string>(["not_connected", "expired"]);
 const DAY = 864e5;
@@ -42,7 +45,7 @@ const ASKED = "(s.told = 1 AND EXISTS (SELECT 1 FROM connection_waits w WHERE w.
 /** Confirmed for the digest: asked (above), or a background row at least LASTING old. Arg: now - LASTING. A success deletes the row, so a restart's blip never lasts. */
 const CONFIRMED = `(${ASKED} OR (s.told = 0 AND s.since <= ?))`;
 /** A scope or org name worth showing the owner; anything else from a module is dropped. */
-const NAME = /^[\w.:/@-]{1,100}$/;
+export const NAME = /^[\w.:/@-]{1,100}$/;
 
 /** The cause as the agent reads it: kernel words only, no module text. */
 const agentWords: Record<Cause, string> = { not_connected: "not connected", expired: "sign-in expired", scope: "missing a permission", sso: "an organization needs SSO authorization", restricted: "an organization restricts outside apps" };
@@ -197,26 +200,45 @@ export function createConnectionState(o: {
 
     /** A module's own call that only the owner can fix (not through the proxy): the same record and routing as a tool call's, as background work. */
     async report(module: string, connection: string, need: Need): Promise<void> {
-      if (o.connections()[connection]?.module !== module) throw Object.assign(new Error(`${module} has no connection ${connection}`), { code: "unknown_connection" });
+      if (!this.owns(module, connection)) throw Object.assign(new Error(`${module} has no connection ${connection}`), { code: "unknown_connection" });
       await this.hit({ kind: "module", module, roles: [], tools: {}, credential: "" }, connection, need);
+    },
+
+    /** Whether the connection belongs to the module (a module reports and clears only its own connections). */
+    owns(module: string, connection: string): boolean {
+      return o.connections()[connection]?.module === module;
     },
 
     /**
      * The connection connected: drops its rows and opens a `connected` wake per waiting task; returns how many it woke. `fullOnly`
-     * (a successful call) clears only the full causes; `account` (a multi-account answer) only that account's rows and waits.
+     * (a successful call) clears only the full causes; `account` (a multi-account answer) only that account's rows and waits; `org`
+     * (a call to that org succeeded) only its sso and restricted rows and waits, matched case-insensitively.
      */
     ok(connection: string, clear: boolean | Clear = false): number {
-      const { account, fullOnly } = typeof clear === "boolean" ? { account: undefined, fullOnly: clear } : clear;
+      const { account, fullOnly, org } = typeof clear === "boolean" ? { account: undefined, fullOnly: clear, org: undefined } : clear;
       const t = now();
-      const where = `module = ?${account ? " AND (account = ? OR account = '')" : ""}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;
+      // An org's rows are keyed `<connection>:<cause>:<org>` (`module` holds the connection). The connection's name is matched
+      // exactly, so another module's `GitHub` connection is not this one; GitHub logins are case-insensitive, so the org is folded.
+      let rowWhere: string, rowArgs: string[], waitWhere: string, waitArgs: string[];
+      if (org !== undefined) {
+        const tails = [`:sso:${org}`, `:restricted:${org}`].map((t) => t.toLowerCase());
+        rowWhere = "module = ? AND cause IN ('sso', 'restricted') AND lower(substr(key, length(?) + 1)) IN (?, ?)";
+        rowArgs = [connection, connection, ...tails];
+        waitWhere = "module = ? AND need IS NOT NULL AND lower(substr(need, length(?) + 1)) IN (?, ?)";
+        waitArgs = [connection, connection, ...tails];
+      } else {
+        const byAccount = account ? " AND (account = ? OR account = '')" : "";
+        rowWhere = `module = ?${byAccount}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;
+        rowArgs = account ? [connection, account] : [connection];
+        waitWhere = `module = ?${byAccount}${fullOnly ? " AND full = 1" : ""}`;
+        waitArgs = rowArgs;
+      }
       return inTx(db, "connection_ok", () => {
-        const waits = `module = ?${account ? " AND (account = ? OR account = '')" : ""}${fullOnly ? " AND full = 1" : ""}`;
-        const args = account ? [connection, account] : [connection];
-        const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waits}`).all(...args) as { task: string; agent: string }[];
-        q(`DELETE FROM connection_state WHERE ${where}`).run(...args);
-        q(`DELETE FROM connection_waits WHERE ${waits}`).run(...args);
+        const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waitWhere}`).all(...waitArgs) as { task: string; agent: string }[];
+        q(`DELETE FROM connection_state WHERE ${rowWhere}`).run(...rowArgs);
+        q(`DELETE FROM connection_waits WHERE ${waitWhere}`).run(...waitArgs);
         for (const w of waiters) o.wakes.open({ key: `connect:${connection}:${w.task}:${t}`, task: w.task, agent: w.agent, cause: CONNECTED_CAUSE, replaces: `wait:${w.task}:`, author: "kernel" });
-        if (waiters.length) log("connection ok", { connection, ...(account ? { account } : {}), woken: waiters.length });
+        if (waiters.length) log("connection ok", { connection, ...(account ? { account } : {}), ...(org !== undefined ? { org } : {}), woken: waiters.length });
         return waiters.length;
       });
     },

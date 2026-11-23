@@ -85,6 +85,8 @@
 //                              the tasks waiting on it wake -> {woken} (connection-state.ts); 404 for a module with no connection
 //   POST /v1/connections/need  (a module with role kernel.owner-notice) {connection, need}: its own call (not a tool call through the proxy)
 //                              that only the owner can fix, recorded as that connection's need (needs.ts) and routed like a tool call's -> {ok}
+//   POST /v1/connections/ok    (a module with role kernel.owner-notice) {connection, org}: a call to that org succeeded, so its sso
+//                              and restricted rows clear and their waiters wake -> {woken}
 //   GET  /v1/connections/down?agent=  (a module with role kernel.jobs) the agent's granted connections that are down ->
 //                              {down: [{connection, module, cause, since}]}: names, causes and dates only (the dispatch preamble)
 //   GET  /v1/connections/needs (the module with role kernel.notify) {lines}: the owner's digest lines for every connection need confirmed
@@ -134,7 +136,7 @@ import { wakeNotice, type Wakes } from "./wakes.ts";
 import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 import { requestChain } from "./review-loop.ts";
-import type { ConnectionState } from "./connection-state.ts";
+import { NAME, type ConnectionState } from "./connection-state.ts";
 import { MemoryError, memoryOp, view as memoryView, type Memory } from "./memory.ts";
 import { EventsError, type Events } from "./events.ts";
 import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
@@ -220,6 +222,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/connections/health", auth: "board" },
   { method: "POST", path: "/v1/connections/:module/ok", auth: "board" },
   { method: "POST", path: "/v1/connections/need", auth: "module" },
+  { method: "POST", path: "/v1/connections/ok", auth: "module" },
   { method: "GET", path: "/v1/connections/down", auth: "module" },
   { method: "GET", path: "/v1/connections/needs", auth: "module" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
@@ -372,7 +375,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   /** Every connection's /healthz (health.ts createConnectionHealth). */
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** Connect on first use (connection-state.ts): the board's /ok and the dispatcher's down list. */
-  connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "needs" | "has" | "report">;
+  connectionState?: Pick<ConnectionState, "ok" | "okModule" | "downFor" | "needs" | "has" | "report" | "owns">;
   /** A local module's share: its preview, and the owner's save of it (module-share.ts createSharing). */
   sharing?: { preview(b: Record<string, unknown>): Promise<unknown>; share(b: Record<string, unknown>): Promise<unknown> };
   /** The owner's typed settings change on their settings task (settings-change.ts). */
@@ -626,6 +629,15 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             throw fail(503, "unavailable", `the connection need could not be recorded: ${String(err.message).slice(0, 300)}`);
           }
           return send(res, 200, { ok: true });
+        }
+        case "POST /v1/connections/ok": {
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.owner-notice")) throw fail(403, "forbidden", `${w.module} may not report a connection success (role kernel.owner-notice)`);
+          if (!connectionState) throw fail(503, "unavailable", "connection state is off");
+          const b = await json(req);
+          if (typeof b?.connection !== "string" || typeof b?.org !== "string" || !NAME.test(b.org)) throw fail(400, "bad_request", "send {connection, org}");
+          if (!connectionState.owns(w.module!, b.connection)) throw fail(400, "bad_request", `${w.module} has no connection ${b.connection}`);
+          return send(res, 200, { woken: connectionState.ok(b.connection, { org: b.org }) });
         }
         case "GET /v1/connections/down": {
           const w = await moduleOf(req);

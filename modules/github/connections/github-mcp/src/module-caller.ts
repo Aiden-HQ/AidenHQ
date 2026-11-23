@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { GitHubNeed } from "./client.js";
+import { inOrgOrder } from "./org-observations.js";
 
 // Whether a bearer is the named module's own token, asked of the kernel (GET /v1/whoami): the issue read for the Maintainer's
 // watcher is opened to that module alone, so no secret is shared with it. undefined: the kernel couldn't answer now (a restart,
@@ -31,8 +32,17 @@ function bodyOf(err: GitHubNeed): NeedBody {
   return { connection: "github", need: { cause: n.cause, detail: err.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) } };
 }
 
+/** Whether a need is one org's sso/restricted row: it shares that org's order with the clear for it (see `inOrgOrder`). */
+const orgScoped = (n: NeedBody["need"]) => (n.cause === "sso" || n.cause === "restricted") && typeof n.org === "string" && n.org !== "";
+
 /** One POST of a need, classified: a 4xx is the request's own fault and is never retried; a 5xx, a timeout or a network error is. */
 async function postNeed(kernelUrl: string, key: string, body: NeedBody, log: WarnLog, fetcher: typeof fetch, timeoutMs: number): Promise<NeedReport> {
+  // An org's refusal takes its place behind the reports already queued for it, so a clear of that org cannot be overtaken by it.
+  if (orgScoped(body.need)) return inOrgOrder(body.need.org!, () => sendNeed(kernelUrl, key, body, log, fetcher, timeoutMs));
+  return sendNeed(kernelUrl, key, body, log, fetcher, timeoutMs);
+}
+
+async function sendNeed(kernelUrl: string, key: string, body: NeedBody, log: WarnLog, fetcher: typeof fetch, timeoutMs: number): Promise<NeedReport> {
   try {
     const r = await fetcher(new URL("/v1/connections/need", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     if (r.ok) return "taken";
@@ -53,6 +63,19 @@ async function postNeed(kernelUrl: string, key: string, body: NeedBody, log: War
 export async function reportNeed(kernelUrl: string, key: string, err: unknown, log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000): Promise<NeedReport> {
   if (!(err instanceof GitHubNeed) || !err.ownerFixable) return "taken";
   return postNeed(kernelUrl, key, bodyOf(err), log, fetcher, timeoutMs);
+}
+
+/**
+ * A call by the owner to `org` succeeded, so the org's sso/restricted need is the owner's fix already made: told to the kernel as
+ * POST /v1/connections/ok. Fire-and-forget, one POST: a lost report is harmless (the next successful GraphQL org query reports
+ * again, and the src_github pass runs one for every configured org every 15 minutes), and a retry would be a success landing after
+ * a newer refusal. It takes that org's place in this process's order, so it lands after an earlier refusal's need and before a
+ * later one's. Never throws into the GitHub call.
+ */
+export function reportOrgOk(kernelUrl: string, key: string, connection: "github", org: string, log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000): void {
+  void inOrgOrder(org, () => fetcher(new URL("/v1/connections/ok", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection, org }), signal: AbortSignal.timeout(timeoutMs) })
+    .then((r) => { if (!r.ok) log.warn({ status: r.status, org }, "the kernel refused a connection success report"); })
+    .catch((e: Error) => log.warn({ err: e.message, org }, "a connection success report failed; the org's next query reports it again")));
 }
 
 /** How long a reply waits for the kernel to take a need: the route answers within its 1 s even when the kernel is slow. */
@@ -142,6 +165,9 @@ export function needQueue(o: {
     try {
       // One entry per kept key at the start: a failure re-keeps it without being visited again in this pass.
       for (const [k, p] of [...pending]) {
+        // A success fixed it, or a newer report for the same key replaced it, while this pass awaited an earlier one: the entry
+        // this pass started with is gone, so the older payload is not sent (and the newer entry is left to its own turn).
+        if (pending.get(k) !== p) continue;
         if (stale(p)) {
           pending.delete(k);
           changed = true;
@@ -156,8 +182,8 @@ export function needQueue(o: {
         }
         const r = await postNeed(o.kernelUrl, o.key(), { connection: "github", need: p.need }, o.log, o.fetcher ?? fetch, 5_000);
         if (r === "retry") continue;
-        pending.delete(k);
-        changed = true;
+        // Only this pass's own entry: a newer report staged for the same key while it was sent stays to be replayed.
+        if (pending.get(k) === p) { pending.delete(k); changed = true; }
       }
     } finally { flushing = false; if (cap() || changed) save(); }
   };
@@ -172,11 +198,25 @@ export function needQueue(o: {
       // takes never evicts a kept one.
       pending.set(k, { need: body.need, gen: gen() });
       save();
+      const kept = pending.get(k)!;
       const r = await reportNeed(o.kernelUrl, o.key(), err, o.log, o.fetcher, waitMs);
       if (r === "retry") { cap(); save(); return; }
-      if (pending.delete(k)) save();
+      // A newer report staged for the same key while this one was sent is not this one's to delete.
+      if (pending.get(k) === kept && pending.delete(k)) save();
     },
     flush,
+    /** A call to `org` succeeded: any kept sso/restricted need for it is the owner's fix already made, not a report to replay. */
+    forget: (org: string): void => {
+      let changed = false;
+      const lower = org.toLowerCase();
+      for (const [k, p] of pending) {
+        if ((p.need.cause === "sso" || p.need.cause === "restricted") && p.need.org?.toLowerCase() === lower) {
+          pending.delete(k);
+          changed = true;
+        }
+      }
+      if (changed) { save(); o.log.warn({ org }, "a kept connection need the org now answers was dropped"); }
+    },
     pending: () => pending.size,
   };
 }

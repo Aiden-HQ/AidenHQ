@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitHubNeed } from "../src/client.js";
-import { needQueue, reportNeed } from "../src/module-caller.js";
+import { needQueue, reportNeed, reportOrgOk } from "../src/module-caller.js";
 
 // The kernel at /v1/connections/need as a fake: each answer is one queued reply, and the last one repeats.
 const replies = (list: (Response | "hang" | Error)[]) => {
@@ -212,5 +212,140 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     await q.flush();
     expect(q.pending(), "an org restriction is not fixed by reconnecting").toBe(1);
     expect(k.seen.at(-1)!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
+  });
+});
+
+describe("a successful owner call to an org", () => {
+  it("is reported as that org's clear in one fire-and-forget POST, and never throws into the call it reports", async () => {
+    const seen: { url: string; authorization?: string; body: unknown }[] = [];
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(input), authorization: (init?.headers as Record<string, string> | undefined)?.authorization, body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    reportOrgOk("http://kernel", "the-key", "github", "Acme", log, fetcher, 5_000);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual([{ url: "http://kernel/v1/connections/ok", authorization: "Bearer the-key", body: { connection: "github", org: "Acme" } }]);
+    // A refused or failed report is logged once and never retried (a retry would be a success landing after a newer refusal);
+    // the org's next query reports again.
+    const said: string[] = [];
+    const warns = { warn: (_o: object, m: string) => void said.push(m) };
+    let n = 0;
+    reportOrgOk("http://kernel", "k", "github", "refused-org", warns, (async () => { n++; return new Response("no", { status: 400 }); }) as unknown as typeof fetch, 5_000);
+    reportOrgOk("http://kernel", "k", "github", "down-org", warns, (async () => { n++; throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch, 5_000);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(n, "one POST each, no retries").toBe(2);
+    expect(said).toEqual(["the kernel refused a connection success report", "a connection success report failed; the org's next query reports it again"]);
+  });
+
+  // A need and a clear for one org reach the kernel in the order this process saw them, so neither can undo the other.
+  it("sends one org's need and clear in the order they were observed", async () => {
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const what = String(input).split("/v1/connections/")[1]!;
+      order.push(`${what}:sent`);
+      if (what === "need") await gate;
+      order.push(`${what}:done`);
+      return new Response(JSON.stringify({ ok: true, woken: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    // A refusal's need is still in flight when the org answers: the clear waits for it, so it cannot land before it.
+    const need = reportNeed("http://kernel", "k", new GitHubNeed({ cause: "restricted", org: "Acme", url: "https://github.com/settings/connections/applications/cid" }), log, fetcher);
+    reportOrgOk("http://kernel", "k", "github", "acme", log, fetcher);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order, "the clear waits for the need already sent for the org").toEqual(["need:sent"]);
+    release();
+    expect(await need).toBe("taken");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order).toEqual(["need:sent", "need:done", "ok:sent", "ok:done"]);
+
+    // A refusal observed after a success is sent after it, and a success after a refusal still clears it: the newer answer wins.
+    order.length = 0;
+    reportOrgOk("http://kernel", "k", "github", "acme", log, fetcher);
+    await reportNeed("http://kernel", "k", new GitHubNeed({ cause: "sso", org: "Acme", url: "https://github.com/orgs/acme/sso" }), log, fetcher);
+    reportOrgOk("http://kernel", "k", "github", "ACME", log, fetcher);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(order).toEqual(["ok:sent", "ok:done", "need:sent", "need:done", "ok:sent", "ok:done"]);
+  });
+
+  it("a kept sso/restricted report for an org the call just reached is dropped, not replayed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    const k = replies([busy()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file });
+    await q.tell(new GitHubNeed({ cause: "restricted", org: "Acme", url: "https://github.com/settings/connections/applications/cid" }));
+    await q.tell(new GitHubNeed({ cause: "sso", org: "other", url: "https://github.com/orgs/other/sso" }));
+    await q.tell(new GitHubNeed({ cause: "scope", scope: "read:org" }));
+    expect(q.pending()).toBe(3);
+    q.forget("acme");
+    expect(q.pending(), "only acme's kept restriction went, whatever its casing").toBe(2);
+    expect(JSON.parse(readFileSync(file, "utf8")).map((r: { need: { org?: string } }) => r.need.org)).toEqual(["other", undefined]);
+    const before = k.seen.length;
+    await q.flush();
+    expect(k.seen.slice(before).map((s) => s.body), "acme's stale report is not replayed").not.toContainEqual(expect.objectContaining({ need: expect.objectContaining({ org: "Acme" }) }));
+  });
+
+  it("a flush does not send or delete a newer report that replaced an entry it started with", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    const kept = (url: string, org = "acme") => ({ cause: "restricted", detail: "d", org, url });
+    writeFileSync(file, JSON.stringify([
+      { key: ["restricted", "", "other", ""].join("\u0000"), need: kept("https://github.com/settings/connections/applications/old", "other") },
+      { key: ["restricted", "", "acme", ""].join("\u0000"), need: kept("https://github.com/settings/connections/applications/old") },
+    ]));
+    let release: (r: Response) => void = () => {};
+    const seen: { need: { org?: string; url?: string } }[] = [];
+    let hang = true, busyOnce = false;
+    const fetcher = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      seen.push(body);
+      if (hang) { hang = false; return new Promise<Response>((r) => (release = r)); }
+      // acme refused again meets a kernel that cannot take it now, so the newer report is kept (the next pass takes it).
+      if (body.need.org === "acme" && body.need.url?.endsWith("/new") && !busyOnce) { busyOnce = true; return new Response("busy", { status: 503 }); }
+      return ok();
+    }) as unknown as typeof fetch;
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher, waitMs: 50, file });
+    const pass = q.flush();
+    await new Promise((r) => setTimeout(r, 20));
+    // The org is refused again with a newer link while the pass is on the first entry: it replaces acme's old entry.
+    await q.tell(new GitHubNeed({ cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/new" }));
+    release(ok());
+    await pass;
+    const tail = () => seen.map((b) => `${b.need.org}:${b.need.url?.split("/").at(-1)}`);
+    expect(tail(), "the stale payload for acme never went in that pass").toEqual(["other:old", "acme:new"]);
+    expect(q.pending(), "and the newer acme report is still kept").toBe(1);
+    await q.flush();
+    expect(tail(), "it is sent on its own turn").toEqual(["other:old", "acme:new", "acme:new"]);
+    expect(q.pending()).toBe(0);
+  });
+
+  it("a success while a flush awaits an earlier report does not let that pass send the forgotten one", async () => {
+    // Two needs kept by an earlier process, read back from disk: nothing is sent until the flush.
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    const kept = (org: string) => ({ cause: "restricted", detail: "d", org, url: "https://github.com/settings/connections/applications/cid" });
+    writeFileSync(file, JSON.stringify([
+      { key: ["restricted", "", "other", ""].join("\u0000"), need: kept("other") },
+      { key: ["restricted", "", "acme", ""].join("\u0000"), need: kept("acme") },
+    ]));
+    let release: (r: Response) => void = () => {};
+    const seen: { need: { org?: string } }[] = [];
+    let first = true;
+    const fetcher = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(JSON.parse(String(init?.body ?? "{}")));
+      if (first) { first = false; return new Promise<Response>((r) => (release = r)); }
+      return ok();
+    }) as unknown as typeof fetch;
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher, waitMs: 50, file });
+    expect(q.pending()).toBe(2);
+    const pass = q.flush(); // sends the first and waits for its answer
+    await new Promise((r) => setTimeout(r, 20));
+    q.forget("acme"); // acme answered meanwhile
+    release(ok());
+    await pass;
+    expect(seen.map((b) => b.need.org), "acme's report never went in that pass").toEqual(["other"]);
+    await q.flush();
+    expect(seen.map((b) => b.need.org)).toEqual(["other"]);
+    expect(q.pending()).toBe(0);
   });
 });
