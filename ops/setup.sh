@@ -391,9 +391,6 @@ if [ ! -f "$ENVF" ]; then
   if [ "$DRY" = 1 ]; then echo "  + write $ENVF (from .env.example)"
   else as_user sh -c 'umask 077; sed "s#/home/USER#$1#g" "$2/.env.example" > "$2/.env"' _ "$H" "$REPO"; fi
 fi
-# Paperclip sign-up is closed unless .env opens it: an .env made another way opens it here for the owner's first account (the
-# apply below creates it), and the step after that apply closes it.
-[ "$DRY" = 1 ] || [ ! -f "$ENVF" ] || grep -q '^PAPERCLIP_DISABLE_SIGN_UP=' "$ENVF" || set_env PAPERCLIP_DISABLE_SIGN_UP false
 set_env PUID "$PUID"
 set_env PGID "$PGID"
 set_env AIDENHQ_SECRETS_DIR "$SECRETS"

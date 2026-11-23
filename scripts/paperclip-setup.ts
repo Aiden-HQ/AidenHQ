@@ -163,7 +163,9 @@ async function ensureBoardKey(health: Obj) {
     const name = env("PAPERCLIP_NAME") || cfg.owner_name || (await ask("No account yet. Your name: "));
     step("Creating your Paperclip account");
     await sleep(3500); // auth endpoints allow 3 requests / 10 s
-    res = await api("POST", "/api/auth/sign-up/email", { name, email, password, rememberMe: true }, { auth: "none" });
+    res = await api("POST", "/api/auth/sign-up/email", { name, email, password, rememberMe: true }, { auth: "none", allow: [400, 403] });
+    // Sign-up is closed unless .env opens it (compose.yaml): .env.example and ops/setup.sh open it for this first account.
+    if (res.status >= 400) fail(`Paperclip refused to create your account (${res.status}: ${JSON.stringify(res.json).slice(0, 200)}): set PAPERCLIP_DISABLE_SIGN_UP=false in .env until it exists, then run this again`);
   }
   sessionCookie = (res.headers.getSetCookie?.() ?? [])
     .map((c) => c.split(";")[0]!)
