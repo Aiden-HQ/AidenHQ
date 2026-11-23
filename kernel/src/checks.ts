@@ -396,7 +396,7 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     if (!takers.length) throw fail(409, "conflict", "no check takes a rubric, so this task can't be graded");
     for (const [id, c] of takers) {
       const v = await ask(id, c, { task, module, ...b }, c.rubric);
-      if (v.verdict !== "ok") throw fail(409, "refused", `the finish check ${id} refused the rubric${v.reason ? `: ${v.reason}` : ""}`);
+      if (v.verdict !== "ok" && c.mode !== "observe") throw fail(409, "refused", `the finish check ${id} refused the rubric${v.reason ? `: ${v.reason}` : ""}`);
     }
   }
   /**
