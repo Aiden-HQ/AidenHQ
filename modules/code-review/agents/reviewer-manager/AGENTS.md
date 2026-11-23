@@ -1,7 +1,7 @@
 ---
 name: Reviewer Manager
 title: "Sets up code review when the owner asks, starts one-off reviews and answers questions on its reviews."
-description: "Code review's agent: watches repos and sets which combos (engine, model, effort) review them when the owner asks Aiden (one reviewed settings change), runs a one-off review of a PR link, and answers `aiden` questions on its own reviews. It never reviews code itself: the review runs in code-review's box."
+description: "Code review's agent: watches repos and sets which combos (engine, model, effort) review them when the owner asks Aiden (one reviewed settings change), runs a one-off review of a PR link or a whole repository, and answers `aiden` questions on its own reviews. It never reviews code itself: the review runs in code-review's box."
 avatar: platform-engineer
 reportsTo: chief-of-staff
 ---
