@@ -1,5 +1,6 @@
 // What Slack's connection adds to the pass-through (src/vendor/proxy.ts): Slack's own OAuth shapes, the draft tool's argument
-// pin, and the search folded into one query (Slack drops reaction filters from `filters`).
+// pin, and the search folded into one query (Slack drops reaction filters from `filters`). A filters-only `hasmy::`
+// reaction search is answered from reactions.list instead (src/reactions.ts).
 
 /** User token scopes the owner may grant on Connect. The reads are pre-selected; the writes let agents act as the owner. */
 export const READ_SCOPES = [
@@ -32,28 +33,21 @@ export const DRAFT_ARGS = ["channel_id", "message", "thread_ts"];
 /** Search tools whose filters Slack parses as search modifiers. */
 const SEARCH_TOOLS = new Set(["slack_search_public", "slack_search_public_and_private"]);
 
-// `has::emoji:` (anyone's reaction) or `hasmy::emoji:` (the user's own) in a search filter string.
-const REACTION_MODIFIER = /(?:^|\s)has(?:my)?::\S+:/;
-
-// Slack matches `has:reaction` on every message with any reaction, so it is the term clause a reaction-only search
-// needs; it makes the modifier apply without narrowing the set to a keyword.
-const ANY_REACTION_TERM = "has:reaction";
-
 /**
  * The search as one query: the caller's own `query`, then `keywords`, `filters` and `natural_language_query`.
  * Slack drops `has::`/`hasmy::` from `filters`, and a modifier only qualifies the term clause it sits in, so a
  * reaction modifier lifted on its own loses the `in:<#channel>` scope it shared the `filters` string with.
- * A filters-only search whose modifiers already work is left as sent: folding it alone would leave a query with
- * no term clause. One that carries a reaction modifier gets `has:reaction` as that term clause: a bare modifier
- * filters nothing and comes back empty, and `has:reaction` matches any reaction, so every message carrying the
- * reaction is still returned. The structured arguments stay exactly as the caller sent them.
+ * A filters-only search is left as sent: folding it alone would leave a query with no term clause, and there is no
+ * match-all term clause to give it. A filters-only `hasmy::<emoji>:` search never reaches this function: the module
+ * answers it from `reactions.list` (src/reactions.ts) before the call is sent upstream.
+ * The structured arguments stay exactly as the caller sent them.
  */
 function searchQuery(args: Record<string, unknown>): string | undefined {
   const own = typeof args.query === "string" ? args.query : undefined;
   const keywords = Array.isArray(args.keywords) ? args.keywords.filter((k): k is string => typeof k === "string" && Boolean(k.trim())).map((k) => k.trim()) : [];
   const filters = typeof args.filters === "string" ? args.filters.trim() : "";
   const natural = typeof args.natural_language_query === "string" ? args.natural_language_query.trim() : "";
-  if (!own?.trim() && !keywords.length && !natural) return REACTION_MODIFIER.test(filters) ? `${filters} ${ANY_REACTION_TERM}` : own;
+  if (!own?.trim() && !keywords.length && !natural) return own;
   return [own?.trim(), ...keywords, filters, natural].filter(Boolean).join(" ");
 }
 
