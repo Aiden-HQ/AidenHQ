@@ -360,14 +360,17 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
 # each wave's saves then happen under a lock hold and its scans after the lock is released (the driver below), so an apply
 # waits only for one wave's saves. Returns 1 when the enumeration itself failed: the caller keeps the previous batch
 # rather than publish a short one.
-plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=()
-plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}"); }
+plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=(); plan_key=()
+plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}"); plan_key+=("${6:-}"); }
 # The units this pass resolved and sized, indexed alike for the wave driver below. The sizes are known before any bytes
 # are written; the driver decides each wave from them, so a later wave never needs to look at the daemon again for size.
-p_key=(); p_pin=(); p_ref=(); p_plat=(); p_size=()
+p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=()
 archive_seq=0
 # Each wave's index, 0 for a unit that never fits (a line at survey time): the save and scan of a wave select their units.
 declare -a wave_of=()
+# Past this many waves an image that still does not fit is a line, so a set whose archives can never share the disk cannot
+# keep deferring itself. snapshot sets it once the planned waves are known.
+wave_limit=0
 # Why a target was not admitted, with the numbers that decided it: the archives the wave holds, this image's size, the
 # largest archive among them, the room above the floor, and the shortfall. A line that says "17 GB does not fit in 101 GB"
 # hides that the other archives are what made it not fit. <short> is passed where the room already has the held archives
@@ -478,7 +481,7 @@ snapshot() {
     [ -n "${u_pinned[$unit]:-}" ] || u_pinned[$unit]="$now"
   done <<< "$rows"
   [ "$nodesc" -eq 0 ] || echo "security-sbom: $nodesc container(s) report no platform manifest descriptor; read on the Docker server platform $platform" >&2
-  p_key=(); p_pin=(); p_ref=(); p_plat=(); p_size=()
+  p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=()
   # Every unit is resolved and sized first, before any bytes are written: a save is only worth making for a target whose
   # scan can be planned. The wave driver uses these sizes to decide which images go in this pass at all.
   for unit in "${units[@]}"; do
@@ -528,7 +531,7 @@ snapshot() {
     if [[ ! "$size" =~ ^[0-9]+$ ]]; then
       fail "image:$key" "docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')"; continue
     fi
-    p_key+=("$key"); p_pin+=("$pin"); p_ref+=("$ref"); p_plat+=("$plat"); p_size+=("$(ceil_gb "$size")")
+    p_key+=("$key"); p_pin+=("$pin"); p_ref+=("$ref"); p_plat+=("$plat"); p_bytes+=("$size"); p_size+=("$(ceil_gb "$size")")
   done
   # Cut the surveyed set into waves, smallest first, each wave admitted only while its peak fits above the floor. A
   # wave's peak is all of its archives on disk at the first scan plus the largest one's own size again, unpacked beside
@@ -538,27 +541,43 @@ snapshot() {
   # largest does not fit (every running image's set at 2026-11-23's sizes) still get every image inventoried instead of
   # dropping its largest on every pass. An image that cannot fit even alone (its archive held for its own scan plus its
   # own size to unpack it, twice over) never fits any wave: that one is a line stating the numbers.
-  room=$(( $(free_gb) - min_free_gb ))
-  [ "$room" -lt 0 ] && room=0
-  local idx sz wave wave_total wave_biggest
+  local room_bytes=$(( $(free_bytes) - min_free_gb * 1073741824 ))
+  [ "$room_bytes" -lt 0 ] && room_bytes=0
+  local room="$(ceil_gb "$room_bytes")"
+  local idx sz szb wave wave_total wave_biggest
   wave_of=(); wave=0; wave_total=0; wave_biggest=0; wave_count=0
   # NB: the loop body runs in this shell only if the loop itself is not at the end of a pipeline; the sizes come from a
-  # process substitution so `wave_of` persists for the save pass.
-  while IFS=$'\t' read -r sz idx; do
+  # process substitution so `wave_of` persists for the save pass. Admission is in bytes: a gigabyte rounded up here would
+  # reject an image whose archive and workspace do fit above the floor, and the byte-exact save would never be tried.
+  while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
+    sz="$(ceil_gb "$szb")"
     # An image held only for its own scan still needs its own size again to unpack it, so twice its size must fit above
     # the floor or no wave can ever take it. It is a line now, with the numbers, and no bytes are written for it.
-    if [ $(( 2 * sz )) -gt "$room" ]; then
+    if [ $(( 2 * szb )) -gt "$room_bytes" ]; then
       fail "image:${p_key[$idx]}" "skipped: ${sz} GB image does not fit: $(space_need 0 "$sz" "$sz" "$room")"
       continue
     fi
-    if [ "$wave" -eq 0 ] || [ $(( wave_total + sz + (sz > wave_biggest ? sz : wave_biggest) )) -gt "$room" ]; then
+    if [ "$wave" -eq 0 ] || [ $(( wave_total + szb + (szb > wave_biggest ? szb : wave_biggest) )) -gt "$room_bytes" ]; then
       # Does not fit where the wave stands. Ascending order means no later (larger) image fits there either, so the wave
       # is closed.
       wave=$((wave + 1)); wave_count="$wave"; wave_total=0; wave_biggest=0
     fi
-    wave_of[$idx]="$wave"; wave_total=$(( wave_total + sz )); [ "$sz" -gt "$wave_biggest" ] && wave_biggest="$sz"
-  done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
+    wave_of[$idx]="$wave"; wave_total=$(( wave_total + szb )); [ "$szb" -gt "$wave_biggest" ] && wave_biggest="$szb"
+  done < <(for i in "${!p_bytes[@]}"; do printf '%s\t%s\n' "${p_bytes[$i]}" "$i"; done | sort -n)
+  # A deferral (a save or scan that the pass's own archives crowded out) moves an image to one wave past the last one
+  # planned. The cap keeps a pathological set from looping: past it the image is a line instead of a new wave.
+  wave_limit=$(( wave_count + ${#p_bytes[@]} + 1 ))
+  return 0
+}
+# Give a surveyed image one more wave, after the last planned one: something the pass itself wrote makes it not fit now,
+# and the bytes come back when those archives are scanned and deleted. Returns 1 once the pass has spent its deferral cap:
+# then the image is a line instead, so a set that can never fit cannot make the driver loop. <why> is the line's numbers.
+defer_to_next_wave() { # <survey idx> <why>
+  local idx="$1" why="$2"
+  if [ "$wave_count" -ge "$wave_limit" ]; then return 1; fi
+  wave_of[$idx]=$((wave_count + 1)); wave_count=$((wave_count + 1))
+  echo "security-sbom: image:${p_key[$idx]} deferred to wave ${wave_of[$idx]}: $why" >&2
   return 0
 }
 # Save one wave's archives, smallest first, with the apply lock held. Exports run smallest first because the snapshot
@@ -566,8 +585,9 @@ snapshot() {
 # with it. Every archive is written from the reference the survey resolved, re-checked at save time; each failure is a
 # line, never a gap.
 save_wave() { # <wave>
-  local w="$1" idx sz key pin ref plat archive top avail_now written=0 written_big=0
-  while IFS=$'\t' read -r sz idx; do
+  local w="$1" idx sz szb key pin ref plat archive top top_gb avail_now written=0 written_big=0
+  local floor_bytes=$(( min_free_gb * 1073741824 ))
+  while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
     [ "${wave_of[$idx]:-0}" = "$w" ] || continue
     key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
@@ -577,31 +597,33 @@ save_wave() { # <wave>
     # would let a save land that the wave's peak could not then unpack; charging the written archives again would reject
     # a save the disk has room for. Below the floor the room is negative and must stay so: clamping it to 0 would let a
     # free image save while the disk is already under the floor.
-    avail_now=$(( $(free_gb) - min_free_gb ))
-    top=$(( sz > written_big ? sz : written_big ))
-    if [ $(( sz + top )) -gt "$avail_now" ]; then
+    avail_now=$(( $(free_bytes) - floor_bytes ))
+    top=$(( szb > written_big ? szb : written_big )); top_gb="$(ceil_gb "$top")"
+    # Bytes throughout, and only the line's numbers rounded: rounding a size up here could refuse a save that fits, and
+    # the request's sizes come from the daemon in bytes anyway.
+    if [ $(( szb + top )) -gt "$avail_now" ]; then
+      local why
+      why="$(space_need "$(ceil_gb "$written")" "$sz" "$top_gb" "$(ceil_gb "$avail_now")" $(( (szb + top - avail_now + 1073741823) / 1073741824 )))"
       # This wave's own archives are held in `free` already, so a save that no longer fits may only be waiting on them.
       # Once this wave is scanned those bytes come back: give the image a wave of its own after this one instead of
       # recording a skip that would repeat on every pass. With nothing written yet the disk itself lacks the room (or
       # another writer took it), and the same check would fail again, so that one is a line.
-      if [ "$written" -gt 0 ]; then
-        wave_of[$idx]=$((wave_count + 1)); wave_count=$((wave_count + 1))
-        echo "security-sbom: image:$key deferred to wave ${wave_of[$idx]}: $(space_need "$written" "$sz" "$top" "$avail_now" $(( sz + top - avail_now )))" >&2
+      if [ "$written" -gt 0 ] && defer_to_next_wave "$idx" "$why"; then
         continue
       fi
-      fail "image:$key" "skipped: ${sz} GB image does not fit: $(space_need "$written" "$sz" "$top" "$avail_now" $(( sz + top - avail_now )))"
+      fail "image:$key" "skipped: ${sz} GB image does not fit: $why"
       continue
     fi
     # Exported now, under the lock, from the reference resolved by the survey: the archive holds exactly what runs, and
     # nothing that moves after this lock is released can change it. The scan only re-opens archives.
     archive="$archives/$((archive_seq += 1)).tar"
     if export_image "$pin" "$ref" "$archive" "$plat"; then
-      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz"
-      written=$(( written + sz )); [ "$sz" -gt "$written_big" ] && written_big="$sz"
+      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$key"
+      written=$(( written + szb )); [ "$szb" -gt "$written_big" ] && written_big="$szb"
     else
       fail "image:$key" "docker save: ${export_err:-failed}"
     fi
-  done < <(for i in "${!p_size[@]}"; do [ "${wave_of[$i]:-0}" = "$w" ] && printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
+  done < <(for i in "${!p_bytes[@]}"; do [ "${wave_of[$i]:-0}" = "$w" ] && printf '%s\t%s\n' "${p_bytes[$i]}" "$i"; done | sort -n)
   return 0
 }
 # Scan one wave's archives, largest first, and delete each as its scan ends. At the first scan every archive of the wave
@@ -614,7 +636,7 @@ save_wave() { # <wave>
 # Its bytes go back before the next target, and the line states the admitted total, its size, the largest archive, the
 # room and the shortfall.
 scan_wave() { # <first plan index>
-  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes
+  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes idx_of_key
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   local -A bytes_of=() gb_of=()
   local -a pending=()
@@ -661,14 +683,20 @@ scan_wave() { # <first plan index>
         keep+=("$k")
       done
       if [ "${#keep[@]}" -eq "${#rest[@]}" ]; then
-        # All could scan alone, so the others still held are what block them: drop the smallest, so the rest get the most
-        # room, and retry them.
+        # All could scan alone, so the others still held are what block them: take the smallest out, so the rest get the
+        # most room, and retry them. Its bytes come back here and it is saved again in a later wave, after this wave's
+        # archives are gone: skipping it for the whole pass would drop the same image on every pass. Once the pass has
+        # spent its deferral cap (a set that keeps trading archives for room), it is a line with the numbers.
         for kk in "${rest[@]}"; do
           if [ -z "$drop" ] || [ "${bytes_of[$kk]}" -lt "$drop_bytes" ]; then drop="$kk"; drop_bytes="${bytes_of[$kk]}"; fi
         done
         i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
         room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
-        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"
+        idx_of_key=""
+        for kk in "${!p_key[@]}"; do [ "${p_key[$kk]}" = "${plan_key[$i]}" ] && { idx_of_key="$kk"; break; }; done
+        if [ -z "$idx_of_key" ] || ! defer_to_next_wave "$idx_of_key" "$(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"; then
+          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"
+        fi
         rm -f "$archive"; remaining_bytes=$(( remaining_bytes - drop_bytes ))
         local -a dropped=()
         for k in "${rest[@]}"; do [ "$k" = "$drop" ] || dropped+=("$k"); done

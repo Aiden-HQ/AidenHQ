@@ -891,6 +891,22 @@ test("security-sbom: a set whose archives plus the largest exceed the room is sc
   assert.ok(lastSave > firstScan, "every save must be accounted for");
 });
 
+test("security-sbom: a size that only fits in bytes is admitted, not rounded out of its wave", { skip: NOT_LINUX }, async () => {
+  // 41.25 GB free, a 30 GB floor: 11.25 GB of room. The image is 5.25 GiB: its archive plus its own workspace is 10.5 GiB,
+  // which fits. Rounded up to 6 GB the admission would ask for 12 GB and reject the image, even though the byte-exact save
+  // and scan both fit. It must be saved and scanned.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(11.25 * 1024 * 1024 + 30 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    held: ["sha256:1111"],
+    sizes: { "sha256:1111": Math.round(5.25 * 1024 ** 3) },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(row[1], "-", `the image fits and must be scanned: ${row[2]}`);
+});
+
 test("security-sbom: a target no wave can hold is a line naming the admitted total, its size, the largest and the room", { skip: NOT_LINUX }, async () => {
   // 40 GB free, a 30 GB floor: 10 GB of room. A 6 GB image needs its 6 GB archive held to scan plus 6 GB to unpack it, 12 GB
   // in all, which no wave of 10 GB ever has. The line must state the budget that decided it rather than "6 GB does not fit
@@ -1002,12 +1018,12 @@ test("security-sbom: an archive too large for its wave is retried after the othe
   assert.equal(scans.length, 2, `both images were scanned:\n${calls.join("\n")}`);
 });
 
-test("security-sbom: when a wave's real bytes outgrow its room, the smallest deferred image is the line, not the largest", { skip: NOT_LINUX }, async () => {
+test("security-sbom: when a wave's real bytes outgrow its room, the smallest archive is deferred with the numbers", { skip: NOT_LINUX }, async () => {
   // 60 GB free, a 30 GB floor: 30 GB of room. The daemon reports 9 GB and 8 GB, so one wave admits both (17 GB of
   // archives plus a 9 GB workspace = 26 GB). The archives are really 12 GB and 10 GB: both save, and the two hold 22 GB,
-  // leaving only 8 GB above the floor, so neither scan fits beside the other (12 > 8 and 10 > 8). Dropping the smaller
-  // 10 GB archive leaves 18 GB of room for the 12 GB archive and its 12 GB workspace. Exactly one image must be a line,
-  // and it must be the smaller one.
+  // leaving only 8 GB above the floor, so neither scan fits beside the other (12 > 8 and 10 > 8). Removing the smaller
+  // 10 GB archive leaves 18 GB of room for the 12 GB archive and its 12 GB workspace, and the smaller image is saved
+  // again in a later wave (where it fits alone) rather than skipped for the pass. Nothing is skipped at all.
   const { status, out, targets } = await run({ FAKE_FREE_KB: String(60 * 1024 * 1024) }, {
     containers: [
       { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
@@ -1023,14 +1039,11 @@ test("security-sbom: when a wave's real bytes outgrow its room, the smallest def
   const large = targets.find((t) => t[0] === "image:big1:local");
   assert.ok(small && large, targets.map((t) => t.join("\t")).join("\n"));
   assert.notEqual(large[1], "-", `the larger image must be scanned: ${large[2]}`);
-  assert.equal(small[1], "-", "the smaller image is the one dropped");
-  assert.match(small[2], /does not fit/);
-  // The line states the real budget in gigabytes, not the raw bytes the round measured.
-  assert.match(small[2], /admitted 12 GB of archives/);
-  assert.match(small[2], /this 10 GB image/);
-  assert.match(small[2], /largest archive 12 GB/);
-  assert.match(small[2], /room 8 GB above the 30 GB floor/);
-  assert.match(small[2], /short by 2 GB/);
+  assert.notEqual(small[1], "-", `the smaller image is scanned in a later wave: ${small[2]}`);
+  // The deferral states the real budget in gigabytes, not the raw bytes the round measured, and names the smaller archive
+  // as the one taken out.
+  assert.match(out, /image:big2:local deferred to wave 2: admitted 12 GB of archives, this 10 GB image, largest archive 12 GB, room 8 GB above the 30 GB floor on .*, short by 2 GB/);
+  assert.doesNotMatch(out, /skipped:/);
 });
 
 test("security-sbom: an archive no round can scan is dropped before one that still can", { skip: NOT_LINUX }, async () => {
