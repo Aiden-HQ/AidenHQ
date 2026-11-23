@@ -969,6 +969,30 @@ test("a reply older than a newer close does not reopen the chat again", async ()
   assert.deepEqual(w.rows("chat"), [], "and no wake on the closed chat");
 });
 
+test("a page that fails leaves the pages before it scanned, and a chat it could not scan is read again next pass", async () => {
+  const w = world();
+  w.issue("seed", { status: "todo" });
+  await w.wakes.poll();
+  w.tick(60_000);
+  for (let i = 0; i < 205; i++) w.issue(`chat-${String(i).padStart(3, "0")}`, { status: "done", labels: [{ name: "chat" }], statusVersion: 2, updatedAt: "2026-11-18T10:01:00.000Z", completedAt: "2026-11-18T10:01:00.000Z" });
+  w.db.prepare("DELETE FROM wakes").run();
+  w.tick(5000);
+  w.comment("chat-001", "c1", { authorUserId: "u1" }); // on the first page
+  w.comment("chat-204", "c9", { authorUserId: "u1" }); // past the failure
+  w.fail.donePages = 1;
+  await w.wakes.poll();
+  delete w.fail.donePages;
+  // The first page's reply is acted on; the second page's failure leaves the resume point at the last row this pass scanned.
+  assert.equal(w.issues["chat-001"].status, "todo", "a reply on a page that was read still reopens");
+  assert.equal(w.issues["chat-204"].status, "done", "the row past the failed page was not read");
+  assert.equal(Number(w.db.prepare("SELECT count(*) n FROM chat_reopen").get().n), 0, "and was not mistaken for a failed scan");
+  w.fail.donePages = 1;
+  await w.wakes.poll();
+  delete w.fail.donePages;
+  await w.wakes.poll();
+  assert.equal(w.issues["chat-204"].status, "todo", "a later pass reaches it");
+});
+
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
   const w = world();
   w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });

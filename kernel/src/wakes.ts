@@ -736,38 +736,46 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           // reopen shifting offset pages would skip the row that slid into the gap. The id cursor is stable under exactly that;
           // every page is collected before any scan, so this poll's own writes cannot move it either.
           const finished: Issue[] = [];
-          let afterId: string | undefined = window.after ?? undefined;
+          let afterId: string | undefined = window.after ?? undefined, pageFailed = false;
           for (let page = 0; page < 25; page++) {
             const query = new URLSearchParams({ status: "done", limit: "200", assigneeAgentId: agent, updatedSince: iso(window.at), sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) });
-            const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
-            if (d.status !== 200 || !Array.isArray(d.json)) throw new Error(`control plane GET done issues → ${d.status}`);
+            const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`).catch((e: Error) => (log("wake poll failed", { agent, page, err: e.message }), undefined));
+            if (!d || d.status !== 200 || !Array.isArray(d.json)) { pageFailed = true; break; }
             const rows = d.json as Issue[];
             finished.push(...rows);
-            readTo = rows.at(-1)?.id ?? readTo;
             if (rows.length < 200) { complete = true; break; }
             afterId = rows.at(-1)?.id;
             if (!afterId) break;
           }
+          // A page that failed ends the listing, but the pages before it are scanned: the work already read is not thrown away
+          // (and their resume point is kept for the rest).
+          if (pageFailed) log("wake chat window cut short", { agent, company });
           // A traversal cut short at its page budget, or a chat whose scan failed, is not the whole window. Its start stays, and
-          // the last id read is kept so the next poll resumes past it: the page budget never strands the chats beyond it, and a
-          // reply that lands during the pass is in the next window (its `updatedAt` is at or after this window's start).
+          // a resume point past the rows the pass actually processed lets the next poll go on from there: the page budget never
+          // strands the chats beyond it. A page fetched but never scanned is not passed (`readTo` moves per processed row).
           let scanned = true;
           for (const issue of finished) {
-            if (listed.has(issue.id) || !isChat(issue)) continue;
-            listed.add(issue.id);
-            await scan(issue, { source: "poll" }).catch((e: Error) => {
-              scanned = false;
-              readTo = null; // this chat's comment may be anywhere in the window: reread it whole
-              q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
-              log("wake scan failed", { task: issue.id, err: e.message });
-            });
+            if (!listed.has(issue.id) && isChat(issue)) {
+              listed.add(issue.id);
+              await scan(issue, { source: "poll" }).catch((e: Error) => {
+                scanned = false;
+                readTo = null; // this chat's comment may be anywhere in the window: reread it whole
+                q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task, at) DO UPDATE SET at = excluded.at").run(issue.id, now());
+                log("wake scan failed", { task: issue.id, err: e.message });
+              });
+            }
+            // The resume point moves one processed row at a time: a row whose scan failed stops it here, so the next pass reads
+            // that row's window again rather than starting past its comment.
+            if (scanned) readTo = issue.id;
           }
           if (!complete) log("wake chat window truncated", { agent, company, reads_to: readTo });
-          if (complete && scanned) setChatSince(agent, polledAt, null);
+          // A pass resumed past an earlier truncation finishes with the cursor still at the original window's start (its resume
+          // point cleared): a reply to an id the earlier pages passed, said while this pass ran, is inside the next window too.
+          if (complete && scanned) setChatSince(agent, window.after ? window.at : polledAt, null);
           else setChatSince(agent, window.at, readTo);
         } catch (e) {
-          // Whatever was read before the failure is not skipped: the window keeps its start, and a resume point only past ids
-          // this pass did read (a failed page leaves none beyond it).
+          // Whatever was processed before the failure is not skipped: the window keeps its start, and the resume point covers
+          // only rows already scanned (a failed page adds none).
           setChatSince(agent, window.at, readTo);
           log("wake poll failed", { agent, err: (e as Error).message });
         }
