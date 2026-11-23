@@ -865,6 +865,41 @@ describe("interception through the proxy", () => {
     broken.close();
   });
 
+  it("names conversations.info, not reactions.list, when the channel lookup is what lacked the scope", async () => {
+    // reactions.list works; conversations.info answers missing_scope for the only channel. The owner-facing need must
+    // name the call that was refused, so reconnecting for a channel lookup's scope is not described as reactions.list.
+    const scoped = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      serviceKey: "svc",
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, {
+        tokenFile: join(dir, "token.json"),
+        headers: async () => ({ authorization: "Bearer xoxp-user" }),
+        authState: () => "ok",
+        serviceKey: "svc",
+        caller: async () => ({}),
+        served: async () => ({ served: true, confirmed: true }),
+        fetchImpl: (async (url: string | URL) => {
+          const u = new URL(String(url));
+          if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: false, error: "missing_scope", needed: "channels:history" });
+          return Response.json(page([item("C1", "1.1")]));
+        }) as unknown as typeof fetch,
+      }),
+    });
+    const scopedBase = await listen(scoped);
+    const res = await fetch(`${scopedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(body.result.structuredContent).toMatchObject({ error: "needs_owner", need: { cause: "scope", scope: "channels:history" } });
+    expect(JSON.stringify(body.result)).toContain("conversations.info");
+    expect(JSON.stringify(body.result)).not.toContain("reactions.list can't be read");
+    scoped.close();
+  });
+
   it("names the missing permission when the sign-in has no channel search scope at all, never an empty complete set", async () => {
     const bare = mkdtempSync(join(tmpdir(), "slack-reactions-"));
     writeFileSync(join(bare, "token.json"), JSON.stringify({ access_token: "xoxp-user", user_id: ME, scope: "reactions:read" }));

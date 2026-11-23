@@ -204,7 +204,7 @@ export interface ScanOptions {
 /** The scan's outcome: the whole set (`nextCursor: null`), or what stopped it from computing one. */
 export type ScanResult =
   | { ok: true; messages: ReactionMessage[]; nextCursor: string | null }
-  | { ok: false; detail: string; error?: string; needed?: unknown };
+  | { ok: false; detail: string; error?: string; needed?: unknown; method?: string };
 
 // A continuation: the caller's `limit` was reached, so the token carries the messages already returned and the upstream
 // page size. A resume walks the feed from the start again and skips those messages by identity. Positions are never
@@ -290,24 +290,24 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // Resume skips by identity, not position: an item is dropped when it was already returned, so a reaction removed from an
   // earlier item between calls can't shift the answer past one that was never returned.
 
-  const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string; error?: string; needed?: unknown }> => {
+  const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string; error?: string; needed?: unknown; method: string }> => {
     const url = new URL(`https://slack.com/api/${method}`);
     for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
     let res: Response | undefined;
     for (let attempt = 0; ; attempt++) {
       const remaining = deadline - now();
-      if (remaining <= 0) return { ok: false, detail: `${method} ran past the scan's deadline` };
+      if (remaining <= 0) return { ok: false, detail: `${method} ran past the scan's deadline`, method };
       try {
         res = await fetchImpl(url, { headers: { authorization: signIn.authorization }, signal: AbortSignal.timeout(Math.min(remaining, 30_000)) });
       } catch (err) {
-        return { ok: false, detail: `${method} couldn't be reached (${String((err as Error).message).slice(0, 200)})` };
+        return { ok: false, detail: `${method} couldn't be reached (${String((err as Error).message).slice(0, 200)})`, method };
       }
       if (res.status !== 429 || attempt >= 2) break;
       await sleep(Math.min((Number(res.headers.get("retry-after")) || 30) * 1000, Math.max(0, deadline - now())));
     }
-    if (!res.ok) return { ok: false, detail: `${method} answered HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, detail: `${method} answered HTTP ${res.status}`, method };
     const json = (await res.json().catch(() => undefined)) as Record<string, any> | undefined;
-    if (!json || json.ok !== true) return { ok: false, detail: `${method} refused the read (${String(json?.error ?? "no answer")})`, ...(json ? { error: String(json.error ?? ""), needed: json.needed } : {}) };
+    if (!json || json.ok !== true) return { ok: false, detail: `${method} refused the read (${String(json?.error ?? "no answer")})`, method, ...(json ? { error: String(json.error ?? ""), needed: json.needed } : {}) };
     return { ok: true, json };
   };
 
@@ -317,7 +317,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
    * reaction read never returns what the tool itself is not allowed to. A channel Slack can't describe fails the scan,
    * unless its `missing_scope` answer names the kind: that is still enough to scope it correctly.
    */
-  const visible = async (channel: string): Promise<boolean | { detail: string; error?: string; needed?: unknown }> => {
+  const visible = async (channel: string): Promise<boolean | { detail: string; error?: string; needed?: unknown; method?: string }> => {
     const known = visibility.get(channel);
     if (known !== undefined) return known;
     const r = await get("conversations.info", { channel });
@@ -326,7 +326,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // (Slack's `needed` field) still says what the conversation is, so it can be scoped like a described one.
     if (!r.ok && UNREACHABLE.test(r.detail)) return visibility.set(channel, false), false;
     const kind = r.ok ? channelKind(r.json.channel ?? {}) : r.error === "missing_scope" ? kindFromNeeded(r.needed) : undefined;
-    if (!r.ok && !kind) return { detail: r.detail, ...(r.error ? { error: r.error } : {}), ...(r.needed !== undefined ? { needed: r.needed } : {}) };
+    if (!r.ok && !kind) return { detail: r.detail, method: "conversations.info", ...(r.error ? { error: r.error } : {}), ...(r.needed !== undefined ? { needed: r.needed } : {}) };
     if (!kind) return { detail: `Slack didn't say what kind of conversation ${channel} is` };
     // A kind inferred from a missing permission (not from the channel's own flags) is only used to exclude: a channel that
     // needed a non-public scope can't be public, and one whose kind's search scope wasn't granted is out of scope anyway.
@@ -334,7 +334,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (!r.ok) {
       const excluded = plan.publicOnly ? kind !== "public" : !(plan.scopes === undefined || plan.scopes.has(SEARCH_SCOPE[kind]));
       if (excluded) return visibility.set(channel, false), false;
-      return { detail: r.detail, error: r.error, needed: r.needed };
+      return { detail: r.detail, error: r.error, needed: r.needed, method: "conversations.info" };
     }
     const ok = (plan.publicOnly ? kind === "public" : true) && (plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]));
     visibility.set(channel, ok);
@@ -395,7 +395,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
           // which replays the feed by identity and re-checks this channel when the caller resumes. The failure is the
           // answer only when nothing was verified.
           if (messages.length) return { ok: true, messages, nextCursor: continuation() };
-          return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}) };
+          return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}), ...(show.method ? { method: show.method } : {}) };
         }
         if (!show) continue;
       }
@@ -705,7 +705,10 @@ async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "
     // the kernel records as a partial cause, naming the scope Slack said it needed.
     if (scan.error === "missing_scope") {
       const scope = (Array.isArray(scan.needed) ? scan.needed.filter((s) => typeof s === "string").join(",") : text(scan.needed)) || "reactions:read";
-      return needsOwner({ cause: "scope", scope, detail: `The reaction set is unknown: the Slack sign-in is missing the ${scope} permission, so reactions.list can't be read (Reconnect on the board and allow it).` });
+      // Name the call Slack refused the permission for: a channel lookup that lacks a scope is not reactions.list.
+      const method = scan.method ?? "reactions.list";
+      const what = method === "reactions.list" ? "reactions.list can't be read" : `Slack couldn't check a conversation's visibility (${method})`;
+      return needsOwner({ cause: "scope", scope, detail: `The reaction set is unknown: the Slack sign-in is missing the ${scope} permission, so ${what} (Reconnect on the board and allow it).` });
     }
     // Slack refusing the token is the owner's to fix; anything else is a plain error the caller retries or reports.
     if (AUTH_ERROR.test(scan.detail)) return need(`The reaction set is unknown: Slack refused the sign-in (${scan.detail}).`);
