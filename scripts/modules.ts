@@ -1803,6 +1803,8 @@ function appFeedbackRoutines(paperclip: Obj, appDefs: Obj[], routineTitles: Set<
     // The modules' default grants (`defaulted`) come to every agent they apply to; the feedback agent holds only FEEDBACK_TOOLS, so drop them.
     for (const [c, list] of Object.entries<Obj>(agent.enabled_tools)) agent.enabled_tools[c] = list.filter((t: string) => FEEDBACK_TOOLS[c as keyof typeof FEEDBACK_TOOLS]?.includes(t) || !defaulted.has(`${c}.${t}`));
     for (const c of Object.keys(agent.enabled_tools)) if (!agent.enabled_tools[c].length) delete agent.enabled_tools[c];
+    // Its declared servers follow its tools: a server left declared with no tools makes the kernel refuse every run it starts.
+    agent.mcp_servers = Object.keys(agent.enabled_tools);
     const extra = Object.entries<Obj>(agent.enabled_tools).flatMap(([c, list]) => list.filter((t: string) => !FEEDBACK_TOOLS[c as keyof typeof FEEDBACK_TOOLS]?.includes(t)).map((t: string) => `${c}.${t}`));
     if (extra.length) fail(`app ${a.name}: its feedback agent ${a.feedback_to} may hold only ${Object.entries(FEEDBACK_TOOLS).map(([c, l]) => `${c}: ${l.join(", ")}`).join("; ")}, not ${extra.join(", ")}`);
     const elsewhere = appDefs.find((b: Obj) => b !== a && (b?.api?.callers ?? []).some((c: Obj) => (c?.agent ?? c) === a.feedback_to));
