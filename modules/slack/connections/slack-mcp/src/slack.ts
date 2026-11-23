@@ -1,6 +1,7 @@
 // What Slack's connection adds to the pass-through (src/vendor/proxy.ts): Slack's own OAuth shapes, the draft tool's argument
 // pin, and the search folded into one query (Slack drops reaction filters from `filters`). A filters-only `hasmy::`
 // reaction search is answered from reactions.list instead (src/reactions.ts).
+import { planReactionSearch } from "./reactions.js";
 
 /** User token scopes the owner may grant on Connect. The reads are pre-selected; the writes let agents act as the owner. */
 export const READ_SCOPES = [
@@ -61,6 +62,11 @@ export function upstreamArgs(name: string, args: Record<string, unknown>): Recor
     return args;
   }
   if (!SEARCH_TOOLS.has(name)) return args;
+  // A filters-only reaction search has no term clause Slack can match, so sending it upstream is the empty, uncursored
+  // page this module exists to replace. The interceptor answers it before this hook runs; anything that still reaches
+  // here (a batched call, or a direct proxy call) is refused outright rather than answered with that misleading page.
+  const plan = planReactionSearch(name, args);
+  if (plan.kind !== "pass") throw new Error(`a filters-only ${plan.filter} search is answered from reactions.list, not sent upstream; call it on its own`);
   const query = searchQuery(args);
   return query === undefined || query === args.query ? args : { ...args, query };
 }

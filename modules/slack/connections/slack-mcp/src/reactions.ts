@@ -204,10 +204,10 @@ const NUMBERED_CURSOR = /^aidenhq:page:(\d+)$/;
 const numberedCursor = (page: number): string => `aidenhq:page:${page}`;
 
 // A continuation: the caller's `limit` was reached, so the token names the page to read again (`c` a Slack cursor, `p` a
-// numbered page, `f` the first page), how many of its raw items were consumed, the upstream page size that must stay the
-// same on resume (a different page size would shift every later page), and the messages already returned (Slack lists a
-// message once per reaction, so the same one can recur on a later page).
-type Position = { c?: string; p?: number; f?: true; skip: number; n: number; seen: string[] };
+// numbered page, `f` the first page), the upstream page size (fixed for the whole walk, so page boundaries don't move),
+// and the messages already returned. Resume skips by message identity, not by position: a reaction removed from an item
+// between calls shifts positions but not the identities, so nothing is skipped or repeated.
+type Position = { c?: string; p?: number; f?: true; n: number; seen: string[] };
 const POSITION = "aidenhq:pos:";
 const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
 function decodePosition(value: string): Position | undefined {
@@ -215,15 +215,14 @@ function decodePosition(value: string): Position | undefined {
   try {
     const v = JSON.parse(Buffer.from(value.slice(POSITION.length), "base64url").toString("utf8")) as Record<string, unknown>;
     if (!v || typeof v !== "object") return undefined;
-    const skip = Number(v.skip);
     const n = Number(v.n);
-    if (!Number.isInteger(skip) || skip < 0 || !Number.isInteger(n) || n <= 0) return undefined;
+    if (!Number.isInteger(n) || n <= 0) return undefined;
     const seen = Array.isArray(v.seen) ? v.seen.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length < 300) : [];
     const c = typeof v.c === "string" && v.c ? v.c : undefined;
     const p = Number.isInteger(v.p) && (v.p as number) > 0 ? (v.p as number) : undefined;
     const f = v.f === true ? true : undefined;
     if (!c && p === undefined && !f) return undefined;
-    return { ...(c ? { c } : {}), ...(p !== undefined ? { p } : {}), ...(f ? { f } : {}), skip, n, seen };
+    return { ...(c ? { c } : {}), ...(p !== undefined ? { p } : {}), ...(f ? { f } : {}), n, seen };
   } catch {
     return undefined;
   }
@@ -270,8 +269,8 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const position = decodePosition(start);
   const resumed = NUMBERED_CURSOR.exec(position ? "" : start);
   let cursor = position ? position.c ?? "" : resumed ? "" : start;
-  // Items of the page named by a position token that an earlier answer already returned: skipped before filtering.
-  let skip = position?.skip ?? 0;
+  // Resume skips by identity, not position: an item is dropped when it was already returned, so a reaction removed from an
+  // earlier item between calls can't shift the answer past one that was never returned.
 
   const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string; error?: string; needed?: unknown }> => {
     const url = new URL(`https://slack.com/api/${method}`);
@@ -321,9 +320,10 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // only a fresh scan starts at the first page.
   const first = position?.f === true;
   let numbered = position?.p ?? (resumed ? Number(resumed[1]) : first || cursor ? undefined : 1);
-  // The upstream page size is fixed by the first call and carried in every continuation: a later call with a different
-  // `limit` must not resize the pages, since that would shift what every page boundary contains.
-  const pageSize = position?.n ?? plan.limit ?? DEFAULT_LIMIT;
+  // The upstream page size is the caller's `limit` when that is larger than the default (so a big ask reads fewer pages),
+  // and never smaller than the default: a small result limit must not turn one scan into hundreds of one-item requests.
+  // It is fixed for the whole walk and carried in every continuation, so page boundaries don't move.
+  const pageSize = position?.n ?? Math.min(MAX_LIMIT, Math.max(plan.limit ?? DEFAULT_LIMIT, DEFAULT_LIMIT));
   // Slack lists a message once per reaction, so it can recur on a later page; the keys already returned ride along.
   for (const k of position?.seen ?? []) seen.add(k);
   // The caller's `limit` bounds what one answer returns. When it is reached the scan stops and hands back a continuation
@@ -335,7 +335,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (!r.ok) return r;
     const { json } = r;
     const items: unknown[] = Array.isArray(json.items) ? json.items : [];
-    for (let i = skip; i < items.length; i++) {
+    for (let i = 0; i < items.length; i++) {
       const item = items[i] as Record<string, any>;
       const message = messageOf(item, plan.emoji, signIn.userId);
       if (!message) continue;
@@ -349,17 +349,17 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       seen.add(key);
       messages.push(message);
       if (reachedLimit()) {
-        const rest = i + 1 < items.length ? { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), skip: i + 1, n: pageSize, seen: [...seen] } : undefined;
+        // Re-read this same page next time (the cursor, the numbered page, or the first page) and skip what was returned.
+        const rest = i + 1 < items.length ? { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] } : undefined;
         if (rest) return { ok: true, messages, nextCursor: encodePosition(rest) };
         break; // this page is done: continue to the cursor below, where the limit check hands the next page back
       }
     }
-    skip = 0;
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
     if (next) {
       // A cursor already visited can't advance: the set is incomplete, and handing the same cursor back would loop.
       if (cursors.has(next)) return { ok: false, detail: "reactions.list returned a cursor this scan had already followed" };
-      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ c: next, skip: 0, n: pageSize, seen: [...seen] }) };
+      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ c: next, n: pageSize, seen: [...seen] }) };
       cursor = next;
       numbered = undefined;
       continue;
@@ -369,7 +369,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (Number.isFinite(pages) && pages > current) {
       if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
       else numbered++;
-      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ p: numbered, skip: 0, n: pageSize, seen: [...seen] }) };
+      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ p: numbered, n: pageSize, seen: [...seen] }) };
       continue;
     }
     return { ok: true, messages, nextCursor: null };
@@ -515,7 +515,8 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   const peeked = await peekJson(req, BODY_LIMIT);
   // A body the proxy can't parse either: answer as the proxy would, since its bytes are spent.
   if (peeked.kind === "invalid") return (send(res, 500, { error: "bad request" }), true);
-  // Only a single tools/call is intercepted. A batch (no caller here sends one) is the proxy's, unchanged.
+  // Only a single tools/call is intercepted. A batch goes to the proxy; its reaction searches are refused by the argument
+  // hook (src/slack.ts) rather than sent upstream, so a batch can't get the empty page either.
   if (peeked.kind === "pass" || peeked.message.method !== "tools/call") return false;
   const message = peeked.message;
   const name = nameOf(message);

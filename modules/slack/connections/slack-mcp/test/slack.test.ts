@@ -13,14 +13,15 @@ describe("slack-mcp draft arguments", () => {
 });
 
 describe("slack-mcp search arguments", () => {
-  it("leaves a filters-only reaction search as sent: there is no term clause to fold in, and has:reaction is a modifier too", () => {
-    const bare = { filters: "hasmy::pushpin:" };
-    expect(upstreamArgs("slack_search_public_and_private", bare)).toBe(bare);
-    const anyone = { filters: "has::pushpin:" };
-    expect(upstreamArgs("slack_search_public", anyone)).toBe(anyone);
-    // A filters-only hasmy:: search never reaches the search tool: src/reactions.ts answers it from reactions.list.
-    const scoped = { filters: "in:<#C0123456> hasmy::pushpin:" };
-    expect(upstreamArgs("slack_search_public_and_private", scoped)).toBe(scoped);
+  it("refuses to send a filters-only reaction search upstream, where it can only answer an empty page", () => {
+    // src/reactions.ts answers these from reactions.list before the hook runs; one that still reaches here (a batched
+    // call, or a direct proxy call) is refused, never forwarded as a query Slack can't match.
+    expect(() => upstreamArgs("slack_search_public_and_private", { filters: "hasmy::pushpin:" })).toThrow(/reactions\.list/);
+    expect(() => upstreamArgs("slack_search_public", { filters: "has::pushpin:" })).toThrow(/reactions\.list/);
+    // A reaction filter beside another modifier is still modifiers and no term clause: refused too, not sent upstream.
+    expect(() => upstreamArgs("slack_search_public_and_private", { filters: "in:<#C0123456> hasmy::pushpin:" })).toThrow(/reactions\.list/);
+    // A real term clause keeps the search tool's job: a keyword search with a reaction filter is folded and sent.
+    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: "hasmy::pushpin:" })).toEqual({ query: "hello hasmy::pushpin:", filters: "hasmy::pushpin:" });
   });
 
   it("folds keywords, filters and the natural-language query into the one query, keeping them as sent", () => {

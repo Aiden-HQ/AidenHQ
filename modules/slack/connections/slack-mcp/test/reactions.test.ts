@@ -145,7 +145,7 @@ describe("scanMyReactions", () => {
     expect(calls[2]).toContain("cursor=cursor-3");
   });
 
-  it("sends the caller's limit, keeps the per-page user's own reactions only, and drops other emoji, other users and duplicates", async () => {
+  it("keeps only the signed-in user's own reactions, dropping other emoji, other users and duplicates", async () => {
     const { fetchImpl, calls } = fakeSlack([
       page(
         [
@@ -163,7 +163,8 @@ describe("scanMyReactions", () => {
     ]);
     const scan = await scanMyReactions({ emoji: "pushpin", limit: 25 }, { authorization: "Bearer xoxp-user", userId: ME }, { fetchImpl });
     expect(scan).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C1", ts: "1.1" }), expect.objectContaining({ channel: "C2", ts: "2.2" }), expect.objectContaining({ channel: "C4", ts: "4.4" })], nextCursor: null });
-    expect(calls[0]).toContain("limit=25");
+    // A small result limit never shrinks the upstream page: the fetch size stays at the default floor.
+    expect(calls[0]).toContain("limit=200");
   });
 
   it("keeps thread_ts for a reacted thread reply, so the scan can attach it to the conversation's task", async () => {
@@ -330,8 +331,23 @@ describe("scanMyReactions", () => {
     const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
     expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
     await scanMyReactions({ emoji: "pushpin", limit: 10, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    // The continuation's upstream page size stays the first call's 1, even though it asked for 10 results.
-    expect(calls.filter((c) => c.includes("reactions.list")).every((c) => c.includes("limit=1"))).toBe(true);
+    // The continuation's upstream page size stays the first call's, even though the second asked for 10 results.
+    const sizes = calls.filter((c) => c.includes("reactions.list")).map((c) => new URL(c).searchParams.get("limit"));
+    expect(new Set(sizes).size).toBe(1);
+    expect(sizes[0]).toBe("200");
+  });
+
+  it("resumes by identity, so a reaction removed between calls doesn't skip an unreturned message", async () => {
+    // The first answer returns A (limit 1) from a page of A, B, C. Then the owner unpins A, so a replay starts with B.
+    const before = page([item("C1", "1.1"), item("C2", "2.2"), item("C3", "3.3")]);
+    const after = page([item("C2", "2.2"), item("C3", "3.3")]);
+    let n = 0;
+    const fetchImpl = (async () => Response.json(n++ === 0 ? before : after)) as unknown as typeof fetch;
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }] });
+    // B is still returned: the resume skipped by identity, not by the position A used to occupy.
+    const second = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(second).toMatchObject({ ok: true, messages: [{ channel: "C2" }] });
   });
 
   it("a limit larger than the set still ends at the last page with a null cursor", async () => {
@@ -675,7 +691,7 @@ describe("interception through the proxy", () => {
     expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["slack_search_public", "slack_search_public_and_private"]);
   });
 
-  it("leaves a JSON-RPC batch to the proxy: no caller here sends one, and its dispatch is the proxy's", async () => {
+  it("refuses a batched reaction search instead of letting it reach the search tool as an empty page", async () => {
     seen.length = 0;
     const res = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -686,8 +702,11 @@ describe("interception through the proxy", () => {
       ]),
     });
     const body = (await res.json()) as any[];
-    // The batch reached the vendor (and its search tool) whole: this path does not rewrite batches.
-    expect(seen).toEqual(["slack_search_public"]);
+    // The batch is the proxy's to dispatch, but the reaction call is refused by the argument hook, never sent upstream.
+    const call = body.find((m) => m.id === 11);
+    expect(call.result).toMatchObject({ isError: true });
+    expect(call.result.content[0].text).toContain("reactions.list");
+    expect(seen).toEqual([]);
     expect(body.find((m) => m.id === 12).result.tools).toHaveLength(2);
   });
 
