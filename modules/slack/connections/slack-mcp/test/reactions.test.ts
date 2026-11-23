@@ -97,6 +97,7 @@ describe("planReactionSearch", () => {
     // A negated modifier in a modifier-only query has no term clause either, and an excluded reaction isn't computable.
     expect(planReactionSearch("slack_search_public", { query: "hasmy::pushpin: -in:<#C1>" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin: -hasmy::eyes:" })).toMatchObject({ kind: "unsupported" });
+    expect(planReactionSearch("slack_search_public", { query: "in:<#C1>", filters: "-hasmy::eyes:" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "files" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public_and_private", { filters: "hasmy::pushpin:", channel_types: "im,mpim" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "messages" })).toMatchObject({ kind: "mine" });
