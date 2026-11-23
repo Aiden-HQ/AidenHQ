@@ -270,8 +270,9 @@ async function deepsecEngine({ model, effort, root, base, trusted, minutes, scra
 
 const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$/, "");
 
-/** What a shell says when it can't run any command: its sandbox failed to start (bubblewrap's own errors, or a harness's word for it). */
-const DEAD_SHELL = /\bbwrap: |Failed RTM_NEWADDR|sandbox (?:failed|is unavailable|could not start|is required)/i;
+/** What a shell says, as the whole of its answer, when it can't run any command: its sandbox failed to start (bubblewrap's own
+ * error, or a harness's word for it). Anchored at the start: a command's own output (a diff that mentions bwrap) never matches. */
+const DEAD_SHELL = /^(?:bwrap: \S|sandbox (?:failed|is unavailable|could not start|is required)\b)/i;
 /** The first commands, all failing with the same output, that end the run: a shell that answers everything with one error. */
 const SAME_FAILS = 3;
 /**
@@ -346,10 +347,11 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
 export const CLAUDE_SETTINGS = { sandbox: { enabled: false } };
 /**
  * The bubblewrap arguments a claude run starts under: everything read-only but `writable` (its run directory, a skill's checkout)
- * and a private /tmp, its own pid namespace (the recipe's processes out of sight), the network as the box has it.
+ * and a private /tmp, its own pid namespace (the recipe's processes out of sight), the network as the box has it. A writable
+ * checkout's .git stays read-only: the recipe runs git there itself (stage), so its config and hooks are never the skill's.
  */
 export const claudeJail = (writable: string[]) => ["--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp",
-  ...writable.flatMap((d) => ["--bind", d, d]), "--"];
+  ...writable.flatMap((d) => ["--bind", d, d, "--ro-bind-try", join(d, ".git"), join(d, ".git")]), "--"];
 
 /** A claude run that never started because its jail couldn't (bwrap's own error on stderr), said as that. */
 const jailFailed = (r: { stdout: string; stderr: string }) => (!r.stdout.trim() && /^bwrap: /m.test(r.stderr) ? `the jail claude runs in couldn't start (${r.stderr.match(/^bwrap: .*$/m)![0].slice(0, 200)})` : undefined);
