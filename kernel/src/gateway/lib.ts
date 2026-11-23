@@ -170,6 +170,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
   // true-up changed it (`changed`: the board's pull reads it; `at` stays the call's time).
   const have = new Set((db.prepare("PRAGMA table_info(calls)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["owner", "gen", "changed"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
+  db.exec("CREATE INDEX IF NOT EXISTS calls_changed ON calls (COALESCE(changed, at))");
   return { db, moved: moveLedger(db, legacy) };
 }
 
