@@ -79,7 +79,6 @@ const http = createVendorProxy({
       headers: () => auth.headers(),
       authState: () => auth.status().state,
       servedRead: servedReadTools,
-      call: (name, args) => http.call(name, args),
       serviceKey: readToken(process.env.MCP_TOKEN_FILE),
       readKey: readToken(process.env.MCP_READ_TOKEN_FILE),
       caller,

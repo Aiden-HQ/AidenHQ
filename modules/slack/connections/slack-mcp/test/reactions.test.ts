@@ -16,7 +16,7 @@ import { createVendorProxy, type VendorProxy } from "../src/vendor/proxy.js";
 const ME = "U0OWNER01";
 const stateDir = () => {
   const dir = mkdtempSync(join(tmpdir(), "slack-reactions-"));
-  writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "xoxp-user", user_id: ME, team_id: "T1" }));
+  writeFileSync(join(dir, "token.json"), JSON.stringify({ access_token: "xoxp-user", user_id: ME, team_id: "T1", scope: "search:read.public,search:read.private,search:read.im,search:read.mpim,reactions:read" }));
   return dir;
 };
 
@@ -156,7 +156,7 @@ describe("scanMyReactions", () => {
     expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.2", thread_ts: "1.1" }] });
   });
 
-  it("a public-only scan drops private channels and DMs, and fails rather than guessing when Slack can't classify one", async () => {
+  it("a public-only scan drops private channels and DMs; the all-channels one drops kinds the sign-in has no search scope for", async () => {
     const fetchImpl = (async (url: string | URL) => {
       const u = new URL(String(url));
       if (u.pathname.endsWith("/conversations.info")) {
@@ -169,6 +169,9 @@ describe("scanMyReactions", () => {
       return Response.json(page([item("C1", "1.1"), item("D1", "2.2"), item("G1", "3.3")]));
     }) as unknown as typeof fetch;
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
+    // No im/mpim search scope granted: the all-channels scan drops the DM and the private channel too.
+    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
+    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.private", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }, { channel: "D1", ts: "2.2" }, { channel: "G1", ts: "3.3" }] });
     const unclassified = (async (url: string | URL) => {
       const u = new URL(String(url));
       if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: false, error: "channel_not_found" });
@@ -298,7 +301,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async (n) => n.startsWith("slack_search_public"), call: (n, a) => proxy.call(n, a), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async (n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
@@ -449,19 +452,20 @@ describe("interception through the proxy", () => {
     expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["slack_search_public", "slack_search_public_and_private"]);
   });
 
-  it("answers a reaction search inside a JSON-RPC batch, and still runs the batch's other calls", async () => {
-    slackCalls = 0;
+  it("leaves a JSON-RPC batch to the proxy: no caller here sends one, and its dispatch is the proxy's", async () => {
+    seen.length = 0;
     const res = await fetch(`${base}/mcp`, {
       method: "POST",
       headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream", "x-aidenhq-caller": "ok" },
       body: JSON.stringify([
         { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } },
-        { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "slack_search_public", arguments: { query: "deploy" } } },
+        { jsonrpc: "2.0", id: 12, method: "tools/list" },
       ]),
     });
     const body = (await res.json()) as any[];
-    expect(body.find((m) => m.id === 11).result.content[0].text).toContain("next_cursor");
-    expect(JSON.parse(body.find((m) => m.id === 12).result.content[0].text)).toMatchObject({ upstream: true });
+    // The batch reached the vendor (and its search tool) whole: this path does not rewrite batches.
+    expect(seen).toEqual(["slack_search_public"]);
+    expect(body.find((m) => m.id === 12).result.tools).toHaveLength(2);
   });
 
   it("passes ordinary searches through exactly, and the proxy still applies the argument hook", async () => {
