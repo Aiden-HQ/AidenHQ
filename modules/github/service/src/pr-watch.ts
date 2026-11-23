@@ -68,8 +68,10 @@ const UPDATE_OK_WAIT_MIN = 10;
  * job's check run can lag by seconds, and a spurious re-run wastes a whole run. */
 const WEDGED_GRACE_MS = 3 * 60_000;
 /** Per pass, across every PR, the wedged checks whose Actions job is read, and the re-runs asked: a queued matrix must not
- * hold the scan. What the pass does not reach, the next resumes from. */
+ * hold the scan. No one PR may take more than its share, so an earlier PR's matrix cannot use up the pass; what is not
+ * reached is resumed from on the next pass. */
 const WEDGED_READS_PER_PASS = 20, WEDGED_ASKS_PER_PASS = 3;
+const WEDGED_READS_PER_PR = 3, WEDGED_ASKS_PER_PR = 1;
 /** How long after a re-run was asked a check run still not completed is reported to its task: the merge gate waits on it, so a
  * still-stuck head is reported rather than waited on silently. */
 const WEDGED_REPORT_MS = 20 * 60_000;
@@ -154,7 +156,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<pr url>:<head>:<job id>` -> the same for a wedged check run
-    state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check name>` -> { at, done: [{ check, at, accepted }] }: the re-runs GitHub took
+    state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check name>` -> { at, done: [{ check, attempt, accepted }] }: the re-runs GitHub took
     state.wedgedTold ??= {}; // `<pr url>:<head>` -> when the task was told its check run is still wedged after a re-run
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
@@ -275,10 +277,11 @@ export function startPrWatch(o: PrWatchOptions) {
       const live = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed");
       const start = live.length ? wedgedAt % live.length : 0;
       wedgedAt = start;
+      const readsAt = wedgedReads, asksAt = wedgedAsks;
       for (const c of [...live.slice(start), ...live.slice(0, start)]) {
-        if (wedgedReads >= WEDGED_READS_PER_PASS || wedgedAsks >= WEDGED_ASKS_PER_PASS) { wedgedAt = start + 1; break; }
+        if (wedgedReads >= WEDGED_READS_PER_PASS || wedgedAsks >= WEDGED_ASKS_PER_PASS || wedgedReads - readsAt >= WEDGED_READS_PER_PR || wedgedAsks - asksAt >= WEDGED_ASKS_PER_PR) { wedgedAt = start + 1; break; }
         const ledgerKey = `${url}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
-        const seen: { at: string; done: { check: number; at: string; accepted: boolean }[] } | undefined = state.wedged[ledgerKey];
+        const seen: { at: string; done: { check: number; attempt: number; accepted: boolean }[] } | undefined = state.wedged[ledgerKey];
         const myself = seen?.done.find((d) => d.check === Number(c.id));
         const wedged = () => { if (seen) out.push({ at: Date.parse(seen.at), accepted: seen.done.some((d) => d.accepted) }); };
         // A check run this head re-ran already is reported from its ledger, not asked again, and needs no further read.
@@ -304,15 +307,16 @@ export function startPrWatch(o: PrWatchOptions) {
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== head || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt) || Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a fresh job's check run can lag
-        // The re-run's replacement: this same check, started after an ask GitHub accepted. A sibling sharing the name started
-        // alongside the re-run check and is a check of its own.
-        const replaced = seen?.done.some((d) => d.accepted && Date.parse(c.started_at ?? job.body?.started_at ?? "") > Date.parse(d.at));
-        if (replaced) { wedged(); continue; }
+        // The re-run's replacement is a later attempt of the same workflow (its job says which attempt it is); a sibling job
+        // that merely shares the display name is still on the attempt it started with, so it is a check of its own.
+        const attempt = Number(job.body?.run_attempt ?? 1);
+        if (seen?.done.some((d) => d.accepted && attempt > d.attempt)) { wedged(); continue; }
         // Bounded: two jobs may share a display name at one head and each is re-run once; beyond that it is reported.
         if ((seen?.done.filter((d) => d.accepted).length ?? 0) >= 2) { wedged(); continue; }
         // Recorded before the request, so one that never answers is still reported after the interval rather than lost.
         state.wedged[ledgerKey] ??= { at: new Date().toISOString(), done: [] };
-        state.wedged[ledgerKey].done.push({ check: Number(c.id), at: new Date().toISOString(), accepted: false });
+        state.wedged[ledgerKey].done.push({ check: Number(c.id), attempt, accepted: false });
+        wedgedAsks++;
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
         catch (e) {
@@ -331,7 +335,6 @@ export function startPrWatch(o: PrWatchOptions) {
         save();
         // A refusal keeps the first ask's time, so a check GitHub keeps refusing is reported once the interval has passed.
         if (r.status >= 300 && Date.now() - Date.parse(state.wedged[ledgerKey].at) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(state.wedged[ledgerKey].at), accepted: false });
-        wedgedAsks++;
         wedgedAt = start + 1;
       }
       return out;

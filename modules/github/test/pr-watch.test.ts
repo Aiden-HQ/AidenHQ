@@ -297,7 +297,7 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
   const c = await rig(t);
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   c.set([c.agentPr(44, stuckPr(44))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/44:h44:500:image-changes": { at: asked, done: [{ check: 77, at: asked, accepted: true }] } } } }));
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/44:h44:500:image-changes": { at: asked, done: [{ check: 77, attempt: 1, accepted: true }] } } } }));
   await c.watch.tick(); await c.watch.tick();
   assert.equal(c.woke.length, 1, "told once at this head");
   assert.equal(c.woke[0].task, "ACME-44");
@@ -311,13 +311,13 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
   // A replacement job that finished seconds ago is inside the grace period: not reported yet either.
   const freshJob = await rig(t, { job: { completed_at: new Date(Date.now() - 30_000).toISOString() } });
   freshJob.set([freshJob.agentPr(51, stuckPr(51, 78))]);
-  writeFileSync(join(freshJob.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/51:h51:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true }] } } } }));
+  writeFileSync(join(freshJob.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/51:h51:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, attempt: 1, accepted: true }] } } } }));
   await freshJob.watch.tick();
   assert.equal(freshJob.woke.length, 0, "a replacement inside the grace period is not stuck yet");
   // A replacement job still queued or running is not stuck: nothing is reported for it.
   const running = await rig(t, { job: { status: "in_progress", completed_at: null } });
   running.set([running.agentPr(49, stuckPr(49, 78))]);
-  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/49:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true }] } } } }));
+  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/49:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, attempt: 1, accepted: true }] } } } }));
   await running.watch.tick();
   assert.equal(running.woke.length, 0, "a re-run still running is not a stuck check");
   // A head the re-run was just asked at waits for the interval: nothing is reported yet.
@@ -330,7 +330,7 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
 test("a re-run GitHub kept refusing is reported after the interval, and an unanswered call stops no other PR's merge", async (t) => {
   const c = await rig(t, { jobRerun: () => 502 });
   c.set([c.agentPr(46, stuckPr(46))]);
-  const db = { "acme/app": { wedged: { "https://github.com/acme/app/pull/46:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false }] } } } };
+  const db = { "acme/app": { wedged: { "https://github.com/acme/app/pull/46:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, attempt: 1, accepted: false }] } } } };
   writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify(db));
   await c.watch.tick();
   assert.equal(c.woke.length, 1, "the first ask's time is kept across refusals, so a refused re-run is still reported");
@@ -373,7 +373,7 @@ test("a wedged check's re-run that never answers is reported after the interval,
   const c = await rig(t, { jobRerun: () => { throw new Error("The operation was aborted due to timeout"); } });
   const key = "https://github.com/acme/app/pull/50:h50:500:image-changes";
   c.set([c.agentPr(50, stuckPr(50))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { [key]: { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false }] } } } }));
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { [key]: { at: new Date(Date.now() - 21 * 60_000).toISOString(), done: [{ check: 77, attempt: 1, accepted: false }] } } } }));
   await c.watch.tick();
   assert.equal(c.woke.length, 1, "an unanswered re-run still counts towards the report");
   assert.match(c.woke[0].text, /the request to re-run the job was refused/);
