@@ -92,3 +92,18 @@ test("a plugin skill is a plugin folder, invoked by its spec", () => {
   assert.deepEqual(resolveSkills([{ skill: "/compound-engineering:ce-code-review", args: "mode:agent base:{base}" }], "claude-code", { base: "abc", root: "/ws" }, root),
     { invocations: ["/compound-engineering:ce-code-review mode:agent base:abc"], skillDirs: [], pluginDirs: [join(root, "plugins", "compound-engineering")] });
 });
+
+test("a skill Claude Code doesn't list is no review, whatever it answers", async () => {
+  const { chmodSync } = await import("node:fs");
+  const { runEngine } = await import("../recipe/engines.ts");
+  const bin = mkdtempSync(join(tmpdir(), "cr-claude-")), scratch = mkdtempSync(join(tmpdir(), "cr-scratch-")), root = mkdtempSync(join(tmpdir(), "cr-skills-"));
+  mkdirSync(join(root, "plugins", "p"), { recursive: true });
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho '{"type":"system","subtype":"init","session_id":"s","slash_commands":["other"]}'\necho '{"type":"result","subtype":"success","session_id":"s","result":"Unknown command"}'\n`);
+  chmodSync(join(bin, "claude"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    const r = await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base: "abc", minutes: 1, scratch, own: true, harness: "claude-code", skills: [{ skill: "/p:cmd", args: "" }], skillsRoot: root });
+    assert.match(String(r.cause), /has no skill p:cmd/);
+  } finally { process.env.PATH = path; }
+});

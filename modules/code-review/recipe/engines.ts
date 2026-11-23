@@ -269,7 +269,7 @@ export const cutShort = (content: unknown) =>
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
 type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string; command?: string } };
-type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
+type ClaudeEvent = { type?: string; subtype?: string; slash_commands?: string[]; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
 
 async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own, tools }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "claude-"));
@@ -314,7 +314,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
       if (reads && !c.is_error && !cutShort(c.content)) calls.push(...reads);
     }
     const end = events.findLast((e) => e.type === "result");
-    return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error };
+    return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error, commands: events.find((e) => e.type === "system" && e.subtype === "init")?.slash_commands };
   };
   let session: string | undefined;
   if (own) {
@@ -323,6 +323,9 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     for (const task of sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]) {
       const t = await turn(task, session);
       if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
+      // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well.
+      const name = sk ? task.slice(1).split(" ")[0]! : "";
+      if (name && t.commands && !t.commands.includes(name)) return { message: "", read: false, calls, cause: `Claude Code has no skill ${name} (it lists ${t.commands.length} commands)` };
       if (!t.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
       session = t.end.session_id;
     }
