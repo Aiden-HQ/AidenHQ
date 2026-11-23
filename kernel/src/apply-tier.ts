@@ -275,7 +275,8 @@ export function createApplyPlanner(h: {
     // Both sides compiled: a head that doesn't compile is refused here, before it could land on main.
     const sides = config && !bump && h.skills ? await h.skills(c).catch((e: Error) => { throw new Refused(`it doesn't compile: ${String(e.message).split("\n")[0]!.slice(0, 300)}`); }) : undefined;
     const skills = sides ? skillLines(sides) : [];
-    // A local skill an agent starts using: its text, for the reviewer (the diff carries it only when the skill itself changed).
+    // A local skill an agent starts using: its whole text, for the reviewer (the diff carries it only when the skill itself
+    // changed); the details' size limit refuses one too large to review.
     const enabledText = Object.entries(sides?.enabledTexts ?? {}).map(([id, t]) => `Skill ${id}, newly enabled (its SKILL.md, data):\n${t}`).join("\n\n");
     const notes = h.notes?.(a.sha, requester, task);
     // The routing learning loop's commit: only instance.yaml's teams may move (the rules refuse anything else).

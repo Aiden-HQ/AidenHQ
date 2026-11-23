@@ -588,7 +588,7 @@ export function skillSides({ product, fetch, tree }: { product: string; fetch: (
       const inFolders = [...folders].flatMap((d) => readdirSync(join(dir, d), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => `${join(e.parentPath, e.name).slice(dir.length + 1)}`));
       // Each local skill an agent starts using, with its text (the reviewer reads what it newly steers).
       const newly = new Set(Object.entries(after).flatMap(([k, ids]) => ids.filter((id) => !(before[k] ?? []).includes(id))));
-      const enabledTexts = Object.fromEntries([...newly].flatMap((id) => { const [m, n] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)]; const f = join(dir, "modules", m, "skills", n, "SKILL.md"); return existsSync(f) ? [[id, readFileSync(f, "utf8").slice(0, 8000)]] : []; }));
+      const enabledTexts = Object.fromEntries([...newly].flatMap((id) => { const [m, n] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)]; const f = join(dir, "modules", m, "skills", n, "SKILL.md"); return existsSync(f) ? [[id, readFileSync(f, "utf8")]] : []; }));
       return { before, after, files: [...new Set([...c.files, ...inFolders])], enabledTexts };
     } finally {
       rmSync(dir, { recursive: true, force: true });

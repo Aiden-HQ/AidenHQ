@@ -82,7 +82,7 @@ export function createEvents(o: {
 }) {
   const { db } = o, now = o.now ?? Date.now, log = o.log ?? (() => {});
   db.exec(`CREATE TABLE IF NOT EXISTS event_queue (seq INTEGER PRIMARY KEY AUTOINCREMENT, routine TEXT NOT NULL, id TEXT NOT NULL, batch TEXT NOT NULL, body TEXT, at INTEGER NOT NULL, UNIQUE(routine, id));
-    CREATE TABLE IF NOT EXISTS event_batches (id TEXT PRIMARY KEY, routine TEXT NOT NULL, sub TEXT NOT NULL, task TEXT, count INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, sealed_at INTEGER, dispatched_at INTEGER);
+    CREATE TABLE IF NOT EXISTS event_batches (id TEXT PRIMARY KEY, routine TEXT NOT NULL, sub TEXT NOT NULL, turn INTEGER NOT NULL DEFAULT 0, task TEXT, count INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, sealed_at INTEGER, dispatched_at INTEGER);
     CREATE INDEX IF NOT EXISTS event_queue_batch ON event_queue (batch);
     CREATE INDEX IF NOT EXISTS event_batches_state ON event_batches (state, routine);
     CREATE INDEX IF NOT EXISTS event_batches_dispatched ON event_batches (dispatched_at);
@@ -175,7 +175,8 @@ export function createEvents(o: {
       try {
         const t = now();
         db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE state = 'open' AND opened_at <= ?").run(t, t - WINDOW_MS);
-        for (const b of db.prepare("SELECT * FROM event_batches WHERE state IN ('sealed', 'firing') ORDER BY sealed_at").all() as Batch[]) {
+        // In turn order (sealed first; a failed routine lookup moves its batch's turn to the back), never the firing deadline.
+        for (const b of db.prepare("SELECT * FROM event_batches WHERE state IN ('sealed', 'firing') ORDER BY max(turn, sealed_at)").all() as Batch[]) {
           if (Date.now() > until) break;
           if (b.state === "firing" && now() - b.sealed_at! > FIRING_MS) { drop(b, "Paperclip didn't take the run in 10 minutes"); continue; }
           const s = subs()[b.routine];
@@ -184,7 +185,7 @@ export function createEvents(o: {
           let r: Awaited<ReturnType<typeof o.routine>>;
           try { r = await o.routine(b.routine); } catch (e) {
             // To the back of the line: one routine whose lookup fails never holds up the batches behind it.
-            if (b.state === "sealed") db.prepare("UPDATE event_batches SET sealed_at = ? WHERE id = ?").run(now(), b.id);
+            db.prepare("UPDATE event_batches SET turn = ? WHERE id = ?").run(now(), b.id);
             log("events: routine lookup failed; retried next drain", { routine: b.routine, err: String((e as Error).message).slice(0, 200) });
             continue;
           }

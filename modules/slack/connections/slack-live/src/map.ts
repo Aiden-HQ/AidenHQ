@@ -18,6 +18,11 @@ export function toSourceEvent(body: unknown): SourceEvent | null {
   if (!ev || !kind || !KINDS.has(kind) || !channel || !ts || !text) return null;
   const subtype = str(ev.subtype);
   if (subtype && SYSTEM_SUBTYPES.has(subtype)) return null;
+  // A direct message goes only from the owner's own stream (a user authorization): a DM someone sends the bot is the bot's
+  // conversation, never a feed a routine reads.
+  const dm = ["im", "mpim"].includes(str(ev.channel_type) ?? "");
+  const auths = (rec(body)?.authorizations as { is_bot?: boolean }[] | undefined) ?? [];
+  if (dm && !auths.some((a) => a?.is_bot === false)) return null;
   const author = str(ev.user) ?? str(ev.bot_id);
   // A reply carries its thread's root ts: whom it addresses and which task it belongs to are the thread's.
   const thread = str(ev.thread_ts);
