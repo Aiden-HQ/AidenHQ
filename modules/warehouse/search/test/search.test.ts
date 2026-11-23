@@ -8,7 +8,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import { createSearch, gatewayModels, type Issue, type Models } from "../src/search.ts";
 
-async function setup({ issues, failEmbed = () => false, listFails = () => false, recent = () => [], summarize, slowEmbed }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; recent?: () => Issue[]; summarize?: () => Models["summarize"]; slowEmbed?: () => Promise<void> }) {
+async function setup({ issues, failEmbed = () => false, listFails = () => false, hang = () => false, recent = () => [], summarize, slowEmbed, reconcileTimeoutMs }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; hang?: () => boolean; reconcileTimeoutMs?: number; recent?: () => Issue[]; summarize?: () => Models["summarize"]; slowEmbed?: () => Promise<void> }) {
   const pg = new PGlite({ extensions: { vector } });
   await pg.exec("CREATE EXTENSION vector; CREATE SCHEMA src_meta; CREATE SEQUENCE src_meta.seq; CREATE SCHEMA src_tasks;");
   const db = new DatabaseSync(":memory:");
@@ -21,12 +21,12 @@ async function setup({ issues, failEmbed = () => false, listFails = () => false,
     embed: async (texts) => { embeds.push(texts); await slowEmbed?.(); if (failEmbed(texts)) throw new Error("upstream down"); return texts.map(axis); },
   };
   const search = createSearch({
-    db, facts: async () => ({ facts: [], tail: 0 }), sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => ({ ...models, ...(summarize?.() ? { summarize: summarize() } : {}) }), now: () => t,
+    db, facts: async () => ({ facts: [], tail: 0 }), sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => ({ ...models, ...(summarize?.() ? { summarize: summarize() } : {}) }), now: () => t, reconcileTimeoutMs,
     cp: {
       company: async () => "co-1",
       issue: async (id) => issues.get(id) ?? null,
       comments: async () => [],
-      list: async (_c, offset, limit) => { if (listFails(offset)) throw new Error("control plane 502"); return [...issues.values()].slice(offset, offset + limit); },
+      list: async (_c, offset, limit) => { if (hang()) return new Promise<Issue[]>(() => {}); if (listFails(offset)) throw new Error("control plane 502"); return [...issues.values()].slice(offset, offset + limit); },
       recent: async () => recent(),
     },
     local: async () => ({ prs: [], paths: [], final: "" }), agentName: async () => null, projectName: async () => null,
@@ -238,4 +238,13 @@ test("a summary the model cut off is a failure, and the request leaves it room a
     assert.deepEqual(bodies[0].reasoning, { enabled: false });
     assert.ok(bodies[0].max_tokens >= 1000);
   } finally { globalThis.fetch = real; }
+});
+
+test("a reconcile pass that hangs is abandoned at its deadline and the next cycle runs it again", async () => {
+  const issues = new Map([["t-300", issue("t-300", "Hung listing")]]);
+  let hung = true;
+  const { search } = await setup({ issues, hang: () => hung, reconcileTimeoutMs: 50 });
+  await assert.rejects(search.reconcileDue(), /timed out/);
+  hung = false;
+  assert.deepEqual(await search.reconcileDue(), { listed: 1, marked: 1, complete: true });
 });

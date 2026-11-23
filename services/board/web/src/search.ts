@@ -25,6 +25,8 @@ const DEBOUNCE_MS = 250;
 const REFRESH_MS = 30_000;
 /** Older closed matches wanted on screen at first, and per "Show more". */
 const WANT = 25;
+/** A refresh replays the pages read so far (at most this many cards, a few requests); an owner paged deeper keeps the answer as it is. */
+const REFRESH_MAX_DONE = 100;
 /**
  * `n`: the query's sequence number that produced it (a page or a refresh applies only to it). `keyword`: the first page was
  * keyword only, so its cursor pages in that mode. `stalled`: a page failed; pages resume on the owner's next "Show more".
@@ -59,21 +61,24 @@ export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean, acti
     return () => clearTimeout(timer);
   }, [q]);
   // The same query again now and then, as a whole answer: its hits, and the older closes read as far as the owner had paged
-  // (so they and their cursor are fresh too), swapped in at once. Skipped while a page is on its way; a failure keeps the last
-  // answer. (`seq` is read in the effects: the query effect above has moved it on when the text changed in the same render.)
+  // (so they and their cursor are fresh too), swapped in at once. Skipped while a page is on its way, past REFRESH_MAX_DONE
+  // cards, and when the owner paged meanwhile (the answer would undo it; the next refresh comes at its own time); a failure
+  // keeps the last answer. (`seq` is read in the effects: the query effect above has moved it on when the text changed in the same render.)
   useEffect(() => {
     if (!q || !active || a.busy || a.n !== seq.current) return;
     const n = a.n;
     let running = false, gone = false;
     const refresh = async () => {
+      const had = loaded.current;
+      if (had > REFRESH_MAX_DONE) return;
       const r = await api.search(q);
       let { done, next } = r;
-      while (next && done.length < loaded.current && !gone) {
+      while (next && done.length < had && !gone) {
         const p = await api.search(q, { after: next, keyword: !r.semantic });
         done = [...done, ...p.done.filter((c) => !done.some((d) => d.id === c.id))];
         next = p.next;
       }
-      if (!gone) setA((s) => (s.n !== n || n !== seq.current || s.paging ? s : answerOf(n, { ...r, done, next })));
+      if (!gone) setA((s) => (s.n !== n || n !== seq.current || s.paging || s.done.length !== had ? s : answerOf(n, { ...r, done, next })));
     };
     const timer = setInterval(() => {
       if (document.hidden || running) return;

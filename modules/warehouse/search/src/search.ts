@@ -69,6 +69,8 @@ const MAX_DONE_PAGE = 100;
 const MARKING = /^(task\.|pr\.opened$|job\.ended$|record\.(filed|landed)$)/;
 export const STATUSES = "backlog,todo,in_progress,in_review,blocked,done,cancelled";
 const PAGE = 500;
+/** The longest one reconcile pass may take (a hung read must not hold the next pass off forever). */
+const RECONCILE_TIMEOUT_MS = 20 * 60_000;
 /** How often a complete reconcile pass runs. */
 const RECONCILE_MS = 6 * 3600_000;
 /** How often the recently updated issues are read. */
@@ -86,7 +88,7 @@ export type Models = {
 /** The kernel's fact log after a seq (GET /v1/facts): without `since`, none and its tail. */
 export type FactLog = (since?: number) => Promise<{ facts: { seq: number; type: string; task: string | null }[]; tail: number }>;
 
-export function createSearch({ db, sql, migrate, facts, cp, local, agentName, projectName, models, log = () => {}, now = Date.now }: {
+export function createSearch({ db, sql, migrate, facts, cp, local, agentName, projectName, models, log = () => {}, now = Date.now, reconcileTimeoutMs = RECONCILE_TIMEOUT_MS }: {
   /** The service's own SQLite: the dirty queue and the cursors. */
   db: DatabaseSync;
   /** The warehouse as src_tasks; undefined while it can't be (no warehouse, no password): search is then unavailable. */
@@ -106,6 +108,7 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
   models: () => Models;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   now?: () => number;
+  reconcileTimeoutMs?: number;
 }) {
   // `backfill`: marked by reconcile only, so it waits behind every live change (a task changed meanwhile clears it).
   db.exec(`CREATE TABLE IF NOT EXISTS search_dirty (task TEXT PRIMARY KEY, gen INTEGER NOT NULL, due INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, backfill INTEGER NOT NULL DEFAULT 0);
@@ -325,11 +328,13 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     return { listed: seen.size, marked, complete };
   }
   let reconciledAt = 0, reconciling = false;
-  /** reconcile() unless a pass completed within RECONCILE_MS or one runs: the caller asks often, so a failed pass is retried soon. */
+  /** reconcile() (within its deadline) unless a pass completed within RECONCILE_MS or one runs: the caller asks often, so a failed pass is retried soon. */
   async function reconcileDue() {
     if (reconciling || now() - reconciledAt < RECONCILE_MS) return null;
     reconciling = true;
-    try { return await reconcile(); } finally { reconciling = false; }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Past the deadline the pass is abandoned (reconciledAt stays, so the next cycle tries again).
+    try { return await Promise.race([reconcile(), new Promise<never>((_, no) => { timer = setTimeout(() => no(new Error("the reconcile pass timed out")), reconcileTimeoutMs); })]); } finally { clearTimeout(timer); reconciling = false; }
   }
 
   /**
