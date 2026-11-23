@@ -48,7 +48,8 @@ cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit &
 npm test && npm run typecheck
 ```
 
-The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
+The kernel's `jobs` tests spawn `kernel/test/fixtures/jobs-host.ts` hosts that can outlive an interrupted run: run kernel
+suites under a timeout and kill stray hosts afterwards. The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
 editing `kernel/sdk/src/caller.ts` or `fence.ts`, `kernel/sdk/src/source-store.ts` or `vendor/`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.ts` (a
 test fails on drift, the copies under `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
 `modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
