@@ -53,9 +53,13 @@ const servedTool = async (readOnly: boolean, name: string): Promise<{ served: bo
   const list = await post(readOnly ? "/mcp/read" : "/mcp", key, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   // No list at all (a 5xx, a timeout, an unreadable answer): admission is unconfirmed, not refused.
   if (!Array.isArray(list?.result?.tools)) return { served: false, confirmed: false };
-  const entry = list.result.tools.find((t: { name?: unknown }) => String(t?.name ?? "") === name) as { annotations?: unknown } | undefined;
-  // The list answered: it is a live entry (annotated) or the tool isn't there, both confirmed.
-  return { served: Boolean(entry && entry.annotations && typeof entry.annotations === "object"), confirmed: true };
+  const tools = list.result.tools as { name?: unknown; annotations?: unknown }[];
+  const live = (t: { annotations?: unknown }) => Boolean(t.annotations && typeof t.annotations === "object");
+  // The proxy lists nothing on /mcp/read when it can't reach the upstream, and cached stand-ins (never annotated) on /mcp
+  // when it can't either: an unannotated list is an outage, not a catalog that excludes the tool.
+  if (!tools.length || !tools.some(live)) return { served: false, confirmed: false };
+  // A live catalog answered: either it carries the tool or it genuinely doesn't, and both are confirmed.
+  return { served: tools.some((t) => String(t?.name ?? "") === name && live(t)), confirmed: true };
 };
 
 const http = createVendorProxy({

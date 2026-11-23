@@ -1,5 +1,5 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { createServer, type Server as HttpServer } from "node:http";
+import { createServer, request as httpRequest, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -515,6 +515,25 @@ describe("interception through the proxy", () => {
     const second = await rpc("/mcp", "svc", "slack_search_public_and_private", { filters: "hasmy::pushpin:", limit: 1, cursor: firstPayload.next_cursor }, "ok");
     expect(payload(second.body)).toEqual({ messages: [expect.objectContaining({ channel: "C2", ts: "2.2" })], next_cursor: null });
     expect(seen).toEqual([]);
+  });
+
+  it("hands a chunked pass-through request its body, so an ordinary call still reaches the vendor", async () => {
+    seen.length = 0;
+    // Chunked (no Content-Length): the peek must settle at end and still give the proxy the bytes it read.
+    const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "slack_search_public", arguments: { query: "deploy" } } }));
+    const res = await new Promise<{ status: number; body: any }>((resolve, reject) => {
+      const req = httpRequest({ host: "127.0.0.1", port: Number(new URL(base).port), path: "/mcp", method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream", "x-aidenhq-caller": "ok" } }, (r) => {
+        const parts: Buffer[] = [];
+        r.on("data", (c: Buffer) => parts.push(c));
+        r.on("end", () => { try { resolve({ status: r.statusCode ?? 0, body: JSON.parse(Buffer.concat(parts).toString("utf8") || "{}") }); } catch (e) { reject(e as Error); } });
+      });
+      req.on("error", reject);
+      req.write(body.subarray(0, 10));
+      setTimeout(() => req.end(body.subarray(10)), 20);
+    });
+    expect(res.status).toBe(200);
+    expect(payload({ result: res.body.result })).toMatchObject({ upstream: true, arguments: { query: "deploy" } });
+    expect(seen).toEqual(["slack_search_public"]);
   });
 
   it("leaves a tools/call without a JSON-RPC id to the proxy, never answering it locally", async () => {

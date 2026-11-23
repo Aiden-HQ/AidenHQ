@@ -431,9 +431,9 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
         } catch {
           /* nothing read yet: the proxy reads the stream as it is */
         }
-      } else if (out.kind !== "message") {
+      } else {
         // The stream has ended, so the bytes can't be pushed back onto it. The proxy reads its body by async iteration
-        // (readJson), so hand that the buffered bytes instead: a pass-through request keeps its body.
+        // (readJson), so hand that the buffered bytes instead: every request this route declines keeps its body.
         const body = Buffer.concat(chunks);
         req[Symbol.asyncIterator] = async function* () {
           if (body.length) yield body;
