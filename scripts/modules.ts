@@ -413,7 +413,7 @@ export function productsOf(v: unknown): Record<string, string[]> {
   for (const [name, repos] of Object.entries(v as Obj)) {
     if (!name.trim() || name.length > 100) fail(`projects: "${name}" is not a project name (1 to 100 characters)`);
     // owner/name is a repo's own project's name (beside another org's repo of the same short name): never a product's.
-    if (name.includes("/")) fail(`projects: "${name}" has a slash: a product's name is a plain name (AidenHQ), its repos are owner/name`);
+    if (repoKey(name)) fail(`projects: "${name}" reads as a repo (owner/name): a product's name is a plain name (AidenHQ), its repos are owner/name`);
     if (!Array.isArray(repos) || !repos.length) fail(`projects.${name}: a list of repos (owner/name)`);
     out[name] = (repos as unknown[]).map((r) => {
       // As the kernel compares repos (kinds.ts repoKey).
