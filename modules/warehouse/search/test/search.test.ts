@@ -132,22 +132,21 @@ test("each side brings its best PER_SIDE, so a word every task shares doesn't re
   assert.equal((await search.search("critique")).hits.length, PER_SIDE, "meaning side");
 });
 
-test("an identifier query is keyword only and ranks its own task first; a term's words match as a phrase", async () => {
+test("a task whose identifier is the query ranks first and meaning brings nothing; a term's words match as a phrase", async () => {
   const issues = new Map([
-    ["t-20", issue("t-20", "Kernel scheduler", { identifier: "WOR-1" })],
-    ["t-21", issue("t-21", "Review lens, after WOR-1", { identifier: "WOR-10", description: "Follows WOR-1." })],
-    ["t-22", issue("t-22", "task_wait answers early", { identifier: "WOR-11" })],
-    ["t-23", issue("t-23", "A task that should wait for review", { identifier: "WOR-12" })],
+    ["t-20", issue("t-20", "Kernel scheduler", { identifier: "REVIEW-1" })],
+    ["t-21", issue("t-21", "Lens work after REVIEW-1", { identifier: "REVIEW-10", description: "Follows REVIEW-1." })],
+    ["t-22", issue("t-22", "Code review lenses", { identifier: "WOR-22" })],
+    ["t-23", issue("t-23", "task_wait answers early", { identifier: "WOR-23" })],
+    ["t-24", issue("t-24", "A task that should wait for the code-review", { identifier: "WOR-24" })],
   ]);
-  const { search, drain, embeds } = await setup({ issues });
+  const { search, drain } = await setup({ issues });
   for (const id of issues.keys()) search.mark(id);
   await drain();
-  const asked = embeds.length;
-  const r = await search.search("WOR-1");
-  assert.equal(r.hits[0]!.identifier, "WOR-1", "its own task first, ahead of the tasks citing it and the prefix matches");
-  assert.equal(r.semantic, true);
-  assert.equal(embeds.length, asked, "no query embedding for an identifier");
-  assert.deepEqual((await search.search("task_wait")).hits.map((h) => h.identifier), ["WOR-11"], "not task and wait anywhere");
+  // "REVIEW-1" is near WOR-22 in (fake) meaning; its own task and the tasks citing it are what it finds.
+  assert.deepEqual((await search.search("REVIEW-1")).hits.map((h) => h.identifier), ["REVIEW-1", "REVIEW-10"]);
+  assert.deepEqual((await search.search("task_wait")).hits.map((h) => h.identifier), ["WOR-23"], "not task and wait anywhere");
+  assert.deepEqual((await search.search("code-rev", { keyword: true })).hits.map((h) => h.identifier), ["WOR-24"], "a half-typed compound is a prefix");
 });
 
 test("live changes go before the backfill, and a fresh edit pulls a backed-off retry forward", async () => {
