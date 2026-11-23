@@ -165,12 +165,20 @@ it("src_github: an org dropped from the configured list gets one retired ingest_
   expect(deleted).toEqual([]);
 });
 
-it("src_github: an org name compares case-insensitively, and no configured org is retired", async () => {
-  const { store, retired, deleted } = retireStore(["Acme", "Kept"]);
-  startSync(store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["acme", "kept"], { info: () => {}, warn: () => {} } as any);
+it("src_github: an org name compares case-insensitively, and a removed org's history is retired under both spellings", async () => {
+  // Configured as "acme", the writer holds the old release's "Acme" rows: kept, not retired.
+  const kept = retireStore(["Acme"]);
+  startSync(kept.store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, ["acme"], { info: () => {}, warn: () => {} } as any);
   await vi.advanceTimersByTimeAsync(30_000);
-  expect(retired).toEqual([]);
-  expect(deleted).toEqual([]);
+  expect(kept.retired).toEqual([]);
+  expect(kept.deleted).toEqual([]);
+
+  // Removed: a marker under both spellings, so whichever the failed history used, it is retired.
+  const gone = retireStore(["Acme"]);
+  startSync(gone.store, { account: async () => ({ user: false, projects: false }), request: async () => ({ items: [] }) } as any, [], { info: () => {}, warn: () => {} } as any);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(gone.retired.map((r) => r.scope).sort()).toEqual(["org:Acme", "org:acme"]);
+  expect(gone.deleted.sort()).toEqual(["board:Acme/1", "issues:Acme", "prs:Acme"]);
 });
 
 it("src_github: an org records its own scope row before its first request, so an org whose passes all fail is still retired once removed", async () => {

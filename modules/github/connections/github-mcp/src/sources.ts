@@ -217,7 +217,10 @@ const scopeOrg = (scope: string): string | undefined =>
  */
 async function retireOrg(store: SourceStore, org: string, scopes: string[], log: Logger): Promise<void> {
   try {
-    await store.pool.query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error, status) VALUES ($1, $2, now(), 0, NULL, 'retired')`, ["github", `org:${org}`]);
+    // GitHub org names are case-insensitive, and a config's spelling can change between releases: the org's passes may be
+    // recorded under either spelling, so a marker under both (folded) retires whichever history exists.
+    const spellings = [...new Set([org, org.toLowerCase()])];
+    for (const name of spellings) await store.pool.query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error, status) VALUES ($1, $2, now(), 0, NULL, 'retired')`, ["github", `org:${name}`]);
     for (const scope of scopes) await store.pool.query(`DELETE FROM src_github.scope WHERE scope = $1`, [scope]);
   } catch (err) {
     // The next tick sees the scope rows still there and retires the org then; one org never stops the others' passes.
