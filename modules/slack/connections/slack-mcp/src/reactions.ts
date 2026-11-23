@@ -202,8 +202,10 @@ export type ScanResult =
 // A continuation: the caller's `limit` was reached, so the token carries the messages already returned and the upstream
 // page size. A resume walks the feed from the start again and skips those messages by identity. Positions are never
 // reused: Slack's cursors and numbered pages are both positional, so a reaction removed between calls shifts every later
-// page, and resuming from a saved page could skip a match that moved earlier. Identity is the only stable key.
-type Position = { n: number; seen: string[] };
+// page, and resuming from a saved page could skip a match that moved earlier. Identity is the only stable key. A walk
+// that itself began at a caller-supplied Slack cursor keeps it (`from`): its earlier results are unknown, so restarting
+// at the head could repeat them.
+type Position = { n: number; seen: string[]; from?: string };
 const POSITION = "aidenhq:pos:";
 const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
 function decodePosition(value: string): Position | undefined {
@@ -214,7 +216,8 @@ function decodePosition(value: string): Position | undefined {
     const n = Number(v.n);
     if (!Number.isInteger(n) || n <= 0) return undefined;
     const seen = Array.isArray(v.seen) ? v.seen.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length < 300) : [];
-    return { n, seen };
+    const from = typeof v.from === "string" && v.from ? v.from : undefined;
+    return { n, seen, ...(from ? { from } : {}) };
   } catch {
     return undefined;
   }
@@ -260,7 +263,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const start = plan.cursor ?? "";
   const position = decodePosition(start);
   // A continuation token walks from the start; any other cursor value is Slack's own, resumed where it names.
-  let cursor = position ? "" : start;
+  let cursor = position ? position.from ?? "" : start;
   // Resume skips by identity, not position: an item is dropped when it was already returned, so a reaction removed from an
   // earlier item between calls can't shift the answer past one that was never returned.
 
@@ -341,7 +344,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       if (seen.has(key)) continue;
       if (full) {
         // The limit was reached on an earlier page and this is the first match after it: there is more to return.
-        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen] }) };
+        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
       }
       seen.add(key);
       messages.push(message);
@@ -518,6 +521,9 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   // hook (src/slack.ts) rather than sent upstream, so a batch can't get the empty page either.
   if (peeked.kind === "pass" || peeked.message.method !== "tools/call") return false;
   const message = peeked.message;
+  // The same envelope rules the SDK applies: a request carries `jsonrpc: "2.0"` and an id, and only a request is answered.
+  // Anything else (a notification, a malformed message) goes to the proxy, which answers it as it answers every other tool.
+  if (message.jsonrpc !== "2.0" || !("id" in message)) return false;
   const name = nameOf(message);
   const plan = planReactionSearch(name, argsOf(message));
   if (plan.kind === "pass") return false;

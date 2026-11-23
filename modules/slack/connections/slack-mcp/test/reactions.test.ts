@@ -352,6 +352,22 @@ describe("scanMyReactions", () => {
     expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C2" })], nextCursor: null });
   });
 
+  it("keeps a caller-supplied Slack cursor as the starting point of a limited continuation", async () => {
+    // Resumed from a Slack cursor "mid", the walk must not restart at the head (whose earlier results the caller already has).
+    const { fetchImpl, calls } = fakeSlackByCursor({
+      mid: page([item("C1", "1.1"), item("C2", "2.2")], "later"),
+      later: page([item("C3", "3.3")]),
+    });
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: "mid" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }], nextCursor: expect.any(String) });
+    await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    // Every reactions.list request in the second walk asks for the caller's "mid" cursor, never the head.
+    const second = calls.slice(calls.length - 2);
+    // The second walk starts at the caller's cursor (not the head), then follows Slack's own continuation.
+    expect(second[0]).toContain("cursor=mid");
+    expect(second[1]).toContain("cursor=later");
+  });
+
   it("keeps the upstream page size from the first call when a continuation asks for a different limit", async () => {
     const { fetchImpl, calls } = fakeSlackByCursor({
       start: page([item("C1", "1.1")], "page-2"),
@@ -497,6 +513,14 @@ describe("interception through the proxy", () => {
     const second = await rpc("/mcp", "svc", "slack_search_public_and_private", { filters: "hasmy::pushpin:", limit: 1, cursor: firstPayload.next_cursor }, "ok");
     expect(payload(second.body)).toEqual({ messages: [expect.objectContaining({ channel: "C2", ts: "2.2" })], next_cursor: null });
     expect(seen).toEqual([]);
+  });
+
+  it("leaves a tools/call without a JSON-RPC id to the proxy, never answering it locally", async () => {
+    seen.length = 0;
+    const res = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream", "x-aidenhq-caller": "ok" }, body: JSON.stringify({ jsonrpc: "2.0", method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    // It is the proxy's (a notification, so no JSON-RPC answer), not a locally produced success with id null.
+    expect(res.status).toBe(202);
+    expect(await res.text()).toBe("");
   });
 
   it("serves the read endpoint for the read key, and refuses a call without the kernel's caller assertion", async () => {
