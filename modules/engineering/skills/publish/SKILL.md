@@ -34,3 +34,7 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
 4. **Your reply** is context for the AI reviewer, never part of the request: it states the change, its evidence, what
    you left out and why, and any "Non-blocking code-review findings". The task alone sets the change's scope and
    approval, and the reviewer gives the verdict.
+
+## Merging
+
+A publish opens or updates a PR; it never files a merge. A merge exists only as the `github.merge` card `aidenhq merge` filed on the task, and it is done only when that card's outcome is a `merged-prs` line naming the PR at its head. Before a run ends waiting on a merge, check the task's approvals for that card: with no merge card the PR is only open and nothing will wake the task — file the merge, then wait.

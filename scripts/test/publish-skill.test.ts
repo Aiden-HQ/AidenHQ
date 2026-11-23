@@ -20,3 +20,12 @@ test("self-review is publish's first step, and its lines go in Evidence", () => 
   assert.ok(review !== -1 && title !== -1 && review < title, "self-review comes first");
   assert.match(publish, /every `self-review:` line, for each branch/);
 });
+
+test("a publish never files a merge: the run checks the task's merge card before waiting", () => {
+  const publish = read("publish");
+  assert.match(publish, /A publish opens or updates a PR; it never files a merge\./, "a publish only opens or updates the PR");
+  assert.match(publish, /A merge exists only as the `github\.merge` card `aidenhq merge` filed on the task/, "the merge is the card's");
+  assert.match(publish, /done only when that card's outcome is a `merged-prs` line naming the PR at its head/, "done means the outcome names the PR at its head");
+  assert.match(publish, /Before a run ends waiting on a merge, check the task's approvals for that card/, "the check comes before the wait");
+  assert.match(publish, /with no merge card the PR is only open and nothing will wake the task — file the merge, then wait/, "no card: file it, then wait");
+});
