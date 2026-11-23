@@ -151,6 +151,9 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
       const title = text.split("\n")[0]!.replace(/^@\S+(\s+\S+){0,3}?\s*/, "").slice(0, 80) || "New chat";
       const note = neutral(str(b.note, 300));
       const issue = await ok(owner("POST", `/api/companies/${company}/issues`, { title, description: `${body}${note ? `\n\n${note}` : ""}\n\n<!-- aidenhq-chat-agent:${agent.replace(/[^\w-]/g, "")} -->`, status: "todo", assigneeAgentId: agent, labelIds: [chat.id] }), "a new chat");
+      // The owner's own message opened it (admission.ts reads this: a known filer).
+      db.exec("CREATE TABLE IF NOT EXISTS task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL)");
+      db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, 'owner')").run(String(issue.id));
       return { task: { id: String(issue.id), identifier: String(issue.identifier ?? "") } };
     }
     const o = modules().owner ?? {};

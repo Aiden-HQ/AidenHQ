@@ -105,7 +105,7 @@ test("a module that doesn't dispatch the agent â†’ 403; a wake it didn't claim â
 });
 
 
-test("the platform-engineer role holds only on a task with a known filer: the owner, a module filing to the role, the Architect, a routine's run", async () => {
+test("the platform-engineer role holds only on a task with a known filer: the owner, the Architect, a routine's run", async () => {
   const { adm, wake, origins, db } = setup();
   const roles = async (key, task, origin) => { origins[task] = origin; return (await adm.admit("acme-dispatch", req(wake(key, task, "agent-4")))).authority.roles; };
   const filed = (task, filer) => db.prepare("INSERT INTO task_filers (task, filer) VALUES (?, ?)").run(task, filer);
@@ -117,8 +117,8 @@ test("the platform-engineer role holds only on a task with a known filer: the ow
   assert.deepEqual(await roles("w10", "task-11", {}), [], "no filer the kernel saw: none");
   filed("task-13", "module:code-review");
   assert.deepEqual(await roles("w12", "task-13", {}), [], "a module's task to an agent");
-  filed("task-14", "role:platform-engineer");
-  assert.deepEqual(await roles("w13", "task-14", {}), ["platform-engineer"], "a module filed it to the platform-engineer role (a Dependabot PR)");
+  filed("task-14", "module:github");
+  assert.deepEqual(await roles("w13", "task-14", {}), [], "a module filed it to the platform-engineer role (a Dependabot PR): it works in its task's namespace");
 });
 
 test("a later job on a routine run's task is still that routine's: its model and its row", async () => {

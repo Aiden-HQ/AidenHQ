@@ -119,16 +119,15 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
 
   /**
    * Platform authority comes only from a known filer, never from a missing one: a job holds the platform-engineer role on a
-   * task the owner filed on the board, one a module filed to that role (a Dependabot PR, a pin bump, a release), one the
-   * Architect or the Fleet Steward filed (the control plane's creator: the kernel's plugin creates a job's task as that job's
+   * task the owner filed (on the board or with his own message: cp.ts, channels.ts), one the Architect or the Fleet Steward filed (the control plane's creator: the kernel's plugin creates a job's task as that job's
    * agent, and no write changes it), or a routine's run (an event routine never runs as a platform agent: compile). Anything
-   * else (a Slack mention, a module's other tasks, a task whose filer the kernel never saw) holds no platform authority.
+   * else (a Slack mention, a module's task, a task whose filer the kernel never saw) holds no platform authority.
    */
   function platformTask(t: { id?: string; originKind?: string | null; createdByAgentId?: string | null }): boolean {
     if (t.originKind === "routine_execution") return true;
     if (t.createdByAgentId) return heldRoles(grants(), t.createdByAgentId).some((r) => PLATFORM_FILERS.includes(r));
     const filer = t.id ? (db.prepare("SELECT filer FROM task_filers WHERE task = ?").get(t.id) as { filer: string } | undefined)?.filer : undefined;
-    return filer === "owner" || filer === `role:${PLATFORM}`;
+    return filer === "owner";
   }
 
   function freeze(g: AgentGrant, key: string | undefined, platform: boolean): Authority {
