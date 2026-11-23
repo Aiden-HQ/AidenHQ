@@ -56,7 +56,7 @@ export function sourceEvent(repo: string, e: Json): Json | undefined {
   const text = kind === "issue_comment.created" ? String(p.comment?.body ?? "") : `${issue.title ?? ""}\n\n${issue.body ?? ""}`;
   const url = String((kind === "issue_comment.created" ? p.comment?.html_url : issue.html_url) ?? "");
   const labels = (issue.labels ?? []).map((l: Json) => String(l.name ?? l)).filter(Boolean).slice(0, 10);
-  return { connection: "github", resource: repo, id: String(e.id), kind, author: String(e.actor?.login ?? "ghost"), text: text.slice(0, 2000), ...(labels.length ? { labels } : {}), ...(url.startsWith("https://") ? { url: url.slice(0, 500) } : {}) };
+  return { connection: "github", resource: repo, id: String(e.id), kind, author: String(e.actor?.login ?? "ghost"), text: text.slice(0, 2000), ...(text.length > 2000 ? { truncated: true } : {}), ...(labels.length ? { labels } : {}), ...(url.startsWith("https://") ? { url: url.slice(0, 500) } : {}) };
 }
 
 export const prSubject = (repo: string, n: number | string) => `pr:${repo.toLowerCase()}#${n}`;
