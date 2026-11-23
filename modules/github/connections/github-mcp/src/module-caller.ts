@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { GitHubNeed } from "./client.js";
-import { noteOrgOk, orgRefusedSince } from "./org-observations.js";
+import { claimOrgOk } from "./org-observations.js";
 
 // Whether a bearer is the named module's own token, asked of the kernel (GET /v1/whoami): the issue read for the Maintainer's
 // watcher is opened to that module alone, so no secret is shared with it. undefined: the kernel couldn't answer now (a restart,
@@ -58,42 +58,20 @@ export async function reportNeed(kernelUrl: string, key: string, err: unknown, l
 
 /**
  * A call by the owner to `org` succeeded, so the org's sso/restricted need is the owner's fix already made: told to the kernel as
- * POST /v1/connections/ok. Never throws into the GitHub call, and a transient failure (a kernel restart, a timeout, a 5xx) is
- * retried a few times in the background: the row must not wait for the org's next call, which may be 15 minutes away (the sync's
- * interval) or never. A retry is dropped when a need for the org was met after this success. A report that still fails is logged;
- * the next successful call reports it again.
+ * POST /v1/connections/ok. Fire-and-forget, one POST: a lost report is harmless (the next successful GraphQL org query reports
+ * again, and the src_github pass runs one for every configured org every 15 minutes), and a retry would be a success landing after
+ * a newer refusal. A success a refusal for the org has already overtaken is not sent at all. Never throws into the GitHub call.
  */
-export function reportOrgOk(kernelUrl: string, key: string, connection: "github", org: string, log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000, retryMs = ORG_OK_RETRY_MS): void {
-  // Where this success sits in the org's answers: a refusal after it means the org is still blocked, and is not overwritten.
-  const at = noteOrgOk(org);
-  // Each answer: taken (200), refused (4xx: the request is wrong, never retried), retry (network, timeout, 5xx).
-  const post = async (): Promise<"taken" | "refused" | "retry"> => {
-    try {
-      const r = await fetcher(new URL("/v1/connections/ok", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection, org }), signal: AbortSignal.timeout(timeoutMs) });
-      if (r.ok) return "taken";
-      if (r.status >= 400 && r.status < 500) { log.warn({ status: r.status, org }, "the kernel refused a connection success report"); return "refused"; }
-      log.warn({ status: r.status, org }, "the kernel could not take a connection success report; it is retried");
-      return "retry";
-    } catch (e) {
-      log.warn({ err: (e as Error).message, org }, "a connection success report failed; it is retried");
-      return "retry";
-    }
-  };
-  void (async () => {
-    for (let attempt = 0; ; attempt++) {
-      if ((await post()) !== "retry") return;
-      if (attempt + 1 >= ORG_OK_ATTEMPTS) { log.warn({ org, attempts: attempt + 1 }, "a connection success report was given up; the org's next successful call reports it again"); return; }
-      await new Promise((r) => setTimeout(r, retryMs * 2 ** attempt));
-      if (orgRefusedSince(org, at)) { log.warn({ org }, "a connection success report was dropped: a need for the org was met after it"); return; }
-    }
-  })();
+export function reportOrgOk(kernelUrl: string, key: string, connection: "github", org: string, log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000): void {
+  // A refusal of the org since the last success is the newer answer: the org is still blocked, so this is not reported.
+  if (!claimOrgOk(org)) { log.warn({ org }, "a connection success report was dropped: a need for the org was met after it"); return; }
+  void fetcher(new URL("/v1/connections/ok", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection, org }), signal: AbortSignal.timeout(timeoutMs) })
+    .then((r) => { if (!r.ok) log.warn({ status: r.status, org }, "the kernel refused a connection success report"); })
+    .catch((e: Error) => log.warn({ err: e.message, org }, "a connection success report failed; the org's next query reports it again"));
 }
 
 /** How long a reply waits for the kernel to take a need: the route answers within its 1 s even when the kernel is slow. */
 const NEED_WAIT_MS = 1_000;
-/** A connection success report's retries: how many tries, and the first gap (doubling), so a kernel restart is outlasted. */
-const ORG_OK_ATTEMPTS = 4;
-const ORG_OK_RETRY_MS = 2_000;
 const PENDING_MAX = 20;
 type Pending = { need: NeedBody["need"]; /** The sign-in the need was met on; a sign-in cause from another one is stale. */ gen?: string };
 /** Causes a reconnection fixes; a kept one from before it is dropped rather than marking the fresh sign-in down. */

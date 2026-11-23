@@ -189,7 +189,7 @@ export function createAccess(o: {
   env?: Record<string, string | undefined>;
   /** Each content-creating write, by identity (how much of the owner's limit code review's App takes off it). */
   log?: (msg: string, f: Record<string, unknown>) => void;
-  /** A successful call by the owner that named an org (REST, search or GraphQL): the org's need is the owner's fix made. */
+  /** The owner's GraphQL org query answered with no errors: the org's sso/restricted need is the owner's fix made. */
   onOrgOk?: (org: string) => void;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
@@ -206,31 +206,16 @@ export function createAccess(o: {
   let granted: string[] | undefined;
   /** The sign-in's scopes as they stood when the API gave `granted`: a reconnect that changes them makes the cache stale. */
   let grantedFor: string | undefined;
-  /** `at`: when a GraphQL refusal last came (those warnings expire, see PROBLEM_TTL_MS); REST's are cleared by an org call that works. */
+  /** `at`: when a GraphQL refusal last came (those warnings expire, see PROBLEM_TTL_MS); an org's GraphQL answer that works clears it. */
   const problems = new Map<string, { org: string; cause: "sso" | "restricted"; url: string; message?: string; at?: number }>();
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
 
-  /** The orgs a successful owner call named: a REST `/orgs/<org>` or `/repos/<org>` path, or a search's `org:`/`user:` qualifiers. */
-  const restOrgs = (path: string): string[] => {
-    const one = ownerOf(path);
-    if (one) return [one];
-    if (/^\/search\/issues(?:[?#]|$)/.test(path)) {
-      const q = new URL(path, API).searchParams.get("q") ?? "";
-      // `-org:acme` excludes the org; it says nothing about reaching it.
-      return [...q.matchAll(/(^|\s)(?:org|user):([A-Za-z0-9-]+)/gi)].map((m) => m[2]!);
-    }
-    return [];
-  };
-  /** A served org's REST warning is the owner's fix made: a retry that works removes it (GraphQL ones keep their TTL). */
-  const clearProblems = (orgs: string[]) => {
-    for (const org of orgs) if (problems.get(org.toLowerCase())?.at === undefined) problems.delete(org.toLowerCase());
-  };
-  const orgOk = (orgs: string[]) => {
-    for (const org of orgs) {
-      try { o.onOrgOk?.(org); } catch { /* a report never breaks the call it reports */ }
-    }
+  /** An org's GraphQL answer came back with no errors: the restriction is lifted, so the card's warning and the kernel's row go. */
+  const orgOk = (org: string) => {
+    problems.delete(org.toLowerCase());
+    try { o.onOrgOk?.(org); } catch { /* a report never breaks the call it reports */ }
   };
 
   async function token(): Promise<string> {
@@ -429,13 +414,6 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    // A 304 is a conditional read that succeeded: the org answered, so its need is cleared too. `partial-results` says the org's
-    // SSO blocked part of the answer (a search that omits what it protects), so the org did not answer for everything asked.
-    if ((res.ok || res.status === 304) && !/^partial-results/i.test(res.headers.get("x-github-sso") ?? "")) {
-      const orgs = restOrgs(path);
-      clearProblems(orgs);
-      orgOk(orgs);
-    }
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -470,7 +448,9 @@ export function createAccess(o: {
         if (fatal) fail(need, now());
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
       }
-      if (org && !(Array.isArray(body?.errors) && body.errors.length)) orgOk([org]);
+      // The org query is what an org's restriction blocks (a search or a public read answers anyway), so its answer with no
+      // errors is the one that says the org is reachable again. `partial-results` still means the org's SSO filtered it.
+      if (org && !(Array.isArray(body?.errors) && body.errors.length) && !/^partial-results/i.test(res.headers.get("x-github-sso") ?? "")) orgOk(org);
       return body;
     },
     async identity() {

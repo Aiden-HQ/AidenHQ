@@ -217,72 +217,39 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
 });
 
 describe("a successful owner call to an org", () => {
-  it("is reported as that org's clear, fire-and-forget, and never throws into the call it reports", async () => {
+  it("is reported as that org's clear in one fire-and-forget POST, and never throws into the call it reports", async () => {
     const seen: { url: string; authorization?: string; body: unknown }[] = [];
     const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
       seen.push({ url: String(input), authorization: (init?.headers as Record<string, string> | undefined)?.authorization, body: JSON.parse(String(init?.body ?? "{}")) });
       return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
     }) as unknown as typeof fetch;
-    reportOrgOk("http://kernel", "the-key", "github", "Acme", log, fetcher, 5_000, 1);
+    reportOrgOk("http://kernel", "the-key", "github", "Acme", log, fetcher, 5_000);
     await new Promise((r) => setTimeout(r, 20));
     expect(seen).toEqual([{ url: "http://kernel/v1/connections/ok", authorization: "Bearer the-key", body: { connection: "github", org: "Acme" } }]);
-    // A refused report (a 4xx) is the request's fault: logged once, never retried.
+    // A refused or failed report is logged once and never retried (a retry would be a success landing after a newer refusal);
+    // the org's next query reports again.
     const said: string[] = [];
     const warns = { warn: (_o: object, m: string) => void said.push(m) };
-    reportOrgOk("http://kernel", "k", "github", "acme", warns, (async () => new Response("no", { status: 400 })) as unknown as typeof fetch, 5_000, 1);
+    let n = 0;
+    reportOrgOk("http://kernel", "k", "github", "refused-org", warns, (async () => { n++; return new Response("no", { status: 400 }); }) as unknown as typeof fetch, 5_000);
+    reportOrgOk("http://kernel", "k", "github", "down-org", warns, (async () => { n++; throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch, 5_000);
     await new Promise((r) => setTimeout(r, 30));
-    expect(said).toEqual(["the kernel refused a connection success report"]);
+    expect(n, "one POST each, no retries").toBe(2);
+    expect(said).toEqual(["the kernel refused a connection success report", "a connection success report failed; the org's next query reports it again"]);
   });
 
-  // A kernel restart or a timeout must not leave the row until the org's next call: the report is retried in the background.
-  it("a transient failure is retried until the kernel takes it", async () => {
-    let n = 0;
-    const seen: string[] = [];
-    const fetcher = (async () => {
-      seen.push(`attempt ${++n}`);
-      if (n === 1) throw new Error("ECONNREFUSED");
-      if (n === 2) return new Response("busy", { status: 503 });
-      return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
-    }) as unknown as typeof fetch;
-    const said: string[] = [];
-    reportOrgOk("http://kernel", "k", "github", "acme", { warn: (_o: object, m: string) => void said.push(m) }, fetcher, 5_000, 1);
-    await new Promise((r) => setTimeout(r, 60));
-    expect(seen, "three tries: the network error and the 5xx were not a final answer").toHaveLength(3);
-    expect(said.at(-1)).toBe("the kernel could not take a connection success report; it is retried");
-  });
-
-  // A retry that would land after the org was refused again must not clear the newer need.
-  it("drops a retried success when a need for the org was met after it", async () => {
-    let n = 0;
-    const fetcher = (async () => {
-      n++;
-      if (n === 1) throw new Error("ECONNREFUSED");
-      return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
-    }) as unknown as typeof fetch;
-    const said: string[] = [];
-    reportOrgOk("http://kernel", "k", "github", "contended", { warn: (_o: object, m: string) => void said.push(m) }, fetcher, 5_000, 5);
-    // The org refuses a call before the retry runs.
-    noteOrgNeed("Contended");
-    await new Promise((r) => setTimeout(r, 40));
-    expect(n, "the second attempt never went: the refusal is newer").toBe(1);
-    expect(said.at(-1)).toBe("a connection success report was dropped: a need for the org was met after it");
-    // A refusal for another org does not stop it, and neither does one before the success.
-    let m = 0;
-    const okFetcher = (async () => { m++; if (m === 1) throw new Error("ECONNREFUSED"); return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
-    noteOrgNeed("elsewhere");
-    reportOrgOk("http://kernel", "k", "github", "fresh", { warn: () => {} }, okFetcher, 5_000, 5);
-    await new Promise((r) => setTimeout(r, 40));
-    expect(m).toBe(2);
-  });
-
-  it("gives up after its attempts, logged, without throwing", async () => {
-    let n = 0;
-    const fetcher = (async () => { n++; return new Response("busy", { status: 503 }); }) as unknown as typeof fetch;
-    const said: string[] = [];
-    reportOrgOk("http://kernel", "k", "github", "acme", { warn: (_o: object, m: string) => void said.push(m) }, fetcher, 5_000, 1);
-    await new Promise((r) => setTimeout(r, 80));
-    expect(n).toBe(4);
-    expect(said.at(-1)).toBe("a connection success report was given up; the org's next successful call reports it again");
+  // A success a refusal for the org already overtook is not sent: it would clear the newer need.
+  it("drops a success a need for the org was met after", async () => {
+    const seen: unknown[] = [];
+    const fetcher = (async (_u: RequestInfo | URL, init?: RequestInit) => { seen.push(init?.body); return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
+    noteOrgNeed("contended");
+    reportOrgOk("http://kernel", "k", "github", "Contended", log, fetcher, 5_000);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toHaveLength(0);
+    // A refusal for another org does not stop it.
+    reportOrgOk("http://kernel", "k", "github", "fresh", log, fetcher, 5_000);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toHaveLength(1);
   });
 
   it("a kept sso/restricted report for an org the call just reached is dropped, not replayed", async () => {

@@ -556,74 +556,60 @@ it("attributes a restriction to the org GitHub names, keeps a refusal inside one
   await expect(bad.graphql("q", { org: "acme" })).rejects.toThrow(/answered 502/);
 });
 
-it("a GraphQL refusal's warning stays while refusals keep coming and expires two hours after the last", async () => {
+it("a GraphQL refusal's warning stays while refusals keep coming, expires two hours after the last, and a working answer clears it", async () => {
   const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
   const t = fakeTime();
   let refuse = true;
-  const a = createAccess({ auth: auth(), now: t.now, sleep: (ms) => t.sleep(ms), timer: t.timer, fetchImpl: async () => (refuse ? forbidden({ saml_failure: false }, msg) : answer(200, { data: { ok: 1 } })) });
+  const a = createAccess({ auth: auth(), now: t.now, sleep: (ms) => t.sleep(ms), timer: t.timer, fetchImpl: async () => (refuse ? forbidden({ saml_failure: false }, msg) : answer(200, { data: { organization: { id: "1" } } })) });
+  await a.graphql("q", { org: "acme" }).catch(() => undefined);
+  expect(a.status().problems).toHaveLength(1);
+  await t.sleep(119 * 60_000);
+  await a.graphql("q", { org: "acme" }).catch(() => undefined); // another refusal restarts the clock
+  await t.sleep(60 * 60_000);
+  expect(a.status().problems, "an hour after the last refusal: still the owner's to fix").toHaveLength(1);
+  await t.sleep(61 * 60_000);
+  expect(a.status().problems, "two hours after the last refusal: the warning expires").toHaveLength(0);
+  // A refusal with no success after it expires; an org answer that works clears it at once.
   await a.graphql("q", { org: "acme" }).catch(() => undefined);
   expect(a.status().problems).toHaveLength(1);
   refuse = false;
-  await t.sleep(119 * 60_000);
   await a.graphql("q", { org: "acme" });
-  expect(a.status().problems).toHaveLength(1);
-  await t.sleep(2 * 60_000);
-  expect(a.status().problems).toHaveLength(0);
-  refuse = true;
-  await a.graphql("q", { org: "acme" }).catch(() => undefined);
-  await t.sleep(60 * 60_000);
-  await a.graphql("q", { org: "acme" }).catch(() => undefined); // another refusal restarts the clock
-  await t.sleep(60 * 60_000);
-  expect(a.status().problems).toHaveLength(1);
+  expect(a.status().problems).toEqual([]);
 });
 
-// A success that names an org is the owner's fix already made: the org is reported so the kernel clears its sso/restricted need.
-it("reports the org on a successful owner call that names one, and only then", async () => {
+// A REST read or a search answers even while the org's restriction stands (the restriction blocks its GraphQL org query),
+// so neither is proof the org is reachable: only a GraphQL answer for the org is, and only that one is reported.
+it("reports nothing for a successful REST read or search that names an org", async () => {
   const seen: string[] = [];
-  let answerWith = () => answer(200, { login: "owner", data: {} });
-  const access = createAccess({ auth: auth(), onOrgOk: (org) => void seen.push(org), fetchImpl: async (u) => answerWith() });
+  const access = createAccess({ auth: auth(), onOrgOk: (org) => void seen.push(org), fetchImpl: async () => answer(200, { login: "owner", items: [] }) });
   await access.rest("GET", "/orgs/Acme/repos");
   await access.rest("GET", "/repos/acme/api/issues/1");
   await access.rest("GET", "/search/issues?q=org%3AAcme%20is%3Aissue");
   await access.rest("GET", "/search/issues?q=user%3Aacme%20is%3Aissue");
-  await access.rest("GET", "/search/issues?q=org%3Aacme%20org%3Aother%20is%3Aissue");
-  await access.rest("GET", "/search/issues?q=is%3Aissue%20-org%3Aexcluded");
   await access.rest("GET", "/user");
-  expect(seen, "a negated -org: names an org excluded, not reached").toEqual(["Acme", "acme", "Acme", "acme", "acme", "other"]);
-  seen.length = 0;
-
-  // A search whose answer the org's SSO filtered (partial-results) is not proof the org answers: nothing is reported.
-  answerWith = () => answer(200, { items: [] }, { "x-github-sso": "partial-results; organizations=acme" });
-  await access.rest("GET", "/search/issues?q=org%3AAcme%20is%3Aissue");
-  expect(seen, "an SSO-filtered answer is not a clear").toEqual([]);
-
-  // A 304 (a conditional read that found nothing new) is a success too.
-  answerWith = () => new Response(null, { status: 304 });
   await access.rest("GET", "/orgs/Acme/repos", undefined, { etag: "W/\"x\"" });
-  expect(seen).toEqual(["Acme"]);
-  seen.length = 0;
+  expect(seen, "a public read or a search is not evidence the org's restriction is lifted").toEqual([]);
+});
 
-  // A failed call reports nothing (no need to clear, and nothing succeeded) and keeps the card's warning.
-  answerWith = () => answer(403, { message: "Resource not accessible by integration", url: "http://board.example/connect/github" });
-  await access.rest("GET", "/orgs/Acme/repos").catch(() => {});
-  expect(seen).toEqual([]);
-  // The owner grants it: the same call working clears the warning the refusal recorded, not only the kernel's row.
-  answerWith = () => answer(200, {});
+it("clears the card's warning only on a GraphQL org answer that works", async () => {
+  const msg = "Although you appear to have the correct authorization credentials, the `acme` organization has enabled OAuth App access restrictions.";
+  let refuse = true;
+  const access = createAccess({ auth: auth(), fetchImpl: async () => (refuse ? forbidden({ saml_failure: false }, msg) : answer(200, { data: { organization: { id: "1" } } })) });
+  await access.graphql("q", { org: "acme" }).catch(() => undefined);
+  expect(access.status().problems).toHaveLength(1);
+  // A REST read of the org succeeds under the restriction: the warning stays, so the card matches the kernel's row.
   await access.rest("GET", "/orgs/Acme/repos");
+  expect(access.status().problems).toHaveLength(1);
+  refuse = false;
+  await access.graphql("q", { org: "acme" });
   expect(access.status().problems).toEqual([]);
-  seen.length = 0;
-
-  // An App's call is another identity: its success says nothing about the owner's sign-in.
-  answerWith = () => answer(200, {});
-  const as = { key: "app:1", token: async () => "ghs_app" };
-  await access.rest("GET", "/orgs/Acme/repos", undefined, { as });
-  expect(seen).toEqual([]);
 });
 
 it("reports variables.org on a GraphQL answer without errors, never one with errors or no org", async () => {
   const seen: string[] = [];
   let body: unknown = { data: { organization: { projectsV2: { nodes: [] } } } };
-  const access = createAccess({ auth: auth(), onOrgOk: (org) => void seen.push(org), fetchImpl: async () => answer(200, body) });
+  let partial = "";
+  const access = createAccess({ auth: auth(), onOrgOk: (org) => void seen.push(org), fetchImpl: async () => answer(200, body, partial ? { "x-github-sso": partial } : {}) });
   await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" });
   expect(seen).toEqual(["acme"]);
   body = { data: {}, errors: [{ message: "Something went wrong" }] };
@@ -632,6 +618,11 @@ it("reports variables.org on a GraphQL answer without errors, never one with err
   body = { data: {} };
   await access.graphql("query { viewer { login } }", {});
   expect(seen).toEqual(["acme"]);
+  // An answer the org's SSO filtered (`partial-results`) leaves part of it unread: the org did not answer for everything asked.
+  partial = "partial-results; organizations=acme";
+  await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" });
+  expect(seen, "an SSO-filtered org answer is not a clear").toEqual(["acme"]);
+  partial = "";
   // The App's answer is not the owner's.
   body = { data: {} };
   await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" }, { as: { key: "app:1", token: async () => "ghs_app" } });
