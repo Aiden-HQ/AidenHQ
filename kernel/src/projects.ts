@@ -185,8 +185,9 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
           // A repo's own project stays as it is while no product lists it, unless a product now has its name: then the repo
           // moves to a project named in full, and the name is the product's.
           // (Unless a task of it is still elsewhere: a move the control plane refused, to be finished.)
+          let keep = false;
           const stray = db.prepare("SELECT 1 FROM project_tasks WHERE repo = ? AND placed IS NOT NULL AND placed != ?").get(r.repo, r.project);
-          if (!r.product && !product && !stray) {
+          if (!r.product && !product) {
             try {
               if (!named.has(r.company)) named.set(r.company, new Map((await serial(() => catalog(r.company))).map((p) => [p.id, p.name.trim().toLowerCase()])));
             } catch (e) {
@@ -194,10 +195,11 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
               log("project catalog unreadable; trying again in a minute", { company: r.company, err: (e as Error).message });
               continue;
             }
-            if (!names.has(named.get(r.company)!.get(r.project) ?? "")) continue;
+            // Its own project stays unless a product took its name; a task still elsewhere is finished into that same project.
+            if (!names.has(named.get(r.company)!.get(r.project) ?? "")) { if (!stray) continue; keep = true; }
           }
           try {
-            const to = await serial(() => projectFor(r.company, r.repo));
+            const to = keep ? r.project : await serial(() => projectFor(r.company, r.repo));
             let moved = 0, skipped = 0;
             // By target, not source: every task this kernel placed for the repo that isn't in the repo's project now moves there,
             // so repeated map changes converge with no state beyond the task's `placed`. The repo's row moves last, once all did.
@@ -206,12 +208,15 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
               try {
                 moved += await serial(async () => {
                   const r2 = await owner("GET", `/api/issues/${enc(task)}`);
-                  if (r2.status === 404) return 0;
+                  const release = () => { db.prepare("UPDATE project_tasks SET placed = NULL WHERE task = ?").run(task); return 0; };
+                  if (r2.status === 404) return release();
                   const i = ok(r2, "reading a task") as Issue;
                   // Closed in the board's Done window, by when it closed (an old task edited since stays where it is), and still
                   // where this kernel put it (one retagged since stays too).
                   const recent = !["done", "cancelled"].includes(String(i.status)) || now() - Date.parse(String(i.completedAt ?? i.cancelledAt ?? i.updatedAt)) < RECENT_MS;
-                  if (i.companyId !== r.company || i.projectId !== placed || !recent) return 0;
+                  // One left behind (old, or retagged) is released: the sync no longer counts it as unfinished.
+                  if (i.companyId !== r.company) return 0;
+                  if (i.projectId !== placed || !recent) return release();
                   ok(await owner("PATCH", `/api/issues/${enc(i.id)}`, { projectId: to }), "moving a task");
                   db.prepare("UPDATE project_tasks SET placed = ? WHERE task = ?").run(to, task);
                   return 1;
