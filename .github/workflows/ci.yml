@@ -77,10 +77,9 @@ jobs:
           (cd scripts && npm ci --ignore-scripts)
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
-        # Runs PR code (`npm ci` and the suites). This step gets no token or secret: no `${{ secrets.* }}`, no `GITHUB_TOKEN`,
-        # no `token:` input. The token the job holds is used by the fetch step above, which is a single `git fetch` that ends
-        # before any PR code runs; `permissions: contents: read` scopes it to read-only, so it cannot write a check. Actions'
-        # own cache credential exists on the job too, but is not injected into a `run:` shell's environment.
+        # Runs PR code (`npm ci` and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
+        # no `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check; the
+        # read-only token the fetch step above uses is passed to that step alone, and it ends before any PR code runs.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
           TESTED_SHA: ${{ github.sha }}
@@ -141,9 +140,8 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        # Runs PR code (`npm ci` and the suites). This step gets no token or secret: no `${{ secrets.* }}`, no `GITHUB_TOKEN`,
-        # no `token:` input. The job's `github.token` is scoped to `contents: read` by its `permissions`, so it cannot write a
-        # check; Actions' own cache credential exists on the job too, but is not injected into a `run:` shell's environment.
+        # Runs PR code (`npm ci` and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
+        # no `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
           TESTED_SHA: ${{ github.sha }}
@@ -314,9 +312,8 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        # Runs PR code (the board suite). This step gets no token or secret: no `${{ secrets.* }}`, no `GITHUB_TOKEN`, no
-        # `token:` input. The job's `github.token` is scoped to `contents: read` by its `permissions`, so it cannot write a
-        # check; Actions' own cache credential exists on the job too, but is not injected into a `run:` shell's environment.
+        # Runs PR code (the board suite). This workflow passes no token or secret to this step: no `${{ secrets.* }}`, no
+        # `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check.
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
