@@ -109,30 +109,36 @@ export function pulledRecords(body: unknown): z.infer<typeof PulledRecord>[] {
  */
 export function pullUsage(gateway: { url: string; token: string } | undefined, store: Pick<Store, "addUsage" | "pruneUsage" | "meta" | "setMeta">, log: Logger, everyMs = 60_000, metaKey = "usage_pulled_at") {
   if (!gateway) return;
+  let pulling = false; // a catch-up longer than a tick: the next tick waits for it, never starts a second pull
   const tick = async () => {
+    if (pulling) return;
+    pulling = true;
     try {
       // From the last pull less a margin (a call is stamped as its answer ends); the overlap dedupes by key.
       const last = store.meta(metaKey);
       const since = last ? new Date(Date.parse(last) - 10 * 60_000).toISOString() : "";
       const now = new Date().toISOString();
-      // Page by page (a full answer names the next one), the cursor moved only once every page is in.
-      for (let from = since; ; ) {
-        const res = await fetch(`${gateway.url}/usage`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json" }, body: JSON.stringify({ since: from }), signal: AbortSignal.timeout(15_000) });
+      // Page by page (a full answer names the next one: after a time and key), the cursor moved only once every page is in.
+      for (let from: { since: string; after?: string } = { since }; ; ) {
+        const res = await fetch(`${gateway.url}/usage`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json" }, body: JSON.stringify(from), signal: AbortSignal.timeout(15_000) });
         if (!res.ok) throw new Error(`the gateway answered ${res.status}`);
         const body = await res.json();
         const records = pulledRecords(body);
         for (const r of records) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
         const skipped = (body as { records: unknown[] }).records.length - records.length;
         if (skipped) log.warn({ skipped }, "usage records the board could not read: their dollars are not counted");
-        const next = (body as { next?: unknown }).next;
-        if (typeof next !== "string" || next <= from) break;
-        from = next;
+        const next = (body as { next?: { since?: unknown; after?: unknown } }).next;
+        if (!next) break;
+        if (typeof next.since !== "string" || typeof next.after !== "string" || `${next.since}\0${next.after}` <= `${from.since}\0${from.after ?? ""}`) throw new Error("the gateway's next usage page does not move forward");
+        from = { since: next.since, after: next.after };
       }
       store.setMeta(metaKey, now);
       // Kept 62 days, so the Costs tab can set the last 30 days against the 30 before.
       store.pruneUsage(new Date(Date.now() - 62 * DAY).toISOString());
     } catch (err) {
       log.warn({ err: String(err).slice(0, 200), from: gateway.url }, "usage pull failed");
+    } finally {
+      pulling = false;
     }
   };
   void tick();

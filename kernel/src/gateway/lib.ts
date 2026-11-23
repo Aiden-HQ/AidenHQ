@@ -172,7 +172,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
   // true-up changed it (`changed`: the board's pull reads it; `at` stays the call's time).
   const have = new Set((db.prepare("PRAGMA table_info(calls)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["owner", "gen", "changed"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
-  db.exec("CREATE INDEX IF NOT EXISTS calls_changed ON calls (COALESCE(changed, at))");
+  db.exec("DROP INDEX IF EXISTS calls_changed; CREATE INDEX IF NOT EXISTS calls_pull ON calls (COALESCE(changed, at), key)");
   return { db, moved: moveLedger(db, legacy) };
 }
 
@@ -417,7 +417,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
     unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
     // A row changes after its call ends only by a true-up (`changed`), which keeps the call's own time (`at`).
-    since: db.prepare(`SELECT * FROM calls WHERE COALESCE(changed, at) >= ? AND status != 'reserved' ORDER BY COALESCE(changed, at) LIMIT ${USAGE_PAGE}`),
+    // In (time, key) order, from after a cursor: a page boundary never splits or repeats rows of one time.
+    since: db.prepare(`SELECT * FROM calls WHERE (COALESCE(changed, at), key) > (?, ?) AND status != 'reserved' ORDER BY COALESCE(changed, at), key LIMIT ${USAGE_PAGE}`),
     settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
     inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
     gen: db.prepare("UPDATE calls SET gen = ? WHERE key = ? AND status = 'reserved'"),
@@ -963,12 +964,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]!);
       if (req.method === "POST" && path === "/usage") {
         boardKeyed(req);
-        const { since } = JSON.parse((await readBody(req)) || "{}") as { since?: unknown };
-        const rows = q.since.all(String(since ?? "")) as (CallRow & { changed: string | null })[];
-        // A full page names where the next one starts (its last row's time: the boundary's rows come again, deduped by key).
+        const { since, after } = JSON.parse((await readBody(req)) || "{}") as { since?: unknown; after?: unknown };
+        const rows = q.since.all(String(since ?? ""), String(after ?? "")) as (CallRow & { changed: string | null })[];
+        // A full page names where the next one starts: after its last row's time and key.
         const last = rows.length === USAGE_PAGE ? rows.at(-1)! : undefined;
         const records = rows.map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
-        return send(res, 200, { records, ...(last ? { next: last.changed ?? last.at } : {}) });
+        return send(res, 200, { records, ...(last ? { next: { since: last.changed ?? last.at, after: last.key } } : {}) });
       }
       if (req.method === "GET" && path === "/v1/spend/summary") {
         // The install's spend (settled and in flight) against its limits, and each agent's today (every granted agent, and any
