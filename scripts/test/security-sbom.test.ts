@@ -975,6 +975,31 @@ test("security-sbom: an archive too large for its wave is retried after the othe
   assert.equal(scans.length, 2, `both images were scanned:\n${calls.join("\n")}`);
 });
 
+test("security-sbom: when a wave's real bytes outgrow its room, the smallest deferred image is the line, not the largest", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. The daemon reports 9 GB and 8 GB, so one wave admits both (17 GB of
+  // archives plus a 9 GB workspace = 26 GB). The archives are really 12 GB and 10 GB: both save, and the two hold 22 GB,
+  // leaving only 8 GB above the floor, so neither scan fits beside the other (12 > 8 and 10 > 8). Dropping the smaller
+  // 10 GB archive leaves 18 GB of room for the 12 GB archive and its 12 GB workspace. Exactly one image must be a line,
+  // and it must be the smaller one.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(60 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 9 * 1024 ** 3, "sha256:b2": 8 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 12 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const small = targets.find((t) => t[0] === "image:big2:local");
+  const large = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(small && large, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(large[1], "-", `the larger image must be scanned: ${large[2]}`);
+  assert.equal(small[1], "-", "the smaller image is the one dropped");
+  assert.match(small[2], /does not fit/);
+});
+
 test("security-sbom: an archive is admitted only when its own scan has workspace left", { skip: NOT_LINUX }, async () => {
   // 40 GB free, a 30 GB floor: 10 GB of room. A 9 GB image's archive fits, but unpacking it beside the archive needs its
   // size again, so the scan would refuse it and the pass would save it every night and never read it. It must be a line

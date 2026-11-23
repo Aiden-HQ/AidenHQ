@@ -436,7 +436,9 @@ cannot get the lock, or starts after that budget is spent, is recorded as unscan
 An image that cannot fit even a wave of its own — its archive held for its own scan plus its own size to unpack it — is a
 line stating the admitted total, its size, the largest archive, the room above the floor and the shortfall, and no bytes
 are written for it. A target that loses its room between waves is a line with the same numbers; free space is checked
-again before each save and again before each scan. It empties the work dir after every target, keeps 30 GB free (an
+again before each save and again before each scan. If a wave's archives turn out larger than the sizes the plan saw, its
+scans run in rounds, smallest remaining archive dropped (with a line) when a round can scan none, so the images the disk
+can still hold are scanned rather than the whole wave being skipped. It empties the work dir after every target, keeps 30 GB free (an
 image whose size the daemon won't report is recorded and not scanned: an unknown demand can't be judged to fit). A container that reports no platform descriptor (an
 older daemon, or a single-platform
 store) is read on the Docker server platform, and the pass says on stderr how many it did that for; a Docker API older
