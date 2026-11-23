@@ -30,6 +30,14 @@ test("no open-loops skill or handbook finishes another task", () => {
   }
 });
 
+test("the tracker's own description and rules no longer say it closes delivered items", () => {
+  const handbook = text("agents/open-loops/AGENTS.md");
+  assert.doesNotMatch(handbook, /closes delivered ones/i, "the frontmatter says mark delivered, not close");
+  assert.doesNotMatch(handbook, /closed when delivered/i, "the intro says mark delivered, not close");
+  assert.doesNotMatch(handbook, /\*\*Close on evidence only/i, "the evidence rule marks delivered, it does not close");
+  assert.match(handbook, /marked delivered for the owner to close/, "the owner closes a delivered loop");
+});
+
 test("scan-slack marks an answered task and leaves it open", () => {
   const skill = text("skills/scan-slack/SKILL.md");
   assert.match(skill, /task_comment/, "the answered task gets a comment");
