@@ -249,12 +249,15 @@ export function createFlow(d: FlowDeps) {
     const state = readJson(eventsFile, {});
     const from = repos.length > EVENT_REPOS ? Number(state["@next"] ?? 0) % repos.length : 0;
     const turn = [...repos.slice(from), ...repos.slice(0, from)].slice(0, EVENT_REPOS);
-    if (repos.length > EVENT_REPOS) writeJson(eventsFile, { ...state, "@next": (from + EVENT_REPOS) % repos.length });
     lowBudget = "";
+    let visited = 0;
     for (const repo of turn) {
       await eventsRepo(repo).catch((e) => d.log("events pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
-      if (lowBudget) return d.log("events: the pass stops under the API budget", { repo, why: lowBudget });
+      visited++;
+      if (lowBudget) { d.log("events: the pass stops under the API budget", { repo, why: lowBudget }); break; }
     }
+    // The next pass starts after the last repo this one read.
+    if (repos.length > EVENT_REPOS) writeJson(eventsFile, { ...readJson(eventsFile, {}), "@next": (from + visited) % repos.length });
   }
   /**
    * One repo's new events, oldest first, to the kernel. Page one is a conditional read (its ETag); later pages run back to the

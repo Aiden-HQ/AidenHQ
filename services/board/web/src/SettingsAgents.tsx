@@ -2,7 +2,7 @@
 // its recent changes. Each row shows the module default beside the instance value, with Reset to default where the
 // instance overrides it; an edit opens the preview, then the progress. One change per row at a time: while one is filed
 // the row shows its stage instead of the editor.
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
@@ -158,6 +158,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
   const [paused, setPaused] = useState(Boolean(r.paused));
+  useEffect(() => setPaused(Boolean(r.paused)), [r.paused]); // a refreshed status is the truth
   const [pausing, setPausing] = useState(false);
   const [pauseError, setPauseError] = useState("");
   const togglePause = () => {

@@ -289,13 +289,13 @@ function Share({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [filed, setFiled] = useState("");
+  // A preview is for one destination: editing it drops the preview (onChange below), and an answer for an older one is ignored.
+  const asked = useRef("");
   useEffect(() => {
     api.modules().then((r) => setGithub(r.modules.some((x) => x.name === "github" && x.state !== "off")), () => setGithub(true));
   }, []);
   if (github === false) return <p className="mod-none">Sharing needs GitHub connected.</p>;
   const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
-  // A preview is for one destination: editing it drops the preview (onChange below), and an answer for an older one is ignored.
-  const asked = useRef("");
   const dest = `${repo.trim()} ${ref.trim()}`;
   const preview = () => {
     setBusy(true), setError(""), setFiled(""), setP(null);

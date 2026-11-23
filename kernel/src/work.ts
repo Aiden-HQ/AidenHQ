@@ -76,7 +76,7 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
     },
     agent(id: string) {
       // The last 50 that aren't quiet routine runs: quiet ones are left out before the limit, so they never crowd out a failure.
-      const shown = rows("SELECT * FROM jobs WHERE agent = ? ORDER BY at DESC LIMIT 1000", id).filter((r) => factData(`job:${r.id}`, "job.ended")?.quiet !== true).slice(0, 50);
+      const shown = rows("SELECT * FROM jobs j WHERE agent = ? AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.subject = 'job:' || j.id AND f.type = 'job.ended' AND json_extract(f.data, '$.quiet') = 1) ORDER BY at DESC LIMIT 50", id);
       return { jobs: shown.map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
         return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final), routine: r.routine ?? null, ...timeline(r) };
