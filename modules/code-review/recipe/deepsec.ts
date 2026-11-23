@@ -76,7 +76,7 @@ export function said(r: { stdout: string; stderr: string }) {
   const ev = events(r.stdout);
   const msg = ev.map((e) => (e.type === "failure" || e.type === "limit" ? e.message : e.type === "setup_event" && e.event?.type === "phase-error" ? e.event.message : undefined)).filter((m) => typeof m === "string" && m).at(-1);
   const detail = ev.map((e) => (e.type === "setup_event" && ["progress", "log"].includes(e.event?.type) ? e.event.message : undefined))
-    .filter((m) => typeof m === "string" && /error|failed|cap_reached/i.test(m)).at(-1);
+    .filter((m) => typeof m === "string" && /error|failed|cap_reached|\b[45]\d\d\b/i.test(m)).at(-1);
   const text = msg === undefined ? r.stderr.trim().split("\n").slice(-3).join(" ") : detail && /failed batch/i.test(msg) && detail !== msg ? `${detail} (${msg})` : msg;
   return String(text).replace(/[\x00-\x1f\x7f«»]+/g, " ").trim();
 }
