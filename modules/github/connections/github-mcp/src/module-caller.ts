@@ -188,6 +188,18 @@ export function needQueue(o: {
       if (pending.delete(k)) save();
     },
     flush,
+    /** A call to `org` succeeded: any kept sso/restricted need for it is the owner's fix already made, not a report to replay. */
+    forget: (org: string): void => {
+      let changed = false;
+      const lower = org.toLowerCase();
+      for (const [k, p] of pending) {
+        if ((p.need.cause === "sso" || p.need.cause === "restricted") && p.need.org?.toLowerCase() === lower) {
+          pending.delete(k);
+          changed = true;
+        }
+      }
+      if (changed) { save(); o.log.warn({ org }, "a kept connection need the org now answers was dropped"); }
+    },
     pending: () => pending.size,
   };
 }

@@ -597,10 +597,15 @@ it("reports the org on a successful owner call that names one, and only then", a
   expect(seen).toEqual(["Acme"]);
   seen.length = 0;
 
-  // A failed call reports nothing (no need to clear, and nothing succeeded).
-  answerWith = () => answer(403, { message: "Resource not accessible by integration" });
+  // A failed call reports nothing (no need to clear, and nothing succeeded) and keeps the card's warning.
+  answerWith = () => answer(403, { message: "Resource not accessible by integration", url: "http://board.example/connect/github" });
   await access.rest("GET", "/orgs/Acme/repos").catch(() => {});
   expect(seen).toEqual([]);
+  // The owner grants it: the same call working clears the warning the refusal recorded, not only the kernel's row.
+  answerWith = () => answer(200, {});
+  await access.rest("GET", "/orgs/Acme/repos");
+  expect(access.status().problems).toEqual([]);
+  seen.length = 0;
 
   // An App's call is another identity: its success says nothing about the owner's sign-in.
   answerWith = () => answer(200, {});

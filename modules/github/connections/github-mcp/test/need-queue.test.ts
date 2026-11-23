@@ -234,3 +234,20 @@ describe("a successful owner call to an org", () => {
     expect(said).toEqual(["the kernel refused a connection success report", "a connection success report failed"]);
   });
 });
+
+  it("a kept sso/restricted report for an org the call just reached is dropped, not replayed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    const k = replies([busy()]);
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file });
+    await q.tell(new GitHubNeed({ cause: "restricted", org: "Acme", url: "https://github.com/settings/connections/applications/cid" }));
+    await q.tell(new GitHubNeed({ cause: "sso", org: "other", url: "https://github.com/orgs/other/sso" }));
+    await q.tell(new GitHubNeed({ cause: "scope", scope: "read:org" }));
+    expect(q.pending()).toBe(3);
+    q.forget("acme");
+    expect(q.pending(), "only acme's kept restriction went, whatever its casing").toBe(2);
+    expect(JSON.parse(readFileSync(file, "utf8")).map((r: { need: { org?: string } }) => r.need.org)).toEqual(["other", undefined]);
+    const before = k.seen.length;
+    await q.flush();
+    expect(k.seen.slice(before).map((s) => s.body), "acme's stale report is not replayed").not.toContainEqual(expect.objectContaining({ need: expect.objectContaining({ org: "Acme" }) }));
+  });

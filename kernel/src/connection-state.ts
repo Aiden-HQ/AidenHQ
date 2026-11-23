@@ -217,16 +217,15 @@ export function createConnectionState(o: {
     ok(connection: string, clear: boolean | Clear = false): number {
       const { account, fullOnly, org } = typeof clear === "boolean" ? { account: undefined, fullOnly: clear, org: undefined } : clear;
       const t = now();
-      // An org's rows are keyed `<connection>:<cause>:<org>`, and the key is unique, so the key alone picks them. GitHub logins are
-      // case-insensitive, so the key matches NOCASE. Everything else clears by the `module` column (the connection's name) and,
-      // with `account`, that account.
+      // An org's rows are keyed `<connection>:<cause>:<org>` (`module` holds the connection). The connection's name is matched
+      // exactly, so another module's `GitHub` connection is not this one; GitHub logins are case-insensitive, so the org is folded.
       let rowWhere: string, rowArgs: string[], waitWhere: string, waitArgs: string[];
       if (org !== undefined) {
-        const keys = [`${connection}:sso:${org}`, `${connection}:restricted:${org}`];
-        rowWhere = "cause IN ('sso', 'restricted') AND key COLLATE NOCASE IN (?, ?)";
-        rowArgs = keys;
-        waitWhere = "need COLLATE NOCASE IN (?, ?)";
-        waitArgs = keys;
+        const tails = [`:sso:${org}`, `:restricted:${org}`].map((t) => t.toLowerCase());
+        rowWhere = "module = ? AND cause IN ('sso', 'restricted') AND lower(substr(key, length(?) + 1)) IN (?, ?)";
+        rowArgs = [connection, connection, ...tails];
+        waitWhere = "lower(substr(need, length(?) + 1)) IN (?, ?)";
+        waitArgs = [connection, ...tails];
       } else {
         const byAccount = account ? " AND (account = ? OR account = '')" : "";
         rowWhere = `module = ?${byAccount}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;

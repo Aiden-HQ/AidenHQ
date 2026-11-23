@@ -373,12 +373,14 @@ test("ok(connection, {org}) clears that org's sso and restricted rows and wakes 
 });
 
 test("an org clear keys its rows by the connection, not the module (github_official and github share a module)", async () => {
-  const w = world(ownerChain(), { w1: [OWNER_COMMENT] }, { github: { module: "github" }, github_official: { module: "github" } });
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] }, { github: { module: "github" }, github_official: { module: "github" }, GitHub: { module: "other" } });
   await w.s.hit(w.who("w3"), "github_official", { cause: "restricted", org: "acme", detail: "" });
   await w.s.hit(w.who("w2"), "github", { cause: "restricted", org: "acme", detail: "" });
-  // github_official answered for acme: only its own row clears, though github is the same module's connection.
+  await w.s.hit(w.who("w2"), "GitHub", { cause: "restricted", org: "acme", detail: "" });
+  // github_official answered for acme: only its own row clears, though github is the same module's connection, and the
+  // differently-cased connection name is another connection, not the same one.
   assert.equal(w.s.ok("github_official", { org: "acme" }), 1);
-  assert.deepEqual(w.db.prepare("SELECT key FROM connection_state").all().map((r) => r.key), ["github:restricted:acme"]);
+  assert.deepEqual(w.db.prepare("SELECT key FROM connection_state ORDER BY key").all().map((r) => r.key), ["GitHub:restricted:acme", "github:restricted:acme"]);
   assert.deepEqual(w.opened.map((o) => o.task), ["w3"]);
 });
 

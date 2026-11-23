@@ -215,9 +215,15 @@ export function createAccess(o: {
   const restOrgs = (path: string): string[] => {
     const one = ownerOf(path);
     if (one) return [one];
-    if (!/^\/search\/issues(?:[?#]|$)/.test(path)) return [];
-    const q = new URL(path, API).searchParams.get("q") ?? "";
-    return [...q.matchAll(/\b(?:org|user):([A-Za-z0-9-]+)/gi)].map((m) => m[1]!);
+    if (/^\/search\/issues(?:[?#]|$)/.test(path)) {
+      const q = new URL(path, API).searchParams.get("q") ?? "";
+      return [...q.matchAll(/\b(?:org|user):([A-Za-z0-9-]+)/gi)].map((m) => m[1]!);
+    }
+    return [];
+  };
+  /** A served org's REST warning is the owner's fix made: a retry that works removes it (GraphQL ones keep their TTL). */
+  const clearProblems = (orgs: string[]) => {
+    for (const org of orgs) if (problems.get(org.toLowerCase())?.at === undefined) problems.delete(org.toLowerCase());
   };
   const orgOk = (orgs: string[]) => {
     for (const org of orgs) {
@@ -417,9 +423,12 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && problems.get(ownerOf(path)!.toLowerCase())?.at === undefined) problems.delete(ownerOf(path)!.toLowerCase());
     // A 304 is a conditional read that succeeded: the org answered, so its need is cleared too.
-    if (res.ok || res.status === 304) orgOk(restOrgs(path));
+    if (res.ok || res.status === 304) {
+      const orgs = restOrgs(path);
+      clearProblems(orgs);
+      orgOk(orgs);
+    }
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
