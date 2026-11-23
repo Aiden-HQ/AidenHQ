@@ -218,3 +218,122 @@ it("a confirmed merged PR makes a versionless close stale even when another PR's
 });
 });
 });
+
+describe("grade loop: the day a grade may wait is a hard bound", () => {
+const long = (h) => new Date(Date.now() - h * 60 * 60_000).toISOString();
+
+it("a busy signal that never clears does not suppress the day: the task closes done, ungraded", async () => {
+  // The jobs table can hold a `running` row with no process behind it, so busy() can stay true forever. The day is the one
+  // bound that holds whatever the evidence says: past it the row takes the existing fail-open close.
+  const { loop, calls, notes, tells, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => ({ awaiting: "the agent is still working on it", busy: true }),
+    escalationFor: async () => ({ reason: "still waiting for its evidence a day after it was finished: the agent is still working on it" }),
+  });
+  failing.done = 0;
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "busy no longer defers the day");
+  assert.match(String(notes.at(-1)), /^ungraded: still waiting for its evidence a day after it was finished/, "the note says why, ungraded");
+  assert.match(String(tells.at(-1)), /is done, ungraded: still waiting for its evidence a day after it was finished/);
+});
+
+it("a gather() that throws before the deadline is retried, never closed", async () => {
+  // A deterministic throw is not evidence that evidence is coming: before the day it only logs and retries (runGrades' own
+  // catch), leaving the row for the next pass.
+  const { loop, calls } = setup("satisfied", {
+    updatedAt: long(1), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+  });
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "nothing closes before the day");
+});
+
+it("a gather() that throws past the day takes the same fail-open close, naming the throw", async () => {
+  const { loop, calls, notes, tells, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+  });
+  failing.done = 0;
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "a throw past the day closes like any other wait");
+  assert.match(String(notes.at(-1)), /^ungraded: gathering its evidence failed a day after it was finished: the PR read threw/);
+  assert.match(String(tells.at(-1)), /is done, ungraded: gathering its evidence failed/);
+});
+
+it("a day-bound close is not undone by the busy signal it outlived when its close is replayed", async () => {
+  // The close PATCH fails (502) and is retried on the next pass. Its replay must not re-gather the evidence and read the same
+  // busy as "still moving": that would send the row back to waiting and let the stuck signal suppress the bound again.
+  const { loop, calls, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => ({ awaiting: "the agent is still working on it", busy: true }),
+    escalationFor: async () => ({ reason: "still waiting for its evidence a day after it was finished" }),
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay lands the close, not a return to waiting");
+});
+
+it("a gather() that keeps throwing past the day does not keep its close owed forever", async () => {
+  // The close is decided at the day bound from the throw; the same throw on every replay must not re-raise and hold the row.
+  const { loop, calls, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay lands it, the throw notwithstanding");
+});
+
+
+it("a day-bound close reopens when the replay reads a new version, never closing over landable work", async () => {
+  // The first pass closed at the day bound while gather() threw. Its PATCH was lost, and by the replay the read works and holds
+  // a version: that is a deliverable which appeared since, and it is graded rather than closed ungraded on the stale close.
+  let throwing = true;
+  const { loop, calls, posts, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { if (throwing) throw new Error("the PR read threw"); return { facts: [], version: "acme/app#7" }; },
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  throwing = false;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the recovered version makes the close stale, not a close ungraded");
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "sent back to grading");
+});
+
+
+it("a deliverable the day-bound close already reported present does not reopen it on replay", async () => {
+  // An app is deployed but the live page its rubric needs never renders: gather() has no version and the presence check finds
+  // the app. The close says its evidence never settled. Replaying it must not read the same finding as "it appeared since"
+  // and park the row awaiting evidence again, which would restart the day and never end the wait.
+  const { loop, calls, notes, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
+    gather: () => ({ facts: [], awaiting: "roadmap-keeper: its live page never rendered" }),
+    escalationFor: async () => ({ hold: true, present: true, facts: ["app roadmap-keeper: deployed c0ffee"] }),
+    presentNow: async () => ({ present: true, facts: ["app roadmap-keeper: deployed c0ffee"] }),
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay closes instead of reopening");
+  assert.match(String(notes.at(-1)), /^ungraded: its deliverable is there/, "the note says what the close found");
+});
+
+it("a busy signal on a fresh row still waits, as before", async () => {
+  const { loop, calls, notes, posts } = setup("satisfied", {
+    updatedAt: long(1), outcome: "cannot_judge", version: "",
+    gather: () => ({ awaiting: "the agent is still working on it", busy: true }),
+    escalationFor: async () => ({ reason: "not reached" }),
+  });
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "a fresh busy row is not closed");
+  assert.equal(notes.length, 0);
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "it is parked awaiting evidence");
+});
+});
