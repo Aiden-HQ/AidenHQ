@@ -444,7 +444,7 @@ export function mimeMessage(m: { to: string[]; cc?: string[]; bcc?: string[]; su
     ...(m.bcc?.length ? [`Bcc: ${list("Bcc", m.bcc)}`] : []),
     `Subject: ${encoded(oneLine("Subject", m.subject))}`,
     ...(m.inReplyTo ? [`In-Reply-To: ${oneLine("In-Reply-To", m.inReplyTo)}`] : []),
-    ...(m.references ? [`References: ${oneLine("References", m.references).split(/\s+/).join(FOLD)}`] : []),
+    ...(m.references ? [`References: ${oneLine("References", m.references).split(/(?<=>)\s+(?=<)/).join(FOLD)}`] : []),
   ];
   const body = Buffer.from(m.body, "utf8").toString("base64").replace(/.{76}/g, "$&\r\n");
   const text = [...lines, "MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", body].join("\r\n");
