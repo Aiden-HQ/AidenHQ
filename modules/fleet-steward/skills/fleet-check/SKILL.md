@@ -84,8 +84,8 @@ One GitHub issue per defect, filed by the Maintainer (when in `fleet_catalog` an
    `^[a-z][a-z0-9-]{0,63}$` — `apply-config`, `routine-dispatch`, `task-wake`; the finer component goes in the title and
    body), `version` (the sha the failing run ran under, from `fleet_generation_status`), the pin at filing, `reproduction`,
    one log line. `github_product_issue` refuses any other `module` with `Invalid string ... at evidence.module`: that is the
-   tool's input validation at the call, refused before any issue or card exists, not the card reviewer's handback below, so
-   a path, a capitalised name, or two words joined by `/` or a space fails validation until the brief's `module` is a slug.
+   tool's own input validation, which files no issue and is not the card reviewer's handback below, so a path, a capitalised
+   name, or two words joined by `/` or a space files nothing until the brief's `module` is a slug.
    The issue is public: a name, email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`), in
    the brief's body, title and evidence too (name things by role, leave task ids out): the `github_product_issue`
    card's reviewer holds the post to the brief's text, so a literal value there loops the filing.
