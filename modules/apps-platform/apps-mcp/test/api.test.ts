@@ -141,12 +141,22 @@ describe("a caller's exact routes", () => {
     expect(asMember("POST", "/intake/AB12CD34/extra", "exact")).toThrow(/isn't under/);
     expect(asMember("POST", "/intake/feedback", "intruder")).toThrow(/may not call/);
     expect(asMember("POST", "/admin/intake")).toThrow(/isn't under/);
+    // A denial names the app's grant (member_paths included) and the caller's own paths, so a member_paths gap doesn't
+    // read as the caller's paths being wrong.
+    expect(asMember("POST", "/admin/intake")).toThrow(/member_paths \(\/intake, \/intake\/feedback\)/);
+    expect(asMember("POST", "/admin/intake")).toThrow(/caller's own paths \(\/intake, \/intake\/feedback\)/);
     // Admin still has the app's own agent API only; member_paths is not a writer path.
     expect(() => authorize(publicGrants, "red-teamer", "/intake/feedback", "POST")).toThrow(/isn't under/);
     expect(() => authorize(publicGrants, "red-teamer", "/api/agent/roadmap", "POST")).toThrow(/isn't under/);
     // An app without member_paths behaves exactly as before: the same object caller cannot reach the public route.
     const unchanged = app({ api: { callers: [{ agent: "red-teamer", paths: ["/intake", "/intake/feedback"] }], paths: ["/api/agent/roadmap"] } });
     expect(() => authorize(unchanged, "red-teamer", "/intake/feedback", "POST", "member")).toThrow(/isn't under/);
+    expect(() => authorize(unchanged, "red-teamer", "/intake/feedback", "POST", "member")).toThrow(/member_paths \(none\)/);
+    expect(() => authorize(unchanged, "red-teamer", "/intake/feedback", "POST", "member")).toThrow(/caller's own paths \(\/intake, \/intake\/feedback\)/);
+    // A member route the app grants but this caller's own paths lack names the caller's grant too.
+    const narrowCaller = app({ api: { callers: [{ agent: "red-teamer", paths: ["/api/agent/roadmap"] }], paths: ["/api/agent/roadmap"], member_paths: ["/intake"] } });
+    expect(() => authorize(narrowCaller, "red-teamer", "/intake", "POST", "member")).toThrow(/member_paths \(\/intake\)/);
+    expect(() => authorize(narrowCaller, "red-teamer", "/intake", "POST", "member")).toThrow(/caller's own paths \(\/api\/agent\/roadmap\)/);
     // A plain-string caller is already granted the app's whole surface; member_paths does not narrow or widen it.
     const plain = app({ api: { callers: ["red-teamer"], paths: ["/api/agent/roadmap"], member_paths: ["/intake"] } });
     expect(() => authorize(plain, "red-teamer", "/intake/feedback", "POST", "member")).not.toThrow();

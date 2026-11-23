@@ -57,7 +57,18 @@ export function checkPath(app: App, path: string, paths = app.api!.paths, method
     if (!r) return under(entry);
     return r.method === method && r.segments.length === seg.length && r.segments.every((s, i) => (s === undefined ? seg[i] !== "" : s === seg[i]));
   };
-  if (!paths.some(ok)) throw new Error(`${path} isn't under ${app.name}'s agent API paths for this caller (${paths.join(", ")})`);
+  if (!paths.some(ok)) {
+    // A call must be under both the app's grant and the caller's own grant; name each, so a gap in member_paths no
+    // longer reads as the caller's own paths being wrong. The caller's grant is named only where it adds something:
+    // an app probe checks the app's own paths, and there is no narrower caller grant to point at. An object caller is
+    // compared against the app grant for this role, member_paths included, so a member route the caller lacks is shown.
+    const appPaths = app.api!.paths.join(", ") || "none";
+    const memberPaths = (app.api!.member_paths ?? []).join(", ") || "none";
+    const grant = `the app grants api.paths (${appPaths})${member ? `, member_paths (${memberPaths})` : ""}`;
+    const sameAsApp = paths.length === roots.length && paths.every((g, i) => g === roots[i]);
+    const own = sameAsApp ? "" : `, and a call must also be under the caller's own paths (${paths.join(", ")})`;
+    throw new Error(`${path} isn't under ${app.name}'s agent API paths for this caller: ${grant}${own}`);
+  }
 }
 
 export function authorize(app: App, callerKey: string, path: string, method?: string, role: "admin" | "member" = "admin"): void {
