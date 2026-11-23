@@ -203,11 +203,56 @@ export async function syncOrg(store: SourceStore, gh: Gh, org: string, now = Dat
   return written;
 }
 
-/** Every 15 minutes, each org in turn, each pass recorded in src_meta.ingest_run (an org the owner can't read records its error). */
+/** The org a scope row belongs to: `org:<org>` (a pass's own name) or one of the org's sync scopes (`issues:<org>`,
+ * `prs:<org>`, `board:<org>/<n>`); undefined for a scope of another shape. */
+const scopeOrg = (scope: string): string | undefined =>
+  /^(?:org|issues|prs):(.+)$/.exec(scope)?.[1] ?? /^board:([^/]+)\//.exec(scope)?.[1];
+
+/**
+ * An org is no longer configured: one `status = 'retired'` ingest_run row for `org:<org>` (the scope its passes ran as; no
+ * error, since it is a marker, not a failed pass) so readers drop the scope's stale failure at once, then every scope row
+ * that org holds, so a re-added org syncs from a clean baseline. The org's data rows (issue, project, project_item) stay:
+ * only the sync and its scope rows go. The writer role holds INSERT, not SELECT, on src_meta.ingest_run (sources.sql), so
+ * the row is a direct INSERT, not a read of the pass record.
+ */
+async function retireOrg(store: SourceStore, org: string, scopes: string[], log: Logger): Promise<void> {
+  try {
+    // GitHub org names are case-insensitive, and a config's spelling can change between releases: the org's passes may be
+    // recorded under either spelling, so a marker under both (folded) retires whichever history exists.
+    const spellings = [...new Set([org, org.toLowerCase()])];
+    for (const name of spellings) await store.pool.query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error, status) VALUES ($1, $2, now(), 0, NULL, 'retired')`, ["github", `org:${name}`]);
+    for (const scope of scopes) await store.pool.query(`DELETE FROM src_github.scope WHERE scope = $1`, [scope]);
+  } catch (err) {
+    // The next tick sees the scope rows still there and retires the org then; one org never stops the others' passes.
+    log.warn({ org, err: String(err).slice(0, 300) }, "src_github scope retirement failed");
+  }
+}
+
+/**
+ * Every 15 minutes, each org in turn, each pass recorded in src_meta.ingest_run (an org the owner can't read records its
+ * error). The configured list is authoritative: before the first pass, every org the writer still holds scope rows for that
+ * is no longer in it is retired (retireOrg), an org already orphaned when this first runs included.
+ */
 export function startSync(store: SourceStore, gh: Gh, orgs: string[], log: Logger, everyMs = 15 * 60_000): void {
+  const configured = new Set(orgs.map((o) => o.toLowerCase()));
+  const retireRemoved = async () => {
+    const held = new Map<string, string[]>(); // org (as the scope row spells it) -> its scope rows
+    for (const scope of (await store.scopesByPrefix("")).keys()) {
+      const org = scopeOrg(scope);
+      if (org) held.set(org, [...(held.get(org) ?? []), scope]);
+    }
+    for (const [org, scopes] of held) if (!configured.has(org.toLowerCase())) await retireOrg(store, org, scopes, log);
+  };
   const tick = async () => {
+    // The scope table (src_github.scope) exists only after migrate: the sweep and the pre-request scope row need it first,
+    // even on a fresh warehouse where no pass has run yet.
+    await store.migrate(DDL).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_github migration failed"));
+    await retireRemoved().catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_github scope retirement pass failed"));
     for (const org of orgs) {
       try {
+        // The org's own scope row, saved before its first request: an org whose every pass fails never reaches saveScope
+        // below, and this row is what retireRemoved finds once the org leaves the config.
+        await store.saveScope(`org:${org}`, null);
         const rows = await store.run("github", `org:${org}`, () => syncOrg(store, gh, org, Date.now(), log));
         log.info({ org, rows }, "src_github sync done");
       } catch (err) {

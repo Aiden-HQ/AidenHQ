@@ -72,6 +72,16 @@ export function createConnectionState(o: {
   grants: () => Record<string, Grant | undefined>;
   /** The board's origin; every link is `<board>/connect/<module>` (the board words what each exposure mode can do). */
   boardUrl: () => string;
+  /**
+   * The code-host orgs the instance still reaches (every code-host org: the sync's configured list, the agents orgs and the
+   * owners of the product, instance and maintained repos). An sso/restricted need names one of them; a row naming any other
+   * org is stale (the org left the config) and is cleared. Undefined or empty (an unreadable config) keeps every org row, as
+   * an empty connections registry keeps its rows.
+   * A need recorded for an org the config never names is therefore cleared too, on tick: the fix for an org that is not
+   * synced or maintained is to configure it, and then its need records again. The alternative (keeping every unconfigured
+   * org's need) is what left the removed org's owner line in the digest for good.
+   */
+  orgs?: () => string[] | undefined;
   now?: () => number;
   log?: Log;
 }) {
@@ -128,6 +138,40 @@ export function createConnectionState(o: {
   const stateKey = (module: string, n: { cause: Cause; account?: string; scope?: string; org?: string }) =>
     `${module}:${n.cause}${n.cause === "sso" || n.cause === "restricted" ? `:${n.org ?? ""}` : n.cause === "scope" && n.scope ? `:${n.scope}` : n.account ? `:account:${n.account}` : ""}`;
   const link = (module: string, url: string | null | undefined) => url ?? `${o.boardUrl().replace(/\/+$/, "")}/connect/${module}`;
+  /** An org row's org, folded as the key stores it: `<connection>:<sso|restricted>:<org>`. */
+  const orgOf = (r: Pick<Row, "key" | "module" | "cause">) => r.key.slice(`${r.module}:${r.cause}:`.length).toLowerCase();
+  /** The configured code-host orgs, folded; undefined is an unreadable config (no org row is stale then, as tick prunes no
+   * connection against an empty registry). */
+  const configuredOrgs = (): Set<string> | undefined => {
+    const list = (o.orgs?.() ?? []).map((x) => x.toLowerCase());
+    return list.length ? new Set(list) : undefined;
+  };
+  /** An sso/restricted row is stale once its org has left the configured list: nothing syncs it, so its clear never comes.
+   * A row with no org (GitHub gave neither a `/orgs/<x>/sso` url nor an owner) names an org that can never be configured,
+   * so it is never stale: it stays until a real ok(), exactly as before this check. */
+  const staleOrg = (r: Pick<Row, "key" | "module" | "cause">, live = configuredOrgs()): boolean => {
+    if (r.cause !== "sso" && r.cause !== "restricted") return false;
+    const org = orgOf(r);
+    return !!org && !!live && !live.has(org);
+  };
+
+  /** Drops one org's sso and restricted rows and their waits, waking each waiter with CONNECTED_CAUSE as ok() does. */
+  const clearOrg = (connection: string, org: string): number => {
+    const t = now();
+    const tails = [`:sso:${org}`, `:restricted:${org}`].map((x) => x.toLowerCase());
+    const rowWhere = "module = ? AND cause IN ('sso', 'restricted') AND lower(substr(key, length(?) + 1)) IN (?, ?)";
+    const rowArgs = [connection, connection, ...tails];
+    const waitWhere = "module = ? AND need IS NOT NULL AND lower(substr(need, length(?) + 1)) IN (?, ?)";
+    const waitArgs = [connection, connection, ...tails];
+    return inTx(db, "connection_ok", () => {
+      const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waitWhere}`).all(...waitArgs) as { task: string; agent: string }[];
+      q(`DELETE FROM connection_state WHERE ${rowWhere}`).run(...rowArgs);
+      q(`DELETE FROM connection_waits WHERE ${waitWhere}`).run(...waitArgs);
+      for (const w of waiters) o.wakes.open({ key: `connect:${connection}:${w.task}:${t}`, task: w.task, agent: w.agent, cause: CONNECTED_CAUSE, replaces: `wait:${w.task}:`, author: "kernel" });
+      if (waiters.length) log("connection ok", { connection, org, woken: waiters.length });
+      return waiters.length;
+    });
+  };
 
   /** The task, the root of its chain (parents, ≤ 10 up) and the root's comments. */
   async function chain(task: string) {
@@ -216,29 +260,20 @@ export function createConnectionState(o: {
      */
     ok(connection: string, clear: boolean | Clear = false): number {
       const { account, fullOnly, org } = typeof clear === "boolean" ? { account: undefined, fullOnly: clear, org: undefined } : clear;
-      const t = now();
       // An org's rows are keyed `<connection>:<cause>:<org>` (`module` holds the connection). The connection's name is matched
       // exactly, so another module's `GitHub` connection is not this one; GitHub logins are case-insensitive, so the org is folded.
-      let rowWhere: string, rowArgs: string[], waitWhere: string, waitArgs: string[];
-      if (org !== undefined) {
-        const tails = [`:sso:${org}`, `:restricted:${org}`].map((t) => t.toLowerCase());
-        rowWhere = "module = ? AND cause IN ('sso', 'restricted') AND lower(substr(key, length(?) + 1)) IN (?, ?)";
-        rowArgs = [connection, connection, ...tails];
-        waitWhere = "module = ? AND need IS NOT NULL AND lower(substr(need, length(?) + 1)) IN (?, ?)";
-        waitArgs = [connection, connection, ...tails];
-      } else {
-        const byAccount = account ? " AND (account = ? OR account = '')" : "";
-        rowWhere = `module = ?${byAccount}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;
-        rowArgs = account ? [connection, account] : [connection];
-        waitWhere = `module = ?${byAccount}${fullOnly ? " AND full = 1" : ""}`;
-        waitArgs = rowArgs;
-      }
+      if (org !== undefined) return clearOrg(connection, org);
+      const t = now();
+      const byAccount = account ? " AND (account = ? OR account = '')" : "";
+      const rowWhere = `module = ?${byAccount}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;
+      const rowArgs = account ? [connection, account] : [connection];
+      const waitWhere = `module = ?${byAccount}${fullOnly ? " AND full = 1" : ""}`;
       return inTx(db, "connection_ok", () => {
-        const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waitWhere}`).all(...waitArgs) as { task: string; agent: string }[];
+        const waiters = q(`SELECT task, agent FROM connection_waits WHERE ${waitWhere}`).all(...rowArgs) as { task: string; agent: string }[];
         q(`DELETE FROM connection_state WHERE ${rowWhere}`).run(...rowArgs);
-        q(`DELETE FROM connection_waits WHERE ${waitWhere}`).run(...waitArgs);
+        q(`DELETE FROM connection_waits WHERE ${waitWhere}`).run(...rowArgs);
         for (const w of waiters) o.wakes.open({ key: `connect:${connection}:${w.task}:${t}`, task: w.task, agent: w.agent, cause: CONNECTED_CAUSE, replaces: `wait:${w.task}:`, author: "kernel" });
-        if (waiters.length) log("connection ok", { connection, ...(account ? { account } : {}), ...(org !== undefined ? { org } : {}), woken: waiters.length });
+        if (waiters.length) log("connection ok", { connection, ...(account ? { account } : {}), woken: waiters.length });
         return waiters.length;
       });
     },
@@ -277,7 +312,8 @@ export function createConnectionState(o: {
     needs(): string[] {
       const live = Object.keys(o.connections());
       const rows = q(`SELECT * FROM connection_state s WHERE ${CONFIRMED} AND module IN (${live.map(() => "?").join(", ")}) ORDER BY since`).all(now() - LASTING, ...live) as Row[];
-      return rows.map((r) => {
+      const orgs = configuredOrgs();
+      return rows.filter((r) => !staleOrg(r, orgs)).map((r) => {
         const named = r.account || (r.key.slice(`${r.module}:${r.cause}:`.length) || undefined);
         const n = { cause: r.cause, ...(r.cause === "scope" ? { scope: named } : {}), ...(r.cause === "sso" || r.cause === "restricted" ? { org: named } : {}) };
         const module = moduleOf(r.module);
@@ -285,7 +321,9 @@ export function createConnectionState(o: {
       });
     },
 
-    /** Housekeeping, on a timer: old waits and rows of connections that no longer exist. */
+    /** Housekeeping, on a timer: old waits, rows of connections that no longer exist, and sso/restricted rows naming an org
+     * no longer configured (cleared as ok() would, waking their waiters: an org that left the config is never cleared by a
+     * sync again). */
     tick(): void {
       // Runs from a timer: an error (a locked database) is logged and the next tick tries again, never thrown into the kernel.
       try {
@@ -297,6 +335,9 @@ export function createConnectionState(o: {
         if (live.length) {
           q(`DELETE FROM connection_state WHERE ${gone}`).run(...live);
           q(`DELETE FROM connection_waits WHERE ${gone}`).run(...live);
+          const orgs = configuredOrgs();
+          const stale = q("SELECT * FROM connection_state WHERE cause IN ('sso', 'restricted')").all().filter((r) => staleOrg(r as Row, orgs)) as Row[];
+          for (const r of stale) clearOrg(r.module, r.key.slice(`${r.module}:${r.cause}:`.length));
         }
       } catch (e) {
         log("connection state: housekeeping failed; the next tick retries", { err: (e as Error).message });

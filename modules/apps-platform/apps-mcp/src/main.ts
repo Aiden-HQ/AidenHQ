@@ -23,6 +23,7 @@ import { bootRegistry, inAgentsOrg } from "./git.js";
 import { codeHostOps, isLocal, localChanges, localRepos, localRoot, readFleetOrg, readOrgs, withLocal } from "./codehost.js";
 import { previewApp, previewName } from "./previews.js";
 import { appsReader, appsReaderIdentity, bearerIs } from "./readers.js";
+import { scopeIssues, sourceHealth } from "./sources.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "apps-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const need = (n: string): string => process.env[n] || (() => { throw new Error(`${n} is required`); })();
@@ -150,38 +151,17 @@ const http = createServer(async (req, res) => {
       } catch {
         return send(res, 200, {});
       }
-      const r = await d.pool.query(
-        "SELECT source, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
-      );
+      const sources = await sourceHealth(d);
       // The detail (scope and error text) goes only to the board's internal token and the Fleet Steward (the module that
       // reads the warehouse's health); other apps.read callers get the summary rows. A scope still recording runs (one within 8
       // days: weekly ones too) whose passes have all failed for 24 hours, counted from its first failure after its last good
-      // pass; a scope that stops running drops out after 8 days (retired). The last good pass is found once per scope.
+      // pass; a scope retired by its writer (its newest pass is `status = 'retired'`) is in neither list. The last good pass is
+      // found once per scope.
       const detail = who === "internal" || who.module === "fleet-steward";
-      const f = detail
-        ? await d.pool.query(
-            `WITH ok AS (SELECT source, scope, max(finished_at) AS last_ok FROM src_meta.ingest_run WHERE error IS NULL GROUP BY source, scope),
-                  latest AS (SELECT DISTINCT ON (source, scope) source, scope, error, finished_at FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC)
-             SELECT l.source, l.scope, left(l.error, 500) AS error, ok.last_ok AS since
-             FROM latest l LEFT JOIN ok USING (source, scope)
-             WHERE l.error IS NOT NULL AND l.finished_at > now() - interval '8 days'
-               AND (SELECT min(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = l.source AND i.scope = l.scope AND i.error IS NOT NULL AND i.finished_at > COALESCE(ok.last_ok, '-infinity')) < now() - interval '24 hours'`,
-          )
-        : { rows: [] };
-      // A scope whose last two passes that reported a total (a completed scope: SourceStore.run) both fetched fewer records than
-      // the source held: records are being missed. One short pass is not enough (a record deleted mid-pass); the scope must still
-      // be recording (8 days).
-      const sh = detail
-        ? await d.pool.query(
-            `SELECT source, scope, (array_agg(total ORDER BY finished_at DESC))[1] AS total, (array_agg(fetched ORDER BY finished_at DESC))[1] AS fetched
-             FROM (SELECT source, scope, total, fetched, finished_at, row_number() OVER (PARTITION BY source, scope ORDER BY finished_at DESC) AS n
-                   FROM src_meta.ingest_run WHERE error IS NULL AND total IS NOT NULL) t
-             WHERE n <= 2
-             GROUP BY source, scope
-             HAVING count(*) = 2 AND bool_and(fetched < total) AND max(finished_at) > now() - interval '8 days'`,
-          )
-        : { rows: [] };
-      return send(res, 200, { sources: r.rows, failing_scopes: f.rows, short_scopes: sh.rows });
+      // The two scope lists (sources.ts scopeIssues), each dropping a scope whose newest pass is retired: a scope no longer
+      // configured stops being reported at once, not after the 8-day window.
+      const { failing, short } = detail ? await scopeIssues(d) : { failing: [], short: [] };
+      return send(res, 200, { sources, failing_scopes: failing, short_scopes: short });
     }
     // Each app's quality checks from its last health probe (quality.ts): name, ok and count only, never samples (app data,
     // read through app_status by a caller who may read the app). The board's detector raises the failing ones for Fleet Ops.

@@ -48,6 +48,9 @@ All writers share one `SourceStore` (a byte-identical copy lives in each connect
 - **Ingest runs.** Each pass writes a `src_meta.ingest_run` row (source, scope, rows written, error, for a repo target the
   commit scanned, and `status` for a non-error marker such as a retired security target). apps-mcp reports each source's
   last good pass and whether the latest failed, and the board's fleet-ops detector raises a stale or failing source.
+  The configured scope list is authoritative: a source that stops syncing a scope (an org dropped from its config) writes
+  `status = 'retired'` for it, and `/internal/sources` leaves a scope out of both its failing and short lists while its newest
+  pass is retired, so its detector key recovers within one tick instead of after the 8-day window.
   A writer whose API gives a reliable total for a scope it read to its end records `total` and `fetched` on that pass
   (`SourceStore.run`'s `pass.complete`; HubSpot first); the Fleet Steward flags a scope whose last two such passes both fetched fewer.
 

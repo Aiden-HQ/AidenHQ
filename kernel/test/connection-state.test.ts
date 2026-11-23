@@ -8,7 +8,7 @@ import { createConnectionState } from "../src/connection-state.ts";
 const H = 3600_000, DAY = 24 * H, LASTED = 11 * 60_000;
 const OWNER_COMMENT = { body: "please read my inbox", authorUserId: "u1", createdAt: "2026-11-20T09:00:00Z" };
 
-function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}, conns: Record<string, { module: string }> = { google: { module: "google" }, github: { module: "github" }, slack: { module: "slack" }, slack_live: { module: "slack" } }) {
+function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}, conns: Record<string, { module: string }> = { google: { module: "google" }, github: { module: "github" }, slack: { module: "slack" }, slack_live: { module: "slack" } }, orgs: string[] = []) {
   let clock = Date.parse("2026-11-20T10:00:00Z");
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT)");
@@ -33,6 +33,7 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
     connections: () => conns as never,
     grants: () => ({ a1: { tools: { google: ["gmail_search"], github: ["x"], slack: ["x"], slack_live: ["x"] } } }),
     boardUrl: () => "http://board.example",
+    orgs: () => orgs,
     now: () => clock,
   });
   const who = (task: string) => ({ kind: "run" as const, agent: "a1", key: "kai", task, roles: [], tools: {}, credential: "" });
@@ -124,6 +125,44 @@ test("a removed connection's need is dropped by tick and never listed", async ()
   w.s.tick();
   assert.deepEqual((w.db.prepare("SELECT module FROM connection_state").all() as { module: string }[]).map((r) => r.module), ["github"]);
 });
+// An org dropped from the configured list is never synced again, so its restricted/sso need is never cleared by a sync:
+// needs() leaves it out and tick() clears it exactly as ok(connection, {org}) would, waking a task still waiting on it.
+test("an sso/restricted row for an org no longer configured is not listed and tick clears it, waking its waiters", async () => {
+  const roots = {
+    a: { id: "a", identifier: "WOR-21", title: "Read acme", assigneeAgentId: "cos", createdByUserId: "u1" },
+    b: { id: "b", identifier: "WOR-22", title: "Read kept", assigneeAgentId: "cos", createdByUserId: "u1" },
+    c: { id: "c", identifier: "WOR-23", title: "Read acme again", assigneeAgentId: "cos", createdByUserId: "u1" },
+  };
+  const w = world(roots, Object.fromEntries(Object.keys(roots).map((k) => [k, [OWNER_COMMENT]])), undefined, ["Kept", "acme-agents"]);
+  await w.s.hit(w.who("a"), "github", { cause: "restricted", org: "acme", detail: "" });
+  await w.s.hit(w.who("b"), "github", { cause: "sso", org: "kept", detail: "" });
+  await w.s.hit(w.who("c"), "github", { cause: "sso", org: "ACME", detail: "" });
+  w.tick(LASTED);
+  // The unconfigured org's rows are not in the digest; the configured one's is ("Kept" folds to "kept").
+  assert.deepEqual(w.s.needs(), ["Github isn't connected (kept needs SSO authorization): http://board.example/connect/github"]);
+  // tick clears the unconfigured org's rows and their waits, waking each waiter with a connected cause.
+  w.s.tick();
+  assert.deepEqual(w.db.prepare("SELECT key FROM connection_state ORDER BY key").all().map((r) => r.key), ["github:sso:kept"]);
+  assert.deepEqual(w.db.prepare("SELECT task FROM connection_waits ORDER BY task").all().map((r) => r.task), ["b"]);
+  assert.deepEqual(w.opened.map((o) => [o.task, o.cause, o.replaces]).sort(), [["a", "connected", "wait:a:"], ["c", "connected", "wait:c:"]]);
+  // The kept org's row is still cleared the normal way.
+  assert.equal(w.s.ok("github", { org: "KEPT" }), 1);
+  assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get() as { n: number }).n, 0);
+});
+
+// A need whose org GitHub could not name (no `/orgs/<x>/sso` url and no owner in the path) is stored with an empty org:
+// it names no org that could leave the config, so it is a live need, not a retired one. It stays listed and no tick clears it.
+test("an sso/restricted row with no org is never stale, even with orgs configured", async () => {
+  const roots = { a: { id: "a", identifier: "WOR-24", title: "Read a repo", assigneeAgentId: "cos", createdByUserId: "u1" } };
+  const w = world(roots, { a: [OWNER_COMMENT] }, undefined, ["acme"]);
+  await w.s.hit(w.who("a"), "github", { cause: "sso", org: "", detail: "" });
+  w.tick(LASTED);
+  assert.deepEqual(w.s.needs(), ["Github isn't connected (an organization needs SSO authorization): http://board.example/connect/github"]);
+  w.s.tick();
+  assert.deepEqual(w.db.prepare("SELECT key FROM connection_state").all().map((r) => r.key), ["github:sso:"]);
+  assert.deepEqual(w.db.prepare("SELECT task FROM connection_waits").all().map((r) => r.task), ["a"]);
+});
+
 test("needs() lists only confirmed needs: old enough, until a success clears them", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
