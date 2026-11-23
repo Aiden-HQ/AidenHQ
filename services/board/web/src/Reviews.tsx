@@ -1015,7 +1015,7 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
   const validRepo = /^[\w.-]+\/[\w.-]+$/.test(repo) && (edit || !watched.has(repo.toLowerCase()));
   const entry = (): RepoConfig => {
     const ignore = ignoreText.split("\n").map((s) => s.trim()).filter(Boolean);
-    return { repo, on_open: f.on_open, on_push: f.on_push, drafts: f.drafts, forks: f.forks, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
+    return { repo, on_open: f.on_open, on_push: f.on_push, push_rounds: f.push_rounds, drafts: f.drafts, forks: f.forks, max_nits: f.max_nits, ...(ignore.length ? { ignore } : {}) };
   };
   const submit = async (value: CodeReview, what: string) => {
     setBusy(true);
@@ -1059,6 +1059,9 @@ function RepoDialog({ config, engines, edit, onClose, onSave }: { config: CodeRe
         <div className="rv-grid2">
           <Field label="Ignore paths" help="One pattern a line, like **/generated/** or *.lock">
             {(id, d) => <textarea id={id} aria-describedby={d} className="ui-input rv-textarea" rows={3} value={ignoreText} onChange={(e) => setIgnoreText(e.target.value)} />}
+          </Field>
+          <Field label="Pushes reviewed" help="How many pushes of a PR get the on-push review; empty reviews every push">
+            {(id, d) => <Input id={id} aria-describedby={d} type="number" min={0} max={100} value={f.push_rounds ?? ""} onChange={(e) => setF({ ...f, push_rounds: e.target.value === "" ? null : Number(e.target.value) })} />}
           </Field>
           <Field label="Nits per review" help="At most this many nits are posted">
             {(id, d) => <Input id={id} aria-describedby={d} type="number" min={0} max={50} value={f.max_nits} onChange={(e) => setF({ ...f, max_nits: Number(e.target.value) })} />}

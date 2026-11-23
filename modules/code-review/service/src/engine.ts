@@ -432,13 +432,22 @@ export function createEngine(d: EngineDeps) {
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); });
   };
 
+  /** A PR's on_push rounds: its pushed heads whose automatic push review finished and was stored (superseded, skipped and carried
+   * runs never count, nor a claim's recheck or an `aiden review`). */
+  const pushRounds = (repo: string, n: number) => one<{ c: number }>("SELECT COUNT(DISTINCT runs.head) c FROM runs JOIN reviews ON reviews.run = runs.id WHERE repo = ? AND number = ? AND kind = 'auto' AND moment = 'push' AND status = 'done'", repo, n)!.c;
+  /** The PR has had the push reviews its repo's push_rounds allows: later heads get no on_push run. */
+  const capped = (cfg: Repo, n: number) => cfg.push_rounds !== null && pushRounds(cfg.repo, n) >= cfg.push_rounds;
+  /** openOnly for one PR: its repo has no mandatory on_push, or the PR's push rounds are used up; either way its later heads are
+   * gated by the opening review, open findings and claim rechecks. */
+  const openOnlyPr = (cfg: Repo, n: number) => openOnly(cfg) || (gated(cfg) && capped(cfg, n));
+
   /** What the verdict waits on at a head: the mandatory reviewers that reviewed it (reviewers()). On a repo with no mandatory on_push
-   * combo (openOnly), the PR's opening review stands for every later head: its latest mandatory opening run per combo, at any head,
+   * combo, or a PR whose push rounds are used up (openOnlyPr), the PR's opening review stands for every later head: its latest mandatory opening run per combo, at any head,
    * with the mandatory runs at the head itself (a claim's recheck) and any mandatory run of the PR on its first post (a recheck at
    * an earlier head whose findings aren't posted yet; one still running there is superseded and never posts). */
   const gateRuns = (cfg: Repo, repo: string, n: number, head: string) => {
     const at = reviewers(repo, n, head);
-    if (!openOnly(cfg)) return at;
+    if (!openOnlyPr(cfg, n)) return at;
     const seen = new Set<string>();
     const opening = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' ORDER BY created DESC", repo, n)
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}`; return !seen.has(k) && !!seen.add(k); });
@@ -1331,8 +1340,10 @@ export function createEngine(d: EngineDeps) {
     if (row.mode === "stop") list = list.filter((c) => c.mandatory);
     if (row.mode === "always" && !list.length) list = cfg.on_push.length ? cfg.on_push : cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_push;
     // With no mandatory on_push, a push's review is advice: `always` never adds a gate.
-    if (which === "push" && openOnly(cfg)) list = list.map((c) => ({ ...c, mandatory: false }));
+    if (which === "push" && openOnlyPr(cfg, p.number)) list = list.map((c) => ({ ...c, mandatory: false }));
     if (!list.length) return;
+    // `aiden review always` is a writer's standing ask for every push: it runs past the cap, as advice once the cap is reached.
+    if (which === "push" && row.mode !== "always" && capped(cfg, p.number)) return skip(p, list[0]!, "auto", `push review cap reached: ${cfg.push_rounds} push review${cfg.push_rounds === 1 ? "" : "s"} done; later pushes are gated by the open findings and claim rechecks, or say \`aiden review\``);
     if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
     if (p.fork && cfg.forks === "manual") {
       // A gated repo's mandatory combos review a fork's PR by themselves (its merge waits on them); the others wait to be asked.
@@ -1439,7 +1450,7 @@ export function createEngine(d: EngineDeps) {
   function missing(cfg: Repo, p: PullRequest) {
     const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
     // No mandatory on_push: a later head needs no review of its own, only a PR never reviewed by a mandatory combo gets one.
-    if (openOnly(cfg)) {
+    if (openOnlyPr(cfg, p.number)) {
       // Its opening review lacks a mandatory run (a push superseded one): the newest head gets each such combo (as a batch of its
       // own, so the push's queued advice stays); none at all yet (a PR open when its repo became gated): every mandatory combo. One
       // such batch still queued for an older head is superseded first.
@@ -1559,7 +1570,7 @@ export function createEngine(d: EngineDeps) {
     const code = v.reasons[0]?.code ?? (failed ? "failed" : "pass");
     const reason = code === "running" && !busy.some((r) => r.status === "running") ? "queued" : code;
     // Partial coverage (a file no finder read whole, a withheld finding, an unchecked recheck) is information: shown, never waited on.
-    const partial = cfg && openOnly(cfg) ? gateRuns(cfg, repo, n, head).some((r) => r.complete === 0)
+    const partial = cfg && openOnlyPr(cfg, n) ? gateRuns(cfg, repo, n, head).some((r) => r.complete === 0)
       : !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND complete = 0", repo, n, head);
     return { repo, number: n, head, reason, important: openGating(repo, n).length, running: busy.map((r) => ({ model: r.model, effort: r.effort })), ...(partial ? { partial: true } : {}) };
   }
@@ -1757,10 +1768,10 @@ export function createEngine(d: EngineDeps) {
       const at = one<{ at: string | null }>(`SELECT MAX(claimed_at) at FROM findings WHERE repo = ? AND number = ? AND outcome IS NULL AND claim LIKE 'fixed:%' AND id IN (${ids.map(() => "?").join(",")})`, cfg.repo, p.number, ...ids)?.at;
       // Not while a mandatory run of the head is still queued or running: it settles first (the verdict keeps one run per combo, and it may still report).
       if (!at || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND status IN ('queued', 'running')", cfg.repo, p.number, p.head)) continue;
-      // A repo with no mandatory on_push has no run at a pushed head: its claim is rechecked by the first mandatory on_open combo.
+      // A repo with no mandatory on_push (or a PR past its push rounds) has no run at a pushed head: its claim is rechecked by the first mandatory on_open combo.
       const must = cfg.on_open.find((c) => c.mandatory);
       const last = one<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' ORDER BY created DESC LIMIT 1", cfg.repo, p.number, p.head)
-        ?? (openOnly(cfg) && must ? { engine: must.engine, model: must.model } : undefined);
+        ?? (openOnlyPr(cfg, p.number) && must ? { engine: must.engine, model: must.model } : undefined);
       if (!last || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck = 1 AND kind != 'oneoff' AND (created >= ? OR started >= ?)", cfg.repo, p.number, p.head, Date.parse(at), at)) continue;
       queue({ repo: cfg.repo, number: p.number, head: p.head, base: p.base, author: p.author }, [{ engine: last.engine as Combo["engine"], model: last.model, effort: "low", mandatory: true }], "command", { moment: "push", recheckOnly: true });
     }
@@ -1798,7 +1809,7 @@ export function createEngine(d: EngineDeps) {
     else if (latest.some((r) => r.status === "skipped")) reasons.push({ code: "not_reviewed", text: `${head.slice(0, 7)} hasn't been reviewed by every mandatory reviewer (${String(latest.find((r) => r.status === "skipped")!.why ?? "").slice(0, 200)})`, unblock: "say `aiden review` on the pull request" });
     const open = openGating(repo, n), note = stillNote(repo, n, head);
     if (open.length) reasons.push({ code: "findings", text: `${open.length} important finding${open.length === 1 ? "" : "s"} open: ${open.slice(0, 10).map((f) => `${f.title.slice(0, 80)} (${f.path}:${f.line}, id ${f.id})`).join("; ")}${open.length > 10 ? "; …" : ""}`,
-      unblock: `fix and push (the next review rechecks each), or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
+      unblock: `${capped(cfg, n) ? "fix and push, then record each fix with code_review_resolve (word fixed: a recheck at the head checks it; pushes past the push review cap get no review of their own)" : "fix and push (the next review rechecks each)"}, or record each outcome with the code_review_resolve tool ({ repo, number, id, word: fixed, disputed, by design or won't fix, reason }; the reply on the finding's thread is posted for you, and a reply you post there starting with the word works too); the owner may also dismiss it on the board's Reviews page: https://github.com/${repo}/pull/${n}` });
     // Its own reason, so the merge gate's cut of the findings list never drops it.
     const noted = open.filter((f) => note(f));
     if (noted.length) reasons.push({ code: "findings", text: `${noted.slice(0, 5).map((f) => `id ${f.id}`).join(", ")}: ${note(noted[0]!)}`, unblock: "fix and push, or answer disputed with the reason through code_review_resolve" });

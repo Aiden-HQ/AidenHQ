@@ -33,7 +33,8 @@ code_review:
       on_open:                   # defaults shown; a list of combos (at most 4), each its own run and post; [] runs none
         - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium }
       on_push:                   # only the new changes since the last reviewed head
-        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low }   # mandatory: true gates merges
+        - { engine: codex-native, model: "openai/gpt-6.2-sol", effort: low }   # mandatory: true gates merges
+      push_rounds: 1             # pushes per PR that get an on_push review; null: every push
       drafts: false
       forks: manual              # manual: only when someone with write access asks; auto: like any PR
       ignore: ["**/generated/**"]
@@ -89,7 +90,9 @@ PR state, not config.
 
 The service reads the watched repos every `code_review_poll_seconds` (default 60); finished checks, filed posts, due runs and the status mirror move every 10 seconds (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
-queued batch). One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
+queued batch). Only the first `push_rounds` pushes of a PR (default 1; null: every push) get one: a round is a pushed head
+whose push review completed (a superseded one doesn't count); later heads are skipped ("push review cap reached") and gated
+as a repo with no mandatory `on_push` (open findings and claim rechecks); `aiden review` and `aiden review always` still run. One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
 rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR (but a one-off)
 completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
 at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run

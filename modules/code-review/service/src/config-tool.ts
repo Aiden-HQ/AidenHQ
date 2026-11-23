@@ -101,7 +101,8 @@ const REPO_ENTRY = {
   properties: {
     repo: { type: "string", description: "owner/name" },
     on_open: { ...COMBOS, description: `when a PR opens (default codex, ~deepseek/deepseek-flash-latest, medium). ${COMBOS.description}` },
-    on_push: { ...COMBOS, description: `on each push, only the new changes (default codex, ~deepseek/deepseek-flash-latest, low). ${COMBOS.description}` },
+    on_push: { ...COMBOS, description: `on each push, only the new changes (default codex-native, openai/gpt-6.2-sol, low). ${COMBOS.description}` },
+    push_rounds: { type: ["integer", "null"], minimum: 0, description: "how many pushes of a PR get an on_push review (default 1; null: every push); later pushes are gated by open findings and claim rechecks" },
     drafts: { type: "boolean" },
     forks: { type: "string", enum: ["manual", "auto"] },
     ignore: { type: "array", items: { type: "string" } },
@@ -182,7 +183,7 @@ export function configTools(d: {
       name: "code_review_configure",
       roles: ["reviewer-manager"],
       description:
-        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push the same at low, drafts off, forks when asked; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Spend is bounded by the install-wide spend limits in Settings, not by code review: the owner changes those there. Reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine or model; adding one is more spend), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
+        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push codex-native openai/gpt-6.2-sol low for one push (push_rounds 1), drafts off, forks when asked; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Spend is bounded by the install-wide spend limits in Settings, not by code review: the owner changes those there. Reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine or model; adding one is more spend), a repo's push_rounds, or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
       inputSchema: {
         type: "object",
         properties: {

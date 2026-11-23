@@ -25,7 +25,8 @@ function world(settings = {}) {
   const threads = new Map(), commits = new Map(), patches = new Map(), bases = new Map();
   const readsDown = settings.readsDown ?? [];
   const { db: _db, readsDown: _rd, ...rest } = settings;
-  const cfg = readConfig(JSON.stringify({ repos: [{ repo: REPO }], ...rest }));
+  // Every push is reviewed here (push_rounds null) unless a test sets the cap.
+  const cfg = readConfig(JSON.stringify({ ...rest, repos: (rest.repos ?? [{ repo: REPO }]).map((r) => ({ push_rounds: null, ...r })) }));
   const db = settings.db ?? new DatabaseSync(":memory:");
   const deps = {
     db,
@@ -97,7 +98,7 @@ test("a new PR runs each on_open combo, each posted with its combo; a push debou
   w.later(60_000); w.pr(2, sha("4")); await w.tick();
   w.later(DEBOUNCE); await w.tick();
   assert.equal(w.started.length, 3);
-  assert.deepEqual([label(w.started[2]), w.started[2].head, w.started[2].incremental_from], ["codex/low", sha("4"), sha("2")]);
+  assert.deepEqual([label(w.started[2]), w.started[2].head, w.started[2].incremental_from], ["codex-native/low", sha("4"), sha("2")]);
   // It rechecks every still-open finding of the PR, whichever combo found it; one found gone is fixed.
   assert.deepEqual(w.started[2].previous.map((f) => f.id).sort(), ["f1", "f2"]);
   w.finish(2, { findings: [], fixed: ["f1"] }); await w.tick();
@@ -1935,4 +1936,26 @@ test("no mandatory on_push: a mandatory opening run a push superseded is run aga
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.ok(w.started.length > n && w.started.slice(n).every((s) => !s.mandatory), "the push is reviewed, as advice");
   assert.equal(w.engine.verdict(REPO, 2, sha("4")).verdict, "pass");
+});
+
+test("push_rounds 1: a push superseded mid-review isn't a round; after the one push review, later heads get none, its findings still gate, a fixed claim is rechecked at the head and `aiden review` still runs", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 1 }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick(); // f1 open, gating
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.pr(2, sha("4")); await w.tick(); // pushed while the push review of 3 runs
+  w.finish(1, NONE); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.deepEqual(w.started.slice(1).map((s) => [s.head, label(s)]), [[sha("3"), "codex/low"], [sha("4"), "codex/low"]], "the superseded review of 3 isn't a round: 4 gets it");
+  w.finish(2, { findings: [{ id: "f2", severity: "important", path: "b.ts", line: 1, title: "t2", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
+  w.pr(2, sha("5")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(w.started.length, 3, "the cap is reached: 5 gets no push review");
+  assert.ok(w.acks.some((a) => a.state === "skipped" && /^push review cap reached/.test(a.why)));
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("5"))), ["findings"], "the open findings hold the merge; nothing waits on a review of 5");
+  for (const id of ["f1", "f2"]) w.engine.resolve({ repo: REPO, number: 2, id, word: "fixed", reason: "fixed in 5", by: "agent:engineer" });
+  await w.tick();
+  assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("5"), "codex/low"]], "the claims' recheck at the head");
+  w.finish(3, { findings: [], cleared: ["f1", "f2"] }); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("5")).verdict, "pass");
+  w.later(1000); w.say(2, "alice", "aiden review"); await w.tick();
+  assert.deepEqual(w.started.slice(4).map((s) => [s.head, label(s)]), [[sha("5"), "codex/medium"]], "a writer's ask beats the cap");
 });

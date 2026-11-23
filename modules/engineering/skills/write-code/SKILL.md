@@ -44,6 +44,11 @@ description: "Sets how code is changed in any repository: starting the branch, P
 - **Code-review findings:** the merge waits on each important one (the wait reason, `code_review_findings`, or
   `github_pr_threads`). Answer each with `code_review_resolve` (`repo`, `number`, `id`, `word`, `reason`): `fixed` with
   `<what changed, commit>` after publishing the fix, or `disputed` with `<reason, file:line>`. Code review posts the reply.
+  - After the opening review, decide first: if the findings point at a design problem, change the architecture and
+    simplify; otherwise fix.
+  - Push one commit that fixes every finding; it gets one review. Then push one final commit that fixes all still-open
+    findings, and mark each `fixed` or dispute it with `file:line`. Further pushes get no new review; claims are
+    rechecked at the head.
 
 ## App repositories
 
