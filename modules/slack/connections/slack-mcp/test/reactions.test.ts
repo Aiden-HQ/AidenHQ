@@ -46,8 +46,8 @@ function fakeSlack(pages: unknown[]) {
 
 describe("planReactionSearch", () => {
   it("answers a filters-only hasmy:: search from reactions.list, with the caller's limit", () => {
-    expect(planReactionSearch("slack_search_public_and_private", { filters: "hasmy::pushpin:", limit: 40 })).toEqual({ kind: "mine", emoji: "pushpin", filter: "hasmy::pushpin:", limit: 40 });
-    expect(planReactionSearch("slack_search_public", { filters: "  hasmy::eyes:  " })).toEqual({ kind: "mine", emoji: "eyes", filter: "hasmy::eyes:" });
+    expect(planReactionSearch("slack_search_public_and_private", { filters: "hasmy::pushpin:", limit: 40 })).toEqual({ kind: "mine", emoji: "pushpin", filter: "hasmy::pushpin:", publicOnly: false, limit: 40 });
+    expect(planReactionSearch("slack_search_public", { filters: "  hasmy::eyes:  " })).toEqual({ kind: "mine", emoji: "eyes", filter: "hasmy::eyes:", publicOnly: true });
   });
 
   it("passes every call that carries a term clause, or no reaction filter, straight through", () => {
@@ -60,6 +60,13 @@ describe("planReactionSearch", () => {
     ] as const) {
       expect(planReactionSearch(name, args as Record<string, unknown>)).toEqual({ kind: "pass" });
     }
+  });
+
+  it("recognizes the same search when the caller puts the modifier in query, as the intake scan has", () => {
+    expect(planReactionSearch("slack_search_public_and_private", { query: "hasmy::pushpin:" })).toMatchObject({ kind: "mine", emoji: "pushpin" });
+    // A query with any real term in it is the search tool's, not this path's.
+    expect(planReactionSearch("slack_search_public", { query: "deploy hasmy::pushpin:" })).toEqual({ kind: "pass" });
+    expect(planReactionSearch("slack_search_public", { query: "in:<#C1> hasmy::pushpin:" })).toMatchObject({ kind: "unsupported" });
   });
 
   it("names the unsupported filter for has::, an extra modifier, or more than one reaction filter", () => {
@@ -135,6 +142,48 @@ describe("scanMyReactions", () => {
     expect(calls[0]).toContain("limit=25");
   });
 
+  it("keeps thread_ts for a reacted thread reply, so the scan can attach it to the conversation's task", async () => {
+    const { fetchImpl } = fakeSlack([page([item("C1", "1.2", "pushpin", [ME], { thread_ts: "1.1" })])]);
+    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.2", thread_ts: "1.1" }] });
+  });
+
+  it("a public-only scan drops private channels and DMs, and fails rather than guessing when Slack can't classify one", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) {
+        const channel = u.searchParams.get("channel");
+        if (channel === "C1") return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
+        if (channel === "D1") return Response.json({ ok: true, channel: { id: "D1", is_im: true } });
+        if (channel === "G1") return Response.json({ ok: true, channel: { id: "G1", is_private: true } });
+        return Response.json({ ok: false, error: "channel_not_found" });
+      }
+      return Response.json(page([item("C1", "1.1"), item("D1", "2.2"), item("G1", "3.3")]));
+    }) as unknown as typeof fetch;
+    expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
+    const unclassified = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: false, error: "channel_not_found" });
+      return Response.json(page([item("C9", "9.9")]));
+    }) as unknown as typeof fetch;
+    expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true }, { authorization: "Bearer x", userId: ME }, { fetchImpl: unclassified })).toMatchObject({ ok: false });
+  });
+
+  it("is not complete when Slack answers numbered paging with pages left and no cursor", async () => {
+    const numbered = (async () => Response.json({ ok: true, items: [item("C1", "1.1")], paging: { count: 100, total: 250, page: 1, pages: 3 } })) as unknown as typeof fetch;
+    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered })).toMatchObject({ ok: false });
+  });
+
+  it("stops at its deadline with what it has, so it never outlives the caller", async () => {
+    let clock = 0;
+    const fetchImpl = (async () => {
+      clock += 60_000;
+      return Response.json(page([item("C1", "1.1")], `c${clock}`));
+    }) as unknown as typeof fetch;
+    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, now: () => clock, deadlineMs: 90_000 });
+    expect(scan).toMatchObject({ ok: false, detail: expect.stringContaining("deadline") });
+  });
+
   it("carries permalink when the item has one", async () => {
     const { fetchImpl } = fakeSlack([page([item("C1", "1.1", "pushpin", [ME], { permalink: "https://acme.slack.com/archives/C1/p11" })])]);
     const scan = await scanMyReactions(plan, { authorization: "Bearer xoxp-user", userId: ME }, { fetchImpl });
@@ -183,8 +232,10 @@ describe("interception through the proxy", () => {
   let dir = "";
   let upstream = "";
   let slackCalls = 0;
-  // Two pages: C1 on "more", then C2, then the end of the set.
-  const slack = (async () => {
+  // Two pages of reactions: C1 on "more", then C2, then the end of the set. Every channel here is public.
+  const slack = (async (url: string | URL) => {
+    const u = new URL(String(url));
+    if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: u.searchParams.get("channel"), is_channel: true } });
     slackCalls++;
     return Response.json(slackCalls % 2 === 1 ? page([item("C1", "1.1")], "more") : page([item("C2", "2.2")]));
   }) as unknown as typeof fetch;
@@ -223,7 +274,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", reads: new Set(["slack_search_public", "slack_search_public_and_private"]), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
@@ -280,7 +331,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), serviceKey: "svc", caller: async () => ({}), fetchImpl: (async () => Response.json({ ok: false, error: "ratelimited" })) as unknown as typeof fetch }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", serviceKey: "svc", caller: async () => ({}), fetchImpl: (async () => Response.json({ ok: false, error: "ratelimited" })) as unknown as typeof fetch }),
     });
     const brokenBase = await listen(broken);
     const res = await fetch(`${brokenBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
@@ -300,7 +351,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer x" }), serviceKey: "svc", caller: async () => ({}), fetchImpl: (async () => Response.json({ ok: false, error: "token_revoked" })) as unknown as typeof fetch }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer x" }), authState: () => "ok", serviceKey: "svc", caller: async () => ({}), fetchImpl: (async () => Response.json({ ok: false, error: "token_revoked" })) as unknown as typeof fetch }),
     });
     const refusedBase = await listen(refused);
     const call = (base: string) => fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) }).then((r) => r.json() as any);
@@ -316,7 +367,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "absent.json"), headers: async () => ({}), serviceKey: "svc", caller: async () => ({}) }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "absent.json"), headers: async () => ({}), authState: () => "missing", serviceKey: "svc", caller: async () => ({}) }),
     });
     const noneBase = await listen(none);
     const body = await call(noneBase);
