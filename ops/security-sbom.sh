@@ -325,12 +325,26 @@ export_space=0
 # not a bound, so an export is capped at the room it was admitted with: the kernel stops the write at the limit instead of
 # letting it take the disk's floor, and the caller sees an ordinary failed save to record. `docker save -o` writes the
 # archive in this process, so the limit is the archive's.
+# Bash's `ulimit -f` counts 1024-byte blocks, so the cap is converted in KiB. A child stopped by the limit exits through
+# SIGXFSZ (153 through a shell that reports it, 128+25), which is also how a save that hit the cap is told apart from a
+# daemon error. Docker publishes `-o` output from its own temp file, so a capped save may leave no `$dest` at all: the
+# signal, a destination at the cap, or the CLI's own file-too-large error all mean the same thing.
+save_hit_cap() { # <rc> <dest> <err> <cap>
+  local rc="$1" dest="$2" err="$3" cap="$4"
+  [ "$rc" = 153 ] && return 0
+  [ -n "$cap" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" -ge "$cap" ] && return 0
+  case "$err" in *"file too large"*|*"File too large"*|*"no space left on device"*) return 0 ;; esac
+  return 1
+}
 save_call() { # <cap bytes, empty for none> <secs> <docker args...>
-  local cap="$1" secs="$2"; shift 2
+  local cap="$1" secs="$2" rc; shift 2
   if [ -z "$cap" ]; then docker_call "$secs" "$@"; return; fi
   secs="$(deadline_secs "$secs")" || return 124
-  ( ulimit -f "$(( (cap + 511) / 512 ))" 2>/dev/null || exit 1
+  ( ulimit -f "$(( (cap + 1023) / 1024 ))" 2>/dev/null || exit 1
     exec timeout "$secs" docker "$@" )
+  rc=$?
+  [ "$rc" -eq 153 ] || [ "$rc" -eq 152 ] && return 153
+  return "$rc"
 }
 export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
   local pin="$1" ref="$2" dest="$3" plat="${4:-$platform}" cap="${5:-}"
@@ -343,19 +357,20 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
       export_err="the reference moved during this pass; not scanning a different image"; return 1
     fi
   fi
+  local rc
   if [ "$save_platform" = 1 ]; then
-    if ! export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; then
-      export_space=0
-      [ -n "$cap" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" -ge "$cap" ] && export_space=1
+    export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      save_hit_cap "$rc" "$dest" "$export_err" "$cap" && export_space=1
       rm -f "$dest"; return 1
     fi
   else
     # No platform selection on this daemon, and an id is no proof of one variant either: on the containerd store a
     # container's `.Image` is the top-level index, so a plain save of it writes every platform the index holds. The save
     # runs, and the archive decides: one manifest is the running image, more is a line, never a scan of variants.
-    if ! export_err="$(save_call "$cap" 900 image save -o "$dest" "$ref" 2>&1)"; then
-      export_space=0
-      [ -n "$cap" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" -ge "$cap" ] && export_space=1
+    export_err="$(save_call "$cap" 900 image save -o "$dest" "$ref" 2>&1)"; rc=$?
+    if [ "$rc" -ne 0 ]; then
+      save_hit_cap "$rc" "$dest" "$export_err" "$cap" && export_space=1
       rm -f "$dest"; return 1
     fi
     if ! plain_archive_single "$dest" "$pin"; then

@@ -223,14 +223,16 @@ case "$1" in
           fi
           # An archive whose bytes differ from the size the daemon reported: FAKE_SAVE_GROW ref<TAB>bytes makes that
           # reference's archive exactly that many bytes, as a save's real bytes can exceed the inspect size a little. A
-          # write with a ulimit -f ceiling (512-byte blocks, 0 = none) stops at that ceiling and fails, as a real write
+          # write with a ulimit -f ceiling (1024-byte blocks, 0 = none) stops at that ceiling and fails, as a real write
           # running out of room does, rather than shrinking to fit.
           grow="$(awk -F '\t' -v ref="$id" '$1 == ref { print $2; found = 1 }' "$SAVE_GROW" 2>/dev/null)"
           lim="$(ulimit -f)"
           if [ -n "$grow" ]; then
-            if [ "$lim" != 0 ] && [ "$grow" -gt $(( lim * 512 )) ]; then
-              truncate -s $(( lim * 512 )) "$file"
-              echo "Error response from daemon: write $file: no space left on device" >&2; exit 1
+            if [ "$lim" != 0 ] && [ "$grow" -gt $(( lim * 1024 )) ]; then
+              truncate -s $(( lim * 1024 )) "$file"
+              echo "Error response from daemon: write $file: no space left on device" >&2
+              echo "Error response from daemon: write $file: file too large" >&2
+              kill -XFSZ $$
             fi
             truncate -s "$grow" "$file"
           fi
