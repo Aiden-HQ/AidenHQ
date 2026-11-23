@@ -244,7 +244,7 @@ export function startPrWatch(o: PrWatchOptions) {
      * Returns the checks GitHub has asked about at this head with when their re-run was first asked and whether it took it,
      * for the report: a check still wedged after the interval is no longer waited on silently.
      */
-    async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean; name: string }[]> {
+    async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean; name: string; key: string }[]> {
       if (pr.isCrossRepository !== false) return [];
       const url = pr.url.toLowerCase(), head = pr.headRefOid;
       // A head whose rollup is wholly finished costs no request: there is nothing to recover. Only when every context is here.
@@ -262,7 +262,7 @@ export function startPrWatch(o: PrWatchOptions) {
         }
       } catch (e) { log("wedged check runs' read failed", { pr: pr.url, head, err: String((e as Error).message).slice(0, 200) }); return []; }
       if (total && runs.length < total) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length, total });
-      const out: { at: number; accepted: boolean; name: string }[] = [];
+      const out: { at: number; accepted: boolean; name: string; key: string }[] = [];
       // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix.
       for (const c of runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed")) {
         const name = `${url}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
@@ -291,10 +291,10 @@ export function startPrWatch(o: PrWatchOptions) {
         // The ask's clock already runs: the check is reported from it (refreshed below if this tick's retry is taken), and
         // one this head took is not re-run again. The same job re-run for a sibling PR at this head is not asked again either,
         // but its report is this PR's own.
-        if (asked?.accepted || (prior && !prior.startsWith("retry:"))) { out.push({ at: Date.parse(asked?.at ?? prior!), accepted: true, name: String(c.name ?? "") }); continue; }
+        if (asked?.accepted || (prior && !prior.startsWith("retry:"))) { out.push({ at: Date.parse(asked?.at ?? prior!), accepted: true, name: String(c.name ?? ""), key: name }); continue; }
         const tell = () => {
-          const now = { at: Date.parse(state.wedged[name].at), accepted: state.wedged[name].accepted, name: String(c.name ?? "") };
-          const i = out.findIndex((o) => o.name === now.name);
+          const now = { at: Date.parse(state.wedged[name].at), accepted: state.wedged[name].accepted, name: String(c.name ?? ""), key: name };
+          const i = out.findIndex((o) => o.key === now.key);
           if (i >= 0) out[i] = now; else out.push(now);
         };
         if (asked) tell();
@@ -565,23 +565,27 @@ export function startPrWatch(o: PrWatchOptions) {
       // the merge gate is held by it and no push fixes it. The PR's task is told once at this head; a PR with no task here (an
       // outside author's) has nobody to tell, so it is logged once at the head instead. The check's name is PR-controlled text:
       // it never enters the wake, which points at `gh pr checks` instead.
-      // The stuck checks whose reporting interval has passed: only those are reported, and only they decide what the wake says.
+      // The stuck checks whose reporting interval has passed. A check the merge waits on wakes the task once at this head; one
+      // that only a matrix job hangs on is logged once, because it holds nothing and must not use up the merge's report.
       const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS);
-      if (due.length && state.wedgedTold[url] !== pr.headRefOid) {
-        const how = due.every((w) => w.accepted)
+      const held = due.filter((w) => named.some((c) => c.pending && c.name === w.name));
+      const optional = due.filter((w) => !held.includes(w));
+      if (held.length && state.wedgedTold[url] !== `${pr.headRefOid}:merge`) {
+        const how = held.every((w) => w.accepted)
           ? "after its Actions job completed and the job had been re-run"
           : "after its Actions job completed, and the request to re-run the job was refused";
-        // The merge is held by this check run only when it is one of the pending named checks: an optional check that stays
-        // pending holds nothing, and the wake must not say it does.
-        const held = due.some((w) => named.some((c) => c.pending && c.name === w.name));
-        const text = `${pr.url}'s check run is still \`in_progress\` at \`${pr.headRefOid}\` ${how}${held ? ", and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it" : ". It holds nothing the merge needs unless it names a required check; carry on with the head's own work and report it to the owner if it stays"}; \`gh pr checks ${pr.url}\` names it.`;
+        const text = `${pr.url}'s check run is still \`in_progress\` at \`${pr.headRefOid}\` ${how}, and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${pr.url}\` names it.`;
         const w = opener && opener.branch === pr.headRefName ? await wake(pr, opener.task, text) : "sent";
         // Told once at this head, whether or not GitHub took the re-run: the ask's clock ran, so the next tick must not repeat it.
         if (w !== "failed") {
-          state.wedgedTold[url] = pr.headRefOid;
+          state.wedgedTold[url] = `${pr.headRefOid}:merge`;
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
+      } else if (optional.length && state.wedgedTold[url] !== `${pr.headRefOid}:optional`) {
+        state.wedgedTold[url] = `${pr.headRefOid}:optional`;
+        save();
+        log("wedged check run holds no required check", { pr: pr.url, head: pr.headRefOid, why: "still in_progress after its job completed and a re-run" });
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
