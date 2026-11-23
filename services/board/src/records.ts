@@ -147,7 +147,12 @@ const neverConnected = (c?: Cause): boolean => !!c && (c.errors?.length ? c.erro
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
   let down = false;
   const list: Records["list"] = async (state, { task, limit, tier0, strict, after, kinds } = {}) => {
-    if (!k) return [];
+    // No kernel is not the same as no cards, for a read whose answer decides a write (the approvals check a run makes before it
+    // waits or files a merge): `strict` throws, so an unreadable history is never reported as "there is no merge card".
+    if (!k) {
+      if (strict) throw new Error("the kernel's records are not configured on this board, so a task's cards can't be read");
+      return [];
+    }
     try {
       const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}${kinds?.length ? `&kinds=${encodeURIComponent(kinds.join(","))}` : ""}${after ? `&after=${encodeURIComponent(after)}` : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`the kernel answered ${res.status}`);

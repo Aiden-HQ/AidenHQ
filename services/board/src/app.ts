@@ -1167,18 +1167,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished, and a card approved
         // between the two reads is never reported as still waiting on a decision. A record only moves forward through these
         // states, so the rank orders the two snapshots without trusting either read's timing.
-        // The kernel's own order as its reads gave it (each answers newest first): a card's place is the first read's, tried in
-        // the order of completeness (the merge history, then the live read, then the general page), so a burst of newer writes
-        // in a narrower read never reorders two attempts that one of the wider reads already held in the kernel's order.
-        const order = new Map<string, number>();
-        for (const [i, a] of [...history, ...live.filter(mine), ...recent].entries()) if (!order.has(a.id)) order.set(a.id, i);
         const byId = new Map<string, Approval>();
         for (const a of [...recent, ...history, ...live.filter(mine)]) {
           const seen = byId.get(a.id);
           if (!seen || newer(a, seen)) byId.set(a.id, a);
         }
-        // Newest first; two different attempts filed in the same millisecond keep that order, never one invented here.
-        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? order.get(a.id)! - order.get(b.id)! : a.createdAt < b.createdAt ? 1 : -1));
+        // Newest first. Two different attempts for one PR can share a millisecond (one filed under the task id, one under its
+        // identifier, in reads that are separate and so carry no shared row order): the one that can still land is the current
+        // attempt, so it sorts ahead of an ended one. The other snapshot tiebreak (same card) is `newer`'s.
+        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? Number(b.live === true) - Number(a.live === true) : a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(mergeView) };
       },
     },
