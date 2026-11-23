@@ -75,6 +75,8 @@ describe("internal listener", () => {
     const inner = fakeRecords([
       card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "running", wait: "code review: 1 important finding open", createdAt: "2026-11-10T10:00:00.000Z" }),
       card({ id: "k-0000000000000002", issueId: "another-task", identifier: "PEN-9", action: "merge", tier: 0, state: "pending" }),
+      // One still waiting on the reviewer or owner, also older than the newer routine cards: it is a card to wait on too.
+      card({ id: "k-0000000000000003", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "pending", createdAt: "2026-11-10T09:00:00.000Z" }),
       ...Array.from({ length: 60 }, (_, i) => card({ id: `k-00000000000002${String(i).padStart(2, "0")}`, issueId: issue.id, identifier: issue.identifier, action: "conn.tool", tier: 0, state: "used", outcome: "applied", createdAt: `2026-11-2${i % 4}T10:00:00.000Z` })),
     ]);
     // The kernel's read is newest first and capped: 60 newer routine cards sit ahead of this task's merge card.
@@ -105,7 +107,7 @@ describe("internal listener", () => {
     (pc as any).issue = async (ref: string) => (ref === other9.identifier || ref === other9.id ? other9 : issue);
     try {
       const mine = (await (await get(issue.identifier)).json()) as { approvals: { id: string }[] };
-      expect(mine.approvals.map((a) => a.id)).toContain("k-0000000000000001");
+      expect(mine.approvals.map((a) => a.id)).toEqual(expect.arrayContaining(["k-0000000000000001", "k-0000000000000003"]));
       expect(seen.some((o) => o.tier0 === true && o.strict === true)).toBe(true);
       // Another task's card is never in this task's read, whatever its tier.
       const other = (await (await get("PEN-9")).json()) as { approvals: { id: string }[] };
