@@ -115,3 +115,16 @@ test("tasks whose PRs came before the table are queued once and filled; a restar
   start();
   assert.deepEqual(pending(), []);
 });
+
+test("fills that keep failing go to the back of the queue, so later ones are still tried", async () => {
+  const { owner, issues } = fake();
+  const db = new DatabaseSync(":memory:");
+  const flaky = async (m, path, body) => (/^\/api\/issues\/bad/.test(path) ? { status: 500, json: {} } : owner(m, path, body));
+  const p = createProjects({ db, owner: flaky, now: () => NOW });
+  for (let i = 0; i < 100; i++) p.queue(`bad${i}`, "acme/widgets");
+  p.queue("t1", "acme/widgets");
+  await p.sync();
+  assert.equal(issues.t1.projectId, null);
+  await p.sync();
+  assert.equal(issues.t1.projectId, "p-1");
+});
