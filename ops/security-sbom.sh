@@ -320,9 +320,21 @@ plain_archive_single() { # <tar> <pin>
 # after the save as well. <platform> is the platform the container runs, so a multi-platform index yields exactly its
 # variant. Returns 1 with export_err.
 export_err=""
-export_image() { # <pin manifest> <ref> <dest tar> [platform]
-  local pin="$1" ref="$2" dest="$3" plat="${4:-$platform}"
-  export_err=""
+export_space=0
+# A Docker call whose own writes may not exceed <bytes> (`ulimit -f`, in 512-byte blocks). The daemon's size estimate is
+# not a bound, so an export is capped at the room it was admitted with: the kernel stops the write at the limit instead of
+# letting it take the disk's floor, and the caller sees an ordinary failed save to record. `docker save -o` writes the
+# archive in this process, so the limit is the archive's.
+save_call() { # <cap bytes, empty for none> <secs> <docker args...>
+  local cap="$1" secs="$2"; shift 2
+  if [ -z "$cap" ]; then docker_call "$secs" "$@"; return; fi
+  secs="$(deadline_secs "$secs")" || return 124
+  ( ulimit -f "$(( (cap + 511) / 512 ))" 2>/dev/null || exit 1
+    exec timeout "$secs" docker "$@" )
+}
+export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
+  local pin="$1" ref="$2" dest="$3" plat="${4:-$platform}" cap="${5:-}"
+  export_err=""; export_space=0
   # Re-read the reference on the container's platform before writing: a tag another pull moved, or an index whose
   # platform manifest changed, must not put a different image under this target. A bare platform manifest inside an index
   # is not an image record, so a reference the daemon does not hold plainly is the resolver's pin and the save decides.
@@ -332,14 +344,18 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
     fi
   fi
   if [ "$save_platform" = 1 ]; then
-    if ! export_err="$(docker_call 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; then
+    if ! export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; then
+      export_space=0
+      [ -n "$cap" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" -ge "$cap" ] && export_space=1
       rm -f "$dest"; return 1
     fi
   else
     # No platform selection on this daemon, and an id is no proof of one variant either: on the containerd store a
     # container's `.Image` is the top-level index, so a plain save of it writes every platform the index holds. The save
     # runs, and the archive decides: one manifest is the running image, more is a line, never a scan of variants.
-    if ! export_err="$(docker_call 900 image save -o "$dest" "$ref" 2>&1)"; then
+    if ! export_err="$(save_call "$cap" 900 image save -o "$dest" "$ref" 2>&1)"; then
+      export_space=0
+      [ -n "$cap" ] && [ "$(stat -c %s "$dest" 2>/dev/null || echo 0)" -ge "$cap" ] && export_space=1
       rm -f "$dest"; return 1
     fi
     if ! plain_archive_single "$dest" "$pin"; then
@@ -587,7 +603,7 @@ defer_to_next_wave() { # <survey idx> <why>
 # with it. Every archive is written from the reference the survey resolved, re-checked at save time; each failure is a
 # line, never a gap.
 save_wave() { # <wave>
-  local w="$1" idx sz szb key pin ref plat archive top top_gb avail_now why written=0 written_big=0
+  local w="$1" idx sz szb key pin ref plat archive top top_gb avail_now why cap_bytes written=0 written_big=0
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
@@ -616,21 +632,39 @@ save_wave() { # <wave>
       continue
     fi
     # Exported now, under the lock, from the reference resolved by the survey: the archive holds exactly what runs, and
-    # nothing that moves after this lock is released can change it. The scan only re-opens archives.
+    # nothing that moves after this lock is released can change it. The scan only re-opens archives. The write is capped
+    # at the room this save was admitted with, so the daemon's estimate being low can overrun the host's reserve by at
+    # most nothing: a save that hits the cap is a refused write, and its file is removed below.
     archive="$archives/$((archive_seq += 1)).tar"
-    if export_image "$pin" "$ref" "$archive" "$plat"; then
+    cap_bytes=$(( $(free_bytes) - floor_bytes )); [ "$cap_bytes" -lt 0 ] && cap_bytes=0
+    if export_image "$pin" "$ref" "$archive" "$plat" "$cap_bytes"; then
       # The archive is measured, not estimated: a save can be larger than the image it holds, and the bytes it really
-      # took are what the rest of the wave and the pass's day-end budget have to live with. A save that overshot the
-      # floor (the estimate was not a bound) is deleted at once, so the space reserved for the host is never held by an
-      # archive this pass cannot scan; the image is a line with the size, never a silent overspend.
+      # took are what the rest of the wave and the pass's end-of-day budget have to live with. The ceiling stops a real
+      # write at the room; a save that still measured over it (a store that reserves a sparse file, say) is deleted here
+      # so the host's reserve is never held by an archive this pass cannot scan.
       szb="$(stat -c %s "$archive" 2>/dev/null || echo "$szb")"
-      if [ "$(free_bytes)" -lt "$floor_bytes" ]; then
+      if [ "$szb" -gt "$cap_bytes" ] || [ "$(free_bytes)" -lt "$floor_bytes" ]; then
+        export_space=1
         rm -f "$archive"
-        fail "image:$key" "docker save: the ${sz} GB image's archive left the disk under the ${min_free_gb} GB floor; not scanned"
+        why="skipped: the ${sz} GB image's archive outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor (admitted $(ceil_gb "$written") GB of archives, largest archive $top_gb GB)"
+        if [ "$written" -gt 0 ] && defer_to_next_wave "$idx" "$why"; then
+          continue
+        fi
+        fail "image:$key" "$why"
         continue
       fi
       plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx"
       written=$(( written + szb )); [ "$szb" -gt "$written_big" ] && written_big="$szb"
+    elif [ "$export_space" = 1 ]; then
+      # The write was stopped at the cap: the archive needs more room than was left above the floor. With archives of this
+      # wave already written, those bytes come back when the wave is scanned, so a later wave may still hold it: defer it
+      # (bounded) rather than skipping it on every pass. With nothing written the disk itself is short, and a later wave
+      # sees the same free space, so it is a line now. Either way the line names the numbers that decided it.
+      why="skipped: the ${sz} GB image's archive outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor (admitted $(ceil_gb "$written") GB of archives, largest archive $top_gb GB)"
+      if [ "$written" -gt 0 ] && defer_to_next_wave "$idx" "$why"; then
+        continue
+      fi
+      fail "image:$key" "$why"
     else
       fail "image:$key" "docker save: ${export_err:-failed}"
     fi

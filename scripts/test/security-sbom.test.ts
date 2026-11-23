@@ -222,9 +222,18 @@ case "$1" in
             rm -rf "$d"
           fi
           # An archive whose bytes differ from the size the daemon reported: FAKE_SAVE_GROW ref<TAB>bytes makes that
-          # reference's archive exactly that many bytes, as a save's real bytes can exceed the inspect size a little.
+          # reference's archive exactly that many bytes, as a save's real bytes can exceed the inspect size a little. A
+          # write with a ulimit -f ceiling (512-byte blocks, 0 = none) stops at that ceiling and fails, as a real write
+          # running out of room does, rather than shrinking to fit.
           grow="$(awk -F '\t' -v ref="$id" '$1 == ref { print $2; found = 1 }' "$SAVE_GROW" 2>/dev/null)"
-          [ -n "$grow" ] && truncate -s "$grow" "$file"
+          lim="$(ulimit -f)"
+          if [ -n "$grow" ]; then
+            if [ "$lim" != 0 ] && [ "$grow" -gt $(( lim * 512 )) ]; then
+              truncate -s $(( lim * 512 )) "$file"
+              echo "Error response from daemon: write $file: no space left on device" >&2; exit 1
+            fi
+            truncate -s "$grow" "$file"
+          fi
         fi
         : > "$SAVED"; exit 0
       fi
@@ -971,9 +980,9 @@ test("security-sbom: an apply that takes the lock between waves leaves those ima
 });
 
 test("security-sbom: a save that overshoots its estimate is deleted rather than left under the floor", { skip: NOT_LINUX }, async () => {
-  // 40 GB free, a 30 GB floor. The daemon reports 5 GB, but the save really writes 15 GB and takes the disk under the
-  // floor. The archive must be deleted at once and the image recorded as a line: holding it would keep the host's reserve
-  // spent on an archive this pass cannot scan, and the next save's check would then see a disk under the floor.
+  // 40 GB free, a 30 GB floor: 10 GB of room. The daemon reports a 5 GB image, but the save would write 15 GB and take
+  // the disk under the floor. The write is capped at the room above the floor, so the kernel stops it before the host's
+  // reserve is spent, the partial archive is removed, and the image is a line naming the room it outgrew.
   const { status, out, targets } = await run({ FAKE_FREE_KB: String(40 * 1024 * 1024) }, {
     containers: [{ id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" }],
     tags: { "big1:local": "sha256:b1" },
@@ -985,7 +994,37 @@ test("security-sbom: a save that overshoots its estimate is deleted rather than 
   const row = targets.find((t) => t[0] === "image:big1:local");
   assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
   assert.equal(row[1], "-", "the overshooting save is not scanned");
-  assert.match(row[2], /left the disk under the 30 GB floor/);
+  assert.match(row[2], /archive outgrew the 10 GB above the 30 GB floor/);
+  assert.doesNotMatch(row[2], /^15 GB/);
+});
+
+test("security-sbom: a save stopped at its cap is retried in a solo wave, not skipped for the pass", { skip: NOT_LINUX }, async () => {
+  // 68 GB free, a 30 GB floor: 38 GB of room. Five 5 GB images and one reported at 6 GB are admitted together, but the
+  // last one's save really writes 15 GB while the five archives already hold 25 GB: 40 GB, over the room, so the cap
+  // stops it. Its scan needs 15 GB more, 30 GB in all, which a wave of its own holds but not beside the others'
+  // archives. It must be deferred and scanned alone, not lost for the pass.
+  const containers = [];
+  const tags = {};
+  const sizes = {};
+  const saveGrow = {};
+  for (let i = 1; i <= 5; i++) {
+    containers.push({ id: `c${i}`, image: `sha256:s${i}`, config: `small${i}:local`, label: `sha256:s${i}` });
+    tags[`small${i}:local`] = `sha256:s${i}`;
+    sizes[`sha256:s${i}`] = 5 * 1024 ** 3;
+  }
+  containers.push({ id: "c6", image: "sha256:big", config: "big:local", label: "sha256:big" });
+  tags["big:local"] = "sha256:big";
+  sizes["sha256:big"] = 6 * 1024 ** 3;
+  saveGrow["sha256:big"] = 15 * 1024 ** 3;
+  for (let i = 1; i <= 5; i++) saveGrow[`sha256:s${i}`] = 5 * 1024 ** 3;
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(68 * 1024 * 1024) }, {
+    containers, tags, held: Object.keys(tags).map((k) => tags[k]), sizes, saveGrow,
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(row[1], "-", `the capped save must be retried in a solo wave: ${row[2]}`);
+  assert.match(out, /image:big:local deferred to wave/);
 });
 
 test("security-sbom: a save that no longer fits beside its wave's archives is deferred, then scanned", { skip: NOT_LINUX }, async () => {

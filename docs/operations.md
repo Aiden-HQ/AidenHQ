@@ -435,7 +435,9 @@ later wave takes the lock again for its saves, within what is left of the pass's
 cannot get the lock, or starts after that budget is spent, is recorded as unscanned lines rather than a gap.
 An image that cannot fit even a wave of its own — its archive held for its own scan plus its own size to unpack it — is a
 line stating the admitted total, its size, the largest archive, the room above the floor and the shortfall, and no bytes
-are written for it. Free space is checked again before each save and again before each scan. A target that loses its room between waves is
+are written for it. Free space is checked again before each save and again before each scan, and an export is written under a file-size
+ceiling set to the room left above the floor, so a save larger than the daemon's estimate is stopped while it is written
+rather than after it has taken the reserve; that image is deferred to a wave of its own. A target that loses its room between waves is
 deferred, not dropped: its numbers are printed, it gets a wave of its own after the planned ones, and it is saved and
 scanned once the pass's own archives are freed. If a wave's archives turn out larger than the sizes the plan saw, its
 scans run in rounds, the smallest remaining archive taken out when a round can scan none, and that image comes back in a
