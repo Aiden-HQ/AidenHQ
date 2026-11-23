@@ -75,7 +75,11 @@ export function planReactionSearch(name: string, args: Record<string, unknown>):
   if (query) {
     const tokens = query.split(/\s+/).filter(Boolean);
     if (!tokens.every((t) => MODIFIER.test(t))) return { kind: "pass" }; // a term clause: the search tool's job
-    if (filters) return { kind: "unsupported", filter: query, reason: `a modifier-only query combined with filters:${filters} is ambiguous` };
+    // Both filled with modifiers only: two modifier sets, which reactions.list can't reconcile into one scope.
+    if (filters && (tokens.some((t) => REACTION_PREFIX.test(t)) || filters.split(/\s+/).some((t) => REACTION_PREFIX.test(t)))) {
+      return { kind: "unsupported", filter: `${query} ${filters}`, reason: `a modifier-only query combined with filters:${filters} is ambiguous` };
+    }
+    if (filters) return { kind: "pass" }; // modifiers on both sides and no reaction among them: the search tool's
     source = query;
   }
   if (!source) return { kind: "pass" };
@@ -310,8 +314,11 @@ export interface InterceptOptions {
   headers: () => Promise<Record<string, string>>;
   /** The sign-in's state, as the proxy reads it: a transient refresh failure is not the owner's to fix. */
   authState: () => string;
-  /** The tools the manifest tags read: `/mcp/read` serves only these (the proxy's own rule). */
-  reads?: Set<string>;
+  /**
+   * Whether the proxy serves `name` on `/mcp/read` (the manifest tag *and* the upstream's read-only hint). Asked of the
+   * proxy itself, so the reaction path can't answer where the proxy would refuse.
+   */
+  servedRead?: (name: string) => Promise<boolean>;
   /** The kernel's bearer on /mcp. */
   serviceKey?: string;
   /** The kernel's read bearer on /mcp/read. */
@@ -369,8 +376,8 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
 
   const plan = planReactionSearch(name, args);
   if (plan.kind === "pass") return false;
-  // /mcp/read serves only the manifest's read tags, as the proxy would: a tool outside them is refused here too.
-  if (readOnly && o.reads && !o.reads.has(name)) {
+  // /mcp/read serves only what the proxy itself would: the manifest's read tag and the upstream's read-only hint.
+  if (readOnly && o.servedRead && !(await o.servedRead(name).catch(() => false))) {
     send(res, 200, answer(message.id, reactionError("refused", `Tool ${name} is not a read: the read endpoint serves reads only.`)));
     return true;
   }
