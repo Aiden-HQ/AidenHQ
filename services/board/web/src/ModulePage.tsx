@@ -1,5 +1,5 @@
 // A module's page (#/modules/<name>/<tab>): what it is, its agents and work, what it may do, its contents, settings and changes.
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
@@ -294,9 +294,14 @@ function Share({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
   }, []);
   if (github === false) return <p className="mod-none">Sharing needs GitHub connected.</p>;
   const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
+  // A preview is for one destination: editing it drops the preview (onChange below), and an answer for an older one is ignored.
+  const asked = useRef("");
+  const dest = `${repo.trim()} ${ref.trim()}`;
   const preview = () => {
     setBusy(true), setError(""), setFiled(""), setP(null);
-    api.sharePreview({ module: m.name, repo: repo.trim(), ref: ref.trim() }).then(setP, fail).finally(() => setBusy(false));
+    const want = dest;
+    asked.current = want;
+    api.sharePreview({ module: m.name, repo: repo.trim(), ref: ref.trim() }).then((x) => { if (asked.current === want) setP(x); }, fail).finally(() => setBusy(false));
   };
   const save = () => {
     if (!p) return;
@@ -308,8 +313,8 @@ function Share({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
     <div className="mod-card mod-share">
       <p>Publish {m.name} to a public GitHub repo with a marketplace.json, for other instances to install. Its agents, skills and routines go; memory, your profile, secrets and setting values never do.</p>
       <div className="mod-share-form">
-        <Field label="Public repository">{(id, d) => <Input id={id} aria-describedby={d} value={repo} placeholder="owner/name" onChange={(e) => setRepo(e.target.value)} />}</Field>
-        <Field label="Branch">{(id, d) => <Input id={id} aria-describedby={d} value={ref} onChange={(e) => setRef(e.target.value)} />}</Field>
+        <Field label="Public repository">{(id, d) => <Input id={id} aria-describedby={d} value={repo} placeholder="owner/name" onChange={(e) => (setRepo(e.target.value), setP(null), (asked.current = ""))} />}</Field>
+        <Field label="Branch">{(id, d) => <Input id={id} aria-describedby={d} value={ref} onChange={(e) => (setRef(e.target.value), setP(null), (asked.current = ""))} />}</Field>
         <button className="btn" type="button" disabled={busy || !/^[\w.-]+\/[\w.-]+$/.test(repo.trim()) || !ref.trim()} onClick={preview}>Preview</button>
       </div>
       {error && <span className="st-error" role="alert">{error}</span>}
@@ -376,7 +381,8 @@ function RoutineRow({ r }: { r: NonNullable<ModuleDetail["routines"]>[number] })
   const [error, setError] = useState("");
   const toggle = () => {
     setBusy(true);
-    api.pauseRoutine(r.id!, on).then((x) => (setOn(x.status !== "paused"), setError("")), (e) => setError((e as Error).message)).finally(() => setBusy(false));
+    // The module's snapshot keeps the new state too, so another tab and back shows it.
+    api.pauseRoutine(r.id!, on).then((x) => (setOn((r.on = x.status !== "paused")), setError("")), (e) => setError((e as Error).message)).finally(() => setBusy(false));
   };
   return (
     <div className="mod-row-with-action">

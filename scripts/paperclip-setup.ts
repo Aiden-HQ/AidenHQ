@@ -375,7 +375,7 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
     Object.assign(routineKeys, k);
     writeGrants(agents, reviewLogs, chatTasks);
   };
-  setKeys(await syncRoutines({
+  const synced = await syncRoutines({
     api, companyId, plans, keys: { ...routineKeys }, step, onKeys: setKeys,
     onWebhook: (plan, material) => {
       const r = cfg.routines[plan.key];
@@ -384,7 +384,9 @@ async function ensureRoutines(companyId: string, agents: Record<string, Obj>) {
       writeSecret(`${prefix}_url${companySuffix}`, r.webhook_base ? r.webhook_base + new URL(material.webhookUrl).pathname : material.webhookUrl);
       writeSecret(`${prefix}_secret${companySuffix}`, material.webhookSecret);
     },
-  }));
+  });
+  routinesReady = true;
+  setKeys(synced);
 }
 
 /**
@@ -457,6 +459,8 @@ const lastGrants = (() => {
 })();
 /** Each routine's compiled key by Paperclip routine id: a routine run's wake names it (`routine:<key>`), so its own model applies. */
 const routineKeys = { ...lastGrants.routine_keys };
+/** Whether this pass has written the routines (ensureRoutines): only then are their event subscriptions published. */
+let routinesReady = false;
 
 function writeGrants(agents: Record<string, Obj>, reviewLogs: Record<string, string> = {}, chatTasks: Record<string, string> = {}) {
   if (!isWork) return;
@@ -467,7 +471,9 @@ function writeGrants(agents: Record<string, Obj>, reviewLogs: Record<string, str
   if (fleetIssues) table.fleet_issues = fleetIssues;
   table.routine_keys = { ...routineKeys };
   // Each event routine's subscription (kernel events.ts), by its Paperclip id: the key it was compiled under and its assignee.
-  const events = Object.entries<string>(routineKeys).flatMap(([id, key]) => { const r = cfg.routines?.[key]; return r?.event && agents[r.agent] ? [[id, { key, agent: agents[r.agent]!.id, connection: r.event.connection, resource: r.event.resource, filter: r.event.filter }]] : []; });
+  // Until this pass's routines are written (their batch and count declared, their description told to read the batch), the
+  // last published subscriptions stand: a new or changed one is published only once Paperclip has the routine as compiled.
+  const events = !routinesReady ? Object.entries<Obj>(lastGrants.routine_events ?? {}) : Object.entries<string>(routineKeys).flatMap(([id, key]) => { const r = cfg.routines?.[key]; return r?.event && agents[r.agent] ? [[id, { key, agent: agents[r.agent]!.id, connection: r.event.connection, resource: r.event.resource, filter: r.event.filter }]] : []; });
   if (events.length) table.routine_events = Object.fromEntries(events);
   // Each fleet-audit agent's review log issue id (ensureReviewLogs): the tasks bridge's coach_record writes there, coach_due reads it.
   for (const [key, a] of Object.entries(agents)) if (reviewLogs[key]) table.agents[a.id].review_log = reviewLogs[key];

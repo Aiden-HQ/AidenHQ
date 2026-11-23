@@ -13,13 +13,13 @@ export const GATE_CHECK = "ci-required";
 /** One context's result: a check run's conclusion once completed, else PENDING; a status's state. */
 export const contextStatus = (n: Json): string | null | undefined => (n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state);
 
-/** The named checks in a rollup, the design review and code review left out: { name, status, ok, pending, skipped? }. */
-export function namedChecks(rollup: Json): { name: string; status: string | null | undefined; ok: boolean; pending: boolean; skipped?: true }[] {
+/** The named checks in a rollup, the design review and code review left out: { name, status, ok, success, pending, skipped? } (`ok` counts neutral and skipped as passed, `success` only success). */
+export function namedChecks(rollup: Json): { name: string; status: string | null | undefined; ok: boolean; success: boolean; pending: boolean; skipped?: true }[] {
   const pass = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
   return (rollup?.contexts?.nodes ?? [])
     .map((n: Json) => ({ name: n.name ?? n.context, status: contextStatus(n) }))
     .filter((c: Json) => c.name && c.name !== DESIGN_REVIEW_CHECK && c.name !== CODE_REVIEW_STATUS)
-    .map((c: Json) => ({ ...c, ok: pass.has(c.status), pending: ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
+    .map((c: Json) => ({ ...c, ok: pass.has(c.status), success: c.status === "SUCCESS", pending: ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(c.status), ...(c.status === "SKIPPED" ? { skipped: true } : {}) }));
 }
 
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;

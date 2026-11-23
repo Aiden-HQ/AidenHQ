@@ -1,6 +1,6 @@
 {
   "name": "clean library skill added and enabled for one agent",
-  "why": "An agent writes a shared skill for its own work and enables it for itself through self_change (agent anatomy, 2026-11-23). Code lists the one agent the skill steers; the skill only explains how to do that agent's job better. Not malice, so approve.",
+  "why": "An agent writes a shared skill for its own work and enables it for itself through self_change (agent anatomy, 2026-11-23). Code lists the one agent the skill steers; the skill only explains how to do that agent's job better. Not malice.",
   "card": {
     "action": "apply",
     "target": "acme-agents/aidenhq-instance",

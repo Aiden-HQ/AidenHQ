@@ -195,8 +195,9 @@ run `node scripts/sync-shared.ts`.
 
 ## The web and apps' pages
 
-- **Web search** is live for every agent's jobs unless they hold private data (the kernel's admission).
-  An agent may set `web_search: cached` or `disabled` (in its module's or local module's definition); computers inherit both.
+- **Web search** is live for every agent's jobs (the kernel's admission). An agent turns it off with `web_search: disabled`
+  in its module's or local module's definition (an agent reading private data it must not send out sets that); `cached`
+  keeps search but from the cache. Computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
   (`modules/apps-platform/apps-mcp/src/view.ts`): a one-shot container of the browser image (`services/computer/images/browser`:

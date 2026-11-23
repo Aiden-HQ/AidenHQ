@@ -124,11 +124,16 @@ export async function syncRoutines({ api, companyId, plans, keys, step, onKeys, 
   // marked on this pass.
   for (const p of plans) {
     if (idOf[p.key]) continue;
-    const r = rows.find((x) => !markedKey(x) && !keys[x.id] && !Object.values(idOf).includes(x.id) && x.title === p.title && x.assigneeAgentId === p.body.assigneeAgentId);
+    // Never the owner's own recurring tasks (the board's "Repeats: …" routines): those are the board's, not an older setup's.
+    const r = rows.find((x) => !markedKey(x) && !keys[x.id] && !Object.values(idOf).includes(x.id) && !String(x.title).startsWith("Repeats: ") && x.title === p.title && x.assigneeAgentId === p.body.assigneeAgentId);
     if (r) idOf[p.key] = r.id;
   }
   const live = Object.fromEntries(Object.entries(idOf).map(([k, id]) => [id, k]));
-  onKeys({ ...live });
+  // Managed routines no longer compiled: archived below, their triggers off. Their ids stay in the key map until that is done,
+  // so a pass that fails part way still knows them next time.
+  const gone = rows.filter((r) => !Object.values(idOf).includes(r.id) && ((markedKey(r) && !compiled.has(markedKey(r)!)) || (keys[r.id] && !compiled.has(keys[r.id]!))) && (r.status !== "archived" || (r.triggers ?? []).some((t: Obj) => t.enabled)));
+  const leaving = Object.fromEntries(gone.filter((r) => keys[r.id]).map((r) => [r.id, keys[r.id]!]));
+  onKeys({ ...leaving, ...live });
   const work: { plan: RoutinePlan; row?: Obj; fields: string[]; triggers: string[]; restore: boolean }[] = [];
   for (const plan of plans) {
     const row = rows.find((r) => r.id === idOf[plan.key]);
@@ -141,8 +146,6 @@ export async function syncRoutines({ api, companyId, plans, keys, step, onKeys, 
       step(`Routine ${plan.title}: ${row ? [...(restore ? ["restored"] : []), ...d.fields, ...d.triggers].join(", ") + " changed" : "new"}`);
     }
   }
-  // Managed routines no longer compiled: archived, their triggers off.
-  const gone = rows.filter((r) => !Object.values(idOf).includes(r.id) && ((markedKey(r) && !compiled.has(markedKey(r)!)) || (keys[r.id] && !compiled.has(keys[r.id]!))) && (r.status !== "archived" || (r.triggers ?? []).some((t: Obj) => t.enabled)));
   step(`setup: ${work.length} routines changed, ${plans.length - work.length} unchanged, ${gone.length} archived`);
   await mapLimit(work, 4, async ({ plan, row, fields, restore }: (typeof work)[number]) => {
     const created = !row;
@@ -150,7 +153,7 @@ export async function syncRoutines({ api, companyId, plans, keys, step, onKeys, 
       row = (await api("POST", `/api/companies/${companyId}/routines`, { ...plan.body, status: plan.status })).json as Obj;
       step(`Created routine ${plan.title}`);
       live[row.id] = plan.key;
-      onKeys({ ...live });
+      onKeys({ ...leaving, ...live });
     }
     const triggers: Obj[] = row.triggers ?? [];
     for (const s of plan.schedules) {

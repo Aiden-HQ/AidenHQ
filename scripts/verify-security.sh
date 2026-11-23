@@ -818,7 +818,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/git-auth.ts \
   && grep -qF 'if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);' "$rplan" \
   && grep -qF 'const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });' "$rplan" \
-  && grep -qF 'const ci = p.checks.some((c) => c.name === GATE_CHECK && c.ok === true && !c.pending && !c.skipped);' "$rm_" \
+  && grep -qF 'const ci = p.checks.some((c) => c.name === GATE_CHECK && c.success === true && !c.pending);' "$rm_" \
   && grep -qF 'return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true);' "$rm_" \
   && grep -qF '!productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");' "$rq" \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
@@ -826,7 +826,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
   && grep -qF 'agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
-  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required green and code review's pass on its exact head, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
+  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required successful (not neutral or skipped) and code review's pass on its exact head, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
 # The AI reviewer's own code (evalgate.ts REVIEWER_CODE) merges on CI's reviewer-eval job, part of ci-required; the code host
 # runs no eval of its own. An `aidenhq` marketplace pin never lands through an apply: official modules come with the product pin.
 rgate="modules/github/service/src/evalgate.ts"

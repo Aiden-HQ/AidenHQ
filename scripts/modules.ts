@@ -70,6 +70,7 @@ const fail = (msg: string): never => { throw new Error(msg); };
  * `always_enqueue` (each sealed batch is its own run) and told to read its batch. Its filter is non-empty and keyed only by what
  * the connection declares; its agent holds one of the connection's `reads` tools; `*` as the resource is a product module's.
  */
+const EVENT_FILTER_KEYS = ["kind", "author", "label", "contains", "bot"];
 const EVENT_SUFFIX = "New events: batch {{batch}} ({{count}}). Read them with routine_events(batch), then follow the routine above.";
 function eventRoutine(key: string, r: Obj, paperclip: Obj) {
   const e = r.event;
@@ -78,7 +79,7 @@ function eventRoutine(key: string, r: Obj, paperclip: Obj) {
   if (r.webhook) fail(`${at} and webhook can't both be set`);
   const ev = paperclip.mcp_servers[e.connection]?.events ?? fail(`${at}: connection ${e.connection} declares no events`);
   if (typeof e.resource !== "string" || !e.resource) fail(`${at}.resource is a string`);
-  if (e.resource === "*" && r.tier === "local") fail(`${at}.resource: * is for product modules; name the resource`);
+  if (e.resource === "*" && r.tier !== "official") fail(`${at}.resource: * is for product modules; name the resource`);
   const filter = e.filter;
   if (!filter || typeof filter !== "object" || Array.isArray(filter) || !Object.keys(filter).length) fail(`${at}.filter is required (what the routine wants from the stream)`);
   for (const f of Object.keys(filter)) if (!ev.filter.includes(f)) fail(`${at}.filter.${f} isn't a filter key of ${e.connection} (${ev.filter.join(", ")})`);
@@ -845,6 +846,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (c.events != null) {
         const ev = c.events;
         if (typeof ev !== "object" || Array.isArray(ev) || !Array.isArray(ev.reads) || !ev.reads.length || ev.reads.some((t: string) => !c.tools.read.includes(t)) || !Array.isArray(ev.filter) || ev.filter.some((f: unknown) => typeof f !== "string")) fail(`connection ${k}: events is { resource, kinds, filter: [keys], reads: [its read tools] }`);
+        // Only keys the kernel's router evaluates (kernel/src/events.ts matches()).
+        const unknown = ev.filter.filter((f: string) => !EVENT_FILTER_KEYS.includes(f));
+        if (unknown.length) fail(`connection ${k}: events.filter ${unknown.join(", ")} isn't a key the event router evaluates (${EVENT_FILTER_KEYS.join(", ")})`);
       }
       if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t: string) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
@@ -1147,6 +1151,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!Array.isArray(r.schedules ?? []) || (r.schedules ?? []).length > 1) fail(`routine ${key}: a local routine has at most one schedule`);
       localRoutines.set(r.agent, (localRoutines.get(r.agent) ?? 0) + 1);
       if (localRoutines.get(r.agent)! > 20) fail(`routine ${key}: an agent has at most 20 local routines`);
+      if (r.schedules?.length && typeof r.schedules[0]?.cron !== "string") fail(`routine ${key}: its schedule needs a cron`);
       const minute = String(r.schedules?.[0]?.cron ?? "0").trim().split(/\s+/)[0]!;
       if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
     }

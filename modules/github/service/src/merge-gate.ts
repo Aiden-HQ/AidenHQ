@@ -13,7 +13,7 @@ import { DESIGN_REVIEW_CHECK, GATE_CHECK, contextStatus, namedChecks, skippedIma
 import type { ReviewGate } from "./review-gate.ts";
 
 /** A check on a head, by name (service.ts checksAt, checks.ts namedChecks). */
-export type NamedCheck = { name?: string; ok?: boolean; pending?: boolean; skipped?: boolean };
+export type NamedCheck = { name?: string; ok?: boolean; success?: boolean; pending?: boolean; skipped?: boolean };
 /** Code review's answer for a head (review-gate.ts). */
 export type Verdict = Awaited<ReturnType<ReviewGate>>;
 
@@ -24,7 +24,8 @@ export type Verdict = Awaited<ReturnType<ReviewGate>>;
  */
 export function productMergeEligible(p: { repo: string; head: string; checks: NamedCheck[]; verdict: Verdict | undefined; productRepo: string }): boolean {
   const same = String(p.repo).toLowerCase() === String(p.productRepo ?? "").toLowerCase() && Boolean(p.productRepo);
-  const ci = p.checks.some((c) => c.name === GATE_CHECK && c.ok === true && !c.pending && !c.skipped);
+  // Success itself: a neutral or skipped gate is no pass for a merge that skips the reviewer.
+  const ci = p.checks.some((c) => c.name === GATE_CHECK && c.success === true && !c.pending);
   return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true);
 }
 
@@ -81,7 +82,7 @@ function designReview(rollup: Json) {
  */
 export function supersededDesignReview(marker: Json, pr: Json) {
   if (!marker || !pr) return undefined;
-  if (pr.state === "MERGED") return "its PR merged";
+  // A merged PR's review stays open: the verdict is advisory, and a defect on the shipped head becomes a follow-up fix.
   if (pr.state === "CLOSED") return "its PR was closed";
   if (pr.headRefOid && pr.headRefOid !== marker.head) return `its PR has moved on to head \`${String(pr.headRefOid).slice(0, 12)}\``;
   const dr = designReview(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup);

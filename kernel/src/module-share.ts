@@ -160,12 +160,13 @@ export function createSharing(d: {
   const text = async (args: string[]) => (await git(d.instanceDir, args)).toString("utf8").trim();
   const main = async () => (await text(["fetch", "-q", "origin", "main"]), text(["rev-parse", "--verify", "origin/main^{commit}"]));
   const tree = (sha: string, module: string) => text(["rev-parse", "--verify", `${sha}:modules/${module}`]).catch(() => "");
-  async function exportAt(module: string, sha: string) {
+  /** The export at `sha`, scanned against the owner's profile at `profileAt` (a save reads today's main: a line added since counts). */
+  async function exportAt(module: string, sha: string, profileAt = sha) {
     const compiled: Dict = YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {};
     const catalog: Dict[] = JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8"));
     // Only the values this instance set: a module default is public text, not the owner's.
     const settings = Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value]));
-    const profile = await text(["cat-file", "blob", `${sha}:owner/profile.md`]).catch(() => "");
+    const profile = await text(["cat-file", "blob", `${profileAt}:owner/profile.md`]).catch(() => "");
     return exportModule(module, { instanceDir: d.instanceDir, sha, catalog, compiled, settings, secrets: d.secrets(), memory: d.memory(), profile, instanceRepo: d.instanceRepo() });
   }
   const shape = (b: Dict) => {
@@ -199,8 +200,9 @@ export function createSharing(d: {
       if (d.filed(String(b.task))) refuse("a share was already filed on that task: preview and save again");
       for (const k of ["source", "base"]) if (!/^[0-9a-f]{40}$/.test(String(b[k]))) refuse(`${k} is the preview's commit`);
       if (!/^[0-9a-f]{64}$/.test(String(b.digest))) refuse("digest is the preview's");
-      if ((await tree(await main(), module)) !== (await tree(String(b.source), module))) refuse(`the ${module} module changed since your preview: preview again`);
-      const x = await exportAt(module, String(b.source));
+      const now = await main();
+      if ((await tree(now, module)) !== (await tree(String(b.source), module))) refuse(`the ${module} module changed since your preview: preview again`);
+      const x = await exportAt(module, String(b.source), now);
       if (x.findings.length) refuse(`not shared: ${x.findings.map((f) => `${f.file || module} (${f.detail})`).join("; ").slice(0, 600)}`);
       if (x.digest !== b.digest) refuse("what would be shared isn't what you previewed: preview again");
       const args = { repo, ref, base: String(b.base), source: x.source, module, files: Object.keys(x.files).sort().map((path) => ({ path, text: x.files[path]! })), digest: x.digest };

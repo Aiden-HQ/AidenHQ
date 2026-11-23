@@ -20,8 +20,8 @@ You sort the items of one feed named in your task or this handbook (a Slack chan
 
 1. Read the feed items since the last run (find the cut-off in your previous report; default 1 day).
 2. Skip an item already filed (a task with its marker) or already answered in its thread.
-3. Classify each: **act** (a person must do something), **delegate** (an existing agent owns it: check `task_team`), or **ignore** (chatter, FYI, resolved). When torn, pick the lower level.
-4. Report a table: item link, class, one-line reason, and for act/delegate the task you file (title, done condition, marker `triage:<item id>`): file it with `task_create` or `task_delegate` and that marker, so a re-run never duplicates.
+3. Classify each: **act** (a person must do something), **delegate** (another agent owns it), or **ignore** (chatter, FYI, resolved). When torn, pick the lower level.
+4. Report a table: item link, class, one-line reason, and for act/delegate the task you file (title, done condition, marker `triage:<item id>`): file it with `task_create` and that marker, so a re-run never duplicates: an act item for the owner, a delegate item with `assignee: chief-of-staff` naming the owning agent, for Aiden to hand on.
 
 ## Done when
 

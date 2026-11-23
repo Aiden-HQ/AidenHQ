@@ -3,6 +3,7 @@
 // instance overrides it; an edit opens the preview, then the progress. One change per row at a time: while one is filed
 // the row shows its stage instead of the editor.
 import { useState, type ReactNode } from "react";
+import { api } from "./api";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./types";
@@ -149,13 +150,20 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
 }
 
 /**
- * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed. Pause and
- * resume are the routine's live controls on the Agents page.
+ * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed; pause and
+ * resume are its live controls here (Paperclip's status, no settings change).
  */
 function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
+  const [paused, setPaused] = useState(Boolean(r.paused));
+  const [pausing, setPausing] = useState(false);
+  const [pauseError, setPauseError] = useState("");
+  const togglePause = () => {
+    setPausing(true);
+    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setPauseError("")), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
+  };
   const [review, setReview] = useState(false);
   const own = r.defaults ?? {};
   const items: SettingChange[] = [];
@@ -176,7 +184,10 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
           <span>
             {when}
             {r.model && ` on ${modelShort(r.model)}`}
+            {paused && " (paused)"}
           </span>
+          {r.id && <button className="btn" type="button" disabled={pausing} onClick={togglePause}>{paused ? "Resume" : "Pause"}</button>}
+          {pauseError && <span className="st-error" role="alert">{pauseError}</span>}
           {diff.length > 0 && <span className="muted"> · module default differs for {diff.join(", ")}</span>}
         </>
       }

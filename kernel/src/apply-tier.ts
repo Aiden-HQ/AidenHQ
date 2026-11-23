@@ -260,6 +260,8 @@ export function createApplyPlanner(h: {
     if (!c.files.length) throw new Refused("the commit changes nothing against the instance's main");
     const stray = strayFiles(c.files);
     if (stray.length) throw new Refused(`it changes files outside the instance config (${stray.join(", ")}). Only instance.yaml, apps.yaml, owner/profile.md, agents/<key>.md, agents/<key>/AGENTS.md (a handbook fork) and a local module's modules/<name>/{module.yaml,agents/<key>/AGENTS.md,skills/<name>/SKILL.md} can be applied; product code and module handbooks change through an Engineer PR`);
+    // The owner's profile is the owner's own save or Aiden's (fleet-admin): never another agent's apply, however filed.
+    if (c.files.includes("owner/profile.md") && requester && !(requester.roles ?? []).includes("fleet-admin")) throw new Refused("owner/profile.md changes only through Aiden (fleet-admin) or the owner's own save: ask Aiden");
     if (c.diff.length > DIFF_MAX) throw new Refused(`the diff is too large to review (${c.files.length} files, ${c.diff.length} characters): split the change into smaller ones`);
     const [baseI, headI] = [c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]];
     const bump = await productBump(productPin(baseI), productPin(headI), h.product);
@@ -268,7 +270,8 @@ export function createApplyPlanner(h: {
     // both sides compiled with the running product, so a product pin move (judged by the module authority diff) has none.
     const config = c.files.some((f) => f === "instance.yaml" || f.startsWith("modules/"));
     const st = { ...(config ? h.modules(baseI, headI) : {}) } as ReturnType<typeof moduleTierState> & { remote?: string };
-    const skills = config && !bump && h.skills ? await h.skills(c).then(skillLines, (e: Error) => [`skill enablers couldn't be listed: ${String(e.message).split("\n")[0]!.slice(0, 200)} (review)`]) : [];
+    // Both sides compiled: a head that doesn't compile is refused here, before it could land on main.
+    const skills = config && !bump && h.skills ? await h.skills(c).then(skillLines, (e: Error) => { throw new Refused(`it doesn't compile: ${String(e.message).split("\n")[0]!.slice(0, 300)}`); }) : [];
     const notes = h.notes?.(a.sha, requester, task);
     // The routing learning loop's commit: only instance.yaml's teams may move (the rules refuse anything else).
     if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");

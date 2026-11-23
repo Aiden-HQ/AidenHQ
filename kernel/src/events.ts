@@ -25,7 +25,7 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
 
 export const WINDOW_MS = 60_000, BATCH_MAX = 20, TEXT_MAX = 2000, LABELS_MAX = 10;
 export const ROUTINE_HOURLY = 12, TOTAL_HOURLY = 120, PENDING_MAX = 2000;
-const FIRING_MS = 10 * 60_000, PENDING_RETRY_S = 10, BODY_MS = 24 * 3600_000, KEEP_MS = 7 * 24 * 3600_000, HOUR = 3600_000;
+const DRAIN_MS = 30_000, FIRING_MS = 10 * 60_000, PENDING_RETRY_S = 10, BODY_MS = 24 * 3600_000, KEEP_MS = 7 * 24 * 3600_000, HOUR = 3600_000;
 
 export class EventsError extends Error {
   status: 403 | 404;
@@ -117,7 +117,7 @@ export function createEvents(o: {
       if (!targets.length) return { queued: 0 };
       const pending = (db.prepare("SELECT count(*) AS n FROM event_queue q JOIN event_batches b ON b.id = q.batch WHERE b.state IN ('open', 'sealed', 'firing')").get() as { n: number }).n;
       // Only events not yet delivered count against intake; delivered bodies go with the 24 h retention.
-      if (pending >= PENDING_MAX) { log("events: dropped on overflow", { module, pending }); return { dropped: targets.length, reason: "overflow" }; }
+      if (pending + targets.length > PENDING_MAX) { log("events: dropped on overflow", { module, pending }); return { dropped: targets.length, reason: "overflow" }; }
       const { connection: _c, ...body } = ev;
       const t = now();
       let queued = 0;
@@ -125,6 +125,8 @@ export function createEvents(o: {
         // A repeated source id for this routine is dropped (its row is kept 7 days), before it could open an empty batch.
         if (db.prepare("SELECT 1 FROM event_queue WHERE routine = ? AND id = ?").get(routine, ev.id)) continue;
         let b = db.prepare("SELECT * FROM event_batches WHERE routine = ? AND state = 'open'").get(routine) as Batch | undefined;
+        // A batch whose window ended (the drain seals it on its next pass) takes no more events: they open the next one.
+        if (b && b.opened_at <= t - WINDOW_MS) { db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE id = ?").run(t, b.id); b = undefined; }
         if (b && b.sub !== subOf(s)) { db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE id = ?").run(t, b.id); b = undefined; }
         if (!b) { const id = randomUUID(); db.prepare("INSERT INTO event_batches (id, routine, sub, state, opened_at) VALUES (?, ?, ?, 'open', ?)").run(id, routine, subOf(s), t); b = get(id)!; }
         db.prepare("INSERT INTO event_queue (routine, id, batch, body, at) VALUES (?, ?, ?, ?, ?)").run(routine, ev.id, b.id, JSON.stringify(body), t);
@@ -147,10 +149,12 @@ export function createEvents(o: {
      */
     async batch(job: { task: string; agent: string; routine?: string | null }, id: string): Promise<{ pending: true; retry_after_s: number } | { count: number; events: Omit<SourceEvent, "connection">[] }> {
       const b = get(id), s = b && subs()[b.routine];
-      const own = b && s && job.routine && subOf(s) === b.sub && s.key === job.routine && s.agent === job.agent && reads(s.agent, s.connection);
+      // Fired: bound to its task (a later job on that task reads it too, a retry or a reopen). Still firing: the run's own routine.
+      const bound = b?.state === "fired" ? b.task === job.task : Boolean(job.routine && s?.key === job.routine);
+      const own = b && s && bound && subOf(s) === b.sub && s.agent === job.agent && reads(s.agent, s.connection);
       const r = own ? await o.routine(b.routine) : undefined;
       if (b && own && r?.status === "active" && r.assignee === job.agent) {
-        if (b.state === "fired" && b.task === job.task) return { count: b.count, events: (db.prepare("SELECT body FROM event_queue WHERE batch = ? AND body IS NOT NULL ORDER BY seq").all(b.id) as { body: string }[]).map((q) => JSON.parse(q.body)) };
+        if (b.state === "fired") return { count: b.count, events: (db.prepare("SELECT body FROM event_queue WHERE batch = ? AND body IS NOT NULL ORDER BY seq").all(b.id) as { body: string }[]).map((q) => JSON.parse(q.body)) };
         if (b.state === "firing" && now() - (b.sealed_at ?? 0) < FIRING_MS) return { pending: true, retry_after_s: PENDING_RETRY_S };
       }
       throw new EventsError(403, "this batch isn't your run's");
@@ -159,10 +163,13 @@ export function createEvents(o: {
     async drain(): Promise<void> {
       if (draining) return;
       draining = true;
+      // A pass is bounded: what it doesn't reach waits for the next one (sealing and cleanup run every pass).
+      const until = Date.now() + DRAIN_MS;
       try {
         const t = now();
         db.prepare("UPDATE event_batches SET state = 'sealed', sealed_at = ? WHERE state = 'open' AND opened_at <= ?").run(t, t - WINDOW_MS);
         for (const b of db.prepare("SELECT * FROM event_batches WHERE state IN ('sealed', 'firing') ORDER BY sealed_at").all() as Batch[]) {
+          if (Date.now() > until) break;
           if (b.state === "firing" && now() - b.sealed_at! > FIRING_MS) { drop(b, "Paperclip didn't take the run in 10 minutes"); continue; }
           const s = subs()[b.routine];
           if (!s || !reads(s.agent, s.connection)) { drop(b, "the subscription or its read grant is gone"); continue; }
@@ -172,8 +179,9 @@ export function createEvents(o: {
           if (r?.status !== "active" || r.assignee !== s.agent) { drop(b, r ? `the routine is ${r.status}` : "the routine is gone"); continue; }
           if (b.state === "sealed") {
             const since = now() - HOUR;
-            const mine = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE routine = ? AND dispatched_at > ?").get(b.routine, since) as { n: number }).n;
-            const all = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE dispatched_at > ?").get(since) as { n: number }).n;
+            // A batch firing holds its place in the caps until it lands (its retries keep the same key and place).
+            const mine = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE routine = ? AND (dispatched_at > ? OR state = 'firing')").get(b.routine, since) as { n: number }).n;
+            const all = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE dispatched_at > ? OR state = 'firing'").get(since) as { n: number }).n;
             if (mine >= ROUTINE_HOURLY || all >= TOTAL_HOURLY) { drop(b, `cap: ${mine} runs of this routine and ${all} in all in the past hour`); continue; }
             db.prepare("UPDATE event_batches SET state = 'firing' WHERE id = ?").run(b.id);
           }

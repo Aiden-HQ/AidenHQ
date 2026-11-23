@@ -34,6 +34,10 @@ test("store: secrets stripped, duplicate, tombstone, cap, budget, digest, librar
   memory.note("acme", { fact: `The deploy bot reads ${tok} from its own vault`, source: `https://example.com/runs?token=${tok}`, job: "j1" });
   const v = memory.view("acme");
   assert.ok(!v.includes(tok) && v.includes("[secret]") && v.includes("token=…"), v);
+  // A private key goes whole, not only its first line.
+  memory.note("acme", { fact: `The deploy key is ${["-----BEGIN", " RSA PRIVATE KEY-----"].join("")} MIIEacmeKEYmaterial123 ${["-----END", " RSA PRIVATE KEY-----"].join("")} on the box`, source: TASK, job: "j1" });
+  assert.match(memory.view("acme"), /The deploy key is \[secret\] on the box/);
+  assert.doesNotMatch(memory.view("acme"), /MIIEacme/);
   // Prose that only mentions a token stays as written.
   memory.note("acme", { fact: "The token budget is 2M a day", source: TASK, job: "j1" });
   assert.match(memory.view("acme"), /The token budget is 2M a day/);

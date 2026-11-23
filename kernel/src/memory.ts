@@ -26,7 +26,7 @@ const SHA = /^[0-9a-f]{7,40}$/;
 /** Text shaped like a credential (a vendor token prefix, a private key), the one list memory and a module share check. */
 export const SECRET_SHAPES = /\b(sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|ahq[a-z]?_[A-Za-z0-9]{16,})|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 /** A memory line with each credential-shaped value blanked (the shapes only: prose like "token budget" stays). */
-const redact = (t: string) => t.replace(new RegExp(SECRET_SHAPES.source, "g"), "[secret]").replace(/:\/\/[^/\s@]+@/g, "://…@")
+const redact = (t: string) => t.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[secret]").replace(new RegExp(SECRET_SHAPES.source, "g"), "[secret]").replace(/:\/\/[^/\s@]+@/g, "://…@")
   .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…");
 
 /** A fact as compared for duplicates and tombstones: lower case, single spaces, no trailing punctuation. */

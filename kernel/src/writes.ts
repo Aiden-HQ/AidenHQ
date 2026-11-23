@@ -633,8 +633,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}`;
       // Code's refusals hold on every call, Tier 0 included.
       const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null });
-      // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
-      const t = computeTier({ floor, refusal: refused?.code, priorVeto: floor > 0 && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
+      // The owner's no on a destructive tool (an unreviewed one too) holds for that tool on the task, never for the task's other writes.
+      const destructive = c.tools.destructive.includes(tool);
+      const t = computeTier({ floor, refusal: refused?.code, priorVeto: destructive && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
       if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
       if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);

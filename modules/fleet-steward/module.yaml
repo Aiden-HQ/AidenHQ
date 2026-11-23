@@ -63,7 +63,7 @@ agents:
     # the Engineer (product and module changes), an app's owner (app-owners; the DevOps Engineer for an app with none), the
     # Agent Architect (an agent's definition), the Maintainer (product bugs upstream), the chief of staff (another agent's rule
     # fix, handed to that agent, and the owner's profile).
-    delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer?, chief-of-staff ]
+    delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer?, chief-of-staff? ]
     roles: [ fleet-read, fleet-settle, fleet-audit, librarian, routing-tuner, product-issues ]
 # Routine titles stay as they were: setup matches routines by title. The check task itself is filed by the service (kernel.tasks).
 routines:

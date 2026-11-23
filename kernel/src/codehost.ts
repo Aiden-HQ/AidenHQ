@@ -324,11 +324,12 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       });
       req.on("timeout", () => req.destroy(fail(504, `${CODEHOST} didn't answer`))).on("error", (e) => no((e as { status?: number }).status ? e : fail(502, `${CODEHOST} is unreachable (${e.message})`))).end(data);
     });
-    let j: { repo?: unknown; base?: unknown; private?: unknown; conflict?: unknown; error?: unknown } = {};
+    let j: { repo?: unknown; base?: unknown; private?: unknown; conflict?: unknown; existing?: unknown; error?: unknown } = {};
     try { j = JSON.parse(got.body); } catch { /* no JSON: the status says it */ }
     if (got.status >= 300) throw fail(got.status >= 500 ? 502 : 422, String(j.error ?? `${CODEHOST} answered ${got.status}`).slice(0, 500));
     if (typeof j.base !== "string" || !/^[0-9a-f]{40}$/.test(j.base) || typeof j.repo !== "string") throw fail(502, `${CODEHOST} named no tip`);
-    return { repo: j.repo, base: j.base, private: j.private !== false, ...(typeof j.conflict === "string" ? { conflict: j.conflict } : {}) };
+    const existing = Array.isArray(j.existing) ? j.existing.filter((p): p is string => typeof p === "string") : [];
+    return { repo: j.repo, base: j.base, private: j.private !== false, existing, ...(typeof j.conflict === "string" ? { conflict: j.conflict } : {}) };
   }
   return {
     ask, identity, publishTip,

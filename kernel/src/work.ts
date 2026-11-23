@@ -75,7 +75,9 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       };
     },
     agent(id: string) {
-      return { jobs: rows("SELECT * FROM jobs WHERE agent = ? ORDER BY at DESC LIMIT 50", id).map((r) => {
+      // The last 50 that aren't quiet routine runs: quiet ones are left out before the limit, so they never crowd out a failure.
+      const shown = rows("SELECT * FROM jobs WHERE agent = ? ORDER BY at DESC LIMIT 1000", id).filter((r) => factData(`job:${r.id}`, "job.ended")?.quiet !== true).slice(0, 50);
+      return { jobs: shown.map((r) => {
         const why = JSON.parse(r.why || "{}"), progress = JSON.parse(r.progress || "{}");
         return { ...job(r), exit: r.exit ?? null, timed_out: why.timedOut === true, steps: Array.isArray(progress.steps) ? progress.steps.length : 0, has_final: Boolean(r.final), routine: r.routine ?? null, ...timeline(r) };
       }) };

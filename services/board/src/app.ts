@@ -1167,13 +1167,20 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
   async function settingsData() {
-    const pending = await records.list("owner");
-    return settingsView({
+    const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);
+    const view = settingsView({
       ...readSources(settingsFiles()),
       boardTimezone: opts.timezone,
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
     });
+    // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
+    const idOf = new Map(Object.entries(routineKeys()).map(([id, k]) => [k, id]));
+    for (const a of view.agents) for (const r of a.routines as { key: string; id?: string; paused?: boolean }[]) {
+      const row = live.find((x) => x.id === idOf.get(r.key) && x.status !== "archived");
+      if (row) Object.assign(r, { id: row.id, paused: row.status === "paused" });
+    }
+    return view;
   }
 
   // Each HTTP connection's /healthz, asked at most every 20 s (the page polls); when it last answered ok, since the board started.

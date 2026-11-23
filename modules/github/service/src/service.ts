@@ -239,8 +239,8 @@ export function createService(o: Options) {
     const unread = runs.complete && status.complete ? [] : [{ pending: true, skipped: false, ok: false }];
     return [
       ...unread,
-      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion) })),
-      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), pending: x.state === "pending", skipped: false, ok: x.state === "success" })),
+      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion), success: r.status === "completed" && r.conclusion === "success" })),
+      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), pending: x.state === "pending", skipped: false, ok: x.state === "success", success: x.state === "success" })),
     ];
   }
   // The commits this code host pushed, each as "<repo, lowercase> <sha>": a head is the runner's own only in the repo it was

@@ -55,7 +55,7 @@ test("drain, caps, gates and binding", async () => {
   assert.deepEqual(one.vars, { batch: one.key, count: "2" });
   const b1 = one.key;
 
-  // The run's own task, agent and routine read its events (connection left out); another task, agent or routine is 403.
+  // The run's own task and agent read its events (connection left out); another task or agent is 403.
   const job = { task: `issue-${b1.slice(0, 8)}`, agent: "a1", routine: "slack-triage" };
   const got = await events.batch(job, b1);
   assert.ok("events" in got);
@@ -63,7 +63,8 @@ test("drain, caps, gates and binding", async () => {
   assert.equal("connection" in got.events[0]!, false);
   assert.equal(await refused(() => events.batch({ ...job, task: "issue-other" }, b1)), 403);
   assert.equal(await refused(() => events.batch({ ...job, agent: "a2" }, b1)), 403);
-  assert.equal(await refused(() => events.batch({ ...job, routine: "watch" }, b1)), 403);
+  // A later job on the same task (a retry, a reopen: no routine wake) still reads it; the binding is the task.
+  assert.ok("events" in (await events.batch({ ...job, routine: null }, b1)));
 
   // 20 events seal a batch at once; the 21st starts the next.
   r.runs.length = 0;
@@ -183,4 +184,22 @@ test("a batch belongs to the subscription that accepted it; resources match in a
   // Its task is bound to outside text: the kernel refuses that run's self_change (backplane /v1/settings/agent).
   assert.equal(events.fired(`issue-${run.key.slice(0, 8)}`), true);
   assert.equal(events.fired("issue-other"), false);
+});
+
+test("an ended window takes no more events; firing batches hold their place in the caps", async () => {
+  const r = rig();
+  const { events } = r;
+  events.ingest("slack", ev("w1"));
+  r.tick(61_000);
+  events.ingest("slack", ev("w2")); // before any drain: a new batch, not the ended one
+  r.answer(() => ({ status: 503 }));
+  r.tick(61_000);
+  await events.drain();
+  const keys = new Set(r.runs.filter((x) => x.routine === R1).map((x) => x.key));
+  assert.equal(keys.size, 2, "two batches, one event each");
+  // Both still firing (503): with 10 more sealed, R1's cap of 12 counts the two in flight, so only 10 fire.
+  r.runs.length = 0;
+  r.answer((k) => ({ status: 202, issue: `issue-${k.slice(0, 8)}` }));
+  for (let i = 0; i < 11; i++) { events.ingest("slack", ev(`x${i}`)); r.tick(61_000); await events.drain(); }
+  assert.equal(new Set(r.runs.filter((x) => x.routine === R1).map((x) => x.key)).size, 12);
 });

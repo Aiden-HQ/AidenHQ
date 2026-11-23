@@ -245,17 +245,21 @@ export function createFlow(d: FlowDeps) {
     if (!d.gh) return;
     const wanted: string[] = (await client.call("GET", "/v1/events/sources?connection=github").catch((e: Error) => { d.log("events: sources unreadable", { err: String(e.message).slice(0, 200) }); return {}; })).resources ?? [];
     const repos = [...new Set([...(wanted.includes("*") && d.repos ? await d.repos() : []), ...wanted.filter((r) => r !== "*")].map((r) => r.toLowerCase()))];
-    if (repos.length > EVENT_REPOS) d.log("events: more subscribed repos than one pass reads", { polled: EVENT_REPOS, skipped: repos.slice(EVENT_REPOS) });
+    // At most EVENT_REPOS a pass, starting where the last pass stopped, so every subscribed repo is read in turn.
+    const state = readJson(eventsFile, {});
+    const from = repos.length > EVENT_REPOS ? Number(state["@next"] ?? 0) % repos.length : 0;
+    const turn = [...repos.slice(from), ...repos.slice(0, from)].slice(0, EVENT_REPOS);
+    if (repos.length > EVENT_REPOS) writeJson(eventsFile, { ...state, "@next": (from + EVENT_REPOS) % repos.length });
     lowBudget = "";
-    for (const repo of repos.slice(0, EVENT_REPOS)) {
+    for (const repo of turn) {
       await eventsRepo(repo).catch((e) => d.log("events pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
       if (lowBudget) return d.log("events: the pass stops under the API budget", { repo, why: lowBudget });
     }
   }
   /**
    * One repo's new events, oldest first, to the kernel. Page one is a conditional read (its ETag); later pages run back to the
-   * cursor (the newest event sent). A repo's first read (no cursor) sets the cursor at its newest event and sends nothing: a
-   * subscription starts from now. A cursor the feed no longer reaches reads page one only: a logged gap.
+   * cursor (the newest event sent). A repo's first read (not yet started) marks it started, at its newest event if it has one
+   * (an empty feed starts at 0), and sends nothing: a subscription starts from now. A cursor the feed no longer reaches reads page one only: a logged gap.
    * The cursor moves with each event the kernel answered 2xx (it does for skipped and dropped ones too); a 429, a 5xx or no answer
    * stops here and the next pass goes on. The ETag is kept only once every event of the read was sent.
    */
@@ -275,7 +279,7 @@ export function createFlow(d: FlowDeps) {
       if (!saved.cursor || items.length < 100) break;
     }
     if (!saved.cursor) {
-      writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { ...(fresh[0] ? { cursor: String(fresh[0].id) } : {}), ...(etag ? { etag } : {}) } });
+      writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { cursor: fresh[0] ? String(fresh[0].id) : "0", ...(etag ? { etag } : {}) } });
       return;
     }
     const batch = reached ? fresh : fresh.slice(0, 100);

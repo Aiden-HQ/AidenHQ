@@ -545,7 +545,8 @@ export function createEvents(o: {
 };
 ```
 - **Step 0 (before any code): probe the pinned Paperclip image.** Run `POST /api/routines/:id/run` as the owner, with
-  `variables` and an `Idempotency-Key`, twice with the same key. It passes when all three hold:
+  `variables` and the key as the body's `idempotencyKey` (the probe below found Paperclip ignores the `Idempotency-Key`
+  header), twice with the same key. It passes when all three hold:
   - one run exists, with the variables;
   - the second call returns the **same issue id**;
   - the created task carries the routine's identity (`originKind: routine_execution`, `originId` = the routine id).
@@ -961,18 +962,18 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
   - `agents/<k>/AGENTS.md` → `modules/<k>/agents/<k>/AGENTS.md`, with frontmatter stripped after checking that it
     matches the YAML identity;
   - each local agent's `skills:` from Task 12's instance snapshot;
-  - delete `overrides.routines.*.autonomy` and any `private_reads`;
+  - delete `overrides.routines.*.autonomy`, `overrides.routines.*.status` and any `private_reads`;
   - set `product: <merged sha>`;
   - **keep `agents/*/memory.md`.**
 
   Verify with Task 17's compile step.
 - [ ] **Before pushing:**
-  - Tell Aiden in WOR-7241 (`~/aiden-msg.sh`) that applies on old paths will be refused, and to re-file them with
+  - Tell Aiden in his operator chat that applies on old paths will be refused, and to re-file them with
     `self_change`.
   - Check the product repo's branch protection for a required `design-review` context, and remove it
     (`gh api repos/<product>/branches/main/protection`).
 - [ ] **Push and apply.** Push from the Mac clone. In the background, run
-  `ssh -i ~/.ssh/aidenhq-ex44 mudit@95.216.21.102 '~/aidenhq/ops/aidenhq-apply --wait'`. Check:
+  `ssh <host> '~/aidenhq/ops/aidenhq-apply --wait'` (the host's address is in `CLAUDE.local.md`). Check:
   - the `memory:` line (imported, refused, skipped);
   - no duplicate routines in Paperclip;
   - triage triggers disabled.

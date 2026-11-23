@@ -9,7 +9,8 @@ const CLOSING = ["task_finish", "task_wait"];
 export function quietRun(db: DatabaseSync, job: { id: string; task: string; at: number; routine?: string | null; state: string; requester: string }): boolean {
   if (!job.routine || job.state !== "done") return false;
   const since = new Date(job.at).toISOString();
-  const filed = db.prepare("SELECT kind, args FROM records WHERE task = ? AND json_extract(requester, '$.agent') = ? AND created_at >= ?").all(job.task, job.requester, since) as { kind: string; args: string }[];
+  // Whatever the job filed, on its own task or one it named (_meta.task: the requester keeps the job's task).
+  const filed = db.prepare("SELECT kind, args FROM records WHERE (task = ? OR json_extract(requester, '$.task') = ?) AND json_extract(requester, '$.agent') = ? AND created_at >= ?").all(job.task, job.task, job.requester, since) as { kind: string; args: string }[];
   const closing = filed.every((r) => {
     if (r.kind !== "conn.tool") return false;
     const a = JSON.parse(r.args) as { connection?: string; tool?: string };

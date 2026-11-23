@@ -253,7 +253,8 @@ export async function fleetControl(pc: Paperclip, caller: Agent, a: z.infer<type
  * routine resumed after a long pause starts there instead of Paperclip catching up every tick it missed.
  */
 export async function setRoutinePaused(pc: Pick<Paperclip, "request">, t: Routine, paused: boolean) {
-  if (!paused) for (const tr of (t.triggers ?? []).filter((x) => x.kind === "schedule" && x.enabled && x.id && x.cronExpression)) await pc.request("PATCH", `/api/routine-triggers/${tr.id}`, { cronExpression: tr.cronExpression, ...(tr.timezone ? { timezone: tr.timezone } : {}), enabled: true });
+  // Only a paused routine's schedules are re-saved on resume: an active one's next tick stays where it is.
+  if (!paused && t.status === "paused") for (const tr of (t.triggers ?? []).filter((x) => x.kind === "schedule" && x.enabled && x.id && x.cronExpression)) await pc.request("PATCH", `/api/routine-triggers/${tr.id}`, { cronExpression: tr.cronExpression, ...(tr.timezone ? { timezone: tr.timezone } : {}), enabled: true });
   await pc.request("PATCH", `/api/routines/${t.id}`, { status: paused ? "paused" : "active" });
 }
 

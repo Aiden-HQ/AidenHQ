@@ -132,8 +132,8 @@ if (!process.env.V3_INSIDE) {
   step("the run's job reads its batch: 4 events, oversize text clipped to 2000");
   assert.equal(await refused(() => events.batch({ ...job, task: "another-task" }, batch)), 403);
   assert.equal(await refused(() => events.batch({ ...job, agent: other.id }, batch)), 403);
-  assert.equal(await refused(() => events.batch({ ...job, routine: "slack-watch" }, batch)), 403);
-  step("batch read by another task, agent or routine -> 403");
+  assert.ok("events" in (await events.batch({ ...job, routine: null }, batch)), "a later job on the same task reads it");
+  step("batch read by another task or agent -> 403; a later job on its task reads it");
   grants.agents[agent.id].tools.slack = [];
   assert.equal(await refused(() => events.batch(job, batch)), 403);
   grants.agents[agent.id].tools.slack = ["slack_read_channel"];
