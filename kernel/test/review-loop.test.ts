@@ -499,7 +499,7 @@ test("a code review post or reply whose comment text names an instance host, hom
   const post = (finding: Record<string, unknown>, coverage: Record<string, unknown> = {}) => check({ args: { repo: "acme/app", review: { coverage: { reviewed: [], excluded: [], incomplete: null, ...coverage }, findings: [{ path: "fixtures/192.0.2.10.json", title: "t", ...finding }] } } }).verdict;
   assert.equal(reply("Looks fine: the retry bound is read before it is defaulted (src/plan.ts line 41)."), "ok");
   for (const leak of ["agents.acme.ts.net", "10.0.0.7", "/home/sam/run.log", "/home/sam", "/root/agents/x", "fd7a:115c:a1e0::5", "fd12::34", "2001:db8::1", "1:2:3:4:5:6:7:8", "https://node.acme.ts.net/home/sam/b.log"]) assert.equal(reply(`seen on ${leak}`), "deny", leak);
-  for (const ok of ["00:1a:2b:3c:4d:5e", "aa:bb:cc:dd", "12:30:45:10", "::1", "class DB::Feed", "std::vector", "version 1.2.3.456"]) assert.equal(reply(ok), "ok", ok);
+  for (const ok of ["00:1a:2b:3c:4d:5e", "aa:bb:cc:dd", "12:30:45:10", "::1", "class DB::Feed", "0:0:0:0:0:0:0:1", "GET /homepage", "std::vector", "version 1.2.3.456"]) assert.equal(reply(ok), "ok", ok);
   assert.equal(post({}, { reviewed: ["fixtures/192.0.2.10.json"] }), "ok", "the PR's own file names (a finding's path, the reviewed list) are not comment text");
   assert.equal(post({ why: "seen on 10.0.0.7" }), "deny");
   assert.equal(post({}, { incomplete: "read failed at /home/ci/build.log on 10.0.0.7" }), "deny", "coverage.incomplete is published");
