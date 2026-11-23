@@ -40,6 +40,8 @@ ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr
 # daemon was unreachable can recover before the verification's own re-listing, and a fresh listing with nothing to remove
 # would then read as a clean scan — the record is how the verification still sees this run's scan never completed.
 ExecStart=-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh
+# The computer images carry aidenhq.keep=true, which the image prune above skips: this removes the superseded ones (see the script).
+ExecStart=-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-computer-images.sh
 # Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, build cache under
 # its 40 GB ceiling (a backstop for a prune that did nothing, above the fleet's 29.9 GB peak, not the 20 GB target), no
 # one-off stopped over a day still there — and reads the image and container steps' recorded status, so a prune that did
