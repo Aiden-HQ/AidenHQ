@@ -176,6 +176,25 @@ describe("internal listener", () => {
     }
   });
 
+  it("a card recovered as unknown says it wakes nobody, so the run does not wait on a notice", async () => {
+    const records = fakeRecords([card({ id: "k-0000000000000080", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: false, outcome: "failed", outcomeText: "unknown: it was claimed and its outcome never came back", createdAt: "2026-11-10T09:00:00.000Z" })]);
+    const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
+    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
+    const portA = (board.address() as AddressInfo).port;
+    try {
+      const out = await new Promise<{ approvals: { id: string; wakes: boolean }[] }>((resolve, reject) => {
+        request({ host: "127.0.0.1", port: portA, method: "GET", path: `/internal/approvals?issue=${issue.identifier}`, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve(JSON.parse(text)));
+        }).on("error", reject).end();
+      });
+      expect(out.approvals.find((a) => a.id === "k-0000000000000080")?.wakes).toBe(false);
+    } finally {
+      board.close();
+    }
+  });
+
   it("the later snapshot of a card wins: an approval made between the reads is not reported as pending", async () => {
     const pending = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "pending", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", updatedAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
     const approved = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "approved", live: true, wakes: true, createdAt: "2026-11-10T09:00:00.000Z", updatedAt: "2026-11-10T09:05:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });

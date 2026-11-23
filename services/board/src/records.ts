@@ -48,8 +48,9 @@ export interface Approval {
   panel: boolean;
   reviewFirst: "final" | "owner" | null;
   /** Whether its outcome is posted to the task: a decided record, or one a module filed for its agent. A Tier 0 record an
-   * agent filed itself answers that call inline and wakes nobody, and one still waiting on the reviewer or owner can expire
-   * after seven days with no notice (kernel/src/writes.ts, records.ts), so neither is a wake. */
+   * agent filed itself answers that call inline and wakes nobody; one still waiting on the reviewer or owner can expire, and
+   * one the kernel recovers as `unknown` after a restart is closed without a notice (kernel/src/writes.ts reconcile), so none
+   * of those is a wake. */
   wakes: boolean;
   /** Still able to act: waiting on the reviewer or owner, approved, or claimed. A Tier 0 record shows `auto` both while it is
    * queued and once it ended, so its state alone can't say; this can. */
@@ -96,7 +97,7 @@ export function recordApproval(r: KernelRecord): Approval {
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner"].includes(r.state), live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner", "unknown"].includes(r.state), live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
   };
 }
 
