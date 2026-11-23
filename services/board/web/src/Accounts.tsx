@@ -47,6 +47,7 @@ export function SignInScreen() {
   const keep = () => {
     try {
       if (location.hash.length > 2) sessionStorage.setItem(RETURN_KEY, location.hash);
+      else sessionStorage.removeItem(RETURN_KEY);
     } catch {}
   };
   return (

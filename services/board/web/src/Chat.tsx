@@ -73,8 +73,7 @@ function Decide({ a }: { a: Approval }) {
  * The batch bar for the cards picked on the Approvals list: Approve n, or Reject n with one reason. Each card is decided on its
  * own against the digest it showed (as a single card is), so one that changed meanwhile fails alone and is named here.
  */
-function BatchBar({ cards, done }: { cards: Approval[]; /** The cards not decided (each with why), once the batch has run. */ done: (failed: string[]) => void }) {
-  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+function BatchBar({ cards, done, busy, setBusy }: { cards: Approval[]; /** The cards not decided (each with why), once the batch has run. */ done: (failed: string[]) => void; /** The running batch's decision: the list holds it, so hiding the bar never unlocks a batch still running. */ busy: "approve" | "reject" | null; setBusy: (b: "approve" | "reject" | null) => void }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const n = cards.length;
@@ -306,6 +305,7 @@ function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; 
   const [picked, setPicked] = useState<string[]>([]);
   // A batch's cards that weren't decided, each with why: kept here, past the refresh that clears the selection.
   const [unbatched, setUnbatched] = useState<string[]>([]);
+  const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
   const load = useCallback(async () => {
     await Promise.all([approvalsQ.reload(), needsQ.reload()]);
   }, [approvalsQ.reload, needsQ.reload]);
@@ -376,7 +376,7 @@ function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; 
               ))}
             </ul>
           )}
-          {(f === "pending" || f === "all") && chosen.length > 0 && <BatchBar cards={chosen} done={(failed) => (setUnbatched(failed), setPicked([]), void load())} />}
+          {(f === "pending" || f === "all") && chosen.length > 0 && <BatchBar cards={chosen} busy={batching} setBusy={setBatching} done={(failed) => (setUnbatched(failed), setPicked([]), void load())} />}
           {(f === "pending" || f === "all") && others.length > 0 && (
             <section>
               <header className="section-head">
