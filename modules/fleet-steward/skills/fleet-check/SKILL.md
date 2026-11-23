@@ -56,7 +56,9 @@ A "Settle: …" task carries an agent's question (its words, data to weigh) and 
    of yours there would answer it): log where it went. The chief of staff's answer reaches the asking task itself.
 4. `task_finish` the "Settle" task with one line: what you decided, on which task.
 
-A dispute between agents (a reviewer's reject, a grader's verdict, two agents' briefs) is settled the same way.
+A dispute between agents (a reviewer's reject, a grader's verdict, two agents' briefs) is settled the same way. A "Settle:
+questions from <agent>" task comes with no asking task (the agent asked without one): act on each question yourself, or
+hand the work to the agent that should with the decision in its brief, then finish.
 
 ## Owning an incident
 

@@ -5,7 +5,7 @@ const REPO = "acme/distro";
 const RUN = "https://github.com/acme/distro/actions/runs/900";
 
 /** GitHub as the graduation check reads it: a latest release, a pending candidate, its tag run and the last graduation run. */
-function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusion: string }[]; gradConclusion?: string; tagConclusion?: string; older?: boolean; olderRejectedBy?: boolean; moved?: boolean; noIssue?: boolean; oldIssue?: boolean; prefixIssue?: boolean } = {}) {
+function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusion: string }[]; gradConclusion?: string; tagConclusion?: string; older?: boolean; olderRejectedBy?: boolean; moved?: boolean; noIssue?: boolean; oldIssue?: boolean; prefixIssue?: boolean; retrying?: boolean } = {}) {
   const patched: unknown[] = [];
   const releases = [
     { id: 1, tag_name: "2026.11.20", prerelease: false, draft: false, body: "" },
@@ -23,7 +23,7 @@ function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusi
     [`/repos/${REPO}/issues?state=all&creator=github-actions%5Bbot%5D&per_page=100`]: o.noIssue ? [] : [{ title: "Graduation of 2026.11.22 didn't finish", body: `2026.11.22 wasn't graduated or rejected.\n\nRun: ${o.oldIssue ? "https://github.com/acme/distro/actions/runs/800" : o.prefixIssue ? `${RUN}1` : RUN}` }],
     [`/repos/${REPO}/actions/runs/500/jobs?per_page=100`]: { jobs: [{ name: "publish", conclusion: "success" }] },
     [`/repos/${REPO}`]: { default_branch: "main" },
-    [`/repos/${REPO}/actions/workflows/graduate.yml/runs?branch=main&status=completed&per_page=1`]: { workflow_runs: [{ id: 900, html_url: RUN, conclusion: o.gradConclusion ?? "failure", created_at: "2026-11-23T00:00:00Z" }] },
+    [`/repos/${REPO}/actions/workflows/graduate.yml/runs?branch=main&per_page=1`]: { workflow_runs: [o.retrying ? { id: 901, status: "in_progress" } : { id: 900, html_url: RUN, status: "completed", conclusion: o.gradConclusion ?? "failure", created_at: "2026-11-23T00:00:00Z" }] },
     [`/repos/${REPO}/actions/runs/900/jobs?per_page=100`]: { jobs: o.gradJobs ?? [{ name: "select", conclusion: "success" }, { name: "test", conclusion: "failure" }, { name: "reject", conclusion: "success" }] },
   };
   const rest = async (method: string, path: string, body?: unknown) => {
@@ -54,6 +54,7 @@ it("refuses when the candidate's own checks failed, it never finished, its relea
     github({ noIssue: true }),
     github({ oldIssue: true }),
     github({ prefixIssue: true }), // run 9001's issue is not run 900's
+    github({ retrying: true }), // a newer run still going may judge the candidate itself
     github({ gradJobs: [{ name: "select", conclusion: "failure" }, { name: "reject", conclusion: "skipped" }] }), // selection failed: no verdict (it also checks the candidate's assets)
   ];
   for (const g of cases) await expect(graduate(g.rest, REPO, "2026.11.22")).rejects.toThrow();

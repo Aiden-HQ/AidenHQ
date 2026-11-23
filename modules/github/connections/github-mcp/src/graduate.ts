@@ -61,8 +61,10 @@ export async function graduationCheck(rest: Rest, repo: string, tag: string): Pr
   if (tagJobs.find((j) => j.name === "publish")?.conclusion !== "success") throw new GitHubRefused(`${tag}'s release run didn't publish`);
   // 3. The latest completed graduation run, on the default branch, after the candidate was published.
   const def = (await get(rest, `/repos/${repo}`)).default_branch;
-  const runs: any[] = (await get(rest, `/repos/${repo}/actions/workflows/graduate.yml/runs?branch=${encodeURIComponent(def)}&status=completed&per_page=1`)).workflow_runs ?? [];
+  // The newest run, finished: one still running may yet judge the candidate itself.
+  const runs: any[] = (await get(rest, `/repos/${repo}/actions/workflows/graduate.yml/runs?branch=${encodeURIComponent(def)}&per_page=1`)).workflow_runs ?? [];
   const run = runs[0];
+  if (run && run.status !== "completed") throw new GitHubRefused(`graduation run ${run.id} is still ${run.status}: wait for its verdict`);
   if (!run || run.conclusion !== "failure") throw new GitHubRefused("the latest graduation run didn't fail: there is no stall to settle");
   if (Date.parse(run.created_at) < Date.parse(rel.published_at ?? rel.created_at)) throw new GitHubRefused(`the latest graduation run started before ${tag} was published: it never tested it`);
   const jobs: any[] = (await get(rest, `/repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`)).jobs ?? [];
