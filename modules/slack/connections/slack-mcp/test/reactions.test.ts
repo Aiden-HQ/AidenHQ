@@ -188,6 +188,20 @@ describe("scanMyReactions", () => {
       return Response.json(page([item("C1", "1.1")]));
     }) as unknown as typeof fetch;
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noScope })).toMatchObject({ ok: false });
+    // A missing_scope answer that names the kind (`needed`) still scopes the conversation: a public-only search drops
+    // the DM it couldn't describe, and keeps the public channel, instead of failing the whole set.
+    const noImScope = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) {
+        if (u.searchParams.get("channel") === "D1") return Response.json({ ok: false, error: "missing_scope", needed: "im:read" });
+        return Response.json({ ok: true, channel: { id: u.searchParams.get("channel"), is_channel: true } });
+      }
+      return Response.json(page([item("C1", "1.1"), item("D1", "2.2")]));
+    }) as unknown as typeof fetch;
+    expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
+    // The same answer in an all-channels scan: the DM is a kind the sign-in has no search scope for, so it is dropped.
+    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
+    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }, { channel: "D1", ts: "2.2" }] });
     // A transient failure (not a scope answer) leaves the set unknown instead of silently short.
     const flaky = (async (url: string | URL) => {
       const u = new URL(String(url));
