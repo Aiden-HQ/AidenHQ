@@ -25,6 +25,10 @@ ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
       libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 \
       && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libkrb5-3)" ge 1.22.3-1 \
+      && for p in libgssapi-krb5-2 libk5crypto3 libkrb5support0; do \
+           dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "$p")" ge 1.22.3-1 \
+             || { echo "$p is $(dpkg-query -W -f='${Version}' "$p"), below 1.22.3-1" >&2; exit 1; }; \
+         done \
       && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/connections/github-mcp/node_modules ./connections/github-mcp/node_modules
