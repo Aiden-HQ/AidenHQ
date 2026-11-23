@@ -418,7 +418,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
     // A row changes after its call ends only by a true-up (`changed`), which keeps the call's own time (`at`).
     // In (time, key) order, from after a cursor: a page boundary never splits or repeats rows of one time.
-    since: db.prepare(`SELECT * FROM calls WHERE (COALESCE(changed, at), key) > (?, ?) AND status != 'reserved' ORDER BY COALESCE(changed, at), key LIMIT ${USAGE_PAGE}`),
+    since: db.prepare(`SELECT * FROM calls WHERE COALESCE(changed, at) >= ?1 AND (COALESCE(changed, at), key) > (?1, ?2) AND status != 'reserved' ORDER BY COALESCE(changed, at), key LIMIT ${USAGE_PAGE}`),
     settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
     inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
     gen: db.prepare("UPDATE calls SET gen = ? WHERE key = ? AND status = 'reserved'"),
