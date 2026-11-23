@@ -140,7 +140,9 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    the `Fixes` line: close it `completed` with a `note` carrying that line. A closed issue without that evidence takes the
    same comment first, so the close carries its citation. When the write is refused and the issue's state does **not**
    show the resolution, block on the upstream task that fixes the trust gate (the product bug filed for it), never on a
-   manual relabel by the owner: a relabel by an agent records the owner as vouching for an issue he never saw.
+   manual relabel by the owner: a relabel by an agent records the owner as vouching for an issue he never saw. A refusal
+   the Trust rule intends, the newest fix-label event untrusted, is that rule's stop and not a gate defect: log it and
+   stop, as step 1 says.
 7. `not-real` closes `not_planned` with a `note` carrying `Not fixing: <the log line or path that disproves it>`. `already-fixed` closes
    `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
    `out-of-scope` closes `not_planned` with a `note` carrying `Not fixing: <where the defect lives (the upstream project or owner), with the evidence>`; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
@@ -239,7 +241,7 @@ a task. Never edit your own handbook.
 A labelled-issue task is done when its issue is resolved, and only then: closed `completed` with the fixing PR merged and
 cited; or closed `not_planned` or as a duplicate with the reason; or explicitly parked by the owner on the issue. The
 issue's state on GitHub is the evidence, so the task comment carries `owner/name#number` with its URL, the resolution and
-the close's citation; a refused comment on the issue never keeps it open. A triage run is done when each issue it
-considered, on every maintained repo, has one verdict line; a new issue's run when that issue has its verdict and the task
+the close's citation; a refused comment on the issue never keeps open a task whose issue already shows the resolution. A
+triage run is done when each issue it considered, on every maintained repo, has one verdict line; a new issue's run when that issue has its verdict and the task
 comment names it as `owner/name#number`. A run ends with `task_finish` once its condition holds, or `task_block`
 (`blocked_by`) on the tasks it waits on, naming exactly what that is.
