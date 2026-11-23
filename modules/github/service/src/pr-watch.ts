@@ -147,7 +147,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<pr url>:<head>:<job id>` -> the same for a wedged check run
-    state.wedged ??= {};     // `<pr url>:<head>:<check name>` -> { job, at, accepted }: the first re-run asked for a wedged check run, kept across a re-run's replacement job
+    state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check name>` -> { at, done: [{ attempt, accepted }] }: the re-runs asked, kept across a replacement job
     state.wedgedTold ??= {}; // `<pr url>:<head>` -> when the task was told its check run is still wedged after a re-run
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
@@ -233,26 +233,28 @@ export function startPrWatch(o: PrWatchOptions) {
     }
     /**
      * A check run GitHub never gave a conclusion, while its Actions job has finished: re-run that job, so GitHub reposts the
-     * check run and the merge gate is no longer held by it. Once per check per head, with the refusal backoff `neverStarted`
-     * uses (a refused or unanswered re-run is asked again after five minutes, never counted as handled). Not on a
-     * cross-repository PR.
+     * check run and the merge gate is no longer held by it. Not on a cross-repository PR.
      *
      * The list is REST's own: it carries the full Actions job id in `details_url` (the rollup's `databaseId` is a 32-bit
      * GraphQL Int and no longer holds one), every page, and the job's `check_run_url` and `head_sha` prove the job belongs
-     * here. The bookkeeping is keyed by the check's suite and name at the head, so a re-run's replacement is the same stuck
-     * check rather than a new one, and the first ask's time is kept across refusals.
+     * here. A check's ledger is kept by its suite and name at the head, naming each check run re-run and when the first was
+     * asked: a re-run's replacement is the same check, so it is not re-run again; at most two checks per name and head are
+     * re-run (a workflow may have two jobs with one display name), and the first ask's time runs the report's clock.
+     *
+     * A refused or unanswered re-run backs off five minutes and is asked again, never counted as handled.
+     * Returns the stuck checks asked about at this head with their first ask's time, for the report.
      */
     async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
-      // The head's current check runs over REST (the latest of each name, every page): that list is complete where the
-      // rollup's first page is not, and it is fresher than the rollup read earlier in the pass. Only GitHub Actions' own,
-      // still unfinished checks have a job to re-run: another app's is not ours to fix.
+      const url = pr.url.toLowerCase();
+      // The head's current check runs, every page: that list is complete where the rollup's first page is not, and it is
+      // fresher than the rollup read earlier in the pass. Only GitHub Actions' own, still unfinished checks have a job to
+      // re-run: another app's is not ours to fix.
       const runs: Json[] = [];
       let total = 0;
-      const url = pr.url.toLowerCase();
       try {
         for (let page = 1; page <= 5; page++) {
-          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${pr.headRefOid}/check-runs?filter=latest&per_page=100&page=${page}`);
+          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${pr.headRefOid}/check-runs?filter=all&per_page=100&page=${page}`);
           if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) break;
           runs.push(...listed.body.check_runs);
           total = Number(listed.body.total_count ?? 0);
@@ -260,20 +262,19 @@ export function startPrWatch(o: PrWatchOptions) {
         }
       } catch (e) { log("wedged check runs' read failed", { pr: pr.url, head: pr.headRefOid, err: String((e as Error).message).slice(0, 200) }); return []; }
       if (total && runs.length < total) log("wedged check runs only partly read", { pr: pr.url, head: pr.headRefOid, got: runs.length, total });
-      const current = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed");
       const out: { at: number; accepted: boolean }[] = [];
-      for (const c of current) {
-        const named = `${url}:${pr.headRefOid}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
+      for (const c of runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed")) {
+        const ledger = `${url}:${pr.headRefOid}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
         const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head: pr.headRefOid, check: String(c.name ?? "").slice(0, 100) }); continue; }
         const key = `${url}:${pr.headRefOid}:${jobId}`;
-        const seen: { job: number; at: string; accepted?: boolean } | undefined = state.wedged[named];
+        const seen: { at: string; done: { check: number; accepted: boolean }[] } | undefined = state.wedged[ledger];
         const prior: string | undefined = state.reran[key];
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         let job: { status: number; body: any };
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
         catch (e) {
-          // Not read, so nothing is known about the replacement: the report waits for a later read rather than guess.
+          // Not read, so nothing is known about this job: the report waits for a later read rather than guess.
           log("wedged check run's job read failed", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
           state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
@@ -281,14 +282,20 @@ export function startPrWatch(o: PrWatchOptions) {
         }
         // Only a job that itself finished, on this head, for this very check run can leave it wedged: a replacement still
         // queued or running is not stuck, and a details URL can never point another job here.
-        if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== pr.headRefOid || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
+        // A re-run replacement is a later attempt of this same suite and display name (a job of another attempt number, which
+        // a sibling job sharing the name never is); one we already accepted is reported from the ledger, not re-run again.
+        const attempt = Number(job.body?.run_attempt ?? 1);
+        const known = seen?.done.find((d) => d.accepted && d.attempt < attempt);
+        if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== pr.headRefOid || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) {
+          if (known && Date.now() - Date.parse(seen!.at) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(seen!.at), accepted: true });
+          continue;
+        }
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt)) continue;
-        // A re-run GitHub took for this check: a replacement that wedges again is not re-run a second time, and one that is
-        // still within the grace period is a fresh job, not a stuck one. The first ask is not moved, so the report still goes
-        // out once the interval since it has passed.
-        if (seen?.accepted) {
-          if (Date.now() - completedAt >= WEDGED_GRACE_MS) out.push({ at: Date.parse(seen.at), accepted: true });
+        // A replacement of a re-run this head accepted is not re-run a second time. Its report still goes out once the
+        // interval since the first ask has passed; one finished inside the grace period is fresh, not stuck.
+        if (known) {
+          if (Date.now() - completedAt >= WEDGED_GRACE_MS) out.push({ at: Date.parse(seen!.at), accepted: true });
           continue;
         }
         // A refusal still backing off: nothing is asked this tick, but its first ask still counts towards the report.
@@ -297,22 +304,29 @@ export function startPrWatch(o: PrWatchOptions) {
           continue;
         }
         if (Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a freshly finished job's check run can lag
-        // Recorded before the request, so one that never answers is still reported after the interval rather than lost.
-        state.wedged[named] ??= { job: Number(jobId), at: new Date().toISOString() };
+        // Bounded: two jobs sharing one display name are each re-run once; beyond that the head is reported, not re-run.
+        const accepted = seen?.done.filter((d) => d.accepted) ?? [];
+        if (accepted.length >= 2) { out.push({ at: Date.parse(seen!.at), accepted: true }); continue; }
+        // Recorded before the request, so one that never answers is still reported after the interval rather than lost. A
+        // refused attempt is dropped from the ledger, so it is asked again after its backoff instead of blocking the check.
+        state.wedged[ledger] ??= { at: new Date().toISOString(), done: [] };
+        state.wedged[ledger].done.push({ attempt, accepted: false });
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
         catch (e) {
           log("wedged check run's re-run failed to send", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
+          state.wedged[ledger].done.pop(); // unanswered: asked again after the backoff, not counted as handled
           state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
-          out.push({ at: Date.parse(state.wedged[named].at), accepted: false });
+          out.push({ at: Date.parse(state.wedged[ledger].at), accepted: false });
           continue;
         }
         log(r.status < 300 ? "wedged check run's job re-run" : "wedged check run's re-run refused", { pr: pr.url, head: pr.headRefOid, job: jobId, status: r.status });
-        if (r.status < 300) state.wedged[named] = { ...state.wedged[named], accepted: true };
+        if (r.status < 300) state.wedged[ledger].done.at(-1)!.accepted = true;
+        else state.wedged[ledger].done.pop();
         state.reran[key] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
         save();
-        out.push({ at: Date.parse(state.wedged[named].at), accepted: r.status < 300 });
+        out.push({ at: Date.parse(state.wedged[ledger].at), accepted: r.status < 300 });
       }
       return out;
     }
