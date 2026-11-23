@@ -115,8 +115,9 @@ outcomes:
   there are none or several).
 - `profile:` on an agent: `crew` (the default), `engineer` or `check`: which tools, writes and computer its kernel jobs get.
 - `max_parallel` on an agent: how many of its kernel jobs run at once, each on its own task.
-- `prompts:` in a module: handbook sections it adds to every crew (`profile: crew`) agent's handbook, after the kernel's
-  Approvals: `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
+- `prompts:` in a module: handbook sections it adds after the kernel's Approvals, to every crew (`profile: crew`) agent
+  and to an Engineer (`profile: engineer`) whose entry's `when` admits it (only `chief-of-staff`'s Replying rule does
+  today): `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
   leading blank lines included); `{{fleet_issues}}` is filled in at compile, `{{memory}}` when a job starts (and each chat lane turn), from the agent's memory, fenced as data. `when` and `unless` test `tools`
   (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
   anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.

@@ -101,15 +101,16 @@ routines:
       task_recurring, task_merge, task_cancel and task_comment, and the GitHub, Primer and meeting-note writes that section names.
       Then close this task with one line saying what you did.
     concurrency: always_enqueue
-# How every crew agent works with the owner and the fleet (spec §2.1: workflow prose, not the kernel's).
+# How every crew agent works with the owner and the fleet (spec §2.1: workflow prose, not the kernel's); of these, only the
+# Replying rule reaches an Engineer too (the run's final message is its one task comment).
 prompts:
-  - { id: how-we-work, file: prompts/how-we-work.md, order: first }
-  - { id: progress, file: prompts/progress.md, order: first }
+  - { id: how-we-work, file: prompts/how-we-work.md, order: first, when: { fields: { profile: crew } } }
+  - { id: progress, file: prompts/progress.md, order: first, when: { fields: { profile: crew } } }
   - { id: replying, file: prompts/replying.md, order: first }
   - { id: asking, file: prompts/asking.md, order: first, when: { tools: [ owner_channel.notify ] } }
   # The chief of staff settles the other agents' questions for the owner (kernel escalate.ts files one task per ask).
   - { id: deciding, file: prompts/deciding.md, when: { roles: [ fleet-admin ] } }
-  - { id: privacy, file: prompts/privacy.md }
+  - { id: privacy, file: prompts/privacy.md, when: { fields: { profile: crew } } }
   # {{fleet_issues}}: the "Fleet issues" task where heartbeat runs note missed wake-ups (setup finds or creates it).
   - { id: heartbeat, file: prompts/heartbeat.md, order: last, when: { fields: { heartbeat: true } } }
 settings:

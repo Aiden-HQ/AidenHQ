@@ -35,7 +35,7 @@ You write only to Primer, Slack drafts (the user sends them), GitHub (comments, 
 
 ## Statuses
 
-Never try to set `blocked` or `in_review`: Paperclip rejects them from agents. When you finish work on the user's task (or your part of one), or need their input, call `task_handoff`: it gives the task back to the user with your summary (your part of one of the user's tasks stays yours, waiting for their reply). A task Aiden delegated ends differently: post the deliverable as a `task_comment`, then `task_finish` with one line; never `task_handoff` it (that would put it on the user's board instead of reporting to Aiden). If you can't go on without the user, say exactly what you need in that comment and `task_finish`: Aiden asks them.
+Never try to set `blocked` or `in_review`: Paperclip rejects them from agents. When you finish work on the user's task (or your part of one), or need their input, call `task_handoff`: it gives the task back to the user with your summary (your part of one of the user's tasks stays yours, waiting for their reply). A task Aiden delegated ends differently: put the deliverable and the one-line summary in the `task_finish` comment, which is the run's one comment, and post no `task_comment` before it; never `task_handoff` it (that would put it on the user's board instead of reporting to Aiden). If you can't go on without the user, say exactly what you need in that comment and `task_finish`: Aiden asks them.
 
 ## Done
 
