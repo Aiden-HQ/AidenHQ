@@ -504,6 +504,9 @@ connectionState = createConnectionState({
   // The module's display name from its module.yaml (compile: its sign-in label, else its setup flow title), else its name.
   label: (m) => modulesFile().modules?.[m]?.label ?? m,
   connections, grants: () => grantsTable().agents ?? {},
+  // The code-host orgs still configured (the github sync's list plus the agents orgs): an sso/restricted need on any other
+  // org is stale, and tick clears it (connection-state.ts).
+  orgs: () => [...(modulesFile().repos?.orgs ?? []), ...repos().agentsOrgs],
   // The board's origin (declared below; read only when a need is routed, after the listeners are up).
   boardUrl: () => boardOrigins[0] ?? "http://localhost:3121",
 });

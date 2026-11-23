@@ -61,3 +61,20 @@ test("POST /v1/connections/ok clears one org's need for its module, and refuses 
   assert.equal((await post({ connection: "slack", org: "acme" })).status, 400, "a connection of another module");
   assert.equal((await post({ connection: "github", org: "acme" }, "gh-key")).status, 403, "a connection's own key holds none of the module's roles");
 });
+
+test("a need on an org no longer configured is not in the digest, and the connection tick clears it", async (t) => {
+  // github_orgs (modules.json repos.orgs) holds acme only: the removed org is not in the configured list. The owner channel
+  // reads the digest (kernel.notify), as in production.
+  const configured = { modules: { ...modules.modules, "owner-channel": { roles: ["kernel.notify"], token: "router_token" } }, repos: { orgs: ["acme"] } };
+  const k = await kernel(t, { connect: true, modules: configured, secrets: { ...secrets, router_token: "router-key" }, connections });
+  const need2 = { ...need, org: "removed" };
+  assert.equal((await k.v1("POST", "/v1/connections/need", { connection: "github", need }, "github-key")).status, 200);
+  assert.equal((await k.v1("POST", "/v1/connections/need", { connection: "github", need: need2 }, "github-key")).status, 200);
+  // A digest line only lists a row once it has lasted 10 minutes (CONFIRMED): age both, as a need reported a while ago.
+  k.records.db.exec("UPDATE connection_state SET since = since - 700000");
+  assert.deepEqual((await k.v1("GET", "/v1/connections/needs", undefined, "router-key")).json.lines, [
+    "Github isn't connected (acme restricts outside apps): https://github.com/settings/connections/applications/cid",
+  ]);
+  k.connectionState.tick();
+  assert.deepEqual(k.records.db.prepare("SELECT key FROM connection_state ORDER BY key").all().map((r) => r.key), ["github:restricted:acme"]);
+});

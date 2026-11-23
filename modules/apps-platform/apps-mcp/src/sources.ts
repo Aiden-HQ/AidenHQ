@@ -95,6 +95,39 @@ export interface WarehouseDeps {
   sql: (script: string, vars: Record<string, string>) => Promise<string>; // superuser psql (platform.ts); stdout
 }
 
+/**
+ * The Fleet Ops detector's two scope lists (`/internal/sources`), from src_meta.ingest_run.
+ *   failing: every pass failed for 24 hours, counted from its first failure after its last good pass; recording within 8 days.
+ *   short:   its last two passes that reported a total both fetched fewer records than the source held; recording within 8 days.
+ * Both apply one condition: a scope whose newest pass carries `status = 'retired'` (its source stopped syncing it, e.g. an
+ * org dropped from the source's configured list) is in neither list. Its last failure would otherwise stay "latest" for up
+ * to 8 days while nothing syncs it; a re-added scope whose latest pass is normal again returns by itself.
+ */
+export async function scopeIssues(d: Pick<WarehouseDeps, "pool">): Promise<{ failing: Record<string, unknown>[]; short: Record<string, unknown>[] }> {
+  // Each scope's newest pass; a retired newest row drops the scope from both lists below.
+  const latest = `latest AS (SELECT DISTINCT ON (source, scope) source, scope, error, status, finished_at FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC)`;
+  const f = await d.pool.query(
+    `WITH ok AS (SELECT source, scope, max(finished_at) AS last_ok FROM src_meta.ingest_run WHERE error IS NULL GROUP BY source, scope), ${latest}
+     SELECT l.source, l.scope, left(l.error, 500) AS error, ok.last_ok AS since
+     FROM latest l LEFT JOIN ok USING (source, scope)
+     WHERE l.error IS NOT NULL AND l.finished_at > now() - interval '8 days' AND l.status IS DISTINCT FROM 'retired'
+       AND (SELECT min(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = l.source AND i.scope = l.scope AND i.error IS NOT NULL AND i.finished_at > COALESCE(ok.last_ok, '-infinity')) < now() - interval '24 hours'
+     ORDER BY l.source, l.scope`,
+  );
+  const sh = await d.pool.query(
+    `WITH ${latest}
+     SELECT t.source, t.scope, (array_agg(t.total ORDER BY t.finished_at DESC))[1] AS total, (array_agg(t.fetched ORDER BY t.finished_at DESC))[1] AS fetched
+     FROM (SELECT i.source, i.scope, i.total, i.fetched, i.finished_at, row_number() OVER (PARTITION BY i.source, i.scope ORDER BY i.finished_at DESC) AS n
+           FROM src_meta.ingest_run i JOIN latest l USING (source, scope)
+           WHERE i.error IS NULL AND i.total IS NOT NULL AND l.status IS DISTINCT FROM 'retired') t
+     WHERE t.n <= 2
+     GROUP BY t.source, t.scope
+     HAVING count(*) = 2 AND bool_and(t.fetched < t.total) AND max(t.finished_at) > now() - interval '8 days'
+     ORDER BY t.source, t.scope`,
+  );
+  return { failing: f.rows, short: sh.rows };
+}
+
 /** The readonly pool, from the warehouse app's vault dir (apps-mcp's /secrets/apps); undefined while it has no password. */
 export function readonlyPool(secretsDir: string): pg.Pool | undefined {
   let password = "";

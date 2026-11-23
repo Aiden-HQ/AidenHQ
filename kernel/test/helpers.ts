@@ -154,7 +154,10 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
     const issue = async (id) => { const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`); return r.status === 200 && r.json?.id ? r.json : undefined; };
     connectionState = createConnectionState({ db: records.db, idle, wakes, queue: notify.queue, log: logf, issue,
       comments: async (id) => { const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}/comments?order=desc&limit=50`); return Array.isArray(r.json) ? r.json : []; },
-      agentName: async () => "Aiden", label: (m) => m.charAt(0).toUpperCase() + m.slice(1), connections: connectionsTable, grants: () => grantsTable().agents ?? {}, boardUrl: () => "http://board.example" });
+      agentName: async () => "Aiden", label: (m) => m.charAt(0).toUpperCase() + m.slice(1), connections: connectionsTable, grants: () => grantsTable().agents ?? {},
+      // The code-host orgs still configured, as main.ts builds them: modules.json's github_orgs plus the agents orgs.
+      orgs: () => [...(((modulesFile() as { repos?: { orgs?: string[] } }).repos?.orgs) ?? []), ...((repos as { agentsOrgs?: string[] }).agentsOrgs ?? [])],
+      boardUrl: () => "http://board.example" });
   }
   const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections: connectionsTable, kindOf: writes.kindOf, callAs: proxy.callAs, log: logf });
   const work = createWork({ db: records.db, records });
