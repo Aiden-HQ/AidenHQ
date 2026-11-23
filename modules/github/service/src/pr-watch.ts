@@ -293,7 +293,7 @@ export function startPrWatch(o: PrWatchOptions) {
         if (asked?.accepted) { out.push({ at: Date.parse(asked.at), accepted: true, name: String(c.name ?? "") }); continue; }
         const tell = () => {
           const now = { at: Date.parse(state.wedged[name].at), accepted: state.wedged[name].accepted, name: String(c.name ?? "") };
-          const i = out.findIndex((o) => o.at === now.at);
+          const i = out.findIndex((o) => o.name === now.name);
           if (i >= 0) out[i] = now; else out.push(now);
         };
         if (asked) tell();
