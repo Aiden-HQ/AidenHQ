@@ -246,6 +246,11 @@ test("a task-closed refusal on a wake is never dropped silently: the owner is to
   await k.dispatch.tick();
   assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "kept for its lease");
   assert.equal(k.inbox.length, 0, "claimed");
+  // A timed wait that came due after its task finished has nothing to do: dropped without a word to anyone.
+  k.inbox.push(wake("wait:t1:1:0", "wait: check the deploy"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "wait:t1:1:0"], "a closed task's wait is stale");
+  assert.equal(k.notified.length, 1, "the owner hears nothing of it");
 });
 
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
