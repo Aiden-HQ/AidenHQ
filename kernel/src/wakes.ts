@@ -407,10 +407,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // A chat reopened here also files the owner's word that reopened it, even when first sight put the comment cursor past
     // it: without that wake the chat would sit open with nothing to run it. A comment the cursor has not passed is filed as on
     // any task, whether or not it reopens the chat: on one that stays closed admission refuses the wake, and dispatch tells the
-    // owner rather than passing the words silently.
+    // owner rather than passing the words silently. On a closed task only the owner's own word is filed: an agent's or a
+    // module's comment there (a grader's verdict on the task it just closed) needs no run and must not reach the owner.
+    const stillClosed = closed(issue.status);
     let commentFiled = false;
     for (const c of all) {
       if (c.deletedAt || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
+      if (stillClosed && !ownerWord(c)) continue;
       if (ms(c.createdAt) <= boundary && !(reopenedHere && ownerWord(c) && ms(c.createdAt) > finishedAt)) continue;
       commentFiled = insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown") || commentFiled;
     }
