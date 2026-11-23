@@ -24,5 +24,6 @@ description: "Works the day's deep-look log lines, gives every owner interruptio
    Each item listed as waiting on the owner is checked first: its task or detector key against live state (a generation, an
    ingest run, the host) and against "Owner decisions". One that is already done or that a decision settles is left out and
    settled the way `fleet-check` settles verified work: the evidence goes on its task (finished where you may close it), an
-   agent waiting on the owner for that answer is handed to the chief of staff to answer from the decision, and a skipped source's open key goes through `fleet-check`'s source triage.
+   agent waiting on the owner for that answer is left untouched and handed to the chief of staff (the evidence and its task
+   id in the handoff) to answer from the decision, and a skipped source's open key goes through `fleet-check`'s source triage.
 5. Log `digest sent`; `task_finish`.
