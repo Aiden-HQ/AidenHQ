@@ -781,6 +781,7 @@ function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Ass
           catalog={catalog}
           recommended={(models?.models ?? []).map((m) => bare(m, prefix))}
           accepts={{ tools: true }}
+          own={assignee.engine === "claude" || assignee.engine === "codex"}
           none={`Default${assignee.defaultModel ? ` (${shortId(bare(assignee.defaultModel, prefix))})` : ""}`}
           onOpen={refreshCatalog}
           onChange={(m) => void update({ model: m && prefix + m })}

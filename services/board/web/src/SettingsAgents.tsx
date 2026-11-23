@@ -205,7 +205,8 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
               ))}
               <div className="ui-field">
                 <span className="ui-field-label">Model</span>
-                <ModelPicker label={`${r.title}: model`} value={bare(model, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} none="The agent's model" onOpen={refreshCatalog} onChange={(m) => (setModel(m && prefix + m), setReview(false))} />
+                <ModelPicker label={`${r.title}: model`} value={bare(model, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} none="Default" onOpen={refreshCatalog} onChange={(m) => (setModel(m && prefix + m), setReview(false))} />
+                <span className="ui-field-help">Default is the model the routine's module sets, or the agent's when it sets none.</span>
               </div>
               {review && items.length ? (
                 <ChangePreview items={items} was={was} onCancel={() => setReview(false)} onDone={() => setReview(false)} />

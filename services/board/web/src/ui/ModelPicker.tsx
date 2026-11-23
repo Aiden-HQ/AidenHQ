@@ -6,7 +6,7 @@ import { useMemo, useState } from "react";
 import { contextText, listing, priceText, shortId, type Accepts, type CatalogModel } from "../../../src/model-catalog";
 import { SearchPicker } from "./SearchPicker";
 
-export function ModelPicker({ value, onChange, catalog, recommended, accepts, label, none, disabled, onOpen }: {
+export function ModelPicker({ value, onChange, catalog, recommended, accepts, label, none, own, disabled, onOpen }: {
   value: string;
   onChange: (id: string) => void;
   /** null while it loads, [] when it couldn't be read. */
@@ -15,6 +15,8 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
   recommended: readonly string[];
   /** What the engine can run (its module's `accepts`). */
   accepts?: Accepts;
+  /** The engine takes only its own models (a native Claude or Codex): the recommended list is all there is, the catalog is not offered. */
+  own?: boolean;
   label: string;
   /** Words for "no model of its own" (the agent's, a default): a first entry that picks "" (and what the button says while none is set). */
   none?: string;
@@ -24,7 +26,7 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
 }) {
   const [query, setQuery] = useState("");
   const [older, setOlder] = useState(false);
-  const list = useMemo(() => listing({ catalog: catalog ?? [], recommended, accepts, query, showOlder: older, current: value || undefined }), [catalog, recommended, accepts, query, older, value]);
+  const list = useMemo(() => listing({ catalog: own ? [] : catalog ?? [], recommended, accepts, query, showOlder: older, current: value || undefined }), [catalog, own, recommended, accepts, query, older, value]);
   const sections = useMemo(() => [...(none && !query ? [{ title: "", items: [{ id: "", node: <span className="ui-mp-id">{none}</span> }] }] : []), ...list.sections.map((s) => ({
     title: s.title,
     items: s.rows.map((r) => {
@@ -43,7 +45,7 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
     }),
   }))], [list, none, query]);
   const count = list.sections.reduce((n, s) => n + s.rows.length, 0);
-  const unavailable = catalog !== null && !catalog.length;
+  const unavailable = !own && catalog !== null && !catalog.length;
   const shown = value ? shortId(value) : none ?? "Choose a model";
   return (
     <SearchPicker
@@ -61,7 +63,7 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
       empty={unavailable ? "OpenRouter's model list isn't available." : query ? `No model matches "${query}".` : "No models to show."}
       footer={
         <>
-          <span>{unavailable ? "Showing the recommended models" : catalog === null ? "Loading the model list…" : `${count} model${count === 1 ? "" : "s"}`}</span>
+          <span>{unavailable ? "Showing the recommended models" : !own && catalog === null ? "Loading the model list…" : `${count} model${count === 1 ? "" : "s"}`}</span>
           {!query && (older || list.older > 0) && (
             <button type="button" className="ui-mp-older" aria-pressed={older} onClick={() => setOlder(!older)}>
               {older ? "Hide older versions" : `Show older versions (${list.older})`}
