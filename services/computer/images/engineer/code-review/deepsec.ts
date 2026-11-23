@@ -67,17 +67,20 @@ const RESOLVED = ["fixed", "false-positive", "accepted-risk", "duplicate"];
 
 /** deepsec's jsonl events (init's --output jsonl, on stdout); other lines are skipped. */
 const events = (stdout: string) => stdout.split("\n").flatMap((l) => { try { const j = l.startsWith("{") ? JSON.parse(l) : undefined; return j && typeof j === "object" ? [j] : []; } catch { return []; } });
+/** deepsec's own words for a failed batch (`Batch 2/5 failed: <the error>`), in its jsonl progress or its human output alike. */
+const BATCH = /Batch \d+\/\d+ failed: .*/;
 /**
- * What deepsec said about its stop, one line, as data: its last failure, limit or phase-error message, else stderr's last lines.
- * A summary of failed batches ("AI processing completed with N failed batch(es)") comes after the reason itself, an earlier
- * progress or log message that reports an error (a 402 from the gateway): that reason leads.
+ * What deepsec said about its stop, one line, as data. init (jsonl): its last failure, limit or phase-error message; when that only
+ * counts failed batches ("AI processing completed with N failed batch(es)"), the last batch's own error leads (a gateway 402).
+ * The other steps (human output): the last failed batch's error on stdout, else stderr's last lines, else stdout's.
  */
 export function said(r: { stdout: string; stderr: string }) {
   const ev = events(r.stdout);
   const msg = ev.map((e) => (e.type === "failure" || e.type === "limit" ? e.message : e.type === "setup_event" && e.event?.type === "phase-error" ? e.event.message : undefined)).filter((m) => typeof m === "string" && m).at(-1);
-  const detail = ev.map((e) => (e.type === "setup_event" && ["progress", "log"].includes(e.event?.type) ? e.event.message : undefined))
-    .filter((m) => typeof m === "string" && /error|failed|cap_reached|\b[45]\d\d\b/i.test(m)).at(-1);
-  const text = msg === undefined ? r.stderr.trim().split("\n").slice(-3).join(" ") : detail && /failed batch/i.test(msg) && detail !== msg ? `${detail} (${msg})` : msg;
+  const lines = r.stdout.split("\n").map((l) => { try { const j = l.startsWith("{") ? JSON.parse(l) : undefined; return j ? String(j.event?.message ?? j.message ?? "") : l; } catch { return l; } });
+  const batch = lines.map((l) => BATCH.exec(l.replace(/\x1b\[[0-9;]*m/g, ""))?.[0]).filter(Boolean).at(-1);
+  const tail = (t: string) => t.trim().split("\n").slice(-3).join(" ");
+  const text = msg !== undefined ? (batch && /failed batch/i.test(msg) ? `${batch} (${msg})` : msg) : batch ?? (tail(r.stderr) || tail(r.stdout.replace(/\x1b\[[0-9;]*m/g, "")));
   return String(text).replace(/[\x00-\x1f\x7f«»]+/g, " ").trim();
 }
 
