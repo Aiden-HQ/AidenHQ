@@ -4,7 +4,7 @@
 //   GET /internal/slack/<method> one read the src_slack gap sync makes, sent to Slack as the owner; Slack's answer as given
 // Both need slack-live's own key (slack_relay_key). Only the gap sync's read methods pass.
 import { timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 /** What the gap sync reads (slack-live src/sources.ts): nothing that writes, nothing else. */
@@ -22,6 +22,13 @@ export interface RelayDeps {
 /** Answers the relay's paths; false for every other path. */
 export function relay(o: RelayDeps) {
   const doFetch = o.fetchImpl ?? fetch;
+  // auth.test's answer for the stored sign-in, kept until the token file changes (a new sign-in).
+  let whoami: { at: number; p: Promise<{ user_id: string | null; team_id: string | null }> } | undefined;
+  const ask = async () => {
+    const r = (await (await doFetch("https://slack.com/api/auth.test", { headers: await o.headers(), signal: AbortSignal.timeout(15_000) })).json()) as { ok?: boolean; user_id?: unknown; team_id?: unknown; error?: unknown };
+    if (!r.ok || typeof r.user_id !== "string") throw new Error(`auth.test: ${String(r.error ?? "no user")}`);
+    return { user_id: r.user_id, team_id: typeof r.team_id === "string" ? r.team_id : null };
+  };
   return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const url = new URL(req.url ?? "/", "http://x");
     if (!url.pathname.startsWith("/internal/")) return false;
@@ -34,7 +41,15 @@ export function relay(o: RelayDeps) {
     if (!o.signedIn()) return (send(409, { error: "Slack is not connected" }), true);
     if (url.pathname === "/internal/owner") {
       const t = JSON.parse(readFileSync(o.tokenFile, "utf8")) as { user_id?: unknown; team_id?: unknown };
-      return (send(200, { user_id: typeof t.user_id === "string" ? t.user_id : null, team_id: typeof t.team_id === "string" ? t.team_id : null }), true);
+      if (typeof t.user_id === "string") return (send(200, { user_id: t.user_id, team_id: typeof t.team_id === "string" ? t.team_id : null }), true);
+      // A sign-in stored without its user id: Slack's auth.test says whose token it is (asked once per sign-in).
+      const at = statSync(o.tokenFile).mtimeMs;
+      if (whoami?.at !== at) whoami = { at, p: ask() };
+      const r = await whoami.p.catch((e: unknown) => {
+        whoami = undefined;
+        throw e;
+      });
+      return (send(200, r), true);
     }
     const method = url.pathname.slice("/internal/slack/".length);
     if (!url.pathname.startsWith("/internal/slack/") || !RELAYED.has(method)) return (send(404, { error: "not relayed" }), true);

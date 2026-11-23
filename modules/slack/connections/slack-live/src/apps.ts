@@ -24,6 +24,22 @@ const WORDS: Record<string, string> = {
   ratelimited: "Slack is busy. Try again in a minute.",
 };
 
+const isMap = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+/**
+ * Our manifest added onto the app's own: maps merge, lists keep the app's entries and add ours (a slash command by its name),
+ * a value ours sets wins, and the app's display information (its name, description, colour) stays as the owner has it.
+ */
+export function onto(theirs: unknown, ours: unknown, key = ""): unknown {
+  if (key === "display_information" && isMap(theirs)) return theirs;
+  if (isMap(theirs) && isMap(ours)) return Object.fromEntries([...new Set([...Object.keys(theirs), ...Object.keys(ours)])].map((k) => [k, k in ours ? (k in theirs ? onto(theirs[k], ours[k], k) : ours[k]) : theirs[k]]));
+  if (Array.isArray(theirs) && Array.isArray(ours)) {
+    const id = (x: unknown) => (isMap(x) && typeof x.command === "string" ? x.command : JSON.stringify(x));
+    const mine = new Set(ours.map(id));
+    return [...theirs.filter((x) => !mine.has(id(x))), ...ours];
+  }
+  return ours;
+}
+
 export interface AppStatus {
   app_id: string | null;
   part: Part | null;
@@ -63,7 +79,11 @@ export function apps(store: Store, fetchImpl: typeof fetch = fetch) {
       const manifest = MANIFESTS[input.part];
       let id = input.app_id;
       let clientId: string | undefined;
-      if (id) await call("apps.manifest.update", input.token, { app_id: id, manifest: JSON.stringify(manifest) });
+      if (id) {
+        // The app's own settings stay (scopes the owner added, other redirect URLs, its name): ours are added on top.
+        const current = (await call("apps.manifest.export", input.token, { app_id: id })).manifest;
+        await call("apps.manifest.update", input.token, { app_id: id, manifest: JSON.stringify(onto(current, manifest)) });
+      }
       else {
         const r = await call("apps.manifest.create", input.token, { manifest: JSON.stringify(manifest) });
         id = String(r.app_id ?? "");

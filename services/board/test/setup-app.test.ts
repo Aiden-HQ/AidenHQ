@@ -39,9 +39,12 @@ it("makes the app with the pasted token and saves only the flow's own public val
   orgSecrets = ["chat_client_id"];
   expect(await call({ token: TOKEN, part: "advanced" })).toMatchObject({ saved: [] });
   expect(saves).toHaveLength(1);
+  // "Use my own app instead": the owner's own app replaces it.
+  expect(await call({ token: TOKEN, part: "basic", own: true })).toMatchObject({ saved: ["chat_client_id"] });
+  expect(saves).toHaveLength(2);
 
   // A token that isn't one never leaves the board; only the owner makes the app.
   await expect(call({ token: "xoxb-nope", part: "basic" })).rejects.toThrow(/doesn't look like/);
   await expect(call({ token: TOKEN, part: "basic" }, false)).rejects.toThrow(/only the owner/);
-  expect(sent.filter((s) => s.body)).toHaveLength(2);
+  expect(sent.filter((s) => s.body)).toHaveLength(3);
 });

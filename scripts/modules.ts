@@ -576,6 +576,10 @@ export function setupFlows(defs: Obj, compiled: Obj, settings: Obj = {}) {
     if (advanced && !f.capabilities?.length) fail(`${where}: an advanced flow lists the capabilities it unlocks`);
     if (!advanced && (f.capabilities || f.label) && !flows.some((x: Obj) => x.module === f.module && x.mode === "advanced")) fail(`${where}: label and capabilities on a basic flow name its option beside an advanced flow`);
     if (advanced && (f.label || f.app)) fail(`${where}: label and app belong on the basic flow`);
+    // A basic flow beside an advanced one is shown as the first of two options (SetupPaths.tsx): its paste fields (or app)
+    // and its sign-in, nothing else. A module that needs more there keeps one flow.
+    if (!advanced && flows.some((x: Obj) => x.module === f.module && x.mode === "advanced") && (f.connect_url != null || f.choose || f.pair_url != null || f.ways))
+      fail(`${where}: a basic flow with an advanced one has no connect_url, choose, pair_url or ways (only its fields and sign-in show)`);
     if (advanced && !flows.some((x: Obj) => x.module === f.module && x.mode !== "advanced")) fail(`${where}: an advanced flow needs the module's basic flow`);
     if (f.pair_url != null && flows.some((x: Obj) => x !== f && x.module === f.module && x.pair_url != null)) fail(`${where}: one pairing per module`);
     f.fields = fieldsOf(f.module, f.secrets, where);

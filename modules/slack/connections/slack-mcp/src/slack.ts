@@ -15,7 +15,8 @@ export const WRITE_SCOPES = ["chat:write", "reactions:write", "channels:write", 
 export function slackAnswer(json: Record<string, unknown>): Record<string, unknown> {
   if (json.ok === false) return { error: String(json.error ?? "refused") };
   const src = (json.authed_user as Record<string, unknown> | undefined)?.access_token ? (json.authed_user as Record<string, unknown>) : json;
-  const user = src.id ?? json.user_id;
+  // Whose token it is: under authed_user even when Slack puts the token itself at the top level.
+  const user = (json.authed_user as Record<string, unknown> | undefined)?.id ?? src.id ?? json.user_id;
   const team = (json.team as { id?: unknown } | undefined)?.id;
   return {
     access_token: src.access_token,

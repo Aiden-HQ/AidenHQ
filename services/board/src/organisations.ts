@@ -29,7 +29,19 @@ const CHOSEN = "organisation";
 /** The organisation whose app a module's client is, until the owner pastes another (setup-flows.ts clears it). */
 export const appliedKey = (module: string) => `organisation_client:${module}`;
 
+/**
+ * An instance from before per-module markers has only the organisation it chose: its modules' clients are that organisation's
+ * (the only way they were set then), so each gets its marker once.
+ */
+export function backfillApplied(store: Store, orgs: OrganisationPoint[]) {
+  const org = orgs.find((o) => o.id === store.meta(CHOSEN));
+  if (!org || store.meta("organisation_client_backfilled")) return;
+  for (const mod of new Set(org.clients.map((c) => c.module))) if (!store.meta(appliedKey(mod))) store.setMeta(appliedKey(mod), org.id);
+  store.setMeta("organisation_client_backfilled", "1");
+}
+
 export function organisationRoutes(d: { orgs: OrganisationPoint[]; accounts: KernelAuth; store: Store; onApplied?: () => void }): SetupRoute[] {
+  backfillApplied(d.store, d.orgs);
   const routes: SetupRoute[] = [
     {
       method: "GET",

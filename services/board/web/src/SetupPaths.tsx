@@ -30,7 +30,9 @@ export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved
   const fields = flow.fields ?? [];
   const advFields = a.fields ?? [];
   // The organisation's app is the sign-in: its client is never the person's to make.
-  const orgSigns = org !== null && fields.length > 0 && fields.every((f) => app?.org_secrets.includes(f.secret));
+  // "Use my own app instead": the owner's own app replaces the organisation's sign-in client once made or pasted.
+  const [own, setOwn] = useState(false);
+  const orgSigns = !own && org !== null && fields.length > 0 && fields.every((f) => app?.org_secrets.includes(f.secret));
   const clientReady = orgSigns || fields.every((f) => flow.present[f.secret]);
   const botSaved = advFields.length > 0 && advFields.every((f) => flow.present[f.secret]);
   const botStarted = botSaved || advFields.some((f) => flow.present[f.secret]) || status?.part === "advanced";
@@ -72,7 +74,14 @@ export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved
       ) : clientReady && flow.signin ? (
         <ConnectButton c={{ id: flow.signin, label: flow.title, signIn: { state: "missing", offer: flow.scopes, mode: flow.signin_mode } }} variant="primary" />
       ) : (
-        <p className="setup-hint">Make the app first; then connect here and allow access.</p>
+        <>
+          <p className="setup-hint">Make the app first; then connect here and allow access.</p>
+          {/* An app made already (its Client ID didn't save, or it was made in Slack): its Client ID goes here, no second app. */}
+          <details className="paths-more">
+            <summary>Already have the app? Paste its Client ID</summary>
+            <SecretFields module={flow.module} fields={fields} present={flow.present} done={clientReady} reload={reload} fail={fail} onSaved={onSaved} />
+          </details>
+        </>
       )}
       <details className="paths-more">
         <summary>What you grant</summary>
@@ -84,15 +93,28 @@ export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved
 
   const basicSteps: Stage[] = [
     { key: "app", title: orgSigns ? `${org}'s app` : "Your Slack app", state: clientReady ? "done" : "open", body: orgSigns ? (
-        <p className="setup-hint">{org} runs the sign-in app for you, so there is nothing to make. Connect with your {org} account.</p>
-      ) : clientReady ? (
+        <>
+          <p className="setup-hint">{org} runs the sign-in app for you, so there is nothing to make. Connect with your {org} account.</p>
+          <button className="link-btn setup-own-app" onClick={() => setOwn(true)}>
+            Use my own app instead
+          </button>
+        </>
+      ) : clientReady && !own ? (
         <p className="setup-hint">Your app is ready{status?.app_id ? <> (<a href={status.url ?? appUrl} target="_blank" rel="noreferrer">open it in Slack ↗</a>)</> : null}.</p>
       ) : app ? (
-        <MakeApp module={flow.module} app={app} part="basic" action="Make my app" reload={reload} fail={fail} onSaved={onSaved} />
+        <>
+          <MakeApp module={flow.module} app={app} part="basic" action="Make my app" own={own} reload={reload} fail={fail} onSaved={onSaved} />
+          {own && (
+            <details className="paths-more">
+              <summary>Made one already? Paste its Client ID</summary>
+              <SecretFields module={flow.module} fields={fields} present={{}} done={false} reload={reload} fail={fail} onSaved={onSaved} />
+            </details>
+          )}
+        </>
       ) : (
         <SecretFields module={flow.module} fields={fields} present={flow.present} done={clientReady} reload={reload} fail={fail} onSaved={onSaved} />
       ) },
-    connect,
+    ...(flow.signin ? [connect] : []),
   ];
 
   // The bot's app: made here, or one made before that predates today's manifest (its update), or the sign-in app made here
@@ -122,7 +144,7 @@ export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved
                 ? "The bot is added to the app you sign in with."
                 : "One app for both: the sign-in and the bot."}
           </p>
-          <MakeApp module={flow.module} app={app} part="advanced" action={orgSigns ? "Make my bot app" : addTo || ownUnknown ? "Add the bot" : "Make my app"} appId={addTo} {...(ownUnknown ? { askAppId: "" } : {})} reload={reload} fail={fail} onSaved={onSaved} />
+          <MakeApp module={flow.module} app={app} part="advanced" action={orgSigns ? "Make my bot app" : addTo || ownUnknown ? "Add the bot" : "Make my app"} appId={addTo} {...(ownUnknown ? { askAppId: "" } : {})} own={own} reload={reload} fail={fail} onSaved={onSaved} />
         </>
       ) : null,
   };
@@ -145,7 +167,7 @@ export function SetupPaths({ flow, board, org, reload, fail, restartFor, onSaved
         </>
       ),
     },
-    connect,
+    ...(flow.signin ? [connect] : []),
     ...(a.pair_url
       ? [
           {
@@ -229,7 +251,7 @@ function PathCard({ id, picked, onPick, title, why, gives, lacks, effort, admin,
  * The token paste that makes (or updates) the app: the token goes to the module once and is never kept, here or there.
  * `appId` updates that app; `askAppId` asks which app to update (prefilled when known).
  */
-function MakeApp({ module, app, part, action, appId, askAppId, reload, fail, onSaved, onDone }: { module: string; app: SetupAppView; part: Path; action: string; appId?: string; askAppId?: string; reload: () => Promise<void>; fail: (e: unknown) => void; onSaved: (ms: number) => void; onDone?: () => void }) {
+function MakeApp({ module, app, part, action, appId, askAppId, own, reload, fail, onSaved, onDone }: { module: string; app: SetupAppView; part: Path; action: string; appId?: string; askAppId?: string; own?: boolean; reload: () => Promise<void>; fail: (e: unknown) => void; onSaved: (ms: number) => void; onDone?: () => void }) {
   const [token, setToken] = useState("");
   const [id, setId] = useState(askAppId ?? "");
   const [busy, setBusy] = useState(false);
@@ -244,7 +266,7 @@ function MakeApp({ module, app, part, action, appId, askAppId, reload, fail, onS
   const go = async () => {
     setBusy(true);
     try {
-      const r = await api.setupApp(module, token.trim(), part, askAppId !== undefined ? id.trim() : appId);
+      const r = await api.setupApp(module, token.trim(), part, askAppId !== undefined ? id.trim() : appId, own);
       setToken("");
       if (r.saved.length) onSaved(60_000);
       onDone?.();

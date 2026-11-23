@@ -133,8 +133,8 @@ export interface SetupFlowDeps {
   settings: () => SettingsView;
   /** Files settings changes as the owner's own task (the board's settings change path); resolves to its task. */
   file: (changes: SettingChangeInput[]) => Promise<{ identifier: string }>;
-  /** The secrets the chosen organisation supplies: an app the module makes never replaces them. */
-  orgSecrets?: () => string[];
+  /** The secrets of `module` an organisation's app supplies now: an app the module makes replaces them only when asked (`own`). */
+  orgSecrets?: (module: string) => string[];
   /** A flow's state changed: the open boards refresh their setup state (the `setup` event). */
   onSetupChange?: () => void;
   fetchImpl?: typeof fetch;
@@ -337,7 +337,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? pairing?.paired === true : true) }))(advanced);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
-            const app = appSpec ? { app: { label: appSpec.label, pattern: appSpec.pattern, help: appSpec.help, ...(appSpec.console_url ? { console_url: appSpec.console_url } : {}), status: (await appStatusOf(full)) ?? null, org_secrets: (d.orgSecrets?.() ?? []).filter((x) => [...(f.secrets ?? []), ...(advanced?.secrets ?? [])].includes(x)) } } : {};
+            const app = appSpec ? { app: { label: appSpec.label, pattern: appSpec.pattern, help: appSpec.help, ...(appSpec.console_url ? { console_url: appSpec.console_url } : {}), status: (await appStatusOf(full)) ?? null, org_secrets: (d.orgSecrets?.(f.module) ?? []).filter((x) => [...(f.secrets ?? []), ...(advanced?.secrets ?? [])].includes(x)) } } : {};
             const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
             // How long the wait has left, not when it ends: the page counts it down on its own clock, which need not agree with the board's.
             const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
@@ -358,7 +358,8 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         const { secret, value } = parsed.data;
         if (!f.secrets?.includes(secret) && !f.advanced?.secrets?.includes(secret)) throw new AccountError(400, "not one of this flow's secrets");
         const saved = await d.accounts.call<{ ok: boolean; restarted?: string[] }>("save_secret", who, { module: f.module, secret, value });
-        d.store.delMeta(appliedKey(f.module)); // a pasted client is the owner's own, not an organisation's
+        // A pasted client is the owner's own, not an organisation's; a bot token beside the organisation's sign-in changes nothing.
+        if (!d.orgSecrets || d.orgSecrets(f.module).includes(secret)) d.store.delMeta(appliedKey(f.module));
         // The kernel recreates those services after answering; remember it briefly, so the page (and a reload) can wait for
         // them instead of treating the module's own "not ready" answer as a failure. Saves go out together (one POST per
         // field), so a save that restarts nothing must not clear a marker another save just set: only an expired one goes.
@@ -409,13 +410,15 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         if (!who.account.owner) throw new AccountError(403, "only the owner can make the app");
         const f = flow(m[1]!);
         if (!f.app) throw new AccountError(404, "this module makes no app");
-        const parsed = z.object({ token: z.string().min(1).max(600), part: z.enum(["basic", "advanced"]), app_id: z.string().max(40).optional() }).strict().safeParse(body);
+        // `own`: the owner's own app replaces the organisation's sign-in client (a bot beside it never does).
+        const parsed = z.object({ token: z.string().min(1).max(600), part: z.enum(["basic", "advanced"]), app_id: z.string().max(40).optional(), own: z.boolean().optional() }).strict().safeParse(body);
         if (!parsed.success) throw new AccountError(400, "a token and an option are required");
         if (!new RegExp(f.app.pattern).test(parsed.data.token.trim())) throw new AccountError(400, `That doesn't look like an ${f.app.label}.`);
-        const r = await appCall(f, { ...parsed.data, token: parsed.data.token.trim() });
+        const { own, ...sent } = parsed.data;
+        const r = await appCall(f, { ...sent, token: sent.token.trim() });
         // Only the basic flow's fields: a new app's public client. Never a token of the advanced part, whatever the module says.
         const fields = f.fields ?? [];
-        const supplied = new Set(d.orgSecrets?.() ?? []);
+        const supplied = new Set(own ? [] : (d.orgSecrets?.(f.module) ?? []));
         const saved: string[] = [];
         let restarting = false;
         for (const [secret, value] of Object.entries((r.secrets ?? {}) as Record<string, unknown>)) {
@@ -424,6 +427,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
           const out = await d.accounts.call<{ ok: boolean; restarted?: string[] }>("save_secret", who, { module: f.module, secret, value });
           restarting ||= Boolean(out.restarted?.length);
           saved.push(secret);
+          d.store.delMeta(appliedKey(f.module)); // the client is the owner's own app now, not an organisation's
         }
         if (restarting) d.store.setMeta(RESTARTING(f.module), String(Date.now() + RESTART_MS));
         changed();
