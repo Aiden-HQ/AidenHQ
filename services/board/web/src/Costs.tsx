@@ -487,7 +487,7 @@ function ModelTable({ d, focus, onOpen }: { d: CostLedger; focus: string | null;
     { key: "hit", label: "Cache hit", value: (r) => cacheHit(r) ?? -1, render: (r) => (cacheHit(r) == null ? "—" : pct(cacheHit(r)!)), title: "Cached input over all input" },
     { key: "ms", label: "Avg latency", cls: "ct-wide", value: (r) => r.ms ?? -1, render: (r) => secs(r.ms), title: "Mean time per successful call (calls that recorded one)" },
     { key: "errors", label: "Errors", value: (r) => r.errors, render: (r) => (r.errors ? <span className="ct-bad">{r.errors}</span> : "0"), title: "Calls that ended in a refusal or an upstream failure" },
-    { key: "interrupted", label: "Interrupted", value: (r) => r.interrupted, render: (r) => compact(r.interrupted), title: "Calls a kernel restart cut off; their spend is what OpenRouter billed for them" },
+    { key: "interrupted", label: "Interrupted", value: (r) => r.interrupted, render: (r) => compact(r.interrupted), title: "Calls cut off before their final usage (a kernel restart, a cut or usage-less stream); their spend is what OpenRouter billed for them" },
   ];
   const { head, sorted } = useSort(cols, "usd");
   return (

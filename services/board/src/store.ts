@@ -211,7 +211,7 @@ export class Store {
 
   /**
    * One usage record; the same key again (a retried report) is ignored, except over an `unsettled` call (the gateway's
-   * reservation for a call a kernel restart cut off), which its trued-up `interrupted` record replaces. An unsettled call's
+   * reservation for a call cut off before its final usage), which its trued-up `interrupted` record replaces. An unsettled call's
    * reserved amount is the gateway's fail-closed hold, not spend: it counts as unpriced here.
    */
   addUsage(u: UsageRecord): void {

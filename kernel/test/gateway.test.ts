@@ -144,12 +144,13 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
   now += 120_000;
   assert.equal((await call(jobToken("ag1", "run3", exp))).status, 401);
 
-  // OpenRouter's stream breaks mid-body: the call still lands in the ledger (upstream_aborted), charged its reservation (the input's estimate).
+  // OpenRouter's stream breaks mid-body: the call still lands in the ledger, charged its reservation (the input's estimate and
+  // its 4,096 output tokens) as `unsettled` until OpenRouter's record of its generation trues it up.
   await call(jobToken("ag1", "run4"));
   await call(jobToken("ag1", "run4"), { model: "breaks" }).catch(() => {});
-  const aborted = (await usage()).filter((r) => r.status === "upstream_aborted");
+  const aborted = (await usage()).filter((r) => r.status === "unsettled");
   assert.deepEqual(aborted.map((r) => r.runId), ["run4"]);
-  assert.ok(aborted[0].costUsd > 0 && aborted[0].costUsd < 0.0001, String(aborted[0].costUsd));
+  assert.ok(aborted[0].costUsd > 0.004096 && aborted[0].costUsd < 0.0042, String(aborted[0].costUsd));
 
   // A chat task's cap counts the UTC day: refused at $0.09 today, open again tomorrow.
   for (const r of ["c1", "c2", "c3"]) await call(jobToken("ag1", r));
@@ -290,7 +291,7 @@ test("gateway: a control plane blip never settles a chat run as capped for life,
   assert.equal(gw.db.prepare("SELECT perpetual FROM runs").get().perpetual, 1);
   for (let i = 0; i < 100 && gw.inflight() > 0; i++) await new Promise((ok) => setTimeout(ok, 10));
   assert.equal(gw.inflight(), 0);
-  assert.equal(gw.db.prepare("SELECT status FROM calls").get().status, "upstream_aborted");
+  assert.equal(gw.db.prepare("SELECT status FROM calls").get().status, "unsettled"); // its generation is trued up later
 });
 
 test("gateway: Anthropic format: a check token's call settles at the streamed usage; only allowed betas and fields go up; a server tool is refused", async (t) => {
@@ -344,6 +345,7 @@ async function streamRig(t, settings = {}) {
   const token = mintToken("job-secret", { kind: "reviewer" });
   // A 30 KB prompt: reserved at about 10,000 input tokens x $1/M = $0.01.
   rig.body = { model: "m", stream: true, input: "x".repeat(30_000) };
+  rig.gw = gw;
   rig.call = async (path = "responses", body = rig.body) => { const r = await fetch(`${front.url}/api/v1/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); return { status: r.status, text: await r.text() }; };
   rig.rows = () => gw.db.prepare("SELECT status, cost_usd, input, output FROM calls ORDER BY rowid").all().map((x) => ({ ...x }));
   rig.fresh = () => { gw.db.exec("DELETE FROM calls"); rig.posts = 0; };
@@ -381,11 +383,23 @@ test("gateway: a stream that fails in-band is booked free as stream_error (OpenR
   await rig.call();
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
 
-  // A clean end with neither usage nor a finish (no error event) fails the same way.
+  // A clean end with neither usage nor a finish (no error event) is no in-band failure: OpenRouter may have billed it, so it
+  // keeps its reservation (input estimate plus its output bound), then is settled from OpenRouter's record of its generation.
   rig.fresh();
   rig.answers = [streamed(sse([...opened("gen-c"), { type: "response.output_text.delta", delta: "Hi" }]))];
   await rig.call();
-  assert.deepEqual(rig.rows().map((x) => x.status), ["stream_error"]);
+  [row] = rig.rows();
+  assert.equal(row.status, "unsettled");
+  assert.ok(row.cost_usd > 0.01, String(row.cost_usd));
+  rig.answers = [(res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { model: "m", total_cost: 0.0042, native_tokens_prompt: 10_000, native_tokens_completion: 3 } }))];
+  await rig.gw.trueUp();
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["interrupted", 0.0042]]);
+  // Without a generation id it stays at the reservation, never $0.
+  rig.fresh();
+  rig.answers = [streamed(sse([{ type: "response.output_text.delta", delta: "Hi" }]))];
+  await rig.call();
+  [row] = rig.rows();
+  assert.deepEqual([row.status, row.cost_usd > 0.01], ["stream_error", true]);
   assert.doesNotMatch(JSON.stringify(rig.logged), /secret provider text/, "provider and model text stay out of the journal");
 });
 
@@ -442,12 +456,28 @@ test("gateway: an answer that failed before any output is re-run once when its e
   assert.equal(rig.posts, 1);
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
 
-  // A re-run is cap-checked: once the call's own reservation ($0.01) is past the install's day limit ($0.005 here), it goes to the caller as it came.
+  // A re-run is cap-checked against everything but the call's own hold (which already covers it): its own reservation past
+  // the install's day limit ($0.005 here) still re-runs; other spend reaching the limit meanwhile sends the failure to the caller.
   const capped = await streamRig(t, { install_day_usd: 0.005 });
   capped.answers = [streamed(sse([...opened("gen-c"), failed("gen-c", "rate_limit_exceeded")])), streamed(completed)];
+  assert.match((await capped.call()).text, /response\.completed/);
+  assert.equal(capped.posts, 2);
+  capped.fresh();
+  const other = () => { const t0 = new Date(); capped.gw.db.prepare("INSERT INTO calls (key, at, day, run_key, kind, component, model, cost_usd, status) VALUES ('other', ?, ?, 'r', 'agent', 'agent', 'm', 1, 'ok')").run(t0.toISOString(), t0.toISOString().slice(0, 10)); };
+  capped.answers = [(res) => { other(); streamed(sse([...opened("gen-c"), failed("gen-c", "rate_limit_exceeded")]))(res); }, streamed(completed)];
   assert.match((await capped.call()).text, /response\.failed/);
   assert.equal(capped.posts, 1);
-  assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error"]);
+  assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error", "ok"]); // the call, then the other spend
+
+  // An attempt that just ended before any output (no error event) is re-run too, but not booked free: its row keeps the input
+  // estimate, trued up from its generation.
+  rig.fresh();
+  rig.answers = [streamed(sse(opened("gen-n"))), streamed(completed)];
+  assert.match((await rig.call()).text, /response\.completed/);
+  assert.equal(rig.posts, 2);
+  const rows = rig.rows();
+  assert.deepEqual(rows.map((x) => x.status), ["ok", "unsettled"]);
+  assert.equal(rows[1].cost_usd, Math.ceil(JSON.stringify(rig.body).length / 3) / 1e6); // the input estimate at $1 a million
 
   // Keep-alives past the first-output wait (a quarter of the idle cut here): passed through as they come, and still billed.
   rig.fresh();
@@ -461,7 +491,8 @@ test("usage tap: an echoed finish_reason is no finish, and completed usage outli
   const echoed = usageTap(true);
   echoed.feed(sseOf({ type: "response.created", response: { id: "gen-1", error: null, tools: [{ parameters: { example: { finish_reason: "stop" } } }] } }));
   echoed.done();
-  assert.match(echoed.failure() ?? "", /no usage or finish/);
+  assert.match(echoed.failure()?.reason ?? "", /no usage or finish/);
+  assert.equal(echoed.failure()?.inBand, false);
   const completed = usageTap(true);
   completed.feed(sseOf({ id: "gen-2", model: "m", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.02 } }, { id: "gen-2", error: { code: 500 }, usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 } }));
   assert.deepEqual([completed.done()?.output, completed.done()?.costUsd, completed.failure()], [5, 0.02, undefined]);

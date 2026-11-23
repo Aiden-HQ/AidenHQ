@@ -61,6 +61,27 @@ test("limits count real cost: a $2 limit with $0.51 spent runs the next call, ou
   assert.equal(s2.seen[0].max_tokens, 1024);
 });
 
+test("concurrent calls share the room: each holds its granted output, so two in flight can't both buy all of it", async (t) => {
+  // $0.015 a day; flat: $1 a million output, input free. Both calls are held upstream until released.
+  const held = [];
+  const r = await rig(t, { dayUsd: 0.015, answer: (body, res, n) => held.push(() => usage(0.001)(body, res, n)) });
+  const both = Promise.all([r.call({ model: "flat", messages: [] }), r.call({ model: "flat", messages: [] })]);
+  try {
+    for (let i = 0; i < 200 && r.seen.length < 2; i++) await sleep(5);
+    // One got the 10,000 tokens it asked for ($0.01); the other only what was left ($0.005), never the whole room again.
+    const [less, more] = r.seen.map((b) => b.max_tokens).sort((a, b) => a - b);
+    assert.equal(more, 10_000);
+    assert.ok(less >= 4999 && less <= 5000, String(less)); // $0.015 - $0.01 in floating point
+    const holds = r.rows().map((x) => { assert.equal(x.status, "reserved"); return x.cost_usd; });
+    assert.ok(holds[0] + holds[1] <= 0.015 + 1e-12, String(holds));
+  } finally {
+    for (const f of held.splice(0)) f(); // released even when an assertion fails
+  }
+  assert.deepEqual((await both).map((x) => x.status), [200, 200]);
+  // Settled at what OpenRouter billed.
+  assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.001], ["ok", 0.001]]);
+});
+
 test("the day limit keeps its value: at it refused, a reservation past it refused, bounded output, true cost settled", async (t) => {
   const r = await rig(t, { dayUsd: 0.05, answer: usage(0.03) });
   // The first call asks for 20,000 output tokens: cut to the model's 10,000. It settles at the $0.03 billed.
@@ -111,11 +132,12 @@ test("A12: stream cut, restart mid-call, no usage, a usage block without its cos
     },
   });
   // A stream cut off and an answer with no usage keep their reservation, the input's estimate ($1 a million, a token per 3
-  // bytes of the body), until OpenRouter's record of the generation trues it up.
-  const est = Math.ceil(JSON.stringify({ model: "priced", messages: ["cut"] }).length / 3) / 1e6;
+  // bytes of the body) plus the output it was granted (10,000 tokens at $2 a million), as `unsettled` until OpenRouter's record
+  // of the generation trues it up.
+  const est = Math.ceil(JSON.stringify({ model: "priced", messages: ["cut"] }).length / 3) / 1e6 + 0.02;
   await r.call({ model: "priced", messages: ["cut"] }).catch(() => {});
   assert.equal((await r.call({ model: "priced", messages: ["none"] })).status, 200);
-  assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["upstream_aborted", est], ["ok", est]]);
+  assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["unsettled", est], ["unsettled", est]]);
   // The cut stream's generation id was kept from its first event (the true-up's handle).
   assert.equal(r.gw.db.prepare("SELECT gen FROM calls ORDER BY rowid LIMIT 1").get().gen, "gen-1");
   // No cost in the usage: settled at tokens × the list's price, never at 0.
