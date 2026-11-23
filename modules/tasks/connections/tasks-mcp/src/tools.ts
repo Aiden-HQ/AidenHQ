@@ -2026,8 +2026,8 @@ Object.assign(TOOLS, {
     inputSchema: {
       type: "object",
       properties: {
-        comment_id: { type: "string", description: "id of the owner's comment on the chat task, from task_comments" },
-        target: { type: "string", description: "the engineer's task identifier, e.g. WOR-45" },
+        comment_id: { type: "string", description: "id of the owner's comment on the chat task, from task_comments; for the message he opened a board chat with (its description), the chat task's own id" },
+        target: { type: "string", description: "the engineer's or Researcher's task identifier, e.g. WOR-45" },
       },
       required: ["comment_id", "target"],
       additionalProperties: false,

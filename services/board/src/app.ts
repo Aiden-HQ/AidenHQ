@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
@@ -60,6 +60,9 @@ import { CreateViewSchema, UpdateViewSchema, ViewSpecSchema, type View } from ".
 import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
+/** The board's record of a chat's opening message (store meta key prefix + the chat's id). */
+const CHAT_OPENING = "chat-opening:";
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
@@ -816,6 +819,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    * the wait's), with the options of the agent's newest reply that offered some. Only work the chat's own agent or the owner put
    * under it counts: another agent can't hang a task under his chat to collect his words.
    */
+  /** A board chat's opening message, as the board recorded it when the owner started the chat: a comment of his, id = the chat's id. */
+  const openingOf = (chat: Issue, me: string): Comment | undefined => {
+    const raw = store.meta(`${CHAT_OPENING}${chat.id}`);
+    if (!raw) return undefined;
+    const { sha, length, createdAt } = JSON.parse(raw) as { sha: string; length: number; createdAt: string };
+    const description = String(chat.description ?? "");
+    if (sha256(description) !== sha) throw new Refused("refused: the chat's opening message was edited since the owner wrote it; ask the owner again");
+    return { id: chat.id, body: description.slice(0, length), authorType: "user", authorUserId: me, createdAt } as Comment;
+  };
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
   async function asksOf(chat: Issue, kids: Issue[], states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>) {
@@ -1041,11 +1053,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const { comment_id, target } = parse(RelaySchema, body);
           const ctx = await context();
           const chats = (await pc.openIssues()).filter((i) => i.assigneeAgentId === cos.id && (i.labels ?? []).some((l) => l.name === "chat"));
-          let source: { chat: Issue; comment: Comment } | undefined;
-          for (const chat of chats) {
-            const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
-            if (comment) source = { chat, comment };
-          }
+          // The chat's own id names its opening message; any other id, a comment on one of the chats.
+          const opened = chats.find((c) => c.id === comment_id);
+          const opening = opened && openingOf(opened, ctx.me);
+          let source: { chat: Issue; comment: Comment } | undefined = opened && opening ? { chat: opened, comment: opening } : undefined;
+          if (!opened)
+            for (const chat of chats) {
+              const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
+              if (comment) source = { chat, comment };
+            }
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
           if (!REF.test(target)) throw new Refused("refused: target must be a task identifier");
@@ -1747,7 +1763,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         const title = input.text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
-        const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
+        const description = `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`;
+        const issue = await pc.createIssue({ title, description, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
+        // The owner's own opening message (a request: the setup wizard's welcome chat has none), so Aiden can pass it on like his
+        // later messages (/internal/relay, comment_id = the chat's own id). The board keeps only a digest of the description
+        // as created, never the text: an agent's edit to the description no longer matches, so it is never passed on.
+        if (req) store.setMeta(`${CHAT_OPENING}${issue.id}`, JSON.stringify({ sha: sha256(description), length: input.text.length, createdAt: new Date().toISOString() }));
         log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
         return { identifier: issue.identifier };
       },
