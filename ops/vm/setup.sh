@@ -146,6 +146,17 @@ fi
 # Distro updates, after the holds so they never move a pinned package.
 apt-get -y upgrade
 
+# Security updates install by themselves (unattended-upgrades, the distro's own security origins; the held vendor packages
+# above stay held, so the pins keep moving them). The host never reboots on its own: the owner reboots when
+# /var/run/reboot-required exists.
+cat >/etc/apt/apt.conf.d/20auto-upgrades <<'CONF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+CONF
+cat >/etc/apt/apt.conf.d/52aidenhq-unattended <<'CONF'
+Unattended-Upgrade::Automatic-Reboot "false";
+CONF
+
 # The browser for Engineer jobs (aidenhq-browse: screenshots and click-throughs of the app they build):
 # AidenHQ's one browser, as in the browser image (services/computer/images/browser): agent-browser 0.41.2 and Chrome for
 # Testing 157.0.8103.78 (2026-11-11, critical CVE fixes; supply-chain exception), checksummed, root-owned under /opt; the runner binds it read-only into every job. Move

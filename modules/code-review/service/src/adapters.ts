@@ -58,6 +58,24 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
   };
 }
 
+/** The previous findings ride in PREVIOUS_FIELDS json spec fields (the kernel holds 16 KB each): `previous`, `previous_b`, … The
+ * budget leaves room for an entry that doesn't fit the end of a field. */
+export const PREVIOUS_FIELDS = 6, PREVIOUS_BUDGET = PREVIOUS_FIELDS * 13_500;
+const FIELD_MAX = 15_000;
+function shards(findings: unknown[]): Record<string, string> {
+  let cut = 0;
+  const out: unknown[][] = Array.from({ length: PREVIOUS_FIELDS }, () => []);
+  let at = 0, size = 0;
+  for (const f of findings) {
+    const n = JSON.stringify(f).length + 1;
+    // A finding that fits no field stays open (never marked fixed unseen); the first field says how many were left out.
+    if (size + n > FIELD_MAX && out[at]!.length) { if (at === PREVIOUS_FIELDS - 1) { cut++; continue; } at++; size = 0; }
+    out[at]!.push(f);
+    size += n;
+  }
+  return Object.fromEntries(out.map((l, i) => [i ? `previous_${"bcdef"[i - 1]}` : "previous", JSON.stringify(i ? { findings: l } : { findings: l, cut })]));
+}
+
 /**
  * The check job's spec, by profile (module.yaml check_jobs; every declared field always sent, each a string of its kind).
  * `code-review` (a combo, or one model option: combo.engine `skill:<id>` with the catalog's harness and skill, or an engine):
@@ -67,23 +85,6 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
  * empty. option and lens are the catalog option's (empty for a combo); setup_files a pending deepsec setup branch's files.
  * `code-review-tools` (the selected tool options, token-free): the base (a tree's: the commit itself) and the options (toolSpec).
  */
-/** The previous findings ride in PREVIOUS_FIELDS json spec fields (the kernel holds 16 KB each): `previous`, `previous_b`, … The
- * budget leaves room for an entry that doesn't fit the end of a field. */
-export const PREVIOUS_FIELDS = 6, PREVIOUS_BUDGET = PREVIOUS_FIELDS * 13_500;
-const FIELD_MAX = 15_000;
-function shards(findings: unknown[]): Record<string, string> {
-  const out: unknown[][] = Array.from({ length: PREVIOUS_FIELDS }, () => []);
-  let at = 0, size = 0;
-  for (const f of findings) {
-    const n = JSON.stringify(f).length + 1;
-    // A finding that fits no field stays open (never marked fixed unseen).
-    if (size + n > FIELD_MAX && out[at]!.length) { if (at === PREVIOUS_FIELDS - 1) continue; at++; size = 0; }
-    out[at]!.push(f);
-    size += n;
-  }
-  return Object.fromEntries(out.map((l, i) => [i ? `previous_${"bcdef"[i - 1]}` : "previous", JSON.stringify({ findings: l })]));
-}
-
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   const tree = s.target === "tree";
   const base = tree ? s.head : s.merge_base;
@@ -197,7 +198,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // (`addressed`, `guidance`) that no post renders, so what is sent is picked, never what is left after stripping.
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
-      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
+      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 200), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
       return filed(async () => (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args: withoutInstanceDetails(args), task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string });
     },
     async status(s: Status) {

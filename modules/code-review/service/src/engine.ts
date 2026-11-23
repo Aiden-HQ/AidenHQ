@@ -478,19 +478,26 @@ export function createEngine(d: EngineDeps) {
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
   /** What a run rechecks (spec.previous, shared over PREVIOUS_FIELDS spec fields of 16 KB): every gating finding with its evidence,
    * every answered one, every other open one. Texts shrink before a finding is left out; one that can't fit even bare stays open
-   * (never marked fixed unseen). */
-  function recheckList(repo: string, n: number) {
+   * (never marked fixed unseen; the check says how many were left out). */
+  function recheckList(repo: string, n: number, seed: string) {
     // Findings closed by a reply (fixed, disputed, by design, won't fix): rechecked only for a fix or reason that is unsafe.
     const claimed = all<{ id: string; path: string; line: number; title: string; claim: string }>("SELECT id, MIN(path) path, MIN(line) line, MIN(title) title, MAX(claim) claim FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND outcome NOT IN ('open_at_merge', 'open_at_close') GROUP BY id ORDER BY MAX(rowid) DESC", repo, n)
-      .map((f) => ({ id: f.id, severity: "important", path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), claim: f.claim.slice(0, 300) }));
+      .map((f) => ({ id: f.id, severity: "important", path: f.path, line: f.line, title: f.title.slice(0, 80), claim: f.claim.slice(0, 300) }));
     const open = stillOpen(repo, n);
     const gating = open.filter((f) => f.gating), other = open.filter((f) => !f.gating);
     const size = (v: unknown) => JSON.stringify(v).length;
-    const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
+    const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
       ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
     let out: object[] = [];
     for (const text of [400, 150, 0]) if (size((out = [...gating.map((f) => entry(f, text)), ...claimed, ...other.map((f) => entry(f, 0))])) <= PREVIOUS_BUDGET) break;
-    while (out.length && size(out) > PREVIOUS_BUDGET) out.pop();
+    // Over budget, each recheck of the PR starts the list one budget further on, so repeated rechecks cover every finding.
+    if (size(out) > PREVIOUS_BUDGET && out.length > 1) {
+      let fit = 0, room = PREVIOUS_BUDGET;
+      while (fit < out.length && (room -= size(out[fit]) + 1) >= 0) fit++;
+      const before = one<{ c: number }>("SELECT COUNT(*) c FROM runs WHERE repo = ? AND number = ? AND recheck = 1 AND id != ?", repo, n, seed)!.c;
+      const k = (before * Math.max(fit, 1)) % out.length;
+      out = [...out.slice(k), ...out.slice(0, k)];
+    }
     return out;
   }
   const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });
@@ -521,7 +528,7 @@ export function createEngine(d: EngineDeps) {
         if (a?.status !== "ahead") incremental_from = null;
       }
       run("UPDATE runs SET incremental_from = ?, merge_base = ? WHERE id = ?", incremental_from, merge_base, r.id);
-      const previous = r.recheck ? recheckList(r.repo, r.number) : [];
+      const previous = r.recheck ? recheckList(r.repo, r.number, r.id) : [];
       // The PR's stated intent, fenced as data in the brief; a fork's author is an outsider, so none.
       const pr = await d.source.get(r.repo, r.number);
       const intent = pr.fork ? "" : [pr.title, pr.body].filter(Boolean).join("\n\n");
