@@ -181,6 +181,13 @@ describe("scanMyReactions", () => {
     }) as unknown as typeof fetch;
     // A channel Slack won't describe is simply not shown, never a failed public search.
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: unclassified })).toMatchObject({ ok: true, messages: [] });
+    // A missing metadata scope means we can't tell what the channel is: the set is unknown, not silently short.
+    const noScope = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: false, error: "missing_scope" });
+      return Response.json(page([item("C1", "1.1")]));
+    }) as unknown as typeof fetch;
+    expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noScope })).toMatchObject({ ok: false });
     // A transient failure (not a scope answer) leaves the set unknown instead of silently short.
     const flaky = (async (url: string | URL) => {
       const u = new URL(String(url));
