@@ -68,5 +68,9 @@ export function upstreamArgs(name: string, args: Record<string, unknown>): Recor
   const plan = planReactionSearch(name, args);
   if (plan.kind !== "pass") throw new Error(`a filters-only ${plan.filter} search is answered from reactions.list, not sent upstream; call it on its own`);
   const query = searchQuery(args);
-  return query === undefined || query === args.query ? args : { ...args, query };
+  // `filters` is documented as a string; an array was folded into the query above, so forward it as the same string
+  // rather than leaving an array an upstream that follows the schema would refuse.
+  const filters = Array.isArray(args.filters) ? args.filters.filter((f): f is string => typeof f === "string" && Boolean(f.trim())).map((f) => f.trim()).join(" ") : args.filters;
+  const next = { ...args, ...(query !== undefined && query !== args.query ? { query } : {}), ...(Array.isArray(args.filters) ? { filters } : {}) };
+  return Object.keys(next).every((k) => next[k as keyof typeof next] === args[k]) ? args : next;
 }

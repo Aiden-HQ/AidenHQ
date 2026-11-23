@@ -9,7 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { SUPPORTED_PROTOCOL_VERSIONS, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { needsOwner, signedIn } from "./vendor/needs.js";
 
 /** Search tools whose `filters` Slack parses as search modifiers. */
@@ -369,7 +369,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // A later page failing after the caller's limit was already met must not throw away matches this answer holds: the
     // set read so far is real, and the continuation says it isn't complete. With nothing new to hand back, though, the
     // honest answer is the failure itself, never an empty page behind a cursor that would keep returning it.
-    if (!r.ok) return full && messages.length ? { ok: true, messages, nextCursor: continuation() } : r;
+    // Any stop after verified matches were found (a failed page, the deadline) hands them back with a continuation that
+    // resumes past this page, rather than discarding them for an error the next run would repeat from the start.
+    if (!r.ok) return messages.length && (full || cursor) ? { ok: true, messages, nextCursor: continuation() } : r;
     const { json } = r;
     // A page without an item list isn't an empty page: it is an answer this scan can't read, so the set is unknown.
     if (!Array.isArray(json.items)) return { ok: false, detail: "reactions.list answered without an item list" };
@@ -384,9 +386,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       if (plan.publicOnly || plan.scopes) {
         const show = await visible(message.channel);
         if (typeof show !== "boolean") {
-          // Once the requested page is full, a lookup that fails on the lookahead must not discard matches already found:
-          // hand them back with a continuation, which re-checks this channel when the caller resumes.
-          if (full) return { ok: true, messages, nextCursor: continuation() };
+          // A lookup that fails after matches were verified must not discard them: hand them back with a continuation,
+          // which re-checks this channel when the caller resumes. (No cursor to advance is still the failure itself.)
+          if (messages.length && (full || cursor)) return { ok: true, messages, nextCursor: continuation() };
           return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}) };
         }
         if (!show) continue;
@@ -608,6 +610,8 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   if (typeof message.id !== "string" && !Number.isInteger(message.id)) return false;
   // The transport's own media checks: without both accepted types and a JSON body it answers 406/415, and this route
   // must not answer a call the rest of the connection would refuse. (`accept` is a list, so a substring check is right.)
+  const version = req.headers["mcp-protocol-version"];
+  if (typeof version === "string" && version && !SUPPORTED_PROTOCOL_VERSIONS.includes(version)) return false;
   const accept = String(req.headers.accept ?? "");
   if (!accept.includes("application/json") || !accept.includes("text/event-stream")) return false;
   if (!/^application\/(?:[\w.+-]+\+)?json\b/i.test(String(req.headers["content-type"] ?? ""))) return false;

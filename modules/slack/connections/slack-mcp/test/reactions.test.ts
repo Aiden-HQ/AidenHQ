@@ -291,8 +291,13 @@ describe("scanMyReactions", () => {
       clock += 60_000;
       return Response.json(page([item("C1", "1.1")], `c${clock}`));
     }) as unknown as typeof fetch;
+    // The first page's match is verified, so the deadline hands it back with a continuation rather than discarding it.
     const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, now: () => clock, deadlineMs: 90_000 });
-    expect(scan).toMatchObject({ ok: false, detail: expect.stringContaining("deadline") });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.stringMatching(/^aidenhq:pos:/) });
+    // Nothing found before the deadline is still a failure, never an empty complete set.
+    const late = (async () => { clock += 60_000; return Response.json(page([item("C1", "1.1", "eyes")], `c${clock}`)); }) as unknown as typeof fetch;
+    clock = 0;
+    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: late, now: () => clock, deadlineMs: 90_000 })).toMatchObject({ ok: false, detail: expect.stringContaining("deadline") });
   });
 
   it("does not read a page with no item list as an empty last page", async () => {
@@ -635,6 +640,10 @@ describe("interception through the proxy", () => {
     const badId = await bad({ jsonrpc: "2.0", id: 1.5, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } });
     expect(badId.status).toBe(400);
     expect(seen).toEqual([]);
+    // An unsupported MCP protocol version: the transport answers 400, so this route must not answer it either.
+    const badVersion = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { "mcp-protocol-version": "1999-01-01" });
+    expect(badVersion.status).toBe(400);
+    expect(slackCalls).toBe(0);
     // Without an Accept that allows both types, the transport answers 406 and no Slack read happens.
     const noAccept = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { accept: "application/json" });
     expect(noAccept.status).toBe(406);

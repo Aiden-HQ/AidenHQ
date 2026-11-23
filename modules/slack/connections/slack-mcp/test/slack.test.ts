@@ -47,8 +47,9 @@ describe("slack-mcp search arguments", () => {
   });
 
   it("folds an array-form filters the same way the reaction planner reads it, so no modifier is silently lost", () => {
-    // Some clients send `filters` as an array; the fold joins it, so a term search keeps the reaction modifier.
-    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["hasmy::pushpin:"] })).toEqual({ query: "hello hasmy::pushpin:", filters: ["hasmy::pushpin:"] });
+    // Some clients send `filters` as an array; the fold joins it, so a term search keeps the reaction modifier, and the
+    // forwarded value is the documented string (an upstream that follows the schema would refuse the array).
+    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["hasmy::pushpin:"] })).toEqual({ query: "hello hasmy::pushpin:", filters: "hasmy::pushpin:" });
     expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["in:<#C0123456>", "after:2026-11-08"] })).toMatchObject({ query: "hello in:<#C0123456> after:2026-11-08" });
     // An array with nothing usable folds to nothing, exactly as an empty string does.
     expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["  ", ""] })).toMatchObject({ query: "hello" });
