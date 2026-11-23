@@ -59,6 +59,9 @@ if [[ "${AIDENHQ_SBOM_MIN_FREE_GB:-}" =~ ^[0-9]+$ ]] && [ "$AIDENHQ_SBOM_MIN_FRE
   min_free_gb="$AIDENHQ_SBOM_MIN_FREE_GB"
 fi
 free_gb() { df -Pk "$out" | awk 'NR == 2 { printf "%d", $4 / 1048576 }'; }
+# The same room in bytes: the pruning round decides what fits, and rounding a gigabyte either way there can drop an
+# image the disk could hold or keep one it cannot. Only the line's numbers are rounded.
+free_bytes() { df -Pk "$out" | awk 'NR == 2 { printf "%.0f", $4 * 1024 }'; }
 # A container is this scanner's own only by its label: a name is not proof of ownership, so nothing else's is ever removed.
 scanner_container() { [ "$(docker inspect -f '{{index .Config.Labels "aidenhq.oneoff"}}' "$1" 2>/dev/null || true)" = 1 ]; }
 n=0
@@ -602,8 +605,9 @@ save_wave() { # <wave>
 # Its bytes go back before the next target, and the line states the admitted total, its size, the largest archive, the
 # room and the shortfall.
 scan_wave() { # <first plan index>
-  local first="$1" i k target archive avail size_gb remaining=0 room_now sz_bytes largest
-  local -A size_of=()
+  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes
+  local floor_bytes=$(( min_free_gb * 1073741824 ))
+  local -A bytes_of=() gb_of=()
   local -a pending=()
   if [ "${#plan_target[@]}" -le "$first" ]; then return 0; fi
   while IFS=$'\t' read -r _ i; do [ -n "$i" ] && pending+=("$i"); done \
@@ -611,49 +615,52 @@ scan_wave() { # <first plan index>
   for i in "${pending[@]}"; do
     archive="${plan_source[$i]#archive:}"
     sz_bytes="$(stat -c %s "$archive" 2>/dev/null || echo 0)"
-    size_of[$i]="$(ceil_gb "$sz_bytes")"; remaining=$(( remaining + size_of[$i] ))
+    bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; remaining_bytes=$(( remaining_bytes + sz_bytes ))
   done
   while [ "${#pending[@]}" -gt 0 ]; do
     local -a rest=()
     for i in "${pending[@]}"; do
-      target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${size_of[$i]}"
-      if [ ! -f "$archive" ]; then remaining=$(( remaining - size_gb )); fail "$target" "docker save: its archive is gone"; continue; fi
-      avail="$(free_gb)"; room_now=$(( avail - min_free_gb ))
-      if [ "$avail" -lt "$min_free_gb" ] || [ "$size_gb" -gt "$room_now" ]; then rest+=("$i"); continue; fi
+      target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
+      if [ ! -f "$archive" ]; then remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); fail "$target" "docker save: its archive is gone"; continue; fi
+      avail_bytes="$(free_bytes)"; room_bytes=$(( avail_bytes - floor_bytes ))
+      if [ "$avail_bytes" -lt "$floor_bytes" ] || [ "${bytes_of[$i]}" -gt "$room_bytes" ]; then rest+=("$i"); continue; fi
       scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
-      rm -f "$archive"; remaining=$(( remaining - size_gb ))
+      rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] ))
     done
     # A round that scanned nothing: the archives themselves now exceed the room (their real bytes are the sizes read
-    # here, not the plan's). The capacity is what the wave had above the floor when it began; deleting archives does not
-    # change it, because every byte a deletion frees was already counted in `remaining`, so re-reading the free space
-    # would double-count it.
+    # here, not the plan's). The capacity is the room the wave began with plus everything still held; deleting an archive
+    # does not change it, because every byte a deletion frees was already in `remaining_bytes`, so re-reading the free
+    # space would count it twice. Bytes throughout: a gigabyte rounded either way here can drop an image the disk can
+    # hold, and only the line's numbers are rounded.
     if [ "${#rest[@]}" -eq "${#pending[@]}" ]; then
       local -a keep=()
-      local kk drop="" drop_size=0 largest=0 avail_now room_cap capacity
-      avail_now="$(free_gb)"; room_cap=$(( avail_now - min_free_gb ))
-      capacity=$(( room_cap + remaining ))
-      for k in "${rest[@]}"; do [ "${size_of[$k]}" -gt "$largest" ] && largest="${size_of[$k]}"; done
-      # First drop every archive that cannot fit even alone (twice its size over the capacity): no round can scan one,
-      # and giving it room would only crowd out an image that can. This is done before any viable archive is considered,
-      # so a wave that starts below the floor still keeps its scannable images.
+      local kk drop="" drop_bytes=0 largest_bytes=0 avail_now room_now capacity
+      avail_now="$(free_bytes)"; capacity=$(( avail_now - floor_bytes + remaining_bytes ))
+      local largest_gb=0
+      for k in "${rest[@]}"; do [ "${bytes_of[$k]}" -gt "$largest_bytes" ] && largest_bytes="${bytes_of[$k]}"; done
+      largest_gb="$(ceil_gb "$largest_bytes")"
+      # First drop every archive no round can scan (its own bytes twice over exceed the capacity): giving it room would
+      # only crowd out an image that can. This runs before any viable archive is considered, so a wave that starts below
+      # the floor still keeps its scannable images.
       for k in "${rest[@]}"; do
-        if [ $(( 2 * size_of[$k] )) -gt "$capacity" ]; then
-          i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${size_of[$k]}"
-          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_cap" $(( 2 * size_gb - capacity )))"
-          rm -f "$archive"; remaining=$(( remaining - size_gb )); continue
+        if [ $(( 2 * bytes_of[$k] )) -gt "$capacity" ]; then
+          i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$k]}"
+          room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
+          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining_bytes - bytes_of[$i] )) "$size_gb" "$largest_gb" "$(( room_now / 1073741824 ))" $(( (2 * bytes_of[$i] - capacity + 1073741823) / 1073741824 )))"
+          rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); continue
         fi
         keep+=("$k")
       done
       if [ "${#keep[@]}" -eq "${#rest[@]}" ]; then
-        # All could scan alone, so the others still held are what block them: drop the smallest, so the largest get the
-        # most room, and the rest are retried.
+        # All could scan alone, so the others still held are what block them: drop the smallest, so the rest get the most
+        # room, and retry them.
         for kk in "${rest[@]}"; do
-          if [ -z "$drop" ] || [ "${size_of[$kk]}" -lt "$drop_size" ]; then drop="$kk"; drop_size="${size_of[$kk]}"; fi
+          if [ -z "$drop" ] || [ "${bytes_of[$kk]}" -lt "$drop_bytes" ]; then drop="$kk"; drop_bytes="${bytes_of[$kk]}"; fi
         done
-        i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="$drop_size"
-        room_now=$(( $(free_gb) - min_free_gb ))
-        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_now" $(( size_gb - room_now )))"
-        rm -f "$archive"; remaining=$(( remaining - size_gb ))
+        i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
+        room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
+        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining_bytes - drop_bytes )) "$size_gb" "$largest_gb" "$(( room_now / 1073741824 ))" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"
+        rm -f "$archive"; remaining_bytes=$(( remaining_bytes - drop_bytes ))
         local -a dropped=()
         for k in "${rest[@]}"; do [ "$k" = "$drop" ] || dropped+=("$k"); done
         keep=("${dropped[@]}")
