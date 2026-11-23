@@ -1033,6 +1033,22 @@ test("a reply that arrived just before the close, never read, still keeps its wa
   assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "its wake is filed: dispatch surfaces the refusal to the owner");
 });
 
+test("a scan whose refreshed chat is already open under another agent files nothing past the reply", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  // AGENT's snapshot is a done chat; by the fresh read the owner had reopened it under OTHER and replied.
+  const closed = "2026-11-18T10:00:02.500Z";
+  const snapshot = { ...w.issues.chat, status: "done", updatedAt: closed, completedAt: closed };
+  Object.assign(w.issues.chat, { status: "todo", assigneeAgentId: OTHER, assigneeUserId: null, updatedAt: "2026-11-18T10:00:30.000Z" });
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  await w.wakes.scan(snapshot, { source: "poll" });
+  assert.deepEqual(w.rows("chat"), [], "no wake for the agent the chat left");
+  assert.equal(w.db.prepare("SELECT comment FROM wake_tasks WHERE task = 'chat'").get()?.comment ?? null, null, "its cursor is not moved past the reply");
+});
+
 test("a scan that sees a chat already reopened by a concurrent one files no second status wake", async () => {
   const w = world();
   w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });

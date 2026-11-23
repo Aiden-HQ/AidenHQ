@@ -391,9 +391,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       }
     }
     // The fresh read or the reopen's answer may name another assignee than the one this scan is for (the owner moved the chat
-    // while its reply was read). A wake filed for the old one is refused `task-not-assigned`, and the comment cursor below would
-    // pass the reply for nobody: leave the row as it was, and the new assignee's own event or the next poll scans it.
-    if (chat && reopenedHere && (issue.assigneeAgentId ?? null) !== agent) {
+    // while its reply was read, or reopened it under another agent). A wake filed for the old one is refused
+    // `task-not-assigned`, and the comment cursor below would pass the reply for nobody: leave the row as it was, and the new
+    // assignee's own event or the next poll scans it.
+    if (chat && (issue.assigneeAgentId ?? null) !== agent) {
       log("wake scan deferred: the chat moved to another agent", { task: issue.id, from: agent, to: issue.assigneeAgentId ?? null });
       return;
     }
