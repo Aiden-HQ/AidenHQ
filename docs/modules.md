@@ -43,6 +43,11 @@ A successful answer a connection's sign-in served is marked `signedIn(result, ac
 clears a full need (`not_connected`, `expired`), and with `account` it clears that account alone. Mark only the account
 that actually served the call: an answer from one account proves nothing about another whose sign-in failed.
 
+An answer whose calls reached particular orgs also names them: `signedIn(result, { orgs: ["acme"] })` sets
+`aidenhq/proved_orgs`, and the kernel clears those orgs' `sso`/`restricted` rows and no others. That is how a grant the
+owner made on the vendor's own page (not the board's Connect) clears its digest line; another org's row and a `scope` row
+stay. Name only the orgs the call actually proved, never the orgs a need was about.
+
 ## `POST /v1/codehost/<op>` — a module's typed code host operations
 
 Grant: the module's `module.yaml` `codehost:` block, per op. The kernel checks the grant and every field's shape, then

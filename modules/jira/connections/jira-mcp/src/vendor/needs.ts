@@ -21,10 +21,35 @@ export function needsOwner(need: Need): { isError: true; content: [{ type: "text
  */
 export const SIGNED_IN = "aidenhq/signed_in";
 
-/** Marks a result as served by the connection's sign-in (SIGNED_IN); `account` names whose it was, for a multi-account one. */
-export function signedIn<T extends object>(result: T, account?: string): T {
+/**
+ * The `_meta` key naming the orgs (logins) a served answer proved: each is an org one of its calls answered. The kernel clears
+ * those orgs' `sso`/`restricted` rows, and only those, so a grant the owner made on the org's own page stops the digest.
+ */
+export const PROVED_ORGS = "aidenhq/proved_orgs";
+
+/** Who a served answer proves: `account` (a multi-account connection's) and/or the orgs its calls proved. */
+export type Served = { account?: string; orgs?: string[] };
+
+/** Marks a result as served by the connection's sign-in (SIGNED_IN); `who` names the account and the orgs it proved. */
+export function signedIn<T extends object>(result: T, who?: string | Served): T & { _meta: Record<string, unknown> } {
+  const { account, orgs } = typeof who === "string" ? { account: who } : who ?? {};
   const meta = (result as { _meta?: Record<string, unknown> })._meta;
-  return { ...result, _meta: { ...(meta && typeof meta === "object" ? meta : {}), [SIGNED_IN]: account || true } };
+  const proved = orgs?.filter(Boolean) ?? [];
+  return {
+    ...result,
+    _meta: {
+      ...(meta && typeof meta === "object" ? meta : {}),
+      [SIGNED_IN]: account || true,
+      ...(proved.length ? { [PROVED_ORGS]: proved } : {}),
+    },
+  };
+}
+
+/** The orgs a served answer proved (PROVED_ORGS): each a login the kernel may clear an sso/restricted need for. */
+export function provedOrgs(result: unknown): string[] {
+  const r = result as { _meta?: Record<string, unknown> } | null | undefined;
+  const v = r && typeof r === "object" && r._meta && typeof r._meta === "object" ? r._meta[PROVED_ORGS] : undefined;
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x) : [];
 }
 
 /** Whether a tools/call result is a success the connection's sign-in served. */

@@ -576,3 +576,36 @@ it("a GraphQL refusal's warning stays while refusals keep coming and expires two
   await t.sleep(60 * 60_000);
   expect(a.status().problems).toHaveLength(1);
 });
+
+// #1558: the client records the orgs a working call reached, so a served answer can name them (main.ts's run marks it, the
+// kernel clears each one's sso/restricted rows). A call that refused proves nothing; a call that reached no org proves none.
+it("provedOrgs names the org each working call reached, once, and only the call's own orgs", async () => {
+  const seen: string[] = [];
+  const refusal = () => answer(403, { message: "the `globex` organization has enabled OAuth App access restrictions." });
+  const access = createAccess({
+    auth: auth(),
+    clientId: "cid",
+    fetchImpl: async (u, init) => {
+      const path = new URL(String(u)).pathname;
+      seen.push(path);
+      // GraphQL names its org in the variables, REST in the path.
+      const named = path === "/graphql" ? String((JSON.parse(String(init?.body ?? "{}")) as { variables?: { org?: string } }).variables?.org ?? "") : path;
+      return named.includes("globex") ? refusal() : answer(200, { ok: 1 });
+    },
+  });
+  // Nothing outside an invocation: a background call proves nothing to no one.
+  await access.rest("GET", "/repos/acme/api");
+  expect(access.provedOrgs()).toEqual([]);
+  const proved = await withWriteBudget(async () => {
+    await access.rest("GET", "/repos/acme/api"); // an org's repo
+    await access.rest("GET", "/orgs/acme/teams"); // the org itself
+    await access.rest("GET", "/user"); // no org
+    await access.rest("GET", "/repos/acme/api/pulls").catch(() => undefined); // the same org again: once
+    await access.rest("GET", "/repos/globex/api").catch(() => undefined); // refused: not proved
+    await access.graphql("query($org:String!){organization(login:$org){login}}", { org: "initech" }); // a GraphQL org
+    await access.graphql("query($org:String!){organization(login:$org){login}}", { org: "globex" }).catch(() => undefined); // refused: not proved
+    return access.provedOrgs();
+  });
+  expect(proved).toEqual(["acme", "initech"]);
+  expect(seen).toHaveLength(8);
+});

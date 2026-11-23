@@ -9,7 +9,7 @@
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fence } from "../sdk/src/fence.ts";
-import { readNeed, servedSignedIn, SIGNED_IN, type Need } from "../sdk/src/vendor/needs.ts";
+import { provedOrgs, readNeed, servedSignedIn, SIGNED_IN, type Need } from "../sdk/src/vendor/needs.ts";
 import type { ConnectionState } from "./connection-state.ts";
 import type { Asserter } from "./assert.ts";
 import { laneCaller, NoGrants, type Connection, type Grant, type Identity, type Whoami } from "./identity.ts";
@@ -99,10 +99,22 @@ export function pendingText(r: Rec): string {
   return `${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nFiled for approval (${r.kind}): ${r.tier === 1 ? "the AI reviewer decides" : "the AI reviewer, then the owner, decide"}. It runs once approved, and the outcome lands on your task. Don't say it is done until then.`;
 }
 
+/** The orgs a served answer proved (PROVED_ORGS), lowercased and deduplicated: each is one the kernel clears an sso/restricted need for. */
+const servedOrgs = (r: unknown) => [...new Set(provedOrgs(r).map((o) => o.toLowerCase()))];
+
 /** The account a served answer named (SIGNED_IN), if it named one. */
 const servedAccount = (r: unknown) => {
   const v = (r as { _meta?: Record<string, unknown> } | null)?._meta?.[SIGNED_IN];
   return typeof v === "string" && v ? v : undefined;
+};
+
+/**
+ * A signed-in success: the full needs it disproves clear (and their tasks wake), and each org the answer proved loses its own
+ * sso/restricted rows. One path per concern: `ok` stays full-cause only, `okOrg` is per org.
+ */
+const clearSuccess = (state: Pick<ConnectionState, "ok" | "okOrg" | "down">, connection: string, account: string | undefined, orgs: string[]) => {
+  if (state.down(connection, account)) state.ok(connection, { account, fullOnly: true });
+  for (const org of orgs) state.okOrg(connection, org);
 };
 
 export function createProxy({ whoami, grants = () => ({}), connections, asserter, resolver, secret, writes, needs = () => undefined, log = () => {} }: {
@@ -110,7 +122,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
   /** The grants table's agents: whom the fast chat lane may speak for (identity.ts laneCaller). */
   grants?: () => Record<string, Grant>;
   /** The connection state (late-bound: main.ts builds it after the proxy): needs_owner answers, and a success that clears one. */
-  needs?: () => Pick<ConnectionState, "hit" | "ok" | "down"> | undefined;
+  needs?: () => Pick<ConnectionState, "hit" | "ok" | "okOrg" | "down"> | undefined;
   log?: Log;
 }) {
   /**
@@ -136,17 +148,17 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
         out.end(body);
       });
       if (status >= 300) return { ok: false, text: `${connection} answered ${status}: ${text.slice(0, 2000)}` };
-      let ok = true, objects: unknown, need: Need | undefined, success = false, account: string | undefined;
+      let ok = true, objects: unknown, need: Need | undefined, success = false, account: string | undefined, orgs: string[] = [];
       const answer = mapMessages(text, sse, (m) => {
         if (m.error || m.result?.isError) ok = false;
         objects ??= m.result?.structuredContent?._aidenhq?.objects;
-        if (m.id === 1 && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; }
+        if (m.id === 1 && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; orgs = success ? servedOrgs(m.result) : []; }
       });
       // The health probe's and a replayed record's call reach the connection state like a live call: a need is recorded, a signed-in success clears it.
       const state = needs();
       try {
         if (state && need) await state.hit({ kind: "module", module: conn.module, roles: [], tools: {}, credential: "" }, connection, need);
-        else if (state && success && state.down(connection, account)) state.ok(connection, { account, fullOnly: true });
+        else if (state && success) clearSuccess(state, connection, account, orgs);
       } catch (e) { log("connection state not updated", { connection, err: (e as Error).message }); }
       return { ok, text: answer, ...(objects !== undefined ? { objects } : {}) };
     } finally {
@@ -287,12 +299,12 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             const text = raw.toString("utf8");
             // A trusted connection's answer (no record) is only read here: it goes back as it came unless it is a need.
             const asIs = call && !fenced && !rec;
-            let need: Need | undefined, success = false, account: string | undefined;
+            let need: Need | undefined, success = false, account: string | undefined, orgs: string[] = [];
             let answer: string | undefined;
             try {
               answer = mapMessages(text, sse, (m) => {
               // Read before fencing strips structuredContent: the module's own answer, never upstream text inside it.
-              if (call && m.id === reqId && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; }
+              if (call && m.id === reqId && !("method" in m)) { need = readNeed(m.result); success = !need && !m.error && servedSignedIn(m.result); account = success ? servedAccount(m.result) : undefined; orgs = success ? servedOrgs(m.result) : []; }
               if (method === "tools/list" && Array.isArray(m.result?.tools)) m.result.tools = m.result.tools.filter((t: { name?: unknown }) => allowed.has(String(t?.name)));
               if (rec && m.id === reqId && !("method" in m)) { okAnswer = !m.error && m.result?.isError !== true; objects = m.result?.structuredContent?._aidenhq?.objects; }
               if (!fenced) return true;
@@ -322,8 +334,9 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             }
             if (rec) done(okAnswer, text);
             // A call the connection's sign-in served (its answer says so: needs.ts SIGNED_IN) proves the module connected: a full
-            // need it had clears, and the tasks waiting on it wake. A tool that works signed out proves nothing.
-            try { if (success && state?.down(connection, account)) state.ok(connection, { account, fullOnly: true }); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
+            // need it had clears, and the tasks waiting on it wake; the orgs its calls proved (PROVED_ORGS) clear their own
+            // sso/restricted rows. A tool that works signed out proves nothing.
+            try { if (success && state) clearSuccess(state, connection, account, orgs); } catch (e) { log("connection state not cleared", { connection, err: (e as Error).message }); }
             if (asIs) res.writeHead(status, { ...hdrs, "content-length": String(raw.length) }).end(raw);
             else res.writeHead(status, { ...hdrs, "content-length": Buffer.byteLength(answer!) }).end(answer);
             resolve();

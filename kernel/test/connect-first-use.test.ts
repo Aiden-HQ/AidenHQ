@@ -78,6 +78,27 @@ test("a health probe feeds the connection state like a live call: a need is reco
   assert.deepEqual(rows(), []);
 });
 
+// #1558: a grant the owner made on GitHub's own page (not the board's Connect) clears the org's restriction. The signed-in
+// answer says which orgs its calls proved; that clears those orgs' sso/restricted rows through the proxy, and nothing else.
+test("a signed-in success that proved org A clears A's restricted/sso rows only, per org, through the live proxy", async (t) => {
+  const module = { kind: "module" as const, module: "github", roles: [], tools: {}, credential: "" };
+  let answer = () =>
+    needsOwner({ cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/x", detail: "acme restricts outside apps" });
+  const w = await setup(t, { answer: () => answer() });
+  const rows = () => w.k.records.db.prepare("SELECT key FROM connection_state ORDER BY key").all().map((r) => r.key);
+  // Two orgs' restrictions and a missing permission record as background needs (no owner chain here).
+  await w.call();
+  const state = w.k.connectionState;
+  await state.hit(module, "google_workspace", { cause: "restricted", org: "globex", url: "https://github.com/settings/connections/applications/x", detail: "" });
+  await state.hit(module, "google_workspace", { cause: "sso", org: "acme", url: "https://github.com/orgs/acme/sso", detail: "" });
+  await state.hit(module, "google_workspace", { cause: "scope", scope: "read:org", detail: "" });
+  assert.deepEqual(rows(), ["google_workspace:restricted:acme", "google_workspace:restricted:globex", "google_workspace:scope:read:org", "google_workspace:sso:acme"]);
+  // The next call works: its answer proved acme alone.
+  answer = () => signedIn({ content: [{ type: "text", text: "ok" }] }, { orgs: ["acme"] });
+  await w.call();
+  assert.deepEqual(rows(), ["google_workspace:restricted:globex", "google_workspace:scope:read:org"], "acme cleared; globex and the scope row stay");
+});
+
 test("an unreachable connection service (a restart) is a retryable error: no needs_owner and no connection state", async (t) => {
   const k = await kernel(t, { connect: true, agents: { run: { id: AGENT, task: "w9" } }, grants, connections: { google_workspace: conn("http://127.0.0.1:1") }, modules, secrets, issues, onControl });
   const r = await k.call("google_workspace", "run", { method: "tools/call", params: { name: "gmail_search", arguments: { query: "in:inbox" } } });

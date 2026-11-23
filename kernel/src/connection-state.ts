@@ -221,6 +221,15 @@ export function createConnectionState(o: {
       });
     },
 
+    /**
+     * A signed-in success that proved `org` (needs.ts PROVED_ORGS): drops that org's `sso`/`restricted` rows, and nothing else.
+     * A success proves the org answered this sign-in, so a grant made on GitHub's own page (not the board's Connect) clears its
+     * digest line; another org's rows and the connection's `scope` row stay. Returns how many rows it cleared.
+     */
+    okOrg(connection: string, org: string): number {
+      return inTx(db, "connection_ok_org", () => (["sso", "restricted"] as const).reduce((n, cause) => n + Number(q("DELETE FROM connection_state WHERE key = ?").run(stateKey(connection, { cause, org })).changes), 0));
+    },
+
     /** The board's Connect names a module: every connection of it connected. */
     okModule(module: string): number {
       return Object.entries(o.connections()).reduce((n, [name, c]) => n + (c?.module === module ? this.ok(name) : 0), 0);

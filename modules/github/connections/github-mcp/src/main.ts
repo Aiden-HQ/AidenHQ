@@ -22,7 +22,7 @@ import { graduate } from "./graduate.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
 import { isModule, needQueue } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
-import { createAccess, GitHubNeed, needResult, withWriteBudget, type GitHubAccess } from "./client.js";
+import { createAccess, GitHubNeed, needResult, provedOrgs, withWriteBudget, type GitHubAccess } from "./client.js";
 import { officialProxy, signIn } from "./official.js";
 import { signedIn } from "./vendor/needs.js";
 import { ReviewPoster } from "./review-post.js";
@@ -169,7 +169,8 @@ function buildServer(caller?: Caller): McpServer {
         const objects = out && typeof out === "object" && Array.isArray(out.objects) ? (out.objects as string[]) : undefined;
         const shown = objects ? Object.fromEntries(Object.entries(out!).filter(([k]) => k !== "objects")) : out;
         const result = { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
-        return usesSignIn ? signedIn(result) : result;
+        // The orgs this call's working requests reached (client.ts provedOrgs): the kernel clears their sso/restricted rows.
+        return usesSignIn ? signedIn(result, { orgs: provedOrgs() }) : result;
       } catch (err) {
         // A typed need names the cause and the fix; an owner-fixable one is needs_owner, which the kernel routes (client.ts).
         if (err instanceof GitHubNeed) {

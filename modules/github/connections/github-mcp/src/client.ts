@@ -99,6 +99,8 @@ export interface GitHubAccess {
   rest(method: string, path: string, body?: unknown, o?: CallOpts): Promise<{ status: number; body: any; headers: Headers }>;
   /** The whole GraphQL answer ({data, errors}). */
   graphql(query: string, variables: Record<string, unknown>, o?: { background?: boolean; as?: Identity }): Promise<any>;
+  /** The orgs (logins) this tool invocation's working calls proved: what a signed-in success says it reached (needs.ts PROVED_ORGS). */
+  provedOrgs(): string[];
   scopes(): string[];
   status(): GitHubStatus;
 }
@@ -151,13 +153,23 @@ const ATTEMPT_TIMEOUT_MS = 30_000;
  * allowance, so this is the conservative constant, fixed against that 300 s default. */
 const WRITE_BUDGET_MS = 240_000;
 const SECONDARY = /secondary rate limit|abuse detection|submitted too quickly/i;
-/** One tool invocation's writes share one budget: the store holds the deadline, fixed at the invocation's entry. */
-const invocation = new AsyncLocalStorage<{ deadline: number }>();
+/** One tool invocation's writes share one budget, and the orgs its working calls proved, both fixed at the invocation's entry. */
+const invocation = new AsyncLocalStorage<{ deadline: number; proved: Set<string> }>();
 
 /** Runs `fn` as one tool invocation (main.ts's tool wrapper): every write it makes shares one 240 s budget, fixed when the
- * invocation starts, so a preflight read and a second write both spend that same budget and no write is sent after it. */
+ * invocation starts, so a preflight read and a second write both spend that same budget and no write is sent after it. The
+ * calls also record the orgs they proved here, for a signed-in success to name them. */
 export function withWriteBudget<T>(fn: () => Promise<T>, at: () => number = Date.now): Promise<T> {
-  return invocation.run({ deadline: at() + WRITE_BUDGET_MS }, fn);
+  return invocation.run({ deadline: at() + WRITE_BUDGET_MS, proved: new Set() }, fn);
+}
+/** The orgs this tool invocation's working calls proved, in the order they did. */
+export function provedOrgs(): string[] {
+  return [...(invocation.getStore()?.proved ?? [])];
+}
+/** Records an org a working call proved, for the invocation's success to name (no invocation: a background call proves nothing). */
+function proveOrg(org: string | undefined): void {
+  const proved = invocation.getStore()?.proved;
+  if (proved && org) proved.add(org);
 }
 /** The deadline of the tool invocation this call belongs to, or undefined outside a tool call. */
 export function writeBudgetDeadline(): number | undefined {
@@ -401,7 +413,14 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    if (res.ok && /^\/orgs\/([^/]+)/.test(path) && problems.get(ownerOf(path)!.toLowerCase())?.at === undefined) problems.delete(ownerOf(path)!.toLowerCase());
+    if (res.ok) {
+      // An org call or a repo (its org, or a user's own repo) that answered proves this sign-in reaches that org, whatever refused it before.
+      const org = ownerOf(path);
+      if (org) {
+        proveOrg(org);
+        if (problems.get(org.toLowerCase())?.at === undefined) problems.delete(org.toLowerCase());
+      }
+    }
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -422,6 +441,7 @@ export function createAccess(o: {
     connected,
     token: () => token(),
     scopes,
+    provedOrgs,
     rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
@@ -432,10 +452,14 @@ export function createAccess(o: {
       const org = typeof variables.org === "string" ? variables.org : "";
       // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content (an
       // issue of another org) is recorded but leaves the rest of the board readable. The warning stays while refusals keep coming.
+      let refused = false;
       for (const { need, fatal } of graphqlNeeds(body?.errors, org, o.clientId)) {
         if (fatal) fail(need, now());
+        refused = true;
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
       }
+      // An answer that named an org and carried no refusal for it proves this sign-in reaches it.
+      if (org && !refused) proveOrg(org);
       return body;
     },
     async identity() {

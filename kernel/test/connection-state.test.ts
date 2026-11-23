@@ -337,6 +337,26 @@ test("a partial cause waits a day and is not listed down; a success clears only 
   assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get()!.n, 1, "a success leaves the partial need");
 });
 
+test("okOrg clears one org's restricted and sso rows only: another org's rows and a scope row stay", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  const module = { kind: "module" as const, module: "github", roles: [], tools: {}, credential: "" };
+  await w.s.hit(module, "github", { cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/x", detail: "" });
+  await w.s.hit(module, "github", { cause: "sso", org: "acme", url: "https://github.com/orgs/acme/sso", detail: "" });
+  await w.s.hit(module, "github", { cause: "restricted", org: "globex", url: "https://github.com/settings/connections/applications/x", detail: "" });
+  await w.s.hit(module, "github", { cause: "scope", scope: "read:org", detail: "" });
+  const rows = () => (w.db.prepare("SELECT key FROM connection_state ORDER BY key").all() as { key: string }[]).map((r) => r.key);
+  // A grant made on GitHub's own page for acme: a success that proved acme clears acme's partial rows and nothing else.
+  assert.equal(w.s.okOrg("github", "acme"), 2);
+  assert.deepEqual(rows(), ["github:restricted:globex", "github:scope:read:org"]);
+  // The digest no longer repeats acme's line, and still names the org whose restriction stands.
+  w.tick(LASTED);
+  assert.deepEqual(w.s.needs().sort(), [
+    "Github isn't connected (globex restricts outside apps): https://github.com/settings/connections/applications/x",
+    "Github isn't connected (missing the read:org permission): http://board.example/connect/github",
+  ]);
+  assert.equal(w.s.okOrg("github", "nobody"), 0, "an org with no row clears nothing");
+});
+
 // A codehost op's need (kernel/src/codehost.ts recordNeed) arrives as a module, not a run: no task chain, so it is background
 // and reaches the owner's digest, and its row is the same one the board and a later success read.
 test("a module's hit is background: no queue, the row keyed by scope, no agent wait; the digest pulls it", async () => {
