@@ -6,6 +6,10 @@ FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b
 RUN npm install -g npm@11.21.2
 
 FROM debian:sid-slim@sha256:07a3205e8583fdff12d2b05bd030f50437e9fd340ee616df0c05dc77af75767b
+# Every computer image builds FROM this one and inherits the label, as do the release's prebuilt ones. The image prunes
+# (ops/units/prune-docker.service, ops/apply-config-work.sh) skip it: an idle install runs no box, so no container uses
+# these images, and pruning them leaves every job "Queued" until an apply rebuilds them.
+LABEL aidenhq.keep=true
 # Chrome's libraries and fonts: the list `agent-browser install --with-deps` installs, without its unpinned Chrome download.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip \
       libxcb-shm0 libx11-xcb1 libx11-6 libxcb1 libxext6 libxrandr2 libxcomposite1 libxcursor1 libxdamage1 libxfixes3 libxi6 \

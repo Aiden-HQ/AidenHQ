@@ -71,7 +71,7 @@ test("the host-metrics check passes when the unit runs this checkout's script", 
 // that run the applied checkout's scripts.
 const pruneExecStart = (dir, { container, verify }) => [
   `{ path=/usr/bin/docker ; argv[]=/usr/bin/docker builder prune -f --max-used-space 20GB ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
-  `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${join(dir, "ops/prune-docker-step.sh")} images /usr/bin/docker image prune -af --filter until=48h ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+  `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${join(dir, "ops/prune-docker-step.sh")} images /usr/bin/docker image prune -af --filter until=48h --filter label!=aidenhq.keep=true ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
   `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${container} ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
   `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash ${verify} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
 ].join("\n") + "\n";
@@ -178,7 +178,7 @@ test("the image step's wrapper and the docker command it runs are both applied-c
   writeFileSync(join(dir, "ops/prune-docker-verify.sh"), "#!/usr/bin/env bash\n");
   writeFileSync(join(dir, "home/.config/aidenhq-prune-docker.env"), `AIDENHQ_DIR=${dir}\n`);
   writeFileSync(join(dir, "execstart"), [
-    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune -af --filter until=48h ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
+    `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/docker image prune -af --filter until=48h --filter label!=aidenhq.keep=true ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
     `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-containers.sh ; ignore_errors=yes ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
     `{ path=/usr/bin/env ; argv[]=/usr/bin/env bash \${AIDENHQ_DIR}/ops/prune-docker-verify.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }`,
   ].join("\n") + "\n");
