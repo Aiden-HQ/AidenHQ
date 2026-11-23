@@ -349,11 +349,11 @@ export class Grades {
 
   /**
    * The Fleet Steward's rebind (role fleet-settle, checked by the route): a filed task's deliverable moved to the work that
-   * actually landed (a merged PR the task's own PRs didn't name), its rubric kept as filed. The row restarts as a re-file does
-   * and, the work being done, is graded at once (`resume`). Any filer's row, recorded or not; a settled row or a closed task is
-   * refused, and the same deliverable is no change.
+   * actually landed (a merged PR the task's own PRs didn't name), its rubric kept as filed. The row restarts as a re-file does;
+   * work already held for its grade (the task in review) is graded at once (`resume`), any other is graded when it is finished.
+   * Any filer's row, recorded or not; a settled row or a closed task is refused, and the same deliverable is no change.
    */
-  rebind(issueId: string, deliverable: Deliverable, { closed = false }: { closed?: boolean } = {}): Grade {
+  rebind(issueId: string, deliverable: Deliverable, { closed = false, held = false }: { closed?: boolean; held?: boolean } = {}): Grade {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const have = this.get(issueId);
@@ -365,7 +365,7 @@ export class Grades {
       }
       if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict(`this task's grade is settled (${have.state}): nothing to rebind`);
       if (closed) throw new Conflict("this task is already closed: its grade is left as it settled");
-      this.restart(issueId, JSON.stringify(have.rubric), JSON.stringify(deliverable), { resume: true });
+      this.restart(issueId, JSON.stringify(have.rubric), JSON.stringify(deliverable), { resume: held });
       this.db.exec("COMMIT");
       this.events?.emit("grades", issueId);
       return this.get(issueId)!;

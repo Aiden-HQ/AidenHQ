@@ -117,13 +117,14 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
     generations: () => fleetGenerations(generationsFile),
     pauses: async () => ({ pauses: await pauses() }),
     /**
-     * The cards that reached the owner (Tier 2: filed at the owner, or put to them later), by when they reached them (the
+     * The cards that reached the owner (Tier 2: filed at the owner, or put to them later; never his own settings save, which
+     * he decided as he saved it), by when they reached them (the
      * reviewer's escalation or a hold, else the filing), newest first, `limit` a page from after record `after`.
      */
     ownerCards(after: string | undefined, limit: number) {
       // Put to the owner later: the reviewer's escalation, or a hold (autonomy tightened after an approval). Else the filing.
       const reached = "COALESCE((SELECT f.at FROM facts f WHERE f.subject = 'record:' || r.id AND ((f.type = 'record.decided' AND f.version = 'reviewer:owner') OR f.type = 'record.held') ORDER BY f.seq DESC LIMIT 1), r.created_at)";
-      const cte = `WITH c AS (SELECT r.id, r.kind, r.state, r.task, r.identifier, r.requester, r.card, r.decided_by, r.created_at, r.decided_at, ${reached} AS reached FROM records r WHERE r.tier = 2)`;
+      const cte = `WITH c AS (SELECT r.id, r.kind, r.state, r.task, r.identifier, r.requester, r.card, r.decided_by, r.created_at, r.decided_at, ${reached} AS reached FROM records r WHERE r.tier = 2 AND COALESCE(r.via, '') != 'save')`;
       const keyset = after ? " WHERE (reached, id) < ((SELECT reached FROM c WHERE id = ?), ?)" : "";
       const got = rows(`${cte} SELECT * FROM c${keyset} ORDER BY reached DESC, id DESC LIMIT ?`, ...(after ? [after, after] : []), limit + 1);
       const cards = got.slice(0, limit).map((r) => {

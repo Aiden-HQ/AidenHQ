@@ -53,7 +53,8 @@ prompt, typed tiered writes, and the old path deleted in the same PR.
 - Existing `to:chief_of_staff` markers stay valid.
 - The detector's notices (a component down, a critical alert, a gate jammed two hours) are the Steward's own check tasks
   (`toSteward` in the fleet-steward service). The chief of staff's notice tasks are deleted.
-- App incidents and resource alerts (the board's app watch) go to `fleet-settle` too.
+- The board's app incident and resource tasks stay with the chief of staff, so an install without the Steward keeps them; the
+  Steward's detector raises the same apps as its own incidents.
 - The shared prompts change with it:
   - `asking.md`: read the owner's decisions first; the Steward settles questions.
   - `deciding.md`: Aiden brings the owner only the calls that are truly theirs.
@@ -94,9 +95,10 @@ prompt, typed tiered writes, and the old path deleted in the same PR.
   pre-release only when code verifies, on GitHub's records:
   1. the tag is the next pending pre-release after latest and isn't marked rejected;
   2. its release run (the tag run its notes name) passed and published;
-  3. the latest completed graduation run failed before the candidate stage: its `select` job failed, or its `reject` job
-     ran and marked the candidate neither `graduation: failed` nor `graduation: incomplete <run>` (graduate.mjs
-     `onFailure`'s own verdict).
+  3. the latest completed graduation run failed before the candidate stage: its `reject` job ran, opened its "didn't
+     finish" issue for the tag naming that exact run, and marked the candidate neither `graduation: failed` nor
+     `graduation: incomplete <run>` (graduate.mjs `onFailure`'s own verdict). A failed `select` is no verdict (it also
+     checks the candidate's own assets).
 
   It is granted to the Maintainer, which owns distro issues. The Maintainer's owner-decision example no longer names
   graduation.

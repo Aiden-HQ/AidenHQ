@@ -60,6 +60,29 @@ const plain = (s: unknown) => typeof s === "string" && !/[\x00-\x1f\x7f$]/.test(
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 /** An own key of a map (never `constructor` or another prototype key). */
 const has = (o: unknown, k: string) => isMap(o) && Object.hasOwn(o, k);
+/**
+ * The profile with one standing decision under its "Owner decisions" heading (made when missing): `replaces` names the line
+ * it supersedes, replaced in place (with or without its "- "), else the decision is added at the end of that section.
+ */
+export function withDecision(profile: string, decision: string, replaces?: string): string {
+  const lines = profile.replace(/\n+$/, "").split("\n");
+  const entry = `- ${decision.trim().replace(/^-\s+/, "")}`;
+  if (replaces !== undefined) {
+    const old = replaces.trim().replace(/^-\s+/, "");
+    const at = lines.findIndex((l) => l.trim().replace(/^-\s+/, "") === old);
+    if (at < 0) refuse("profile: the decision `replaces` names isn't in the profile now: read it again");
+    lines[at] = entry;
+    return `${lines.join("\n")}\n`;
+  }
+  let head = lines.findIndex((l) => /^#{1,6}\s+Owner decisions\s*$/i.test(l));
+  if (head < 0) { if (lines.length && lines.at(-1)!.trim()) lines.push(""); lines.push("## Owner decisions"); head = lines.length - 1; }
+  let end = lines.findIndex((l, i) => i > head && /^#{1,6}\s/.test(l));
+  if (end < 0) end = lines.length;
+  while (end > head + 1 && !lines[end - 1]!.trim()) end--;
+  // An empty section gets a blank line under its heading first.
+  lines.splice(end, 0, ...(end === head + 1 ? ["", entry] : [entry]));
+  return `${lines.join("\n")}\n`;
+}
 const only = (ch: Dict, keys: string[]) => Object.keys(ch).every((k) => keys.includes(k)) || refuse(`${ch.kind}: unknown fields (${Object.keys(ch).filter((k) => !keys.includes(k)).join(", ")})`);
 /** Handbook texts: Markdown, no NUL or other control characters but tab and newlines. */
 const text = (t: unknown, max: number) => (typeof t === "string" && t.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(t)) || refuse(`text must be at most ${max} characters, without control characters`);
@@ -176,10 +199,17 @@ export function checkTyped(ch: unknown, { compiled, catalog, self }: Sources): v
     }
     case "profile": {
       agentsOwn();
-      only(c, ["kind", "text"]);
+      only(c, ["kind", "text", "decision", "replaces"]);
       if (!self!.roles.includes("fleet-admin")) refuse("only fleet-admin (Aiden) changes the owner profile: ask Aiden");
-      text(c.text, PROFILE_MAX);
-      if (Buffer.byteLength(c.text) > PROFILE_MAX) refuse(`the owner profile is at most ${PROFILE_MAX} bytes`);
+      // The whole profile, or one standing decision written into the profile as it is at the base (so a decision recorded
+      // meanwhile is never overwritten by a stale copy).
+      if ((c.text === undefined) === (c.decision === undefined)) refuse("profile: the whole `text`, or one `decision` (with `replaces`, the line it supersedes)");
+      if (c.text !== undefined) {
+        text(c.text, PROFILE_MAX);
+        if (Buffer.byteLength(c.text) > PROFILE_MAX) refuse(`the owner profile is at most ${PROFILE_MAX} bytes`);
+        if (c.replaces !== undefined) refuse("profile: `replaces` goes with a `decision`");
+      }
+      for (const f of ["decision", "replaces"]) if (c[f] !== undefined && !(typeof c[f] === "string" && c[f].trim() && c[f].length <= 500 && !/[\n\r]/.test(c[f]))) refuse(`profile: ${f} is one line of at most 500 characters`);
       return;
     }
     case "handbook": {
@@ -398,7 +428,7 @@ export function planFiles(changes: Change[], { read, localOf, teamOf, moduleHand
         break;
       }
       case "profile":
-        out.set("owner/profile.md", ch.text.endsWith("\n") ? ch.text : `${ch.text}\n`);
+        out.set("owner/profile.md", ch.decision !== undefined ? withDecision(current("owner/profile.md") ?? "", ch.decision, ch.replaces) : ch.text.endsWith("\n") ? ch.text : `${ch.text}\n`);
         break;
       case "unfork":
         if (forkOf(ch.agent) == null && current(`agents/${ch.agent}/AGENTS.md`) === undefined) refuse(`${ch.agent}'s handbook isn't forked`);

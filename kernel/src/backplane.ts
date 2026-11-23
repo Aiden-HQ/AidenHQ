@@ -38,7 +38,7 @@
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
-//   POST /v1/board-tasks       (the board's key) {title, description, role | agent, source}: the same, as module "board" (app incidents for the Fleet Steward)
+//   POST /v1/board-tasks       (the board's key) {title, description, role | agent, source}: the same, as module "board" (app incidents for the chief of staff)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?, quiet?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
 //                              the open tasks of the module's own `release:instance:` family (the release train's sweep); POST /v1/tasks/:task/close

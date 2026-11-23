@@ -44,6 +44,11 @@ it("delivered, queued and retried messages are in notify_recent; dropped ones ar
     ["ops", "WOR-1", "alert", "delivered", fenced("Prod is down")],
     ["scout", null, "fyi", "queued", fenced("Routine news")],
   ]);
+  // Delivered only, a page at a time back through `before`.
+  const page = async (args: Record<string, unknown>) => JSON.parse(((await client.callTool({ name: "notify_recent", arguments: args })).content as { text: string }[])[0]!.text) as { source: string; at: string }[];
+  const first = await page({ state: "delivered", limit: 1 });
+  expect(first.map((r) => r.source)).toEqual(["late"]);
+  expect((await page({ state: "delivered", limit: 1, before: first[0]!.at })).map((r) => r.source)).toEqual(["ops"]);
 
   // The digest goes: its lines leave the queue and enter the ledger, each as delivered with its own sender.
   const tomorrow = new Date(); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1); tomorrow.setUTCHours(10, 0, 0, 0);

@@ -38,7 +38,7 @@ type Api = (method: string, path: string, body?: unknown) => Promise<{ status: n
 type Gen = { n: number | null; product: string | null; health: string | null; lkg?: number | null };
 const refuse = (message: string, status = 422) => Object.assign(new Error(message), { status });
 
-export function createFleetOps({ db, owner, roles, services, running, stop, note, generations, launch, recreate, log = () => {} }: {
+export function createFleetOps({ db, owner, roles, services, running, stop, note, generations, launch, applying, recreate, log = () => {} }: {
   db: DatabaseSync;
   /** The control plane as the owner (main.ts ownerApi). */
   owner: Api;
@@ -46,15 +46,17 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
   roles: (agent: string) => string[];
   /** Every compose service a module runs (the compiled modules file's `services`). */
   services: () => string[];
-  /** The task's running jobs (jobs.ts), and stopping them. */
-  running: (task: string) => number;
-  stop: (task: string) => { id: string; agent: string; task: string }[];
+  /** The task's running jobs (jobs.ts, by task id or identifier), and stopping one of them by id. */
+  running: (task: string) => string[];
+  stop: (job: string) => { id: string; agent: string; task: string }[];
   /** A note on a stopped job's task (outcomes.ts post, kind notice): it wakes nobody. */
   note: (job: { id: string; agent: string; task: string }, body: string) => Promise<unknown>;
   /** The host's apply generations, newest first (generations.ts). */
   generations: () => Gen[];
   /** Starts `aidenhq-apply --unit <unit> <args…>` (apply.ts hostApply launch). */
   launch: (unit: string, args: string[]) => Promise<void>;
+  /** Whether an apply holds or waits for the host's apply lock now: a rollback queued behind it could undo its repair. */
+  applying: () => Promise<boolean>;
   /** Recreates compose services under the apply lock (module-secrets.ts composeRecreate). */
   recreate: (services: string[]) => Promise<void>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -80,7 +82,7 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
   const agentHeld = (a: { status: string; lifecycleHolds?: string[] }) => agentPaused(a);
 
   /** What the op does now, checked against the live state: its card's words, or `satisfied` when nothing is left to do. */
-  async function check(op: Op, target: string): Promise<{ sentence: string; name: string; satisfied?: string; generation?: number }> {
+  async function check(op: Op, target: string): Promise<{ sentence: string; name: string; satisfied?: string; generation?: number; jobs?: string[] }> {
     switch (op) {
       case "pause_routine": case "resume_routine": {
         const r = await routine(target), name = String(r.title ?? target).slice(0, 100);
@@ -95,8 +97,10 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
         }
         return { ...(await resumable(`agent:${target}`, agentHeld(a), name)), sentence: `Resume agent ${name}.`, name };
       }
-      case "stop_run":
-        return running(target) ? { sentence: `Stop the running jobs of task ${target}, leaving it open.`, name: target } : { sentence: "", name: target, satisfied: `no job runs on task ${target}` };
+      case "stop_run": {
+        const jobs = running(target);
+        return jobs.length ? { sentence: `Stop the running job${jobs.length === 1 ? "" : "s"} ${jobs.join(", ")} of task ${target}, leaving it open.`, name: target, jobs } : { sentence: "", name: target, satisfied: `no job runs on task ${target}` };
+      }
       case "restart_service":
         if (!services().includes(target)) throw refuse(`no module service ${target} (a compose service a module runs)`);
         return { sentence: `Restart service ${target} (recreated under the apply lock).`, name: target };
@@ -153,7 +157,8 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
       const c = await check(a.op, a.target);
       const card = { target: `${a.op} ${a.target}`, sentence: c.sentence || `${a.op} ${a.target}: nothing to do.`, changes: `${c.sentence} Why (the Steward's words): ${a.reason}`, reads: "Nothing new.", cost: "No model cost.", details: `op: ${a.op}\ntarget: ${a.target} (${c.name})\nreason: ${a.reason}` };
       // A rollback's generation is bound to the record: the one on the card is the one that runs, or none.
-      return { args: a, targets: { target: { op: a.op, id: a.target, ...(c.generation !== undefined ? { generation: c.generation } : {}) } }, card, ...(c.satisfied ? { satisfied: { evidence: c.satisfied } } : {}) };
+      // A stop is bound to the jobs on its card: a job that started since is never the one reviewed.
+      return { args: a, targets: { target: { op: a.op, id: a.target, ...(c.generation !== undefined ? { generation: c.generation } : {}), ...(c.jobs ? { jobs: c.jobs } : {}) } }, card, ...(c.satisfied ? { satisfied: { evidence: c.satisfied } } : {}) };
     },
     /** The kind's executor (writes.ts native): checks again, then acts. */
     async execute(r: Rec): Promise<{ ok: boolean; text: string }> {
@@ -181,7 +186,10 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
           break;
         }
         case "stop_run": {
-          const stopped = stop(target);
+          const approved = (r.targets as { target?: { jobs?: unknown } } | undefined)?.target?.jobs;
+          const reviewed = Array.isArray(approved) ? approved.map(String) : [];
+          const stopped = reviewed.filter((j) => c.jobs?.includes(j)).flatMap((j) => stop(j));
+          if (!stopped.length) return { ok: true, text: `Nothing stopped: the job${reviewed.length === 1 ? "" : "s"} reviewed (${reviewed.join(", ") || "none"}) no longer run${reviewed.length === 1 ? "s" : ""}; a job started since is not this record's.` };
           for (const j of stopped) await note(j, `**Stopped by the Fleet Steward:** ${reason.slice(0, 300)} (${r.id}). The task stays open.`).catch((e: Error) => log("stop note failed", { job: j.id, err: e.message }));
           log("fleet op", { op, target, stopped: stopped.length, record: r.id });
           return { ok: true, text: `Stopped ${stopped.length} job${stopped.length === 1 ? "" : "s"} on ${target}; the task stays open.` };
@@ -193,6 +201,8 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
           const to = lastGood();
           const approved = (r.targets as { target?: { generation?: unknown } } | undefined)?.target?.generation;
           if (to.n !== approved) return { ok: false, text: `Not rolled back: the last good generation is now ${to.n}, not the ${String(approved)} this record was approved for (an apply ran since). File the rollback again.` };
+          // Queued behind a running apply, it would undo whatever that apply repairs: only on an idle host.
+          if (await applying()) return { ok: false, text: "Not rolled back: an apply is running or waiting now. Check its result, and file the rollback again if the host still needs it." };
           const unit = `aidenhq-apply-rollback-${r.id.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)}`;
           await launch(unit, ["--generation", String(to.n)]);
           log("fleet op", { op, target, generation: to.n, unit, record: r.id });

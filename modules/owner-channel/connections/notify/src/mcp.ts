@@ -35,18 +35,21 @@ export function buildServer(d: Deps, caller?: Caller): McpServer {
   server.registerTool(
     "notify_recent",
     {
-      description: "What the owner was already told, newest first: who sent it, the task, its kind, whether it was delivered or still waits in their next digest (queued), when, and the text. Glance at it before telling them something, so you tell only what is new to them.",
+      description: "What the owner was already told, newest first: who sent it, the task, its kind, whether it was delivered or still waits in their next digest (queued), when, and the text. Glance at it before telling them something, so you tell only what is new to them. To read further back, pass the last row's `at` as `before`; `state` keeps only delivered or only queued rows.",
       inputSchema: z.strictObject({
         days: z.number().int().min(1).max(14).optional().describe("how far back (default 3)"),
         limit: z.number().int().min(1).max(50).optional().describe("how many (default 20)"),
+        before: z.string().datetime().optional().describe("only rows older than this (an `at` from an earlier page)"),
+        state: z.enum(["delivered", "queued"]).optional().describe("only delivered rows, or only those waiting in the next digest"),
       }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     // Delivered rows from the ledger plus the digest lines still waiting (read live from the queue). Texts are agents' and
     // people's words: fenced as data.
-    async ({ days, limit }) => {
-      const since = Date.now() - (days ?? 3) * 86_400_000;
-      const rows = [...d.store.recentTold(days ?? 3, 1000).map((r) => ({ ...r, state: "delivered" })), ...waitingDigest(d.store).filter((r) => r.at >= since).map((r) => ({ ...r, state: "queued" }))]
+    async ({ days, limit, before, state }) => {
+      const since = Date.now() - (days ?? 3) * 86_400_000, until = before ? Date.parse(before) : Infinity;
+      const rows = [...d.store.recentTold(days ?? 3, 5000).map((r) => ({ ...r, state: "delivered" })), ...waitingDigest(d.store).filter((r) => r.at >= since).map((r) => ({ ...r, state: "queued" }))]
+        .filter((r) => r.at < until && (!state || r.state === state))
         .sort((x, y) => y.at - x.at).slice(0, limit ?? 20);
       return json(rows.map((r) => ({ source: r.source, task: r.task, kind: r.kind, state: r.state, at: new Date(r.at).toISOString(), text: fence(r.text) })));
     },

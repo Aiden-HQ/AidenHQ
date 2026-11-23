@@ -226,6 +226,8 @@ test("the owner's cards: only those that reached them, newest first, a page at a
   const file = (tier, state) => records.file({ kind: "github.push", module: "github", args: { n: Math.random() }, targets: {}, executor: { module: "github" }, policy: "p", tier, card, requester: { agent: "", key: "eng", name: "Eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state });
   const a = file(2, "owner"), b = file(2, "owner");
   file(1, "review"); // with the reviewer, never the owner's
+  const saved = file(2, "approved"); // the owner's own settings save, decided as he saved it: never an interruption
+  records.db.prepare("UPDATE records SET via = 'save' WHERE id = ?").run(saved.id);
   const first = work.ownerCards(undefined, 1);
   assert.deepEqual([first.cards.length, first.cards[0].sentence, first.cards[0].requester], [1, "Push it.", "eng"]);
   const second = work.ownerCards(first.next, 1);

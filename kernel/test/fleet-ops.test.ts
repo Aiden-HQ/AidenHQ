@@ -30,13 +30,14 @@ function world(db = new DatabaseSync(":memory:")) {
     if ((m = /^\/api\/agents\/([^/]+)$/.exec(path))) return agents[m[1]] ? { status: 200, json: agents[m[1]] } : { status: 404, json: {} };
     return { status: 404, json: {} };
   };
-  const launched = [], recreated = [], stopped = [];
+  const launched = [], recreated = [], stopped = [], live = new Set(["j1"]), busy = { v: false };
   const gens = [{ n: 7, product: "c".repeat(40), health: "failed" }, { n: 6, product: "b".repeat(40), health: "good" }, { n: 5, product: "a".repeat(40), health: "good" }];
   const ops = createFleetOps({
     db, owner, roles: (id) => (id === "a-cos" ? ["fleet-admin"] : []),
     services: () => ["apps-mcp", "board"],
-    running: (task) => (task === "WOR-1" ? 1 : 0),
-    stop: (task) => (stopped.push(task), [{ id: "j1", agent: "a-eng", task }]),
+    running: (task) => (task === "WOR-1" ? [...live] : []),
+    stop: (job) => (stopped.push(job), live.delete(job), [{ id: job, agent: "a-eng", task: "WOR-1" }]),
+    applying: async () => busy.v,
     note: async () => ({}),
     generations: () => gens,
     launch: async (unit, args) => void launched.push([unit, ...args]),
@@ -48,7 +49,7 @@ function world(db = new DatabaseSync(":memory:")) {
     if (plan.satisfied) return { satisfied: plan.satisfied.evidence };
     return ops.execute({ id: `rec-${calls.length}`, requester, args, targets: plan.targets });
   };
-  return { ops, file, routines, agents, calls, launched, recreated, stopped, gens, db };
+  return { ops, file, routines, agents, calls, launched, recreated, stopped, gens, db, live, busy };
 }
 
 test("fleet_operate is the Steward's alone: another agent's request is refused at plan and again at execute", async () => {
@@ -86,12 +87,23 @@ test("the Steward pauses and resumes its own pause; a pause it didn't make stays
 test("stop, restart and roll back: a run stopped with its task open, only a module's service, and the rollback target picked by the kernel", async () => {
   const w = world();
   assert.match((await w.file(STEWARD, { op: "stop_run", target: "WOR-1", reason: "looping" })).text, /Stopped 1 job on WOR-1; the task stays open/);
+  // Bound to the job on its card: one that started since is never stopped by it.
+  w.live.add("j2");
+  const stopPlan = await w.ops.plan({ args: { op: "stop_run", target: "WOR-1", reason: "looping" }, requester: STEWARD });
+  w.live.delete("j2");
+  w.live.add("j3");
+  assert.match((await w.ops.execute({ id: "s", requester: STEWARD, args: stopPlan.args, targets: stopPlan.targets })).text, /Nothing stopped/);
+  assert.deepEqual(w.stopped, ["j1"]);
+  w.live.clear();
   assert.match((await w.file(STEWARD, { op: "stop_run", target: "WOR-2", reason: "x" })).satisfied, /no job runs/);
   await w.file(STEWARD, { op: "restart_service", target: "apps-mcp", reason: "hung" });
   assert.deepEqual(w.recreated, ["apps-mcp"]);
   await assert.rejects(w.file(STEWARD, { op: "restart_service", target: "kernel", reason: "x" }), /no module service kernel/);
   assert.throws(() => validate(FLEET_OP_KIND.args, { op: "restart_service", target: "a; rm -rf /", reason: "x" }), /doesn't match/);
   await assert.rejects(w.file(STEWARD, { op: "rollback", target: "5", reason: "x" }), /target is last_good/);
+  w.busy.v = true; // an apply holds the lock: a rollback queued behind it could undo its repair
+  assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "bad apply" })).text, /an apply is running/);
+  w.busy.v = false;
   assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "bad apply" })).text, /generation 6/);
   assert.deepEqual(w.launched[0].slice(1), ["--generation", "6"]);
   // Approved for generation 6, but an apply ran since: the record runs only the rollback on its card.

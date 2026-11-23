@@ -140,9 +140,12 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     if (!caller.roles.includes("fleet-settle")) throw new HttpError(403, "only the Fleet Steward (role fleet-settle) rebinds a task's deliverable");
     const b = (body ?? {}) as { issue?: unknown; deliverable?: unknown };
     const f = parseFiling({ issue: b.issue, rubric: [], deliverable: b.deliverable });
+    // The grader reads a named PR on GitHub directly; a change on this server's own code host it reads only from the task's own
+    // records (grader/evidence.ts prEvidence), so a rebind there would grade nothing.
+    if (f.deliverable.ref.startsWith("codehost:")) throw new HttpError(400, "deliverable.ref: a rebind names a GitHub PR (owner/name#number or its URL); a change on this server's code host is graded only on the task that opened it");
     const issue = await kernel.issue(f.issue);
     await refAllowed(f.deliverable);
-    const g = grades.rebind(issue.id, f.deliverable, { closed: isClosed(issue) });
+    const g = grades.rebind(issue.id, f.deliverable, { closed: isClosed(issue), held: issue.status === "in_review" });
     log("deliverable rebound", { task: issue.identifier, by: `agent:${caller.agent}`, kind: g.deliverable.kind, state: g.state });
     return { rebound: true, state: g.state, deliverable: g.deliverable, rubric: g.rubric };
   }

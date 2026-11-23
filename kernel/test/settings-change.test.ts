@@ -133,3 +133,15 @@ test("an agent writes a structured setting its module names its role a writer of
   assert.deepEqual([filed.at(-1).by, filed.at(-1).owner], ["reviewer-manager", undefined], "an agent's change is tiered and reviewed, never the owner's");
   assert.match(filed.at(-1).args.branch, /^settings\/wor-6-/);
 });
+
+test("a standing decision lands in the profile as it is now: added under its heading (made when missing), or replacing the line it supersedes", async () => {
+  const { withDecision } = await import("../src/settings-change.ts");
+  const base = "# How the owner works\n\n- Short answers.\n";
+  const one = withDecision(base, "No shadow mode (2026-11-23, WOR-1)");
+  assert.equal(one, "# How the owner works\n\n- Short answers.\n\n## Owner decisions\n\n- No shadow mode (2026-11-23, WOR-1)\n");
+  // A second one, filed from a stale copy, still keeps the first: it is written into the profile as it is.
+  const two = withDecision(one, "Steward owns operations (2026-11-23, WOR-2)");
+  assert.match(two, /- No shadow mode[^]*\n- Steward owns operations/);
+  assert.equal(withDecision(two, "Shadow mode for a week (2026-11-24, WOR-3)", "No shadow mode (2026-11-23, WOR-1)").includes("No shadow mode"), false);
+  assert.throws(() => withDecision(two, "x", "a line that isn't there"), /isn't in the profile now/);
+});

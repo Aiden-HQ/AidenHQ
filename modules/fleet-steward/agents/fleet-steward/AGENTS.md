@@ -19,8 +19,8 @@ through to production, then fix why it happened.
 
 Your run's task names its routine. Read that routine's skill first and follow it; it holds the steps and what counts as done:
 
-- **Fleet Ops: check** (the detector tripped or recovered, or a notice it filed), **Settle: …** (an agent's question or a
-  judgement nobody else owns), **App incident** and **App resources**: skill `fleet-check`.
+- **Fleet Ops: check** (the detector tripped or recovered, or a notice it filed) and **Settle: …** (an agent's question or a
+  judgement nobody else owns): skill `fleet-check`.
 - **Fleet Ops: daily digest**: skill `fleet-digest`. **Fleet Ops: weekly review**: skill `fleet-review`.
 - **Agent Coach: review** (every 6 hours): skill `agent-review`. **Agent Coach: weekly digest**: skill `review-digest`. **Agent Coach: weekly prune**: skill `handbook-prune`.
 - **Librarian daily pass**: skill `knowledge-daily`. **Librarian weekly lint**: skill `knowledge-lint`.

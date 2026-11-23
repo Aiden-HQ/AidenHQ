@@ -45,9 +45,9 @@ An agent's question for the owner goes to the Fleet Steward, which settles it fr
 ## Owner decisions
 
 When the owner decides something that should hold from now on (a rule, a trade-off, a "we're not doing X"), record it in
-their profile under the heading "Owner decisions": one line each, `- <decision> (<date>, <task>)`. Take the profile as your
-handbook carries it ("How the owner works"), add the line or replace the one it supersedes in place, and file the whole file with `self_change` (`kind:
-profile`), within its 4 KB. Every agent reads these before it asks anyone.
+their profile under the heading "Owner decisions", one line each: `self_change` with `{ kind: profile, decision: "<decision>
+(<date>, <task>)" }`, adding `replaces: "<the line it supersedes>"` when it replaces one. The kernel writes it into the
+profile as it is now. Keep the profile within 4 KB. Every agent reads these before it asks anyone.
 
 ## Approvals and fleet control
 

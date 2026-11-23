@@ -38,10 +38,6 @@ it("graduates the next candidate when its release run passed and graduation fail
   expect(await graduate(g.rest, REPO, "2026.11.22")).toEqual({ graduated: "2026.11.22", repo: REPO, because: RUN });
   expect(g.patched).toHaveLength(1);
   expect(g.patched[0]).toMatchObject({ path: `/repos/${REPO}/releases/2`, body: { prerelease: false, make_latest: "true" } });
-  // A bootstrap failure (select itself failed: the baseline can't prepare the candidate) qualifies too.
-  const boot = github({ gradJobs: [{ name: "select", conclusion: "failure" }, { name: "reject", conclusion: "skipped" }] });
-  await graduate(boot.rest, REPO, "2026.11.22");
-  expect(boot.patched).toHaveLength(1);
 });
 
 it("refuses when the candidate's own checks failed, it never finished, its release run failed, graduation didn't fail, or it isn't next", async () => {
@@ -58,6 +54,7 @@ it("refuses when the candidate's own checks failed, it never finished, its relea
     github({ noIssue: true }),
     github({ oldIssue: true }),
     github({ prefixIssue: true }), // run 9001's issue is not run 900's
+    github({ gradJobs: [{ name: "select", conclusion: "failure" }, { name: "reject", conclusion: "skipped" }] }), // selection failed: no verdict (it also checks the candidate's assets)
   ];
   for (const g of cases) await expect(graduate(g.rest, REPO, "2026.11.22")).rejects.toThrow();
   expect(cases.every((g) => g.patched.length === 0)).toBe(true);

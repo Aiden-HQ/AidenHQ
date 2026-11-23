@@ -2212,13 +2212,15 @@ const SELF_CHANGE = {
     key: { type: "string", description: "routine_def: the routine's key; it is saved as <your key>-<key>" },
     routine: { type: "object", description: "routine_def: { title, description, schedules: [{ cron, label }] (at most one, at most hourly: the cron minute is one number), concurrency?, model?, event? }" },
     delete: { type: "boolean", description: "routine_def: true removes your routine" },
+    decision: { type: "string", description: "profile: one standing decision (one line), added under \"Owner decisions\" in the profile as it is now" },
+    replaces: { type: "string", description: "profile, with decision: the decision line it supersedes, replaced in place" },
   },
   required: ["kind"],
   additionalProperties: false,
 };
 Object.assign(TOOLS, {
   self_change: {
-    description: "Change yourself: `changes` is a list of typed changes, each one of: { kind: rules, agent: <your key>, text } (your own rules, whole: a local agent's handbook, a module agent's instance rules); { kind: skill, name, text } (a shared skill library.<name>, its whole SKILL.md with name and a one-line description in its frontmatter; any agent may improve one); { kind: skills, agent: <your key>, add?, remove? } (the skills you use); { kind: routine_def, key, routine } or { kind: routine_def, key, delete: true } (your own routines); { kind: profile, text } (the owner's whole profile, fleet-admin only). `why`: one line on what it fixes and its evidence. The kernel checks and files it as one change record that the AI reviewer decides; the result is { record, tier, state }. Wait on the record with task_wait (`on`: the record id) before you finish your task: a change on a closed task isn't applied.",
+    description: "Change yourself: `changes` is a list of typed changes, each one of: { kind: rules, agent: <your key>, text } (your own rules, whole: a local agent's handbook, a module agent's instance rules); { kind: skill, name, text } (a shared skill library.<name>, its whole SKILL.md with name and a one-line description in its frontmatter; any agent may improve one); { kind: skills, agent: <your key>, add?, remove? } (the skills you use); { kind: routine_def, key, routine } or { kind: routine_def, key, delete: true } (your own routines); { kind: profile, decision, replaces? } (one standing decision in the owner's profile as it is now, fleet-admin only) or { kind: profile, text } (the whole profile). `why`: one line on what it fixes and its evidence. The kernel checks and files it as one change record that the AI reviewer decides; the result is { record, tier, state }. Wait on the record with task_wait (`on`: the record id) before you finish your task: a change on a closed task isn't applied.",
     inputSchema: { type: "object", properties: { changes: { type: "array", items: SELF_CHANGE, minItems: 1, maxItems: 10 }, why: { type: "string" } }, required: ["changes", "why"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     run: async ({ changes, why }: Args) => {

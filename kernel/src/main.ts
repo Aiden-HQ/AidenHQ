@@ -541,11 +541,13 @@ const fleetOps = createFleetOps({
   roles: (id) => (grantsTable().agents?.[id] as { roles?: string[] } | undefined)?.roles ?? [],
   services: () => Object.values(modulesFile().services ?? {}).flat(),
   // A task by its id or its identifier (WOR-12): the job rows carry both.
-  running: (task) => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = 'running' AND (task = ? OR identifier = ?)").get(task, task) as { n: number }).n,
-  stop: (task) => [...new Set((records.db.prepare("SELECT task FROM jobs WHERE state = 'running' AND (task = ? OR identifier = ?)").all(task, task) as { task: string }[]).map((r) => r.task))].flatMap((id) => jobs.stopRunning({ task: id }, "fleet-steward")),
+  running: (task) => (records.db.prepare("SELECT id FROM jobs WHERE state = 'running' AND (task = ? OR identifier = ?) ORDER BY id").all(task, task) as { id: string }[]).map((r) => r.id),
+  stop: (job) => jobs.stopRunning({ job }, "fleet-steward"),
   note: (j, body) => outcomes.post(j, { kind: "notice", body }),
   generations: () => { const g = work.generations(); return "error" in g ? [] : g.generations; },
   launch: (unit, args) => applyHost.launch(unit, args),
+  // The apply lock is free when a non-blocking flock gets it (ops/apply-config.sh holds it for a whole apply, queued ones wait on it).
+  applying: () => new Promise((ok) => execFile("flock", ["-n", path.join(env("AIDENHQ_DIR", repo), "data", "apply.lock"), "true"], (err) => ok(Boolean(err)))),
   recreate: (services) => composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") })(services),
 });
 const work = createWork({ db: records.db, records, pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });

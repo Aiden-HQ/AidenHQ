@@ -10,8 +10,8 @@ description: "Works the day's deep-look log lines, gives every owner interruptio
    bump ("Pin bump: …" via `task_search` on the sha). Once `fleet_generation_status` shows a `good` generation carrying
    it, check each symptom on the case its issue names (the reproduction is in the filing brief, `task_search` the fingerprint, or for a `link sent` slug in the report's `evidence` on Fleet issues; none found: say verification is blocked), then `task_create` `assignee: maintainer`, marker `product-bug:<slug>:live`, `dedupe_closed: true`, the fingerprint in the description:
    `verified live at <commit>: <check>` or `still happens at <commit>: <evidence>`.
-3. **The day's interruptions.** Everything that reached the owner since the last digest: `notify_recent` (every message, from
-   any agent) and `fleet_owner_cards` (the cards that went to them; page with `next` back to the last digest). Give each one
+3. **The day's interruptions.** Everything that reached the owner since the last digest: `notify_recent` with `state: delivered`
+   (every message, from any agent; page back with `before` until you pass the last digest) and `fleet_owner_cards` (the cards that went to them; page with `next` back to the last digest). Give each one
    a disposition in your log, `interrupt · <source> · <what> · needed|needless · <repair>`: needed when it was theirs to act on
    (a card only they decide, a credential, a security trade-off) and still true when it was sent. A needless one gets one
    repair at the agent that produced it (the rule fix, or a product bug for code that sends it): why didn't an agent settle it,

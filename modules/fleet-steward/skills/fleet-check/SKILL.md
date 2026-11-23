@@ -1,6 +1,6 @@
 ---
 name: fleet-check
-description: "Operates the fleet on a \"Fleet Ops: check\", \"Settle: …\", \"App incident\" or \"App resources\" run: answers agents' questions from the owner's decisions, settles stuck work, owns each incident until it is resolved live, uses the operator's powers and files product bugs. Use on those runs, or to settle any stuck item."
+description: "Operates the fleet on a \"Fleet Ops: check\" or \"Settle: …\" run: answers agents' questions from the owner's decisions, settles stuck work, owns each incident until it is resolved live, uses the operator's powers and files product bugs. Use on those runs, or to settle any stuck item."
 ---
 
 # Fleet check
@@ -114,9 +114,8 @@ An incident is yours until it is resolved live:
   repo; a PR outside that scope goes to the Maintainer: `task_create` `assignee: maintainer`, marker
   `pr-close:<repo>#<n>` (PR link, why superseded, close reason), no close task for an Engineer, and log
   `pr · <repo>#<n> · outside-close-scope · maintainer`.
-- App incident ("App incident" / "App resources" tasks, the detector's app keys): the DevOps Engineer fixes it; check the
-  app's state first (healthy again: finish), then wake or re-brief the DevOps Engineer with `task_route` on its incident task,
-  or delegate. Flapping or still open after its run: own it as "Owning an incident" says. `quality:<app>:<check>`:
+- App incident (the detector's app keys): the DevOps Engineer fixes it; check the app's state first (healthy again: log it),
+  then wake or re-brief the DevOps Engineer with `task_route` on its incident task, or delegate. Flapping or still open after its run: own it as "Owning an incident" says. `quality:<app>:<check>`:
   `task_create` once to the app's owner (else the DevOps Engineer), same marker, done when the check passes.
 - Source down: `src_meta.ingest_run`; "not connected", "sign in" is the owner's. Otherwise one Fleet issues comment `ingest · src_<source> · stale`. A flag keyed `<source>:<scope>` (one scope failing a day while the rest work): same handling, comment key `ingest · src_<source> · <scope> · failing`. `source:<source>:<scope>:incomplete` (its last two complete passes fetched fewer rows than its own total): route a writer fix to the source module's owner.
 - `alert:…` and a component down: name the rule and container, never the label text; `query_prometheus` with a `grafana`

@@ -32,7 +32,7 @@ async function harness(t) {
     "WOR-5": { id: "t5", identifier: "WOR-5", status: "in_review", assigneeAgentId: "eng", createdByAgentId: "other", parentId: null },
   };
   const byRef = (ref) => Object.values(tasks).find((i) => i.id === ref || i.identifier === ref);
-  const kernel = { issue: async (ref) => { const i = byRef(ref); if (!i) throw new Error(`no task ${ref}`); return i; }, repos: async () => ({}) };
+  const kernel = { issue: async (ref) => { const i = byRef(ref); if (!i) throw new Error(`no task ${ref}`); return i; }, repos: async () => ({ agentsOrgs: ["acme-agents"] }) };
   const { server, grades, runner } = createGrading({ db: new DatabaseSync(":memory:"), kernel, keys: KEYS, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] } });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => server.close());
@@ -43,6 +43,7 @@ async function harness(t) {
   };
   return {
     grades,
+    tasks,
     call,
     // The runner's verdict route (POST /internal/grades/<task>/verdict), as the grade loop calls it.
     verdict: (task, body) => runner("POST", `/internal/grades/${encodeURIComponent(task)}/verdict`, body),
@@ -369,7 +370,7 @@ test("an amending tool reads a row it may amend; a filing tool still reads only 
 test("the Fleet Steward rebinds a graded task to the PR that landed, rubric kept and graded again; any other caller is refused", async (t) => {
   const h = await harness(t);
   assert.equal((await h.agentFile("cos", { issue: "WOR-1", rubric: RUBRIC, deliverable: PR })).status, 200);
-  const landed = { kind: "pr", ref: "codehost:local/app/change/3" };
+  const landed = { kind: "pr", ref: "acme-agents/app#3" };
   assert.equal((await h.rebind("eng", [], { issue: "WOR-1", deliverable: landed })).status, 403, "the role, not the tool alone");
   assert.equal((await h.rebind("cos", ["fleet-read"], { issue: "WOR-1", deliverable: landed })).status, 403);
   const r = await h.rebind("steward", ["fleet-settle"], { issue: "WOR-1", deliverable: landed });
@@ -379,4 +380,10 @@ test("the Fleet Steward rebinds a graded task to the PR that landed, rubric kept
   assert.deepEqual([g.state, g.resume, g.deliverable], ["open", true, landed], "graded again at once against the kept rubric");
   assert.equal((await h.rebind("steward", ["fleet-settle"], { issue: "WOR-1", deliverable: APP })).status, 400, "the kind stays");
   assert.equal((await h.rebind("steward", ["fleet-settle"], { issue: "WOR-3", deliverable: landed })).status, 409, "no row (or a closed task) is refused");
+  assert.equal((await h.rebind("steward", ["fleet-settle"], { issue: "WOR-1", deliverable: { kind: "pr", ref: "codehost:local/app/change/3" } })).status, 400, "a local change the grader can't read is refused");
+  // Not finished yet: rebound, and graded when its assignee finishes (only work held in review is graded at once).
+  assert.equal((await h.agentFile("cos", { issue: "WOR-2", rubric: RUBRIC, deliverable: PR })).status, 200);
+  h.tasks["WOR-2"].status = "todo";
+  assert.equal((await h.rebind("steward", ["fleet-settle"], { issue: "WOR-2", deliverable: landed })).status, 200);
+  assert.equal(h.grades.get("t2").resume, false);
 });

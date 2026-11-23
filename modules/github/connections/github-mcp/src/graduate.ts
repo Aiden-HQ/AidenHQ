@@ -9,8 +9,7 @@
 //      on this tag at the tag's current commit, concluded success, its `publish` job a success;
 //   3. the latest completed graduation run (graduate.yml, on the default branch, started after the candidate was published)
 //      failed before the candidate stage, and it was this candidate's run: no other release's notes name that run (a run that
-//      judged an older cut marks that one), and either its `select` job failed (a baseline that can't prepare the
-//      candidate), or its `reject` job ran to success, opened its "Graduation of <tag> didn't finish" issue for this tag naming
+//      judged an older cut marks that one), and its `reject` job ran to success, opened its "Graduation of <tag> didn't finish" issue for this tag naming
 //      that run (`Run: <url>`), and
 //      marked the candidate neither `graduation: failed` (its own checks failed) nor `graduation: incomplete <that run>` (it
 //      reached the candidate and never finished). That is graduate.mjs onFailure's own verdict that the failure wasn't the
@@ -72,15 +71,14 @@ export async function graduationCheck(rest: Rest, repo: string, tag: string): Pr
   const names = (text: unknown) => new RegExp(`${run.html_url.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?![\\w/])`).test(String(text ?? ""));
   if (releases.some((r) => r.id !== rel.id && names(r.body))) throw new GitHubRefused(`graduation run ${run.id} judged another release, not ${tag}`);
   if (String(rel.body ?? "").split("\n").some((l) => l.startsWith("graduation: incomplete ") && names(l))) throw new GitHubRefused(`graduation run ${run.id} reached ${tag}'s own stage and never finished: that is the candidate's, so it gets a fix (or is tested again)`);
-  const bootstrap = job("select")?.conclusion === "failure";
-  if (!bootstrap) {
-    if (job("reject")?.conclusion !== "success") throw new GitHubRefused(`graduation run ${run.id} recorded no verdict (its reject job didn't run to success): ${tag} stays a pre-release`);
-    const issues: any[] = await get(rest, `/repos/${repo}/issues?state=all&creator=${encodeURIComponent("github-actions[bot]")}&per_page=100`);
-    const mine = issues.filter((i) => !i.pull_request && i.title === `Graduation of ${tag} didn't finish`);
-    if (!mine.some((i) => String(i.body ?? "").split("\n").some((l) => l.trim() === `Run: ${run.html_url}`))) throw new GitHubRefused(mine.length
-      ? `the "Graduation of ${tag} didn't finish" issue names an earlier run, not ${run.id}: close it, and the next graduation run opens a new one naming itself`
-      : `graduation run ${run.id} opened no "Graduation of ${tag} didn't finish" issue: it isn't shown to have failed before ${tag}'s stage`);
-  }
+  // Only the distro's own verdict counts (its reject job, which judges where the run failed). A failed `select` is no verdict:
+  // it also fails on the candidate's own assets.
+  if (job("reject")?.conclusion !== "success") throw new GitHubRefused(`graduation run ${run.id} recorded no verdict (its reject job didn't run to success, e.g. selection itself failed): ${tag} stays a pre-release`);
+  const issues: any[] = await get(rest, `/repos/${repo}/issues?state=all&creator=${encodeURIComponent("github-actions[bot]")}&per_page=100`);
+  const mine = issues.filter((i) => !i.pull_request && i.title === `Graduation of ${tag} didn't finish`);
+  if (!mine.some((i) => String(i.body ?? "").split("\n").some((l) => l.trim() === `Run: ${run.html_url}`))) throw new GitHubRefused(mine.length
+    ? `the "Graduation of ${tag} didn't finish" issue names an earlier run, not ${run.id}: close it, and the next graduation run opens a new one naming itself`
+    : `graduation run ${run.id} opened no "Graduation of ${tag} didn't finish" issue: it isn't shown to have failed before ${tag}'s stage`);
   return { release: { id: rel.id, body: String(rel.body ?? "") }, run: run.html_url };
 }
 
