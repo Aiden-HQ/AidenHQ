@@ -492,19 +492,18 @@ test("the card's details text is read decoded too, so a report's version is not 
   assert.equal(instanceDetails({ action: "conn.tool" }, big).length, 3000, "each private-range quad is still refused");
   assert.ok(Date.now() - started < 1000, `the scan is bounded (${Date.now() - started}ms)`);
 });
-test("a code review post or reply whose comment text names an instance host, home path or address is refused by code at filing; clean text passes", async () => {
+test("a code review post or reply whose comment text names an instance host, home path or address is refused by code at filing; clean text and the PR's own names pass", async () => {
   const { check } = await import("../src/instance-details-check.ts");
+  const { withoutInstanceDetails } = await import("../sdk/src/instance-details.ts");
   const reply = (body: string) => check({ args: { repo: "acme/app", body } }).verdict;
-  const post = (finding: Record<string, unknown>, coverage: Record<string, unknown> = {}) => check({ args: { repo: "acme/app", review: { coverage: { reviewed: [], excluded: [], incomplete: null, ...coverage }, findings: [{ path: "src/plan.ts", title: "t", ...finding }] } } }).verdict;
+  const post = (finding: Record<string, unknown>, coverage: Record<string, unknown> = {}) => check({ args: { repo: "acme/app", review: { coverage: { reviewed: [], excluded: [], incomplete: null, ...coverage }, findings: [{ path: "fixtures/192.0.2.10.json", title: "t", ...finding }] } } }).verdict;
   assert.equal(reply("Looks fine: the retry bound is read before it is defaulted (src/plan.ts line 41)."), "ok");
-  for (const leak of ["agents.acme.ts.net", "10.0.0.7", "/home/sam/run.log", "fd7a:115c:a1e0::5", "fd12::34", "fdaa::beef"]) assert.equal(reply(`seen on ${leak}`), "deny", leak);
-  for (const ok of ["00:1a:2b:3c:4d:5e", "de:ad:be:ef:00:01", "aa:bb:cc:dd", "12:30:45:10"]) assert.equal(reply(`mac ${ok}`), "ok", ok);
-  assert.equal(reply("address fd12::34: seen in the log"), "deny", "a prose colon after an address");
-  assert.equal(reply("full fd7a:115c:a1e0:ab12:4843:cd96:6200:1234"), "deny", "eight groups");
-  assert.equal(reply("version 1.2.3.456 is not an address; at 12:30:45:10; loopback ::1"), "ok");
-  assert.equal(post({ path: "src/plan.ts" }, { reviewed: ["fixtures/192.0.2.10.json"] }), "ok", "the reviewed list is never published");
-  assert.equal(post({ path: "/home/runner/work/x.ts" }), "deny", "a finding's path is printed in the summary");
-  assert.equal(post({ path: "src/plan.ts", title: "a call to db::add" }), "ok", "a scoped name is not an address");
+  for (const leak of ["agents.acme.ts.net", "10.0.0.7", "/home/sam/run.log", "/home/sam", "/root/agents/x", "fd7a:115c:a1e0::5", "fd12::34", "2001:db8::1", "1:2:3:4:5:6:7:8", "https://node.acme.ts.net/home/sam/b.log"]) assert.equal(reply(`seen on ${leak}`), "deny", leak);
+  for (const ok of ["00:1a:2b:3c:4d:5e", "aa:bb:cc:dd", "12:30:45:10", "::1", "class DB::Feed", "std::vector", "version 1.2.3.456"]) assert.equal(reply(ok), "ok", ok);
+  assert.equal(post({}, { reviewed: ["fixtures/192.0.2.10.json"] }), "ok", "the PR's own file names (a finding's path, the reviewed list) are not comment text");
   assert.equal(post({ why: "seen on 10.0.0.7" }), "deny");
   assert.equal(post({}, { incomplete: "read failed at /home/ci/build.log on 10.0.0.7" }), "deny", "coverage.incomplete is published");
+  assert.equal(reply("addr 10.0.\u200b0.7"), "deny", "an invisible character cannot hide an address");
+  // what the service files is clean by the same scan, host-then-path included
+  assert.equal(reply(withoutInstanceDetails({ body: "see https://node.acme.ts.net/home/sam/b.log and 10.0.0.7" }).body), "ok");
 });

@@ -5,11 +5,11 @@
 /** The instance details in plain text (see instanceDetails): the hosts, home paths and addresses it holds, each once. */
 export function instanceDetailsIn(text: string, versions = new Set<string>()): string[] {
   const found = [
-    // An IPv6 address (a tailnet's fd7a:...): a real IPv6 shape only: eight groups (with a hex letter, so never a MAC address, six groups, or a clock time) or a
-    // compressed one with a digit or a four-letter group (`fd12::34`, `fdaa::beef`; never a short scoped name like `db::add`); loopback (`::1`) is not.
-    ...[...text.matchAll(/(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?!\w|:[\w:])/gi)].filter((m) => /::|[a-f]/i.test(m[0]) && (!m[0].includes("::") || /\d|\b[0-9a-f]{4}\b/i.test(m[0])) && !/^(?:0{0,4}:){1,7}0{0,3}1$/.test(m[0])),
+    // An IPv6 address, by shape: eight groups (never a MAC address, six groups, or a clock time), or a compressed form that holds a
+    // digit (`2001:db8::1`, `fd12::34`; never a scoped name like `DB::Feed`); loopback (`::1`) is not.
+    ...[...text.matchAll(/(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?!\w|:[\w:])/gi)].filter((m) => !m[0].includes("::") || (/\d/.test(m[0]) && !/^(?:0{0,4}:){1,7}0{0,3}1$/.test(m[0]))),
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
-    ...text.matchAll(/(?<![\w.~])\/(?:home|Users)\/[\w.-]+\/\S*/g),
+    ...text.matchAll(/(?<![\w.~])\/(?:home|Users|root)(?:\/[\w.-]+(?:\/\S*)?)?/g),
     ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
       .filter((m) => m[0].split(".").every((o) => Number(o) <= 255))
       .filter((m) => !/^(127\.|0\.0\.0\.0$)/.test(m[0]) && !(versions.has(m[0]) && !addressShaped(text, m.index ?? 0, m[0].length))),
@@ -27,25 +27,31 @@ function addressShaped(text: string, at: number, length: number): boolean {
   return /(?:\/\/|@)$/.test(before) || /^:\d/.test(after);
 }
 
-/** The keys whose string values a review or reply publishes as comment text or prints (a finding's path): what a model or run wrote. */
-const TEXT_KEYS = new Set(["title", "why", "evidence", "fix_brief", "option", "incomplete", "body", "stale_guidance", "path"]);
-/** The text in a write's args that reaches a comment: each string under a text key (and each one of a text list). */
+/** The keys whose string values a review or reply publishes as comment text: what a model or run wrote. A finding's path and the repo are the PR's own names and the anchors of the comments, so they are not read. */
+const TEXT_KEYS = new Set(["title", "why", "evidence", "fix_brief", "option", "incomplete", "body", "stale_guidance"]);
+/** Text as GitHub receives it: invisible format and control characters dropped (the poster's `plain` does the same), so none can hide a match. */
+const normal = (t: string) => t.replace(/[^\P{Cc}\n\t]|\p{Cf}/gu, "");
+/** The comment text in a write's args: each string under a text key (and each one of a text list). */
 export function publishedText(args: unknown): string[] {
   const out: string[] = [];
-  const read = (x: unknown) => { if (typeof x === "string") out.push(x); else if (Array.isArray(x)) x.forEach(read); };
+  const read = (x: unknown) => { if (typeof x === "string") out.push(normal(x)); else if (Array.isArray(x)) x.forEach(read); };
   JSON.parse(JSON.stringify(args ?? null), (k, x) => { if (TEXT_KEYS.has(k)) read(x); return x; });
   return out;
 }
 /**
- * The args with the instance's details removed from their comment text, in one pass (the longest match first, so a path that holds
- * a host goes whole) and by a marker shorter than any match, so no field outgrows its schema limit. The repo is left as it is, the target of the post;
- * a finding's path is cleaned too, so one that names an instance detail loses its inline anchor (its finding stays in the summary)
- * instead of the post being refused.
+ * The args with the instance's details removed from their comment text: the longest match first (so a path that holds a host goes
+ * whole), again until none is left (a removed host can expose a path), by a marker shorter than any match so no field outgrows
+ * its schema limit.
  */
 export function withoutInstanceDetails<T>(args: T): T {
   const clean = (t: string) => {
-    const found = instanceDetailsIn(t).sort((a, b) => b.length - a.length);
-    return found.length ? t.replace(new RegExp(found.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g"), "[x]") : t;
+    let out = normal(t);
+    for (let i = 0; i < 3; i++) {
+      const found = instanceDetailsIn(out).sort((a, b) => b.length - a.length);
+      if (!found.length) break;
+      out = out.replace(new RegExp(found.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g"), "[x]");
+    }
+    return out;
   };
   const cleanAll = (x: unknown): unknown => (typeof x === "string" ? clean(x) : Array.isArray(x) ? x.map(cleanAll) : x);
   return JSON.parse(JSON.stringify(args), (k, x) => (TEXT_KEYS.has(k) ? cleanAll(x) : x));

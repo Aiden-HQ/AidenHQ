@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { kernelPoster } from "../service/src/adapters.ts";
 
-test("comment text loses its instance details in one pass and never grows; the repo target is untouched", async () => {
+test("comment text loses its instance details in one pass and never grows; the repo and anchors are untouched", async () => {
   const filed: any[] = [];
   const kernel = { call: async (_m: string, path: string, body: any) => (path === "/v1/tasks" ? { id: "T-1" } : (filed.push(body), { id: "w-1", state: "claimed" })) } as any;
   const poster = kernelPoster(kernel);
@@ -16,7 +16,7 @@ test("comment text loses its instance details in one pass and never grows; the r
   const text = JSON.stringify(filed);
   for (const leak of ["10.0.0.7", "/home/", "agents.acme.ts.net", "fd7a:115c", "fd12::34"]) assert.ok(!text.includes(leak), leak);
   const f = filed[0].args.review.findings[0];
-  assert.equal(f.path, "fixtures/[x].json", "a path naming an address is cleaned: the finding falls to the summary, the post goes");
+  assert.equal(f.path, "fixtures/192.0.2.10.json", "a finding's path is the PR's own name and the comment's anchor");
   assert.equal(filed[0].args.repo, "acme/app");
   assert.ok(f.title.length <= title.length && f.title.endsWith("[x]"));
   assert.equal(filed[0].args.review.coverage.incomplete, "failed at [x]");

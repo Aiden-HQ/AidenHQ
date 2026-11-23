@@ -1,7 +1,7 @@
 // The code-review module's write.filed check on its posts and replies (kernel/src/writes.ts filedRaises): a GitHub thread is
 // outside the instance, so comment text naming its hosts, home paths or addresses is refused at filing, whatever tier the write
 // runs at (they run at Tier 0: no AI reviewer reads them). The service removes such text from its own posts first (adapters.ts),
-// so this is the backstop. The repo and the reviewed-files lists are not read.
+// so this is the backstop. The repo, a finding's path and the reviewed-files lists are not read.
 import { instanceDetailsIn, publishedText } from "../sdk/src/instance-details.ts";
 
 export function check({ args }: { args?: unknown } = {}) {
