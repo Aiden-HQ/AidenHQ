@@ -9,7 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { SUPPORTED_PROTOCOL_VERSIONS, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, JSONRPCRequestSchema, SUPPORTED_PROTOCOL_VERSIONS, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { needsOwner, signedIn } from "./vendor/needs.js";
 
 /** Search tools whose `filters` Slack parses as search modifiers. */
@@ -614,11 +614,11 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   // hook (src/slack.ts) rather than sent upstream, so a batch can't get the empty page either.
   if (peeked.kind === "pass" || peeked.message.method !== "tools/call") return false;
   const message = peeked.message;
-  // The same envelope rules the SDK applies: a request carries `jsonrpc: "2.0"` and a string-or-integer id, and only a
-  // request is answered. Anything else (a notification, a malformed message) goes to the proxy, which answers it as it
-  // answers every other tool, so this path can never succeed where the transport would refuse the same request.
-  if (message.jsonrpc !== "2.0") return false;
-  if (typeof message.id !== "string" && !Number.isInteger(message.id)) return false;
+  // The SDK's own request schema, not a second set of rules: a request carries `jsonrpc: "2.0"`, a string-or-integer id
+  // and a `params` the transport accepts. Anything else (a notification, a malformed message) goes to the proxy, which
+  // answers it as it answers every other tool, so this path can never succeed where the transport would refuse.
+  if (!JSONRPCRequestSchema.safeParse(message).success) return false;
+  if (!CallToolRequestSchema.safeParse(message).success) return false;
   // The transport's own media checks: without both accepted types and a JSON body it answers 406/415, and this route
   // must not answer a call the rest of the connection would refuse. (`accept` is a list, so a substring check is right.)
   const version = req.headers["mcp-protocol-version"];

@@ -702,6 +702,10 @@ describe("interception through the proxy", () => {
     const badVersion = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { "mcp-protocol-version": "1999-01-01" });
     expect(badVersion.status).toBe(400);
     expect(slackCalls).toBe(0);
+    // A `params` the SDK's call schema refuses (`_meta` as a string): the transport rejects it, so this route must too.
+    const badParams = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" }, _meta: "nope" } });
+    expect(badParams.status).toBe(400);
+    expect(slackCalls).toBe(0);
     // A `+json` suffix is not `application/json`: the transport answers 415, so no Slack read happens here either.
     const badType = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { "content-type": "application/mcp+json" });
     expect(badType.status).toBe(415);
