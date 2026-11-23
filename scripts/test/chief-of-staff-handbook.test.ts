@@ -38,7 +38,7 @@ test("the daily brief's \"Still open\" close path does not `task_finish` an owne
   const agents = read("modules/chief-of-staff/agents/chief-of-staff/AGENTS.md");
   const line = block(agents, /\*\*Still open:\*\*/);
   assert.doesNotMatch(line, /task_finish/, "the close path names no `task_finish`");
-  assert.match(line, /"close" is `task_cancel` with `issue` on a task this agent filed, with their reply as the evidence line, and on any other task \(the owner's own, or one another agent filed\) `task_comment` with their reply, leaving it open for them to close — say so/, "close cancels what the agent filed and comments on everything else, which stays open");
+  assert.match(line, /"close" is `task_cancel` with `issue` on a task this agent filed \(the only close an owner-held task takes from an agent\), with their reply as the evidence line, and on any other task \(the owner's own, or one another agent filed\) `task_comment` with their reply, leaving it open for them to close — say so/, "close cancels what the agent filed and comments on everything else, which stays open");
   assert.match(line, /"snooze" is `fleet_followup_snooze`/, "snooze is unchanged");
   assert.match(line, /"delegate to X" is `task_delegate`/, "delegate is unchanged");
 });
