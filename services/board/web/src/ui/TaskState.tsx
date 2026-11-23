@@ -3,6 +3,7 @@
 // out itself, and a task the kernel has no facts for shows none.
 import type { ShownState } from "../types";
 import { StatusDot, type StatusTone } from "./StatusDot";
+import { dueWords } from "../util";
 
 /** Something waits on the owner: a card, his answer, a handback. */
 export const needsOwner = (s: ShownState | null | undefined) => Boolean(s?.attention.some((a) => a.who === "owner"));
@@ -21,7 +22,7 @@ const MODULE_WAIT: Record<string, string> = { checks: "CI checks", eval: "review
 const moduleWords = (ref: string) => MODULE_WAIT[ref] ?? ref.replace(/_/g, " ");
 
 /** After a dot: what a reason means to the person reading it. `refLabel` names a card, a blocker or how a job ended. */
-const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
+const REASON: Record<ShownState["reason"], (s: ShownState, timeZone?: string) => string> = {
   closed: (s) => (s.grade ? `graded ${s.grade}` : ""),
   cancelled: () => "stopped",
   job_running: () => "job running",
@@ -30,12 +31,12 @@ const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
   card_review: (s) => (s.refLabel ? `AI review: ${s.refLabel}` : "AI review"),
   card_owner: (s) => (s.refLabel ? `your approval: ${s.refLabel}` : "your approval"),
   owner_wait: (s) => (s.question ? `your answer: “${s.question.split("\n")[0]!.slice(0, 80)}”` : "your answer"),
-  delegator_wait: () => "an answer from another agent",
+  delegator_wait: (s) => `an answer from ${s.waits_on_name ?? "another agent"}`,
   handback: () => "handed to you",
   blocked: (s) => (s.refLabel ? `blocked by ${s.refLabel}` : "blocked"),
   agent_wait: () => "its own wait",
   module_wait: (s) => MODULE_WAIT[s.ref ?? ""] ?? (s.ref ? s.ref.replace(/_/g, " ") : "a module's step"),
-  scheduled: () => "scheduled",
+  scheduled: (s, tz) => (s.scheduled_for ? `scheduled for ${dueWords(s.scheduled_for, tz)}` : "scheduled"),
   chat_turn: () => "your turn",
   owner_task: () => "your task",
   backlog: () => "backlog",
@@ -46,12 +47,16 @@ const REASON: Record<ShownState["reason"], (s: ShownState) => string> = {
   history_expired: () => "unknown, history expired",
 };
 
-/** The tone, word and detail a state shows with. A chat waiting on the owner's next message (no attention) is quiet. */
+/** The board's timezone (App sets it from the board's read): every state's time reads in it, in every view. */
+let boardZone: string | undefined;
+export const setBoardTimezone = (tz: string | undefined) => void (boardZone = tz);
+
+/** The tone, word and detail a state shows with (times in the board's timezone). A chat waiting on the owner's next message (no attention) is quiet. */
 export function stateWords(s: ShownState): { tone: StatusTone; word: string; detail: string } {
   const tone: StatusTone = s.kind === "working" ? "working" : s.kind === "done" ? "done" : s.reason === "failed" ? "failed" : needsOwner(s) ? "needs" : "idle";
   const word = s.reason === "cancelled" ? "Stopped" : KIND_WORD[s.kind];
   const stalled = s.attention.find((a) => a.why === "stalled_wait");
-  const reason = stalled ? `stalled · ${moduleWords(stalled.ref)}` : REASON[s.reason](s);
+  const reason = stalled ? `stalled · ${moduleWords(stalled.ref)}` : REASON[s.reason](s, boardZone);
   const note = s.note && s.note !== reason ? (s.note.length > 60 ? `${s.note.slice(0, 59)}…` : s.note) : "";
   return { tone, word, detail: [reason, note, s.stage].filter(Boolean).join(" · ") };
 }

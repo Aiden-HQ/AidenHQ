@@ -314,9 +314,9 @@ if [ "$NO_TS" = 1 ] && [ "$DRY" = 0 ] && on_tailnet; then
 fi
 # The board's URL for links: its tailnet name over https, or (no Tailscale) loopback, reached through an SSH tunnel.
 if [ -n "$BOARD_HOST" ]; then BOARD_URL="https://$BOARD_HOST"; else BOARD_URL="http://localhost:3121"; fi
-# The kernel's admin listener (sign-in and approvals) on its own origin: a second tailnet port, or the second tunnel.
+# The kernel's admin listener (sign-in) on its own origin: a second tailnet port, or the second tunnel.
 if [ -n "$BOARD_HOST" ]; then ADMIN_URL="https://$BOARD_HOST:8446"; else ADMIN_URL="http://localhost:3120"; fi
-say "Board address: $BOARD_URL (sign-in and approvals: $ADMIN_URL)"
+say "Board address: $BOARD_URL (sign-in: $ADMIN_URL)"
 # The machine step installs node; everything after it needs it.
 [ "$DRY" = 1 ] || command -v node >/dev/null || die "node is missing after the machine step: ops/vm/setup.sh installs it (NodeSource); see its output above"
 # Public mode that can't work here falls back to local, loudly: the board on loopback through the SSH tunnel (printed at the
@@ -354,7 +354,7 @@ elif [ "$PUBLIC" = 1 ] && [ -z "$PUBLIC_IP" ]; then
   fall_back_local "this host has no public IPv4 of its own (above: behind NAT, or only a private address). Set AIDENHQ_PUBLIC_IP if the address that forwards 443 and 8446 here is known."
 elif [ "$PUBLIC" = 1 ]; then
   BOARD_URL="https://$PUBLIC_IP"; ADMIN_URL="https://$PUBLIC_IP:8446"
-  say "Public: board $BOARD_URL, sign-in and approvals $ADMIN_URL (Caddy, a Let's Encrypt certificate for the IP)"
+  say "Public: board $BOARD_URL, sign-in $ADMIN_URL (Caddy, a Let's Encrypt certificate for the IP)"
 fi
 
 # ---------------------------------------------------------------- 2. the product (its main is what may run here)

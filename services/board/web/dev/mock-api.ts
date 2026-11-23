@@ -8,6 +8,8 @@ const port = Number(process.env.PORT ?? 3120);
 const now = Date.now();
 const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 const ahead = (min: number) => new Date(now + min * 60_000).toISOString();
+/** Tomorrow 08:00 in the board's timezone (Asia/Dubai, UTC+4). */
+const TOMORROW_8 = (() => { const d = new Date(now + 4 * 3600_000); d.setUTCDate(d.getUTCDate() + 1); d.setUTCHours(8 - 4, 0, 0, 0); return d.toISOString(); })();
 const mock = { welcome: false, empty: false, slow: 0 };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
@@ -15,8 +17,8 @@ const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
 const LANE: Record<string, string> = { owner_wait: "needs_you", card_owner: "needs_you", handback: "needs_you", job_running: "working", failed: "blocked", blocked: "blocked", unknown: "blocked", orphaned: "blocked", history_expired: "blocked", unpolled: "blocked", scheduled: "idle", backlog: "idle", owner_task: "idle", chat_turn: "idle", closed: "done", cancelled: "done" };
 const st = (kind: string, reason: string, o: Record<string, unknown> = {}) => ({ task: "t", identifier: null as string | null, kind, reason, since: ago(30), holder: null, attention: [] as unknown[], lane: LANE[reason] ?? "waiting", ...o });
 const ASK = st("waiting", "owner_wait", { since: ago(120), question: "Which week should I compare against?", attention: [A("owner", "owner_wait", "wait:t")] });
-const CARD = st("waiting", "card_owner", { since: ago(9), ref: "record:ap1", refLabel: "Deploy the invoices app at 4e1a9c2", attention: [A("owner", "card", "record:ap1")] });
-const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", lane: "needs_you", attention: [A("owner", "card", "record:ap2")] });
+const CARD = st("waiting", "card_owner", { since: ago(9), ref: "record:k-00000000000000a1", refLabel: "Deploy the invoices app at 4e1a9c2", attention: [A("owner", "card", "record:k-00000000000000a1")] });
+const WORKING_CARD = st("working", "job_running", { since: ago(12), stage: "CI running", ref: "job:j-2", lane: "needs_you", attention: [A("owner", "card", "record:k-00000000000000a2")] });
 const FAILED = st("idle", "failed", { since: ago(8), ref: "job:j-1", refLabel: "timed out", attention: [A("agent", "failed", "job:j-1")] });
 const UNKNOWN = st("idle", "unknown", { since: ago(25), attention: [A("agent", "unknown", "task:t")] });
 const EXPIRED = st("idle", "history_expired", { since: ago(900), attention: [A("agent", "history_expired", "task:t")] });
@@ -24,7 +26,7 @@ const STATES = {
   running: st("working", "job_running", { since: ago(1), ref: "job:j-3" }),
   queued: st("waiting", "job_queued", { since: ago(4) }),
   held: st("waiting", "job_held", { since: ago(6), ref: "capacity" }),
-  review: st("waiting", "card_review", { since: ago(4), ref: "record:ap5", refLabel: "Merge “Add CSV export” into main" }),
+  review: st("waiting", "card_review", { since: ago(4), ref: "record:k-00000000000000a5", refLabel: "Merge “Add CSV export” into main" }),
   delegator: st("waiting", "delegator_wait", { since: ago(33), attention: [A("agent", "delegator_wait", "wait:t")] }),
   handback: st("waiting", "handback", { since: ago(70), attention: [A("owner", "handback", "task:t")] }),
   blocked: st("waiting", "blocked", { since: ago(40), ref: "task:id-901", refLabel: "WOR-901" }),
@@ -55,7 +57,7 @@ const roster = [
 
 const CARD_STATES: Record<number, ReturnType<typeof st>> = { 812: STATES.orphaned, 815: ASK, 790: WORKING_CARD, 801: STATES.queued, 802: FAILED, 770: STATES.scheduled, 700: STATES.agentWait, 705: UNKNOWN, 600: STATES.backlog };
 // Agent work (the mockup's sample, docs/design/agent-work-board.html): every issue its own card in its kernel lane.
-const PROJECTS = [{ id: "p-launch", name: "Launch" }, { id: "p-infra", name: "Infra" }];
+const PROJECTS = [{ id: "p-aidenhq", name: "AidenHQ" }, { id: "p-launch", name: "Launch" }, { id: "p-infra", name: "Infra" }, { id: "p-hiring", name: "Hiring" }];
 const LABELS = [{ id: "l-code", name: "engineer", color: "#3b82f6" }, { id: "l-review", name: "needs-review", color: "#f59e0b" }];
 const w = (n: number, title: string, who: string | null, state: Record<string, unknown> | null, o: Record<string, unknown> = {}) => ({
   ...card(n, title, { assignee: who, state: state && named(`WOR-${n}`, { ...state, task: `id-${n}` }), activityAt: ago(o.age as number ?? 30) }),
@@ -63,19 +65,19 @@ const w = (n: number, title: string, who: string | null, state: Record<string, u
 });
 const WORK = () => [
   w(7812, "Pick the payments vendor for the refund API", "aiden", st("waiting", "owner_wait", { question: "Stripe or Adyen? Adyen is cheaper at our volume but needs a 3-week review.", since: ago(120), attention: [A("owner", "owner_wait", "wait:t")] }), { priority: "high", projectId: "p-launch", age: 120 }),
-  w(7820, "Approve push: release 0.9 notes", "engineer", st("waiting", "card_owner", { ref: "record:k-1", since: ago(25), attention: [A("owner", "card", "record:k-1")], refs: { "record:k-1": "push to docs/release-0.9" } }), { projectId: "p-launch", age: 25 }),
+  w(7820, "Approve push: release 0.9 notes", "engineer", st("waiting", "card_owner", { ref: "record:k-00000000000000a2", since: ago(25), attention: [A("owner", "card", "record:k-00000000000000a2")], refs: { "record:k-00000000000000a2": "push to docs/release-0.9" } }), { projectId: "p-launch", age: 25 }),
   w(7790, "Fix the flaky checkout test on CI", "engineer", st("working", "job_running", { ref: "job:j-e101000000000001", stage: "Testing", since: ago(3.2) }), { priority: "high", projectId: "p-launch", labelIds: ["l-code"], age: 40 }),
   w(7791, "Add retry to the checkout flow", "platform-engineer", st("working", "job_running", { ref: "job:j-e102000000000002", stage: "Coding", since: ago(8) }), { projectId: "p-launch", parent: "WOR-7790", age: 20 }),
-  w(7795, "Weekly fleet digest", "aiden", st("working", "job_running", { ref: "job:j-77fa000000000003", stage: "Digest", since: ago(1) }), { age: 6 }),
+  w(7795, "Weekly fleet digest", "aiden", st("working", "job_running", { ref: "job:j-77fa000000000003", stage: "Digest", since: ago(1) }), { projectId: "p-aidenhq", age: 6 }),
   w(7801, "Migrate the warehouse ingest to the new schema, including backfill of 2023 and the long tail of partner tables", "platform-engineer", st("working", "job_running", { ref: "job:j-0b3c000000000004", stage: "Migrating", since: ago(12.6) }), { projectId: "p-infra", crewIds: ["engineer"], age: 60 }),
-  w(7788, "Release 0.9 candidate", "engineer", st("waiting", "card_review", { ref: "record:k-2", refLabel: "reviewer is reading the diff", since: ago(18) }), { projectId: "p-launch", labelIds: ["l-review"], age: 18 }),
-  w(7765, "Ask legal about the data-retention clause", "aiden", st("waiting", "delegator_wait", { since: ago(180), attention: [A("agent", "delegator_wait", "wait:t")] }), { age: 180 }),
+  w(7788, "Release 0.9 candidate", "engineer", st("waiting", "card_review", { ref: "record:k-00000000000000a5", refLabel: "reviewer is reading the diff", since: ago(18) }), { projectId: "p-launch", labelIds: ["l-review"], age: 18 }),
+  w(7765, "Ask legal about the data-retention clause", "aiden", st("waiting", "delegator_wait", { since: ago(180), waits_on: "a8", waits_on_name: "Research Lead", attention: [A("agent", "delegator_wait", "wait:t")] }), { projectId: "p-hiring", age: 180 }),
   w(7770, "Deploy marketing site", "platform-engineer", st("waiting", "module_wait", { ref: "checks", since: ago(50) }), { projectId: "p-infra", age: 50 }),
   w(7744, "Refund API: wire up the webhook handler", "engineer", st("idle", "failed", { ref: "job:j-d002000000000005", since: ago(300), attention: [A("agent", "failed", "job:j-d002000000000005")], refs: { "job:j-d002000000000005": "the job timed out after 120 min" } }), { priority: "critical", projectId: "p-launch", age: 300 }),
   w(7751, "Backfill invoices", "platform-engineer", st("waiting", "job_queued", { since: ago(300), blocker: "task:id-7744", lane: "blocked", note: "Waits for the webhook handler.", refs: { "task:id-7744": "WOR-7744" } }), { projectId: "p-infra", age: 300 }),
   w(7756, "Answer the partner's API question", "open-loops", st("idle", "failed", { ref: "no_reply", since: ago(90), attention: [A("agent", "failed", "no_reply")] }), { age: 90 }),
   w(7702, "Tidy the Notion roadmap", "aiden", st("waiting", "backlog", { since: ago(5760) }), { age: 5760 }),
-  w(7733, "Prepare Thursday's board pre-read", "aiden", st("waiting", "scheduled", { since: ago(1440) }), { age: 1440 }),
+  w(7733, "Prepare Thursday's board pre-read", "aiden", st("waiting", "scheduled", { since: ago(1440), scheduled_for: TOMORROW_8 }), { age: 1440 }),
   w(7690, "Review vendor security questionnaire", "me", st("waiting", "owner_task", { since: ago(2880) }), { age: 2880 }),
   w(7686, "Old import task", null, null, { age: 9000 }),
   w(7781, "Rotate the staging database credentials", "platform-engineer", st("done", "closed", { grade: "pass", since: ago(180) }), { status: "done", closedAt: ago(180), age: 180 }),
@@ -128,11 +130,11 @@ const chatRows = () => mock.empty ? [] : [
 
 const approval = (id: string, over = {}) => ({ id, identifier: "WOR-818", action: "deploy", target: "invoices", digest: "sha256:9f2c", sentence: "Deploy the invoices app at 4e1a9c2", reads: "The warehouse schema app_invoices", changes: "Starts a new container; the app's door opens to admins", cost: "No spend", details: "Commit 4e1a9c2 on acme-agents/invoices: adds CSV export and a monthly total.", requestedBy: "Engineer", state: "pending", tier: 2, reason: "First deploy of a new app", review: "The diff is small and touches only the app's own repo. Sent to you because it is a first deploy.", decidedBy: null, outcome: null, outcomeText: null, createdAt: ago(9), replaced: false, ...over });
 const approvals = () => mock.empty ? [] : [
-  approval("ap1"),
-  approval("ap2", { identifier: "WOR-806", action: "push", target: "acme-agents/aidenhq-instance", sentence: "Raise the Platform Engineer's run timeout to 45 minutes", changes: "One line in instance.yaml", tier: 2, reason: "Changes an agent's limits", review: null, createdAt: ago(50) }),
-  approval("ap3", { identifier: "WOR-790", action: "merge", target: "acme-agents/invoices#14", sentence: "Merge “Add CSV export” into main", tier: 1, state: "approved", decidedBy: "reviewer:gpt-luna", review: "Tests pass, change is scoped to the export.", outcome: "applied", outcomeText: "Merged as 4e1a9c2", createdAt: ago(70) }),
-  approval("ap4", { identifier: "WOR-777", action: "send", target: "slack:#general", sentence: "Post the weekly update in #general", tier: 1, state: "rejected", decidedBy: "reviewer:gpt-luna", review: "The draft names a customer that isn't public yet.", createdAt: ago(300) }),
-  approval("ap5", { identifier: "WOR-792", action: "push", target: "acme-agents/invoices", sentence: "Push the CSV export fix to a branch", tier: 1, reason: null, review: null, createdAt: ago(2) }),
+  approval("k-00000000000000a1"),
+  approval("k-00000000000000a2", { identifier: "WOR-806", action: "push", target: "acme-agents/aidenhq-instance", sentence: "Raise the Platform Engineer's run timeout to 45 minutes", changes: "One line in instance.yaml", tier: 2, reason: "Changes an agent's limits", review: null, createdAt: ago(50) }),
+  approval("k-00000000000000a3", { identifier: "WOR-790", action: "merge", target: "acme-agents/invoices#14", sentence: "Merge “Add CSV export” into main", tier: 1, state: "approved", decidedBy: "reviewer:gpt-luna", review: "Tests pass, change is scoped to the export.", outcome: "applied", outcomeText: "Merged as 4e1a9c2", createdAt: ago(70) }),
+  approval("k-00000000000000a4", { identifier: "WOR-777", action: "send", target: "slack:#general", sentence: "Post the weekly update in #general", tier: 1, state: "rejected", decidedBy: "reviewer:gpt-luna", review: "The draft names a customer that isn't public yet.", createdAt: ago(300) }),
+  approval("k-00000000000000a5", { identifier: "WOR-792", action: "push", target: "acme-agents/invoices", sentence: "Push the CSV export fix to a branch", tier: 1, reason: null, review: null, createdAt: ago(2) }),
 ];
 
 const chatDetail = (ref: string) => {
@@ -147,7 +149,7 @@ const chatDetail = (ref: string) => {
       { kind: "reply", id: "m5", agent: row.agent.name, text: "Got it: Wednesday 14:30 for 30 minutes. Which title should the invite carry?", at: ago(2), questions: [{ question: "Invite title", options: ["Sam / sync", "Q1 planning", "Catch-up"] }] },
     ],
     working: row.state?.kind === "working" ? { agent: row.agent.name, since: ago(1), queued: false, said: "Checking Sam's calendar", plan: [{ text: "Read both calendars", state: "done" }, { text: "Pick slots", state: "doing" }, { text: "Send the invite", state: "todo" }] } : null,
-    files: [], approvals: ref === "WOR-818" ? [approval("ap1")] : [], handedOut: ref === "WOR-818" ? [{ identifier: "WOR-819", title: "Build the invoices app", agent: "Engineer", state: named("WOR-819", WORKING_CARD), updatedAt: ago(5), working: { agent: "Engineer", since: ago(5), queued: false } }, { identifier: "WOR-821", title: "Design the invoice screens", agent: "UI Designer", state: named("WOR-821", ASK), updatedAt: ago(20), working: null }, { identifier: "WOR-822", title: "Write the export tests", agent: "Engineer", state: named("WOR-822", STATES.blocked), updatedAt: ago(40), working: null }, { identifier: "WOR-823", title: "Seed the demo data", agent: "Engineer", state: named("WOR-823", STATES.done), updatedAt: ago(100), working: null }] : [],
+    files: [], approvals: ref === "WOR-818" ? [approval("k-00000000000000a1")] : [], handedOut: ref === "WOR-818" ? [{ identifier: "WOR-819", title: "Build the invoices app", agent: "Engineer", state: named("WOR-819", WORKING_CARD), updatedAt: ago(5), working: { agent: "Engineer", since: ago(5), queued: false } }, { identifier: "WOR-821", title: "Design the invoice screens", agent: "UI Designer", state: named("WOR-821", ASK), updatedAt: ago(20), working: null }, { identifier: "WOR-822", title: "Write the export tests", agent: "Engineer", state: named("WOR-822", STATES.blocked), updatedAt: ago(40), working: null }, { identifier: "WOR-823", title: "Seed the demo data", agent: "Engineer", state: named("WOR-823", STATES.done), updatedAt: ago(100), working: null }] : [],
     parent: null, runs: [], asks: [],
   };
 };
@@ -155,7 +157,7 @@ const chatDetail = (ref: string) => {
 const kid = (n: number, title: string, agent: string, state: ReturnType<typeof st>, o: Record<string, unknown> = {}) => ({ identifier: `WOR-${n}`, title, agent, model: "deepseek-flash high", state: named(`WOR-${n}`, state), latest: { text: "Working through the export tests.", at: ago(4) }, tokens: 182_000, usd: 0.42, startedAt: ago(90), endedAt: state.kind === "done" ? ago(30) : null, children: [], approvals: [], ...o });
 const lineage = (identifier: string) => {
   if (identifier !== "WOR-818" || mock.empty) return { identifier, children: [], total: { tasks: 0, running: 0, needs: 0, failed: 0, tokens: 0, usd: 0, ms: 0 } };
-  const children = [kid(819, "Build the invoices app", "Engineer", WORKING_CARD, { children: [kid(824, "Add CSV export", "Engineer", FAILED, { latest: { text: "The export test timed out.", at: ago(8) } })], approvals: [approval("ap1")] }), kid(821, "Design the invoice screens", "UI Designer", ASK), kid(822, "Write the export tests", "Engineer", STATES.blocked), kid(823, "Seed the demo data", "Engineer", STATES.done)];
+  const children = [kid(819, "Build the invoices app", "Engineer", WORKING_CARD, { children: [kid(824, "Add CSV export", "Engineer", FAILED, { latest: { text: "The export test timed out.", at: ago(8) } })], approvals: [approval("k-00000000000000a1")] }), kid(821, "Design the invoice screens", "UI Designer", ASK), kid(822, "Write the export tests", "Engineer", STATES.blocked), kid(823, "Seed the demo data", "Engineer", STATES.done)];
   return { identifier, children, total: { tasks: 5, running: 1, needs: 2, failed: 1, tokens: 910_000, usd: 2.1, ms: 5_400_000 } };
 };
 
@@ -261,6 +263,8 @@ const catalog = () => ({ sha: "4e1a9c2f0b7d".padEnd(40, "0"), options: [
 const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9c2`\n\n## Security\n\n- **Important** `src/billing/charge.ts:88`: a retried charge can post twice.\n  - Evidence: the idempotency key is written after the provider call.\n  - Found by: sec.quick-scan\n\n## Coverage\n\n| Option | Result |\n| --- | --- |\n| sec.quick-scan | done |\n| maint.knip | done |\n\nCost $6.80.";
 
 function route(method: string, url: URL): [number, unknown] {
+  const one = /^\/api\/approvals\/(k-[0-9a-f]{16})$/.exec(url.pathname)?.[1];
+  if (one && method === "GET") { const a = approvals().find((x) => x.id === one); return a ? [200, { approval: a }] : [404, { error: "no such card" }]; }
   const p = url.pathname;
   if (method === "POST" && p === "/api/reviews") return [200, { batch: "b-000000000003" }];
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
@@ -289,6 +293,7 @@ function route(method: string, url: URL): [number, unknown] {
       { identifier: "WOR-650", title: "An old task whose history expired", agent: "Engineer", state: named("WOR-650", EXPIRED) },
     ] }];
     case "/api/approvals": return [200, { approvals: approvals() }];
+
     case "/api/agents/roster": return [200, { roster: mock.empty ? roster.slice(0, 1) : roster }];
     case "/api/agents": return [200, { sessions: [{ id: "s1", agent: "Engineer", agentId: "a3", state: "working", startedAt: ago(12), said: "Running the export tests", run: { identifier: "WOR-790", title: "Ship the invoices app's export" }, tasks: [] }], finished: [], roster }];
     case "/api/apps": return [200, { apps: apps() }];

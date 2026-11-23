@@ -19,7 +19,7 @@ import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSo
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { SignInRequired, api, type Session } from "./api";
-import { SignInScreen } from "./Accounts";
+import { SignInScreen, RETURN_KEY } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
 import { AttentionStrip } from "./Attention";
 import { ApprovalsView, onYouBeyondCards } from "./Chat";
@@ -43,6 +43,7 @@ import { AgentWork, AgentWorkLoading } from "./AgentWork";
 import { BoardTabs, ConflictBanner, FilterChips, FilterSheet, SaveButton, useTaskBoard } from "./TaskTools";
 import { applyFilters, isEmpty } from "./filters";
 import { Banner, Segmented } from "./ui";
+import { setBoardTimezone } from "./ui/TaskState";
 import "./shell.css";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
@@ -60,7 +61,7 @@ const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.Des
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string; /** One approval card (#/approvals/<id>). */ card?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean };
 
 const HINTS: Record<Bucket, string> = {
   triage: "New tasks land here",
@@ -137,6 +138,9 @@ function parseRoute(): Route {
   // #/board?view=<id>: Tasks on a saved board (TaskTools.tsx); an unknown id falls back to All tasks.
   const saved = /^board\?view=([0-9a-f-]{36})$/.exec(h);
   if (saved) return { kind: "view", view: "board", saved: saved[1]! };
+  // #/approvals/<k-id>: one card, decided here.
+  const card = /^approvals\/(k-[0-9a-f]{16})$/.exec(h);
+  if (card) return { kind: "view", view: "approvals", card: card[1]! };
   // #/approvals, #/costs, ...: deep links to a tab.
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
@@ -203,6 +207,8 @@ function cachedBoard(): Board | undefined {
 export function App() {
   // The device's last board (main.tsx adopted its account) paints at once; /api/board, already on its way, replaces it.
   const [board, setBoard] = useState<Board | null>(() => cachedBoard() ?? null);
+  // Every view's state words read times in the board's timezone (ui/TaskState.tsx).
+  setBoardTimezone(board?.timezone);
   const [session, setSession] = useState<Session | null>(null);
   const [needsSignIn, setNeedsSignIn] = useState(false);
   const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);
@@ -325,7 +331,14 @@ export function App() {
   }, [view, refresh]);
 
   useEffect(() => {
-    load("session", api.session, false).then(setSession, () => {});
+    load("session", api.session, false).then((s) => {
+      // Back from signing in: open the page the link named (a card, a task) before the sign-in.
+      try {
+        const back = s.account ? sessionStorage.getItem(RETURN_KEY) : null;
+        if (back) (sessionStorage.removeItem(RETURN_KEY), location.hash.length <= 2 && (location.hash = back));
+      } catch {}
+      setSession(s);
+    }, () => {});
     void refresh(true);
     // Every 10s on Tasks; elsewhere only the header reads it (the working dot, sign-in banners, the brief): once a minute.
     const t = setInterval(() => {
@@ -796,7 +809,7 @@ export function App() {
       )}
 
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
-      {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} />}
+      {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} card={route.kind === "view" && route.view === "approvals" ? route.card : undefined} />}
       {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} />}
       {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}

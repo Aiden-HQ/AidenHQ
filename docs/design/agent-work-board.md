@@ -1,6 +1,7 @@
 # Agent work board (Tasks page, second layout and saved views)
 
-Status: built (owner-approved direction: extend the Tasks page, no separate board). Follow-up: agent project assignment.
+Status: built (owner-approved direction: extend the Tasks page, no separate board). Follow-ups built: projects that fill
+themselves in, the single-approval route, richer waiting and scheduled cards (below).
 
 ## Why
 
@@ -14,8 +15,8 @@ In: a layout switch (My day | Agent work); a filter bar and optional agent swiml
 SQLite); Paperclip projects as a read-only filter; two card additions.
 
 Out, deliberately: custom statuses; table or Gantt layouts; drag between state lanes (state is the kernel's); drag or
-mutation shortcuts in Agent work; server-side filtering; shared or multi-user views; any project UI; agent project assignment
-and inheritance (follow-up, below); a new keyboard suite; per-view notifications; run cost on the card (drawer only).
+mutation shortcuts in Agent work; server-side filtering; shared or multi-user views; any project UI beyond the filter and the
+card's tag; a new keyboard suite; per-view notifications; run cost on the card (drawer only).
 
 ## The one rule
 
@@ -119,14 +120,10 @@ Update and delete are one SQL statement `WHERE account_id = ? AND id = ? AND rev
 the draft and reloads the saved row; if the row is gone (deleted elsewhere) the page offers "Save as new". Tabs render only after the session is confirmed (the board cache can paint before that,
 `App.tsx`). The route is `#/board?view=<id>`, parsed explicitly in `Route`; an unknown id falls back to All tasks with a toast.
 
-## Projects (read-only filter now)
+## Projects (filter)
 
-Paperclip issues carry `projectId`; pass it through on the card. A company project catalog read goes through the kernel: add the
-projects route to `BOARD_READ_PATHS` (`kernel/src/cp.ts`), `pc.projects()` in `src/paperclip.ts`, `projects: {id, name}[]` in
-the payload. Probe the deployed response before enabling the filter. New installs: no projects, so the Project filter is absent.
-Follow-up (not in this build): agents assign projects. It touches the `task_create`/`task_update` schemas
-(`modules/tasks/connections/tasks-mcp/src/tools.ts`), `CREATE`/`PATCH` in `cp.ts`, and the Paperclip plugin's validators
-(`services/paperclip-events/post.js`); until then projects are set in Paperclip's console and labels carry the same filter.
+Paperclip issues carry `projectId`; the card carries it, and the company project catalog is read through the kernel
+(`BOARD_READ_PATHS`, `pc.projects()`, `projects: {id, name}[]` in the payload). How projects get filled in: "Follow-ups" below.
 
 ## Card additions (both layouts)
 
@@ -226,6 +223,69 @@ with `--ring` focus; state is a word as well as a colour; the live dot is a smal
 
 ## New installs
 
-A fresh install sees My day unchanged, Agent work with empty lanes ("No tasks yet"), no saved views, no Project filter. Nothing
+A fresh install sees My day unchanged, Agent work with empty lanes ("No tasks yet"), no saved views, no Project filter (no
+project exists until a PR opens or an agent names one). Nothing
 depends on an optional module: lanes read the kernel only. Another owner's modules plug in through the kernel's reasons and
 stages: a module wait arrives as `module_wait` with its `ref` and shows in Waiting with its own words.
+
+## Follow-ups (built)
+
+### Projects that fill themselves in
+
+A project is a product; repos map into it. One kernel module, `kernel/src/projects.ts`, is the only thing that names or makes
+projects and the only writer of a task's `projectId` besides the agent's own `project` tag. It writes with the owner key (the
+plugin can only read projects).
+
+- **Repo → project map**: a kernel table `project_repos(company, repo, project)` (repo = `repoKey`, lower-case `owner/name`). Not
+  Paperclip's project workspaces: a workspace pulls a project into Paperclip's execution-workspace machinery (an issue in the
+  project gets a default workspace, and re-pointing its `projectId` then trips the workspace-match check), and `repositoryUrls`
+  takes github.com only, so `local/<name>` repos would not fit. Paperclip keeps the project and the task's `projectId`.
+- **Automatic from repos**: a code host's `pr.opened` fact for a task (backplane's `/v1/facts`, github and codehost-local) calls
+  `projects.touch(task, repo)`: the repo's project, made on first sight, set on the task only while it has none (a PR is the signal
+  that a task's work touches a repo; a clone isn't: admission clones every repo a task merely mentions). A fill is queued in
+  kernel.db first, so one that fails (Paperclip restarting) is tried again each minute, across kernel restarts.
+- **Products are instance data**: `instance.yaml` `projects:` (a product's name → its repos; compile checks it, setup writes it
+  into the grants table). A listed repo belongs to its product's project; any other repo gets a project of its own named after
+  it (in full, `partner/api`, beside another org's `api` or when its short name is a product's). This instance lists AidenHQ, aidenhq-distro and aidenhq-instance under
+  "AidenHQ"; nothing in the product names them. Moving a repo into a product later is editing the map: the kernel (`sync`, each
+  minute when the map changed) moves the repo and its open tasks and those closed in the last two days (`project_tasks`
+  remembers which tasks a repo's PRs touched); older tasks stay, nothing is archived.
+- **Agents tag by name**: `task_create` and `task_update` take `project` (a name). The kernel's agent route (`cp.ts`) resolves it:
+  trimmed, case-insensitive match among the company's unarchived projects, else a new project of that name; two of one name is an
+  error the agent sees. The plugin's `post` action writes `projectId` (`post.js` `PATCH_KEYS`, `CHILD_KEYS`). When to tag lives
+  once, in the tool's description: the product or standing area the work belongs to; when unsure, leave it out ("No project").
+- **Inheritance**: a task an agent creates with no `project` takes its parent's project, else the project of the task the job
+  works on (the chain escalate uses: `parentId`, else the creating job's task). An explicit `project` wins.
+- **Precedence**: an explicit tag (create or update) sets or replaces; a repo's PR fills only an empty project.
+- Every project write runs on one kernel chain (task creates and tags in `cp.ts` too), and each create carries Paperclip's
+  idempotency key, so two first sights of one repo make one project and a fill never lands over a tag.
+- **New installs**: no projects until the first PR or tag; GitHub optional (`local/…` repos map the same way).
+
+### One approvals UI: the board
+
+The board is the only approvals UI (owner, 2026-11-23: one UI, one flow). `#/approvals/<k-id>` opens one card inside the board:
+the full `ApprovalCard` (sentence, reads, changes, cost, the whole diff under review, the reviewer's note, Explain), read by its
+id whatever its age, with Approve and Reject (an optional reason). Every link to a card goes there: Agent work's Needs you
+callout, a chat's card, the card id on the list, Telegram's card ("on the board"), the MCP's `status` and `approvals` (`link`).
+On the Approvals list each pending card has a box, with "Select all" above; picking any shows one bar, Approve n or Reject n
+with one reason, and each card is decided on its own against the digest it showed (one that changed fails alone and is named).
+
+Deciding: the board's `POST /api/approvals/:id/decide {digest, decision, reason}` forwards the signed-in admin's board session to the
+kernel's `POST /v1/owner/decide` with `{board: <session token>}` beside the MCP bearer: the kernel checks the session
+(`uiSession("board")`, a ready admin, as for a settings save) and decides as `account:<id>` via `board`. The route needs an Origin
+header besides the board's JSON, board-header and same-origin checks. The kernel's approval pages are gone: `/`, `/approvals` and
+`/approvals/<id>` on its admin listener redirect to the board (the board is reachable in every exposure mode wherever the admin
+listener is: public, tailscale, cloudflare and the local tunnel), and no card is decided by a kernel form any more. Telegram decides
+by its own channel tokens (taps and typed replies), never through a kernel page.
+
+### Richer waiting and scheduled cards
+
+The kernel's state row gains two fields; the board only renders them (`ui/TaskState.tsx`, in the board's timezone):
+- `scheduled_for`: the earliest open scheduled wake's due time (`wake.opened` `at`), whenever one is open: "Scheduled for
+  tomorrow 08:00".
+- `waits_on`: the agent id an open delegator wait went to. `escalate.ask` returns the recipient (the delegator task's agent, or the
+  chief of staff), `idle.ts` stores it on the `work.waiting` fact (`agent`), the state reads it: "An answer from Research Lead".
+  Waits recorded before this keep "an answer from another agent".
+
+"All tasks" stays the unfiltered default of Agent work: it never picks up a filter (filters live only in a saved board's spec,
+and selecting All tasks clears them), shows "No project" tasks, and each card carries its project as a quiet tag at its top right.

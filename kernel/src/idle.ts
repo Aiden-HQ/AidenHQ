@@ -391,7 +391,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         // A replacement can arrive in the same millisecond as the wait it replaces: give its fact and wake their own id, or
         // both are dropped as duplicates and the task keeps the old question. The suffix also makes the wake replace the old one.
         let n = 0;
-        while (facts && !facts.record({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}${n ? `:${n}` : ""}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } })) n++;
+        while (facts && !facts.record({ type: "work.waiting", subject: `wait:${caller.task}`, version: `wait@${t}${n ? `:${n}` : ""}`, at: iso(t), actor: `agent:${caller.key}`, task: caller.task, data: { reason: who ? (to === "owner" ? "owner_wait" : "delegator_wait") : "agent_wait", note: reason, until: iso(until), ...(r?.agent && to !== "owner" ? { agent: r.agent } : {}), ...(on ? { on } : {}), ...(question ? { question } : {}), ...(b.handoff === true ? { handoff: true } : {}) } })) n++;
         // The wait episode is in the wake key too: two replacements with the same `until` but a different millisecond must
         // still be different wakes, or the later one is dropped as a duplicate and the task keeps the old one.
         wakes.open({ key: `wait:${caller.task}:${until}:${t}${n ? `:${n}` : ""}`, task: caller.task, agent: caller.agent, cause: `wait: ${reason}`.slice(0, 200), at: until, replaces: `wait:${caller.task}:`, author: `agent:${caller.key}` });

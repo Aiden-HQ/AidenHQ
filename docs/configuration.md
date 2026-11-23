@@ -152,6 +152,20 @@ outcomes:
   never from the change, and the AI reviewer rejects a change that brings back what an entry rules out or reverses a
   decision, unless the owner's own words in the request chain ask for it (policy: "Recorded product decisions").
 
+## Projects
+
+Tasks fill in their project by themselves (kernel/src/projects.ts): a PR opened for a task puts it in its repo's project, an
+agent may name one (`task_create`/`task_update` `project`), and a sub-task takes its parent's. A repo gets a project of its own,
+named after it, unless `instance.yaml` lists it under a product; several repos form one product this way:
+
+```yaml
+projects:
+  Acme: [acme/app, acme/app-infra]
+```
+
+Moving a repo into a product later is editing this map: after the apply the kernel moves the repo, and with it its open tasks
+and those closed in the last two days; older tasks stay where they are and no project is archived. A repo belongs to one product.
+
 ## Teams
 
 `teams.<name>` in `instance.yaml` turns one module agent into a team of named agents (schema: `kernel/src/team-routing.ts`):

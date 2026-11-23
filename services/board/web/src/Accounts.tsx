@@ -40,10 +40,19 @@ function useSubmit(run: () => Promise<void>) {
  * Signing in, enrolling an authenticator and claiming a link happen on the kernel's admin pages; /auth/start then has the
  * kernel hand this board its own session (and sends the browser to sign in there first when it isn't).
  */
+/** Where the sign-in should come back to: the page a link opened (a card's #/approvals/<id>), read once after sign-in (App). */
+export const RETURN_KEY = "aidenhq.return";
+
 export function SignInScreen() {
+  const keep = () => {
+    try {
+      if (location.hash.length > 2) sessionStorage.setItem(RETURN_KEY, location.hash);
+      else sessionStorage.removeItem(RETURN_KEY);
+    } catch {}
+  };
   return (
     <Screen title="Sign in" sub="Admins sign in on the AidenHQ sign-in page, then come back here.">
-      <a className="btn primary" href="/auth/start">
+      <a className="btn primary" href="/auth/start" onClick={keep}>
         Sign in
       </a>
     </Screen>

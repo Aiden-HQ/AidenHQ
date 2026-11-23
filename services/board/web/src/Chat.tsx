@@ -1,5 +1,5 @@
-import { useCallback, useState } from "react";
-import { admin } from "./api";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import { QUERIES, useQuery } from "./queries";
@@ -8,6 +8,7 @@ import { Explain } from "./Explain";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ShownState } from "./types";
 import { StatusDot } from "./ui/StatusDot";
+import { Banner, Button, EmptyState, Input } from "./ui";
 import { TaskState } from "./ui/TaskState";
 import { ago } from "./util";
 
@@ -29,11 +30,94 @@ const forOwner = (a: Approval) => a.state === "pending" && a.tier === 2;
 const withAI = (a: Approval) => a.state === "pending" && !forOwner(a);
 
 /**
- * One approval card: one sentence, what it reads and changes, the cost, Details; the outcome stays here. A pending card is
- * decided on the kernel's approval page (a top-level page of its own: the board can't decide), linked from here.
+ * A pending Tier 2 card's Approve and Reject (a reason is optional with a reject: the agent is told). The board forwards the
+ * signed-in admin's session; the kernel checks it and decides against the digest this card shows, so a card that changed
+ * meanwhile fails alone and says so.
+ */
+function Decide({ a }: { a: Approval }) {
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const decide = async (d: "approve" | "reject") => {
+    setBusy(d);
+    setError(null);
+    try {
+      await api.decide(a.id, a.digest, d, d === "reject" ? reason.trim() || undefined : undefined);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="approval-decide">
+      {rejecting ? (
+        <form className="approval-actions" onSubmit={(e) => (e.preventDefault(), void decide("reject"))}>
+          <Input className="decide-reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} placeholder="Why not? (optional, the agent is told)" aria-label="Reason for rejecting" autoFocus />
+          <Button type="submit" variant="danger" disabled={busy !== null}>{busy === "reject" ? "Rejecting…" : "Reject"}</Button>
+          <Button variant="quiet" onClick={() => setRejecting(false)} disabled={busy !== null}>Cancel</Button>
+        </form>
+      ) : (
+        <div className="approval-actions">
+          <Button variant="primary" className="approve" onClick={() => void decide("approve")} disabled={busy !== null}>{busy === "approve" ? "Approving…" : "Approve"}</Button>
+          <Button onClick={() => setRejecting(true)} disabled={busy !== null}>Reject…</Button>
+        </div>
+      )}
+      {error && <p className="decide-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * The batch bar for the cards picked on the Approvals list: Approve n, or Reject n with one reason. Each card is decided on its
+ * own against the digest it showed (as a single card is), so one that changed meanwhile fails alone and is named here.
+ */
+function BatchBar({ cards, done, busy, setBusy }: { cards: Approval[]; /** The cards not decided (each with why), once the batch has run. */ done: (failed: string[]) => void; /** The running batch's decision: the list holds it, so hiding the bar never unlocks a batch still running. */ busy: "approve" | "reject" | null; setBusy: (b: "approve" | "reject" | null) => void }) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const n = cards.length;
+  const decide = async (d: "approve" | "reject") => {
+    setBusy(d);
+    const bad: string[] = [];
+    for (const a of cards) {
+      try {
+        await api.decide(a.id, a.digest, d, d === "reject" ? reason.trim() || undefined : undefined);
+      } catch (e) {
+        bad.push(`${a.identifier}: ${(e as Error).message}`);
+      }
+    }
+    setBusy(null);
+    if (!bad.length) (setRejecting(false), setReason(""));
+    done(bad);
+  };
+  return (
+    <div className="batch-bar" role="region" aria-label="Decide the selected cards">
+      <span className="batch-count">
+        <b>{n}</b> selected
+      </span>
+      {rejecting ? (
+        <form className="batch-actions" onSubmit={(e) => (e.preventDefault(), void decide("reject"))}>
+          <Input className="decide-reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} placeholder="Why not? (optional, each agent is told)" aria-label="Reason for rejecting" autoFocus />
+          <Button type="submit" variant="danger" disabled={busy !== null}>{busy === "reject" ? "Rejecting…" : `Reject ${n}`}</Button>
+          <Button variant="quiet" onClick={() => setRejecting(false)} disabled={busy !== null}>Cancel</Button>
+        </form>
+      ) : (
+        <div className="batch-actions">
+          <Button onClick={() => setRejecting(true)} disabled={busy !== null}>Reject {n}…</Button>
+          <Button variant="primary" onClick={() => void decide("approve")} disabled={busy !== null}>{busy === "approve" ? "Approving…" : `Approve ${n}`}</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One approval card: one sentence, what it reads and changes, the cost, Details; the outcome stays here. A pending Tier 2 card
+ * is decided here (Decide); its id opens it alone (#/approvals/<id>).
  * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
  */
-export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Approval; open: (identifier: string) => void; inline?: boolean; prefix?: string; unfold?: boolean }) {
+export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick }: { a: Approval; open: (identifier: string) => void; inline?: boolean; prefix?: string; unfold?: boolean; /** On the Approvals list: the card's box in a batch decision. */ pick?: { on: boolean; toggle: () => void } }) {
   const [unfolded, setUnfolded] = useState(Boolean(unfold));
   // In a conversation a decided card is one line; one decided while on screen stays open.
   const [seenPending] = useState(a.state === "pending");
@@ -69,30 +153,27 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
       </li>
     );
   }
-  const buttons = forOwner(a) && (
-    <div className="approval-actions">
-      <a className="btn primary approve" href={`${admin.url}/approvals/${encodeURIComponent(a.id)}`} target="_blank" rel="noopener noreferrer">
-        Decide on the approval page
-      </a>
-    </div>
-  );
-  const top = !inline && forOwner(a);
+  const buttons = forOwner(a) && <Decide a={a} />;
   const label = a.outcome === "applied" ? "Applied." : a.outcome === "failed" ? "Failed:" : OUTCOME[a.state];
   const text = a.outcome === "applied" ? (a.outcomeText ?? "") : a.outcome === "failed" ? (a.outcomeText ?? "no reason given") : a.state === "running" ? (a.wait ?? "") : "";
   return (
-    <li className={`approval-card ap-${a.outcome ?? a.state}${inline ? " inline" : ""}`}>
+    <li className={`approval-card ap-${a.outcome ?? a.state}${inline ? " inline" : ""}${pick?.on ? " picked" : ""}`}>
       <div className="approval-head">
+        {pick && (
+          <label className="approval-pick" title="Select for a batch decision">
+            <input type="checkbox" checked={pick.on} onChange={pick.toggle} aria-label={`Select ${a.identifier}: ${a.sentence}`} />
+          </label>
+        )}
         <button className="chat-open" onClick={() => open(a.identifier)}>
           <span className="chat-agent">{a.requestedBy}</span>
           <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.state === "running" ? "is running" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
         </button>
-        <span className="muted small">{a.id}</span>
+        <a className="muted small approval-id" href={`#/approvals/${a.id}`} title="Open this card alone">{a.id}</a>
         {inline && shown && (
           <button className="link-btn small" onClick={() => setShown(false)} aria-label="Fold this card to one line">
             Fold
           </button>
         )}
-        {top && buttons}
       </div>
       <p className="approval-sentence">{a.sentence}</p>
       <dl className="approval-facts">
@@ -140,7 +221,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
       </button>
       {explained && <Explain id={a.id} />}
       {a.state === "pending" ? (
-        !top && <div className="row-end">{buttons}</div>
+        buttons
       ) : (
         <div className={`approval-outcome ${a.outcome === "failed" || a.state === "unknown" ? "bad" : ""}`}>
           {label && <b>{label}</b>}
@@ -177,14 +258,54 @@ function groups(list: Approval[]): Approval[][] {
   return [...by.values()];
 }
 
+/** The Approvals page, or one card alone. */
+export function ApprovalsView({ open, onSignIn, card }: { open: (identifier: string) => void; onSignIn: () => void; /** One card alone (#/approvals/<id>). */ card?: string }) {
+  if (card) return <OneApproval key={card} id={card} open={open} />;
+  return <AllApprovals open={open} onSignIn={onSignIn} />;
+}
+
+/** One card alone (#/approvals/<id>), read by its id whatever its age, decided here; it follows the card live. */
+function OneApproval({ id, open }: { id: string; open: (identifier: string) => void }) {
+  const [a, setA] = useState<Approval | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => api.approval(id).then((r) => (setA(r.approval), setError(null)), (e: Error & { status?: number }) => (e.status === 404 ? setA(null) : setError(e.message))), [id]);
+  useEffect(() => void load(), [load]);
+  useLive(["approvals"], load, 5_000);
+  return (
+    <main className="page wide approvals-page approval-one">
+      <header className="page-head">
+        <div>
+          <p className="ui-crumb"><a href="#/approvals">Approvals</a></p>
+          <h1>{a ? (forOwner(a) ? "Waiting for you" : outcomeOf(a).text) : "Approval"}</h1>
+          <p className="page-sub">{a ? `${a.requestedBy} on ${a.identifier}` : id}</p>
+        </div>
+      </header>
+      {error && <div className="alert">{error}</div>}
+      {a === undefined ? (
+        !error && <CardListSkeleton />
+      ) : a ? (
+        <ul className="approval-list pending-grid">
+          <ApprovalCard a={a} open={open} unfold />
+        </ul>
+      ) : (
+        <EmptyState action={<a className="btn" href="#/approvals">All approvals</a>}>There is no card {id}.</EmptyState>
+      )}
+    </main>
+  );
+}
+
 /** Approvals: what waits for you first, big; then the history as one line per request, open to the full card. */
-export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) => void; onSignIn: () => void }) {
+function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; onSignIn: () => void }) {
   // The cards (the board's own store: fast) show first; what else waits on you (Paperclip: slower) fills in after.
   // Both are kept in memory only; a card shown from an earlier visit can't be decided until the fresh copy lands.
   const approvalsQ = useQuery(QUERIES.approvals, onSignIn);
   const needsQ = useQuery(QUERIES.needsYou, onSignIn);
   const [filter, setFilter] = useState<Filter | null>(null);
   const [showCalls, setShowCalls] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  // A batch's cards that weren't decided, each with why: kept here, past the refresh that clears the selection.
+  const [unbatched, setUnbatched] = useState<string[]>([]);
+  const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
   const load = useCallback(async () => {
     await Promise.all([approvalsQ.reload(), needsQ.reload()]);
   }, [approvalsQ.reload, needsQ.reload]);
@@ -207,6 +328,8 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const past = groups(all.filter((a) => !forOwner(a) && !withAI(a) && (showCalls || !toolCall(a))));
   const history = past.filter((g) => inFilter(g[0]!, f));
   const count = (k: Filter) => (k === "pending" ? waitingCount : k === "all" ? waitingCount + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
+  // The cards picked for a batch decision that still wait for you (a card decided elsewhere drops out of the selection).
+  const chosen = pending.filter((a) => picked.includes(a.id));
   return (
     <main className="page wide approvals-page">
       <header className="page-head">
@@ -228,26 +351,32 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
         </div>
       </header>
       {error && <div className="alert">{error}</div>}
+      {unbatched.length > 0 && (
+        <Banner tone="danger" action={<Button size="sm" variant="quiet" onClick={() => setUnbatched([])}>Dismiss</Button>}>
+          Not decided: {unbatched.join("; ")}
+        </Banner>
+      )}
       {!cards ? (
         !error && <CardListSkeleton />
       ) : (
         <>
           {(f === "pending" || f === "all") && pending.length > 1 && (
-            <div className="batch-bar">
-              <span className="muted small">Decide several at once on the approval page.</span>
-              <span className="spacer" />
-              <a className="btn" href={`${admin.url}/approvals`} target="_blank" rel="noopener noreferrer">
-                Open the approval page
-              </a>
+            <div className="batch-select">
+              <label className="approval-pick">
+                <input type="checkbox" checked={chosen.length === pending.length} ref={(el) => void (el && (el.indeterminate = chosen.length > 0 && chosen.length < pending.length))} onChange={() => setPicked(chosen.length === pending.length ? [] : pending.map((a) => a.id))} />
+                <span>{chosen.length ? `${chosen.length} of ${pending.length} selected` : `Select all ${pending.length}`}</span>
+              </label>
+              {chosen.length > 0 && <button className="link-btn small" onClick={() => setPicked([])}>Clear</button>}
             </div>
           )}
           {(f === "pending" || f === "all") && pending.length > 0 && (
             <ul className="approval-list pending-grid">
               {pending.map((a) => (
-                <ApprovalCard key={a.id} a={a} open={open} />
+                <ApprovalCard key={a.id} a={a} open={open} pick={{ on: picked.includes(a.id), toggle: () => setPicked((p) => (p.includes(a.id) ? p.filter((x) => x !== a.id) : [...p, a.id])) }} />
               ))}
             </ul>
           )}
+          {(f === "pending" || f === "all") && chosen.length > 0 && <BatchBar cards={chosen} busy={batching} setBusy={setBatching} done={(failed) => (setUnbatched(failed), setPicked([]), void load())} />}
           {(f === "pending" || f === "all") && others.length > 0 && (
             <section>
               <header className="section-head">

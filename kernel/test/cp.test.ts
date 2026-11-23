@@ -17,7 +17,7 @@ const OWN = "10000000-0000-4000-8000-000000000001", OTHER = "10000000-0000-4000-
 const FLEET = "10000000-0000-4000-8000-000000000004", HANDED = "10000000-0000-4000-8000-000000000005", MINE = "10000000-0000-4000-8000-000000000006";
 const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW, "key-set": SET };
 
-async function setup(t) {
+async function setup(t, { projects } = {}) {
   const h = pluginHost({
     [OWN]: { id: OWN, identifier: "WOR-1", status: "in_progress", assigneeAgentId: ADA, companyId: "co", parentId: null },
     [OTHER]: { id: OTHER, identifier: "WOR-2", status: "in_progress", assigneeAgentId: BO, companyId: "co", parentId: null },
@@ -39,6 +39,7 @@ async function setup(t) {
   } });
   const tool = { todo: ["act"] };
   k = await kernel(t, {
+    projects,
     settings: { fleet_issues: "WOR-4" },
     agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, steward: { id: STW, task: OWN }, settler: { id: SET, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
     grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [STW]: { key: "fleet-audit", roles: ["fleet-audit"], tools: tool }, [SET]: { key: "fleet-steward", roles: ["fleet-audit", "fleet-settle"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
@@ -151,4 +152,26 @@ test("no control-plane identity, no call: a caller whose agent the kernel holds 
     assert.match(r.json.error.message, /no control-plane identity/);
   }
   assert.equal(plugin.length, 0);
+});
+
+test("a task's project: named by the agent, else its parent's, else that of the job's own task", async (t) => {
+  const P = (n) => `90000000-0000-4000-8000-00000000000${n}`;
+  const named = [];
+  const projects = {
+    serial: (f) => f(),
+    named: async (co, name) => (named.push([co, name]), name === "Hiring" ? P(2) : P(3)),
+  };
+  const { h, act } = await setup(t, { projects });
+  h.issues[OWN].projectId = P(1);
+  // A sub-task with no project takes its parent's; a top-level task the job files takes its own task's.
+  let r = await act("ada", "POST", "/api/companies/co/issues", { title: "Part one", parentId: OWN, assigneeAgentId: BO, status: "todo" });
+  assert.equal(h.issues[r.json.id].projectId, P(1));
+  r = await act("ada", "POST", "/api/companies/co/issues", { title: "For the owner", assigneeUserId: "u-owner" });
+  assert.equal(h.issues[r.json.id].projectId, P(1));
+  // A named project wins, resolved by the kernel in the task's company; a change names one too.
+  r = await act("ada", "POST", "/api/companies/co/issues", { title: "Screen candidates", parentId: OWN, assigneeAgentId: BO, project: "Hiring" });
+  assert.equal(h.issues[r.json.id].projectId, P(2));
+  r = await act("ada", "PATCH", "/api/issues/WOR-1", { project: "Infra" });
+  assert.deepEqual([r.status, h.issues[OWN].projectId], [200, P(3)]);
+  assert.deepEqual(named, [["co", "Hiring"], ["co", "Infra"]]);
 });

@@ -38,6 +38,7 @@ import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
 import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
+import { ProjectError, type Projects } from "./projects.ts";
 import { isLogTask, logTasks, scopeOf as taskScopeOf } from "./task-scope.ts";
 
 // One path segment: never a dot segment, which URL resolution would turn into another route.
@@ -56,10 +57,13 @@ export const CP_AGENT_PATHS: [string, RegExp][] = [
   ["GET", new RegExp(`^/api/attachments/${ID}/content$`)],
 ];
 const MAX = 32 * 1024 * 1024;
-/** What a PATCH may change besides its status and comment (post.js PATCH_KEYS), and what a create may carry. */
-const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds"];
-const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate"];
-type Issue = { id: string; identifier?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string };
+/**
+ * What a PATCH may change besides its status and comment (post.js PATCH_KEYS), and what a create may carry. `project` is a
+ * project's name, resolved here (projects.ts named: the one of that name, else a new one) and written as `projectId`.
+ */
+const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds", "project"];
+const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate", "project"];
+type Issue = { id: string; identifier?: string; companyId?: string; projectId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string };
 /** The role that settles stuck work on another agent's task (the Fleet Steward): see `settle` above. */
 export const SETTLE = "fleet-settle";
 
@@ -73,7 +77,9 @@ export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: 
 }
 export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, observe, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, observe, projects, log = () => {} }: {
+  /** Projects (projects.ts): an agent's `project` tag by name. */
+  projects?: Pick<Projects, "serial" | "named">;
   /** The wake inbox's observe (wakes.ts): a task this route just changed has its facts recorded at once, from the issue the write returned. */
   observe?: (issue: Issue, actor: string) => Promise<void>;
   /** Flow's fact log (facts.ts): task.commented for each comment a job writes through here. */
@@ -199,6 +205,15 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     // by the dispatch rules (who started work there), never the writer itself.
     const tagOf = (scope: string, op: string) => (scope === "own" || scope === "listed" ? `<!-- aidenhq:job=${op} kind=cp -->` : `<!-- aidenhq:op=${op} -->`);
 
+    /** A project's id by name (`project`), made when there is none; its errors as this route's. */
+    const projectNamed = async (co: string, name: unknown): Promise<string> => {
+      if (!projects) throw fail(503, "unavailable", "projects are off");
+      if (typeof name !== "string" || !name.trim()) throw fail(400, "bad_request", "project is a project's name");
+      try { return await projects.named(co, name); } catch (e) { throw e instanceof ProjectError ? fail(400, "bad_request", e.message) : e; }
+    };
+    /** `f` alone with every other project write (projects.ts serial) when it sets a project: a PR's fill never lands over a tag. */
+    const tagged = <T>(on: boolean, f: () => Promise<T>) => (on && projects ? projects.serial(f) : f());
+
     // POST /api/companies/:cid/issues: a new task, as the job's agent, in its own company.
     const company = method === "POST" ? new RegExp(`^/api/companies/(${ID})/issues$`).exec(path)?.[1] : undefined;
     if (company) {
@@ -210,11 +225,18 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       const parent = typeof b.parentId === "string" && b.parentId ? await issue(b.parentId) : undefined;
       if (parent && isLogTask(parent, logs)) throw fail(403, "forbidden", `${parent.identifier ?? parent.id} is a log task: it takes comments only`);
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
-      const child = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
+      const child: Record<string, unknown> = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
       const tag = tagOf("created", op);
-      // The cap goes on record under the new task's origin (its tag) before the task exists.
-      provenance.intend(tag.slice(5, -4), await provenance.carried({ agent, task }));
-      const d = await send({ tag, ...(parent ? { issueId: parent.id, scope } : {}), child, delegateTo });
+      // A named project goes on the projects chain (projects.ts serial); an inherited one is read as it is, and a create never
+      // waits behind other project writes for it.
+      const d = await tagged(b.project !== undefined, async () => {
+        // Its project: the one named, else its parent's, else (none there either) that of the task the job works on.
+        const projectId = b.project !== undefined ? await projectNamed(decodeURIComponent(company), b.project) : (parent ? (await issue(parent.id)).projectId : undefined) ?? (await issue(task)).projectId;
+        if (projectId) child.projectId = projectId;
+        // The cap goes on record under the new task's origin (its tag) before the task exists.
+        provenance.intend(tag.slice(5, -4), await provenance.carried({ agent, task }));
+        return send({ tag, ...(parent ? { issueId: parent.id, scope } : {}), child, delegateTo });
+      });
       if (!d) return;
       provenance.record(d.child!, tag.slice(5, -4));
       return issueAnswer(d.child!, 201, { deduplicated: d.found });
@@ -266,14 +288,17 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       gated = true;
     }
     const blocked = status === "blocked";
-    const { blockedByIssueIds, ...rest } = patch;
-    const d = await send({
+    const { blockedByIssueIds, project, ...rest } = patch;
+    const d = await tagged(project !== undefined, async () => {
+    if (project !== undefined) rest.projectId = await projectNamed(String(t.companyId ?? (await viaPlugin(() => plugin.company(agent)))), project);
+    return send({
       issueId: t.id, tag: tagOf(scope, op), scope,
       ...(typeof comment === "string" && comment.trim() ? { body: comment } : {}),
       ...(status !== undefined ? { status } : {}), ...(gated ? { gated } : {}),
       ...(blocked ? { blockedBy: blockedByIssueIds ?? [] } : {}),
       ...(handTo ? { delegateTo: [handTo] } : {}),
       ...(Object.keys(rest).length || (!blocked && blockedByIssueIds !== undefined) ? { patch: { ...rest, ...(!blocked && blockedByIssueIds !== undefined ? { blockedByIssueIds } : {}) } } : {}),
+    });
     });
     if (!d) return;
     if (d.comment) fact({ type: "task.commented", subject: `task:${t.id}`, version: String(d.comment), at: iso(Date.now()), actor: `agent:${c.key}`, task: t.id, data: { kind: "cp", job: c.run } });

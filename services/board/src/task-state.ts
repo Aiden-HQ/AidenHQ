@@ -25,6 +25,10 @@ export type TaskState = {
   note?: string;
   /** When the open owner wait began (present whenever one is open, whatever the task shows first). */
   wait_since?: string;
+  /** When the earliest open scheduled wake is due. */
+  scheduled_for?: string;
+  /** The agent (id) an open delegator wait's question went to. */
+  waits_on?: string;
 };
 export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; holder_name?: string; holder_gone?: true };
 export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
@@ -33,7 +37,7 @@ export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you:
  * A row with what its refs name, read from where the board already has it (see `shown`): `refLabel` for the primary reason's
  * `ref` (the web's one chip wording reads it), `refs` for each attention entry's and the blocker's (a card's callout reads those).
  */
-export type ShownState = StateRow & { refLabel?: string; refs?: Record<string, string> };
+export type ShownState = StateRow & { refLabel?: string; refs?: Record<string, string>; /** The name of the agent `waits_on` names. */ waits_on_name?: string };
 
 /** `closed_since` (an ISO instant, with `open`): the tasks closed since then too, in the same snapshot. */
 export type StateQuery = { ids?: string[]; open?: boolean; closed_since?: string };
@@ -95,6 +99,8 @@ export interface RefSources {
   card(id: string): string | undefined;
   /** How a kernel job ended (state, and the first line of why), by job id. */
   job(id: string): { state: string; error?: string | null } | undefined;
+  /** An agent's name, by its id. */
+  agent(id: string): string | undefined;
 }
 
 const JOB_ENDED: Record<string, string> = { timeout: "timed out", lost: "lost", failed: "run failed" };
@@ -116,5 +122,6 @@ export function shown(row: StateRow, src: RefSources): ShownState {
     const l = labelOf(ref, src);
     if (l) refs[ref] = l;
   }
-  return { ...row, ...(named ? { refLabel: named } : {}), ...(Object.keys(refs).length ? { refs } : {}) };
+  const waitsOn = row.waits_on ? src.agent(row.waits_on) : undefined;
+  return { ...row, ...(named ? { refLabel: named } : {}), ...(Object.keys(refs).length ? { refs } : {}), ...(waitsOn ? { waits_on_name: waitsOn } : {}) };
 }

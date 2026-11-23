@@ -546,6 +546,8 @@ function writeGrants(agents: Record<string, Obj>, memoryInboxes: Record<string, 
   const table: Obj = { autonomy: cfg.autonomy ?? "off", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].trial ? { trial: true } : {}), ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}) }])) };
   // The shared "Fleet issues" log task (ensureFleetIssues, its identifier): any agent may comment there (kernel cp.ts).
   if (fleetIssues) table.fleet_issues = fleetIssues;
+  // The instance's products (instance.yaml `projects:`): the kernel's repo → project map reads them here (kernel/src/projects.ts).
+  if (cfg.projects) table.projects = cfg.projects;
   table.routines = { ...routineAutonomy };
   table.routine_keys = { ...routineKeys };
   // Each agent's memory inbox issue id (ensureMemoryInboxes): memory_note posts there, the tasks bridge guards it.

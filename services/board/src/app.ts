@@ -85,7 +85,7 @@ export interface AppOptions {
   mode?: "lan" | "internal";
   /** GitHub's REST API for a marketplace's newest pinnable commit (tests: a fake). */
   fetch?: typeof fetch;
-  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in, and the approval page where every card is decided. */
+  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in. */
   adminUrl?: string;
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
@@ -319,13 +319,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // A task's own ref (a handback, an orphaned task) names itself: nothing to read.
     const refs = rows.flatMap((r) => [r.ref, r.blocker, ...r.attention.map((a) => a.ref)].filter((x): x is string => Boolean(x) && x !== `task:${r.task}`));
     const blockers = [...new Set(refs.filter((x) => x.startsWith("task:")).map((x) => x.slice(5)).filter((t) => !known.has(t)))];
-    const [named, cards, activity] = await Promise.all([
+    const [named, cards, activity, agents] = await Promise.all([
       blockers.length ? statesOf(taskStates, blockers) : new Map<string, StateRow>(),
       refs.some((x) => x.startsWith("record:")) ? records.list("pending").catch(() => []) : [],
       refs.some((x) => x.startsWith("job:")) ? kernelActivity() : undefined,
+      rows.some((r) => r.waits_on) ? pc.agents().catch(() => []) : [],
     ]);
     const jobs = new Map((activity?.recent ?? []).map((j) => [j.id, j]));
-    return rows.map((r) => shown(r, { identifier: (t) => known.get(t) ?? named.get(t)?.identifier ?? undefined, card: (id) => cards.find((c) => c.id === id)?.sentence, job: (id) => jobs.get(id) }));
+    return rows.map((r) => shown(r, { identifier: (t) => known.get(t) ?? named.get(t)?.identifier ?? undefined, card: (id) => cards.find((c) => c.id === id)?.sentence, job: (id) => jobs.get(id), agent: (id) => agents.find((a) => a.id === id)?.name }));
   }
   /** The state of each task (by id) the kernel has facts for; a task it has none for isn't in the map and shows none. */
   async function stateRows(ids: string[]): Promise<Map<string, ShownState>> {
@@ -1578,6 +1579,33 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         return { entries: timelineOf(jobs, { agents, issues: [...open, ...closed], routines }) };
       },
     },
+    // One card by its id, whatever its age (#/approvals/<id>: an old card still waiting is never lost behind newer ones).
+    {
+      method: "GET",
+      path: /^\/api\/approvals\/(k-[0-9a-f]{16})$/,
+      handle: async (m) => {
+        const a = await records.one(m[1]!);
+        if (!a) throw new HttpError(404, "no such card");
+        return { approval: shownApproval(await bylines(), await named(a)) };
+      },
+    },
+    // A card's Approve or Reject (the single-approval route, #/approvals/<id>): the signed-in admin's board session goes to the kernel,
+    // which checks it and decides the card as that account against the digest the card showed. Same-origin only, and the
+    // Origin must be there: a decision is never made by a request whose origin can't be checked.
+    {
+      method: "POST",
+      path: /^\/api\/approvals\/(k-[0-9a-f]{16})\/decide$/,
+      handle: async (m, body, _u, req) => {
+        if (!opts.accounts) throw new HttpError(503, "deciding needs board accounts");
+        if (!req.headers.origin) throw new HttpError(403, "no origin");
+        const b = parse(DecideSchema, body);
+        const token = (await opts.accounts.sessionOf(req))?.token;
+        if (!token) throw new HttpError(401, "sign in");
+        const o = await opts.accounts.boardDecide(token, { id: m[1]!, ...b });
+        if (!o.ok) throw new HttpError(409, o.error ?? "not decided");
+        return o;
+      },
+    },
     // A card's "Explain" (explain.ts): who decided, why, what was asked and what it would change.
     {
       method: "GET",
@@ -1661,8 +1689,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       },
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made
-    // at once, shown after the fact; read apart so they never crowd the cards out). Read-only: every card is decided on the
-    // kernel's approval page (or in a channel).
+    // at once, shown after the fact; read apart so they never crowd the cards out). A card is decided by its own
+    // route below (one card or a batch; the kernel checks the session) or in a channel.
     {
       method: "GET",
       path: /^\/api\/approvals$/,
@@ -2729,6 +2757,8 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 
 
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
+/** A card's decision on the board: against the digest it showed; a reason only with a reject. */
+const DecideSchema = z.object({ digest: z.string().min(1).max(200), decision: z.enum(["approve", "reject"]), reason: z.string().max(500).optional() }).strict();
 const OneOffSchema = z.object({ pr_url: PR_URL, combos: CombosSchema.min(1).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
 const CatalogQuerySchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), commit: z.string().regex(/^[0-9a-f]{40}$/i).optional() }).strict();
 const ReviewConfigSchema = z.object({ value: z.unknown() }).strict();

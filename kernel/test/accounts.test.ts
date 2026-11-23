@@ -74,7 +74,7 @@ async function adminOn(t, dir, now, boardUrl) {
   const deploy = file("acme.deploy", "acme");
   const writes = { decide: (id, b) => (decided.push({ id, ...b }), { task: "t-7", identifier: "WOR-7", card: { sentence: "Deploy." }, state: "approved" }) };
   const channels = createChannels({ db: records.db, records, writes, board: async () => ({ status: 404, json: {} }), owner: async () => ({ status: 200, json: {} }), modules: () => ({}) });
-  const { s, url } = await serve(createAdmin({ accounts, ...(boardUrl ? { boardUrl: () => boardUrl } : {}), cards: channels, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST, FRONT], origins: () => [`http://${HOST}`, `https://${FRONT}`], frameOrigins: () => ["https://board.example.com"] }));
+  const { s, url } = await serve(createAdmin({ accounts, ...(boardUrl ? { boardUrl: () => boardUrl } : {}), ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST, FRONT], origins: () => [`http://${HOST}`, `https://${FRONT}`], frameOrigins: () => ["https://board.example.com"] }));
   t.after(() => { s.close(); accounts.close(); });
   return { url, decided, notices, push, deploy };
 }
@@ -103,8 +103,7 @@ test("the account and TOTP sign in; an accounts file without its secret refuses"
   await signIn(b);
   assert.match(notices.join("\n"), /New admin sign-in.*owner@example\.com/); // the owner hears of every new admin session
   const list = await b("GET", "/approvals");
-  assert.equal(list.status, 200);
-  assert.match(list.html, /Push the fix\./);
+  assert.deepEqual([list.status, list.headers.location], [303, "/#/approvals"]); // the board is the one approvals UI
 
   // An accounts file without its secret refuses (a new secret would void every TOTP); a fresh install makes both.
   const bare = mkdtempSync(join(tmpdir(), "kernel-auth-"));
@@ -112,40 +111,20 @@ test("the account and TOTP sign in; an accounts file without its secret refuses"
   assert.throws(() => authSecret(join(bare, "auth.db")), /without its auth\.secret/);
 });
 
-test("a card is decided on the kernel page, stamped with the admin's account; the board's origin and a page without the token can't", async (t) => {
+test("the kernel's approval addresses go to the board's approvals; nothing is decided on a kernel page", async (t) => {
   const dir = kernelData();
-  const { url, decided, push, deploy } = await adminOn(t, dir);
+  const { url, decided, push } = await adminOn(t, dir, undefined, "https://board.example.com");
   const b = browser(url);
   await signIn(b);
-  const page = await b("GET", `/approvals/${push.id}`);
-  assert.equal(page.status, 200);
-  assert.ok(page.csrf);
-  // A6: the board's JavaScript on the same host (another port: cookies ignore ports) posting here, and a forged form.
-  assert.equal((await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve", csrf: page.csrf }, "http://localhost:3121")).status, 403);
-  assert.equal((await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve", csrf: page.csrf }, "")).status, 403);
-  assert.equal((await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve" })).status, 403);
+  for (const [path, to] of [["/", "/#/approvals"], ["/approvals", "/#/approvals"], [`/approvals/${push.id}`, `/#/approvals/${push.id}`]]) {
+    const r = await b("GET", path);
+    assert.deepEqual([r.status, r.headers.location], [303, `https://board.example.com${to}`], path);
+  }
+  const csrf = (await b("GET", "/auth/password")).csrf;
+  assert.ok(csrf);
+  for (const path of [`/approvals/${push.id}/decide`, "/approvals/batch"]) assert.equal((await b("POST", path, { digest: push.digest, decision: "approve", item: `${push.id}:${push.digest}`, csrf })).status, 404, path);
   assert.equal(decided.length, 0);
-
-  const ok = await b("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve", csrf: page.csrf });
-  assert.equal(ok.status, 200, ok.html);
-  assert.equal(decided.length, 1);
-  assert.equal(decided[0].id, push.id);
-  assert.equal(decided[0].digest, push.digest);
-  assert.match(decided[0].by, /^account:[\w-]+$/);
-  assert.equal(decided[0].via, "web");
-  // Several at once: each against the digest the owner saw; the kernel's record through the records.
-  const batch = await b("POST", "/approvals/batch", { item: `${deploy.id}:${deploy.digest}`, decision: "reject", reason: "Wrong fix", csrf: page.csrf });
-  assert.equal(batch.status, 200, batch.html);
-  assert.deepEqual(decided[1], { id: deploy.id, digest: deploy.digest, decision: "reject", by: decided[0].by, via: "web", reason: "Wrong fix" });
-
-  // Signed out, a user's account and an unknown host never decide.
-  const stranger = browser(url);
-  assert.equal((await stranger("POST", `/approvals/${push.id}/decide`, { digest: push.digest, decision: "approve" })).status, 401);
-  const user = await stranger("POST", "/auth/sign-in", { email: "user@example.com", password: "x".repeat(12) });
-  assert.equal(user.status, 401);
-  assert.match(user.html, /no admin access/);
   assert.equal((await browser(url, "evil.example:3120")("GET", "/approvals")).status, 421);
-  assert.equal(decided.length, 2);
 });
 
 // Last: its burst spends Better Auth's per-address limit for the shared loopback peer (module-wide memory) for a minute.
@@ -211,7 +190,7 @@ test("every kernel page refuses a frame (A7); unidentified guessing hits its cei
   const other = await adminOn(t, fresh);
   const o = browser(other.url, HOST, false, { "x-aidenhq-client-ip": "198.51.100.5", "x-aidenhq-edge": "edge-secret" });
   await signIn(o);
-  for (const path of ["/approvals", `/approvals/${other.push.id}`, "/auth/password"]) {
+  for (const path of ["/auth/password"]) {
     const r = await o("GET", path);
     assert.equal(r.status, 200, path);
     assert.match(csp(r), /frame-ancestors 'none'/, path);
