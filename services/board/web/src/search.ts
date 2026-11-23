@@ -1,4 +1,4 @@
-// The Tasks page's search field (docs/design/task-search.md): the kernel's task search, 250 ms after the last keystroke. The
+// The Tasks page's search field (docs/design/task-search.md): the warehouse module's task search, 250 ms after the last keystroke. The
 // last answer stays in force while the next is on its way, so the cards never flash empty; `busy` marks the field meanwhile.
 // Tasks closed before the board's 48 hours come a page at a time, newest close first; pages are read until the owner's other
 // filters (`keep`) leave enough of them to show, so a filter never hides the newest match behind a page.
@@ -29,10 +29,10 @@ const WANT = 25;
  * `n`: the query's sequence number that produced it (a page or a refresh applies only to it). `keyword`: the first page was
  * keyword only, so its cursor pages in that mode. `stalled`: a page failed; pages resume on the owner's next "Show more".
  */
-type Answer = { n: number; hits?: ReadonlySet<string>; done: WorkCard[]; next: string | null; keyword: boolean; busy: boolean; paging?: boolean; stalled?: boolean; note: TaskSearch["note"] };
-const NONE: Answer = { n: 0, done: [], next: null, keyword: false, busy: false, note: null };
+type Answer = { n: number; hits?: ReadonlySet<string>; done: WorkCard[]; next: string | null; keyword: boolean; pages: number; busy: boolean; paging?: boolean; stalled?: boolean; note: TaskSearch["note"] };
+const NONE: Answer = { n: 0, done: [], next: null, keyword: false, pages: 0, busy: false, note: null };
 type Reply = Awaited<ReturnType<typeof api.search>>;
-const answerOf = (n: number, r: Reply): Answer => ({ n, hits: new Set(r.ids), done: r.done, next: r.next, keyword: !r.semantic, busy: false, note: r.semantic ? null : "keyword" });
+const answerOf = (n: number, r: Reply): Answer => ({ n, hits: new Set(r.ids), done: r.done, next: r.next, keyword: !r.semantic, pages: 1, busy: false, note: r.semantic ? null : "keyword" });
 
 export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean): TaskSearch {
   const q = text.trim();
@@ -52,9 +52,9 @@ export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean): Tas
     }, DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [q]);
-  // The same query again now and then, as a whole answer: its hits and the first page of older closes with their cursor (the
-  // pages effect below reads on from there while the filters keep too few). Skipped while a page is on its way; a failure keeps
-  // the last answer. (`seq` is read in the effects: the query effect above has moved it on when the text changed in the same
+  // The same query again now and then: a whole answer while only the first page of older closes is read (so they and their
+  // cursor are fresh too), else its hits only (the pages read on "Show more" stay). Skipped while a page is on its way; a
+  // failure keeps the last answer. (`seq` is read in the effects: the query effect above has moved it on when the text changed in the same
   // render.)
   useEffect(() => {
     if (!q || a.busy || a.n !== seq.current) return;
@@ -62,7 +62,7 @@ export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean): Tas
     const timer = setInterval(() => {
       if (document.hidden) return;
       api.search(q).then(
-        (r) => setA((s) => (s.n !== n || n !== seq.current || s.paging ? s : answerOf(n, r))),
+        (r) => setA((s) => (s.n !== n || n !== seq.current || s.paging ? s : s.pages > 1 ? { ...s, hits: new Set(r.ids), note: r.semantic ? null : "keyword" } : answerOf(n, r))),
         () => {},
       );
     }, REFRESH_MS);
@@ -75,11 +75,11 @@ export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean): Tas
     const n = a.n, page = { after: a.next, keyword: a.keyword };
     setA((s) => ({ ...s, paging: true }));
     api.search(q, page).then(
-      (r) => { if (n === seq.current) setA((s) => (s.n !== n ? s : { ...s, paging: false, done: [...s.done, ...r.done.filter((c) => !s.done.some((d) => d.id === c.id))], next: r.next })); },
+      (r) => { if (n === seq.current) setA((s) => (s.n !== n ? s : { ...s, paging: false, done: [...s.done, ...r.done.filter((c) => !s.done.some((d) => d.id === c.id))], next: r.next, pages: s.pages + 1 })); },
       () => { if (n === seq.current) setA((s) => (s.n !== n ? s : { ...s, paging: false, stalled: true })); },
     );
   }, [q, a.busy, a.n, a.paging, a.stalled, a.next, a.keyword, kept, want]);
-  // The older closed cards are hits too (the kernel pages them apart from the ranked ids).
+  // The older closed cards are hits too (the module pages them apart from the ranked ids).
   const hits = useMemo(() => (a.hits ? new Set([...a.hits, ...a.done.map((c) => c.id)]) : undefined), [a.hits, a.done]);
   return { hits, done: a.done, hasMore: !!a.next, more: () => { setA((s) => ({ ...s, stalled: false })); setWant((w) => w + WANT * 4); }, busy: a.busy, note: a.note };
 }

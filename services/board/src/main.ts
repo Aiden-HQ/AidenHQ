@@ -40,7 +40,7 @@ const work = kernelWork({ url: kernelUrl, token: cfg.gateway.token });
 const taskStates = kernelStates({ url: kernelUrl, token: cfg.gateway.token });
 // The Flow page's reads (the kernel's /v1/flow).
 const flow = kernelFlow({ url: kernelUrl, token: cfg.gateway.token });
-// The Tasks page's search (the kernel's /v1/search/tasks).
+// The Tasks page's search (the warehouse module's, through the kernel's /v1/board-api).
 const search = kernelSearch({ url: kernelUrl, token: cfg.gateway.token });
 
 /** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */

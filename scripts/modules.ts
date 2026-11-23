@@ -130,12 +130,16 @@ export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network, beside the sign-in's board link.
   slack: { until: "3g", to: ["board", "sources"] },
   security: { until: "4c", to: ["paperclip", "sources"] },
+  // The task search service writes src_tasks like every source writer, until 3g removes the lists (owner-directed: task
+  // search moved out of the kernel into the warehouse module, 2026-11-23).
+  warehouse: { until: "3g", to: ["sources"] },
 };
 /** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
 export const LEGACY_SECRETS: Record<string, string[]> = {
   tasks: ["board_internal_token"],
   google: ["google_auth_token", "gateway_source_key"],
   jira: ["gateway_source_key"],
+  warehouse: ["gateway_source_key"],
   glean: ["glean_auth_token"],
   grafana: ["grafana_auth_token"],
   clickhouse: ["clickhouse_auth_token"],
@@ -1320,7 +1324,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // (a service outside the owning module can mount one), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)), review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated }, modules: kernelModuleTable(enabledDefs, settings), search: { summaries: settings.search_summaries === "on" }, services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)), review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);

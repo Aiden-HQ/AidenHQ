@@ -61,7 +61,6 @@
     "gateway_board_key",
     "gateway_source_key",
     "launcher_kernel_key",
-    "receipt_secret",
-    "warehouse_src_tasks_password"
+    "receipt_secret"
   ]
 }

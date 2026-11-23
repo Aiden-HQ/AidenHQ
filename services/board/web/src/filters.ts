@@ -1,7 +1,7 @@
 // The Tasks page's filters, as one pure function over the cards both layouts draw: filters AND, values within one OR. Every
 // value is a stable id (an agent, label or project id; "me" and "none" for You and Unassigned / no project); a value whose
 // thing is gone matches nothing. The lane is the kernel's (state.lane): a card with no reported state is Idle. The text is the
-// kernel's task search (search.ts): a card matches when the search hit it (identifiers included: a typed prefix matches).
+// warehouse module's task search (search.ts): a card matches when the search hit it (identifiers included: a typed prefix matches).
 import type { Card, Filters, Lane, WorkCard } from "./types";
 
 export const LANES: readonly Lane[] = ["needs_you", "working", "waiting", "blocked", "idle", "done"];

@@ -1,19 +1,18 @@
 // Task search (docs/design/task-search.md): one warehouse row per Paperclip task (src_tasks.task_search), kept by one rebuild
 // function, and one search operation over it: keyword (Postgres full text) and meaning (exact cosine over the rows'
-// embeddings), fused by rank. The kernel is the only writer and the only reader; agents never read the rows.
+// embeddings), fused by rank. This service (the warehouse module's) is the only writer and the only reader; agents never read
+// the rows.
 //
-// Indexing: mark(task) puts the task in kernel.db's dirty queue with the next generation; a worker takes due rows and
-// rebuild()s each from the canonical inputs (the issue and comments as the owner, the kernel's PR facts, write records and
-// job finals). The row is written by one statement that only an older generation can't win, so a late answer never
-// overwrites a newer edit or brings back a tombstone. A row leaves the queue only when its generation is the one rebuilt.
-// Marks come from the fact log (a cursor), Paperclip's events (backplane) and reconcile(), which also backfills.
+// Indexing: mark(task) puts the task in the service's dirty queue (its own SQLite) with the next generation; a worker takes
+// due rows and rebuild()s each from the canonical inputs, read through the kernel (the issue and comments as the owner, the
+// task's PRs, changed paths and last job final). The row is written by one statement that only an older generation can't
+// win, so a late answer never overwrites a newer edit or brings back a tombstone. A row leaves the queue only when its
+// generation is the one rebuilt. Marks come from the kernel's fact log (a cursor), the control plane's recently updated
+// tasks (title and description edits make no fact) and reconcile(), which also backfills.
 import type { DatabaseSync } from "node:sqlite";
-import pg from "pg";
-import { SourceStore, tableDdl, type Table } from "../sdk/src/source-store.ts";
-import { mintToken } from "./gateway/token.ts";
+import { tableDdl, type Table } from "./source-store.ts";
 import { buildDoc, contentHash, embedHash, embedText, headLine, keywordTerms, keywordText, type DocInput } from "./search-doc.ts";
-import type { Facts } from "./facts.ts";
-import { fence } from "../sdk/src/fence.ts";
+import { fence } from "./aidenhq-sdk/fence.ts";
 
 /** What the rows are read and written through: a pg.Pool (or PGlite in tests). */
 export type Sql = { query(text: string, params?: unknown[]): Promise<{ rows: any[] }> };
@@ -65,10 +64,12 @@ const RRF_K = 60;
 const MAX_DONE_PAGE = 100;
 /** Fact types that change what a task's row holds. */
 const MARKING = /^(task\.|pr\.opened$|job\.ended$|record\.(filed|landed)$)/;
-const STATUSES = "backlog,todo,in_progress,in_review,blocked,done,cancelled";
+export const STATUSES = "backlog,todo,in_progress,in_review,blocked,done,cancelled";
 const PAGE = 500;
 /** How often a complete reconcile pass runs. */
 const RECONCILE_MS = 6 * 3600_000;
+/** How often the recently updated issues are read. */
+const EDITS_MS = 15_000;
 
 export type Models = {
   /** The encoder's id (the rows' `model`) and the cosine a hit needs without a keyword match. */
@@ -79,19 +80,25 @@ export type Models = {
   summarize?: (text: string) => Promise<{ summary: string; tags: string[] }>;
 };
 
+/** The kernel's fact log after a seq (GET /v1/facts): without `since`, none and its tail. */
+export type FactLog = (since?: number) => Promise<{ facts: { seq: number; type: string; task: string | null }[]; tail: number }>;
+
 export function createSearch({ db, sql, migrate, facts, cp, local, agentName, projectName, models, log = () => {}, now = Date.now }: {
-  /** kernel.db: the dirty queue and the cursors. */
+  /** The service's own SQLite: the dirty queue and the cursors. */
   db: DatabaseSync;
   /** The warehouse as src_tasks; undefined while it can't be (no warehouse, no password): search is then unavailable. */
   sql: () => Sql | undefined;
   /** Runs the table's DDL once (SourceStore.migrate: under its advisory lock). */
   migrate: (ddl: string) => Promise<void>;
-  facts: Facts;
-  /** The control plane as the owner. `issue`: null when it answers 404 (gone); throws on any other failure. */
-  cp: { company: () => Promise<string>; issue(id: string): Promise<Issue | null>; comments(id: string): Promise<string[]>; list(company: string, offset: number, limit: number): Promise<Issue[]> };
-  /** What the kernel itself knows of a task: its PRs, changed paths and last job's final message. */
-  local: (task: string) => { prs: DocInput["prs"]; paths: string[]; final: string };
-  agentName: (id: string) => string | null;
+  facts: FactLog;
+  /**
+   * The control plane as the owner. `issue`: null when it answers 404 (gone); throws on any other failure. `recent`: the
+   * company's most recently updated issues, newest first.
+   */
+  cp: { company: () => Promise<string>; issue(id: string): Promise<Issue | null>; comments(id: string): Promise<string[]>; list(company: string, offset: number, limit: number): Promise<Issue[]>; recent(company: string): Promise<Issue[]> };
+  /** What the kernel knows of a task's work: its PRs, changed paths and last job's final message. */
+  local: (task: string) => Promise<{ prs: DocInput["prs"]; paths: string[]; final: string }>;
+  agentName: (id: string) => Promise<string | null>;
   projectName: (company: string, id: string) => Promise<string | null>;
   models: () => Models;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -129,20 +136,29 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
   const companyId = async () => (company ??= await cp.company());
 
   /** Every fact with a task since the cursor marks it; the cursor moves in the same transaction. The first run starts now. */
-  function follow() {
+  async function follow() {
     const at = getMeta("facts");
-    if (at === undefined) {
-      const top = (db.prepare("SELECT COALESCE(MAX(seq), 0) AS s FROM facts").get() as { s: number }).s;
-      return void setMeta("facts", String(top));
-    }
+    if (at === undefined) return void setMeta("facts", String((await facts()).tail));
     for (let cursor = Number(at), n = 0; n < 20; n++) {
-      const rows = facts.since(cursor, 1000);
-      if (!rows.length) return;
+      const r = await facts(cursor);
+      if (!r.facts.length) return;
       tx(() => {
-        for (const t of new Set(rows.filter((r) => r.task && MARKING.test(r.type)).map((r) => r.task!))) markIn(t);
-        setMeta("facts", String((cursor = rows.at(-1)!.seq)));
+        for (const t of new Set(r.facts.filter((f) => f.task && MARKING.test(f.type)).map((f) => f.task!))) markIn(t);
+        setMeta("facts", String((cursor = r.tail)));
       });
     }
+  }
+
+  let polled = -Infinity;
+  /** The recently updated issues newer than their rows are marked (an edit to a title or description makes no fact). */
+  async function edits(s: Sql) {
+    if (now() - polled < EDITS_MS) return;
+    polled = now();
+    const page = await cp.recent(await companyId());
+    if (!page.length) return;
+    const rows = new Map(((await s.query("SELECT task_id, updated_at FROM src_tasks.task_search WHERE task_id = ANY($1::text[])", [page.map((i) => i.id)])).rows as { task_id: string; updated_at: Date | null }[]).map((r) => [r.task_id, r.updated_at]));
+    const stale = page.filter((i) => i.updatedAt && !(rows.get(i.id) && new Date(rows.get(i.id)!).getTime() >= Date.parse(i.updatedAt)));
+    if (stale.length) tx(() => { for (const i of stale) markIn(i.id); });
   }
 
   const iso = (v: unknown) => (v ? new Date(String(v)).toISOString() : null);
@@ -172,12 +188,11 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       await write(s, gen, { task_id: task, deleted: true }, false);
       return "ok";
     }
-    const comments = await cp.comments(task);
-    const k = local(task);
+    const [comments, k] = await Promise.all([cp.comments(task), local(task)]);
     const m = models();
     const input: DocInput = {
       identifier: issue.identifier ?? "", title: issue.title ?? "", labels: (issue.labels ?? []).map((l) => String(l.name ?? "")).filter(Boolean),
-      project: issue.projectId ? await projectName(comp, issue.projectId) : null, agent: issue.assigneeAgentId ? agentName(issue.assigneeAgentId) : null,
+      project: issue.projectId ? await projectName(comp, issue.projectId) : null, agent: issue.assigneeAgentId ? await agentName(issue.assigneeAgentId) : null,
       description: issue.description ?? "", comments, prs: k.prs, paths: k.paths, final: k.final,
     };
     const prev = (await s.query("SELECT content_hash, summary, tags, embed_hash, embedding IS NOT NULL AS has FROM src_tasks.task_search WHERE task_id = $1", [task])).rows[0] as
@@ -215,13 +230,15 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     if (working || !sql()) return 0;
     working = true;
     try {
-      follow();
-      try { await store(); unready = ""; } catch (e) {
+      await follow();
+      let s: Sql;
+      try { s = await store(); unready = ""; } catch (e) {
         const err = String((e as Error).message).slice(0, 200);
         if (err !== unready) log("search waits for the warehouse", { err });
         unready = err;
         return 0;
       }
+      await edits(s);
       const due = db.prepare("SELECT task, gen, tries FROM search_dirty WHERE due <= ? ORDER BY backfill, due LIMIT ?").all(now(), WORKERS * 4) as { task: string; gen: number; tries: number }[];
       let done = 0;
       for (let i = 0; i < due.length; i += WORKERS) {
@@ -335,7 +352,7 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
 }
 export type Search = ReturnType<typeof createSearch>;
 
-/** The gateway calls task search makes, with its own `search` token: an embedding, and the summary (chat completions, JSON). */
+/** The gateway calls task search makes, as a source writer: an embedding, and the summary (chat completions, JSON). */
 export function gatewayModels({ url, token, model, threshold, summaries, summaryModel = "~deepseek/deepseek-flash-latest" }: { url: string; token: () => string; model: string; threshold: number; summaries: () => boolean; summaryModel?: string }): () => Models {
   const post = async (path: string, body: unknown, timeoutMs: number) => {
     const r = await fetch(`${url}/api/v1/${path}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
@@ -361,86 +378,4 @@ export function gatewayModels({ url, token, model, threshold, summaries, summary
     return { summary: out.summary.trim().slice(0, 600), tags: (Array.isArray(out.tags) ? out.tags : []).map((t) => String(t).trim().toLowerCase().slice(0, 40)).filter(Boolean).slice(0, 8) };
   };
   return () => ({ model, threshold, embed, ...(summaries() ? { summarize } : {}) });
-}
-
-/**
- * The kernel's task search, wired to what the kernel holds: the warehouse as src_tasks (host loopback, the vault's
- * warehouse_src_tasks_password; none: search is unavailable), the control plane as the owner, kernel.db's PR facts, write
- * records (their diffs name the changed paths) and job finals, and the gateway with a `search` token.
- */
-export function kernelSearch({ db, facts, secret, cp, agents, summaries, gatewayUrl, warehouse, log }: {
-  db: DatabaseSync; facts: Facts; secret: (name: string) => string;
-  /** A control plane read as the owner (cpApi). */
-  cp: (path: string) => Promise<Response>;
-  /** Granted agents by Paperclip id (their names). */
-  agents: () => Record<string, { name?: unknown; key?: unknown }>;
-  summaries: () => boolean;
-  gatewayUrl: string; warehouse: { host: string; port: number };
-  log: (msg: string, f?: Record<string, unknown>) => void;
-}) {
-  let pool: pg.Pool | undefined, store: SourceStore | undefined, password = "";
-  const sql = () => {
-    const pw = secret("warehouse_src_tasks_password");
-    if (!pw) return undefined;
-    if (pw !== password) {
-      void pool?.end().catch(() => undefined);
-      password = pw;
-      pool = new pg.Pool({ ...warehouse, database: "warehouse", user: "src_tasks", password: pw, max: 4, connectionTimeoutMillis: 5_000, statement_timeout: 30_000 });
-      pool.on("error", () => undefined); // an idle client's error surfaces on the next query
-      store = new SourceStore("src_tasks", pool);
-    }
-    return pool;
-  };
-  const json = async (path: string, ok404 = false) => {
-    const r = await cp(path);
-    if (ok404 && r.status === 404) return null;
-    if (!r.ok) throw new Error(`control plane GET ${path.split("?")[0]} → ${r.status}`);
-    return r.json() as Promise<any>;
-  };
-  const projects = new Map<string, { at: number; names: Map<string, string> }>();
-  let token = { value: "", until: 0 };
-  const models = gatewayModels({
-    url: gatewayUrl, model: SEARCH_MODEL, threshold: SEARCH_THRESHOLD, summaries,
-    // One token an hour (the gateway keys its ledger's run rows by the credential).
-    token: () => (Date.now() < token.until ? token.value : (token = { value: mintToken(secret("gateway_job_secret"), { kind: "search", component: "Task search", ttlMs: 3600_000 }), until: Date.now() + 3000_000 }).value),
-  });
-  return createSearch({
-    db, facts, sql, models, log,
-    migrate: (ddl) => (sql(), store!.migrate(ddl)),
-    cp: {
-      company: async () => {
-        for (const id of Object.keys(agents())) { const a = await json(`/api/agents/${encodeURIComponent(id)}`, true); if (a?.companyId) return String(a.companyId); }
-        throw new Error("no granted agent names the company");
-      },
-      issue: (id) => json(`/api/issues/${encodeURIComponent(id)}`, true),
-      // The newest comments (Paperclip's page: newest first), oldest first for the document, deleted ones left out.
-      comments: async (id) => ((await json(`/api/issues/${encodeURIComponent(id)}/comments?order=desc&limit=100`)) as { body?: string; deletedAt?: string | null; createdAt?: string }[])
-        .filter((c) => !c?.deletedAt).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).map((c) => String(c?.body ?? "")),
-      list: (company, offset, limit) => json(`/api/companies/${encodeURIComponent(company)}/issues?${new URLSearchParams({ status: STATUSES, limit: String(limit), offset: String(offset), excludeRoutineExecutions: "false", sortField: "id", sortDir: "asc" })}`),
-    },
-    local: (task) => {
-      const prs = new Map<string, DocInput["prs"][number]>();
-      for (const r of db.prepare("SELECT data FROM facts WHERE task = ? AND type = 'pr.opened' ORDER BY seq").all(task) as { data: string }[]) {
-        const d = JSON.parse(r.data) as { repo?: unknown; number?: unknown; title?: unknown };
-        if (typeof d.repo === "string" && Number.isInteger(d.number)) prs.set(`${d.repo}#${d.number}`, { repo: d.repo, number: d.number as number, title: String(d.title ?? "") });
-      }
-      // The files its landed writes changed: as recorded at filing (records.paths), or for a record filed before that column,
-      // what its card's diff names (a long diff was cut for storage, so those are partial).
-      const paths = new Set<string>();
-      for (const r of db.prepare("SELECT paths, card FROM records WHERE task = ? AND state = 'done' AND (paths IS NOT NULL OR card LIKE '%diff --git%')").all(task) as { paths: string | null; card: string }[]) {
-        try {
-          if (r.paths) for (const p of JSON.parse(r.paths) as string[]) paths.add(p.slice(p.indexOf(":") + 1));
-          else for (const m of String(JSON.parse(r.card)?.details ?? "").matchAll(/^diff --git a\/(\S+) b\//gm)) paths.add(m[1]!);
-        } catch { /* a malformed row names no paths */ }
-      }
-      const final = (db.prepare("SELECT final FROM jobs WHERE task = ? AND final != '' ORDER BY at DESC LIMIT 1").get(task) as { final: string } | undefined)?.final ?? "";
-      return { prs: [...prs.values()], paths: [...paths], final };
-    },
-    agentName: (id) => { const a = agents()[id]; return a ? String(a.name ?? a.key ?? "") || null : null; },
-    projectName: async (company, id) => {
-      let c = projects.get(company);
-      if (!c || Date.now() - c.at > 600_000) projects.set(company, (c = { at: Date.now(), names: new Map(((await json(`/api/companies/${encodeURIComponent(company)}/projects`)) as { id: string; name: string }[]).map((p) => [p.id, p.name])) }));
-      return c.names.get(id) ?? null;
-    },
-  });
 }

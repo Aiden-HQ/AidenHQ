@@ -8,7 +8,7 @@
 FROM postgres:17.12@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
 RUN apt-get update && apt-get install -y --no-install-recommends zlib1g
 RUN apt-get update && apt-get install -y --no-install-recommends libc6 libc-bin libc-l10n locales
-# pgvector for the kernel's task search (docs/design/task-search.md): the base's own PGDG trixie repo, 0.8.7-1.pgdg13+2
+# pgvector for task search (docs/design/task-search.md): the base's own PGDG trixie repo, 0.8.7-1.pgdg13+2
 # (published 2026-11-10). sources.sql creates the extension.
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-17-pgvector=0.8.7-1.pgdg13+2
 RUN rm -rf /var/lib/apt/lists/*

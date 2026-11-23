@@ -6,14 +6,12 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
-import { openFacts } from "../src/facts.ts";
 import { createSearch, type Issue, type Models } from "../src/search.ts";
 
-async function setup({ issues, failEmbed = () => false, listFails = () => false }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean }) {
+async function setup({ issues, failEmbed = () => false, listFails = () => false, recent = () => [] }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; recent?: () => Issue[] }) {
   const pg = new PGlite({ extensions: { vector } });
   await pg.exec("CREATE EXTENSION vector; CREATE SCHEMA src_meta; CREATE SEQUENCE src_meta.seq; CREATE SCHEMA src_tasks;");
   const db = new DatabaseSync(":memory:");
-  const facts = openFacts(db);
   let t = Date.parse("2026-11-23T10:00:00Z");
   const embeds: string[][] = [];
   // Meaning, faked: one axis per topic, so "critique" is near a code-review task without sharing a word with it.
@@ -23,14 +21,15 @@ async function setup({ issues, failEmbed = () => false, listFails = () => false 
     embed: async (texts) => { embeds.push(texts); if (failEmbed(texts)) throw new Error("upstream down"); return texts.map(axis); },
   };
   const search = createSearch({
-    db, facts, sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => models, now: () => t,
+    db, facts: async () => ({ facts: [], tail: 0 }), sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => models, now: () => t,
     cp: {
       company: async () => "co-1",
       issue: async (id) => issues.get(id) ?? null,
       comments: async () => [],
       list: async (_c, offset, limit) => { if (listFails(offset)) throw new Error("control plane 502"); return [...issues.values()].slice(offset, offset + limit); },
+      recent: async () => recent(),
     },
-    local: () => ({ prs: [], paths: [], final: "" }), agentName: () => null, projectName: async () => null,
+    local: async () => ({ prs: [], paths: [], final: "" }), agentName: async () => null, projectName: async () => null,
   });
   const drain = async () => { t += 60_000; while (await search.tick()) t += 60_000; };
   return { pg, db, search, embeds, drain, advance: (ms: number) => (t += ms), now: () => t };
@@ -158,4 +157,16 @@ test("an older closed hit carries its crew: the agents on its subtasks", async (
   await drain();
   const r = await search.search("lens", { closedBefore: "2026-11-21T00:00:00Z" });
   assert.deepEqual(r.done.map((h) => [h.id, h.crew]), [["t-70", ["a-2"]]]);
+});
+
+test("an edit that makes no fact is found among the recently updated tasks and rebuilt", async () => {
+  const issues = new Map([["t-80", issue("t-80", "Old title")]]);
+  const { pg, search, drain, advance } = await setup({ issues, recent: () => [...issues.values()] });
+  search.mark("t-80");
+  await drain();
+  issues.set("t-80", issue("t-80", "New title", { updatedAt: "2026-11-23T11:00:00Z" }));
+  advance(20_000);
+  await search.tick(); // the poll marks it
+  await drain();
+  assert.equal((await pg.query<{ title: string }>("SELECT title FROM src_tasks.task_search WHERE task_id = 't-80'")).rows[0]!.title, "New title");
 });

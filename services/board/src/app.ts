@@ -124,7 +124,7 @@ export interface AppOptions {
   taskStates?: TaskStates;
   /** The kernel's flow reads (flow.ts): the Flow page. Without it, the page is empty. */
   flow?: Flow;
-  /** The kernel's task search (search.ts): the Tasks page's search field. Without it, a search answers 503. */
+  /** The warehouse module's task search (search.ts): the Tasks page's search field. Without it, a search answers 503. */
   search?: TaskSearch;
   /**
    * Board sign-in (kernel-auth.ts, docs/design/access.md): every route on "lan" needs a ready admin's board session, handed off
@@ -1780,7 +1780,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         return issueView(issue.id);
       },
     },
-    // The Tasks page's search (search.ts, docs/design/task-search.md): the kernel's ranked hits as ids, and the closed ones the
+    // The Tasks page's search (search.ts, docs/design/task-search.md): the warehouse module's ranked hit ids, and the closed ones the
     // 48-hour inventory doesn't hold as Done cards. A failure is a 503: the page then shows every task, with its note.
     {
       method: "GET",

@@ -50,8 +50,8 @@ END $$;
 SELECT set_config('aidenhq.pw_src_slack', '', false), set_config('aidenhq.pw_src_github', '', false), set_config('aidenhq.pw_src_jira', '', false),
        set_config('aidenhq.pw_src_meetings', '', false), set_config('aidenhq.pw_src_docs', '', false), set_config('aidenhq.pw_src_security', '', false), set_config('aidenhq.pw_src_hubspot', '', false);
 
--- The kernel's task search (docs/design/task-search.md): src_tasks writes one row per Paperclip task, with an embedding, and
--- answers the board's searches. Not a source agents read: no agents_open grant (agents search through the kernel, never rows).
+-- Task search (the warehouse module's search service, docs/design/task-search.md): src_tasks writes one row per Paperclip task, with an embedding, and
+-- answers the board's searches. Not a source agents read: no agents_open grant (never raw rows for agents).
 -- The extension ships with the warehouse image: an older image still running (the app redeploys on its own schedule) skips it,
 -- and task search answers "unavailable" until the new image runs and this runs again; nothing else here waits on it.
 DO $$ BEGIN

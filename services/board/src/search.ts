@@ -1,24 +1,25 @@
-// Task search (docs/design/task-search.md), as the board reads it: the kernel's one search operation (POST /v1/search/tasks,
-// the board's key). The kernel ranks; the board keeps its lanes, so it takes the hit ids of what its inventory holds (open, and
-// closed in the last 48 hours), and draws the tasks closed before that, a page at a time newest first, as Done cards.
+// Task search (docs/design/task-search.md), as the board reads it: the warehouse module's search (its board provider, POST
+// /search, through the kernel's /v1/board-api/warehouse/search with the board's key). The module ranks; the board keeps its
+// lanes, so it takes the ranked hit ids (what its inventory holds: open, and closed in the last 48 hours), and draws the tasks
+// closed before that, a page at a time newest first, as Done cards. Without the module the kernel answers 404: unavailable.
 import { isWork, workCard, type Assignee, type WorkCard } from "./board.js";
 import type { Issue, Label } from "./paperclip.js";
 
-/** A hit as the kernel answers it (kernel/src/search.ts Hit; change them together). */
+/** An older closed hit as the module answers it (modules/warehouse/search/src/search.ts Hit; change them together). */
 export type Hit = {
   id: string; identifier: string; title: string; status: string; closedAt: string | null; updatedAt: string | null; assignee: string | null;
   assigneeUser: string | null; createdByAgent: string | null; projectId: string | null; labels: { id: string; name: string }[]; priority: string | null;
 };
 /** `done` hits carry their crew: the agents on their subtasks (other than the assignee), as Agent work counts it. */
-export type SearchAnswer = { hits: Hit[]; done: (Hit & { crew: string[] })[]; next: string | null; semantic: boolean };
+export type SearchAnswer = { ids: string[]; done: (Hit & { crew: string[] })[]; next: string | null; semantic: boolean };
 export type TaskSearch = { search(q: string, page: { closedBefore: string; after?: string; keyword?: boolean; limit: number }): Promise<SearchAnswer> };
 
 export function kernelSearch(k: { url: string; token: string }): TaskSearch {
   return {
     async search(q, page) {
       const body = { q, closed_before: page.closedBefore, limit: page.limit, ...(page.after ? { after: page.after } : {}), ...(page.keyword ? { keyword: true } : {}) };
-      const res = await fetch(`${k.url}/v1/search/tasks`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
+      const res = await fetch(`${k.url}/v1/board-api/warehouse/search`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) throw new Error(`task search answered ${res.status}`);
       return (await res.json()) as SearchAnswer;
     },
   };
@@ -27,7 +28,7 @@ export function kernelSearch(k: { url: string; token: string }): TaskSearch {
 /**
  * What the Tasks page takes from an answer: the ids of the hits its inventory holds (rank order), and the page of older closed
  * hits as Done cards, newest close first, drawn by the board's own card projection (workCard). Only what Agent work would
- * show: not the brief, the owner's settings tasks or setup's log tasks. Their state is Paperclip's own close (no kernel row is
+ * show: not the brief, the owner's settings tasks or setup's log tasks. Their state is Paperclip's own close (no task-state row is
  * read for a task closed long ago).
  */
 export function searchView(a: SearchAnswer, ctx: { labels: Label[]; assignees: Assignee[]; logs: Set<string> }): { ids: string[]; done: WorkCard[]; next: string | null; semantic: boolean } {
@@ -47,5 +48,5 @@ export function searchView(a: SearchAnswer, ctx: { labels: Label[]; assignees: A
     const state = { task: h.id, identifier: h.identifier, idle_wakes: 0, kind: "done" as const, reason: h.status === "cancelled" ? ("cancelled" as const) : ("closed" as const), since: closed, holder: null, attention: [], lane: "done" as const };
     done.push(workCard(issue, ctx.assignees, state, null, h.crew));
   }
-  return { ids: a.hits.map((h) => h.id), done, next: a.next, semantic: a.semantic };
+  return { ids: a.ids, done, next: a.next, semantic: a.semantic };
 }

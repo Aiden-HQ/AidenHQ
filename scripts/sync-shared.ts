@@ -62,7 +62,7 @@ export function sharedCopies(root = repo) {
     "modules/code-review/service/src",
     // The grading service checks the tasks module's assertion when it files a rubric, and the owner's router on notify; the
     // grading service, the reviewer and dispatch fence their prompts' data blocks (dataBlock).
-    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src"]),
+    ...(f === "caller.ts" ? ["modules/grading/service/src", "modules/owner-channel/connections/notify/src"] : ["modules/grading/service/src", "modules/ai-reviewer/service/src", "modules/dispatch/service/src", "modules/warehouse/search/src"]),
   ].map((d) => `${d}/aidenhq-sdk/${f}`)])),
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
   "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/slack/connections/slack-live/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/github/service/src/aidenhq-sdk/executor.ts", "modules/code-review/service/src/aidenhq-sdk/executor.ts"],
@@ -113,6 +113,7 @@ export function sharedCopies(root = repo) {
     "modules/meetings/connections/ops-mcp/src/source-store.ts",
     "modules/google/connections/google-workspace-mcp/src/source-store.ts",
     "modules/security/scanner/src/source-store.ts",
+    "modules/warehouse/search/src/source-store.ts",
   ],
   // Who said it: a comment posted for someone else is never the owner's words (dispatch, the grader, task_comments, the board).
   "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/grading/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],

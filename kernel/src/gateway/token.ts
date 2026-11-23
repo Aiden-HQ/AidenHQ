@@ -1,6 +1,6 @@
 // Model credentials the kernel mints for the gateway: `ahqj_<payload>.<hmac>`, signed with the secret gateway_job_secret
 // (held by the kernel only). Stateless, so a restart never strands a running job.
-// payload: { k: kind (job | reviewer | grader | check | search), a: agent id | null, i: task id | null, c: component, x: expiry ms, id?: the job }.
+// payload: { k: kind (job | reviewer | grader | check), a: agent id | null, i: task id | null, c: component, x: expiry ms, id?: the job }.
 // Kind job: a kernel-admitted job's only credential (boxes.ts), id: the job; what it may do is its job row's frozen authority.
 // A fast chat lane signs its own turn tokens in this format, kind agent, with gateway_lane_secret (chat-lane model.ts).
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -13,7 +13,7 @@ export type VerifiedToken = Brand<TokenPayload, "VerifiedToken">;
 
 export const JOB_TOKEN_PREFIX = "ahqj_";
 /** What the kernel mints; a verified token may also be a lane's (agent), which only the gateway's lane check accepts. */
-const MINTED = new Set(["job", "reviewer", "grader", "check", "search"]);
+const MINTED = new Set(["job", "reviewer", "grader", "check"]);
 const KINDS = new Set([...MINTED, "agent"]);
 const sign = (secret: string, body: string) => createHmac("sha256", secret).update(body).digest("base64url");
 

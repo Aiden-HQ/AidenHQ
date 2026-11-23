@@ -9,8 +9,7 @@
 //                                 is dropped), custom tools only (a server tool, billed per use, is refused), anthropic-version and
 //                                 the ANTHROPIC_BETAS Claude Code sends. A cut-off call is trued up by OpenRouter's x-generation-id.
 //   POST /advisor/api/v1/... | /fanout/api/v1/...                kind advisor | fanout, counted against the caller's run
-//   POST /api/v1/embeddings       an embedding call (no output to bound: its input is its price); the kernel's task search
-//                                 sends its own with a `search` system token (search.ts)
+//   POST /api/v1/embeddings       an embedding call (no output to bound: its input is its price)
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   GET /v1/spend/summary         (Bearer gateway_board_key) the install's spend against its limits, as the gateway counts it:
@@ -89,7 +88,7 @@ type UsageBlock = {
 type Answer = { id?: unknown; model?: unknown; usage?: UsageBlock };
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
 
-const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers", search: "Task search" };
+const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers" };
 const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions|messages|embeddings)$/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** The Anthropic-format body fields a call may carry (what Claude Code sends); any other is dropped before it goes upstream. */
