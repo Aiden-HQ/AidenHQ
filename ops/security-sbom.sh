@@ -357,27 +357,35 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
       export_err="the reference moved during this pass; not scanning a different image"; return 1
     fi
   fi
-  local rc
+  # Docker publishes `-o` output from a temp file of its own, in or beside the destination: a save killed at the cap may
+  # leave that file behind, and nothing this script removes would reclaim it. Each save writes into a private staging
+  # directory, removed whole on any failure, and only a complete archive is moved into place.
+  local stage rc
+  stage="$(mktemp -d "${dest%/*}/.save.XXXXXX")"
   if [ "$save_platform" = 1 ]; then
-    export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$dest" "$ref" 2>&1)"; rc=$?
+    export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$stage/archive.tar" "$ref" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
-      save_hit_cap "$rc" "$dest" "$export_err" "$cap" && export_space=1
-      rm -f "$dest"; return 1
+      save_hit_cap "$rc" "$stage/archive.tar" "$export_err" "$cap" && export_space=1
+      rm -rf "$stage"; return 1
     fi
+    mv -f "$stage/archive.tar" "$dest" || { rm -rf "$stage"; export_err="could not move the archive into place"; return 1; }
+    rm -rf "$stage"
   else
     # No platform selection on this daemon, and an id is no proof of one variant either: on the containerd store a
     # container's `.Image` is the top-level index, so a plain save of it writes every platform the index holds. The save
     # runs, and the archive decides: one manifest is the running image, more is a line, never a scan of variants.
-    export_err="$(save_call "$cap" 900 image save -o "$dest" "$ref" 2>&1)"; rc=$?
+    export_err="$(save_call "$cap" 900 image save -o "$stage/archive.tar" "$ref" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
-      save_hit_cap "$rc" "$dest" "$export_err" "$cap" && export_space=1
-      rm -f "$dest"; return 1
+      save_hit_cap "$rc" "$stage/archive.tar" "$export_err" "$cap" && export_space=1
+      rm -rf "$stage"; return 1
     fi
-    if ! plain_archive_single "$dest" "$pin"; then
-      rm -f "$dest"
+    if ! plain_archive_single "$stage/archive.tar" "$pin"; then
+      rm -rf "$stage"
       export_err="this daemon cannot select a platform to save, and $ref's archive does not hold exactly the running platform ($archive_err); not scanning it"
       return 1
     fi
+    mv -f "$stage/archive.tar" "$dest" || { rm -rf "$stage"; export_err="could not move the archive into place"; return 1; }
+    rm -rf "$stage"
   fi
   case "$ref" in
     sha256:*|*@sha256:*) export_err=""; return 0 ;;
