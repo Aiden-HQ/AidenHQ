@@ -244,3 +244,25 @@ test("owner decide over MCP: each card against its digest, as the bearer's accou
   assert.equal((await k.api.post("/v1/auth/mcp", { token: again.tok.json.access_token, resource: RESOURCE }, key)).status, 401);
   assert.equal(k.accounts.mcpGrants(account).length, 0);
 });
+
+test("owner decide from the board: the admin's board session decides as that account, via board; a forged or ended one decides nothing", async (t) => {
+  const k = await kernel(t);
+  const { jar } = await connect(k);
+  const key = { authorization: `Bearer ${k.api.boardKey}` };
+  const session = await k.boardSession(jar);
+  const [one, two] = [1, 2].map(k.card);
+  const decide = (board, card, digest = card.digest) => k.api.post("/v1/owner/decide", { board, cards: [{ id: card.id, digest, decision: "approve" }] }, key);
+  assert.equal((await decide("ahqu_forged_session_token", one)).status, 401);
+  assert.equal((await k.api.post("/v1/owner/decide", { board: session, cards: [{ id: one.id, digest: one.digest, decision: "approve" }] })).status, 401); // the board's key too
+  assert.equal(k.records.get(one.id).state, "owner");
+  const stale = await decide(session, one, "old");
+  assert.equal(stale.json.outcomes[0].ok, false);
+  const r = await decide(session, one);
+  assert.equal(r.json.outcomes[0].ok, true, r.body);
+  const account = k.records.get(one.id).decided_by;
+  assert.match(account, /^account:/);
+  assert.equal(k.records.get(one.id).via, "board");
+  await k.accounts.reset(OWNER.email);
+  assert.equal((await decide(session, two)).status, 401);
+  assert.equal(k.records.get(two.id).state, "owner");
+});

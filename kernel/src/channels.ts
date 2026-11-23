@@ -219,7 +219,6 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
       return { cards, finished: finished.map((a) => ({ id: a.id, identifier: a.identifier, state: a.state, outcome: a.outcome ?? null, outcomeText: a.outcomeText ?? null, sentence: a.sentence })), ended };
     },
 
-    ownerCards,
     decideCard,
 
     /** Spends one token: checked against its channel and the card's current digest; every token of the card burns after. */

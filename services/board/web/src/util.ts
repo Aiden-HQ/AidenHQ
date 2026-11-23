@@ -86,10 +86,21 @@ export function addDays(d: string, n: number): string {
   return t.toISOString().slice(0, 10);
 }
 
-/** Today's YYYY-MM-DD in the board's timezone. */
-export function todayIn(timeZone: string): string {
-  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+/** Today's YYYY-MM-DD in the board's timezone (or the date of `at`). */
+export function todayIn(timeZone: string | undefined, at = new Date()): string {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(at).map((x) => [x.type, x.value]));
   return `${p.year}-${p.month}-${p.day}`;
+}
+
+/** When an instant falls, in the board's timezone: "today 08:00", "tomorrow 08:00", "Thu 08:00" within a week, else "Oct 15, 08:00". */
+export function dueWords(iso: string, timeZone: string | undefined, now = new Date()): string {
+  const at = new Date(iso);
+  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone });
+  const today = todayIn(timeZone, now), day = todayIn(timeZone, at);
+  if (day === today) return `today ${time}`;
+  if (day === addDays(today, 1)) return `tomorrow ${time}`;
+  if (day > today && day <= addDays(today, 6)) return `${at.toLocaleDateString(undefined, { weekday: "short", timeZone })} ${time}`;
+  return `${at.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone })}, ${time}`;
 }
 
 /** Where Snooze parks a task until `date`: tomorrow waits in Tomorrow, 2 to 7 days out in Later, further out in Backlog. */

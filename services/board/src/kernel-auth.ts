@@ -170,6 +170,9 @@ export function createKernelAuth(o: KernelAuthOptions) {
     /** Cards decided as the bearer's account (the kernel derives who from the grant; each card stands alone). */
     mcpDecide: (token: string, resource: string, cards: { id: string; digest: string; decision: "approve" | "reject"; reason?: string; stale?: boolean }[]) =>
       post<{ outcomes: { id: string; ok: boolean; state?: string; identifier?: string; error?: string }[] }>("/v1/owner/decide", { token, resource, cards }),
+    /** One card decided as the admin whose board session this is (a card's Approve or Reject on the board): the kernel checks the session. */
+    boardDecide: (session: string, card: { id: string; digest: string; decision: "approve" | "reject"; reason?: string }) =>
+      post<{ outcomes: { id: string; ok: boolean; state?: string; identifier?: string; error?: string }[] }>("/v1/owner/decide", { board: session, cards: [card] }).then((r) => r.outcomes[0]!),
     /** The release install moved to a main commit as the bearer's account: the updater verifies it first (git and GitHub's API, so up to two minutes) and answers with what it did, or why not. */
     mcpUpdate: (token: string, resource: string, to: string) => post<{ said: string }>("/v1/owner/update", { token, resource, to }, 120_000),
     /** The MCP clients an admin has signed in, and ending one. */

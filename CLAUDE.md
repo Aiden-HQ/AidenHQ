@@ -135,12 +135,14 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
 - **Source writers:** one bad item never fails a pass (skip only permanent errors, rethrow transient ones); passes
   are time-bounded. Probe a vendor MCP's real tool shapes live before trusting guessed params
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
-- **Inbound:** the kernel's admin listener (3120: sign-in, approval pages) and the board (3121) are loopback-only, reached
+- **Inbound:** the kernel's admin listener (3120: sign-in and the kernel's own pages) and the board (3121) are loopback-only, reached
   through the exposure mode's front door (`settings.exposure`: Caddy on the public IP, the default off a tailnet; Tailscale
   serve; or an SSH tunnel; only `ops/setup.sh --exposure` changes it), but every host process shares that loopback, so every route on 3120 and 3121 needs a signed-in
   admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state an admin's page made, and the MCP's OAuth routes on 3120: `/oauth2/*`, `/oauth/consent`, `/.well-known/oauth-authorization-server`, which sign an admin in themselves and answer only to a registered client) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
-  also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided only on the kernel's pages, by
-  channel token, or by a signed-in admin's MCP token (the board's `/mcp`); a settings change saved in a signed-in board session is
+  also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided by
+  channel token, or by a signed-in admin through the board, the one approvals UI (his board session on a card's Approve or Reject,
+  one or a batch, or his MCP token at the board's `/mcp`), the kernel checking that credential (`/v1/owner/decide`); the kernel's
+  old approval addresses redirect to the board; a settings change saved in a signed-in board session is
   decided as that admin at filing, the kernel checking the session the board forwards. Every admin is an owner: writes as the owner
   (the board through the kernel's `/v1/cp/owner`; only the kernel holds the Paperclip key), taps and typed replies decide (`account:<id>`); the board labels what non-owner admins wrote ("by <name>",
   `authored`). `kernel_operator_key` (root's ops/setup.sh on the host; no container

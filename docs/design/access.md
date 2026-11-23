@@ -96,9 +96,11 @@ The board's `/mcp` (bearer-only, never cookies) lets an admin's own Claude or Co
 - **Open routes.** `/oauth2/*`, `/oauth/consent` and the well-known path are the exception to "every admin-listener
   route needs a signed-in admin": a client calls them before it has a token. Authorize and consent still require the
   password and TOTP sign-in; token, register and revoke are protocol endpoints.
-- **Decide rule.** A card is decided on the kernel's pages, by channel token, or by a signed-in admin's MCP token
-  (`account:<id>`; `stale:account:<id>` closes a dead or duplicate card and is never a veto), always against the digest
-  the client read.
+- **Decide rule.** A card is decided by channel token, or by a signed-in admin through the board (the one approvals UI:
+  his board session on a card's Approve or Reject, one card or a batch, or his MCP token at its `/mcp`), each through the
+  kernel's `/v1/owner/decide` as `account:<id>` (`stale:account:<id>` closes a dead or duplicate card and is never a veto),
+  always against the digest the client read. The kernel's old approval addresses (`/`, `/approvals`, `/approvals/<id>`)
+  redirect to the board.
 - **Front doors.** `public` (Caddy: all of 443 to the board, all of 8446 to the admin listener) and `tailscale` (the
   same two doors) pass these paths with no change.
 
@@ -164,7 +166,7 @@ setup link and resets with the operator key).
 - **Every route needs an admin session**, reads and file downloads included, on the admin listener and the board's. The
   internal listener uses bearer tokens.
 - **Every admin is an owner.** Any ready admin writes to Paperclip as the owner (through the kernel's `/v1/cp/owner`; the
-  board holds no Paperclip key), so agents act on their words, and their decisions on the kernel's pages decide
+  board holds no Paperclip key), so agents act on their words, and their decisions on the board decide
   approvals. Decisions are stamped `account:<id>` from the session, never from the client. The board records which
   account wrote what (`authored`) and shows "by <name>" for non-owner admins.
 - Exactly one account is the owner (`settings.owner_email`). The board cannot demote, disable or reset the owner; only

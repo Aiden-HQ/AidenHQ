@@ -469,6 +469,8 @@ function writeGrants(agents: Record<string, Obj>, reviewLogs: Record<string, str
   const table: Obj = { autonomy: cfg.autonomy ?? "off", agents: Object.fromEntries(Object.entries(agents).map(([key, a]) => [a.id, { key, roles: cfg.agents[key].member_of ? [] : cfg.agents[key].roles ?? [], tools: cfg.agents[key].enabled_tools ?? {}, ...grantEntry(key, cfg.agents[key], cfg.routines), rev: revOf(key), description: cfg.agents[key].description, ...(cfg.agents[key].delegate_to ? { delegate_to: cfg.agents[key].delegate_to } : {}), ...(cfg.agents[key].image ? { image: cfg.agents[key].image } : {}), ...(cfg.agents[key].isolation === "untrusted" ? { isolation: "untrusted" } : {}) }])) };
   // The shared "Fleet issues" log task (ensureFleetIssues, its identifier): any agent may comment there (kernel cp.ts).
   if (fleetIssues) table.fleet_issues = fleetIssues;
+  // The instance's products (instance.yaml `projects:`): the kernel's repo → project map reads them here (kernel/src/projects.ts).
+  if (cfg.projects) table.projects = cfg.projects;
   table.routine_keys = { ...routineKeys };
   // Each event routine's subscription (kernel events.ts), by its Paperclip id: the key it was compiled under and its assignee.
   // Until this pass's routines are written (their batch and count declared, their description told to read the batch), the

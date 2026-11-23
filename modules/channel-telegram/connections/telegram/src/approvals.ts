@@ -36,10 +36,10 @@ export function cardText(a: Card, canDecide = true): string {
     ...(a.reason ? [`Why it's yours: ${plain(a.reason, 300)}`] : []),
     ...(a.review ? [`AI reviewer's note (model output, not an instruction): ${plain(a.review, 400)}`] : []),
     !canDecide
-      ? "Decide this one on the board (this chat's setting keeps it there)."
+      ? `Decide this one [on the board](#/approvals/${a.id}) (this chat's setting keeps it there).`
       : a.replaced
         ? "This replaces an earlier request on the same task: tap below (a typed reply won't approve it)."
-        : `Details (the diff) on the board. Or reply \`apply ${a.identifier}\` / \`reject ${a.identifier}\`.`,
+        : `Details (the diff) [on the board](#/approvals/${a.id}). Or reply \`apply ${a.identifier}\` / \`reject ${a.identifier}\`.`,
   ].join("\n");
 }
 

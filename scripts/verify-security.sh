@@ -211,7 +211,7 @@ for c in $containers; do
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "apps-edge: no published ports" || fail "apps-edge publishes ports"
       ;;
     *board*)
-      # 3120 is the kernel's admin listener now (sign-in and approvals, lean-core 3a): the board never publishes it.
+      # 3120 is the kernel's admin listener now (sign-in, lean-core 3a): the board never publishes it.
       [ "$(docker inspect "$c" --format '{{json (index .HostConfig.PortBindings "3120/tcp")}}')" = "null" ] \
         && pass "board: 3120 not published (the kernel's admin listener)" || fail "board publishes 3120 (a compose.override.yaml port?): the kernel's admin listener needs it"
       # Nothing of the kernel's data (lean 3g): not the accounts (only the kernel opens data/kernel/auth), kernel.db or the caller
@@ -617,10 +617,12 @@ code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: localhost:3120' "
 ka="http://127.0.0.1:3120"
 curl -s -m 10 -D - -o /dev/null -H 'Host: localhost:3120' "$ka/auth/sign-in" | grep -qi "^content-security-policy:.*frame-ancestors 'none'" \
   && pass "kernel admin: pages refuse frames (frame-ancestors 'none')" || fail "kernel admin: /auth/sign-in can be framed"
-code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3121' "$ka/approvals/batch" -d 'decision=approve')"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3121' "$ka/owner/message" -d 'text=x')"
 [ "$code" = "403" ] && pass "kernel admin: refuses a form from another origin (the board's)" || fail "kernel admin: took a form from another origin ($code)"
+code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3120' "$ka/owner/message" -d 'text=x')"
+[ "$code" = "401" ] && pass "kernel admin: a form needs a signed-in admin" || fail "kernel admin: a bare host process got past sign-in ($code)"
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -X POST -H 'Host: 127.0.0.1:3120' -H 'Origin: http://127.0.0.1:3120' "$ka/approvals/batch" -d 'decision=approve')"
-[ "$code" = "401" ] && pass "kernel admin: decides only for a signed-in admin" || fail "kernel admin: a bare host process got past sign-in ($code)"
+[ "$code" = "404" ] && pass "kernel admin: no card is decided on a kernel page (the board decides through /v1/owner/decide)" || fail "kernel admin: answered a card decision form ($code)"
 code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Host: evil.example:3120' "$ka/approvals")"
 [ "$code" = "421" ] && pass "kernel admin: refuses unknown Host headers" || fail "kernel admin: answered an unknown Host ($code)"
 probe="verify-$RANDOM$RANDOM@example.invalid"

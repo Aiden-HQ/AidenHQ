@@ -318,6 +318,12 @@ async function partsOf(parentId: string, exceptId: string) {
 }
 
 const PRIORITIES = ["critical", "high", "medium", "low"];
+/** A task's project, by name: when to tag one is said here, once. */
+const PROJECT_INPUT = {
+  type: "string",
+  description:
+    "the product or standing area this work belongs to, by name (e.g. \"AidenHQ\", \"Hiring\"): an existing project of that name (any case) is reused, else one is made. Leave it out when unsure: the task stays in No project. Code work joins its repo's project by itself when its PR opens, and a sub-task takes its parent's project.",
+};
 const OPEN_STATUSES = "backlog,todo,in_progress,in_review,blocked";
 
 async function labelIds(names: Json) {
@@ -1335,6 +1341,7 @@ const TOOLS: Record<string, Tool> = {
         labels: { type: "array", items: { type: "string" } },
         priority: { type: "string", enum: PRIORITIES },
         assignee: { type: "string", description: "an agent's key or name (fleet_catalog, task_team) instead of the owner; wakes it" },
+        project: PROJECT_INPUT,
         status: { type: "string", enum: ["todo", "backlog"], description: "default todo (wakes the assignee); backlog parks it" },
         dedupe_closed: { type: "boolean", description: "also match a done or cancelled task (never recreate what the user closed)" },
         related_markers: { type: "array", items: { type: "string" }, description: "markers of other tasks for the same item; an existing one is returned instead (closed ones too with dedupe_closed)" },
@@ -1345,7 +1352,7 @@ const TOOLS: Record<string, Tool> = {
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ title, description, marker, labels, priority, assignee, status, dedupe_closed, related_markers, deliverable, rubric }: Args) => {
+    run: async ({ title, description, marker, labels, priority, assignee, project, status, dedupe_closed, related_markers, deliverable, rubric }: Args) => {
       if (!COMPANY()) throw new Error("no company for this agent");
       const m = String(marker).trim().replace(/^(source:)+/, ""); // agents sometimes include the prefix
       if (!/^[A-Za-z0-9:._\/-]{3,200}$/.test(m)) throw new Error("invalid marker");
@@ -1388,6 +1395,7 @@ const TOOLS: Record<string, Tool> = {
         labelIds: await labelIds(labels ?? []),
         idempotencyKey: idempotencyKey(m),
         allowDuplicate: true,
+        ...(typeof project === "string" && project.trim() ? { project: project.trim() } : {}),
       };
       if (isBrief(`<!-- source:${m} -->`, labels)) warning = [warning, metricWarning(description, Date.now())].filter(Boolean).join(" ") || undefined;
       if (assigneeAgent) body.assigneeAgentId = assigneeAgent;
@@ -1579,7 +1587,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_update: {
-    description: "Update a Paperclip task's title, description or priority (e.g. refresh today's brief). The source markers are preserved.",
+    description: "Update a Paperclip task's title, description, priority or project (e.g. refresh today's brief). The source markers are preserved.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1587,15 +1595,17 @@ const TOOLS: Record<string, Tool> = {
         title: { type: "string" },
         description: { type: "string" },
         priority: { type: "string", enum: PRIORITIES },
+        project: PROJECT_INPUT,
       },
       required: ["issue"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ issue, title, description, priority }: Args) => {
+    run: async ({ issue, title, description, priority, project }: Args) => {
       const body: Args = {};
       let current;
       if (title) body.title = String(title).slice(0, 200);
+      if (typeof project === "string" && project.trim()) body.project = project.trim();
       if (priority && PRIORITIES.includes(priority)) body.priority = priority;
       if (description !== undefined) {
         current = await api("GET", `/api/issues/${issueRef(issue)}`);

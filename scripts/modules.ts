@@ -20,7 +20,7 @@ import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
 import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
-import { KERNEL_KINDS, KERNEL_ROLES } from "../kernel/src/kinds.ts";
+import { KERNEL_KINDS, KERNEL_ROLES, repoKey } from "../kernel/src/kinds.ts";
 import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
 
 // Manifests, instance files and Paperclip data are YAML/JSON read at run time: their shapes are described by the docs, not by types here.
@@ -412,6 +412,27 @@ function resolveEnabled(all: Map<string, Obj>, wanted: string[]) {
  */
 const codehostOrgs = (enabled: Obj, settings: Obj) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
+/** instance.yaml `projects:` checked: names to lists of owner/name repos, no repo under two products. */
+export function productsOf(v: unknown): Record<string, string[]> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) fail("projects: a map of a product's name to its repos (owner/name)");
+  const out: Record<string, string[]> = {};
+  const seen = new Map<string, string>();
+  for (const [name, repos] of Object.entries(v as Obj)) {
+    if (!name.trim() || name.length > 100) fail(`projects: "${name}" is not a project name (1 to 100 characters)`);
+    // owner/name is a repo's own project's name (beside another org's repo of the same short name): never a product's.
+    if (repoKey(name)) fail(`projects: "${name}" reads as a repo (owner/name): a product's name is a plain name (AidenHQ), its repos are owner/name`);
+    if (!Array.isArray(repos) || !repos.length) fail(`projects.${name}: a list of repos (owner/name)`);
+    out[name] = (repos as unknown[]).map((r) => {
+      // As the kernel compares repos (kinds.ts repoKey).
+      const k = repoKey(r) ?? fail(`projects.${name}: ${String(r)} is not a repo (owner/name)`);
+      if (seen.has(k) && seen.get(k) !== name) fail(`projects: ${k} is listed under both ${seen.get(k)} and ${name}`);
+      seen.set(k, name);
+      return k;
+    });
+  }
+  return out;
+}
+
 /** Fails on a spend setting this release removed (SPEND_GONE), naming it. */
 function spendGone(instance: Obj) {
   const st = instance.settings ?? {}, cr = st.code_review ?? {};
@@ -788,6 +809,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
   const paperclip: Obj = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
+  // The instance's products (instance.yaml `projects:`, a project's name → its repos): the kernel puts each listed repo's tasks in
+  // that project (kernel/src/projects.ts); an unlisted repo gets a project of its own. A repo belongs to one product.
+  if (instance.projects != null) paperclip.projects = productsOf(instance.projects);
   const apps: Obj[] = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a: Obj) => a.name);

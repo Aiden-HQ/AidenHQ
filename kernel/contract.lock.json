@@ -23,8 +23,6 @@
     "admin route GET /setup/model": {"state":"experimental","fp":"auth=admin"},
     "admin route GET /setup/openrouter/:state": {"state":"experimental","fp":"auth=pkce-state"},
     "admin route GET /updates": {"state":"experimental","fp":"auth=admin"},
-    "admin route POST /approvals/:id/decide": {"state":"experimental","fp":"auth=admin+csrf"},
-    "admin route POST /approvals/batch": {"state":"experimental","fp":"auth=admin+csrf"},
     "admin route POST /auth/enrol": {"state":"experimental","fp":"auth=session+csrf"},
     "admin route POST /auth/password": {"state":"experimental","fp":"auth=admin+csrf"},
     "admin route POST /auth/set-password": {"state":"experimental","fp":"auth=origin"},

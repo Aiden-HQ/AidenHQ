@@ -100,6 +100,7 @@
 //                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
+import type { Projects } from "./projects.ts";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -300,9 +301,11 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
+  /** Projects (projects.ts): a code host's new PR fills in its task's project. */
+  projects?: Pick<Projects, "queue" | "touch">;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
   idle?: Idle;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
@@ -440,6 +443,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             return r?.requester.key ? `agent:${r.requester.key}` : undefined;
           };
           let recorded = 0;
+          const opened: { task: string; repo: string }[] = [];
           // Facts older than the log keeps (facts.ts prune, 400 days) would be pruned at once: skipped, not refused (a history backfill).
           const kept = t - 400 * 864e5;
           records.db.exec("BEGIN IMMEDIATE");
@@ -449,13 +453,22 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
               const data = f.data ?? {};
               const actor = (data.job != null ? agentOf(data.job) : undefined) ?? (f.subject.startsWith("pr:") ? prAgent(f.subject, f.task) : undefined) ?? `module:${w.module}`;
               // The module's name is part of the version (so of the id): two modules declaring one type can never pre-empt each other's facts.
-              if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
+              if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) {
+                recorded++;
+                // A code host's new PR on a task: the task joins the repo's project (projects.ts touch).
+                // Queued in this transaction, so a restart before the fill keeps it.
+                if (f.type === "pr.opened" && CODEHOSTS.includes(w.module!) && typeof f.task === "string" && f.task && typeof data.repo === "string" && f.source !== "backfill") {
+                  projects?.queue(f.task, data.repo);
+                  opened.push({ task: f.task, repo: data.repo });
+                }
+              }
             }
             records.db.exec("COMMIT");
           } catch (e) {
             records.db.exec("ROLLBACK");
             throw e;
           }
+          for (const o of opened) void projects?.touch(o.task, o.repo).catch((e: Error) => log("project fill failed", { task: o.task, repo: o.repo, err: e.message }));
           return send(res, 200, { recorded });
         }
         case "GET /v1/whoami": {
@@ -1033,8 +1046,10 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
           case "GET /v1/writes": {
             if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
             const p = new URLSearchParams(q ?? "");
+            // `id=<record id>`: that one record, whatever its state or age (the board's card page), shown as the lists show it.
+            const one = p.get("id");
             const list = LISTS[p.get("state") ?? ""];
-            if (!list) throw fail(400, "bad_request", `state=${Object.keys(LISTS).join(", ")}`);
+            if (!list && !one) throw fail(400, "bad_request", `state=${Object.keys(LISTS).join(", ")}, or id`);
             const task = p.get("task") || undefined;
             // The reviewed ones only (every Tier 0 write is a record too, and would crowd the cards out), unless `tier0=1`
             // asks for every record (the board's history shows Tier 0 runs after the fact); the review list says which wait out a
@@ -1045,7 +1060,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             // `kinds`: only these record kinds (comma-separated). A read of one kind's history — a task's merge cards — must not
             // lose it behind newer writes of other kinds, whatever the page cap.
             const kinds = (p.get("kinds") ?? "").split(",").map((k) => k.trim()).filter(Boolean);
-            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}), ...(kinds.length ? { kinds } : {}), ...(after ? { after } : {}) });
+            const rows = one ? [records.get(one)].filter((r): r is NonNullable<typeof r> => Boolean(r)) : records.list(list!, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}), ...(kinds.length ? { kinds } : {}), ...(after ? { after } : {}) });
             // An open record's card shows the whole diff the reviewer reads (context.diff), so the owner decides on all of it; the
             // reviewer's other input (the files' text) stays in the kernel.
             return send(res, 200, { records: rows.map(({ context, ...r }) => ({ ...r, card: context?.diff ? { ...r.card, details: context.diff } : r.card, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });

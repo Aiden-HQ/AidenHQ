@@ -4,8 +4,8 @@
 //   POST /v1/auth/mcp, /v1/auth/mcp/{grants,revoke}  (the board's key) an MCP client's bearer for {resource} (the board's
 //              /mcp) → its ready admin, client and expiry (or 401); with {token} (a live board session's ready admin) that
 //              admin's own MCP clients, and revoking one of them.
-//   POST /v1/owner/decide    (the board's key + an MCP client's bearer) cards decided as the bearer's account, via "mcp",
-//              each against the digest that was read, each on its own.
+//   POST /v1/owner/decide    (the board's key + an MCP client's bearer, or {board}: a signed-in admin's board session) cards
+//              decided as that account, via "mcp" or "board", each against the digest that was read, each on its own.
 //   POST /v1/owner/update    (the board's key + an MCP client's bearer) {to: "main" | sha}: the release updater moves this
 //              release install to that main commit once it verified it (updates.ts requestMain), as the bearer's account.
 //   POST /v1/accounts/<op>   (the board's key + {token}: a live module UI session's admin acts) account admin: list, sessions,
@@ -106,7 +106,11 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
       }
       if (group === "owner" && op === "decide") {
         if (!decide) throw fail(503, "unavailable", "deciding cards is off");
-        const g = await grant();
+        // The board's own Approve and Reject forward the admin's board session (as a settings save does); an MCP client its bearer.
+        const session = b.board !== undefined ? await a.uiSession("board", need(b, "board", (v) => typeof v === "string" && v.length >= 16 && v.length <= 200)) : undefined;
+        if (b.board !== undefined && !(session?.ready && session.account.role === "admin")) throw fail(401, "unauthorized", "that sign-in has ended: sign in again");
+        const g = session ? { account: session.account } : await grant();
+        const via = session ? "board" : "mcp";
         const cards = need(b, "cards", (v) => Array.isArray(v) && v.length >= 1 && v.length <= 20) as unknown[];
         const outcomes = [];
         // Each card on its own: one that changed since it was read fails alone.
@@ -118,7 +122,7 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
             : c.stale && c.decision !== "reject" ? "stale closes a dead or duplicate card: only with decision reject" : "";
           if (bad) { outcomes.push({ id, ok: false, error: bad }); continue; }
           const by = `${c.stale ? "stale:" : ""}account:${g.account.id}`;
-          outcomes.push(await decide(id, c.digest!, c.decision!, by, "mcp", c.reason ?? "").then(
+          outcomes.push(await decide(id, c.digest!, c.decision!, by, via, c.reason ?? "").then(
             (r) => ({ id, ok: true, state: r.state, identifier: r.identifier }),
             (e: Error) => ({ id, ok: false, error: /digest|changed meanwhile/.test(e.message) ? `card ${id} changed since you read it: call approvals again` : e.message }),
           ));

@@ -20,8 +20,7 @@ before(async () => {
   // An app door on loopback (docs/design/app-doors.md), as compile's gate.json names it.
   accounts = await openAccounts({ dataDir: ":memory:", hosts: [HOST], adminUrl: `http://${HOST}`, edgeSecret: () => "", notify: () => {}, log: silent, gate: () => ({ password: true, appHosts: [], door: { base: "localhost", scheme: "http", port: 3130 }, moduleDoors: { "https://board.example.com:8447": "board.example.com" } }) });
   steps = await stepListener(accounts);
-  const cards = { ownerCards: async () => ({ live: [], finished: [] }), decideCard: async () => { throw new Error("no"); } };
-  adminSrv = await serve(createAdmin({ accounts, cards, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], uiOrigins: () => ({ [BOARD]: "board" }), doorSource: () => doorSource({ door: { base: "localhost", scheme: "http", port: 3130 } }) }));
+  adminSrv = await serve(createAdmin({ accounts, ownerMessage: async () => ({ task: { identifier: "WOR-1" } }), owner: async () => ({ status: 200, json: {} }), hosts: () => [HOST], origins: () => [`http://${HOST}`], frameOrigins: () => [], uiOrigins: () => ({ [BOARD]: "board" }), doorSource: () => doorSource({ door: { base: "localhost", scheme: "http", port: 3130 } }) }));
   api = await authApiServer(accounts, { whoami: async (t) => apps[t] });
 });
 after(() => { steps.close(); adminSrv.s.close(); api.close(); accounts.close(); });

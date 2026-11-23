@@ -51,6 +51,10 @@ export type TaskState = {
   wait_until?: string;
   /** The open wait's own words (task_wait's reason). */
   note?: string;
+  /** When the earliest open scheduled wake is due, whatever the representative reason. */
+  scheduled_for?: string;
+  /** The agent (id) an open delegator wait's question went to, when the wait recorded it. */
+  waits_on?: string;
 };
 
 export /** How long after a job ends its reply may still arrive (the kernel posts it a few seconds later). */
@@ -199,6 +203,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   // Wakes: pending from due until bound, dropped or a job queued at or after it (held: until bound or dropped); a due one
   // nothing takes ages out; one still ahead is scheduled.
   let agedOut: { due: number; at: number } | undefined;
+  let nextDue: number | undefined;
   const bySubject = new Map<string, FactRow[]>();
   for (const f of own) if (f.subject.startsWith("wake:")) (bySubject.get(f.subject) ?? bySubject.set(f.subject, []).get(f.subject)!).push(f);
   for (const opened of own.filter((f) => f.type === "wake.opened" && after(f))) {
@@ -208,7 +213,7 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     const held = later.filter((g) => g.type === "job.held" && ms(g.at) <= now).at(-1);
     const due = ms(opened.at);
     if (held) { open.push({ reason: "job_held", ref: str(held.data.reason) ?? opened.subject, since: ms(held.at) }); continue; }
-    if (due > now) { open.push({ reason: "scheduled", ref: opened.subject, since: ms(opened.seen_at) }); continue; }
+    if (due > now) { open.push({ reason: "scheduled", ref: opened.subject, since: ms(opened.seen_at) }); nextDue = Math.min(nextDue ?? due, due); continue; }
     if (queuedAt.some((q) => q >= due)) continue;
     const ages = Math.max(due, ms(opened.seen_at)) + PENDING_MAX;
     if (now < ages) open.push({ reason: "job_queued", ref: opened.subject, since: due });
@@ -261,7 +266,8 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const openNote = wait && open.some((o) => o.ref === wait!.f.subject) ? str(wait.f.data.note) : undefined;
   const openUntil = waitQuestion ? str(wait!.f.data.until) : undefined;
   const blocker = open.find((o) => o.reason === "blocked")?.ref;
-  const extra = { ...(blocker ? { blocker } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
+  const waitsOn = wait && !wait.end && wait.f.data.reason === "delegator_wait" ? str(wait.f.data.agent) : undefined;
+  const extra = { ...(blocker ? { blocker } : {}), ...(nextDue !== undefined ? { scheduled_for: iso(nextDue) } : {}), ...(waitsOn ? { waits_on: waitsOn } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);

@@ -191,7 +191,7 @@ shell doesn't have it yet (setup restarts your systemd user manager itself, so t
 | OpenRouter key | the setup output line `OpenRouter key ok (...)` (setup stops before the apply if OpenRouter rejects the key); re-check with `AIDENHQ_SECRETS_DIR=~/.config/aidenhq node ~/aidenhq/scripts/openrouter-key.ts check` | `OpenRouter key ok`, with your remaining limit |
 | Paperclip | `curl -s http://127.0.0.1:3100/api/health` | contains `"status":"ok"` and `"bootstrapStatus":"ready"` |
 | Board | `curl -s http://127.0.0.1:3121/healthz` | `ok` |
-| Sign-in and approvals (the kernel) | `curl -s http://127.0.0.1:3120/healthz` | `ok` |
+| Sign-in (the kernel) | `curl -s http://127.0.0.1:3120/healthz` | `ok` |
 | Containers | `cd ~/aidenhq && docker compose ps --format '{{.Service}} {{.State}}'` | every service `running` |
 | Kernel (model gateway) and agent computers | `systemctl --user is-active aidenhq-kernel aidenhq-computers` | `active` twice |
 

@@ -14,7 +14,7 @@
 //   the kernel's word alone: a comment, nothing else. `settle` (a fleet settler, role fleet-settle, on a task an agent made) is
 //   the kernel's word too: a comment, a status or a patch on that task (handing it to the one agent in `delegateTo`), never a
 //   new task.
-// - Writes: a comment; a status from STATUSES (`blocked` names its blockers, as the REST route requires; `done` only with
+// - Writes (a project as its id: the kernel resolved the agent's name, kernel/src/projects.ts): a comment; a status from STATUSES (`blocked` names its blockers, as the REST route requires; `done` only with
 //   `gated`, the kernel's word that its finish gate passed); a `patch` of PATCH_KEYS; a new task (`child`: under `issueId`,
 //   or top-level without one) assigned to the caller, to an agent in `delegateTo`, or to a user.
 // - Once: every write carries the kernel's tag (a job's `aidenhq:job=` tag wakes nobody, wakes.ts SELF_TAG; a cp write on
@@ -28,8 +28,8 @@ import { HOST_PARAMS, SKEW_MS, verify } from "./sign.js";
 export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const PARAMS = ["sig", "ts", "tag", "again", "scope", "issueId", "body", "status", "blockedBy", "gated", "patch", "child", "delegateTo"];
 const SCOPES = ["own", "child", "created", "part", "admin", "listed", "settle"];
-const PATCH_KEYS = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "labelIds"];
-const CHILD_KEYS = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds"];
+const PATCH_KEYS = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "labelIds", "projectId"];
+const CHILD_KEYS = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "projectId"];
 /** The origin kind of every task this action makes (Paperclip allows a plugin only its own, `plugin:<id>`): a retry finds its task by it. */
 export const ORIGIN = "plugin:aidenhq.events";
 const PRIORITIES = ["critical", "high", "medium", "low"];
@@ -51,6 +51,7 @@ function fields(f, keys, what) {
   if (f.assigneeAgentId !== undefined && !(f.assigneeAgentId === null || (typeof f.assigneeAgentId === "string" && UUID.test(f.assigneeAgentId)))) return `${what}.assigneeAgentId is an agent id or null`;
   if (f.assigneeUserId !== undefined && !user(f.assigneeUserId)) return `${what}.assigneeUserId is a user id or null`;
   for (const k of ["blockedByIssueIds", "labelIds"]) if (f[k] !== undefined && !ids(f[k])) return `${what}.${k} is a list of ids`;
+  if (f.projectId !== undefined && !(typeof f.projectId === "string" && UUID.test(f.projectId))) return `${what}.projectId is a project id`;
   return undefined;
 }
 
@@ -137,7 +138,7 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
       companyId, title: text(c.title, 200), originKind: ORIGIN, originId: origin, actor: as,
       ...(p.issueId ? { parentId: p.issueId } : {}),
       ...(c.description !== undefined ? { description: text(c.description, MAX) } : {}),
-      ...Object.fromEntries(["priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds"].filter((k) => c[k] !== undefined).map((k) => [k, c[k]])),
+      ...Object.fromEntries(["priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "projectId"].filter((k) => c[k] !== undefined).map((k) => [k, c[k]])),
     })).id;
   }
   if (p.body !== undefined) {

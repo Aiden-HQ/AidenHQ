@@ -54,7 +54,7 @@ SSH stays open in every mode, so a switch can't lock the owner out.
   firewall) and voice;
 - the security floor: sign-in is password and TOTP; every route on 3120 and 3121 needs a signed-in admin; 3120, 3121
   and 3130 stay on loopback, behind Caddy;
-- the public firewall opens tcp 22, 443 and 8446 only. 8446 is the kernel's admin listener (sign-in and approvals) on
+- the public firewall opens tcp 22, 443 and 8446 only. 8446 is the kernel's admin listener (sign-in) on
   its own origin, as U2 built it, the same layout as `tailscale serve`. Port 80 stays closed.
 
 `scripts/verify-security.sh` in public mode checks:
@@ -243,7 +243,7 @@ Generated Caddyfile (compile writes it, from the detected public IP):
 | 443/tcp | `0.0.0.0` | `caddy` → 127.0.0.1:3121 (board) and, with a domain, → 127.0.0.1:3130 (gate) | **open** | closed (firewall) | closed |
 | 80/tcp | none | nothing (D1) | closed | closed | closed |
 | 41641/udp | host netns | `edge-tailscale` and `apps-edge` direct connections | closed | open | closed |
-| 3120 | 127.0.0.1 | the kernel's admin listener (sign-in, approval pages; lean-core 3a) | loopback | loopback | loopback |
+| 3120 | 127.0.0.1 | the kernel's admin listener (sign-in; lean-core 3a) | loopback | loopback | loopback |
 | 3121 | 127.0.0.1 | board browser listener (`mode: "lan"`) | loopback, behind Caddy | loopback, behind `tailscale serve` | loopback, forwarded by Lima or reached by tunnel |
 | 3122, 3129 | 127.0.0.1 | board internal API, gate sign-in listener | loopback | loopback | loopback |
 | 3130 | 127.0.0.1 | gate | loopback, behind Caddy (domain only) | loopback | loopback (Lima: forwarded) |
