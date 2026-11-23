@@ -50,6 +50,7 @@ export function buildServer(d: Deps, caller?: Caller): McpServer {
     async ({ days, limit, before, state }) => {
       const since = Date.now() - (days ?? 3) * 86_400_000;
       const [t, id] = before ? [Date.parse(before.split("#")[0]!), Number(before.split("#")[1] ?? Infinity)] : [Infinity, Infinity];
+      if (Number.isNaN(t)) throw new Error("before: the `cursor` of a row from an earlier page");
       const rows = [...d.store.recentTold(days ?? 3, 5000).map((r) => ({ ...r, n: Number(r.id), state: "delivered" })), ...waitingDigest(d.store).filter((r) => r.at >= since).map((r) => ({ ...r, n: 0, state: "queued" }))]
         .filter((r) => (r.at < t || (r.at === t && r.n < id)) && (!state || r.state === state))
         .sort((x, y) => y.at - x.at || y.n - x.n).slice(0, limit ?? 20);
