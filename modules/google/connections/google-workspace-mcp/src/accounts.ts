@@ -39,6 +39,7 @@ export function readCredentials(path: string, forWrite = false): CredentialsFile
   }
   const id = fileText(process.env.GOOGLE_CLIENT_ID_FILE);
   if (forWrite || !id) return raw;
+  // A sign-in made now stamps its account with the client it used (Reconnect.finish), so a client pasted later leaves it alone.
   return { ...raw, client_id: id, client_secret: fileText(process.env.GOOGLE_CLIENT_SECRET_FILE) || undefined };
 }
 
@@ -107,7 +108,7 @@ export function loadAccounts(path: string): { primary: string; accounts: Map<str
   for (const [email, a] of Object.entries(raw.accounts ?? {})) {
     const client_id = a.client_id ?? raw.client_id;
     if (!client_id || !a.refresh_token) continue;
-    accounts.set(email, { client_id, client_secret: a.client_secret ?? raw.client_secret, refresh_token: a.refresh_token, scopes: a.scopes });
+    accounts.set(email, { client_id, client_secret: a.client_id ? a.client_secret : raw.client_secret, refresh_token: a.refresh_token, scopes: a.scopes });
   }
   if (!accounts.size && raw.client_id && raw.refresh_token) {
     accounts.set("default", { client_id: raw.client_id, client_secret: raw.client_secret, refresh_token: raw.refresh_token });

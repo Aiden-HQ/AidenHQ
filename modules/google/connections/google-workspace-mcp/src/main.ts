@@ -235,7 +235,7 @@ const FinishSchema = z.object({ state: z.string().min(16).max(100), code: z.stri
 async function handleAuth(req: IncomingMessage, path: string): Promise<[number, unknown]> {
   if (path === "/auth/status" && req.method === "GET") {
     if (fixturesDir) return [200, { accounts: [] }];
-    return [200, { accounts: multi?.authStatus() ?? [], ...(authError ? { error: authMessage() } : {}) }];
+    return [200, { accounts: multi?.authStatus() ?? [], client: reconnect.hasClient(), ...(authError ? { error: authMessage() } : {}) }];
   }
   if (path === "/auth/check" && req.method === "GET") return [200, await checkGoogle(fixturesDir ? undefined : multi, authError)];
   if (req.method !== "POST") return [405, { error: "method not allowed" }];

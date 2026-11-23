@@ -258,7 +258,7 @@ export interface Board {
   /** The install's model spend against its two limits (settings.spend_day_usd, spend_month_usd: a UTC day and month); null without the kernel. */
   spend?: SpendNow | null;
   /** Google sign-in per account; null when the board can't ask. */
-  google: { accounts: GoogleAccount[]; error?: string } | null;
+  google: { accounts: GoogleAccount[]; error?: string; client?: boolean } | null;
   /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
   signIns: { id: string; label: string; missing: string; stopped: string; status: SignInStatus | null; offer?: boolean; mode?: "device" }[];
 }

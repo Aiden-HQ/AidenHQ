@@ -11,10 +11,10 @@ const list = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1)
 
 /**
  * `onContinue` (the wizard): one primary Continue that applies the picked organisation, or moves on with None, and always shows
- * the choice. Otherwise (Settings) a chosen organisation collapses to a line with Change. `bare` (inside a setup flow's way): a dropdown
- * of the organisations and its button, with no card or None.
+ * the choice. Otherwise (Settings) a chosen organisation collapses to a line with Change. `bare` (inside a setup flow's way, for its
+ * `module`): a dropdown of the organisations and its button, applying only that module's client, with no card or None.
  */
-export function OrganisationPicker({ onApplied, onContinue, compact, bare }: { onApplied?: () => void; onContinue?: () => void; compact?: boolean; bare?: boolean }) {
+export function OrganisationPicker({ onApplied, onContinue, compact, bare, module }: { onApplied?: () => void; onContinue?: () => void; compact?: boolean; bare?: boolean; module?: string }) {
   const [data, setData] = useState<Organisations | null | undefined>(undefined);
   const [pick, setPick] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,13 +31,15 @@ export function OrganisationPicker({ onApplied, onContinue, compact, bare }: { o
       </div>
     ) : null;
   }
+  // A setup page lists only the organisations that have an app for its module.
+  const offered = module ? data.organisations.filter((o) => o.connections.includes(module)) : data.organisations;
   const chosen = data.organisations.find((o) => o.id === data.chosen);
   const apply = async () => {
     if (!pick || (pick === data.chosen && !bare)) return onContinue?.();
     setBusy(true);
     setProblem("");
     try {
-      const r = await api.organisationApply(pick);
+      const r = await api.organisationApply(pick, module);
       const failed = r.results.filter((x) => !x.ok);
       if (failed.length) setProblem(`${list(failed.map((f) => displayName(f.module)))} didn't take it: ${failed[0]!.error}`);
       else {
@@ -74,7 +76,7 @@ export function OrganisationPicker({ onApplied, onContinue, compact, bare }: { o
           <span>Your organisation</span>
           <select className="ui-select" value={pick ?? ""} onChange={(e) => setPick(e.target.value || null)}>
             <option value="">Choose your organisation</option>
-            {data.organisations.map((o) => (
+            {offered.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.name} ({o.domains.join(", ")}){o.id === data.suggested ? ", matches your email" : ""}
               </option>
@@ -84,7 +86,7 @@ export function OrganisationPicker({ onApplied, onContinue, compact, bare }: { o
         {problem && <Banner tone="danger">{problem}</Banner>}
         <div className="setup-actions">
           <Button variant="primary" disabled={busy || !pick} onClick={() => void apply()}>
-            {busy ? "Saving…" : pick ? `Use ${data.organisations.find((o) => o.id === pick)!.name}` : "Use this organisation"}
+            {busy ? "Saving…" : pick ? `Use ${offered.find((o) => o.id === pick)!.name}` : "Use this organisation"}
           </Button>
         </div>
       </section>

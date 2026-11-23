@@ -100,6 +100,8 @@ export interface Organisations {
   organisations: { id: string; name: string; domains: string[]; connections: string[] }[];
   suggested: string | null;
   chosen: string | null;
+  /** Per module: the organisation whose app is that module's client now (none once the owner pastes their own). */
+  applied: Record<string, string>;
 }
 
 /** A module's advanced flow: the person's own app, for what the basic sign-in can't do. */
@@ -296,7 +298,7 @@ export const api = {
   deviceCancel: (id: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/device/cancel`, {}),
   googleFinish: (url: string) => call<{ ok: boolean }>("POST", "/api/google/finish", { url }),
   organisations: () => call<Organisations>("GET", "/api/organisations"),
-  organisationApply: (id: string) => call<{ ok: boolean; results: { module: string; secret: string; ok: boolean; error?: string }[] }>("POST", `/api/organisations/${encodeURIComponent(id)}/apply`, {}),
+  organisationApply: (id: string, module?: string) => call<{ ok: boolean; results: { module: string; secret: string; ok: boolean; error?: string }[] }>("POST", `/api/organisations/${encodeURIComponent(id)}/apply`, module ? { module } : {}),
   signInSecret: (id: string, secret: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/secret`, { secret, value }),
   setupFlows: () => call<{ flows: SetupFlowView[]; board_url: string }>("GET", "/api/setup-flows"),
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean; restarted?: string[]; restarting_for?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/secret`, { secret, value }),

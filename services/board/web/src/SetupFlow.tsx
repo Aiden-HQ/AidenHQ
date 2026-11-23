@@ -85,8 +85,8 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
   useEffect(() => {
     void Promise.all([api.organisations().catch(() => null), allWays ? api.session().catch(() => null) : null]).then(([o, s]) => {
       const mine = o?.organisations.filter((x) => x.connections.includes(flow.module)) ?? [];
-      const chosen = mine.find((x) => x.id === o?.chosen);
-      setOrg(chosen?.name ?? null);
+      // Whose app this module's client is now: the organisation applied to it, not the global pick (a pasted client clears it).
+      setOrg(mine.find((x) => x.id === o?.applied[flow.module])?.name ?? null);
       setOrgListed(mine.length > 0);
       const domain = s?.account?.email.split("@")[1]?.toLowerCase();
       const pick = (mine.some((x) => x.id === o?.suggested) ? allWays?.find((w) => w.organisation)?.id : undefined) ?? allWays?.find((w) => domain && w.domains?.includes(domain))?.id ?? null;
@@ -142,7 +142,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
             </div>
             {way && (
               <div className="setup-way" key={way.id}>
-                {way.organisation && <OrganisationPicker bare onApplied={() => void reload()} />}
+                {way.organisation && <OrganisationPicker bare module={flow.module} onApplied={() => void reload()} />}
                 {way.steps && <Steps text={fill(way.steps)} />}
               </div>
             )}

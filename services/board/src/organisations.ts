@@ -24,6 +24,8 @@ export function suggested(orgs: OrganisationPoint[], email: string): string | nu
 }
 
 const CHOSEN = "organisation";
+/** The organisation whose app a module's client is, until the owner pastes another (setup-flows.ts clears it). */
+export const appliedKey = (module: string) => `organisation_client:${module}`;
 
 export function organisationRoutes(d: { orgs: OrganisationPoint[]; accounts: KernelAuth; store: Store; onApplied?: () => void }): SetupRoute[] {
   const routes: SetupRoute[] = [
@@ -34,6 +36,7 @@ export function organisationRoutes(d: { orgs: OrganisationPoint[]; accounts: Ker
         organisations: d.orgs.map((o) => ({ id: o.id, name: o.name, domains: o.domains, connections: [...new Set(o.clients.map((c) => c.module))] })),
         suggested: suggested(d.orgs, who.account.email),
         chosen: d.store.meta(CHOSEN) ?? null,
+        applied: Object.fromEntries([...new Set(d.orgs.flatMap((o) => o.clients.map((c) => c.module)))].flatMap((mod) => (d.store.meta(appliedKey(mod)) ? [[mod, d.store.meta(appliedKey(mod))]] : []))),
       }),
     },
     {
@@ -41,11 +44,15 @@ export function organisationRoutes(d: { orgs: OrganisationPoint[]; accounts: Ker
       // since each save restarts that connection's service.
       method: "POST",
       path: /^\/api\/organisations\/([a-z][a-z0-9-]{1,40})\/apply$/,
-      handle: async (m, _b, who) => {
+      handle: async (m, b, who) => {
         const org = d.orgs.find((o) => o.id === m[1]);
         if (!org) throw new AccountError(404, "no such organisation");
+        // A setup page applies only its own module's client; the wizard and Settings apply the organisation's whole entry.
+        const only = typeof (b as { module?: unknown } | null)?.module === "string" ? (b as { module: string }).module : undefined;
         const results: { module: string; secret: string; ok: boolean; error?: string }[] = [];
-        for (const c of org.clients) {
+        const clients = org.clients.filter((x) => !only || x.module === only);
+        if (!clients.length) throw new AccountError(404, `${org.name} has no app for ${only}`);
+        for (const c of clients) {
           try {
             await d.accounts.call("save_secret", who, { module: c.module, secret: c.secret, value: c.value });
             results.push({ module: c.module, secret: c.secret, ok: true });
@@ -53,8 +60,13 @@ export function organisationRoutes(d: { orgs: OrganisationPoint[]; accounts: Ker
             results.push({ module: c.module, secret: c.secret, ok: false, error: String((e as Error).message).slice(0, 200) });
           }
         }
+        // A module's client is the organisation's only when all its values were written; a partial write leaves a mixed one.
+        for (const mod of new Set(clients.map((c) => c.module))) {
+          if (results.filter((r) => r.module === mod).every((r) => r.ok)) d.store.setMeta(appliedKey(mod), org.id);
+          else d.store.delMeta(appliedKey(mod));
+        }
         const ok = results.every((r) => r.ok);
-        if (ok) d.store.setMeta(CHOSEN, org.id);
+        if (ok && !only) d.store.setMeta(CHOSEN, org.id);
         d.onApplied?.();
         return { ok, results };
       },

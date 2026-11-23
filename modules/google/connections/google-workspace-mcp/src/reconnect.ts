@@ -23,6 +23,15 @@ export class Reconnect {
     return readCredentials(this.credsPath);
   }
 
+  /** Whether a Google client is set up (pasted on the board, or in the credentials file). */
+  hasClient(): boolean {
+    try {
+      return Boolean(this.creds().client_id);
+    } catch {
+      return true; // an unreadable file is its own error (the status carries it), not a missing client
+    }
+  }
+
   /** Google's consent URL: for `account`, which must already be connected, or (none given) for a new account. */
   start(account: string | undefined, redirectUri: string): { url: string } {
     const creds = this.creds();
@@ -74,7 +83,7 @@ export class Reconnect {
     if (p.account && email.toLowerCase() !== p.account.toLowerCase()) throw new ReconnectError(`you signed in as ${email}, not ${p.account}; nothing changed`);
     const name = p.account ?? email;
     const latest = readCredentials(this.credsPath, true); // the file may have changed while the user was at Google
-    latest.accounts = { ...(latest.accounts ?? {}), [name]: { ...(latest.accounts?.[name] ?? {}), refresh_token: tokens.refresh_token, scopes: granted } };
+    latest.accounts = { ...(latest.accounts ?? {}), [name]: { ...(latest.accounts?.[name] ?? {}), client_id: creds.client_id!, client_secret: creds.client_secret, refresh_token: tokens.refresh_token, scopes: granted } };
     if (!latest.primary || !latest.accounts[latest.primary]) latest.primary = name;
     // Written in place: the file is a single-file bind mount, which a rename would not replace.
     writeFileSync(this.credsPath, JSON.stringify(latest, null, 2), { mode: 0o600 });

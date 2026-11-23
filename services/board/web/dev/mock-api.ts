@@ -3,10 +3,8 @@
 // Neutral sample data only. Writes answer ok and change nothing. GET /__mock?welcome=1|0 shows or hides the first-run wizard;
 // GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
-// ?org=1 lists an organisation with its own Google app. The Google flow is modules/google/module.yaml's, as compiled.
-import { readFileSync } from "node:fs";
+// ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`.
 import { createServer } from "node:http";
-import { parse } from "yaml";
 
 const port = Number(process.env.PORT ?? 3120);
 const now = Date.now();
@@ -270,8 +268,16 @@ const explanation = (id: string) => ({
 
 const welcome = () => ({ finished: !mock.welcome, modelReady: true, recoveryKeyWaiting: mock.welcome, wizard: ["google", "telegram"] });
 const googleFlow = () => ({
-  module: "google",
-  ...parse(readFileSync(new URL("../../../../modules/google/module.yaml", import.meta.url), "utf8")).contributes["board.setup_flows"][0],
+  module: "google", order: 40, title: "Google", why: "Aiden reads your calendar, Drive and Gmail (read-only) to brief you and follow up.", effort: "about 5 minutes, in the Google Cloud console",
+  secrets: ["google_client_id", "google_client_secret"], connect_url: "/google/connect",
+  console_scopes: ["https://www.googleapis.com/auth/calendar.events.readonly", "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/gmail.readonly"],
+  steps: "AidenHQ needs **one Google app per Workspace**: the app is what Google shows when you approve access. Pick the way that fits you; only its steps show.",
+  ways: [
+    { id: "organisation", title: "Use your organisation's app", detail: "Your organisation already runs one. Pick it from the list and there is nothing to make.", effort: "about a minute", organisation: true },
+    { id: "colleague", title: "A colleague already made one", detail: "Ask them for the Client ID and Client secret, then enter them here.", effort: "about a minute", paste: true, steps: "1. Ask your colleague for the app's **Client ID** and **Client secret** (a **Desktop app** client).\n2. Enter both under **Paste the details**, then press **Connect**." },
+    { id: "create", title: "Create one", detail: "A Google Workspace address. About 5 minutes in the Google Cloud console.", paste: true, steps: "1. [Create a project](https://console.cloud.google.com/projectcreate) named `AidenHQ`.\n2. On [Data access](https://console.cloud.google.com/auth/scopes) add these scopes:\n   {scopes}\n3. Create a **Desktop app** client and enter its ID and secret under **Paste the details**." },
+    { id: "personal", title: "Personal Gmail", detail: "A gmail.com address. One extra step so sign-in does not expire every 7 days.", paste: true, domains: ["gmail.com", "googlemail.com"], steps: "1. As Create one, with audience **External**.\n2. On [Audience](https://console.cloud.google.com/auth/audience) press **Publish app**.\n3. Google then shows **Google hasn't verified this app**: press **Advanced**, then **Go to AidenHQ (unsafe)**." },
+  ],
   fields: [
     { secret: "google_client_id", label: "Google client ID", pattern: "^[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com$", help: "Ends in .apps.googleusercontent.com." },
     { secret: "google_client_secret", label: "Google client secret", pattern: "^GOCSPX-[A-Za-z0-9_-]{20,60}$", help: "Starts with GOCSPX-." },
@@ -356,7 +362,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/board": return [200, board()];
     case "/api/search": return search(url.searchParams.get("q") ?? "", url.searchParams.get("after"));
     case "/api/welcome": return [200, welcome()];
-    case "/api/organisations": return [200, mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null } : { organisations: [], suggested: null, chosen: null }];
+    case "/api/organisations": return [200, mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null, applied: {} } : { organisations: [], suggested: null, chosen: null, applied: {} }];
     case "/api/setup-flows": return [200, flows()];
     case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];

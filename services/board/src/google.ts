@@ -14,7 +14,7 @@ export interface GoogleAccountStatus {
  * Google token.
  */
 export class GoogleAuth {
-  private cached: { at: number; accounts: GoogleAccountStatus[]; error?: string } | undefined;
+  private cached: { at: number; accounts: GoogleAccountStatus[]; error?: string; client?: boolean } | undefined;
 
   constructor(
     private readonly baseUrl: string,
@@ -36,11 +36,11 @@ export class GoogleAuth {
   }
 
   /** Sign-in state per account, at most a minute old. Undefined when the sidecar can't be asked. */
-  async status(maxAgeMs = 60_000): Promise<{ accounts: GoogleAccountStatus[]; error?: string } | undefined> {
+  async status(maxAgeMs = 60_000): Promise<{ accounts: GoogleAccountStatus[]; error?: string; client?: boolean } | undefined> {
     if (!this.cached || Date.now() - this.cached.at >= maxAgeMs) {
       try {
-        const s = await this.call<{ accounts: GoogleAccountStatus[]; error?: string }>("GET", "/auth/status");
-        this.cached = { at: Date.now(), accounts: s.accounts ?? [], ...(s.error ? { error: s.error } : {}) };
+        const s = await this.call<{ accounts: GoogleAccountStatus[]; error?: string; client?: boolean }>("GET", "/auth/status");
+        this.cached = { at: Date.now(), accounts: s.accounts ?? [], ...(s.error ? { error: s.error } : {}), ...(s.client !== undefined ? { client: s.client } : {}) };
       } catch (err) {
         this.log?.warn({ err: String((err as Error).message).slice(0, 300) }, "Google sign-in state unavailable");
         this.cached = undefined;

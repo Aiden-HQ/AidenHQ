@@ -44,7 +44,8 @@ export interface SignIn {
 export interface GoogleState {
   accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[];
   error?: string;
-  /** A Desktop client returns only to loopback: its Connect is pasted back (GoogleConnect in Connect.tsx). */
+  /** Whether a Google app (OAuth client) is set up; false sends the owner to its setup. */
+  client?: boolean;
 }
 export interface ConnectionRow {
   name: string;
@@ -101,6 +102,8 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   // Google: each account's own sign-in comes first; the service's health after.
   if (row.google) {
     const g = row.google;
+    // No Google app yet (one per Workspace): setting one up comes first; Connect would fail without a client.
+    if (!g.accounts.length && g.client === false) return { status: "not_configured", reason: "Google needs an app first: one per Workspace." };
     if (!g.accounts.length) return { status: "signed_out", reason: g.error ? `No Google account connected (${g.error}).` : "No Google account connected.", ...connect("Connect Google", "/google/connect") };
     const expired = g.accounts.filter((a) => a.state === "expired" || a.state === "error");
     if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`) };
