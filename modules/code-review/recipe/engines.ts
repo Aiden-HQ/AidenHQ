@@ -4,12 +4,14 @@
 // through the gateway at OPENROUTER_BASE_URL), and nothing of the PR loaded as its config.
 //
 // One access policy for every engine that runs commands (owner, 2026-11-21: "same settings across all reviewers"): a shell that
-// reads the repo and the system and runs read-only commands, with the network open; it writes nowhere but the engine's own
-// per-run temp directory, and inherits no credential (codex: shell_environment_policy; Claude Code: its subprocess env scrub).
-// Verdicts come only from what the shell can't write: the engine's stdout stream, or its session files outside the writable
-// area. Every result is scrubbed of the token and key-shaped text (review.ts scrub). codex and codex-native get it from codex's
-// own sandbox (a read-only permission profile with network on: no network namespace, which gVisor can't set up), claude-code
-// from Claude Code's sandbox (bubblewrap, read-only but its empty cwd, no network restriction).
+// reads the repo and the system, with the network open, and inherits no credential (codex: shell_environment_policy; Claude
+// Code: its subprocess env scrub). Every result is scrubbed of the token and key-shaped text (review.ts scrub). The box is the
+// isolation boundary: a throwaway gVisor container with no credential but the run's capped token, which a command can read from
+// the engine's process anyway (docs/design/code-review.md). codex and codex-native also run their shell in codex's own sandbox
+// (a read-only permission profile with the network on: no network namespace, which gVisor can't set up). Claude Code runs its
+// Bash unsandboxed: its sandbox always gives Bash a network namespace, which gVisor refuses ("bwrap: loopback: Failed
+// RTM_NEWADDR"), so with it on every command failed (2026-11-23). Its shell can write the run's checkout and scratch.
+// A run whose shell can't run at all ends at once (shellGuard), never spending a whole review on a dead shell.
 //
 // codex: our prompts through `codex exec` from an empty cwd, the repo tools (review-tools.ts) as its MCP server and the shell.
 // claude-code: `claude -p` through the gateway's Anthropic-format route (ANTHROPIC_BASE_URL at its /api, the run's token as the
@@ -121,7 +123,7 @@ export const callOf = (tool: string, a: Record<string, unknown> | undefined): Ca
 export function comboProblem(c: Combo | null | undefined) {
   if (!c || typeof c !== "object") return "a combo is an object";
   const skill = typeof c.engine === "string" && c.engine.startsWith("skill:");
-  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x?.skill !== "string" || typeof x.args !== "string" || (x.also !== undefined && !Array.isArray(x.also)) || (x.uncommitted !== undefined && typeof x.uncommitted !== "boolean")))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
+  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x?.skill !== "string" || typeof x.args !== "string" || (x.also !== undefined && !Array.isArray(x.also)) || (x.uncommitted !== undefined && typeof x.uncommitted !== "boolean") || (x.tree !== undefined && x.tree !== false && typeof x.tree !== "string")))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
   if (c.tools !== undefined && (!Array.isArray(c.tools) || c.tools.some((t) => !["Skill", "Workflow"].includes(t)))) return "tools are Skill and/or Workflow";
   const e = skill ? ENGINES[c.harness!] : ENGINES[c.engine];
   if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}, skill:<option>`;
@@ -154,8 +156,8 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
 }
 
 /** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
-/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). `uncommitted`: it finds the change as the checkout's uncommitted changes (`git status`, `git diff`), so for its turn the checkout's HEAD and index are the base, its files still the head's. */
-export interface SkillRef { skill: string; args: string; also?: string[]; uncommitted?: boolean }
+/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). `uncommitted`: it finds the change as the checkout's uncommitted changes (`git status`, `git diff`), so for its turn the checkout's HEAD and index are the base, its files still the head's. `tree`: its contract in a whole-repo review (target tree, base the empty tree): the arguments it takes there, or false when it only reviews a change (it isn't run there); absent, `args`. */
+export interface SkillRef { skill: string; args: string; also?: string[]; uncommitted?: boolean; tree?: string | false }
 /** `cwd`: the run's throwaway checkout of `head` (skillEngine), where it runs. `idle`: the turns (by index) that called no tool. */
 export interface Skill { invocations: string[]; uncommitted: boolean[]; skillDirs: string[]; pluginDirs: string[]; cwd?: string; head?: string; idle?: Set<number> }
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
@@ -170,12 +172,13 @@ export function parseSkill(skill: string) {
 }
 
 /**
- * The catalog's `run.skills` as installed skills, run in order in one session. `/<plugin>:<command>` is a Claude Code plugin
+ * The catalog's `run.skills` as installed skills, run in order in one session; in a whole-repo review (`at.target` tree) each with
+ * its `tree` arguments, and a skill whose `tree` is false left out. `/<plugin>:<command>` is a Claude Code plugin
  * (plugins/<plugin>); `/<name>` a skill of that name under skills/ (or, when none is installed, the harness's own command, e.g.
  * `/code-review`); and `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>`
  * (`$<name>` in codex). Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
  */
-export function resolveSkills(skills: SkillRef[], harness: string, at: { base: string; root: string }, root = SKILLS_ROOT): Skill {
+export function resolveSkills(skills: SkillRef[], harness: string, at: { base: string; root: string; target?: "tree" | "pr" }, root = SKILLS_ROOT): Skill {
   const all: Skill = { invocations: [], uncommitted: [], skillDirs: [], pluginDirs: [] };
   const sigil = harness === "codex" ? "$" : "/";
   // One spec installed: its invocation (a plugin's is its own spec) and the folders it needs.
@@ -194,11 +197,14 @@ export function resolveSkills(skills: SkillRef[], harness: string, at: { base: s
     for (const d of found.slice(0, 1)) if (!all.skillDirs.includes(d)) all.skillDirs.push(d);
     return `${sigil}${p.name}`;
   };
-  for (const { skill, args, also = [], uncommitted } of skills) {
-    all.invocations.push(`${install(skill)} ${args.replaceAll("{base}", at.base).replaceAll("{root}", at.root)}`.trim());
+  for (const { skill, args: change, also = [], uncommitted, tree } of skills) {
+    const args = at.target === "tree" ? tree : change;
+    if (args === false) continue;
+    all.invocations.push(`${install(skill)} ${(args ?? change).replaceAll("{base}", at.base).replaceAll("{root}", at.root)}`.trim());
     all.uncommitted.push(uncommitted === true);
     for (const a of also) install(a);
   }
+  if (!all.invocations.length) throw new Error("none of the option's skills runs on a whole repo");
   return all;
 }
 
@@ -213,7 +219,7 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
   if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
   const cwd = join(mkdtempSync(join(i.scratch, "skill-")), "repo"), head = gitSafe(i.root, ["rev-parse", "--verify", `${i.head ?? "HEAD"}^{commit}`]).trim();
   snapshot(i.root, head, cwd);
-  const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd }, i.skillsRoot), cwd, head, idle: new Set<number>() };
+  const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd, target: i.target }, i.skillsRoot), cwd, head, idle: new Set<number>() };
   const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
   return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!), sk.idle);
 }
@@ -262,6 +268,25 @@ async function deepsecEngine({ model, effort, root, base, trusted, minutes, scra
 
 const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$/, "");
 
+/** What a shell says when it can't run any command: its sandbox failed to start (bubblewrap's own errors, or a harness's word for it). */
+const DEAD_SHELL = /\bbwrap: |Failed RTM_NEWADDR|sandbox (?:failed|is unavailable|could not start|is required)/i;
+/** How many failed commands in a row, before any has worked, end the run: a shell that never works spends the review for nothing. */
+const FIRST_FAILS = 5;
+/**
+ * One run's shell watch, fed each shell command's outcome (in order, across the run's turns): the reason to end the run now, or
+ * undefined. A command that worked disarms it (later failures are a skill's own business: a grep with no match exits 1).
+ */
+export function shellGuard() {
+  let worked = false, failed = 0;
+  return (ok: boolean, output: string): string | undefined => {
+    if (worked || (ok && (worked = true))) return undefined;
+    const text = output.trim().slice(0, 200);
+    if (DEAD_SHELL.test(output)) return `the shell can't run commands (${text})`;
+    if (++failed >= FIRST_FAILS) return `the first ${FIRST_FAILS} shell commands all failed (the last: ${text})`;
+    return undefined;
+  };
+}
+
 async function codex({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "codex-"));
   // cwd: empty, not a repository, so codex loads nothing of the repo; a skill's is its checkout (codex reads no project doc)
@@ -272,8 +297,16 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions, repo: { root, base } }));
   const out = join(tmp, "answer.txt");
   const calls: Call[] = [];
+  const guard = shellGuard();
+  // Each command codex ran, as it finishes: a shell that can't run ends the run (shellGuard).
+  const watch = (l: string) => {
+    let e: CodexEvent | undefined;
+    try { e = JSON.parse(l); } catch { return undefined; }
+    const it = e?.type === "item.completed" ? e.item : undefined;
+    return it?.type === "command_execution" ? guard(it.status === "completed" && it.exit_code === 0, String(it.aggregated_output ?? "")) : undefined;
+  };
   const turn = async (task: string, resume?: string) => {
-    const r = await run("codex", ["exec", ...(resume ? ["resume", resume] : []), "--skip-git-repo-check", "--ignore-rules", "--json", "-o", out, task], { cwd, minutes, env: codexEnv(home) });
+    const r = await run("codex", ["exec", ...(resume ? ["resume", resume] : []), "--skip-git-repo-check", "--ignore-rules", "--json", "-o", out, task], { cwd, minutes, env: codexEnv(home), watch });
     const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
     calls.push(...events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
       .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []));
@@ -302,6 +335,9 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   return { message: last.done ? message : "", read: calls.some((c) => c.tool === "diff"), calls, cause: last.done ? undefined : stopped(last.r, last.said) };
 }
 
+/** The user settings of every Claude Code run (its only settings: --setting-sources user). */
+export const CLAUDE_SETTINGS = { sandbox: { enabled: false } };
+
 /** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
  * result (never a word inside the diff itself). */
 const CUT = /^\s*(<persisted-output>|Output too large|\[?\d+ (characters|lines) truncated)/i;
@@ -311,7 +347,7 @@ export const cutShort = (content: unknown) =>
 
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
-type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string; command?: string } };
+type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string; command?: string; exit_code?: number | null } };
 type ClaudeEvent = { type?: string; subtype?: string; slash_commands?: string[]; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
 
 async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own, tools }: EngineInput, sk?: Skill): Promise<EngineResult> {
@@ -320,11 +356,11 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   const home = join(tmp, "home"), cwd = sk?.cwd ?? join(tmp, "cwd");
   mkdirSync(home);
   mkdirSync(cwd, { recursive: true });
-  // Claude Code's sandbox for its Bash (the access policy above): read-only everywhere but its cwd, no network restriction
-  // (none set, so no network namespace), never run outside it.
+  // Claude Code's own sandbox off: the box is the boundary, and gVisor can't give that sandbox its network namespace (the access
+  // policy above). Bash is allowed by --allowedTools.
   mkdirSync(join(home, ".claude"));
   linkSkills(sk, join(home, ".claude", "skills"));
-  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false } }));
+  writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify(CLAUDE_SETTINGS));
   const mcp = join(tmp, "mcp.json");
   writeFileSync(mcp, JSON.stringify({ mcpServers: { repo: { command: process.execPath, args: [join(HERE, "review-tools.ts"), root, base] } } }));
   const m = String(model).replace(/^openrouter\//, "");
@@ -342,8 +378,22 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", ["Agent", "Bash", ...(tools ?? [])].join(","),
     ...(sk?.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]), "--allowedTools", ["Agent", "Bash", ...(tools ?? []), ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
   const calls: Call[] = [];
+  const guard = shellGuard(), bash = new Set<string>();
+  // Each Bash result as it comes: a shell that can't run ends the run (shellGuard).
+  const watch = (l: string) => {
+    let e: ClaudeEvent | undefined;
+    try { e = JSON.parse(l); } catch { return undefined; }
+    for (const c of e?.message?.content ?? []) {
+      if (e!.type === "assistant" && c.type === "tool_use" && c.name === "Bash" && c.id) bash.add(c.id);
+      if (e!.type === "user" && c.type === "tool_result" && c.tool_use_id && bash.has(c.tool_use_id)) {
+        const why = guard(!c.is_error, typeof c.content === "string" ? c.content : Array.isArray(c.content) ? c.content.map((b) => String(b?.text ?? "")).join("\n") : "");
+        if (why) return why;
+      }
+    }
+    return undefined;
+  };
   const turn = async (task: string, resume?: string) => {
-    const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes });
+    const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes, watch });
     const events: ClaudeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
     // Claude Code's own review reads the diff with its shell too (`git diff`): a read that came back whole (no error, not cut
     // short by Claude Code's output limit) counts like the repo tools' diff.

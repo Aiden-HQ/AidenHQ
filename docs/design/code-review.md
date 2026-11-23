@@ -58,17 +58,26 @@ the final message out; fan-out, verification, dedupe and the schema are `review.
 | `claude-code` | Claude Code's own `/code-review <effort>` over the change, then our finder prompt in the same session restates its findings as our JSON | our prompts | `claude -p` through the gateway's Anthropic route; built-in tools off but Agent and Bash, the repo tools (MCP); empty cwd, user settings only, CLAUDE.md off |
 | `codegenie` | `codegenie review --format json` (Polygon's harness, its own planning and verification), mapped to our findings | recheck by codex on the same model | a worktree of the trusted base (its `codegenie.toml` and `.codegenie/skills` are the base's), the head as review data; its OpenRouter calls rewritten to the gateway (`gateway-fetch.ts`) |
 | `codex-native` | `codex exec review --base <base>` (OpenAI's built-in reviewer and its own prompt; the brief as its developer instructions), its findings mapped to ours (P0-P2 important, P3 nit) | recheck by codex on the same model | the box's checkout (base and head commits) as its cwd and the shell; it reads git itself, so which parts it read isn't tracked: a note (`coverage_note`), never partial coverage; a failed or cut-off run still is |
-| `skill:<option>` | an installed upstream skill or plugin (the engineer image's pinned `/opt/review`) run in its harness (`claude-code` or `codex`, the catalog's `run.harness`) over the range (`base..HEAD`; the empty tree as base for a whole-tree review), then our restate-as-JSON step in the same session | the harness's, our prompts | the harness's own (above); only the selected skill or plugin is linked into the run's throwaway home, never the repo's; reads the code its own way, so coverage is a note, not tracked |
+| `skill:<option>` | an installed upstream skill or plugin (the engineer image's pinned `/opt/review`) run in its harness (`claude-code` or `codex`, the catalog's `run.harness`) over the range (`base..HEAD`), or in a whole-repo review each skill's `tree` contract from the catalog (its arguments for the
+whole repo, or `false` to leave out a skill that only reviews a change, like Trail of Bits' differential review), then our restate-as-JSON step in the same session | the harness's, our prompts | the harness's own (above); only the selected skill or plugin is linked into the run's throwaway home, never the repo's; reads the code its own way, so coverage is a note, not tracked |
 | `deepsec` | Vercel's scanner on its pi backend through the gateway: `init` when nothing is under `.deepsec/` (the allowlisted files but the lockfile come back as `setup`), then `scan`, `process` and `revalidate` (a tree) or `process --diff <base>` (a change); CRITICAL/HIGH/HIGH_BUG important, the rest nits | recheck by codex on the same model | its own read-only agent on the box's checkout, run from a scratch workspace with our config (the repo's deepsec config and matchers are never loaded as code; only its INFO.md, as text); state in the run's scratch (`DEEPSEC_DATA_ROOT`), the run's token only in `OPENROUTER_API_KEY`, install scripts off |
 
 **One access policy for every reviewer** (owner, 2026-11-21: the same settings across all reviewers, no special case per
-engine). An engine that runs commands gets a shell that reads the repo and the system and runs read-only commands, with the
-network open; it writes nowhere but the engine's own per-run temp directory (Claude Code: its empty cwd; codex: nowhere). The
-shell inherits no credential (codex's `shell_environment_policy` inherits nothing but PATH; Claude Code's
-`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). Verdicts and results come only from channels the shell can't write: the engine's stdout
-stream, or its session files outside the writable area (codex-native's review). codex and codex-native get it from codex's own
-sandbox, a read-only permission profile with the network on (`default_permissions`; no network namespace, which gVisor can't set
-up); claude-code from Claude Code's sandbox (bubblewrap, `failIfUnavailable`, no network restriction set, never unsandboxed).
+engine). An engine that runs commands gets a shell that reads the repo and the system, with the network open. The shell
+inherits no credential (codex's `shell_environment_policy` inherits nothing but PATH; Claude Code's
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). **The box is the isolation boundary**: a throwaway gVisor container per run, holding no
+credential but the run's capped token, its checkout a copy, nothing of it kept after the run. codex and codex-native also run
+their shell in codex's own sandbox, a read-only permission profile with the network on (`default_permissions`; no network
+namespace, which gVisor can't set up), so their shell writes nowhere. **Claude Code's own sandbox is off**
+(`sandbox.enabled: false` in the run's user settings): on Linux it always gives Bash a network namespace, and gVisor refuses
+its loopback (`bwrap: loopback: Failed RTM_NEWADDR`), so with it on every shell command failed and the skills that need a
+shell reviewed nothing (2026-11-23, a repo review of AidenHQ: ce-code-review, the Cloudflare audit, Trail of Bits and the
+architecture skill). Its Bash, allowed by `--allowedTools`, can write the run's checkout and scratch, its session files among
+them; that buys a command nothing it couldn't already do through the model it steers, and the token it could reach is the one
+any command can already read from the engine's process. Every engine's output is mapped by code (`review.ts`: the schema,
+placement, verification), never trusted as written.
+A run whose shell can't run at all ends at once (`engines.ts` `shellGuard`: the shell's own sandbox error, or its first five
+commands all failing before one works) instead of spending the review: Trail of Bits spent $5.84 on a dead shell.
 Nothing of the repo is loaded as config: project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off,
 the project never trusted. The run's token (the check's own `check` token, time-limited) is the box's only
 secret; a command can still read it from the engine's process, which the owner accepted, and every engine's output has it and

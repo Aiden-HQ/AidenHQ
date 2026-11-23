@@ -17,7 +17,8 @@ export type Mode = (typeof MODES)[number];
  * One option. `recommended`: the modes it is ticked by default in (a subset of `modes`). `when`: file globs (the recipe's globRe,
  * over the snapshot's paths); none means always. `run`: a tool's shell command (run in the checkout copy, its stdout is the
  * output) and `exits`, the exit codes of a finished scan (default [0]; a scanner's "found something" code too: any other code is a
- * failed tool, report or not), a skill's harness, `skills` (each a spec and its arguments, run in order in one session: engines.ts parseSkill) and the extra Claude Code `tools` they need (e.g. Skill), or an engine's id. `runs_code`:
+ * failed tool, report or not), a skill's harness, `skills` (each a spec and its arguments, run in order in one session: engines.ts parseSkill; its `tree`
+ * contract is what a whole-repo review, the one_off mode, runs instead: other arguments, or false to leave a change-only skill out) and the extra Claude Code `tools` they need (e.g. Skill), or an engine's id. `runs_code`:
  * the tool can run the repo's code (a JS config it imports): only a tool, never on a fork's PR, after the others (tools.ts). `severity: "nit"` caps a tool whose
  * output marks everything an error (ruff, fallow); an option with `unavailable` (the reason) is never run. `name`, `description` and `needs` are the board's words for it (the service's catalog.ts reads them). `source.version` is the pin: a release tag,
  * package version or commit.
@@ -50,8 +51,10 @@ export function loadCatalog(source: string): Option[] {
     if (!text(o.source?.repo) || !text(o.source?.version) || !text(o.source?.licence)) bad(id, "source needs repo, a pinned version and a licence");
     if (!OUTPUTS.includes(o.output)) bad(id, "unknown output");
     const run = o.run ?? {};
-    if (o.kind === "tool" ? !text(run.cmd, 2000) || o.output === "findings" : o.output !== "findings" || (o.kind === "skill" ? !text(run.harness) || !(Array.isArray(run.skills) && run.skills.length && run.skills.every((x: SkillRef) => text(x?.skill) && typeof x.args === "string" && (x.also === undefined || (Array.isArray(x.also) && x.also.every((a: unknown) => text(a)))) && (x.uncommitted === undefined || typeof x.uncommitted === "boolean")) && (run.tools === undefined || (Array.isArray(run.tools) && run.tools.every((t: unknown) => text(t))))) : !text(run.engine))) bad(id, `${o.kind} has the run fields (and the output) its kind takes`);
+    if (o.kind === "tool" ? !text(run.cmd, 2000) || o.output === "findings" : o.output !== "findings" || (o.kind === "skill" ? !text(run.harness) || !(Array.isArray(run.skills) && run.skills.length && run.skills.every((x: SkillRef) => text(x?.skill) && typeof x.args === "string" && (x.also === undefined || (Array.isArray(x.also) && x.also.every((a: unknown) => text(a)))) && (x.uncommitted === undefined || typeof x.uncommitted === "boolean") && (x.tree === undefined || x.tree === false || typeof x.tree === "string")) && (run.tools === undefined || (Array.isArray(run.tools) && run.tools.every((t: unknown) => text(t))))) : !text(run.engine))) bad(id, `${o.kind} has the run fields (and the output) its kind takes`);
     if (!Array.isArray(o.when) || o.when.some((g: unknown) => !text(g))) bad(id, "when is a list of globs");
+    // A whole-repo review (one_off) runs each skill's `tree` contract: one that only reviews a change (tree false) is left out there.
+    if (o.kind === "skill" && o.modes.includes("one_off") && run.skills.every((x: SkillRef) => x.tree === false)) bad(id, "a one_off skill option has a skill that runs on a whole repo (tree isn't false)");
     if (run.exits !== undefined && (o.kind !== "tool" || !Array.isArray(run.exits) || !run.exits.length || run.exits.some((c: unknown) => !Number.isInteger(c) || (c as number) < 0 || (c as number) > 255))) bad(id, "exits is a tool's list of exit codes");
     if (o.runs_code === true && o.kind !== "tool") bad(id, "only a tool option runs repo code (runs_code)");
     if (typeof o.runs_code !== "boolean" || !["free", "low", "high"].includes(o.cost)) bad(id, "runs_code is a boolean and cost is free, low or high");

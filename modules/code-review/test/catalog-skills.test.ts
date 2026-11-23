@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCatalog } from "../recipe/catalog.ts";
-import { comboProblem, parseSkill, resolveSkills, runEngine, skillOutcome } from "../recipe/engines.ts";
+import { comboProblem, parseSkill, resolveSkills, runEngine, shellGuard, skillOutcome } from "../recipe/engines.ts";
 
 const catalog = loadCatalog(readFileSync(new URL("../service/src/catalog.json", import.meta.url), "utf8"));
 const skillOptions = catalog.filter((o) => o.kind === "skill");
@@ -20,11 +20,15 @@ const plugins = new Set([...dockerfile.matchAll(/for p in ([\w -]+); do cp/g)].f
 // Claude Code tools beyond Agent and Bash. A skill listed here can't be configured without them.
 // Every skill runs in a checkout of the head as its cwd (skillEngine), which is where these find the repo, its history and their
 // report folders (solidity-auditor's `find .` and .solidity-auditor/runs/, ce-code-review's git rev-parse --show-toplevel).
-const NEEDS: Record<string, { tools?: string[]; args: RegExp; also?: string[]; uncommitted?: boolean }> = {
-  "/compound-engineering:ce-code-review": { args: /^mode:agent base:\{base\}$/ }, // base:<sha> on the current checkout, never a range
+// `tree`: its contract in a whole-repo review (base: the empty tree's commit), or false when it reviews only a change.
+const NEEDS: Record<string, { tools?: string[]; args: RegExp; also?: string[]; uncommitted?: boolean; tree?: RegExp | false }> = {
+  // base:<sha> on the current checkout, never a range. Its pinned scope.md takes any commit as base: (git merge-base HEAD <base>,
+  // else the base itself, then git diff <base>), and it has no directory mode: in a whole-repo review the base is the empty tree's
+  // commit, so every file is the change.
+  "/compound-engineering:ce-code-review": { args: /^mode:agent base:\{base\}$/, tree: /^mode:agent base:\{base\}$/ },
   // Its only arguments are review aspects; it finds the change with git status and git diff --name-only (uncommitted changes).
   "/pr-review-toolkit:review-pr": { args: /^(comments|errors tests)$/, uncommitted: true },
-  "/differential-review:diff-review": { args: /^HEAD --baseline \{base\}$/ }, // <commit> [--baseline <ref>]
+  "/differential-review:diff-review": { args: /^HEAD --baseline \{base\}$/, tree: false }, // <commit> [--baseline <ref>]: a diff only
   "/insecure-defaults:audit": { tools: ["Workflow"], args: /^\{root\}$/ }, // its command runs a Workflow over a path: the checkout
   "pashov/skills:solidity-auditor": { args: /^--loop 1$/ }, // else it asks how many passes and waits
   "mattpocock/skills:improve-codebase-architecture": { tools: ["Skill"], args: /^$/, also: ["mattpocock/skills:codebase-design"] }, // loads codebase-design through the Skill tool
@@ -59,6 +63,12 @@ test("a skill is configured with the arguments and tools its pinned file needs",
     if (s.also?.length) assert.ok(o.run.tools?.includes("Skill"), `${o.id}: a skill that loads others needs the Skill tool`);
     // A skill with no contract above is told what to review: its arguments say so.
     if (!need && !o.unavailable) assert.ok(s.args.length > 20, `${o.id}: ${s.skill} is told what to review`);
+    // A whole-repo review (one_off) runs its tree contract: the one above, else arguments about the whole repo, never "the change".
+    if (!o.modes.includes("one_off") || o.unavailable) continue;
+    if (need?.tree !== undefined) {
+      assert.equal(s.tree === false, need.tree === false, `${o.id}: ${s.skill} runs on a whole repo`);
+      if (need.tree) assert.match(s.tree ?? s.args, need.tree, `${o.id}: ${s.skill} whole-repo arguments`);
+    } else if (s.tree !== false) assert.doesNotMatch(s.tree ?? s.args, /\{base\}|\bchange\b/, `${o.id}: ${s.skill} has a whole-repo contract`);
   }
   assert.deepEqual([...seen].sort(), Object.keys(NEEDS).sort(), "every contract above is used by a catalog option");
 });
@@ -84,6 +94,11 @@ test("a multi-skill option yields every skill with its own arguments, in order",
   assert.deepEqual(sk.invocations.map((v) => v.split(" ")[0]), ["/audit-context-building:audit-context-building", "/insecure-defaults:audit", "/sharp-edges:sharp-edges", "/fp-check:fp-check", "/differential-review:diff-review"]);
   assert.equal(sk.invocations[1], "/insecure-defaults:audit /ws");
   assert.match(sk.invocations[4]!, /^\/differential-review:diff-review HEAD --baseline abc123/);
+  // A whole-repo review: the four that read a tree, each with its whole-repo arguments; the diff review is left out.
+  const tree = resolveSkills(tob.run.skills!, "claude-code", { base: "abc123", root: "/ws", target: "tree" }, root);
+  assert.deepEqual(tree.invocations.map((v) => v.split(" ")[0]), ["/audit-context-building:audit-context-building", "/insecure-defaults:audit", "/sharp-edges:sharp-edges", "/fp-check:fp-check"]);
+  assert.ok(tree.invocations.every((v) => !v.includes("abc123")), "no change range in a whole-repo review");
+  assert.throws(() => resolveSkills([{ skill: "/differential-review:diff-review", args: "x", tree: false }], "claude-code", { base: "a", root: "/ws", target: "tree" }, root), /none of the option's skills runs on a whole repo/);
 });
 
 test("a repo skill is its folder, invoked by name; its companions are linked, not invoked", () => {
@@ -106,7 +121,8 @@ test("a plugin skill is a plugin folder, invoked by its spec", () => {
 // A repo with a base commit and a head commit that changes a.txt, and a fake `claude` on PATH. Each turn the fake appends one line
 // to its log: the task, its cwd, the checkout's HEAD and its uncommitted files; it prints `init` (its slash commands), `tool` (a
 // tool call, when set) and answers the restate turn with `restate`.
-function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: string }) {
+// `dead`: the shell's error text; the fake's every Bash call fails with it, then it hangs (a run that would burn its time).
+function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: string; dead?: string }) {
   const root = mkdtempSync(join(tmpdir(), "cr-repo-")), bin = mkdtempSync(join(tmpdir(), "cr-claude-")), scratch = mkdtempSync(join(tmpdir(), "cr-scratch-"));
   const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: root, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   git("init", "-q");
@@ -123,10 +139,14 @@ function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: strin
   const log = join(bin, "log");
   const init = o.commands === null ? "" : `echo '${JSON.stringify({ type: "system", subtype: "init", session_id: "s", slash_commands: o.commands ?? ["p:one", "p:two"] })}'`;
   const tool = o.tool === false ? "" : `echo '${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } })}'`;
+  const dead = o.dead === undefined ? "" : [1, 2].map((n) => `printf '%s\\n' '${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: `b${n}`, name: "Bash", input: { command: "git status" } }] } })}'
+printf '%s\\n' '${JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: `b${n}`, is_error: true, content: o.dead }] } })}'`).join("\n") + "\nsleep 30";
   const result = (r: string) => JSON.stringify({ type: "result", subtype: "success", session_id: "s", result: r }).replace(/'/g, "'\\''");
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 printf '%s|%s|%s|%s\\n' "$(echo "$2" | head -1 | cut -c1-20)" "$PWD" "$(git rev-parse HEAD)" "$(git diff --name-only | tr '\\n' ' ')" >> '${log}'
+cp "$CLAUDE_CONFIG_DIR/settings.json" '${bin}/settings.json'
 ${init}
+${dead}
 case "$2" in
   "Now restate"*) echo '${result(o.restate)}' ;;
   *) ${tool}
@@ -140,7 +160,7 @@ esac
     try { return await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base, minutes: 1, scratch, own: true, harness: "claude-code", skills, skillsRoot: root }); } finally { process.env.PATH = path; }
   };
   const turns = () => readFileSync(log, "utf8").trim().split("\n").map((l) => { const [task, cwd, at, dirty] = l.split("|"); return { task, cwd, at, dirty: dirty!.trim() }; });
-  return { root, base, head, run, turns };
+  return { root, base, head, run, turns, settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")) };
 }
 const ran = (...r: boolean[]) => JSON.stringify({ findings: [], stale_guidance: [], skills: r.map((x, i) => ({ skill: `/p:${["one", "two"][i]}`, ran: x, why: x ? "" : "it found no change to review" })) });
 
@@ -186,4 +206,78 @@ test("the restated skill list is read in order and must cover every skill", () =
   const r = { message: "", read: true };
   assert.match(String(skillOutcome({ ...r, message: ran(true) }, ["/p:one", "/p:two"]).cause), /didn't say/);
   assert.equal(skillOutcome({ ...r, message: "```json\n" + ran(true, true) + "\n```" }, ["/p:one", "/p:two"]).read, true);
+});
+
+test("Claude Code runs with its own sandbox off: the box is the boundary, and gVisor refuses the sandbox's network namespace", async () => {
+  const f = fakeRun({ restate: ran(true) });
+  assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
+  assert.deepEqual(f.settings(), { sandbox: { enabled: false } });
+});
+
+test("a run whose shell can't run ends at once, never spending the review", async () => {
+  const t0 = Date.now();
+  const f = fakeRun({ restate: ran(true), dead: "Exit code 1\nbwrap: loopback: Failed RTM_NEWADDR: No child processes" });
+  const r = await f.run([{ skill: "/p:one", args: "" }, { skill: "/p:two", args: "" }]);
+  assert.match(String(r.cause), /the shell can't run commands \(Exit code 1\nbwrap: loopback/);
+  assert.equal(r.read, false);
+  assert.equal(f.turns().length, 1, "no later skill or restate turn");
+  assert.ok(Date.now() - t0 < 15_000, "killed, not waited out");
+});
+
+test("the shell guard: a known dead shell, or the first five commands failing, ends the run; one that worked disarms it", () => {
+  const g = shellGuard();
+  assert.equal(g(false, "grep: no match"), undefined);
+  assert.match(String(g(false, "bwrap: Creating new namespace failed")), /can't run commands/);
+  const five = shellGuard();
+  for (let i = 0; i < 4; i++) assert.equal(five(false, "exit 1"), undefined);
+  assert.match(String(five(false, "exit 1")), /the first 5 shell commands all failed/);
+  const worked = shellGuard();
+  assert.equal(worked(true, "ok"), undefined);
+  for (let i = 0; i < 9; i++) assert.equal(worked(false, "bwrap: x"), undefined);
+});
+
+// The real Claude Code binary (where it is installed: the engineer image, a developer's machine) with the recipe's own settings,
+// against a stub model that asks for one Bash command: the command runs and its output comes back (2026-11-23: inside the box
+// Claude Code's sandbox failed every command with "bwrap: loopback").
+const claudeBin = (() => { try { return execFileSync("sh", ["-c", "command -v claude"], { encoding: "utf8" }).trim(); } catch { return ""; } })();
+test("a Claude Code run's shell executes a command", { skip: !claudeBin && "claude isn't installed here" }, async () => {
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      const j = JSON.parse(body || "{}");
+      const last = j.messages?.at(-1)?.content;
+      const result = Array.isArray(last) ? last.find((c: { type?: string }) => c.type === "tool_result") : undefined;
+      const block = !j.tools?.length ? { type: "text", text: "ok" }
+        : result ? { type: "text", text: `RESULT ${JSON.stringify(result.content)} error=${result.is_error === true}` }
+        : { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "echo shell-$((6*7)) > out.txt && cat out.txt", description: "probe" } };
+      const stop = block.type === "tool_use" ? "tool_use" : "end_turn";
+      const msg = { id: "msg_1", type: "message", role: "assistant", model: j.model, content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } };
+      if (!j.stream) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ...msg, content: [block], stop_reason: stop })); return; }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const ev = (type: string, d: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...d })}\n\n`);
+      ev("message_start", { message: msg });
+      ev("content_block_start", { index: 0, content_block: block.type === "text" ? { type: "text", text: "" } : { ...block, input: {} } });
+      ev("content_block_delta", { index: 0, delta: block.type === "text" ? { type: "text_delta", text: block.text } : { type: "input_json_delta", partial_json: JSON.stringify(block.input) } });
+      ev("content_block_stop", { index: 0 });
+      ev("message_delta", { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 1 } });
+      ev("message_stop", {});
+      res.end();
+    });
+  });
+  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+  const saved = { base: process.env.OPENROUTER_BASE_URL, key: process.env.OPENROUTER_API_KEY };
+  Object.assign(process.env, { OPENROUTER_BASE_URL: url, OPENROUTER_API_KEY: "test-token" });
+  try {
+    const repo = mkdtempSync(join(tmpdir(), "cr-shell-"));
+    execFileSync("git", ["init", "-q", repo]);
+    const r = await runEngine("claude-code", { prompt: "run the probe", instructions: "x", model: "m/m", effort: "low", root: repo, base: "HEAD", minutes: 2, scratch: mkdtempSync(join(tmpdir(), "cr-scratch-")) });
+    assert.equal(r.cause, undefined);
+    assert.match(r.message, /RESULT .*shell-42.* error=false/);
+  } finally {
+    for (const [k, v] of [["OPENROUTER_BASE_URL", saved.base], ["OPENROUTER_API_KEY", saved.key]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    server.close();
+  }
 });
