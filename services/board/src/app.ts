@@ -135,6 +135,8 @@ const approvalView = (approval: Approval) => {
   const { args: _args, ...a } = approval;
   return { ...a, ...(a.wait !== null ? { wait: shownWait(a.wait) } : {}) };
 };
+/** A card's states in the order a record moves through them (`used` is any end): the later snapshot of one card wins. */
+const RANK: Approval["state"][] = ["pending", "approved", "running", "used", "expired", "rejected", "stale"];
 /** A merge kind's action: the kernel's own kinds (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
  * A card of any other kind says only what the board's own view says, whatever its args hold. */
 const isMergeKind = (action: string) => action === "merge" || action.endsWith(".merge");
@@ -1138,12 +1140,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           records.allOf("recent", kinds, task),
           records.allOf("live", kinds, task),
         ]);
-        // The reads run side by side, and one card can be in two of them: the record that ended wins, so an ended card's
-        // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished.
+        // The reads run side by side, and one card can be in two of them: the later snapshot wins, so an ended card's
+        // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished, and a card approved
+        // between the two reads is never reported as still waiting on a decision. A record only moves forward through these
+        // states, so the rank orders the two snapshots without trusting either read's timing.
+        const rank = (a: Approval) => RANK.indexOf(a.state);
         const byId = new Map<string, Approval>();
         for (const a of [...recent, ...history, ...live.filter(mine)]) {
           const seen = byId.get(a.id);
-          if (!seen || (seen.live && !a.live)) byId.set(a.id, a);
+          if (!seen || rank(a) > rank(seen)) byId.set(a.id, a);
         }
         const shown = [...byId.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(mergeView) };

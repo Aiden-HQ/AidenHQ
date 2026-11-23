@@ -151,6 +151,29 @@ describe("internal listener", () => {
     }
   });
 
+  it("the later snapshot of a card wins: an approval made between the reads is not reported as pending", async () => {
+    const pending = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "pending", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
+    const approved = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "approved", live: true, wakes: true, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
+    const inner = fakeRecords([pending]);
+    // The reviewer approved it after the newest-cards read, which still returns the pending snapshot.
+    const records: typeof inner = { ...inner, allOf: async (state, kinds, task) => (state === "live" ? [approved] : inner.allOf(state, kinds, task)) };
+    const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
+    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
+    const port7 = (board.address() as AddressInfo).port;
+    try {
+      const out = await new Promise<{ approvals: { id: string; state: string; wakes: boolean }[] }>((resolve, reject) => {
+        request({ host: "127.0.0.1", port: port7, method: "GET", path: `/internal/approvals?issue=${issue.identifier}`, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve(JSON.parse(text)));
+        }).on("error", reject).end();
+      });
+      expect(out.approvals.find((a) => a.id === "k-0000000000000050")).toMatchObject({ state: "approved", wakes: true });
+    } finally {
+      board.close();
+    }
+  });
+
   it("only a merge card's view decodes `prs`: another kind's args cannot break the read", async () => {
     const records = fakeRecords([
       card({ id: "k-0000000000000040", issueId: issue.id, identifier: issue.identifier, action: "apply", tier: 1, state: "used", outcome: "applied", args: { prs: "not-an-array" } }),
