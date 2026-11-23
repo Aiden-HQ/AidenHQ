@@ -36,7 +36,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
 ## Each sweep
 
 1. **List.** `task_list` with `label: "waiting-on"`. For each open task, call `task_join` with a title like `Chasing: <person>, <thing>` and a one-line description of what you track. It returns the same part every time.
-   Before any comment this sweep, check the item's part for a chase draft already waiting on the owner; while one is pending, leave that item to a later sweep and comment on it again only after they send, edit or drop it.
+   Before any chase comment this sweep, check the item's part for a chase draft already waiting on the owner; while one is pending, draft no second chase and post no other sweep comment until they send, edit or drop it. The delivery check below still runs: a draft that delivery makes obsolete is reported, not chased.
 
 2. **Check evidence.** Read the source thread from the task's `source:` marker, and PRs, Jira or documents it references.
    - **Delivered:** `task_comment` on your part — the child `task_join` returns, the one task here you may write on — "Delivered: <evidence link> — left open for the owner to close.", and leave the parent open: a comment on the parent is refused ("isn't yours to change") and a `task_finish` with `issue` on it is refused too ("only this job's own task is finished here"). Report it as "delivered, needs owner close" in the sweep summary; count the part's `done` as delivery to the parent and the parent's `done` as the close the sweep reports. No chase draft once delivery is evidenced. Post it once: read your part's comments with `task_comments` (`limit: 100`) first and skip the comment when one already carries that exact line.
