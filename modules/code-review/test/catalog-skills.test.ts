@@ -203,6 +203,27 @@ test("a skill that didn't review the code is never a clean review", async () => 
   assert.match(String((await fakeRun({ commands: null, restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /has no skill p:one/);
 });
 
+test("a skill that reviewed only part of the code keeps its findings, and the review is incomplete, never failed", () => {
+  const finding = { severity: "important", path: "a.ts", line: 1, title: "t", why: "w", evidence: "e", fix_brief: "f" };
+  const said = (...s: { ran: boolean; partial?: boolean; why?: string }[]) => JSON.stringify({ findings: [finding], stale_guidance: [], skills: s.map((x, i) => ({ skill: `/p:${["one", "two"][i]}`, ...x })) });
+  const r = { message: "", read: true };
+  // The live case (2026-11-23): one skill, a sampled pass of its own workflow.
+  const one = skillOutcome({ ...r, message: said({ ran: true, partial: true, why: "Partial: sampled trust-boundary review only" }) }, ["/security-audit"]);
+  assert.equal(one.cause, undefined);
+  assert.equal(one.read, true);
+  assert.match(String(one.message), /"a.ts"/, "its findings are kept");
+  assert.match(String(one.incomplete), /reviewed only part of the code \(\/security-audit: Partial: sampled trust-boundary review only\)/);
+  // A partial skill and one that didn't run: both gaps named.
+  const mixed = skillOutcome({ ...r, message: said({ ran: true, partial: true, why: "a few files only" }, { ran: false, why: "it found no change" }) }, ["/p:one", "/p:two"]);
+  assert.equal(mixed.read, true);
+  assert.match(String(mixed.incomplete), /didn't review the code \(\/p:two: it found no change\).*reviewed only part of the code \(\/p:one: a few files only\)/);
+  // Whole and finished: complete. A skill that called no tool never counts as partial work, and none that reviewed is no review.
+  assert.equal(skillOutcome({ ...r, message: said({ ran: true, partial: false }) }, ["/p:one"]).incomplete, undefined);
+  assert.match(String(skillOutcome({ ...r, message: said({ ran: true, partial: true, why: "x" }) }, ["/p:one"], new Set([0])).cause), /no skill reviewed the code \(\/p:one: it called no tool/);
+  assert.match(String(skillOutcome({ ...r, message: said({ ran: false, why: "it stopped" }) }, ["/p:one"]).cause), /no skill reviewed the code/);
+  assert.match(String(skillOutcome({ ...r, message: said({ ran: true, partial: "yes" as never }) }, ["/p:one"]).cause), /didn't say/);
+});
+
 test("the restated skill list is read in order and must cover every skill", () => {
   const r = { message: "", read: true };
   assert.match(String(skillOutcome({ ...r, message: ran(true) }, ["/p:one", "/p:two"]).cause), /didn't say/);

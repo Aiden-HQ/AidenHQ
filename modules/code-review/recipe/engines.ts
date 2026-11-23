@@ -225,23 +225,28 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
 }
 
 /**
- * A finished skill run as the review takes it: the restated answer says, per skill in order, whether it reviewed the code. One
- * that didn't (it stopped, failed, asked, found nothing to review) leaves the review incomplete; none that did, or an answer that
- * doesn't say, is no review at all. A run that reviewed counts as read and says its coverage isn't tracked.
+ * A finished skill run as the review takes it: the restated answer says, per skill in order, whether it reviewed the code and
+ * whether it covered all of it. One that reviewed only part (a sampled pass, steps of its own workflow left out) keeps its findings
+ * and leaves the review incomplete; so does one that didn't review at all (it stopped, failed, asked, found nothing to review). None
+ * that reviewed anything, or an answer that doesn't say, is no review at all. A run that reviewed counts as read and says its
+ * coverage isn't tracked.
  */
 export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>()): EngineResult {
-  const said = answer(r.message)?.skills as { ran?: unknown; why?: unknown }[] | undefined;
-  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean")) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
+  const said = answer(r.message)?.skills as { ran?: unknown; partial?: unknown; why?: unknown }[] | undefined;
+  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean" || (s.partial !== undefined && typeof s.partial !== "boolean"))) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
   // A turn that called no tool read no code, whatever the restate says of it.
-  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i]!.why ?? "no reason given").slice(0, 150)}`;
-  const not = names.flatMap((_, i) => (said[i]!.ran && !idle.has(i) ? [] : [why(i)]));
+  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i]!.why || "no reason given").slice(0, 300)}`;
+  const reviewed = (i: number) => said[i]!.ran === true && !idle.has(i);
+  const not = names.flatMap((_, i) => (reviewed(i) ? [] : [why(i)]));
+  const part = names.flatMap((_, i) => (reviewed(i) && said[i]!.partial === true ? [why(i)] : []));
   if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
-  return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(not.length ? { incomplete: `a skill didn't review the code (${not.join("; ")})` } : {}) };
+  const gaps = [not.length ? `a skill didn't review the code (${not.join("; ")})` : "", part.length ? `a skill reviewed only part of the code (${part.join("; ")})` : ""].filter(Boolean);
+  return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(gaps.length ? { incomplete: gaps.join("; ") } : {}) };
 }
 
 /** Our restate step after a skill run (or Claude Code's own review): its findings in our shape and, after skills, whether each ran. */
 const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk ? `
-Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "why": ""} when it reviewed the code and finished, or "ran": false with a one-line "why" when it didn't: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed, skipped or partial status.` : ""}
+Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "partial": false, "why": ""} when it reviewed all the code it was given and finished; "ran": true, "partial": true with a one-line "why" naming what it left out when it reviewed only part (a sampled pass, or steps of its workflow not run), or reported a partial status; or "ran": false with a one-line "why" when it reviewed no code: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed or skipped status.` : ""}
 ${prompt}`;
 
 /**
