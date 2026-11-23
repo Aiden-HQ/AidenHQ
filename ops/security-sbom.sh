@@ -712,7 +712,9 @@ save_wave() { # <wave>
         export_space=1
         rm -f "$archive"
         why="skipped: the ${sz} GB image's archive outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor (admitted $(ceil_gb "$written") GB of archives, largest archive $top_gb GB)"
-        if [ "$written" -gt 0 ] && defer_to_next_wave "$idx" "$why"; then
+        # Same policy as the pre-save and in-save checks: a first shortfall with nothing of the wave written may be
+        # another writer's temporary pressure and is retried once; a second is the disk's own state.
+        if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then
           continue
         fi
         fail "image:$key" "$why"
