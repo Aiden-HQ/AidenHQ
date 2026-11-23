@@ -97,7 +97,7 @@ export type Records = {
    * [] when the kernel is unreachable or not configured (logged once until it answers again): a page never fails on it.
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
-  list(state: "owner" | "pending" | "recent" | "finished" | "approved", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean; after?: string }): Promise<Approval[]>;
+  list(state: "owner" | "pending" | "recent" | "finished" | "approved", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean; after?: string; kinds?: string[] }): Promise<Approval[]>;
   /**
    * Every live record (`approved`, and `claimed` ones an executor holds), whatever its tier: the kernel's page size is its own
    * cap, so this walks the pages (`after`) rather than treating the largest one as the whole set. A Tier 0 merge held on review
@@ -128,10 +128,10 @@ const neverConnected = (c?: Cause): boolean => !!c && (c.errors?.length ? c.erro
 
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
   let down = false;
-  const list: Records["list"] = async (state, { task, limit, tier0, strict, after } = {}) => {
+  const list: Records["list"] = async (state, { task, limit, tier0, strict, after, kinds } = {}) => {
     if (!k) return [];
     try {
-      const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}${after ? `&after=${encodeURIComponent(after)}` : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
+      const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}${kinds?.length ? `&kinds=${encodeURIComponent(kinds.join(","))}` : ""}${after ? `&after=${encodeURIComponent(after)}` : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
       const { records } = (await res.json()) as { records: KernelRecord[] };
       down = false;

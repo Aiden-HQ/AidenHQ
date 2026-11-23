@@ -1101,18 +1101,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           throw new HttpError(502, `couldn't read ${issue}: ${String(e?.message ?? e).slice(0, 200)}`);
         });
         // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
-        // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". The runs that can still
-        // become one are added whole — waiting on the reviewer or the owner, and `live()` paging every claimed record — so a
-        // merge card is never crowded out of the recent 50 by newer routine writes.
-        const [recent, pending, live] = await Promise.all([
+        // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". This task's merge cards are
+        // read by kind, past the page cap, so no number of newer writes of other kinds can hide the one the run waits on.
+        const [recent, merges] = await Promise.all([
           cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
-          cardsOf("pending", { task, strict: true }),
-          records.live(),
+          cardsOf("recent", { task, limit: 1000, tier0: true, strict: true, kinds: ["github.merge", "codehost-local.merge"] }),
         ]);
-        const mine = live
-          .filter((a) => a.issueId === task || a.identifier === task)
-          .filter((a) => /(^|\.)merge$/.test(a.action));
-        const shown = [...new Map([...recent, ...pending, ...mine].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        const shown = [...new Map([...recent, ...merges].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(approvalView) };
       },
     },

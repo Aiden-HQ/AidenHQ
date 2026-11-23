@@ -9,11 +9,12 @@ export const card = (o: Partial<Approval> & { id: string }): Approval => ({
 
 export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval[]; settings: { task: string; changes: unknown[]; credential?: unknown }[] } {
   const settings: { task: string; changes: unknown[]; credential?: unknown }[] = [];
-  const list: Records["list"] = async (state, { task, limit = 100, tier0 } = {}) =>
+  const list: Records["list"] = async (state, { task, limit = 100, tier0, kinds } = {}) =>
     cards
       .filter((a) => (!task || a.issueId === task || a.identifier === task) && (state === "owner" ? a.state === "pending" && a.tier === 2 : state === "pending" ? a.state === "pending" : state === "finished" ? a.outcome : state === "approved" ? a.state === "approved" || a.state === "running" : true))
       // As the kernel's reads: `tier0` adds the Tier 0 rows, and leaving it off drops them.
       .filter((a) => tier0 || a.tier !== 0)
+      .filter((a) => !kinds?.length || kinds.some((k) => a.action === k.replace(/^github\./, "") || a.action === k))
       .slice(0, limit);
   // The paged live read (records.ts `live`): every approved or running card, whatever its tier, in one page here.
   const live: Records["live"] = async () => cards.filter((a) => a.state === "approved" || a.state === "running");
