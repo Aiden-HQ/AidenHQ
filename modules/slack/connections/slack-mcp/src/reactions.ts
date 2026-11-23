@@ -428,8 +428,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     }
     return { ok: true, messages, nextCursor: null };
   }
-  // The cap. An identity continuation starts over and could never get past this same cap, so once the limit was reached
-  // the honest answer is that the set is unknown, with what was read so far.
+  // The cap. When the caller's limit was reached, what was verified is real: hand it back with a continuation, which
+  // resumes past this page (a Slack cursor still advances), rather than discarding it for an error a retry would repeat.
+  if (full && cursor) return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, from: cursor }) };
   if (full) return { ok: false, detail: `the reaction feed ran past the scan's ${maxPages}-page limit before the set ended` };
   if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
   // A Slack cursor still advances: hand it back inside a continuation that carries what was returned, so a capped walk
@@ -628,8 +629,11 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   }
   const admission = o.served ? await o.served(readOnly, name).catch(() => ({ served: false, confirmed: false })) : { served: true, confirmed: true };
   if (!admission.served) {
-    // Signed out, the proxy lists nothing: that is a sign-in to fix, not a tool that isn't served.
-    if (o.authState() !== "ok") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
+    // Signed out (no token, or one Slack refused), the proxy lists nothing: that is a sign-in to fix, not a tool that
+    // isn't served. An `unknown` state is not that: it means the state couldn't be read right now, so it falls through
+    // to the retryable admission error rather than telling the owner to reconnect over a transient problem.
+    const state = o.authState();
+    if (state === "missing" || state === "expired" || state === "none") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
     // A probe that couldn't answer says nothing about the tool: that is a retry, not a policy refusal.
     if (!admission.confirmed) {
       o.log?.({ tool: name }, "couldn't confirm tool admission");
