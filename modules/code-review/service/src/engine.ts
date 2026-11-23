@@ -31,7 +31,7 @@ import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, openOnly, REPO_DE
 import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
 import { detect, toolSpec, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
-import { SETUP_PATH } from "./adapters.ts";
+import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
@@ -428,8 +428,9 @@ export function createEngine(d: EngineDeps) {
    * the next head, so a deploy or a settings change never re-reviews every open PR). */
   const reviewers = (repo: string, n: number, head: string) => {
     const seen = new Set<string>();
-    return all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' ORDER BY created DESC", repo, n, head)
-      .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); });
+    // A recheck-only run stands for a combo only where no review of the head has its key: it never shadows the review the head waits on.
+    const runs = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' ORDER BY recheck_only, created DESC", repo, n, head);
+    return runs.filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); }).sort((a, b) => b.created - a.created);
   };
 
   /** What the verdict waits on at a head: the mandatory reviewers that reviewed it (reviewers()). On a repo with no mandatory on_push
@@ -466,23 +467,23 @@ export function createEngine(d: EngineDeps) {
   };
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
-  /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
-   * shrink before a gating finding is left out; one that can't fit even bare stays open (never marked fixed unseen). */
+  /** What a run rechecks (spec.previous, shared over PREVIOUS_FIELDS spec fields of 16 KB): every gating finding with its evidence,
+   * every answered one, every other open one. Texts shrink before a finding is left out; one that can't fit even bare stays open
+   * (never marked fixed unseen). */
   function recheckList(repo: string, n: number) {
     // Findings closed by a reply (fixed, disputed, by design, won't fix): rechecked only for a fix or reason that is unsafe.
-    const claimed = all<{ id: string; path: string; line: number; title: string; claim: string }>("SELECT id, MIN(path) path, MIN(line) line, MIN(title) title, MAX(claim) claim FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND outcome NOT IN ('open_at_merge', 'open_at_close') GROUP BY id ORDER BY MAX(rowid) DESC LIMIT 30", repo, n)
+    const claimed = all<{ id: string; path: string; line: number; title: string; claim: string }>("SELECT id, MIN(path) path, MIN(line) line, MIN(title) title, MAX(claim) claim FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND outcome NOT IN ('open_at_merge', 'open_at_close') GROUP BY id ORDER BY MAX(rowid) DESC", repo, n)
       .map((f) => ({ id: f.id, severity: "important", path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), claim: f.claim.slice(0, 300) }));
     const open = stillOpen(repo, n);
     // An open finding carrying an agent's `fixed` claim goes first: it is what the next review is to settle, and what is cut stays open.
     const byClaim = (a: Open, b: Open) => b.pending - a.pending;
-    const gating = open.filter((f) => f.gating).sort(byClaim), other = open.filter((f) => !f.gating).sort(byClaim).slice(0, 50);
-    const size = (v: unknown) => JSON.stringify({ findings: v }).length;
+    const gating = open.filter((f) => f.gating).sort(byClaim), other = open.filter((f) => !f.gating).sort(byClaim);
+    const size = (v: unknown) => JSON.stringify(v).length;
     const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
       ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
-    let out: ReturnType<typeof entry>[] = [];
-    for (const text of [400, 150, 0]) if (size((out = gating.map((f) => entry(f, text)))) <= 15_000) break;
-    while (out.length && size(out) > 15_000) out.pop();
-    for (const f of [...claimed, ...other.map((f) => entry(f, 0))]) { if (size([...out, f]) > 15_000) break; out.push(f as never); }
+    let out: object[] = [];
+    for (const text of [400, 150, 0]) if (size((out = [...gating.map((f) => entry(f, text)), ...claimed, ...other.map((f) => entry(f, 0))])) <= PREVIOUS_BUDGET) break;
+    while (out.length && size(out) > PREVIOUS_BUDGET) out.pop();
     return out;
   }
   const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });

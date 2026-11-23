@@ -48,7 +48,7 @@ import type { Combo, EngineResult } from "./engines.ts";
 type Git = (args: string[]) => string;
 /** The review job's spec ($AIDENHQ_SPEC): the PR and the heads to review; combo and previous are JSON text. */
 export interface Spec {
-  repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string;
+  repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string; previous_2?: string; previous_3?: string; previous_4?: string; previous_5?: string; previous_6?: string;
   /** The pull request's title and description (its author's words, data): behaviour it states as intended is not a finding. */
   intent?: string;
   /** `tree`: the whole tree at the head against the empty tree; `pr` (default): the change. */
@@ -303,7 +303,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // The PR's title and body (spec.intent) too: steering text there is the same attempt.
   const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer) || (!tree && atReviewer(String(spec.intent ?? "").split("\n").map((l) => `+${l}`).join("\n")));
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
-  const previous = tree ? [] : (() => { try { const p = JSON.parse(spec.previous ?? "{}").findings; return Array.isArray(p) ? p : []; } catch { return []; } })()
+  const previous = tree ? [] : (() => { try { return ([spec.previous, spec.previous_2, spec.previous_3, spec.previous_4, spec.previous_5, spec.previous_6]).flatMap((t) => { const p = JSON.parse(t ?? "{}").findings; return Array.isArray(p) ? p : []; }); } catch { return []; } })()
     .filter((f) => f && /^[0-9a-f]{16}$/.test(f.id) && typeof f.path === "string")
     .map((f) => ({ id: f.id as string, severity: (SEVERITIES.includes(f.severity) ? f.severity : "pre_existing") as Severity, path: f.path as string, line: Number(f.line) || 1, title: cap(f.title, 120), why: cap(f.why, 1000), evidence: cap(f.evidence, 1000), gating: f.gating === true, claim: typeof f.claim === "string" && f.claim ? cap(f.claim, 300) : undefined }));
   const reported = new Map(previous.map((f) => [f.id, f]));
