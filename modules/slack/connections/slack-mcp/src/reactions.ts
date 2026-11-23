@@ -350,16 +350,22 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       }
       return value && typeof value === "object" && !Array.isArray(value) ? { kind: "message", message: value as Record<string, any> } : { kind: "pass" };
     };
+    // The body's last non-whitespace byte, tracked from each chunk alone so a large pass-through body isn't recopied.
+    let tail: number | undefined;
     const onData = (chunk: Buffer) => {
       chunks.push(chunk);
       size += chunk.length;
       // Too large: hand it to the proxy, which refuses it on its own limit.
       if (size > limit) return settle({ kind: "pass" });
+      for (let i = chunk.length - 1; i >= 0; i--) {
+        const b = chunk[i]!;
+        if (b !== 0x20 && b !== 0x0a && b !== 0x0d && b !== 0x09) {
+          tail = b;
+          break;
+        }
+      }
       // A whole JSON value ends at a `}` (an object) or `]` (a batch array), trailing whitespace aside.
-      const body = Buffer.concat(chunks);
-      let end = body.length - 1;
-      while (end >= 0 && (body[end] === 0x20 || body[end] === 0x0a || body[end] === 0x0d || body[end] === 0x09)) end--;
-      if (end < 0 || (body[end] !== 0x7d && body[end] !== 0x5d)) return;
+      if (tail !== 0x7d && tail !== 0x5d) return;
       const out = parse();
       if (out) settle(out);
     };
@@ -481,6 +487,11 @@ async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "
   if (!scopes) return reactionError("scopes_unknown", "The reaction set is unknown: the sign-in's granted scopes couldn't be read (Reconnect on the board).", { filter: plan.filter });
   if (plan.publicOnly && !scopes.has(SEARCH_SCOPE.public)) {
     return reactionError("scope", "The reaction set is unknown: the sign-in has no search:read.public scope, so public search isn't granted (Reconnect on the board and allow it).", { filter: plan.filter });
+  }
+  // The all-channels tool shows only the kinds the sign-in granted a search scope for, so with none of them granted
+  // every match would be dropped: that is a missing permission, not a completed search with no matches.
+  if (!plan.publicOnly && !Object.values(SEARCH_SCOPE).some((s) => scopes.has(s))) {
+    return reactionError("scope", "The reaction set is unknown: the sign-in has no search scope for any conversation kind (public, private, im, mpim), so the all-channels search isn't granted (Reconnect on the board and allow one).", { filter: plan.filter });
   }
   const scan = await scanMyReactions({ ...plan, scopes }, { authorization, userId }, { fetchImpl: o.fetchImpl, sleep: o.sleep, maxPages: o.maxPages, deadlineMs: o.deadlineMs });
   if (!scan.ok) {
