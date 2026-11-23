@@ -28,9 +28,11 @@
 //   still incomplete). Recheck goes to codex.
 // skill:<option id>: an installed upstream skill or plugin (the engineer image's /opt/review, pinned) run by its own harness
 //   (claude-code or codex, the catalog's `run.harness`) over the change or, in tree mode, the whole tree (the empty tree as base):
-//   the skill's own slash command with the range as its argument, then, in the same session, our "restate the findings as JSON"
-//   step. Same sandbox and token rules as the harness's own engine; only that skill (never the repo's) is loaded. It reads the tree
-//   its own way, so which files it read isn't tracked (said as a note, never partial coverage).
+//   each skill's own slash command with the arguments its pinned file takes, then, in the same session, our "restate the findings
+//   as JSON" step, which also says whether each skill reviewed the code (one that didn't is never a clean review). It runs in a
+//   throwaway checkout of the head (snapshot) as its cwd, the one place it may write: skills find the repo, its git history and
+//   their report folders from their cwd. Same sandbox and token rules as the harness's own engine; only that skill (never the
+//   repo's) is loaded. It reads the tree its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -39,7 +41,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deepsec } from "./deepsec.ts";
 import { run, stopped } from "./proc.ts";
-import { clean, downgrade } from "./brief.ts";
+import { answer, clean, downgrade } from "./brief.ts";
 import type { Severity } from "./brief.ts";
 import { place } from "./scope.ts";
 
@@ -59,8 +61,8 @@ const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 /** One review run's engine, model and effort (JSON from the spec, with the repo's ignore globs and max_nits). */
 export interface Combo {
   engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean;
-  /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skill` (see resolveSkill). */
-  harness?: string; skill?: string;
+  /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skills` (see resolveSkills). */
+  harness?: string; skills?: SkillRef[]; tools?: string[];
 }
 export interface EngineInput {
   prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string;
@@ -76,8 +78,8 @@ export interface EngineInput {
   left?: string[];
   /** `tree`: the whole tree at the head (base is the empty tree); else the change. */
   target?: "tree" | "pr";
-  /** Skill engines: the harness, the skill (resolveSkill) and where the image keeps skills (default /opt/review). */
-  harness?: string; skill?: string; skillsRoot?: string;
+  /** Skill engines: the harness, the skills (resolveSkills) and where the image keeps skills (default /opt/review). */
+  harness?: string; skills?: SkillRef[]; tools?: string[]; skillsRoot?: string;
   /** deepsec: its spend cap, and the files of a pending setup (JSON: path to text) to scan with instead of setting up. */
   budget_usd?: number; setupFiles?: Record<string, string>;
 }
@@ -119,7 +121,8 @@ export const callOf = (tool: string, a: Record<string, unknown> | undefined): Ca
 export function comboProblem(c: Combo | null | undefined) {
   if (!c || typeof c !== "object") return "a combo is an object";
   const skill = typeof c.engine === "string" && c.engine.startsWith("skill:");
-  if (skill && (!HARNESSES.includes(c.harness as string) || typeof c.skill !== "string" || !c.skill)) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skill`;
+  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x?.skill !== "string" || typeof x.args !== "string" || (x.also !== undefined && !Array.isArray(x.also)) || (x.uncommitted !== undefined && typeof x.uncommitted !== "boolean")))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
+  if (c.tools !== undefined && (!Array.isArray(c.tools) || c.tools.some((t) => !["Skill", "Workflow"].includes(t)))) return "tools are Skill and/or Workflow";
   const e = skill ? ENGINES[c.harness!] : ENGINES[c.engine];
   if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}, skill:<option>`;
   if (typeof c.model !== "string" || !MODEL.test(c.model)) return "model is an OpenRouter model id (e.g. ~deepseek/deepseek-flash-latest)";
@@ -150,33 +153,53 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
   throw new Error(`no engine ${engine}`);
 }
 
-/** An installed skill: how its harness invokes it, the skill folders to load and the plugin folders to enable. */
-export interface Skill { invocation: string; skillDirs: string[]; pluginDirs: string[] }
+/** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
+/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). `uncommitted`: it finds the change as the checkout's uncommitted changes (`git status`, `git diff`), so for its turn the checkout's HEAD and index are the base, its files still the head's. */
+export interface SkillRef { skill: string; args: string; also?: string[]; uncommitted?: boolean }
+/** `cwd`: the run's throwaway checkout of `head` (skillEngine), where it runs. `idle`: the turns (by index) that called no tool. */
+export interface Skill { invocations: string[]; uncommitted: boolean[]; skillDirs: string[]; pluginDirs: string[]; cwd?: string; head?: string; idle?: Set<number> }
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
 const SKILLS_ROOT = "/opt/review";
 
-/**
- * The catalog's `run.skill` as an installed skill. `/<plugin>:<command>` is a Claude Code plugin (plugins/<plugin>); `/<name>` a
- * skill of that name under skills/ (or, when none is installed, the harness's own command, e.g. `/code-review`); and
- * `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>` (`$<name>` in codex).
- * Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
- */
-export function resolveSkill(skill: string, harness: string, root = SKILLS_ROOT): Skill {
+/** One catalog skill spec read: `<owner>/<repo>:<name>` (that repo's skill), `/<plugin>:<command>` (a Claude Code plugin's) or `/<name>`. Throws on any other form. */
+export function parseSkill(skill: string) {
   const repo = /^([\w.-]+)\/([\w.-]+):([\w.-]+)$/.exec(skill);
   const cmd = /^\/([\w.-]+)(?::([\w.-]+))?$/.exec(skill);
   if (!repo && !cmd) throw new Error(`skill "${skill}" is /<name>, /<plugin>:<command> or <owner>/<repo>:<name>`);
+  return repo ? { owner: repo[1]!, repo: repo[2]!, name: repo[3]!, plugin: undefined } : { owner: undefined, repo: undefined, plugin: cmd![2] ? cmd![1]! : undefined, name: cmd![2] ?? cmd![1]! };
+}
+
+/**
+ * The catalog's `run.skills` as installed skills, run in order in one session. `/<plugin>:<command>` is a Claude Code plugin
+ * (plugins/<plugin>); `/<name>` a skill of that name under skills/ (or, when none is installed, the harness's own command, e.g.
+ * `/code-review`); and `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>`
+ * (`$<name>` in codex). Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
+ */
+export function resolveSkills(skills: SkillRef[], harness: string, at: { base: string; root: string }, root = SKILLS_ROOT): Skill {
+  const all: Skill = { invocations: [], uncommitted: [], skillDirs: [], pluginDirs: [] };
   const sigil = harness === "codex" ? "$" : "/";
-  if (cmd?.[2]) {
-    const dir = join(root, "plugins", cmd[1]!);
-    if (harness !== "claude-code" || !existsSync(dir)) throw new Error(`plugin ${cmd[1]} isn't installed for ${harness}`);
-    return { invocation: skill, skillDirs: [], pluginDirs: [dir] };
+  // One spec installed: its invocation (a plugin's is its own spec) and the folders it needs.
+  const install = (skill: string) => {
+    const p = parseSkill(skill);
+    if (p.plugin) {
+      const dir = join(root, "plugins", p.plugin);
+      if (harness !== "claude-code" || !existsSync(dir)) throw new Error(`plugin ${p.plugin} isn't installed for ${harness}`);
+      if (!all.pluginDirs.includes(dir)) all.pluginDirs.push(dir);
+      return skill;
+    }
+    const from = p.owner ? join(root, "skills", `${p.owner}__${p.repo}`) : join(root, "skills");
+    let found: string[] = [];
+    try { found = readdirSync(from, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === p.name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(from, dirname(f))); } catch {}
+    if (!found.length && p.owner) throw new Error(`skill ${p.name} isn't installed from ${p.owner}/${p.repo}`);
+    for (const d of found.slice(0, 1)) if (!all.skillDirs.includes(d)) all.skillDirs.push(d);
+    return `${sigil}${p.name}`;
+  };
+  for (const { skill, args, also = [], uncommitted } of skills) {
+    all.invocations.push(`${install(skill)} ${args.replaceAll("{base}", at.base).replaceAll("{root}", at.root)}`.trim());
+    all.uncommitted.push(uncommitted === true);
+    for (const a of also) install(a);
   }
-  const name = (repo ? repo[3] : cmd![1])!;
-  const base = repo ? join(root, "skills", `${repo[1]}__${repo[2]}`) : join(root, "skills");
-  let found: string[] = [];
-  try { found = readdirSync(base, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(base, dirname(f))); } catch {}
-  if (!found.length && repo) throw new Error(`skill ${name} isn't installed from ${repo[1]}/${repo[2]}`);
-  return { invocation: `${sigil}${name}`, skillDirs: found.slice(0, 1), pluginDirs: [] };
+  return all;
 }
 
 /** The skill's folders linked into the harness's user skills folder (a fresh one per run: nothing else is loaded). */
@@ -187,11 +210,44 @@ function linkSkills(sk: Skill | undefined, dir: string) {
 }
 
 async function skillEngine(i: EngineInput): Promise<EngineResult> {
-  const sk = resolveSkill(String(i.skill), String(i.harness), i.skillsRoot);
   if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
+  const cwd = join(mkdtempSync(join(i.scratch, "skill-")), "repo"), head = gitSafe(i.root, ["rev-parse", "--verify", `${i.head ?? "HEAD"}^{commit}`]).trim();
+  snapshot(i.root, head, cwd);
+  const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd }, i.skillsRoot), cwd, head, idle: new Set<number>() };
   const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
-  // It ran its own way: a finished run counts as read, and says its coverage isn't tracked.
-  return r.cause ? r : { ...r, read: true, untracked: `${sk.invocation} reads the code its own way, so which files it read isn't tracked` };
+  return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!), sk.idle);
+}
+
+/**
+ * A finished skill run as the review takes it: the restated answer says, per skill in order, whether it reviewed the code. One
+ * that didn't (it stopped, failed, asked, found nothing to review) leaves the review incomplete; none that did, or an answer that
+ * doesn't say, is no review at all. A run that reviewed counts as read and says its coverage isn't tracked.
+ */
+export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>()): EngineResult {
+  const said = answer(r.message)?.skills as { ran?: unknown; why?: unknown }[] | undefined;
+  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean")) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
+  // A turn that called no tool read no code, whatever the restate says of it.
+  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i]!.why ?? "no reason given").slice(0, 150)}`;
+  const not = names.flatMap((_, i) => (said[i]!.ran && !idle.has(i) ? [] : [why(i)]));
+  if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
+  return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(not.length ? { incomplete: `a skill didn't review the code (${not.join("; ")})` } : {}) };
+}
+
+/** Our restate step after a skill run (or Claude Code's own review): its findings in our shape and, after skills, whether each ran. */
+const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk ? `
+Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "why": ""} when it reviewed the code and finished, or "ran": false with a one-line "why" when it didn't: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed, skipped or partial status.` : ""}
+${prompt}`;
+
+/**
+ * Before a skill's turn: the checkout's HEAD and index at the base for a skill that reads uncommitted changes (the files the change
+ * adds marked intent-to-add, so `git diff` lists them too), else at the head.
+ */
+function stage(sk: Skill, n: number, base: string) {
+  if (!sk.cwd || !sk.head) return;
+  gitSafe(sk.cwd, ["reset", "--quiet", "--mixed", sk.uncommitted[n] ? base : sk.head]);
+  if (!sk.uncommitted[n]) return;
+  const added = gitSafe(sk.cwd, ["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", base, sk.head]);
+  if (added) execFileSync("git", ["--literal-pathspecs", "add", "--force", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"], { cwd: sk.cwd, input: added, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "ignore", "ignore"] });
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
@@ -208,9 +264,10 @@ const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$
 
 async function codex({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "codex-"));
-  const home = join(tmp, "home"), cwd = join(tmp, "cwd"); // cwd: empty, not a repository, so codex loads nothing of the repo
+  // cwd: empty, not a repository, so codex loads nothing of the repo; a skill's is its checkout (codex reads no project doc)
+  const home = join(tmp, "home"), cwd = sk?.cwd ?? join(tmp, "cwd");
   mkdirSync(home);
-  mkdirSync(cwd);
+  mkdirSync(cwd, { recursive: true });
   linkSkills(sk, join(home, "skills"));
   writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions, repo: { root, base } }));
   const out = join(tmp, "answer.txt");
@@ -222,15 +279,22 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
       .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []));
     const done = r.code === 0 && events.some((e) => e?.type === "turn.completed");
     const said = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
-    return { r, done, said, thread: events.find((e) => e?.type === "thread.started")?.thread_id };
+    const acted = events.some((e) => e?.type === "item.completed" && !["agent_message", "reasoning"].includes(String(e.item?.type)));
+    return { r, done, said, acted, thread: events.find((e) => e?.type === "thread.started")?.thread_id };
   };
   let session: string | undefined;
   if (sk && own) {
     // The skill's own run over the range, its findings then restated as our JSON in the same thread.
-    const first = await turn(`${sk.invocation} ${base}..HEAD`);
-    if (!first.done || !first.thread) return { message: "", read: false, calls, cause: first.done ? "codex gave no thread to continue" : stopped(first.r, first.said) };
-    session = first.thread;
-    prompt = `Now restate every finding of that run in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+    for (const [n, inv] of sk.invocations.entries()) {
+      stage(sk, n, base);
+      const t = await turn(inv, session);
+      if (!t.done || !(t.thread ?? session)) return { message: "", read: false, calls, cause: t.done ? "codex gave no thread to continue" : stopped(t.r, t.said) };
+      // A skill that ran no command or tool read no code: it counts as not run (skillOutcome).
+      if (!t.acted) sk.idle?.add(n);
+      session ??= t.thread;
+    }
+    stage(sk, -1, base);
+    prompt = restate(prompt, sk);
   }
   const last = await turn(prompt, session);
   let message = "";
@@ -248,14 +312,15 @@ export const cutShort = (content: unknown) =>
 // Claude Code's repo tools are ours (the same read-only MCP server codex gets), named mcp__repo__<tool>.
 const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "search", "definition", "references", "diagnostics"];
 type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string; command?: string } };
-type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
+type ClaudeEvent = { type?: string; subtype?: string; slash_commands?: string[]; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
 
-async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
+async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own, tools }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "claude-"));
-  const home = join(tmp, "home"), cwd = join(tmp, "cwd");
+  // cwd: empty, or a skill's checkout (only user settings load: nothing of the repo's .claude, .mcp.json or CLAUDE.md)
+  const home = join(tmp, "home"), cwd = sk?.cwd ?? join(tmp, "cwd");
   mkdirSync(home);
-  mkdirSync(cwd);
-  // Claude Code's sandbox for its Bash (the access policy above): read-only everywhere but its empty cwd, no network restriction
+  mkdirSync(cwd, { recursive: true });
+  // Claude Code's sandbox for its Bash (the access policy above): read-only everywhere but its cwd, no network restriction
   // (none set, so no network namespace), never run outside it.
   mkdirSync(join(home, ".claude"));
   linkSkills(sk, join(home, ".claude", "skills"));
@@ -272,9 +337,10 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: "1", CLAUDE_CODE_EFFORT_LEVEL: effort,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", // its Bash never sees the token
+    ...gitEnv(), // its Bash's git reads no attributes or config of the branch's (the same diff as ours)
   };
-  const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", "Agent,Bash",
-    ...(sk?.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]), "--allowedTools", ["Agent", "Bash", ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
+  const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", ["Agent", "Bash", ...(tools ?? [])].join(","),
+    ...(sk?.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]), "--allowedTools", ["Agent", "Bash", ...(tools ?? []), ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
   const calls: Call[] = [];
   const turn = async (task: string, resume?: string) => {
     const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes });
@@ -293,17 +359,27 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
       if (reads && !c.is_error && !cutShort(c.content)) calls.push(...reads);
     }
     const end = events.findLast((e) => e.type === "result");
-    return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error };
+    const acted = events.some((e) => e.type === "assistant" && (e.message?.content ?? []).some((c) => c.type === "tool_use"));
+    return { r, end, acted, ok: r.code === 0 && end?.subtype === "success" && !end.is_error, commands: events.find((e) => e.type === "system" && e.subtype === "init")?.slash_commands };
   };
   let session: string | undefined;
   if (own) {
     // Claude Code's own review of the change (base..HEAD in the box's history), or the skill's command over that range, its
     // findings then restated as our JSON.
-    const first = await turn(sk ? `${sk.invocation} ${base}..HEAD` : `/code-review ${effort} ${base}..HEAD --max-findings all`);
-    if (!first.ok) return { message: "", read: false, calls, cause: stopped(first.r, first.end?.result ?? "") };
-    if (!first.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
-    session = first.end.session_id;
-    prompt = `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+    for (const [n, task] of (sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]).entries()) {
+      if (sk) stage(sk, n, base);
+      const t = await turn(task, session);
+      if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
+      // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. One that called no
+      // tool read nothing: it counts as not run (skillOutcome), and the next skill still runs.
+      const name = sk ? task.slice(1).split(" ")[0]! : "";
+      if (name && !t.commands?.includes(name)) return { message: "", read: false, calls, cause: `Claude Code has no skill ${name} (it lists ${t.commands?.length ?? 0} commands)` };
+      if (sk && !t.acted) sk.idle?.add(n);
+      if (!t.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
+      session = t.end.session_id;
+    }
+    if (sk) stage(sk, -1, base);
+    prompt = restate(prompt, sk);
   }
   const last = await turn(prompt, session);
   if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: stopped(last.r, last.end?.result ?? "") };

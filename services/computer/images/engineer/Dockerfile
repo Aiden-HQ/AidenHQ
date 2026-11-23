@@ -141,7 +141,7 @@ RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force && deeps
 RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
     pin() { d=$1; repo=$2; sha=$3; git init -q "$d" && git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$sha" && git -C "$d" checkout -q FETCH_HEAD && rm -rf "$d/.git"; }; \
     skills() { pin "/opt/review/skills/$(echo "$1" | sed 's#/#__#')" "$1" "$2"; }; \
-    # Skill repos (names pass through to run.skill as <owner>/<repo>:<skill>).
+    # Skill repos (each passes through to run.skills as <owner>/<repo>:<skill>).
     skills cloudflare/security-audit-skill c1c8a8c1471069fb0e188eeaff69b8e8db6564a8; \
     skills trailofbits/skills 149d7b21f4067765b82e67029730b42d228ef4b4; \
     skills mattpocock/skills 5863806dd4e15c63174bee4e7515a4256792ecfa; \
@@ -154,10 +154,14 @@ RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
     # Claude Code plugins: anthropics/claude-plugins-official's three, and EveryInc's (the repo root is the plugin).
     pin /tmp/cpo anthropics/claude-plugins-official b5b01ac4f889fec0c4c6bb89f27ca7c8574473f6; \
     for p in pr-review-toolkit code-modernization security-guidance; do cp -r "/tmp/cpo/plugins/$p" "/opt/review/plugins/$p"; done; rm -rf /tmp/cpo; \
+    # Trail of Bits plugins (their commands, agents and skills as a plugin), from the pinned skills checkout above.
+    for p in audit-context-building insecure-defaults sharp-edges fp-check differential-review variant-analysis; do cp -r "/opt/review/skills/trailofbits__skills/plugins/$p" "/opt/review/plugins/$p"; done; \
     pin /opt/review/plugins/compound-engineering EveryInc/compound-engineering-plugin ee46dde75a40e297bd8eac4055a410a771d3ac1d; \
     # Left out: gemini-cli-extensions/code-review (no gemini CLI in the image) and openai/codex-plugin-cc (inactive since 2026-07,
     # and it calls a local codex outside our gateway).
     chmod -R a+rX /opt/review; \
     test -f /opt/review/skills/cloudflare__security-audit-skill/skills/security-audit/SKILL.md; \
     test -f /opt/review/plugins/pr-review-toolkit/.claude-plugin/plugin.json; \
-    test -f /opt/review/plugins/compound-engineering/.claude-plugin/plugin.json
+    test -f /opt/review/plugins/compound-engineering/.claude-plugin/plugin.json; \
+    test -f /opt/review/plugins/insecure-defaults/commands/audit.md; \
+    test -f /opt/review/skills/mattpocock__skills/skills/engineering/codebase-design/SKILL.md

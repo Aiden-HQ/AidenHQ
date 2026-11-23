@@ -34,7 +34,7 @@ import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, r
 import { dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 import { atReviewer } from "./code-review.ts";
-import { brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
+import { answer, brief, cap, clean, downgrade, fence, SCENARIO, SEVERITIES, scenarioOf, scrub } from "./brief.ts";
 import type { Cleaned, Excluded, Placed, Severity } from "./brief.ts";
 import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { changed, guidePaths, place, scope } from "./scope.ts";
@@ -236,10 +236,6 @@ ${fence(JSON.stringify(previous, null, 1), marker)}
 When you are done, your final message is only this JSON: {"fixed": ["<id>", ...], "still": ["<id>", ...], "unsafe": [{"id": "...", "why": "...", "line": 12}]}`;
 }
 
-/** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
-export function answer(message: unknown) {
-  try { const j = JSON.parse(String(message ?? "").trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); return j && typeof j === "object" && !Array.isArray(j) ? j : undefined; } catch { return undefined; }
-}
 
 
 const words = (t: string) => new Set(t.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
@@ -411,7 +407,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
 
   // What a skill or deepsec engine needs besides the brief: its harness and skill, the target, the spend cap, a pending setup.
   const engineSpec = {
-    target: spec.target ?? "pr", harness: combo.harness, skill: combo.skill,
+    target: spec.target ?? "pr", harness: combo.harness, skills: combo.skills, tools: combo.tools,
     ...(Number(spec.budget_usd) > 0 ? { budget_usd: Number(spec.budget_usd) } : {}),
     ...(spec.setup_files ? { setupFiles: setupFilesOf(spec.setup_files) } : {}),
   };
