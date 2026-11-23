@@ -1,6 +1,6 @@
 // The model picker's list rules (src/model-catalog.ts): older versions collapse, engines filter, search finds the old one.
 import { describe, expect, it } from "vitest";
-import { family, listing, type CatalogModel } from "../src/model-catalog.js";
+import { costText, family, listing, optionCost, type CatalogModel } from "../src/model-catalog.js";
 
 const m = (id: string, created: number, o: Partial<CatalogModel> = {}): CatalogModel => ({ id, name: id, provider: id.replace(/^~/, "").split("/")[0]!, created, context: 200000, in: 1, out: 2, tools: true, reasoning: false, ...o });
 const catalog = [
@@ -40,5 +40,14 @@ describe("model picker list", () => {
 
   it("a saved id the catalog doesn't offer stays first", () => {
     expect(ids(listing({ ...base, current: "gone/old" }))[0]).toBe("Not offered: gone/old");
+  });
+
+  it("a rough cost per option: free is nothing, a model's tiers follow its prices", () => {
+    const cheap = m("x/m", 1, { in: 0.1, out: 0.4 });
+    expect(optionCost("free", cheap)).toBe(0);
+    expect(optionCost("high", undefined)).toBe(0);
+    expect(optionCost("high", cheap)).toBeCloseTo(0.31, 2);
+    expect(costText(0.004)).toBe("<$0.01");
+    expect(costText(42.4)).toBe("$42");
   });
 });

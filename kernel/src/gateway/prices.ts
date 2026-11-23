@@ -94,7 +94,7 @@ export function createPrices({ url, now = Date.now, retryMs = [1000, 3000], log 
     },
     /** The text models of the same list (the board's model picker); a cold start reads it first (at most once a minute), [] when it can't be read. */
     async catalog(): Promise<CatalogModel[]> {
-      if (!catalog.length && now() - tried >= MISS_MS) await refresh();
+      if (!catalog.length && (pending || now() - tried >= MISS_MS)) await refresh(); // a read already under way is waited for
       return catalog;
     },
     close: () => clearInterval(timer),

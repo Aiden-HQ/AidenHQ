@@ -302,3 +302,4 @@ a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 .ui-mp-older:focus-visible { outline: none; box-shadow: var(--ring); }
 @media (max-width: 560px) { .ui-mp-name { display: none; } .ui-mp-opt { padding-block: 9px; } }
 @media (prefers-reduced-motion: reduce) { .ui-mp-panel { animation: none; } }
+.ui-mp-opt[aria-disabled="true"] { opacity: 0.5; cursor: default; }

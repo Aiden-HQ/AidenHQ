@@ -257,20 +257,45 @@ const flows = () => ({
 const REVIEW_COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
 const reviewRuns = () => [{ id: "cr-000000000001", repo: "acme/payments", number: 42, head: "a".repeat(40), engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", status: "done", why: null, cost_usd: 0.4, tokens_in: 12000, tokens_out: 3000, duration_ms: 90000, important: 1, nit: 2, pre_existing: 0, started: ago(30), ended: ago(28), full: false, incremental_from: null, posted: true, title: "Retry failed charges" }];
 const reviewBatches = () => [
-  { id: "b-000000000001", repo: "acme/payments", sha: "4e1a9c2".padEnd(40, "0"), sha7: "4e1a9c2", verdict: "concerns", cost_usd: 6.8, status: "done", started: ago(300), ended: ago(260) },
-  { id: "b-000000000002", repo: "acme/web", sha: "9b0c7de".padEnd(40, "0"), sha7: "9b0c7de", verdict: null, cost_usd: 1.2, status: "running", started: ago(4), ended: null },
+  { id: "b-000000000001", repo: "acme/payments", sha: "4e1a9c2".padEnd(40, "0"), sha7: "4e1a9c2", verdict: "concerns", cost_usd: 6.8, status: "done", started: ago(300), ended: ago(260), option_names: ["Lint (Oxlint)", "Secret scan (Gitleaks)", "Dependency vulnerabilities (OSV)", "GitHub Actions security (zizmor)", "Trail of Bits security audit", "React performance (Vercel)"] },
+  { id: "b-000000000002", repo: "acme/web", sha: "9b0c7de".padEnd(40, "0"), sha7: "9b0c7de", verdict: null, cost_usd: 1.2, status: "running", started: ago(4), ended: null, option_names: ["Secret scan (Gitleaks)", "Copy-paste detection (jscpd)"] },
 ];
-const O = (id: string, lens: string, kind: string, recommended: boolean, runs_code: boolean, cost: string, repo: string, version: string, licence: string) => ({ id, lens, kind, recommended, runs_code, cost, source: { repo, version, licence } });
-const catalog = () => ({ sha: "4e1a9c2f0b7d".padEnd(40, "0"), options: [
-  O("correctness.model-review", "correctness", "engine", true, false, "medium", "aidenhq/code-review", "1.0.0", "MIT"),
-  O("correctness.tsc", "correctness", "tool", true, true, "low", "microsoft/typescript", "5.6.3", "Apache-2.0"),
-  O("sec.quick-scan", "security", "skill", true, false, "medium", "aidenhq/code-review", "1.0.0", "MIT"),
-  O("sec.semgrep", "security", "tool", true, false, "low", "semgrep/semgrep", "1.95.0", "LGPL-2.1"),
-  O("sec.deepsec", "security", "engine", false, true, "high", "vercel-labs/deepsec", "0.4.0", "Apache-2.0"),
-  O("maint.knip", "maintainability", "tool", true, false, "low", "webpro-nl/knip", "5.38.0", "ISC"),
-  O("maint.jscpd", "maintainability", "tool", false, false, "low", "kucherenko/jscpd", "4.0.5", "MIT"),
-  O("perf.linters", "performance", "tool", true, false, "low", "aidenhq/code-review", "1.0.0", "MIT"),
-] });
+const CATALOG_ROWS: [string, string, string, string, string, boolean, boolean, string, string, string | null][] = [
+  ["cor.oxlint", "Lint (Oxlint)", "Fast linter for JavaScript and TypeScript: bugs, unused code and suspicious patterns.", "correctness", "tool", true, false, "free", "oxc-project/oxc", null],
+  ["cor.codex-native", "Codex code review", "OpenAI's Codex reads the whole repo and reports logic errors and broken edge cases.", "correctness", "engine", false, false, "high", "openai/codex", null],
+  ["cor.claude-review", "Claude Code review", "Anthropic's built-in code review: bugs, regressions and risky changes.", "correctness", "engine", false, false, "high", "anthropics/claude-code", null],
+  ["cor.codegenie", "Codegenie review", "Codegenie's reviewer for logic errors and missed cases.", "correctness", "engine", false, false, "high", "0xPolygon/codegenie", "Runs on pull requests only"],
+  ["cor.ce-code-review", "Compound Engineering review", "A multi-angle review that checks correctness, tests and design together.", "correctness", "skill", false, false, "high", "EveryInc/compound-engineering-plugin", null],
+  ["cor.pr-review-toolkit", "Silent failures and test gaps", "Finds swallowed errors and code paths no test covers.", "correctness", "skill", false, false, "low", "anthropics/claude-plugins-official", "Runs on pull requests only"],
+  ["cor.variant-analysis", "Variant analysis (Trail of Bits)", "Takes known bug patterns and hunts for the same flaw elsewhere in the code.", "correctness", "skill", false, false, "high", "trailofbits/skills", null],
+  ["sec.gitleaks", "Secret scan (Gitleaks)", "Finds API keys, tokens and passwords committed to the repo.", "security", "tool", true, false, "free", "gitleaks/gitleaks", null],
+  ["sec.osv-scanner", "Dependency vulnerabilities (OSV)", "Matches your lockfiles against known vulnerabilities in open-source packages.", "security", "tool", true, false, "free", "google/osv-scanner", null],
+  ["sec.govulncheck", "Go vulnerabilities (govulncheck)", "Reports known vulnerabilities in Go dependencies that your code actually calls.", "security", "tool", true, false, "free", "golang/vuln", "Needs Go (go.mod)"],
+  ["sec.zizmor", "GitHub Actions security (zizmor)", "Finds injection and permission problems in GitHub Actions workflows.", "security", "tool", true, false, "free", "zizmorcore/zizmor", null],
+  ["sec.deepsec", "Deep security scan (deepsec)", "Vercel's scanner sets itself up on the repo, then traces risky flows and revalidates each finding.", "security", "engine", false, false, "high", "vercel-labs/deepsec", null],
+  ["sec.cloudflare-audit", "Cloudflare security audit", "Cloudflare's security audit skill: auth, input handling and platform misconfigurations.", "security", "skill", true, false, "high", "cloudflare/security-audit-skill", null],
+  ["sec.codex-security", "Codex Security", "OpenAI's security reviewer for vulnerabilities in application code.", "security", "engine", false, false, "high", "openai/codex-security", "No Codex Security engine is built into the review box yet"],
+  ["sec.claude-security-review", "Claude security review", "Anthropic's security review of a change: injection, auth and data exposure.", "security", "engine", false, false, "high", "anthropics/claude-code", "Runs on pull requests only"],
+  ["sec.tob-audit", "Trail of Bits security audit", "A security audit that follows how data and trust cross the code.", "security", "skill", false, false, "high", "trailofbits/skills", null],
+  ["sec.solidity-auditor", "Solidity audit", "Reviews smart contracts for reentrancy, access control and arithmetic flaws.", "security", "skill", true, false, "high", "pashov/skills", "Needs Solidity contracts (.sol)"],
+  ["maint.knip", "Unused code and dependencies (Knip)", "Finds unused files, exports and packages in JavaScript and TypeScript projects.", "maintainability", "tool", true, true, "free", "webpro-nl/knip", null],
+  ["maint.vulture", "Dead Python code (Vulture)", "Finds unused functions, classes and variables in Python.", "maintainability", "tool", true, false, "free", "jendrikseipp/vulture", "Needs Python files"],
+  ["maint.ruff-unused", "Unused Python imports and variables (Ruff)", "Flags imports and variables nothing uses.", "maintainability", "tool", true, false, "free", "astral-sh/ruff", "Needs Python files"],
+  ["maint.jscpd", "Copy-paste detection (jscpd)", "Finds duplicated blocks of code across the repo.", "maintainability", "tool", true, false, "free", "kucherenko/jscpd", null],
+  ["maint.improve-architecture", "Architecture improvements", "Suggests refactors that deepen modules and untangle structure.", "maintainability", "skill", true, false, "high", "mattpocock/skills", null],
+  ["maint.fallow", "Codebase health (Fallow)", "Reports dead code, duplication and complexity in JavaScript projects.", "maintainability", "tool", false, false, "free", "fallow-rs/fallow", null],
+  ["maint.code-modernization", "Code modernization", "Finds outdated patterns and APIs and suggests current ones.", "maintainability", "skill", false, false, "high", "anthropics/claude-plugins-official", null],
+  ["maint.scc", "Code size and complexity (scc)", "Counts lines and complexity per language: a quick picture of the codebase.", "maintainability", "tool", false, false, "free", "boyter/scc", null],
+  ["maint.comment-analyzer", "Comment accuracy", "Checks that comments still match the code they describe.", "maintainability", "skill", false, false, "low", "anthropics/claude-plugins-official", "Runs on pull requests only"],
+  ["perf.ruff-perf", "Python performance lint (Ruff)", "Flags Python patterns that are slower than they need to be.", "performance", "tool", true, false, "free", "astral-sh/ruff", "Needs Python files"],
+  ["perf.squawk", "Risky SQL migrations (Squawk)", "Finds migrations that lock tables or break running queries.", "performance", "tool", true, false, "free", "sbdchd/squawk", "Needs SQL migrations"],
+  ["perf.supabase-postgres", "Postgres performance (Supabase)", "Reviews queries, indexes and schema for Postgres performance.", "performance", "skill", true, false, "high", "supabase/agent-skills", "Needs SQL or Supabase files"],
+  ["perf.react-best-practices", "React performance (Vercel)", "Finds slow renders, waterfalls and oversized bundles in React code.", "performance", "skill", true, false, "high", "vercel-labs/agent-skills", null],
+  ["perf.django", "Django performance (Sentry)", "Finds N+1 queries and slow ORM use in Django projects.", "performance", "skill", false, false, "high", "getsentry/skills", "Needs a Django project (manage.py)"],
+  ["perf.react-native", "React Native performance", "Finds slow lists, re-renders and bridge overhead in React Native apps.", "performance", "skill", false, false, "high", "callstackincubator/agent-skills", "Needs a React Native project"],
+  ["perf.dotnet", ".NET performance", "Finds allocation and async problems in .NET code.", "performance", "skill", false, false, "high", "dotnet/skills", "Needs .NET projects (.csproj)"],
+];
+const catalog = () => ({ sha: "6018f7c2f0b7d".padEnd(40, "0"), options: CATALOG_ROWS.map(([id, name, description, lens, kind, recommended, runs_code, cost, repo, unavailable]) => ({ id, name, description, lens, kind, recommended: recommended && !unavailable, runs_code, cost, source: { repo, version: "1.0.0", licence: "MIT" }, ...(unavailable ? { unavailable } : {}) })) });
 const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9c2`\n\n## Security\n\n- **Important** `src/billing/charge.ts:88`: a retried charge can post twice.\n  - Evidence: the idempotency key is written after the provider call.\n  - Found by: sec.quick-scan\n\n## Coverage\n\n| Option | Result |\n| --- | --- |\n| sec.quick-scan | done |\n| maint.knip | done |\n\nCost $6.80.";
 
 function route(method: string, url: URL): [number, unknown] {

@@ -74,3 +74,10 @@ export const priceText = (m: CatalogModel) => {
 };
 /** "400k", "1M". */
 export const contextText = (n: number) => (n >= 1e6 ? `${Number((n / 1e6).toFixed(1))}M` : `${Math.round(n / 1e3)}k`);
+
+/** What a model-backed option tends to use per review, by its cost tier: [input, output] tokens. A guess to tune from the ledger. */
+const TIER_TOKENS = { low: [0.4e6, 0.04e6], high: [2.5e6, 0.15e6] } as const;
+/** A rough USD guess for one option on a model (a free option, and a model the list doesn't price, count 0). */
+export const optionCost = (tier: "free" | "low" | "high", m: CatalogModel | undefined) => (tier === "free" || !m ? 0 : (TIER_TOKENS[tier][0] * m.in + TIER_TOKENS[tier][1] * m.out) / 1e6);
+/** A guess in dollars: "$0.40", "<$0.01", "$12". */
+export const costText = (usd: number) => (usd < 0.005 ? "<$0.01" : usd < 10 ? `$${usd.toFixed(2)}` : `$${Math.round(usd)}`);

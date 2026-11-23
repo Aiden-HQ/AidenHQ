@@ -121,6 +121,11 @@ export type Lens = (typeof LENSES)[number];
 /** GET /catalog?repo=&commit=: what a repo review can run at that commit; `recommended` options come pre-ticked. */
 export interface CatalogOption {
   id: string;
+  /** The words the form shows: a proper name, and what it finds. */
+  name: string;
+  description: string;
+  /** Why it can't run on this repo (listed last, greyed); absent: it can. */
+  unavailable?: string;
   lens: Lens;
   kind: "tool" | "skill" | "engine";
   recommended: boolean;
@@ -150,8 +155,10 @@ export interface TreeBatch {
   primer_url?: string;
   /** The report's Primer outcome is in (a link or a refusal). */
   published?: boolean;
+  /** The options it ran with, by name. */
+  option_names?: string[];
   /** Each option's run, whose page lists its findings (the report may leave some out to fit Primer). */
-  runs?: { id: string; option: string; status: RunStatus; important: number; nit: number; pre_existing: number }[];
+  runs?: { id: string; option: string; names?: string[]; status: RunStatus; important: number; nit: number; pre_existing: number }[];
 }
 export const TreeRequestSchema = z
   .object({

@@ -9,6 +9,7 @@ export { Checks, Field, FieldRow, Input, Select, Switch } from "./Field";
 export { hueClass } from "./hue";
 export { ListRow, ListRows } from "./ListRow";
 export { ModelPicker } from "./ModelPicker";
+export { SearchPicker, type PickSection } from "./SearchPicker";
 export { Menu, type MenuItem } from "./Menu";
 export { Page } from "./Page";
 export { PageHeader } from "./PageHeader";
