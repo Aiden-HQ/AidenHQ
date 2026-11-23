@@ -135,6 +135,10 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   assert.deepEqual(asked, [], "refused before the board is asked");
   const own = parse(await pub.call("task_approvals", {})).out;
   assert.deepEqual(asked, ["cur"], "no issue: the run's own task");
+  // Naming the run's own task is still fine: only another task is refused.
+  asked.length = 0;
+  parse(await pub.call("task_approvals", { issue: "cur" }));
+  assert.deepEqual(asked, ["cur"], "the run's own task, named explicitly");
   // Whether a card wakes the task, and the whole `merged-prs` line the rule's evidence is.
   const byId = (id: string) => own.approvals.find((a: { id: string }) => a.id === id);
   assert.deepEqual(own.approvals.map((a: { id: string; wakes: boolean }) => [a.id, a.wakes]), [["k-1", true], ["k-3", true], ["k-2", false]]);

@@ -20,7 +20,7 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
   const live: Records["live"] = async () => cards.filter((a) => a.state === "approved" || a.state === "running");
   const allOf: Records["allOf"] = async (state, kinds) =>
     cards
-      .filter((a) => (state === "approved" ? a.state === "approved" || a.state === "running" : a.state === "pending"))
+      .filter((a) => (state === "pending" ? a.state === "pending" : state === "approved" ? a.state === "approved" || a.state === "running" : a.state === "pending" || a.state === "approved" || a.state === "running"))
       .filter((a) => !kinds?.length || kinds.some((k) => a.action === k.replace(/^github\./, "") || a.action === k));
   return { cards, settings, list, live, allOf, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };
 }

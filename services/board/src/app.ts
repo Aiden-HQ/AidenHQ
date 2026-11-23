@@ -1113,16 +1113,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // approved or claimed run), so neither newer writes nor a full page of ended merges can hide the card that matters.
         const kinds = ["github.merge", "codehost-local.merge"];
         const mine = (a: Approval) => a.issueId === task || a.identifier === task;
-        const [recent, history, running, waiting] = await Promise.all([
+        const [recent, history, live] = await Promise.all([
           cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
           cardsOf("recent", { task, limit: 1000, tier0: true, strict: true, kinds }),
-          records.allOf("approved", kinds),
-          records.allOf("pending", kinds),
+          records.allOf("live", kinds),
         ]);
         // The reads run side by side, and one card can be in two of them: the record that ended wins, so an ended card's
         // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished.
         const byId = new Map<string, Approval>();
-        for (const a of [...recent, ...history, ...running.filter(mine), ...waiting.filter(mine)]) {
+        for (const a of [...recent, ...history, ...live.filter(mine)]) {
           const seen = byId.get(a.id);
           if (!seen || (seen.live && !a.live)) byId.set(a.id, a);
         }

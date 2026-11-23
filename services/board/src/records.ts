@@ -104,7 +104,7 @@ export type Records = {
    * [] when the kernel is unreachable or not configured (logged once until it answers again): a page never fails on it.
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
-  list(state: "owner" | "pending" | "recent" | "finished" | "approved", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean; after?: string; kinds?: string[] }): Promise<Approval[]>;
+  list(state: "owner" | "pending" | "recent" | "finished" | "approved" | "live", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean; after?: string; kinds?: string[] }): Promise<Approval[]>;
   /**
    * Every live record (`approved`, and `claimed` ones an executor holds), whatever its tier: the kernel's page size is its own
    * cap, so this walks the pages (`after`) rather than treating the largest one as the whole set. A Tier 0 merge held on review
@@ -112,9 +112,9 @@ export type Records = {
    * read so far: a caller must not mistake a timeout for "no more live records".
    */
   live(): Promise<Approval[]>;
-  /** Every page of one state it can still become (`approved`, `pending`), optionally one kind: a live merge card is never
-   * behind the page cap, however many records follow it. */
-  allOf(state: "approved" | "pending", kinds?: string[]): Promise<Approval[]>;
+  /** Every page of every live state (`pending`, `approved`), optionally one kind, in one order: a card moving between them
+   * mid-read is never missed, and a live card is never behind the page cap, however many records follow it. */
+  allOf(state: "pending" | "approved" | "live", kinds?: string[]): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -157,12 +157,16 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
   const PAGE = 1000;
   /** Hard bound on pages walked in one read: 1,000 pages is a million live records, past any real queue. */
   const PAGES_MAX = 1000;
-  /** Every page of one state, walked with `after`: a bounded read that must not lose a record behind the page cap. */
-  const allOf = async (state: "approved" | "pending", kinds?: string[]): Promise<Approval[]> => {
+  /**
+   * Every page of a state, walked with `after`: a bounded read that must not lose a record behind the page cap. `live` is the
+   * kernel's own read of every approved and claimed record, one query, so a card moving between the states mid-read is not missed.
+   */
+  const allOf = async (state: "pending" | "approved" | "live", kinds?: string[]): Promise<Approval[]> => {
     const out: Approval[] = [];
     const seen = new Set<string>();
     let after = "";
     for (let i = 0; i < PAGES_MAX; i++) {
+      // The kernel's live list is one read of both states; the page params still apply (its default page is 100).
       const page = await list(state, { limit: PAGE, tier0: true, strict: true, ...(kinds?.length ? { kinds } : {}), ...(after ? { after } : {}) });
       const fresh = page.filter((a) => !seen.has(a.id));
       for (const a of fresh) seen.add(a.id);

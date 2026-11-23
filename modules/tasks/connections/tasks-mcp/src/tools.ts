@@ -1297,11 +1297,17 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ issue }: Args) => {
       const target = issue ?? CURRENT();
       if (!target) throw new Error("no current task");
-      // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task.
-      // A caller the directory doesn't hold has no entry to establish its scope, so a named task is refused, never read.
+      // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task. A
+      // caller the directory doesn't hold has no entry to establish its scope, so a named task is refused, never read. Naming
+      // the run's own task (by id or identifier) is fine: only another task is refused.
       const me = dirAgents()[cx().caller.agent];
-      if (issue && me == null) throw new Error("Refused: the agent directory has no entry for this caller, so only the task this run is working on is readable: leave out `issue`.");
-      if (issue && me.profile === "engineer" && me.private_reads !== true) throw new Error("Refused: without private reads you read only the task this run is working on: leave out `issue`.");
+      const asked = String(issue ?? "").trim();
+      if (asked && me == null) throw new Error("Refused: the agent directory has no entry for this caller, so only the task this run is working on is readable: leave out `issue`.");
+      if (asked && me.profile === "engineer" && me.private_reads !== true) {
+        const mine = CURRENT();
+        const same = mine && (asked === mine || (await api("GET", `/api/issues/${issueRef(asked)}`).then((i: Json) => i.id === mine, () => false)));
+        if (!same) throw new Error("Refused: without private reads you read only the task this run is working on: leave out `issue`.");
+      }
       const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(target)}`);
       return {
         // `wakes`: whether the outcome is posted to the task (a decided record, or one a module filed for its agent). A merge's
