@@ -137,7 +137,8 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    line on the task and finish. An issue closed any other way (another PR, a commit, someone's close) keeps its state and
    reason: record that line on the task and finish, never closing it again, once its state shows that close as above. Only
    an issue still open after its PR merged means the PR lacked the `Fixes` line: close it `completed` with a `note`
-   carrying that line. When the write is refused and the issue's state does **not** show the resolution, block on the
+   carrying that line. A closed issue without that evidence takes the same comment first, so the close carries its
+   citation. When the write is refused and the issue's state does **not** show the resolution, block on the
    upstream task that fixes the trust gate (the product bug filed for it), never on a manual relabel by the owner: a
    relabel by an agent records the owner as vouching for an issue he never saw.
 7. `not-real` closes `not_planned` with a `note` carrying `Not fixing: <the log line or path that disproves it>`. `already-fixed` closes
