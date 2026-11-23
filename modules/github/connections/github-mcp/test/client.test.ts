@@ -587,8 +587,9 @@ it("reports the org on a successful owner call that names one, and only then", a
   await access.rest("GET", "/search/issues?q=org%3AAcme%20is%3Aissue");
   await access.rest("GET", "/search/issues?q=user%3Aacme%20is%3Aissue");
   await access.rest("GET", "/search/issues?q=org%3Aacme%20org%3Aother%20is%3Aissue");
+  await access.rest("GET", "/search/issues?q=is%3Aissue%20-org%3Aexcluded");
   await access.rest("GET", "/user");
-  expect(seen).toEqual(["Acme", "acme", "Acme", "acme", "acme", "other"]);
+  expect(seen, "a negated -org: names an org excluded, not reached").toEqual(["Acme", "acme", "Acme", "acme", "acme", "other"]);
   seen.length = 0;
 
   // A search whose answer the org's SSO filtered (partial-results) is not proof the org answers: nothing is reported.

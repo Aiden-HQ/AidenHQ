@@ -222,18 +222,43 @@ describe("a successful owner call to an org", () => {
       seen.push({ url: String(input), authorization: (init?.headers as Record<string, string> | undefined)?.authorization, body: JSON.parse(String(init?.body ?? "{}")) });
       return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
     }) as unknown as typeof fetch;
-    reportOrgOk("http://kernel", "the-key", "github", "Acme", log, fetcher);
+    reportOrgOk("http://kernel", "the-key", "github", "Acme", log, fetcher, 5_000, 1);
     await new Promise((r) => setTimeout(r, 20));
     expect(seen).toEqual([{ url: "http://kernel/v1/connections/ok", authorization: "Bearer the-key", body: { connection: "github", org: "Acme" } }]);
-    // A refused or failed report is logged, never thrown.
+    // A refused report (a 4xx) is the request's fault: logged once, never retried.
     const said: string[] = [];
     const warns = { warn: (_o: object, m: string) => void said.push(m) };
-    reportOrgOk("http://kernel", "k", "github", "acme", warns, (async () => new Response("no", { status: 400 })) as unknown as typeof fetch);
-    reportOrgOk("http://kernel", "k", "github", "acme", warns, (async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(said).toEqual(["the kernel refused a connection success report", "a connection success report failed"]);
+    reportOrgOk("http://kernel", "k", "github", "acme", warns, (async () => new Response("no", { status: 400 })) as unknown as typeof fetch, 5_000, 1);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(said).toEqual(["the kernel refused a connection success report"]);
   });
-});
+
+  // A kernel restart or a timeout must not leave the row until the org's next call: the report is retried in the background.
+  it("a transient failure is retried until the kernel takes it", async () => {
+    let n = 0;
+    const seen: string[] = [];
+    const fetcher = (async () => {
+      seen.push(`attempt ${++n}`);
+      if (n === 1) throw new Error("ECONNREFUSED");
+      if (n === 2) return new Response("busy", { status: 503 });
+      return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const said: string[] = [];
+    reportOrgOk("http://kernel", "k", "github", "acme", { warn: (_o: object, m: string) => void said.push(m) }, fetcher, 5_000, 1);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(seen, "three tries: the network error and the 5xx were not a final answer").toHaveLength(3);
+    expect(said.at(-1)).toBe("the kernel could not take a connection success report; it is retried");
+  });
+
+  it("gives up after its attempts, logged, without throwing", async () => {
+    let n = 0;
+    const fetcher = (async () => { n++; return new Response("busy", { status: 503 }); }) as unknown as typeof fetch;
+    const said: string[] = [];
+    reportOrgOk("http://kernel", "k", "github", "acme", { warn: (_o: object, m: string) => void said.push(m) }, fetcher, 5_000, 1);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(n).toBe(4);
+    expect(said.at(-1)).toBe("a connection success report was given up; the org's next successful call reports it again");
+  });
 
   it("a kept sso/restricted report for an org the call just reached is dropped, not replayed", async () => {
     const dir = mkdtempSync(join(tmpdir(), "needs-"));
@@ -281,3 +306,4 @@ describe("a successful owner call to an org", () => {
     expect(seen.map((b) => b.need.org)).toEqual(["other"]);
     expect(q.pending()).toBe(0);
   });
+});

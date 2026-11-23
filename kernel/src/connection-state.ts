@@ -12,7 +12,7 @@
 // account's rows and waits clear, so a healthy account's call never wakes work that failed on another one.
 // Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them,
 // except that a success naming an org (`ok(connection, { org })`) clears that org's sso and restricted rows: GitHub logins are
-// case-insensitive, so the key matches with COLLATE NOCASE.
+// case-insensitive, so the org part of the key is lowercased (the connection's name is matched exactly).
 import type { DatabaseSync } from "node:sqlite";
 import type { Cause, Need } from "../sdk/src/vendor/needs.ts";
 import { ownerWroteAt } from "./escalate.ts";

@@ -217,7 +217,8 @@ export function createAccess(o: {
     if (one) return [one];
     if (/^\/search\/issues(?:[?#]|$)/.test(path)) {
       const q = new URL(path, API).searchParams.get("q") ?? "";
-      return [...q.matchAll(/\b(?:org|user):([A-Za-z0-9-]+)/gi)].map((m) => m[1]!);
+      // `-org:acme` excludes the org; it says nothing about reaching it.
+      return [...q.matchAll(/(^|\s)(?:org|user):([A-Za-z0-9-]+)/gi)].map((m) => m[2]!);
     }
     return [];
   };
