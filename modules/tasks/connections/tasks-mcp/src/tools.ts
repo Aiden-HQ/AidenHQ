@@ -1305,11 +1305,11 @@ const TOOLS: Record<string, Tool> = {
       const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(target)}`);
       return {
         // `wakes`: whether the outcome is posted to the task (a decided record, or one a module filed for its agent). A merge's
-        // evidence is its `merged-prs` line, so the first line is never cut; the rest of a long outcome is.
+        // evidence is its `merged-prs` line, so that line is never cut; every other outcome keeps the summary's own cap.
         approvals: approvals.map((a: Json) => {
           const text = a.outcomeText ? String(a.outcomeText) : "";
           const [first, ...rest] = text.split("\n");
-          const outcomeText = rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : text;
+          const outcomeText = first.startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
           return { id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), createdAt: a.createdAt };
         }),
       };
