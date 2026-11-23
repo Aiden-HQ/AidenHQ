@@ -17,6 +17,7 @@ services:
       data: ["whisper:/data/whisper"]
       env:
         HOME: /data/whisper # the model download (huggingface xet) and matplotlib caches need a writable home, and only the data dir is
+        USER: whisper # torch's cache dir calls getpass.getuser() at import, which reads the passwd file when USER is unset, and the instance owner's uid has no entry in the image
         ASR_ENGINE: faster_whisper
         ASR_MODEL: small
         ASR_MODEL_PATH: /data/whisper
