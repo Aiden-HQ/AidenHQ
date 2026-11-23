@@ -43,6 +43,14 @@ test("the alert rule names the owner-only decisions", () => {
   );
 });
 
+test("the exception survives a fix task", () => {
+  assert.match(
+    handbook(),
+    /A fix task does not cancel the exception/,
+    "the exception survives a fix task: a blocked credential or accept-exposure call is still the owner's alert",
+  );
+});
+
 test("the tools bullet scopes notify alerts to an owner-only decision", () => {
   const text = handbook();
   const bullet = text.split("\n").find((line) => line.includes("**`notify`:**"));
