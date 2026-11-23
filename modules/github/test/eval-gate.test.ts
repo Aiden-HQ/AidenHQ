@@ -10,8 +10,8 @@ const sh = (cwd, ...args) => execFileSync("git", args, { cwd, env, stdio: "pipe"
 
 // Only the reviewer's own code runs the eval.
 it("the reviewer's own code is reviewer code; the gates around it are not", () => {
-  assert.deepEqual(["modules/ai-reviewer/policy.md", "kernel/sdk/src/reviewer.ts", "kernel/src/review-loop.ts", "kernel/src/reviews.ts"].filter((p) => !touchesReviewer([p])), []);
-  assert.deepEqual(["kernel/src/tier.ts", "kernel/src/writes.ts", "modules/github/service/src/plan.ts", "scripts/modules.ts"].filter((p) => touchesReviewer([p])), []);
+  assert.deepEqual(["modules/ai-reviewer/policy.md", "kernel/sdk/src/reviewer.ts", "kernel/sdk/src/instance-details.ts", "kernel/src/review-loop.ts", "kernel/src/reviews.ts"].filter((p) => !touchesReviewer([p])), []);
+  assert.deepEqual(["kernel/src/tier.ts", "kernel/src/writes.ts", "modules/github/service/src/plan.ts", "scripts/modules.ts", "modules/code-review/service/src/aidenhq-sdk/instance-details.ts"].filter((p) => touchesReviewer([p])), []);
 });
 
 // A stale pattern (a .mjs that became .ts) would take the renamed file out of the eval and out of its reuse key.
