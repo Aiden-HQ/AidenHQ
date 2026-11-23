@@ -164,13 +164,14 @@ function buildServer(caller?: Caller): McpServer {
     async (a: A) => {
       try {
         // A write's GitHub objects go to the kernel with its outcome (structuredContent._aidenhq.objects), not to the agent.
-        // One invocation, one write budget: every write the tool makes shares the deadline its first write fixes.
-        const out = (await withWriteBudget(() => Promise.resolve(fn(a)))) as { objects?: unknown } | undefined;
+        // One invocation, one write budget: every write the tool makes shares the deadline its first write fixes. The orgs its
+        // working requests reached (client.ts provedOrgs) are read inside the invocation, whose async context ends with it.
+        const { out, proved } = await withWriteBudget(async () => ({ out: (await fn(a)) as { objects?: unknown } | undefined, proved: provedOrgs() }));
         const objects = out && typeof out === "object" && Array.isArray(out.objects) ? (out.objects as string[]) : undefined;
         const shown = objects ? Object.fromEntries(Object.entries(out!).filter(([k]) => k !== "objects")) : out;
         const result = { content: [{ type: "text" as const, text: JSON.stringify(shown, null, 2) }], ...(objects ? { structuredContent: { _aidenhq: { objects } } } : {}) };
-        // The orgs this call's working requests reached (client.ts provedOrgs): the kernel clears their sso/restricted rows.
-        return usesSignIn ? signedIn(result, { orgs: provedOrgs() }) : result;
+        // The orgs the kernel clears an sso/restricted row for, and only those.
+        return usesSignIn ? signedIn(result, { orgs: proved }) : result;
       } catch (err) {
         // A typed need names the cause and the fix; an owner-fixable one is needs_owner, which the kernel routes (client.ts).
         if (err instanceof GitHubNeed) {

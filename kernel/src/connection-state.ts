@@ -10,7 +10,8 @@
 //   row, so a restart's blip clears itself and never reaches the owner.
 // The agent always gets the kernel's fixed words, never the module's text. ok() clears a connection (a successful call with no account; the board's Connect clears every connection of its module, okModule) and wakes every task waiting on it; a multi-account need names its account, and only that
 // account's rows and waits clear, so a healthy account's call never wakes work that failed on another one.
-// Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them.
+// Partial causes (scope, sso, restricted) mean the connection works and downFor() omits them: a success never clears them as a
+// whole, only per proved org (okOrg, needs.ts PROVED_ORGS), and a partial `scope` row is left to the board's Connect.
 import type { DatabaseSync } from "node:sqlite";
 import type { Cause, Need } from "../sdk/src/vendor/needs.ts";
 import { ownerWroteAt } from "./escalate.ts";
@@ -227,7 +228,19 @@ export function createConnectionState(o: {
      * digest line; another org's rows and the connection's `scope` row stay. Returns how many rows it cleared.
      */
     okOrg(connection: string, org: string): number {
-      return inTx(db, "connection_ok_org", () => (["sso", "restricted"] as const).reduce((n, cause) => n + Number(q("DELETE FROM connection_state WHERE key = ?").run(stateKey(connection, { cause, org })).changes), 0));
+      // GitHub logins are case-insensitive, and a row keeps the spelling the refusal gave: match the key without case.
+      const keys = (["sso", "restricted"] as const).map((cause) => stateKey(connection, { cause, org }));
+      return inTx(db, "connection_ok_org", () => {
+        const cleared = keys.reduce((n, key) => n + Number(q("DELETE FROM connection_state WHERE key = ? COLLATE NOCASE").run(key).changes), 0);
+        if (!cleared) return 0;
+        // A task parked on this org's need resumes, as ok() wakes one on a full need: the connection is fixed for it too.
+        const t = now();
+        const waiters = q(`SELECT task, agent FROM connection_waits WHERE need = ? COLLATE NOCASE OR need = ? COLLATE NOCASE`).all(...keys) as { task: string; agent: string }[];
+        q(`DELETE FROM connection_waits WHERE need = ? COLLATE NOCASE OR need = ? COLLATE NOCASE`).run(...keys);
+        for (const w of waiters) o.wakes.open({ key: `connect:${connection}:${w.task}:${t}`, task: w.task, agent: w.agent, cause: CONNECTED_CAUSE, replaces: `wait:${w.task}:`, author: "kernel" });
+        if (waiters.length) log("connection ok", { connection, org, woken: waiters.length });
+        return cleared;
+      });
     },
 
     /** The board's Connect names a module: every connection of it connected. */

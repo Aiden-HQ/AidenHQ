@@ -357,6 +357,21 @@ test("okOrg clears one org's restricted and sso rows only: another org's rows an
   assert.equal(w.s.okOrg("github", "nobody"), 0, "an org with no row clears nothing");
 });
 
+test("okOrg matches a row's org spelling without case and wakes the task waiting on that org's need", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
+  // The refusal names the org as GitHub returned it; the row keeps that spelling.
+  await w.s.hit(w.who("w3"), "github", { cause: "restricted", org: "Acme", url: "https://github.com/settings/connections/applications/x", detail: "" });
+  assert.deepEqual((w.db.prepare("SELECT key FROM connection_state").all() as { key: string }[]).map((r) => r.key), ["github:restricted:Acme"]);
+  assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits WHERE need = 'github:restricted:Acme'").get() as { n: number }).n, 1);
+  // GitHub logins are case-insensitive: the success that proved `acme` clears the row, wakes the task and drops its wait.
+  assert.equal(w.s.okOrg("github", "acme"), 1);
+  assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get() as { n: number }).n, 0);
+  assert.deepEqual(w.opened.map((o) => [o.task, o.cause, o.replaces]), [["w3", "connected", "wait:w3:"]]);
+  assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits").get() as { n: number }).n, 0);
+  assert.equal(w.s.okOrg("github", "acme"), 0, "a second success has nothing left to clear or wake");
+  assert.equal(w.opened.length, 1);
+});
+
 // A codehost op's need (kernel/src/codehost.ts recordNeed) arrives as a module, not a run: no task chain, so it is background
 // and reaches the owner's digest, and its row is the same one the board and a later success read.
 test("a module's hit is background: no queue, the row keyed by scope, no agent wait; the digest pulls it", async () => {

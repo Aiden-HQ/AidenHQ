@@ -452,14 +452,16 @@ export function createAccess(o: {
       const org = typeof variables.org === "string" ? variables.org : "";
       // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content (an
       // issue of another org) is recorded but leaves the rest of the board readable. The warning stays while refusals keep coming.
-      let refused = false;
-      for (const { need, fatal } of graphqlNeeds(body?.errors, org, o.clientId)) {
+      const refusals = graphqlNeeds(body?.errors, org, o.clientId);
+      for (const { need, fatal } of refusals) {
         if (fatal) fail(need, now());
-        refused = true;
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
       }
-      // An answer that named an org and carried no refusal for it proves this sign-in reaches it.
-      if (org && !refused) proveOrg(org);
+      // An answer that named an org proves this sign-in reaches it unless it carried a refusal for that org (a refusal for a
+      // linked item of another org leaves this one readable). An error that isn't one of these refusals proves nothing.
+      const unread = body?.errors ? (Array.isArray(body.errors) ? body.errors.length : Infinity) - refusals.length : 0;
+      const refused = refusals.some((r) => r.need.org.toLowerCase() === org.toLowerCase());
+      if (org && !refused && unread === 0) proveOrg(org);
       return body;
     },
     async identity() {
