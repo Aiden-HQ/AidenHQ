@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { BUNDLE } from "./bundle.ts";
 import { ensureIdentityKeys } from "../identity.ts";
+import { productsOf } from "../modules.ts";
 import { checkEntries, checkJobs, codeReviewGated, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -479,4 +480,9 @@ test("check job limits: a recipe may run 180 minutes; a recipe's own model cap i
   assert.equal(real["code-review"].model, true);
   assert.equal(real["code-review-tools"].model, undefined);
   assert.equal(real["code-review-tools"].result, true);
+});
+
+test("product names that differ only in case are refused", () => {
+  assert.throws(() => productsOf({ Billing: ["acme/a"], billing: ["acme/b"] }), /differ only in case/);
+  assert.deepEqual(productsOf({ Billing: ["acme/a"], Hiring: ["acme/b"] }), { Billing: ["acme/a"], Hiring: ["acme/b"] });
 });

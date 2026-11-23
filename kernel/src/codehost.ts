@@ -403,6 +403,13 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
  * `module:codehost-local` with the module in the version as POST /v1/facts stamps it (generations.ts trusts only code hosts' pr.merged),
  * the same pr.* and code.* facts codehost-github emits there. A fact never fails the write it describes.
  */
-export const localFacts = (facts: Facts) => (f: { type: string; subject: string; version: string; at: string; task?: string | null; data?: Record<string, unknown> }) => {
-  try { facts.record({ ...f, version: `codehost-local/${f.version}`, task: f.task ?? undefined, actor: "module:codehost-local" }); } catch { /* a fact write never blocks the action */ }
+export const localFacts = (facts: Facts, projects?: { queue(task: string, repo: string): void; touch(task: string, repo: string): Promise<void> }) => (f: { type: string; subject: string; version: string; at: string; task?: string | null; data?: Record<string, unknown> }) => {
+  try {
+    // A new PR on a task: the task joins the repo's project, as for codehost-github's (backplane.ts /v1/facts). Queued before
+    // the fact is recorded, so a stop in between never leaves a PR without its fill (a fill for a task with a project does nothing).
+    const fill = f.type === "pr.opened" && f.task && typeof f.data?.repo === "string" ? { task: f.task, repo: f.data.repo } : undefined;
+    if (fill) projects?.queue(fill.task, fill.repo);
+    const fresh = facts.record({ ...f, version: `codehost-local/${f.version}`, task: f.task ?? undefined, actor: "module:codehost-local" });
+    if (fill && fresh) void projects?.touch(fill.task, fill.repo).catch(() => {});
+  } catch { /* a fact write never blocks the action */ }
 };

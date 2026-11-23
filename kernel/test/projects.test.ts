@@ -5,6 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createProjects } from "../src/projects.ts";
+import { openFacts } from "../src/facts.ts";
+import { localFacts } from "../src/codehost.ts";
 
 const NOW = Date.parse("2026-11-23T08:00:00Z");
 function fake(products = {}) {
@@ -30,7 +32,7 @@ function fake(products = {}) {
   };
   const map = { products };
   const p = createProjects({ db: new DatabaseSync(":memory:"), owner, products: () => map.products, now: () => NOW });
-  return { p, projects, issues, map };
+  return { p, projects, issues, map, owner };
 }
 
 test("a PR's repo fills in its task's project: one per repo, a listed product's for its repos, never over a set project", async () => {
@@ -92,4 +94,90 @@ test("a product named like a repo's own project takes the name; that repo moves 
   issues.t2.projectId = null;
   await p.touch("t2", "acme/backend");
   assert.equal(projects.find((x) => x.id === issues.t2.projectId).name, "api");
+});
+
+test("tasks whose PRs came before the table are queued once and filled; a restart doesn't queue them again", async () => {
+  const { owner, issues, projects } = fake();
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE facts (seq INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, version TEXT, task TEXT, source TEXT, data TEXT)");
+  // The previous release had remembered t1 already, without queuing it.
+  db.exec("CREATE TABLE project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL); INSERT INTO project_tasks VALUES ('t1', 'acme/widgets')");
+  const add = db.prepare("INSERT INTO facts (type, version, task, source, data) VALUES ('pr.opened', 'github/1', ?, 'live', ?)");
+  add.run("t1", JSON.stringify({ repo: "Acme/Widgets" }));
+  add.run("t1", JSON.stringify({ repo: "acme/other" }));
+  add.run("t2", JSON.stringify({ repo: "acme/widgets" }));
+  const start = () => createProjects({ db, owner, now: () => NOW });
+  const pending = () => db.prepare("SELECT task, repo FROM project_pending ORDER BY task").all().map((r) => `${r.task}:${r.repo}`);
+  const p = start();
+  assert.deepEqual(pending(), ["t1:acme/widgets", "t2:acme/widgets"]);
+  await p.sync();
+  assert.deepEqual(projects.map((x) => x.name), ["widgets"]);
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-1", "p-1"]);
+  assert.deepEqual(pending(), []);
+  start();
+  assert.deepEqual(pending(), []);
+});
+
+test("fills that keep failing go to the back of the queue, so later ones are still tried", async () => {
+  const { owner, issues } = fake();
+  const db = new DatabaseSync(":memory:");
+  const flaky = async (m, path, body) => (/^\/api\/issues\/bad/.test(path) ? { status: 500, json: {} } : owner(m, path, body));
+  const p = createProjects({ db, owner: flaky, now: () => NOW });
+  for (let i = 0; i < 100; i++) p.queue(`bad${i}`, "acme/widgets");
+  p.queue("t1", "acme/widgets");
+  await p.sync();
+  assert.equal(issues.t1.projectId, null);
+  await p.sync();
+  assert.equal(issues.t1.projectId, "p-1");
+});
+
+test("a local code host's new PR queues and fills its task's project, as a github one does", async () => {
+  const { owner, issues } = fake();
+  const db = new DatabaseSync(":memory:");
+  const facts = openFacts(db);
+  const p = createProjects({ db, owner, now: () => NOW });
+  localFacts(facts, p)({ type: "pr.opened", subject: "pr:local/app#1", version: "2", at: new Date(NOW).toISOString(), task: "t1", data: { repo: "local/app" } });
+  await p.serial(async () => {});
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(issues.t1.projectId);
+});
+
+test("a task the control plane refuses to move is skipped; the others move and the repo moves once it can", async () => {
+  const { owner, issues, projects } = fake();
+  let refuse = true;
+  const map = { products: {} as Record<string, string[]> };
+  const flaky = async (m, path, body) => (refuse && m === "PATCH" && path === "/api/issues/t1" && body.projectId === "p-2" ? { status: 500, json: {} } : owner(m, path, body));
+  const p = createProjects({ db: new DatabaseSync(":memory:"), owner: flaky, products: () => map.products, now: () => NOW });
+  for (const t of ["t1", "t2"]) await p.touch(t, "acme/distro");
+  await p.sync();
+  map.products = { Platform: ["acme/distro"] };
+  await p.sync();
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-1", "p-2"]);
+  refuse = false;
+  await p.sync();
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-2", "p-2"]);
+  assert.equal(projects.length, 2);
+});
+
+test("a refused move, then the map changes again, then the refusal clears: every task ends in the final target", async () => {
+  const { owner, issues, projects } = fake();
+  let refuse = true;
+  const map = { products: {} as Record<string, string[]> };
+  const flaky = async (m, path, body) => (refuse && m === "PATCH" && path === "/api/issues/t1" ? { status: 500, json: {} } : owner(m, path, body));
+  const p = createProjects({ db: new DatabaseSync(":memory:"), owner: flaky, products: () => map.products, now: () => NOW });
+  for (const t of ["t1", "t2"]) await p.touch(t, "acme/distro");
+  await p.sync();
+  map.products = { Platform: ["acme/distro"] };
+  await p.sync();
+  map.products = { Tools: ["acme/distro"] };
+  await p.sync();
+  refuse = false;
+  await p.sync();
+  const tools = projects.find((x) => x.name === "Tools").id;
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], [tools, tools]);
+  // Retagged by an agent since: it stays.
+  issues.t2.projectId = "p-set";
+  map.products = {};
+  await p.sync();
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-1", "p-set"]);
 });
