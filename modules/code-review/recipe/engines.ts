@@ -66,6 +66,8 @@ export interface Combo {
   engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean;
   /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skills` (see resolveSkills). */
   harness?: string; skills?: SkillRef[]; tools?: string[];
+  /** deepsec: its own spend cap, the catalog option's `run.max_cost_usd`. */
+  max_cost_usd?: number;
 }
 export interface EngineInput {
   prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string;
@@ -83,8 +85,8 @@ export interface EngineInput {
   target?: "tree" | "pr";
   /** Skill engines: the harness, the skills (resolveSkills) and where the image keeps skills (default /opt/review). */
   harness?: string; skills?: SkillRef[]; tools?: string[]; skillsRoot?: string;
-  /** deepsec: its spend cap, and the files of a pending setup (JSON: path to text) to scan with instead of setting up. */
-  budget_usd?: number; setupFiles?: Record<string, string>;
+  /** deepsec: its own spend cap, and the files of a pending setup (JSON: path to text) to scan with instead of setting up. */
+  max_cost_usd?: number; setupFiles?: Record<string, string>;
 }
 /** `calls`: the repo tools a run called, with the arguments code checks coverage by (path, the page `from`, `stat`). */
 /** `incomplete`: the engine covered only part of the change. `untracked`: it reads the change its own way, so which parts it read
@@ -282,9 +284,9 @@ function stage(sk: Skill, n: number, base: string) {
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
-async function deepsecEngine({ model, effort, root, base, trusted, minutes, scratch, target, budget_usd, setupFiles }: EngineInput): Promise<EngineResult> {
+async function deepsecEngine({ model, effort, root, base, trusted, minutes, scratch, target, max_cost_usd, setupFiles }: EngineInput): Promise<EngineResult> {
   try {
-    const { review, setup } = await deepsec({ root, target: target ?? "pr", base, trusted: trusted ?? base, model, effort, budget_usd: budget_usd ?? 5, scratch, setupFiles, minutes });
+    const { review, setup } = await deepsec({ root, target: target ?? "pr", base, trusted: trusted ?? base, model, effort, max_cost_usd, scratch, setupFiles, minutes });
     return { message: JSON.stringify({ findings: review.findings, stale_guidance: [] }), read: true, covered: review.covered, ...(review.incomplete ? { incomplete: review.incomplete } : {}), ...(setup ? { setup } : {}) };
   } catch (e) {
     return { message: "", read: false, cause: String((e as Error).message ?? e).slice(0, 300) };

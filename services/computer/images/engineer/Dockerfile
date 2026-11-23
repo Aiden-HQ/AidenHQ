@@ -84,8 +84,6 @@ RUN case "$(dpkg --print-architecture)" in \
     && ln -s /opt/review-py/bin/vulture /opt/review-py/bin/ruff /usr/local/bin/ \
     && rm -rf /tmp/uv /tmp/uv.tgz /tmp/uv-cache && chmod -R a+rX /opt/review-py \
     && vulture --version | grep -qx 'vulture 2.16' && ruff --version | grep -qx 'ruff 0.17.5'
-RUN npm i -g --before=2026-11-14 knip@6.45.1 fallow@3.43.0 && npm cache clean --force \
-    && knip --version | grep -q 6.45.1 && fallow --version | grep -q 3.43.0
 # govulncheck v1.9.0 (2026-10-11), built with the image's Go from the module proxy (go.sum and the checksum database verify it).
 RUN GOTOOLCHAIN=local CGO_ENABLED=0 GOBIN=/usr/local/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 \
     && chmod -R u+w /tmp/gopath && rm -rf /tmp/gopath /tmp/gocache && govulncheck -version | grep -q v1.9.0

@@ -12,8 +12,8 @@ export type SkillRef = { skill: string; args: string; also?: string[]; uncommitt
 export type Option = {
   id: string; name: string; description: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
   source: { repo: string; version: string; licence: string };
-  run: { cmd?: string; harness?: string; skills?: SkillRef[]; tools?: string[]; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[] };
-  when: string[]; output: "sarif" | "knip" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; needs?: string; severity?: "nit";
+  run: { cmd?: string; harness?: string; skills?: SkillRef[]; tools?: string[]; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[]; /** an engine's own spend cap (deepsec) */ max_cost_usd?: number };
+  when: string[]; output: "sarif" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; needs?: string; severity?: "nit";
 };
 
 const LENSES = ["correctness", "security", "maintainability", "performance"];

@@ -1,5 +1,5 @@
-// Tool output to raw findings: one SARIF reader (govulncheck, ruff, fallow, …) and a small
-// adapter each for the tools with their own format (knip, vulture, scc) and for plain `path:line:col: message` lines
+// Tool output to raw findings: one SARIF reader (govulncheck, ruff, …) and a small
+// adapter each for the tools with their own format (vulture, scc) and for plain `path:line:col: message` lines
 // (squawk). A raw finding is what review.ts `clean` takes; tools.ts places it, tags its option and lens and caps
 // it. Every adapter throws on output that isn't its format (that is a failed tool, never a clean one).
 import type { Option } from "./catalog.ts";
@@ -49,29 +49,6 @@ export function readSarif(text: string, root: string, cap?: "nit"): Raw[] {
   return out;
 }
 
-const KNIP: Record<string, string> = {
-  files: "Unused file", dependencies: "Unused dependency", devDependencies: "Unused devDependency", optionalPeerDependencies: "Unused optional peer dependency",
-  unlisted: "Dependency used but not listed in package.json", binaries: "Binary used but not listed in package.json", unresolved: "Unresolved import", exports: "Unused export",
-  types: "Unused exported type", enumMembers: "Unused enum member", namespaceMembers: "Unused namespace member", duplicates: "Duplicate export", catalog: "Unused catalog entry",
-};
-/** knip --reporter json: { issues: [{ file, <kind>: [{ name, line? }] }] }. */
-export function readKnip(text: string): Raw[] {
-  const doc = JSON.parse(text);
-  if (!doc || !Array.isArray(doc.issues)) throw new Error("not knip's JSON: no issues");
-  const out: Raw[] = [];
-  for (const issue of doc.issues) {
-    for (const [key, label] of Object.entries(KNIP)) {
-      const v = issue?.[key];
-      const items: any[] = Array.isArray(v) ? v : v && typeof v === "object" ? Object.values(v).flat() : [];
-      for (const it of items) {
-        const name = Array.isArray(it) ? it.map((x) => x?.name).join(" = ") : String(it?.name ?? it);
-        out.push({ severity: "nit", path: String(issue.file ?? ""), line: num(it?.line), title: cut(`${label}: ${name}`, 120), why: `knip found ${label.toLowerCase()} \`${name}\` in ${issue.file}.`, evidence: `knip ${key}: ${name}`, fix_brief: key === "files" ? "Delete the file, or add it as an entry point if something outside the code uses it." : "Remove it, or list it in knip's config if it is used in a way knip can't see." });
-      }
-    }
-  }
-  return out;
-}
-
 /** vulture's lines: `path:line: unused function 'name' (60% confidence)`, `, 4 lines` inside the brackets with sort_by_size.
  * Empty output is no findings; output with no such line isn't vulture's. */
 export function readVulture(text: string): Raw[] {
@@ -113,6 +90,6 @@ export function readLines(text: string): Raw[] {
 
 /** A tool's stdout read as its option says. Throws when it isn't that format. */
 export function adapt(o: { output: Exclude<Option["output"], "findings">; severity?: "nit" }, text: string, root: string): Raw[] {
-  const raw = o.output === "sarif" ? readSarif(text, root, o.severity) : o.output === "knip" ? readKnip(text) : o.output === "vulture" ? readVulture(text) : o.output === "scc" ? readScc(text) : readLines(text);
+  const raw = o.output === "sarif" ? readSarif(text, root, o.severity) : o.output === "vulture" ? readVulture(text) : o.output === "scc" ? readScc(text) : readLines(text);
   return o.severity === "nit" ? raw.map((f) => ({ ...f, severity: "nit" as const })) : raw;
 }
