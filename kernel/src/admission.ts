@@ -97,8 +97,13 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   // Strict: each fact is written in the transaction of the change it describes, which fails with it.
   const fact = facts ? strictFact(facts) : () => {};
   /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
-  // The tasks modules filed (modtasks.ts writes it; made here too so admission reads it in any order).
+  // The tasks modules filed (modtasks.ts writes it; made here too so admission reads it in any order). Tasks filed before
+  // this table are taken once from their task.created facts (wakes.ts origin `module:<name>`).
   db.exec("CREATE TABLE IF NOT EXISTS module_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
+  try {
+    db.exec(`INSERT OR IGNORE INTO module_tasks (task, module) SELECT task, substr(json_extract(data, '$.origin'), 8) FROM facts
+      WHERE type = 'task.created' AND task IS NOT NULL AND json_extract(data, '$.origin') LIKE 'module:%'`);
+  } catch { /* no fact log in this database */ }
   const launching = new Set<string>();
   const keyOf = (agent: string) => grants()[agent]?.key ?? agent;
   /**
@@ -117,13 +122,12 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
    * Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent or module filed
    * (the owner's, or a routine's run), or one the Architect or the Fleet Steward filed. The filer is the control plane's
    * creator: the kernel's plugin creates a job's task as that job's agent, and no write changes it. A module's task (kernel
-   * /v1/tasks) has no creator: the kernel's own row of it (modtasks.ts module_tasks) says so, or, for one filed before that row,
-   * its module marker. A module may carry outside text (a stranger's PR comment) into its task.
+   * /v1/tasks) has no creator: the kernel's own row of it (modtasks.ts module_tasks) says so. A module may carry outside text
+   * (a stranger's PR comment) into its task.
    */
-  function platformTask(t: { id?: string; originKind?: string | null; createdByAgentId?: string | null; description?: string | null }): boolean {
+  function platformTask(t: { id?: string; originKind?: string | null; createdByAgentId?: string | null }): boolean {
     if (t.originKind === "routine_execution") return true;
     if (t.createdByAgentId) return heldRoles(grants(), t.createdByAgentId).some((r) => PLATFORM_FILERS.includes(r));
-    if (/<!--\s*aidenhq-module:[\w-]+\s*-->/.test(t.description ?? "")) return false;
     return !(t.id && db.prepare("SELECT 1 FROM module_tasks WHERE task = ?").get(t.id));
   }
 

@@ -34,6 +34,7 @@ const listen = (h: Parameters<typeof createServer>[1]) => new Promise<{ s: Serve
 
 // Planted at runtime: a vault secret, an instance setting value, a memory fact and a profile line.
 const SECRET = `tok${randomBytes(12).toString("hex")}`;
+const ENV_SECRET = `pw${randomBytes(6).toString("hex")}`;
 const FACT = `the acme quarterly review moves to thursdays ${randomBytes(4).toString("hex")}`;
 const PROFILE = `Prefers short replies before noon ${randomBytes(4).toString("hex")}`;
 const SETTING = `acme-agents-${randomBytes(4).toString("hex")}`;
@@ -112,6 +113,8 @@ describe("sharing a local module (V4)", () => {
     mkdirSync(join(vault, "github-app"), { recursive: true });
     // A vault file holding the secret inside it (a JSON credential): its value is still found when copied alone.
     writeFileSync(join(vault, "github-app", "key"), JSON.stringify({ client_id: "Iv1.example", private_token: SECRET }));
+    // And an env-style vault file: its quoted value is found alone.
+    writeFileSync(join(vault, "jira.env"), `JIRA_TOKEN="${ENV_SECRET}"\n`);
 
     // What the backplane does (its routes are thin), with lifecycle pieces made below with these routes (the board's key), and an executor's outcome.
     const kernel = await listen(async (req, res) => {
@@ -260,6 +263,7 @@ describe("sharing a local module (V4)", () => {
     commitInstance({
       "modules/review-chaser/skills/chase/SKILL.md": `---\nname: chase\ndescription: how\n---\nUse ${Buffer.from(SECRET).toString("base64")} to log in.\n`,
       "modules/review-chaser/agents/chaser/AGENTS.md": `Remember: ${FACT}. ${PROFILE}. Post in ${SETTING}.\n`,
+      "modules/review-chaser/skills/chase/notes.md": `Jira: ${ENV_SECRET}\n`,
     }, "oops");
     const flagged = await preview();
     expect(flagged.body.findings).toEqual([
@@ -267,9 +271,10 @@ describe("sharing a local module (V4)", () => {
       { file: "agents/chaser/AGENTS.md", rule: "memory-fact", detail: "a fact from an agent's memory" },
       { file: "agents/chaser/AGENTS.md", rule: "profile-fact", detail: "a line of the owner's profile" },
       { file: "skills/chase/SKILL.md", rule: "secret-value", detail: "a vault secret's value" },
+      { file: "skills/chase/notes.md", rule: "secret-value", detail: "a vault secret's value" },
     ]);
     expect(flagged.body.files.every((f: any) => f.text === undefined)).toBe(true);
-    for (const never of [SECRET, FACT, PROFILE, SETTING]) expect(JSON.stringify(flagged.body)).not.toContain(never);
+    for (const never of [SECRET, ENV_SECRET, FACT, PROFILE, SETTING]) expect(JSON.stringify(flagged.body)).not.toContain(never);
     expect(await save(flagged.body)).toMatchObject({ status: 422, body: { error: expect.stringMatching(/not shared/) } });
     // No job, module or kernel filing without the owner's save files a publish.
     const args = { repo: market, ref: "main", base: tip(market), source: p.body.source, module: "review-chaser", files: [{ path: "module.yaml", text: "name: review-chaser\n" }], digest: p.body.digest };

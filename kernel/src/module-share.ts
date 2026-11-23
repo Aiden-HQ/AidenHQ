@@ -97,7 +97,7 @@ export async function exportModule(name: string, d: ExportDeps): Promise<Export>
   // A vault file whole, and each value inside one: a JSON credential's string values (its field names are no secret), else
   // each line of the file (a key file, an env-style file's values).
   const leaves = (v: unknown): string[] => (typeof v === "string" ? [v] : v && typeof v === "object" ? Object.values(v).flatMap(leaves) : []);
-  const inside = (s: string) => { try { return leaves(JSON.parse(s)); } catch { return s.split("\n").map((l) => l.replace(/^[\w.-]+\s*=\s*/, "")); } };
+  const inside = (s: string) => { try { return leaves(JSON.parse(s)); } catch { return s.split("\n").map((l) => l.trim().replace(/^(?:export\s+)?[\w.-]+\s*=\s*/, "").replace(/^(["'])(.*)\1$/, "$2")); } };
   const secrets = values(d.secrets.flatMap((s) => [s, ...inside(s)]), 6).flatMap(forms);
   const settings = Object.entries(d.settings).flatMap(([k, v]) => values(scalars(v), 6).flatMap((s) => forms(s).map((f) => [k, f] as const)));
   const facts = values(d.memory, 20);
