@@ -82,12 +82,14 @@ test("a job's kernel.apply is read from, and names, the job's own workspace", as
 test("new module authority, loosened autonomy or raised spend is the AI reviewer's under full autonomy; autonomy off is the owner's", async () => {
   const role = (official) => ({ modules: { acme: { base: { name: "acme" }, head: { name: "acme", roles: { requests: ["kernel.work-read"] } }, codeChanged: false, ...(official ? { official: true } : {}) } }, marketplaces: [] });
   const tierOf = async (o) => { const r = await kernel(o).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" }); return [r.tier, r.merit, r.state]; };
-  const settings = (b, h) => ({ base: `${yaml(OLD)}settings: ${b}\n`, head: `${yaml(NEW)}settings: ${h}\n` });
+  // Settings move without the pin (a pin move lands alone).
+  const settings = (b, h) => ({ base: `${yaml(OLD)}settings: ${b}\n`, head: `${yaml(OLD)}settings: ${h}\n` });
   for (const o of [{ modules: NEW_AUTHORITY }, { modules: role(true) }, { modules: role(false) }, { texts: settings("{ autonomy: tier0 }", "{ autonomy: full }") }, { texts: settings("{ spend_day_usd: 10 }", "{ spend_day_usd: 20 }") }, { texts: settings("{ quiet_start: on }", "{ quiet_start: off }") }]) {
     const [tier, , state] = await tierOf(o);
     assert.deepEqual([tier, state], [1, "review"], JSON.stringify(o).slice(0, 80));
   }
   assert.deepEqual(await tierOf({ modules: role(false), autonomy: "off" }), [2, 1, "owner"]);
+  await assert.rejects(tierOf({ texts: { base: `${yaml(OLD)}settings: { a: 1 }\n`, head: `${yaml(NEW)}settings: { a: 2 }\n` } }), /a product pin move lands alone/);
   // The reviewer's yes runs it: no owner card.
   const k = kernel({ modules: NEW_AUTHORITY });
   const r = await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });

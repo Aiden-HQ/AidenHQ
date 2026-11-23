@@ -45,7 +45,7 @@ if (!process.env.V3_INSIDE) {
   const { createEvents, routineRun, EventsError, TEXT_MAX, WINDOW_MS } = await import("../../src/events.ts");
   const B = "http://127.0.0.1:3100";
   const call = async (method: string, path: string, body?: unknown) => {
-    const r = await fetch(`${B}${path}`, { method, headers: { "content-type": "application/json", origin: B }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const r = await fetch(`${B}${path}`, { method, headers: { "content-type": "application/json", origin: B }, signal: AbortSignal.timeout(30_000), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const text = await r.text();
     let json: any = null;
     try { json = JSON.parse(text); } catch { json = text; }
@@ -58,10 +58,10 @@ if (!process.env.V3_INSIDE) {
   };
   const step = (s: string) => console.log(`  ok  ${s}`);
 
-  for (let i = 0; ; i++) {
-    const up = await fetch(`${B}/api/health`).then((r) => r.ok, () => false);
+  for (const until = Date.now() + 120_000; ;) {
+    const up = await fetch(`${B}/api/health`, { signal: AbortSignal.timeout(5_000) }).then((r) => r.ok, () => false);
     if (up) break;
-    if (i > 120) throw new Error("Paperclip didn't start in 2 minutes");
+    if (Date.now() > until) throw new Error("Paperclip didn't start in 2 minutes");
     await new Promise((r) => setTimeout(r, 1000));
   }
   const company = await ok("POST", "/api/companies", { name: "Acme Events" });

@@ -96,6 +96,8 @@ export function createEvents(o: {
     const tools = o.grants().agents?.[agent]?.tools?.[connection] ?? [];
     return (o.connections()[connection]?.events?.reads ?? []).some((t) => tools.includes(t));
   };
+  /** A fired batch whose bodies are gone (kept a day after it fired). */
+  const dispatchedOld = (b: Batch) => b.count > 0 && now() - (b.dispatched_at ?? 0) > BODY_MS;
   const get = (id: string) => db.prepare("SELECT * FROM event_batches WHERE id = ?").get(id) as Batch | undefined;
   const drop = (b: Batch, why: string) => {
     db.prepare("UPDATE event_batches SET state = 'dropped' WHERE id = ?").run(b.id);
@@ -147,13 +149,14 @@ export function createEvents(o: {
      * active and assigned to the job's agent, and that agent's read grant still held. A batch still firing (the job started before
      * its binding was stored) answers pending for a while. Anything else is 403.
      */
-    async batch(job: { task: string; agent: string; routine?: string | null }, id: string): Promise<{ pending: true; retry_after_s: number } | { count: number; events: Omit<SourceEvent, "connection">[] }> {
+    async batch(job: { task: string; agent: string; routine?: string | null }, id: string): Promise<{ pending: true; retry_after_s: number } | { expired: true; count: number } | { count: number; events: Omit<SourceEvent, "connection">[] }> {
       const b = get(id), s = b && subs()[b.routine];
       // Fired: bound to its task (a later job on that task reads it too, a retry or a reopen). Still firing: the run's own routine.
       const bound = b?.state === "fired" ? b.task === job.task : Boolean(job.routine && s?.key === job.routine);
       const own = b && s && bound && subOf(s) === b.sub && s.agent === job.agent && reads(s.agent, s.connection);
       const r = own ? await o.routine(b.routine) : undefined;
       if (b && own && r?.status === "active" && r.assignee === job.agent) {
+        if (b.state === "fired" && dispatchedOld(b)) return { expired: true, count: b.count };
         if (b.state === "fired") return { count: b.count, events: (db.prepare("SELECT body FROM event_queue WHERE batch = ? AND body IS NOT NULL ORDER BY seq").all(b.id) as { body: string }[]).map((q) => JSON.parse(q.body)) };
         if (b.state === "firing" && now() - (b.sealed_at ?? 0) < FIRING_MS) return { pending: true, retry_after_s: PENDING_RETRY_S };
       }
@@ -196,7 +199,8 @@ export function createEvents(o: {
         const t2 = now();
         db.prepare("UPDATE event_queue SET body = NULL WHERE body IS NOT NULL AND batch IN (SELECT id FROM event_batches WHERE state = 'fired' AND dispatched_at < ?)").run(t2 - BODY_MS);
         db.prepare("DELETE FROM event_queue WHERE at < ?").run(t2 - KEEP_MS);
-        db.prepare("DELETE FROM event_batches WHERE state IN ('fired', 'dropped') AND opened_at < ?").run(t2 - KEEP_MS);
+        // A fired batch's row stays (its body is gone after a day): it is what tells the kernel the task read outside text.
+        db.prepare("DELETE FROM event_batches WHERE state = 'dropped' AND opened_at < ?").run(t2 - KEEP_MS);
       } finally { draining = false; }
     },
   };

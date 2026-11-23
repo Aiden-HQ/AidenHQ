@@ -203,3 +203,19 @@ test("an ended window takes no more events; firing batches hold their place in t
   for (let i = 0; i < 11; i++) { events.ingest("slack", ev(`x${i}`)); r.tick(61_000); await events.drain(); }
   assert.equal(new Set(r.runs.filter((x) => x.routine === R1).map((x) => x.key)).size, 12);
 });
+
+test("a batch read after its text is gone answers expired; its task stays marked as fired", async () => {
+  const r = rig();
+  const { events } = r;
+  events.ingest("slack", ev("old1"));
+  r.tick(61_000);
+  await events.drain();
+  const run = r.runs.find((x) => x.routine === R1)!;
+  const job = { task: `issue-${run.key.slice(0, 8)}`, agent: "a1", routine: "slack-triage" };
+  r.tick(25 * 3600_000);
+  await events.drain();
+  assert.deepEqual(await events.batch(job, run.key), { expired: true, count: 1 });
+  r.tick(8 * 24 * 3600_000);
+  await events.drain();
+  assert.equal(events.fired(job.task), true);
+});

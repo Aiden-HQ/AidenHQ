@@ -64,6 +64,11 @@ export async function exportModule(name: string, d: ExportDeps): Promise<Export>
     if (def.agents[k]?.reports_to != null) (doc.deleteIn(["agents", k, "reports_to"]), notShared.push({ path: `module.yaml agents.${k}.reports_to`, why: "it names an agent on this instance; the importer sets the reporting line" }));
     if (def.agents[k]?.image != null) (doc.deleteIn(["agents", k, "image"]), notShared.push({ path: `module.yaml agents.${k}.image`, why: "an agent computer is this instance's" }));
   }
+  // A skill from another of this instance's local modules (library.<name>) isn't in the share: an importer couldn't compile it.
+  const localModules = d.catalog.filter((m) => m.tier === "local" && m.name !== name).map((m) => String(m.name));
+  for (const k of agents) for (const sk of [def.agents[k]?.skills ?? []].flat().map(String)) {
+    if (localModules.includes(sk.split(".")[0]!)) findings.push({ file: "module.yaml", rule: "local-reference", detail: `agent ${k} uses skill ${sk}, from this instance's ${sk.split(".")[0]} module: share that skill inside this module, or drop it` });
+  }
   for (const [key, r] of Object.entries<Dict>(def.routines ?? {})) {
     const why = !agents.includes(r?.agent) ? `it runs as ${String(r?.agent)}, who isn't in this module` : r?.event?.resource != null ? "it watches a channel or repo of this instance" : undefined;
     if (why) (doc.deleteIn(["routines", key]), notShared.push({ path: `module.yaml routines.${key}`, why }));
@@ -164,8 +169,10 @@ export function createSharing(d: {
   async function exportAt(module: string, sha: string, profileAt = sha) {
     const compiled: Dict = YAML.parse(readFileSync(join(d.configDir, "paperclip.yaml"), "utf8")) ?? {};
     const catalog: Dict[] = JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8"));
-    // Only the values this instance set: a module default is public text, not the owner's.
-    const settings = Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value]));
+    // Only the values this instance set: a module default is public text, not the owner's. Both the applied ones and the ones in
+    // instance.yaml at the shared commit (set there, not yet applied).
+    const atSha = (YAML.parse(await text(["cat-file", "blob", `${sha}:instance.yaml`]).catch(() => "")) ?? {}).settings ?? {};
+    const settings = { ...Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value])), ...atSha };
     const profile = await text(["cat-file", "blob", `${profileAt}:owner/profile.md`]).catch(() => "");
     return exportModule(module, { instanceDir: d.instanceDir, sha, catalog, compiled, settings, secrets: d.secrets(), memory: d.memory(), profile, instanceRepo: d.instanceRepo() });
   }

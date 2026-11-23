@@ -77,6 +77,7 @@ function eventRoutine(key: string, r: Obj, paperclip: Obj) {
   const at = `routine ${key}: event`;
   if (!e || typeof e !== "object" || Array.isArray(e) || Object.keys(e).some((f) => !["connection", "resource", "filter"].includes(f))) fail(`${at} is { connection, resource, filter }`);
   if (r.webhook) fail(`${at} and webhook can't both be set`);
+  if (typeof e.connection !== "string" || !e.connection) fail(`${at}.connection is a connection's name`);
   const ev = paperclip.mcp_servers[e.connection]?.events ?? fail(`${at}: connection ${e.connection} declares no events`);
   if (typeof e.resource !== "string" || !e.resource) fail(`${at}.resource is a string`);
   if (e.resource === "*" && r.tier !== "official") fail(`${at}.resource: * is for product modules; name the resource`);
@@ -900,6 +901,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (/aidenhq:routine:/.test(String(r.description ?? ""))) fail(`routine ${key}: its description may not carry a routine marker`);
       }
       if (!r.title || routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
+      // "Repeats: …" names the board's own recurring tasks (services/board recurring.ts): setup never takes one for a module's.
+      if (String(r.title).startsWith("Repeats: ")) fail(`routine ${key}: a title starting "Repeats: " is the board's, for the owner's recurring tasks`);
       routineTitles.add(r.title);
       // `when: { forks: true }`: only while instance.yaml runs a fork (spec §6.9b); no routine, and no run, otherwise.
       if (when != null && JSON.stringify(when) !== '{"forks":true}') fail(`routine ${key}: when must be { forks: true }`);
@@ -1096,6 +1099,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     // The module's own isolation counts too: an agent can't opt itself out of an untrusted module.
     if (a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted") {
       if (a.roles.length) fail(`${key}: an untrusted module's agent may not have roles`);
+      // It changes nothing about itself (its handbook, a shared skill): self_change is a write, however it was granted.
+      if ((tools.paperclip_tasks ?? []).includes("self_change")) fail(`${key}: an untrusted module's agent may not have paperclip_tasks.self_change`);
       for (const [name, list] of Object.entries<Obj>(tools)) {
         const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t));
         if (writes.length) fail(`${key}: an untrusted module's agent may not have ${name} write tools (${writes.join(", ")})`);
@@ -1151,7 +1156,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!Array.isArray(r.schedules ?? []) || (r.schedules ?? []).length > 1) fail(`routine ${key}: a local routine has at most one schedule`);
       localRoutines.set(r.agent, (localRoutines.get(r.agent) ?? 0) + 1);
       if (localRoutines.get(r.agent)! > 20) fail(`routine ${key}: an agent has at most 20 local routines`);
-      if (r.schedules?.length && typeof r.schedules[0]?.cron !== "string") fail(`routine ${key}: its schedule needs a cron`);
+      if (r.schedules?.length && (typeof r.schedules[0]?.cron !== "string" || r.schedules[0].cron.trim().split(/\s+/).length !== 5)) fail(`routine ${key}: its schedule needs a cron of five fields (minute hour day month weekday)`);
       const minute = String(r.schedules?.[0]?.cron ?? "0").trim().split(/\s+/)[0]!;
       if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
     }
@@ -1206,7 +1211,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   for (const a of Object.values<Obj>(paperclip.agents)) if (a.profile === "crew" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
   // Skills (modules/<m>/skills/<name>/SKILL.md): each agent gets exactly its effective list (effectiveSkills), of every
   // available module's skills; jobs get exactly these.
-  const skills = [...all.values()].flatMap((m) => skillEntries(m.name, m.root).map((s) => ({ ...s, enabled: enabled.includes(m.name) })));
+  const skills = [...all.values()].flatMap((m) => skillEntries(m.name, m.root, enabled.includes(m.name)).map((s) => ({ ...s, enabled: enabled.includes(m.name) })));
   const enabledSkills = skills.filter((s) => s.enabled);
   if (enabledSkills.length) paperclip.skills = Object.fromEntries(enabledSkills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
   const skillCatalog = Object.fromEntries(skills.map((s) => [s.id, s.enabled]));
@@ -1796,11 +1801,13 @@ export function promptEntries(name: string, def: Obj, root: string): Obj[] {
  * <module>.<name>, file, summary}]. The agents that list one get it (effectiveSkills); the engine reads it natively from the
  * job's engine home, never from the handbook.
  */
-export function skillEntries(name: string, root: string): { id: string; file: string; summary: string }[] {
+/** A module's skills; `check: false` (a disabled module) lists their ids only, its SKILL.md text read and checked once it is on. */
+export function skillEntries(name: string, root: string, check = true): { id: string; file: string; summary: string }[] {
   const dir = join(root, "skills");
   return (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
     if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     const file = join(dir, d.name, "SKILL.md");
+    if (!check) return { id: `${name}.${d.name}`, file, summary: "" };
     // A skill is the module's own files: its folder resolves inside the module (jobs get a copy of it).
     if (!realpathSync(join(dir, d.name)).startsWith(realpathSync(root) + sep)) fail(`module ${name}: skill ${d.name}: its folder must be inside the module`);
     const { name: skillName, description, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;

@@ -124,7 +124,7 @@ export async function syncRoutines({ api, companyId, plans, keys, step, onKeys, 
   // marked on this pass.
   for (const p of plans) {
     if (idOf[p.key]) continue;
-    // Never the owner's own recurring tasks (the board's "Repeats: …" routines): those are the board's, not an older setup's.
+    // Never the owner's own recurring tasks: their "Repeats: …" titles are the board's alone (compile refuses them for a module).
     const r = rows.find((x) => !markedKey(x) && !keys[x.id] && !Object.values(idOf).includes(x.id) && !String(x.title).startsWith("Repeats: ") && x.title === p.title && x.assigneeAgentId === p.body.assigneeAgentId);
     if (r) idOf[p.key] = r.id;
   }

@@ -266,6 +266,8 @@ export function createApplyPlanner(h: {
     const [baseI, headI] = [c.texts.base["instance.yaml"], c.texts.head["instance.yaml"]];
     const bump = await productBump(productPin(baseI), productPin(headI), h.product);
     if (bump && "error" in bump) throw new Refused(bump.error);
+    // A product pin move lands alone (the product it moves to compiles the instance on apply; nothing here can compile with it).
+    if (bump && (c.files.length !== 1 || changedKeys(parse(baseI), parse(headI)).some((k) => !["product", "release"].includes(k)))) throw new Refused("a product pin move lands alone: file the other changes in their own commit");
     // The module sides and the skill lines: whenever the change touches instance.yaml or any module folder. Skill lines come from
     // both sides compiled with the running product, so a product pin move (judged by the module authority diff) has none.
     const config = c.files.some((f) => f === "instance.yaml" || f.startsWith("modules/"));

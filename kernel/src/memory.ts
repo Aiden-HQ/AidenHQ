@@ -126,6 +126,8 @@ export function createMemory(o: { dir: string; now?: () => number }) {
       const d = load(key);
       const gone = d.facts.filter((l) => norm(l.fact).includes(m));
       if (!gone.length) return { removed: [] as string[] };
+      // One fact a call: a match that names several forgets none (a forgotten fact is never learned again).
+      if (gone.length > 1) throw new MemoryError(400, `"${String(n.match).slice(0, 60)}" matches ${gone.length} facts: quote more of the one to forget`);
       spend(n.job, () => save(key, { ...d, facts: d.facts.filter((l) => !gone.includes(l)), forgotten: [...d.forgotten, ...gone.map((l) => norm(l.fact))] }));
       return { removed: gone.map(lineOf) };
     },
