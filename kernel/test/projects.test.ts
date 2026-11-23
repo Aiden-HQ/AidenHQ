@@ -30,7 +30,7 @@ function fake(products = {}) {
   };
   const map = { products };
   const p = createProjects({ db: new DatabaseSync(":memory:"), owner, products: () => map.products, now: () => NOW });
-  return { p, projects, issues, map };
+  return { p, projects, issues, map, owner };
 }
 
 test("a PR's repo fills in its task's project: one per repo, a listed product's for its repos, never over a set project", async () => {
@@ -92,4 +92,24 @@ test("a product named like a repo's own project takes the name; that repo moves 
   issues.t2.projectId = null;
   await p.touch("t2", "acme/backend");
   assert.equal(projects.find((x) => x.id === issues.t2.projectId).name, "api");
+});
+
+test("tasks whose PRs came before the table are queued once and filled; a restart doesn't queue them again", async () => {
+  const { owner, issues, projects } = fake();
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE facts (seq INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, version TEXT, task TEXT, source TEXT, data TEXT)");
+  const add = db.prepare("INSERT INTO facts (type, version, task, source, data) VALUES ('pr.opened', 'github/1', ?, 'live', ?)");
+  add.run("t1", JSON.stringify({ repo: "Acme/Widgets" }));
+  add.run("t1", JSON.stringify({ repo: "acme/other" }));
+  add.run("t2", JSON.stringify({ repo: "acme/widgets" }));
+  const start = () => createProjects({ db, owner, now: () => NOW });
+  const pending = () => db.prepare("SELECT task, repo FROM project_pending ORDER BY task").all().map((r) => `${r.task}:${r.repo}`);
+  const p = start();
+  assert.deepEqual(pending(), ["t1:acme/widgets", "t2:acme/widgets"]);
+  await p.sync();
+  assert.deepEqual(projects.map((x) => x.name), ["widgets"]);
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-1", "p-1"]);
+  assert.deepEqual(pending(), []);
+  start();
+  assert.deepEqual(pending(), []);
 });

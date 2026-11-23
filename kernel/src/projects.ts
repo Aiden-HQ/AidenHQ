@@ -40,8 +40,14 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
     CREATE TABLE IF NOT EXISTS project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS project_pending (task TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY (task, repo))`);
   // The tasks PRs touched before this table existed: from the fact log's pr.opened, once (a repo's own facts name it lower-case).
-  // Only the facts the live path takes (backplane's /v1/facts): a code host's own, recorded live, first one per task.
-  try { db.exec("INSERT OR IGNORE INTO project_tasks (task, repo) SELECT task, lower(json_extract(data, '$.repo')) FROM facts WHERE type = 'pr.opened' AND source = 'live' AND (version LIKE 'github/%' OR version LIKE 'codehost-local/%') AND task IS NOT NULL AND json_extract(data, '$.repo') IS NOT NULL ORDER BY seq"); } catch { /* no fact log here */ }
+  // Only the facts the live path takes (backplane's /v1/facts): a code host's own, recorded live, first one per task. Each task not
+  // yet remembered is also queued for a fill, before it is remembered (a run cut short queues it again), so existing work joins its
+  // repo's project through the minute's retry; a task remembered already is never queued again.
+  const past = "FROM facts WHERE type = 'pr.opened' AND source = 'live' AND (version LIKE 'github/%' OR version LIKE 'codehost-local/%') AND task IS NOT NULL AND json_extract(data, '$.repo') IS NOT NULL";
+  try {
+    db.exec(`INSERT OR IGNORE INTO project_pending (task, repo) SELECT task, repo FROM (SELECT task, lower(json_extract(data, '$.repo')) AS repo, min(seq) ${past} GROUP BY task) WHERE task NOT IN (SELECT task FROM project_tasks)`);
+    db.exec(`INSERT OR IGNORE INTO project_tasks (task, repo) SELECT task, lower(json_extract(data, '$.repo')) ${past} ORDER BY seq`);
+  } catch { /* no fact log here */ }
   let chain: Promise<unknown> = Promise.resolve();
   /** One write at a time, in order. */
   const serial = <T>(fn: () => Promise<T>): Promise<T> => {
