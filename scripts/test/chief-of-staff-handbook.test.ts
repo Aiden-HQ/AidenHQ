@@ -10,7 +10,7 @@ const product = join(import.meta.dirname, "../..");
 
 const read = (file: string) => readFileSync(join(product, file), "utf8");
 
-/** The bullet or paragraph that starts with `start`, up to the next blank line or list item. */
+/** The line that starts with `start`. */
 function block(text: string, start: RegExp) {
   const lines = text.split("\n");
   const at = lines.findIndex((l) => start.test(l));
@@ -25,18 +25,20 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
   assert.doesNotMatch(bullet, /task_finish`?\s*(?:\(\s*)?`?issue/, "the bullet never pairs `task_finish` with an `issue`");
   assert.match(bullet, /a task the owner holds is theirs to close/, "an owner-held task is the owner's to close");
   assert.match(bullet, /never `task_finish` it/, "the bullet names the refused call only to forbid it");
-  assert.match(bullet, /A task assigned to your run that is not your part of the owner's task is `task_finish`/, "a task the run holds is still finished");
-  assert.match(bullet, /`task_comment` with what was done and leave it open/, "a task the run filed gets a comment and stays open");
-  assert.match(bullet, /a task it filed is also `task_cancel` with its `issue` when they say drop it \(its part of the owner's task never: `task_cancel` refuses it\)/, "cancel is for a task the run filed, never its part of the owner's");
-  assert.match(bullet, /On a task you can write on \(assigned to it, its part of the owner's task, or one it filed\)/, "the bullet names the tasks the run may write on");
-  assert.match(bullet, /Any other task is refused \("isn't yours to change"\) for a comment and a cancel alike/, "a task the run cannot write on is left open, not commented");
+  assert.match(bullet, /one this run filed for them takes `task_cancel` with its `issue` only when they say drop it/, "a task the run filed for them takes a cancel only on a drop");
+  assert.match(bullet, /Anything it cannot write on is refused \("isn't yours to change"\)/, "a task the run cannot write on is left open, not commented");
+});
+
+test("each task the reply run holds has its own close path", () => {
+  const bullet = block(read("modules/chief-of-staff/skills/task-replies/SKILL.md"), /\*\*Done or not needed:\*\*/);
+  assert.match(bullet, /A task this run holds closes on its own: `task_finish` for the run's own task, `task_handoff` for its part of the owner's task, and a child of one of its tasks takes `task_comment` and stays open/, "the run's own task is finished, its owner part handed off, a child commented (task-scope.ts scopeOf)");
 });
 
 test("the daily brief's \"Still open\" close path does not `task_finish` an owner-held task", () => {
   const agents = read("modules/chief-of-staff/agents/chief-of-staff/AGENTS.md");
   const line = block(agents, /\*\*Still open:\*\*/);
   assert.doesNotMatch(line, /task_finish/, "the close path names no `task_finish`");
-  assert.match(line, /"close" is `task_cancel` with `issue` on a task this agent filed, with their reply as the evidence line, and on a task the owner created `task_comment` with their reply, leaving it open for them to close — say so/, "close cancels what the agent filed and comments on the owner's own, which stays open");
+  assert.match(line, /"close" is `task_cancel` with `issue` on a task this agent filed, with their reply as the evidence line, and on any other task \(the owner's own, or one another agent filed\) `task_comment` with their reply, leaving it open for them to close — say so/, "close cancels what the agent filed and comments on everything else, which stays open");
   assert.match(line, /"snooze" is `fleet_followup_snooze`/, "snooze is unchanged");
   assert.match(line, /"delegate to X" is `task_delegate`/, "delegate is unchanged");
 });
@@ -64,4 +66,6 @@ test("the task_cancel description says the owner's own task is not the agent's t
   const description = /description: "([^"]*)"/.exec(tools.slice(at))?.[1] ?? "";
   assert.match(description, /Only a task you filed, one assigned to you, or \(a fleet settler\) any agent's stale or superseded task can be cancelled/, "cancel is for a task the agent filed or holds, with the settler's exception");
   assert.match(description, /a task the owner created and holds themselves is not yours/, "the owner's own task is theirs");
+  const param = /issue: \{ type: "string", description: "([^"]*)"/.exec(tools.slice(at))?.[1] ?? "";
+  assert.match(param, /a task you filed, one assigned to you, or \(a fleet settler\) any agent's stale or superseded task/, "the `issue` parameter says the same scope as the description");
 });
