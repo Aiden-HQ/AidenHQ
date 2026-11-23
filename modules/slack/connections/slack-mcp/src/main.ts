@@ -34,7 +34,8 @@ const auth = oauth({
 
 // Whether the proxy serves a tool on /mcp/read, asked of the proxy itself: its own tools/list there applies its rule
 // (the manifest's read tag *and* the upstream's read-only hint) and connects on demand, so the reaction path answers
-// only where the proxy would and never on a stale copy of that rule. Cached briefly; a failed probe refuses.
+// only where the proxy would and never on a stale copy of that rule. The answer is cached briefly; a probe that fails
+// drops the cache, so a tool whose admission can't be confirmed now is refused rather than served on an old answer.
 const port = Number(process.env.PORT ?? 8082);
 let servedRead: { names: Set<string>; at: number } | undefined;
 const servedReadTools = async (name: string): Promise<boolean> => {
@@ -48,9 +49,11 @@ const servedReadTools = async (name: string): Promise<boolean> => {
       signal: AbortSignal.timeout(15_000),
     }).catch(() => undefined);
     const body = res?.ok ? ((await res.json().catch(() => undefined)) as { result?: { tools?: { name?: unknown }[] } } | undefined) : undefined;
-    // A probe that failed is not "every tool is served": keep the last good answer, or refuse when there is none.
-    if (body?.result?.tools) servedRead = { names: new Set(body.result.tools.map((t) => String(t?.name ?? "")).filter(Boolean)), at: Date.now() };
-    else if (!servedRead) return false;
+    if (!body?.result?.tools) {
+      servedRead = undefined; // unconfirmed: refuse until a probe answers
+      return false;
+    }
+    servedRead = { names: new Set(body.result.tools.map((t) => String(t?.name ?? "")).filter(Boolean)), at: Date.now() };
   }
   return servedRead.names.has(name);
 };
@@ -76,6 +79,7 @@ const http = createVendorProxy({
       headers: () => auth.headers(),
       authState: () => auth.status().state,
       servedRead: servedReadTools,
+      call: (name, args) => http.call(name, args),
       serviceKey: readToken(process.env.MCP_TOKEN_FILE),
       readKey: readToken(process.env.MCP_READ_TOKEN_FILE),
       caller,

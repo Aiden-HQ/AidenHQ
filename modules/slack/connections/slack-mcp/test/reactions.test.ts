@@ -298,7 +298,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async (n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async (n) => n.startsWith("slack_search_public"), call: (n, a) => proxy.call(n, a), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
@@ -447,6 +447,21 @@ describe("interception through the proxy", () => {
     const res = await fetch(`${base}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
     const listed = (await res.json()) as any;
     expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["slack_search_public", "slack_search_public_and_private"]);
+  });
+
+  it("answers a reaction search inside a JSON-RPC batch, and still runs the batch's other calls", async () => {
+    slackCalls = 0;
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream", "x-aidenhq-caller": "ok" },
+      body: JSON.stringify([
+        { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } },
+        { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "slack_search_public", arguments: { query: "deploy" } } },
+      ]),
+    });
+    const body = (await res.json()) as any[];
+    expect(body.find((m) => m.id === 11).result.content[0].text).toContain("next_cursor");
+    expect(JSON.parse(body.find((m) => m.id === 12).result.content[0].text)).toMatchObject({ upstream: true });
   });
 
   it("passes ordinary searches through exactly, and the proxy still applies the argument hook", async () => {
