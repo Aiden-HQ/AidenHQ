@@ -1257,12 +1257,13 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }]));
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
-  // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. Last, after the
-  // overrides (an override may set heartbeat or image).
+  // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. An Engineer gets
+  // the ones its entry's `when` admits too (only the Replying rule today); last, after the overrides (an override may set
+  // heartbeat or image).
   const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n)!.def, all.get(n)!.root)).sort(promptOrder);
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
   paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
-  for (const a of Object.values<Obj>(paperclip.agents)) if (a.profile === "crew" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  for (const a of Object.values<Obj>(paperclip.agents)) if ((a.profile === "crew" || a.profile === "engineer") && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
   // Skills (modules/<m>/skills/<name>/SKILL.md): each agent gets exactly its effective list (effectiveSkills), of every
   // available module's skills; jobs get exactly these.
   const skills = [...all.values()].flatMap((m) => skillEntries(m.name, m.root, enabled.includes(m.name)).map((s) => ({ ...s, enabled: enabled.includes(m.name) })));

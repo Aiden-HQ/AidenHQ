@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { compile } from "../modules.ts";
-import { readInstructions } from "../handbook.ts";
+import { handbookParts, readInstructions } from "../handbook.ts";
 import { BUNDLE } from "./bundle.ts";
 
 const product = join(import.meta.dirname, "../..");
@@ -30,6 +30,13 @@ function engineer() {
   return readInstructions(r.paperclip, r.paperclip.agents.engineer, { repo: product, instanceDir: instance });
 }
 
+/** The Engineer's whole handbook (its own text plus the shared sections setup appends), once per run. */
+function engineerParts() {
+  engineer();
+  const r = compile(product, instance!);
+  return handbookParts(r.paperclip, "engineer", r.paperclip.agents.engineer, { repo: product, instanceDir: instance!, fleetIssues: "WOR-0" });
+}
+
 test("the compiled handbook carries the repair-loop rule and leaves its steps to write-code", () => {
   const text = engineer();
   const start = text.indexOf("**A repair loop stops at two rejections.**");
@@ -49,4 +56,16 @@ test("the write-code skill holds the stop steps, including the wait for the dele
   assert.match(skill, /both rejection ids/, "both rejection ids go in the question");
   assert.match(skill, /final reply repeats the ids and question/, "the reply records the ids, since the Engineer cannot comment");
   assert.match(skill, /Publish again once a reply says what the change must do; meet any other reply with the same question/, "no new head before a resolving answer");
+});
+
+test("the Engineer's handbook carries the shared reply rule and no other shared section", () => {
+  // An Engineer's run posts one task comment too: its final message. The shared source is the one place the rule lives
+  // (CLAUDE.md: a rule lives once and is linked, never copied into handbooks), so the Engineer reads it from there.
+  const parts = engineerParts();
+  const text = parts.map(([, t]) => t).join("");
+  assert.match(text, /the run's final message is that comment: a run that already posted a `task_comment` on the task it is working has used its one comment/, "the Replying rule reaches the Engineer");
+  assert.match(text, /On a task, that is one comment per turn/, "with its one-comment-per-turn rule");
+  // Only Replying newly reaches an Engineer: how-we-work, progress and privacy stay crew-only, so its rules are unchanged.
+  const shared = parts.map(([id]) => id).filter((id) => ["chief-of-staff.how-we-work", "chief-of-staff.progress", "chief-of-staff.privacy"].includes(id));
+  assert.deepEqual(shared, [], "no other chief-of-staff section reaches an Engineer");
 });
