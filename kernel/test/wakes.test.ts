@@ -1064,6 +1064,42 @@ test("a scan that sees a chat already reopened by a concurrent one files no seco
   assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "one wake for the reply, no second status wake");
 });
 
+test("two scans of one reopened chat queue one run: the one that sees the reply's wake adds no status wake", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  const closed = "2026-11-18T10:00:02.500Z";
+  const snapshot = { ...w.issues.chat, status: "done", updatedAt: closed, completedAt: closed };
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  await w.wakes.scan(snapshot, { source: "poll" }); // reopens and files comment:c1
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+  // The poll's older snapshot saw the same chat as done; by its read the chat is open with the reply already woken.
+  await w.wakes.scan(snapshot, { source: "poll" });
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "still one wake: no second run for the same reply");
+});
+
+test("a window larger than one pass catches up when the resumed pass finishes", async () => {
+  const w = world();
+  w.issue("seed", { status: "todo" });
+  await w.wakes.poll(); // the window's start
+  w.tick(60_000);
+  for (let i = 0; i < 210; i++) w.issue(`chat-${String(i).padStart(3, "0")}`, { status: "done", labels: [{ name: "chat" }], statusVersion: 2, updatedAt: "2026-11-18T10:01:00.000Z", completedAt: "2026-11-18T10:01:00.000Z" });
+  w.db.prepare("DELETE FROM wakes").run();
+  w.tick(5000);
+  w.fail.donePages = 1;
+  await w.wakes.poll();
+  delete w.fail.donePages;
+  const first = w.db.prepare("SELECT at, after, until FROM chat_cursor").get();
+  assert.equal(first.after, "chat-199");
+  assert.ok(first.until, "the window's end is kept for the resumed pass");
+  await w.wakes.poll();
+  const done = w.db.prepare("SELECT at, after, until FROM chat_cursor").get();
+  assert.equal(done.after, null, "the resumed pass completes");
+  assert.ok(done.at > first.at, "and the window moves forward instead of restarting");
+});
+
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
   const w = world();
   w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });

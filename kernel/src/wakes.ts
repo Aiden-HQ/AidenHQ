@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NO
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
   state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
 CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS chat_cursor (agent TEXT PRIMARY KEY, at INTEGER NOT NULL, after TEXT);`;
+CREATE TABLE IF NOT EXISTS chat_cursor (agent TEXT PRIMARY KEY, at INTEGER NOT NULL, after TEXT, until INTEGER);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
@@ -419,7 +419,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const armedWait = Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND state = 'open' AND key LIKE 'wait:%'").get(issue.id));
     // The reopen above files the owner's comment's wake: no second status wake for the move itself. A chat whose comment wake
     // this scan filed is the same case seen from another scan (a concurrent one reopened it): the comment carries the run.
-    const fileable = !armedWait && !reopenedHere && !(chat && commentFiled) && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
+    // A reply already has a wake (another scan filed it while this one read an older cursor): its run is that comment's, not a
+    // second status wake for the same move. A chat that went done -> todo is exactly the reopen that reply caused.
+    const replyWake = chat && prev?.status === "done" && status === "todo" && Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND key LIKE 'comment:%' AND state IN ('open', 'claimed')").get(issue.id));
+    const fileable = !armedWait && !reopenedHere && !(chat && commentFiled) && !replyWake && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
     // A move made while a job runs is filed once that job ends: until then the cursor keeps what it last saw (`deferred`).
     const deferred = fileable && Boolean(liveJob(issue.id));
     if (fileable && !deferred) {
@@ -682,11 +685,15 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
    * turn failed (its company unknown, a list or a chat read broken) holds only its own window, never a colleague's.
    */
   const chatSince = (agent: string) => {
-    const row = q("SELECT at, after FROM chat_cursor WHERE agent = ?").get(agent) as { at: number; after: string | null } | undefined;
-    return row ?? { at: now() - 10 * 60_000, after: null };
+    const row = q("SELECT at, after, until FROM chat_cursor WHERE agent = ?").get(agent) as { at: number; after: string | null; until: number | null } | undefined;
+    return row ?? { at: now() - 10 * 60_000, after: null, until: null };
   };
-  /** Where the agent's pass over its window stands: the window's start, and the last id read when an earlier poll was cut short. */
-  const setChatSince = (agent: string, at: number, after: string | null) => q("INSERT INTO chat_cursor (agent, at, after) VALUES (?, ?, ?) ON CONFLICT(agent) DO UPDATE SET at = excluded.at, after = excluded.after").run(agent, at, after);
+  /**
+   * Where the agent's pass over its window stands: the window's start, the last id read when an earlier poll was cut short,
+   * and the time the window ends (`until`, the first pass's start). A resumed pass that finishes moves the start to `until`,
+   * so a long outage with more rows than one pass covers still catches up instead of restarting the same window forever.
+   */
+  const setChatSince = (agent: string, at: number, after: string | null, until: number | null) => q("INSERT INTO chat_cursor (agent, at, after, until) VALUES (?, ?, ?, ?) ON CONFLICT(agent) DO UPDATE SET at = excluded.at, after = excluded.after, until = excluded.until").run(agent, at, after, until);
   /** The wait-park reconcile, once idle.ts has it (it is made after this inbox): a task's own event re-parks a restored wait at
    *  once, so the recovery sweep's tick never gets to see a settled wait in a status it scans. */
   let settleOn: ((issue: Issue) => Promise<unknown>) | undefined;
@@ -784,16 +791,15 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             if (scanned) readTo = issue.id;
           }
           if (!complete) log("wake chat window truncated", { agent, company, reads_to: readTo });
-          // A pass resumed past an earlier truncation finishes with the cursor still at the original window's start (its resume
-          // point cleared): a reply to an id the earlier pages passed, said while this pass ran, is inside the next window too.
-          // The new start overlaps by a second: Paperclip's `updatedSince` is strictly after, and a change that commits inside
-          // the second this pass read it must not fall on the wrong side of the boundary.
-          if (complete && scanned) setChatSince(agent, window.after ? window.at : polledAt - 1000, null);
-          else setChatSince(agent, window.at, readTo);
+          // A finished pass moves the start to its window's end (`until`): a resumed pass covers its ids to the end, and a reply
+          // that landed while it ran is later than that end, so the next window has it. The one-second overlap keeps a change
+          // that commits at the boundary inside the next window: Paperclip's `updatedSince` is strictly after.
+          if (complete && scanned) setChatSince(agent, (window.until ?? polledAt) - 1000, null, null);
+          else setChatSince(agent, window.at, readTo, window.until ?? polledAt);
         } catch (e) {
           // Whatever was processed before the failure is not skipped: the window keeps its start, and the resume point covers
           // only rows already scanned (a failed page adds none).
-          setChatSince(agent, window.at, readTo);
+          setChatSince(agent, window.at, readTo, window.until ?? polledAt);
           log("wake poll failed", { agent, err: (e as Error).message });
         }
       }
