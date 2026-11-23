@@ -201,7 +201,8 @@ describe("internal listener", () => {
   it("a card the code closed says it wakes nobody: recovered as unknown, expired, or replaced", async () => {
     const records = fakeRecords([
       card({ id: "k-0000000000000080", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: false, outcome: "failed", outcomeText: "unknown: it was claimed and its outcome never came back", createdAt: "2026-11-10T09:00:00.000Z" }),
-      card({ id: "k-0000000000000081", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "expired", live: false, wakes: false, outcome: "failed", outcomeText: "expired: not decided in 7 days", createdAt: "2026-11-10T09:00:00.000Z" }),
+      // The kernel's own shown state for a card past its cutoff, and the just-approved card that stays eligible even when old.
+      card({ id: "k-0000000000000081", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "expired", live: false, wakes: false, outcome: "failed", outcomeText: "expired: not decided in 7 days", createdAt: "2026-11-01T09:00:00.000Z" }),
       card({ id: "k-0000000000000082", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "expired", live: false, wakes: false, outcome: "failed", outcomeText: "replaced by a newer request", replaced: true, createdAt: "2026-11-10T09:00:00.000Z" }),
     ]);
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });

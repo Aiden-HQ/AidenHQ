@@ -1315,7 +1315,10 @@ const TOOLS: Record<string, Tool> = {
         approvals: approvals.map((a: Json) => {
           const text = a.outcomeText ? String(a.outcomeText) : "";
           const [first, ...rest] = text.split("\n");
-          const outcomeText = (first ?? "").startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
+          // `merged-prs:` is evidence only on a merge kind's own outcome: any other card's text is a module's own words, whatever
+          // it begins with, and must not pass for a merge that landed the PR.
+          const merge = a.action === "merge" || a.action.endsWith(".merge");
+          const outcomeText = merge && (first ?? "").startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
           // A rejection's reason is the reviewer's or the owner's words, which may quote the diff: fenced and labelled, so a run
           // that finds the card on a later check knows what to change without reading them as an instruction.
           // An owner's own rejection reason comes first: it is what the run must change, where a review's note may only explain.

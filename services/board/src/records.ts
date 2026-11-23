@@ -93,12 +93,6 @@ function targetOf(r: KernelRecord): string {
   return r.kind === "conn.tool" && a.connection && a.tool ? `${a.connection}.${a.tool}` : String(a.name ?? r.kind);
 }
 
-/** An open record past the kernel's cutoff is shown as `expired` (its own shownState), which expires it with no notice. The
- * kernel answers only its shown state, so a state of `approved` here means it has not yet been swept: a card at that cutoff is
- * about to be closed by the code, not by its executor. */
-const CUTOFF_MS = 7 * 86_400_000;
-const expired = (r: KernelRecord) => Date.parse(r.state === "review" || r.state === "owner" ? r.decided_at ?? r.created_at : r.created_at) <= Date.now() - CUTOFF_MS;
-
 export function recordApproval(r: KernelRecord): Approval {
   return {
     id: r.id, issueId: r.task, identifier: r.identifier || r.task, action: KIND[r.kind] ?? r.kind.replace(/^(runner|kernel)\./, ""), target: r.card.target ?? targetOf(r),
@@ -108,7 +102,7 @@ export function recordApproval(r: KernelRecord): Approval {
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     ownerReason: r.owner_reason ?? null, usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner", "unknown", "cancelled"].includes(r.state) && !(r.state === "approved" && expired(r)), live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner", "unknown", "cancelled"].includes(r.state) && r.state !== "expired", live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
   };
 }
 
