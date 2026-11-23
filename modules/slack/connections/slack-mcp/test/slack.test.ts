@@ -51,8 +51,8 @@ describe("slack-mcp search arguments", () => {
     // forwarded value is the documented string (an upstream that follows the schema would refuse the array).
     expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["hasmy::pushpin:"] })).toEqual({ query: "hello hasmy::pushpin:", filters: "hasmy::pushpin:" });
     expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["in:<#C0123456>", "after:2026-11-08"] })).toMatchObject({ query: "hello in:<#C0123456> after:2026-11-08" });
-    // An array with nothing usable folds to nothing, exactly as an empty string does.
-    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["  ", ""] })).toMatchObject({ query: "hello" });
+    // An array with nothing usable folds to nothing and is dropped, so no empty `filters` reaches Slack.
+    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["  ", ""] })).toEqual({ query: "hello" });
   });
 });
 

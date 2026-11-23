@@ -70,7 +70,13 @@ export function upstreamArgs(name: string, args: Record<string, unknown>): Recor
   const query = searchQuery(args);
   // `filters` is documented as a string; an array was folded into the query above, so forward it as the same string
   // rather than leaving an array an upstream that follows the schema would refuse.
-  const filters = Array.isArray(args.filters) ? args.filters.filter((f): f is string => typeof f === "string" && Boolean(f.trim())).map((f) => f.trim()).join(" ") : args.filters;
-  const next = { ...args, ...(query !== undefined && query !== args.query ? { query } : {}), ...(Array.isArray(args.filters) ? { filters } : {}) };
-  return Object.keys(next).every((k) => next[k as keyof typeof next] === args[k]) ? args : next;
+  const joined = Array.isArray(args.filters) ? args.filters.filter((f): f is string => typeof f === "string" && Boolean(f.trim())).map((f) => f.trim()).join(" ") : undefined;
+  // An array with nothing usable has no string form: the field is dropped, not sent as `filters: ""`.
+  const next: Record<string, unknown> = { ...args, ...(query !== undefined && query !== args.query ? { query } : {}) };
+  if (joined !== undefined) {
+    if (joined) next.filters = joined;
+    else delete next.filters;
+  }
+  const same = Object.keys(args).length === Object.keys(next).length && Object.keys(next).every((k) => next[k] === args[k]);
+  return same ? args : next;
 }
