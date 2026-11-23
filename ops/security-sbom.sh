@@ -568,16 +568,16 @@ save_wave() { # <wave>
     [ -n "$idx" ] || continue
     [ "${wave_of[$idx]:-0}" = "$w" ] || continue
     key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
-    # Free space is read again with this wave's archives already written: the plan's budget counted them, but another
-    # writer on the same filesystem can have taken room since. Judge the same peak the plan did, with this room: all the
-    # wave's archives on disk plus its largest unpacked beside them. Checking only this archive's size would let a save
-    # land that its own scan then had to drop, and the image would be saved and skipped every pass. Below the floor the
-    # room is negative and must stay so: clamping it to 0 would let a free image save while the disk is already under the
-    # floor.
+    # Free space is read again with this wave's archives already written: `free` already has those bytes subtracted, but
+    # another writer on the same filesystem can have taken room since. Judge what this save still needs above it: its own
+    # archive plus its own workspace, or the wave's largest workspace if that is bigger. Checking only this archive's size
+    # would let a save land that the wave's peak could not then unpack; charging the written archives again would reject
+    # a save the disk has room for. Below the floor the room is negative and must stay so: clamping it to 0 would let a
+    # free image save while the disk is already under the floor.
     avail_now=$(( $(free_gb) - min_free_gb ))
     top=$(( sz > written_big ? sz : written_big ))
-    if [ $(( written + sz + top )) -gt "$avail_now" ]; then
-      fail "image:$key" "skipped: ${sz} GB image does not fit: $(space_need "$written" "$sz" "$top" "$avail_now")"
+    if [ $(( sz + top )) -gt "$avail_now" ]; then
+      fail "image:$key" "skipped: ${sz} GB image does not fit: $(space_need "$written" "$sz" "$top" "$avail_now" $(( sz + top - avail_now )))"
       continue
     fi
     # Exported now, under the lock, from the reference resolved by the survey: the archive holds exactly what runs, and

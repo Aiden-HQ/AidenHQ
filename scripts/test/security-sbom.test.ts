@@ -1,7 +1,7 @@
 // ops/security-sbom.sh with a fake `docker` on PATH: the syft invocations it would run are read back from the fake's
 // log, so the host scan's scope is its argument list, not an inference from the script's text.
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -914,10 +914,12 @@ test("security-sbom: an apply that takes the lock between waves leaves those ima
   for (let i = 0; i < 100 && !existsSync(join(checkout, "data/late-holder")); i++) await new Promise((r) => setTimeout(r, 20));
   assert.ok(existsSync(join(checkout, "data/late-holder")), "the fixture never took the apply lock");
   rmSync(join(checkout, "data/late-holder"), { force: true });
-  for (let i = 0; i < 100; i++) {
-    try { execFileSync("flock", ["-n", join(checkout, "data/apply.lock"), "-c", "true"], { stdio: "ignore" }); break; }
+  let released = false;
+  for (let i = 0; i < 100 && !released; i++) {
+    try { execFileSync("flock", ["-n", join(checkout, "data/apply.lock"), "-c", "true"], { stdio: "ignore" }); released = true; }
     catch { await new Promise((r) => setTimeout(r, 20)); }
   }
+  assert.ok(released, "the fixture never released the apply lock");
   const rows = targets.filter((t) => t[0].startsWith("image:"));
   assert.equal(rows.length, ids.length, `every running image has a row:\n${rows.map((t) => t.join("\t")).join("\n")}`);
   const scanned = rows.filter((t) => t[1] !== "-");
