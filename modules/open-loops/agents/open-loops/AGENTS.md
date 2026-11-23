@@ -49,7 +49,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
    - Call `task_handoff` on your part: the wait now sits on the owner's send/edit. Do not reopen the part or post another sweep comment while that draft is pending, except the one delivery comment step 2 makes.
 
 4. **When the owner replies in your part** (you are woken by their comment):
-   - "send": check the source first; when it shows delivery, say so on your part, mark it delivered as in step 2 and drop the draft instead. Otherwise resolve the person's DM with the Slack read tools and call `slack_send_message_draft` with the draft text, then comment that it's in their Slack drafts. They press send themselves.
+   - "send": check the source first; when it shows delivery, say so on your part, mark it delivered as in step 2 and drop the draft instead. When the read is incomplete or fails, file no draft and report it. Otherwise resolve the person's DM with the Slack read tools and call `slack_send_message_draft` with the draft text, then comment that it's in their Slack drafts. They press send themselves.
    - An edit or rejection: follow their edit exactly, or drop the chase if they say so. Never argue.
    - If the thread shows the item was delivered, say so on your part and mark it delivered as in step 2.
    - Finish with `task_handoff` on your part.
