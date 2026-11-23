@@ -45,7 +45,9 @@ const SEARCH_TOOLS = new Set(["slack_search_public", "slack_search_public_and_pr
 function searchQuery(args: Record<string, unknown>): string | undefined {
   const own = typeof args.query === "string" ? args.query : undefined;
   const keywords = Array.isArray(args.keywords) ? args.keywords.filter((k): k is string => typeof k === "string" && Boolean(k.trim())).map((k) => k.trim()) : [];
-  const filters = typeof args.filters === "string" ? args.filters.trim() : "";
+  // `filters` as the tool documents it (a string); an array is accepted too, as some clients send one, so the fold reads
+  // it the same way the reaction planner does and no modifier is silently lost before it reaches Slack.
+  const filters = typeof args.filters === "string" ? args.filters.trim() : Array.isArray(args.filters) ? args.filters.filter((f): f is string => typeof f === "string" && Boolean(f.trim())).map((f) => f.trim()).join(" ") : "";
   const natural = typeof args.natural_language_query === "string" ? args.natural_language_query.trim() : "";
   if (!own?.trim() && !keywords.length && !natural) return own;
   return [own?.trim(), ...keywords, filters, natural].filter(Boolean).join(" ");

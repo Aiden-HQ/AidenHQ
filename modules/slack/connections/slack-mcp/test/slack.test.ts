@@ -44,6 +44,14 @@ describe("slack-mcp search arguments", () => {
     expect(upstreamArgs("slack_search_public_and_private", { keywords: ["<@U0123456>"], filters: "after:2026-11-16" })).toEqual({ keywords: ["<@U0123456>"], filters: "after:2026-11-16", query: "<@U0123456> after:2026-11-16" });
     expect(upstreamArgs("slack_read_thread", { channel_id: "C0123456", ts: "1794214411.703719", filters: "hasmy::pushpin:" })).toMatchObject({ filters: "hasmy::pushpin:" });
   });
+
+  it("folds an array-form filters the same way the reaction planner reads it, so no modifier is silently lost", () => {
+    // Some clients send `filters` as an array; the fold joins it, so a term search keeps the reaction modifier.
+    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["hasmy::pushpin:"] })).toEqual({ query: "hello hasmy::pushpin:", filters: ["hasmy::pushpin:"] });
+    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["in:<#C0123456>", "after:2026-11-08"] })).toMatchObject({ query: "hello in:<#C0123456> after:2026-11-08" });
+    // An array with nothing usable folds to nothing, exactly as an empty string does.
+    expect(upstreamArgs("slack_search_public_and_private", { query: "hello", filters: ["  ", ""] })).toMatchObject({ query: "hello" });
+  });
 });
 
 describe("slack sign-in", () => {

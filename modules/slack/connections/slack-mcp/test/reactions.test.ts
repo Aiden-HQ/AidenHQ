@@ -76,6 +76,15 @@ describe("planReactionSearch", () => {
     expect(planReactionSearch("slack_search_public", { query: "hasmy::pushpin:", filters: "in:<#C1>" })).toMatchObject({ kind: "unsupported" });
   });
 
+  it("refuses an ordering or shape this path can't reproduce, and accepts the ones it can", () => {
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", sort: "timestamp" })).toMatchObject({ kind: "unsupported" });
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", response_format: "concise" })).toMatchObject({ kind: "unsupported" });
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", include_context: true })).toMatchObject({ kind: "unsupported" });
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", some_future_option: "x" })).toMatchObject({ kind: "unsupported" });
+    // The options this path reproduces (or that don't change the set) are accepted.
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", response_format: "detailed", include_context: false })).toMatchObject({ kind: "mine" });
+  });
+
   it("names the unsupported filter for has::, an extra modifier, or more than one reaction filter", () => {
     expect(planReactionSearch("slack_search_public", { filters: "has::pushpin:" })).toMatchObject({ kind: "unsupported", filter: "has::pushpin:" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin: in:<#C1>" })).toMatchObject({ kind: "unsupported", filter: "hasmy::pushpin: in:<#C1>" });
@@ -267,6 +276,50 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 })).toMatchObject({ ok: true, nextCursor: "c3" });
   });
 
+  it("stops at the caller's limit and hands back the cursor for the next unread page, so nothing is skipped", async () => {
+    const { fetchImpl, calls } = fakeSlack([
+      page([item("C1", "1.1"), item("C2", "2.2")], "after-two"),
+      page([item("C3", "3.3"), item("C4", "4.4")], "after-four"),
+      page([item("C5", "5.5")]),
+    ]);
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 2 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C1" }), expect.objectContaining({ channel: "C2" })], nextCursor: "after-two" });
+    const second = await scanMyReactions({ emoji: "pushpin", limit: 2, cursor: "after-two" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C3" }), expect.objectContaining({ channel: "C4" })], nextCursor: "after-four" });
+    // The last page is reached and the set is exhausted: only then is the cursor null.
+    const third = await scanMyReactions({ emoji: "pushpin", limit: 2, cursor: "after-four" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(third).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C5" })], nextCursor: null });
+    expect(calls.filter((c) => c.includes("reactions.list"))).toHaveLength(3);
+  });
+
+  it("a limit reached part-way through a page resumes at the exact item, so no match is skipped or repeated", async () => {
+    // One page of four reactions: a limit of 1 must return the first and resume at the second. The continuation re-reads
+    // that same page (the fake answers it every time), so each call resumes exactly where the last one stopped.
+    const one = page([item("C1", "1.1"), item("C2", "2.2"), item("C3", "3.3"), item("C4", "4.4")]);
+    const fetchImpl = (async () => Response.json(one)) as unknown as typeof fetch;
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }], nextCursor: expect.any(String) });
+    const next = (first as { nextCursor: string }).nextCursor;
+    expect(next).not.toBeNull();
+    // The continuation re-reads the same page and picks up at C2: nothing skipped, nothing repeated.
+    const second = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: next }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(second).toMatchObject({ ok: true, messages: [{ channel: "C2" }] });
+    const third = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (second as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(third).toMatchObject({ ok: true, messages: [{ channel: "C3" }] });
+    const fourth = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (third as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(fourth).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C4" })], nextCursor: null });
+  });
+
+  it("a limit larger than the set still ends at the last page with a null cursor", async () => {
+    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "only"), page([item("C2", "2.2")])]);
+    expect(await scanMyReactions({ emoji: "pushpin", limit: 50 }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, nextCursor: null });
+  });
+
+  it("carries Slack's needed scope on a missing_scope failure, so it is a permission, not an outage", async () => {
+    const refused = (async () => Response.json({ ok: false, error: "missing_scope", needed: "reactions:read" })) as unknown as typeof fetch;
+    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: refused })).toMatchObject({ ok: false, error: "missing_scope", needed: "reactions:read" });
+  });
+
   it("does not report numbered pages cut off at the cap as complete: there is no cursor to hand back", async () => {
     const numbered = (async (url: string | URL) => {
       const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
@@ -338,7 +391,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async (n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async (_r, n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
@@ -361,6 +414,18 @@ describe("interception through the proxy", () => {
     expect(r.body.id).toBe(7);
     expect(servedSignedIn(r.body.result)).toBe(true);
     expect(payload(r.body)).toEqual({ messages: [{ channel: "C1", ts: "1.1", text: "text 1.1", user: "U0OTHER1" }, { channel: "C2", ts: "2.2", text: "text 2.2", user: "U0OTHER1" }], next_cursor: null });
+    expect(seen).toEqual([]);
+  });
+
+  it("honours the caller's limit through the proxy and hands back a cursor that continues the set", async () => {
+    seen.length = 0;
+    // The fake Slack has two pages (C1 then C2). A limit of 1 returns C1 with a continuation, not the whole set.
+    const first = await rpc("/mcp", "svc", "slack_search_public_and_private", { filters: "hasmy::pushpin:", limit: 1 }, "ok");
+    const firstPayload = payload(first.body);
+    expect(firstPayload.messages).toEqual([expect.objectContaining({ channel: "C1", ts: "1.1" })]);
+    expect(firstPayload.next_cursor).toEqual(expect.any(String));
+    const second = await rpc("/mcp", "svc", "slack_search_public_and_private", { filters: "hasmy::pushpin:", limit: 1, cursor: firstPayload.next_cursor }, "ok");
+    expect(payload(second.body)).toEqual({ messages: [expect.objectContaining({ channel: "C2", ts: "2.2" })], next_cursor: null });
     expect(seen).toEqual([]);
   });
 
@@ -416,6 +481,60 @@ describe("interception through the proxy", () => {
     expect(body.result).toMatchObject({ isError: true });
     expect(payload(body)).toMatchObject({ error: "refused", set: "unknown" });
     unlisted.close();
+  });
+
+  it("reports a missing reactions:read permission as a scope need, not as Slack being disconnected", async () => {
+    const noReactions = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      serviceKey: "svc",
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", serviceKey: "svc", caller: async () => ({}), fetchImpl: (async () => Response.json({ ok: false, error: "missing_scope", needed: "reactions:read" })) as unknown as typeof fetch }),
+    });
+    const base = await listen(noReactions);
+    const res = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(body.result.structuredContent).toMatchObject({ error: "needs_owner", need: { cause: "scope", scope: "reactions:read" } });
+    noReactions.close();
+  });
+
+  it("asks the admission rule of the endpoint the call came to", async () => {
+    const seenEndpoints: boolean[] = [];
+    const perEndpoint = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      serviceKey: "svc",
+      readKey: "rd",
+      reads: ["slack_search_public"],
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, {
+        tokenFile: join(dir, "token.json"),
+        headers: async () => ({ authorization: "Bearer xoxp-user" }),
+        authState: () => "ok",
+        serviceKey: "svc",
+        readKey: "rd",
+        caller: async () => ({}),
+        served: async (readOnly, n) => { seenEndpoints.push(readOnly); return n.startsWith("slack_search_public"); },
+        fetchImpl: (async (url: string | URL) => {
+          if (new URL(String(url)).pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
+          return Response.json(page([item("C1", "1.1")]));
+        }) as unknown as typeof fetch,
+      }),
+    });
+    const base = await listen(perEndpoint);
+    const call = (path: string, key: string) => fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) }).then((r) => r.json() as any);
+    expect(payload(await call("/mcp", "svc")).messages).toHaveLength(1);
+    expect(payload(await call("/mcp/read", "rd")).messages).toHaveLength(1);
+    expect(seenEndpoints).toEqual([false, true]);
+    perEndpoint.close();
   });
 
   it("returns an explicit unsupported error for has:: and for hasmy:: with an extra modifier, never an empty page", async () => {

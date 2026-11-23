@@ -23,8 +23,9 @@ const MAX_PAGES = 200;
 /** A scan that runs longer than this answers "unknown" rather than outliving the kernel's call timeout. */
 const DEFAULT_DEADLINE_MS = 120_000;
 const BODY_LIMIT = 8 * 1024 * 1024;
-// Slack's errors that mean the sign-in itself is refused, not the read.
-const AUTH_ERROR = /invalid_auth|not_authed|token_expired|token_revoked|account_inactive|missing_scope/;
+// Slack's errors that mean the sign-in itself is refused, not the read. `missing_scope` is not one of them: the sign-in
+// works, it just lacks one permission, and the kernel records that as a partial cause, never a Slack outage.
+const AUTH_ERROR = /invalid_auth|not_authed|token_expired|token_revoked|account_inactive/;
 // A conversation that is gone or that this sign-in can't reach: not shown, rather than failing the whole scan.
 const UNREACHABLE = /channel_not_found|not_in_channel|is_archived|access_denied/;
 
@@ -37,6 +38,10 @@ const NEGATED_REACTION = /^-has(my)?::/;
 // A whitespace-delimited token that is a search modifier rather than a term clause. Slack's `-in:`/`-from:`/… are the
 // same modifiers negated, and a modifier still has no term clause to act on.
 const MODIFIER = /^-?(?:in|from|to|with|creator|is|has|hasmy|before|after|on|during|type|content_type):/;
+
+// The search tool's own options. Everything here is either reproduced by this path or refused with a reason; an option
+// this path doesn't know is refused too, so a narrowing or ordering the scan can't repeat is never silently dropped.
+const KNOWN_OPTIONS = new Set(["query", "keywords", "natural_language_query", "filters", "limit", "cursor", "channel_types", "content_types", "after", "before", "sort", "response_format", "include_context"]);
 
 /** One message carrying the reaction, in the search tool's per-message shape. */
 export interface ReactionMessage {
@@ -120,6 +125,13 @@ export function planReactionSearch(name: string, args: Record<string, unknown>):
   // reactions.list's message items are messages; a search that also asks for files would come back short.
   const types = filterText(args.content_types);
   if (types && types.split(",").map((t) => t.trim()).some((t) => t && t !== "messages")) return { kind: "unsupported", filter: only, reason: `${only} with content_types:${types} also asks for non-message content` };
+  // Ordering and response shape are the search tool's, and reactions.list's feed order is its own: an option that would
+  // reorder or reshape the answer is refused rather than quietly ignored.
+  if (text(args.sort)) return { kind: "unsupported", filter: only, reason: `${only} with sort:${text(args.sort)} asks for an order reactions.list doesn't return` };
+  if (text(args.response_format) && text(args.response_format) !== "detailed") return { kind: "unsupported", filter: only, reason: `${only} with response_format:${text(args.response_format)} asks for a shape this path doesn't return` };
+  if (args.include_context === true || text(args.include_context) === "true") return { kind: "unsupported", filter: only, reason: `${only} with include_context asks for surrounding messages this path doesn't return` };
+  const unknown = Object.keys(args).filter((k) => !KNOWN_OPTIONS.has(k) && args[k] !== undefined && args[k] !== null && args[k] !== "");
+  if (unknown.length) return { kind: "unsupported", filter: only, reason: `${only} with ${unknown.join(", ")} asks for an option this path doesn't reproduce` };
 
   const n = Number(args.limit);
   const limit = Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), MAX_LIMIT) : undefined;
@@ -183,7 +195,35 @@ export interface ScanOptions {
 }
 
 /** The scan's outcome: the whole set (`nextCursor: null`), or what stopped it from computing one. */
-export type ScanResult = { ok: true; messages: ReactionMessage[]; nextCursor: string | null } | { ok: false; detail: string };
+export type ScanResult =
+  | { ok: true; messages: ReactionMessage[]; nextCursor: string | null }
+  | { ok: false; detail: string; error?: string; needed?: unknown };
+
+// Slack's numbered pages have no cursor of their own, so one handed back to the caller is this module's own token.
+const NUMBERED_CURSOR = /^aidenhq:page:(\d+)$/;
+const numberedCursor = (page: number): string => `aidenhq:page:${page}`;
+
+// A continuation inside one page: the caller's `limit` was reached part-way through it, so the token names the page to
+// read again (`c` a Slack cursor, `p` a numbered page) and how many of its raw items were already consumed.
+type Position = { c?: string; p?: number; f?: true; skip: number };
+const POSITION = "aidenhq:pos:";
+const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
+function decodePosition(value: string): Position | undefined {
+  if (!value.startsWith(POSITION)) return undefined;
+  try {
+    const v = JSON.parse(Buffer.from(value.slice(POSITION.length), "base64url").toString("utf8")) as Record<string, unknown>;
+    if (!v || typeof v !== "object") return undefined;
+    const skip = Number(v.skip);
+    if (!Number.isInteger(skip) || skip < 0) return undefined;
+    const c = typeof v.c === "string" && v.c ? v.c : undefined;
+    const p = Number.isInteger(v.p) && (v.p as number) > 0 ? (v.p as number) : undefined;
+    const f = v.f === true ? true : undefined;
+    if (!c && p === undefined && !f) return undefined;
+    return { ...(c ? { c } : {}), ...(p !== undefined ? { p } : {}), ...(f ? { f } : {}), skip };
+  } catch {
+    return undefined;
+  }
+}
 
 const messageOf = (item: Record<string, any>, emoji: string, userId: string): ReactionMessage | undefined => {
   if (item?.type !== "message") return undefined;
@@ -222,7 +262,12 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const seen = new Set<string>();
   const cursors = new Set<string>();
   const visibility = new Map<string, boolean>();
-  let cursor = plan.cursor ?? "";
+  const start = plan.cursor ?? "";
+  const position = decodePosition(start);
+  const resumed = NUMBERED_CURSOR.exec(position ? "" : start);
+  let cursor = position ? position.c ?? "" : resumed ? "" : start;
+  // Items of the page named by a position token that an earlier answer already returned: skipped before filtering.
+  let skip = position?.skip ?? 0;
 
   const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string; error?: string; needed?: unknown }> => {
     const url = new URL(`https://slack.com/api/${method}`);
@@ -251,7 +296,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
    * reaction read never returns what the tool itself is not allowed to. A channel Slack can't describe fails the scan,
    * unless its `missing_scope` answer names the kind: that is still enough to scope it correctly.
    */
-  const visible = async (channel: string): Promise<boolean | string> => {
+  const visible = async (channel: string): Promise<boolean | { detail: string; error?: string; needed?: unknown }> => {
     const known = visibility.get(channel);
     if (known !== undefined) return known;
     const r = await get("conversations.info", { channel });
@@ -260,37 +305,52 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // (Slack's `needed` field) still says what the conversation is, so it can be scoped like a described one.
     if (!r.ok && UNREACHABLE.test(r.detail)) return visibility.set(channel, false), false;
     const kind = r.ok ? channelKind(r.json.channel ?? {}) : r.error === "missing_scope" ? kindFromNeeded(r.needed) : undefined;
-    if (!r.ok && !kind) return r.detail;
-    if (!kind) return `Slack didn't say what kind of conversation ${channel} is`;
+    if (!r.ok && !kind) return { detail: r.detail, ...(r.error ? { error: r.error } : {}), ...(r.needed !== undefined ? { needed: r.needed } : {}) };
+    if (!kind) return { detail: `Slack didn't say what kind of conversation ${channel} is` };
     const ok = (plan.publicOnly ? kind === "public" : true) && (plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]));
     visibility.set(channel, ok);
     return ok;
   };
 
   // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives.
-  let numbered = plan.cursor ? undefined : 1;
+  // A continuation names the page it resumes (a cursor, a numbered page, or — for the very first page — `first`), and
+  // only a fresh scan starts at the first page.
+  const first = position?.f === true;
+  let numbered = position?.p ?? (resumed ? Number(resumed[1]) : first || cursor ? undefined : 1);
+  // The caller's `limit` bounds what one answer returns. When it is reached the scan stops and hands back a continuation
+  // that resumes exactly where it stopped (mid-page included), so nothing is skipped and `null` still means exhausted.
+  const reachedLimit = () => plan.limit !== undefined && messages.length >= plan.limit;
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
     const r = await get("reactions.list", { full: "true", limit: String(plan.limit ?? DEFAULT_LIMIT), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
     if (!r.ok) return r;
     const { json } = r;
-    for (const item of Array.isArray(json.items) ? json.items : []) {
+    const items: unknown[] = Array.isArray(json.items) ? json.items : [];
+    for (let i = skip; i < items.length; i++) {
+      const item = items[i] as Record<string, any>;
       const message = messageOf(item, plan.emoji, signIn.userId);
       if (!message) continue;
       if (plan.publicOnly || plan.scopes) {
         const show = await visible(message.channel);
-        if (typeof show === "string") return { ok: false, detail: `couldn't tell what ${message.channel} is (${show})` };
+        if (typeof show !== "boolean") return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}) };
         if (!show) continue;
       }
       const key = `${message.channel}\u0000${message.ts}`;
       if (seen.has(key)) continue;
       seen.add(key);
       messages.push(message);
+      if (reachedLimit()) {
+        const rest = i + 1 < items.length ? { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), skip: i + 1 } : undefined;
+        if (rest) return { ok: true, messages, nextCursor: encodePosition(rest) };
+        break; // this page is done: continue to the cursor below, where the limit check hands the next page back
+      }
     }
+    skip = 0;
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
     if (next) {
       // A cursor already visited can't advance: the set is incomplete, and handing the same cursor back would loop.
       if (cursors.has(next)) return { ok: false, detail: "reactions.list returned a cursor this scan had already followed" };
+      if (reachedLimit()) return { ok: true, messages, nextCursor: next };
       cursor = next;
       numbered = undefined;
       continue;
@@ -300,6 +360,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (Number.isFinite(pages) && pages > current) {
       if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
       else numbered++;
+      if (reachedLimit()) return { ok: true, messages, nextCursor: numberedCursor(numbered) };
       continue;
     }
     return { ok: true, messages, nextCursor: null };
@@ -404,11 +465,10 @@ export interface InterceptOptions {
   /** The sign-in's state, as the proxy reads it: a transient refresh failure is not the owner's to fix. */
   authState: () => string;
   /**
-   * Whether the proxy admits `name` now: a live upstream catalog that carries it, the manifest's read tag and the
-   * upstream's read-only hint (asked of the proxy's own `/mcp/read`, which lists nothing when either is missing). A tool
-   * admitted there is admitted on `/mcp` too, so the reaction path can't answer where the proxy would refuse.
+   * Whether the proxy admits `name` on the endpoint the call came to (`readOnly`): the same rule the proxy applies there,
+   * asked of the proxy itself, so the reaction path can't answer where the proxy would refuse.
    */
-  served?: (name: string) => Promise<boolean>;
+  served?: (readOnly: boolean, name: string) => Promise<boolean>;
   /** The kernel's bearer on /mcp. */
   serviceKey?: string;
   /** The kernel's read bearer on /mcp/read. */
@@ -465,7 +525,7 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
       return true;
     }
   }
-  if (o.served && !(await o.served(name).catch(() => false))) {
+  if (o.served && !(await o.served(readOnly, name).catch(() => false))) {
     // Signed out, the proxy lists nothing: that is a sign-in to fix, not a tool that isn't served.
     if (o.authState() !== "ok") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
     const detail = readOnly ? `Tool ${name} is not a read: the read endpoint serves reads only.` : `The reaction set is unknown: Slack doesn't offer ${name} right now.`;
@@ -516,6 +576,12 @@ async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "
   const scan = await scanMyReactions({ ...plan, scopes }, { authorization, userId }, { fetchImpl: o.fetchImpl, sleep: o.sleep, maxPages: o.maxPages, deadlineMs: o.deadlineMs });
   if (!scan.ok) {
     o.log?.({ tool: name, filter: plan.filter, detail: scan.detail }, "reactions.list could not compute the set");
+    // A missing permission is not an outage: the sign-in works and every other tool still does, so it is a `scope` need
+    // the kernel records as a partial cause, naming the scope Slack said it needed.
+    if (scan.error === "missing_scope") {
+      const scope = (Array.isArray(scan.needed) ? scan.needed.filter((s) => typeof s === "string").join(",") : text(scan.needed)) || "reactions:read";
+      return needsOwner({ cause: "scope", scope, detail: `The reaction set is unknown: the Slack sign-in is missing the ${scope} permission, so reactions.list can't be read (Reconnect on the board and allow it).` });
+    }
     // Slack refusing the token is the owner's to fix; anything else is a plain error the caller retries or reports.
     if (AUTH_ERROR.test(scan.detail)) return need(`The reaction set is unknown: Slack refused the sign-in (${scan.detail}).`);
     return reactionError("reactions_list_failed", `The reaction set is unknown: ${scan.detail}.`, { filter: plan.filter });
