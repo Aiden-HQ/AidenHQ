@@ -140,9 +140,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    the `Fixes` line: close it `completed` with a `note` carrying that line. A closed issue without that evidence takes the
    same comment first, so the close carries its citation. When the write is refused and the issue's state does **not**
    show the resolution, block on the upstream task that fixes the trust gate (the product bug filed for it), never on a
-   manual relabel by the owner: a relabel by an agent records the owner as vouching for an issue he never saw. A refusal
-   the Trust rule intends, the newest fix-label event untrusted, is that rule's stop and not a gate defect: log it and
-   stop, as step 1 says.
+   manual relabel by the owner: a relabel by an agent records the owner as vouching for an issue he never saw.
 7. `not-real` closes `not_planned` with a `note` carrying `Not fixing: <the log line or path that disproves it>`. `already-fixed` closes
    `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
    `out-of-scope` closes `not_planned` with a `note` carrying `Not fixing: <where the defect lives (the upstream project or owner), with the evidence>`; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
