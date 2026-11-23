@@ -336,7 +336,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const gaps = [...shardGaps];
   const hidden = excluded.filter((e) => e.gap);
   if (hidden.length) gaps.push(`${hidden.length} changed file${hidden.length > 1 ? "s" : ""} got no findings pass (${hidden.slice(0, 5).map((e) => `${e.path}: ${e.why}`).join("; ")}${hidden.length > 5 ? "; …" : ""})`);
-  const ids = (l: string[]) => `${l.slice(0, 10).join(", ")}${l.length > 10 ? `, … (${l.length} in all)` : ""}`;
+  const ids = (l: string[]) => `${l.slice(0, 2).join(", ")}${l.length > 2 ? ", …" : ""}`;
   /** The PR's earlier findings at this head (`again`: found or restated by this run): which are fixed, which answers unsafe. */
   async function recheck(again: Set<string>, claimsOnly = false) {
     const root = ws.replace(/\/$/, "");
@@ -378,6 +378,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         const id = u && typeof u === "object" && typeof u.id === "string" ? u.id : "";
         const why = u && typeof u === "object" && typeof u.why === "string" ? u.why.trim() : "";
         const f = claims.get(id);
+        if (f && why && !seen(f)) unread.push(id);
         if (!f || !why || named.has(id) || !seen(f)) continue;
         named.add(id);
         // The defect's line at the head, when it gives one inside the post schema's range; else the finding keeps its own.
