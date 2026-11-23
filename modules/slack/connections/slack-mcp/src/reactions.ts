@@ -401,11 +401,14 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       if (plan.publicOnly || plan.scopes) {
         const show = await visible(message.channel);
         if (typeof show !== "boolean") {
-          // A lookup that fails after matches were verified must not discard them: hand them back with a continuation,
-          // which replays the feed by identity and re-checks this channel when the caller resumes. The failure is the
-          // answer only when nothing was verified.
+          const detail = `couldn't tell what ${message.channel} is (${show.detail})`;
+          // A missing permission can't be fixed by following a cursor: it must reach the owner even when matches were
+          // already verified, so it stays a failure (with those matches riding along) rather than a successful page.
+          if (show.error === "missing_scope") return { ok: false, detail, error: show.error, needed: show.needed, method: show.method ?? "conversations.info", ...(messages.length ? { messages } : {}) };
+          // Any other lookup failure after matches were verified keeps them: a continuation replays the feed by identity
+          // and re-checks this channel when the caller resumes. The failure is the answer only when nothing was verified.
           if (messages.length) return { ok: true, messages, nextCursor: continuation() };
-          return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}), ...(show.method ? { method: show.method } : {}) };
+          return { ok: false, detail, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}), ...(show.method ? { method: show.method } : {}) };
         }
         if (!show) continue;
       }

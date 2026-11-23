@@ -233,12 +233,11 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
     // The same answer in an all-channels scan: the DM is a kind the sign-in has no search scope for, so it is dropped.
     expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
-    // With the im scope granted it could be shown, but Slack never said what it is: C1 is verified so it is returned with
-    // a continuation, and the resume (which skips C1 and hits the same unresolved D1) reports the set as unknown — the
-    // DM is never guessed in.
+    // With the im scope granted it could be shown, but Slack never said what it is. A missing permission can't be fixed
+    // by a cursor, so the scan reports it (with the verified C1 riding along) instead of a successful page: the DM is
+    // never guessed in, and the owner learns to reconnect.
     const unresolved = await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope });
-    expect(unresolved).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
-    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]), cursor: (unresolved as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: false });
+    expect(unresolved).toMatchObject({ ok: false, error: "missing_scope", needed: "im:read", messages: [{ channel: "C1", ts: "1.1" }] });
     // A transient failure (not a scope answer) leaves the set unknown instead of silently short.
     const flaky = (async (url: string | URL) => {
       const u = new URL(String(url));
@@ -948,6 +947,42 @@ describe("interception through the proxy", () => {
     expect(body.result.isError).toBe(true);
     expect(payload(body)).toMatchObject({ error: "reactions_list_failed", set: "unknown" });
     broken.close();
+  });
+
+  it("sends the scope need to the owner even when a match was already verified", async () => {
+    // C1 is verified and returned by reactions.list; the next channel's lookup is missing_scope. Following a cursor can't
+    // grant a permission, so the answer is the `scope` need (with C1 riding along), never a successful page.
+    const scoped = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      serviceKey: "svc",
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, {
+        tokenFile: join(dir, "token.json"),
+        headers: async () => ({ authorization: "Bearer xoxp-user" }),
+        authState: () => "ok",
+        serviceKey: "svc",
+        caller: async () => ({}),
+        served: async () => ({ served: true, confirmed: true }),
+        fetchImpl: (async (url: string | URL) => {
+          const u = new URL(String(url));
+          if (u.pathname.endsWith("/conversations.info")) {
+            if (u.searchParams.get("channel") === "C2") return Response.json({ ok: false, error: "missing_scope", needed: "groups:read" });
+            return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
+          }
+          return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
+        }) as unknown as typeof fetch,
+      }),
+    });
+    const scopedBase = await listen(scoped);
+    const res = await fetch(`${scopedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public_and_private", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(body.result.structuredContent).toMatchObject({ error: "needs_owner", need: { cause: "scope", scope: "groups:read" } });
+    scoped.close();
   });
 
   it("names conversations.info, not reactions.list, when the channel lookup is what lacked the scope", async () => {
