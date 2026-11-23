@@ -1,4 +1,4 @@
-// Host-side, one-time OAuth consent for the read-only Google sidecar.
+// Host-side, one-time OAuth consent for the Google sidecar.
 //
 //   node src/auth.ts <client_secret.json> <credentials file> [--email you@example.com] [--primary]
 //
@@ -6,16 +6,17 @@
 // pre-selects the account in Google's chooser; --primary makes it the account used for
 // Calendar and meeting documents (the first account is primary by default).
 //
-// Uses the installed-app loopback flow with PKCE. Requests read-only scopes only.
+// Uses the installed-app loopback flow with PKCE.
 // Self-contained (no local imports) so it runs with Node's type stripping.
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
+// A copy of google.ts SCOPES (test/reconnect.test.ts checks they match).
 const SCOPES = [
-  "https://www.googleapis.com/auth/calendar.events.readonly",
+  "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive.readonly",
-  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.modify",
 ];
 
 const args = process.argv.slice(2);
@@ -86,9 +87,7 @@ const server = createServer(async (req, res) => {
     console.error("token exchange failed:", tokens.error ?? tokenRes.status);
     process.exit(1);
   }
-  const granted = (tokens.scope ?? "").split(" ");
-  const unexpected = granted.filter((s) => s && !SCOPES.includes(s) && !["openid", "email", "profile"].includes(s));
-  if (unexpected.length) console.warn("warning: unexpected scopes granted:", unexpected.join(", "));
+  const granted = (tokens.scope ?? "").split(" ").filter(Boolean);
   const email = await emailFor(tokens.access_token!);
   const creds = existingCreds();
   creds.client_id = client.client_id;
@@ -97,7 +96,7 @@ const server = createServer(async (req, res) => {
   if (makePrimary || !creds.primary) creds.primary = email;
   writeFileSync(outFile, JSON.stringify(creds, null, 2), { mode: 0o600 });
   chmodSync(outFile, 0o600);
-  res.writeHead(200, { "content-type": "text/plain" }).end(`AidenHQ: read-only access granted for ${email}. You can close this tab.`);
+  res.writeHead(200, { "content-type": "text/plain" }).end(`AidenHQ: access granted for ${email}. You can close this tab.`);
   console.log(`Connected ${email} (read-only). Accounts: ${Object.keys(creds.accounts).join(", ")}; primary (Calendar, meeting docs): ${creds.primary}`);
   server.close();
 });

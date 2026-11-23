@@ -42,7 +42,7 @@ export interface SignIn {
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
 }
 export interface GoogleState {
-  accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[];
+  accounts: { email: string; primary: boolean; state: string; since: string; detail?: string; missing?: string[] }[];
   error?: string;
   /** A Desktop client returns only to loopback: its Connect is pasted back (GoogleConnect in Connect.tsx). */
   client_type?: "desktop" | "web";
@@ -113,6 +113,9 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
     if (!g.accounts.length) return { status: "signed_out", reason: g.error ? `No Google account connected (${g.error}).` : "No Google account connected.", ...connect("Connect Google", "/google/connect", canConnect.google) };
     const expired = g.accounts.filter((a) => a.state === "expired" || a.state === "error");
     if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`, canConnect.google) };
+    // Connected before Google writes: reads work; one reconnect grants calendar changes and Gmail drafts, sends and labels.
+    const short = g.accounts.filter((a) => a.missing?.length);
+    if (short.length) return { status: "signed_out", reason: `${short.map((a) => a.email).join(", ")} needs new access: reconnect once so agents can change your calendar and send email (each change reviewed first).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(short[0]!.email)}`, canConnect.google) };
   }
 
   // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): its Connect asks for any per-install value first (its

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only Google consent for the google-workspace-mcp sidecar, one account at a time.
+# Google consent for the google-workspace-mcp sidecar, one account at a time.
 # Connect several accounts by running it once per account:
 #   scripts/google-auth.sh --email you@work.com --primary   # Calendar + meeting docs come from here
 #   scripts/google-auth.sh --email you@side.io              # adds Gmail/Drive of a second account
@@ -8,7 +8,7 @@
 #   scripts/google-auth.sh            (reuses the client on file, or prompts for client ID and secret)
 #
 # Needs a "Desktop app" OAuth client from a Google Cloud project with the Calendar API
-# and Drive API enabled. Requests only calendar.events.readonly and drive.readonly.
+# and Drive API enabled. Requests the scopes in google-workspace-mcp src/google.ts (SCOPES).
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo"
@@ -47,4 +47,4 @@ fi
 node modules/google/connections/google-workspace-mcp/src/auth.ts "$client" "$out" "${extra[@]}"
 chmod 0600 "$out"
 docker compose up -d --force-recreate google-workspace-mcp
-echo "Google connected (read-only). Verify with scripts/healthcheck.sh"
+echo "Google connected. Verify with scripts/healthcheck.sh"

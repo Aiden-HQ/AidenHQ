@@ -6,6 +6,8 @@ export interface GoogleAccountStatus {
   state: "unknown" | "ok" | "expired" | "error";
   since: string;
   detail?: string;
+  /** Write scopes its sign-in lacks (connected before Google writes): one reconnect grants them. */
+  missing?: string[];
 }
 
 /**

@@ -1,5 +1,5 @@
 name: google
-description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads)."
+description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads), plus calendar changes and Gmail drafts, sends and labels as you, each reviewed first."
 requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its guided setup
@@ -15,7 +15,7 @@ contributes:
     - order: 40
       wizard: false
       title: Google
-      why: "Aiden reads your calendar, Drive and Gmail (read-only) to brief you and follow up."
+      why: "Aiden reads your calendar, Drive and Gmail to brief you and follow up, and agents can change your calendar and send email as you, each change reviewed first."
       effort: "about 5 minutes, in the Google Cloud console"
       secrets: [google_client_id, google_client_secret]
       console_url: https://console.cloud.google.com/auth/clients/create
@@ -29,13 +29,13 @@ contributes:
         2. Turn on three APIs, pressing Enable on each: [Calendar](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com), [Drive](https://console.cloud.google.com/apis/library/drive.googleapis.com), [Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
         3. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) and press **Get started**. App name `AidenHQ`, your email as support email. Audience: **Internal** or **External** (above). Your email again as contact, accept the policy, **Create**.
         4. On [Data access](https://console.cloud.google.com/auth/scopes) press **Add or remove scopes**, paste these three (one per line) into *Manually add scopes*, **Add to table**, **Update**, **Save**:
-        `https://www.googleapis.com/auth/calendar.events.readonly`
+        `https://www.googleapis.com/auth/calendar.events`
         `https://www.googleapis.com/auth/drive.readonly`
-        `https://www.googleapis.com/auth/gmail.readonly`
+        `https://www.googleapis.com/auth/gmail.modify`
         5. External only: on [Audience](https://console.cloud.google.com/auth/audience) add your own address under **Test users**, then press **Publish app** to avoid the 7-day expiry.
         6. Open [Clients](https://console.cloud.google.com/auth/clients/create) and create a client of type **Desktop app** (not Web application; it needs no redirect address).
         7. Copy the **Client ID** and **Client secret** it shows, paste them below and save.
-        8. Press **Connect** and approve read-only access. If the browser then shows a page that does not load, that is expected: copy its address and paste it back on the board.
+        8. Press **Connect** and approve access. If the browser then shows a page that does not load, that is expected: copy its address and paste it back on the board.
   warehouse.sources:
     - schema: src_docs
       about: "src_docs.docs (Drive metadata + a cheap summary: a pointer, never evidence; read the doc live before acting) / changes"
@@ -45,12 +45,18 @@ contributes:
 connections:
   google_workspace:
     setup: "Follow the steps at #/setup/google on the board (a Desktop-app client), then press Connect Google (from the board's loopback address, http://127.0.0.1:3121, or paste the redirected address back). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
-    guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads. Glean finds Drive documents faster; read them here when you need the exact current text."
+    guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads; and, when granted, calendar changes and Gmail drafts, sends and labels as the owner. Glean finds Drive documents faster; read them here when you need the exact current text."
     url: http://google-workspace-mcp:8081/mcp
     auth: google_service_key
     tools:
       read: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
       write: []
+      # Writes act as the owner on one account (`account`, default the primary): destructive, so only a grant naming one reaches
+      # it and every call is a record the AI reviewer decides first (floor 1), except gmail_label: upkeep of the owner's own
+      # labels (never system ones, never a new one; checked in code), which runs at once (Tier 0) like GitHub issue labels.
+      # Rules for agents: skills calendar-changes and gmail-writes.
+      destructive: [ calendar_create_event, calendar_update_event, calendar_delete_event, calendar_respond, gmail_draft, gmail_send, gmail_label ]
+      unreviewed: [ gmail_label ]
     # The host's health probes (kernel/src/health.ts): one read each, as the narrowest agent granted the tool.
     health_probes:
       gmail: { tool: gmail_search, args: { query: "in:inbox", max_results: 1 } }
