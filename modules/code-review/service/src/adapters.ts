@@ -67,7 +67,7 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
  * empty. option and lens are the catalog option's (empty for a combo); setup_files a pending deepsec setup branch's files.
  * `code-review-tools` (the selected tool options, token-free): the base (a tree's: the commit itself) and the options (toolSpec).
  */
-/** The previous findings ride in PREVIOUS_FIELDS json spec fields (the kernel holds 16 KB each): `previous`, `previous_2`, … The
+/** The previous findings ride in PREVIOUS_FIELDS json spec fields (the kernel holds 16 KB each): `previous`, `previous_b`, … The
  * budget leaves room for an entry that doesn't fit the end of a field. */
 export const PREVIOUS_FIELDS = 6, PREVIOUS_BUDGET = PREVIOUS_FIELDS * 13_500;
 const FIELD_MAX = 15_000;
@@ -81,7 +81,7 @@ function shards(findings: unknown[]): Record<string, string> {
     out[at]!.push(f);
     size += n;
   }
-  return Object.fromEntries(out.map((l, i) => [i ? `previous_${i + 1}` : "previous", JSON.stringify({ findings: l })]));
+  return Object.fromEntries(out.map((l, i) => [i ? `previous_${"bcdef"[i - 1]}` : "previous", JSON.stringify({ findings: l })]));
 }
 
 export function checkSpec(s: ReviewSpec): Record<string, string> {

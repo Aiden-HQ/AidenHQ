@@ -26,7 +26,7 @@ codehost:
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
 # incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, previous
-# the PR's still-open findings to recheck (shared over previous, previous_2 … previous_6, 16 KB each) (and that the finders take as already reported, and the answered ones whose claim it
+# the PR's still-open findings to recheck (shared over previous, previous_b … previous_f, 16 KB each) (and that the finders take as already reported, and the answered ones whose claim it
 # checks for an unsafe fix). It reads back GET /v1/checks/:id
 # with `result` (the Review JSON, bound into the receipt, stamped with the ledger's cost_usd
 # and tokens) and `billed_usd` (a running check's spend so far too).
@@ -38,7 +38,7 @@ check_jobs:
     title: the code review
     # target: pr, or tree (a whole repo at head: pr is empty and base is the head); option and lens: a catalog option's (empty
     # for a combo); setup_files: a pending deepsec setup branch's files ({} for none).
-    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_2: json, previous_3: json, previous_4: json, previous_5: json, previous_6: json, intent: text }
+    spec: { base: sha, run: text, incremental_from: sha, pr: text, target: text, option: text, lens: text, setup_files: json, combo: json, focus: text, previous: json, previous_b: json, previous_c: json, previous_d: json, previous_e: json, previous_f: json, intent: text }
     model: true
     result: true
   # The selected tool options of the option catalog (catalog.json), run token-free over one commit (recipe/tools.ts): `options` is
