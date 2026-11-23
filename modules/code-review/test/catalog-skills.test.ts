@@ -146,7 +146,7 @@ printf '%s\\n' '${JSON.stringify({ type: "user", message: { content: [{ type: "t
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 printf '%s|%s|%s|%s\\n' "$(echo "$2" | head -1 | cut -c1-20)" "$PWD" "$(git rev-parse HEAD)" "$(git diff --name-only | tr '\\n' ' ')" >> '${log}'
 cp "$CLAUDE_CONFIG_DIR/settings.json" '${bin}/settings.json'
-prev=""; for a in "$@"; do [ "$prev" = "--append-system-prompt" ] && printf '%s' "$a" > '${bin}/instructions'; prev="$a"; done
+prev=""; for a in "$@"; do [ "$prev" = "--append-system-prompt" ] && printf '%s\n=====\n' "$a" >> '${bin}/instructions'; prev="$a"; done
 test "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" && echo "\${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB-unset}" > '${bin}/scrub'
 ${init}
 ${dead}
@@ -165,7 +165,7 @@ esac
     try { return await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base, minutes, scratch, own: true, harness: "claude-code", skills, skillsRoot: root }); } finally { process.env.PATH = path; }
   };
   const turns = () => readFileSync(log, "utf8").trim().split("\n").map((l) => { const [task, cwd, at, dirty] = l.split("|"); return { task, cwd, at, dirty: dirty!.trim() }; });
-  return { root, base, head, run, turns, scrub: () => readFileSync(join(bin, "scrub"), "utf8").trim(), settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")), instructions: () => readFileSync(join(bin, "instructions"), "utf8") };
+  return { root, base, head, run, turns, scrub: () => readFileSync(join(bin, "scrub"), "utf8").trim(), settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")), instructions: () => readFileSync(join(bin, "instructions"), "utf8").split("\n=====\n").slice(0, -1) };
 }
 const ran = (...r: boolean[]) => JSON.stringify({ findings: [], stale_guidance: [], skills: r.map((x, i) => ({ skill: `/p:${["one", "two"][i]}`, ran: x, ...(x ? { partial: false } : {}), why: x ? "" : "it found no change to review" })) });
 
@@ -231,7 +231,8 @@ test("a skill that reviewed only part of the code keeps its findings, and the re
 
 test("a skill stopped at the skills' time limit keeps what it found: the restate runs, the review is incomplete", async () => {
   const t0 = Date.now();
-  const f = fakeRun({ restate: ran(true, true), slow: true });
+  // The restate is asked only for the skills that started; the runner says the rest never did.
+  const f = fakeRun({ restate: ran(true), slow: true });
   const r = await f.run([{ skill: "/p:one", args: "" }, { skill: "/p:two", args: "" }], 0.01); // 6 turn allowances: 3.6 s
   assert.ok(Date.now() - t0 < 20_000, "stopped at the limit, not after the skill's 30 s");
   assert.equal(r.cause, undefined);
@@ -270,12 +271,13 @@ test("Claude Code runs with its own sandbox off (gVisor refuses its network name
 test("a skill run is told to run its whole workflow, sub-agents included, and where it may write", async () => {
   const f = fakeRun({ restate: ran(true) });
   assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
-  const text = f.instructions();
-  assert.ok(text.startsWith("x\n\n"), "the brief first");
-  assert.match(text, /Run it in full as its files say/);
-  assert.match(text, /the sub-agents it dispatches/);
-  assert.match(text, /a sampled or lead-only pass in its place is not this review/);
-  const cwd = /Your working directory \((\S+), a throwaway checkout of the head\)/.exec(text)?.[1];
+  const [text, restated] = f.instructions();
+  assert.ok(text!.startsWith("x\n\n"), "the brief first");
+  assert.equal(restated, "x", "the restate gets the brief alone: it never resumes the workflow");
+  assert.match(text!, /Run it in full as its files say/);
+  assert.match(text!, /the sub-agents it dispatches/);
+  assert.match(text!, /a sampled or lead-only pass in its place is not this review/);
+  const cwd = /Your working directory \((\S+), a throwaway checkout of the head\)/.exec(text!)?.[1];
   assert.equal(cwd && realpathSync(cwd), realpathSync(f.turns()[0]!.cwd!), "its working directory, the throwaway checkout, is where it writes");
 });
 
