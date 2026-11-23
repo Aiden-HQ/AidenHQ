@@ -591,6 +591,11 @@ it("reports the org on a successful owner call that names one, and only then", a
   expect(seen).toEqual(["Acme", "acme", "Acme", "acme", "acme", "other"]);
   seen.length = 0;
 
+  // A search whose answer the org's SSO filtered (partial-results) is not proof the org answers: nothing is reported.
+  answerWith = () => answer(200, { items: [] }, { "x-github-sso": "partial-results; organizations=acme" });
+  await access.rest("GET", "/search/issues?q=org%3AAcme%20is%3Aissue");
+  expect(seen, "an SSO-filtered answer is not a clear").toEqual([]);
+
   // A 304 (a conditional read that found nothing new) is a success too.
   answerWith = () => new Response(null, { status: 304 });
   await access.rest("GET", "/orgs/Acme/repos", undefined, { etag: "W/\"x\"" });

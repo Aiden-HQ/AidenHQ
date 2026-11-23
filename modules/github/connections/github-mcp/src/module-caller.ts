@@ -153,6 +153,8 @@ export function needQueue(o: {
     try {
       // One entry per kept key at the start: a failure re-keeps it without being visited again in this pass.
       for (const [k, p] of [...pending]) {
+        // A success fixed it while this pass awaited an earlier report: no longer kept, so it is not sent.
+        if (!pending.has(k)) continue;
         if (stale(p)) {
           pending.delete(k);
           changed = true;

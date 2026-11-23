@@ -251,3 +251,33 @@ describe("a successful owner call to an org", () => {
     await q.flush();
     expect(k.seen.slice(before).map((s) => s.body), "acme's stale report is not replayed").not.toContainEqual(expect.objectContaining({ need: expect.objectContaining({ org: "Acme" }) }));
   });
+
+  it("a success while a flush awaits an earlier report does not let that pass send the forgotten one", async () => {
+    // Two needs kept by an earlier process, read back from disk: nothing is sent until the flush.
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    const kept = (org: string) => ({ cause: "restricted", detail: "d", org, url: "https://github.com/settings/connections/applications/cid" });
+    writeFileSync(file, JSON.stringify([
+      { key: ["restricted", "", "other", ""].join("\u0000"), need: kept("other") },
+      { key: ["restricted", "", "acme", ""].join("\u0000"), need: kept("acme") },
+    ]));
+    let release: (r: Response) => void = () => {};
+    const seen: { need: { org?: string } }[] = [];
+    let first = true;
+    const fetcher = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(JSON.parse(String(init?.body ?? "{}")));
+      if (first) { first = false; return new Promise<Response>((r) => (release = r)); }
+      return ok();
+    }) as unknown as typeof fetch;
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher, waitMs: 50, file });
+    expect(q.pending()).toBe(2);
+    const pass = q.flush(); // sends the first and waits for its answer
+    await new Promise((r) => setTimeout(r, 20));
+    q.forget("acme"); // acme answered meanwhile
+    release(ok());
+    await pass;
+    expect(seen.map((b) => b.need.org), "acme's report never went in that pass").toEqual(["other"]);
+    await q.flush();
+    expect(seen.map((b) => b.need.org)).toEqual(["other"]);
+    expect(q.pending()).toBe(0);
+  });

@@ -224,8 +224,8 @@ export function createConnectionState(o: {
         const tails = [`:sso:${org}`, `:restricted:${org}`].map((t) => t.toLowerCase());
         rowWhere = "module = ? AND cause IN ('sso', 'restricted') AND lower(substr(key, length(?) + 1)) IN (?, ?)";
         rowArgs = [connection, connection, ...tails];
-        waitWhere = "lower(substr(need, length(?) + 1)) IN (?, ?)";
-        waitArgs = [connection, ...tails];
+        waitWhere = "module = ? AND need IS NOT NULL AND lower(substr(need, length(?) + 1)) IN (?, ?)";
+        waitArgs = [connection, connection, ...tails];
       } else {
         const byAccount = account ? " AND (account = ? OR account = '')" : "";
         rowWhere = `module = ?${byAccount}${fullOnly ? " AND cause IN ('not_connected', 'expired')" : ""}`;

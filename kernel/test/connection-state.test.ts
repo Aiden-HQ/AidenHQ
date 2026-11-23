@@ -381,6 +381,7 @@ test("an org clear keys its rows by the connection, not the module (github_offic
   // differently-cased connection name is another connection, not the same one.
   assert.equal(w.s.ok("github_official", { org: "acme" }), 1);
   assert.deepEqual(w.db.prepare("SELECT key FROM connection_state ORDER BY key").all().map((r) => r.key), ["GitHub:restricted:acme", "github:restricted:acme"]);
+  assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connection_waits WHERE module = 'GitHub'").get()!.n, 1, "GitHub's wait stays registered");
   assert.deepEqual(w.opened.map((o) => o.task), ["w3"]);
 });
 

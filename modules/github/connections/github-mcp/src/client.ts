@@ -423,8 +423,9 @@ export function createAccess(o: {
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
-    // A 304 is a conditional read that succeeded: the org answered, so its need is cleared too.
-    if (res.ok || res.status === 304) {
+    // A 304 is a conditional read that succeeded: the org answered, so its need is cleared too. `partial-results` says the org's
+    // SSO blocked part of the answer (a search that omits what it protects), so the org did not answer for everything asked.
+    if ((res.ok || res.status === 304) && !/^partial-results/i.test(res.headers.get("x-github-sso") ?? "")) {
       const orgs = restOrgs(path);
       clearProblems(orgs);
       orgOk(orgs);
