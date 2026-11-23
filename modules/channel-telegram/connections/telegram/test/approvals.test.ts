@@ -50,7 +50,7 @@ describe("cards", () => {
     const { sent, send } = sender();
     await syncCards(k, store, send, "standard", true);
     expect(sent.map((s) => Boolean(s.markup))).toEqual([false, true]);
-    expect(sent[0]!.text).toContain("Decide this one on the board");
+    expect(sent[0]!.text).toContain("Decide this one [on the board](#/approvals/");
     expect(await decideCard(k, store, "A00000003", "approve", "owner")).toMatchObject({ ok: false });
   });
 

@@ -1407,3 +1407,18 @@ a.cost-top-name:focus-visible { outline: 2px solid var(--accent); outline-offset
 .decide-error { margin: 0; color: var(--bad-text); font-size: var(--text-sm); }
 .approval-id { text-decoration: none; }
 .approval-id:hover { text-decoration: underline; }
+/* Batch deciding on the Approvals list (Chat.tsx BatchBar): a box on each card, a select-all row, one bar for the picked. */
+.approval-pick { display: inline-flex; align-items: center; gap: 8px; flex: none; cursor: pointer; font-size: var(--text-base); color: var(--muted); }
+.approval-pick input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.approval-card.picked { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
+.batch-select { display: flex; align-items: center; gap: 12px; min-height: 28px; }
+.batch-bar { position: sticky; bottom: 16px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 4px; padding: 10px 12px 10px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-lg); animation: msg-in var(--medium) var(--ease-out) both; }
+.batch-count { font-size: var(--text-base); color: var(--muted); }
+.batch-count b { color: var(--text); font-variant-numeric: tabular-nums; }
+.batch-actions { display: flex; flex: 1 1 auto; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
+.batch-actions .decide-reason { flex: 0 1 380px; min-width: 0; }
+.batch-failed { flex-basis: 100%; }
+.app.mobile .batch-bar { bottom: calc(var(--bottom-bar, 64px) + 8px); }
+.app.mobile .batch-actions { flex-wrap: wrap; width: 100%; }
+.app.mobile .batch-actions .decide-reason { flex: 1 1 100%; }
+.app.mobile .batch-actions > .btn { flex: 1 1 0; }

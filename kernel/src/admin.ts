@@ -1,5 +1,6 @@
 // K4 kernel pages on the admin listener (127.0.0.1:3120; spec §2.3, §2.5; lean 3a): sign-in, the approval list and card
-// pages, decide and batch decide, the owner's confirmation page and the owner message frame. Server-rendered, no script.
+// pages' old addresses (they redirect to the board, the one approvals UI), the owner's confirmation page and the owner message
+// frame. Server-rendered, no script.
 // - Every request names an allowed Host (DNS rebinding); every route but /healthz, sign-in, OpenRouter's callback and GitHub's
 //   App manifest return (each by a single-use state an admin's page made) needs a ready admin's session (TOTP enrolled), stamped `account:<id>` from the session, never from the request.
 // - The OAuth authorization server for the owner's MCP clients (Better Auth's oauthProvider, auth-rules.ts): its metadata,
@@ -8,8 +9,8 @@
 // - Every POST carries this listener's own Origin, exactly (cookies ignore ports, so the board's origin on the same host is
 //   refused here), and, signed in, a token bound to the session that only a page from this origin carries (A6).
 // - Every page sends frame-ancestors 'none', except /owner/message, which the board's origins may frame: it only sends what
-//   the owner typed into it (A7). Every one-click owner action here happens on a top-level page; the board's own Approve and
-//   Reject decide through /v1/owner/decide with the admin's board session instead (auth-api.ts), never by framing a page here.
+//   the owner typed into it (A7). Every one-click owner action here happens on a top-level page. Cards are decided on the board
+//   (its Approve and Reject, through /v1/owner/decide with the admin's board session: auth-api.ts), never on a page here.
 // - /setup (spec §6.10, A42): the first-run page, only with the single-use token ops/setup.sh --unattended prints and only
 //   while no admin exists. A GET changes nothing; the submit is checked in full, then spends the token, makes the owner's
 //   account and hands over to /auth/enrol for the authenticator. The owner then picks the model on /setup/model: Connect
@@ -27,7 +28,6 @@ import { ORG, manifest, type MadeApp } from "./github-app.ts";
 import type { Api } from "./channels.ts";
 import type { State as UpdateState } from "./updates.ts";
 
-type Card = Record<string, any>;
 type Deps = {
   accounts: {
     sessionOf: (req: IncomingMessage) => Promise<AdminSession | null>; step: (req: IncomingMessage, sub: string, body: Record<string, unknown>) => Promise<Step>; secret: string;
@@ -38,7 +38,6 @@ type Deps = {
   };
   /** First-run setup's vault side: the owner email settings fix, the recovery key shown once, and secret writes. */
   firstRun?: { ownerEmail: () => string | undefined; recoveryKey: () => string; fields: () => SetupField[]; has: (secret: string) => boolean; save: (secret: string, value: string) => void; forgetRecoveryKey: () => void };
-  cards: { ownerCards: () => Promise<{ live: Card[]; finished: Card[] }>; decideCard: (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason?: string) => Promise<{ identifier: string; sentence: string; state: string }> };
   ownerMessage: (b: { text?: unknown; task?: unknown }) => Promise<{ task: { identifier: string } }>;
   /** The control plane as the owner (a confirmed status change). */
   owner: Api;
@@ -93,8 +92,6 @@ export const ROUTES = [
   { method: "GET", path: "/", auth: "admin" },
   { method: "GET", path: "/approvals", auth: "admin" },
   { method: "GET", path: "/approvals/:id", auth: "admin" },
-  { method: "POST", path: "/approvals/:id/decide", auth: "admin+csrf" },
-  { method: "POST", path: "/approvals/batch", auth: "admin+csrf" },
   { method: "GET", path: "/owner/message", auth: "admin" },
   { method: "POST", path: "/owner/message", auth: "admin+csrf" },
   { method: "GET", path: "/owner/confirm", auth: "admin" },
@@ -174,7 +171,7 @@ export function createAdmin(d: Deps) {
   }
   const doc = (title: string, body: string, s?: AdminSession | null, head = "") =>
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}<title>${esc(title)} · AidenHQ</title><style>${CSS}</style></head><body>` +
-    (s?.ready ? `<header><b>AidenHQ</b><a href="/approvals">Approvals</a><a href="/owner/message">Message</a>${d.updates?.view().current ? `<a href="/updates">Updates</a>` : ""}<a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
+    (s?.ready ? `<header><b>AidenHQ</b><a href="${esc(`${d.boardUrl?.() ?? ""}/#/approvals`)}">Approvals</a><a href="/owner/message">Message</a>${d.updates?.view().current ? `<a href="/updates">Updates</a>` : ""}<a href="/auth/password">Password</a><form method="post" action="/auth/sign-out"><button>Sign out</button></form></header>` : "") +
     `<main>${body}</main></body></html>`;
   const redirect = (res: ServerResponse, to: string, cookies: string[] = []) =>
     void res.writeHead(303, { location: to, "cache-control": "no-store", ...(cookies.length ? { "set-cookie": cookies } : {}) }).end();
@@ -212,7 +209,7 @@ export function createAdmin(d: Deps) {
   // The board's own sign-in handoff (services/board/src/kernel-auth.ts): the owner arrives signed in there, and the board's
   // welcome gate opens #/welcome until setup is finished.
   // A sign-in with nowhere else to go (it began at the board, or on this page) ends there too, never on the approvals list.
-  const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/auth/start` : "/approvals");
+  const welcome = () => (d.boardUrl?.() ? `${d.boardUrl()}/auth/start` : "/auth/password");
   // The owner goes on to the model step, or (a model key given at install) straight to the board's welcome, which shows the
   // recovery key and the modules' flows until it is finished.
   const afterEnrol = (s: AdminSession) => (d.model && s.account.owner ? (d.model.ready() ? welcome() : "/setup/model") : welcome());
@@ -242,14 +239,6 @@ export function createAdmin(d: Deps) {
     if (r === "no_credit") return send(res, 200, modelPage(req, s, "", true));
     return redirect(res, welcome());
   }
-  function cardHtml(a: Card, s: AdminSession, full: boolean) {
-    const head = `<div class="muted">${esc(a.identifier)} · ${esc(a.action ?? a.kind)} · Tier ${esc(a.tier)} · asked by ${esc(a.requestedBy)}</div><b>${esc(a.sentence)}</b>`;
-    if (!full) return `<div class="card">${head}<div><a href="/approvals/${esc(a.id)}">Open</a></div></div>`;
-    const rows = [["Changes", a.changes], ["Reads", a.reads], ["Cost", a.cost], ["Why", a.reason], ["AI reviewer", a.review]].filter(([, v]) => v).map(([k, v]) => `<div class="muted">${k}</div><pre>${esc(v)}</pre>`).join("");
-    const decide = (decision: string, label: string, cls: string) => form(`/approvals/${a.id}/decide`, `<input type="hidden" name="digest" value="${esc(a.digest)}"><input type="hidden" name="decision" value="${decision}">${decision === "reject" ? `<input name="reason" maxlength="500" placeholder="Reason (optional)" aria-label="Reason">` : ""}<button class="b ${cls}">${label}</button>`, s);
-    return `<div class="card">${head}${rows}<div class="muted">digest ${esc(String(a.digest).slice(0, 16))}…</div><div style="display:flex;gap:8px;margin-top:8px">${decide("approve", "Approve", "")}${decide("reject", "Reject", "r")}</div></div>`;
-  }
-
   async function admin(req: IncomingMessage): Promise<AdminSession> {
     const s = await d.accounts.sessionOf(req);
     if (!s?.ready) throw new Refusal(s ? 403 : 401, s ? "this account can't decide here: an admin with an authenticator" : "sign in");
@@ -478,39 +467,10 @@ export function createAdmin(d: Deps) {
           const r = await step(req, "/change-password", { currentPassword: f.get("current") ?? "", newPassword: f.get("password") ?? "", revokeOtherSessions: true });
           return send(res, r.ok ? 200 : 400, doc("Change password", r.ok ? `<p class="ok">Password changed; your other sessions ended.</p>` : err(r.error), s), undefined, r.cookies.length ? { "set-cookie": r.cookies } : {});
         }
-        case "GET /": case "GET /approvals": {
-          const { live, finished } = await d.cards.ownerCards();
-          const batch = live.length > 1 ? form("/approvals/batch", `${live.map((a) => `<label><input type="checkbox" name="item" value="${esc(`${a.id}:${a.digest}`)}" style="width:auto"> ${esc(a.identifier)}: ${esc(a.sentence)}</label>`).join("")}<div style="display:flex;gap:8px"><button class="b" name="decision" value="approve">Approve selected</button><input name="reason" maxlength="500" placeholder="Reason for reject (optional)" aria-label="Reason"><button class="b r" name="decision" value="reject">Reject selected</button></div>`, s) : "";
-          const done = finished.slice(0, 20).map((a) => `<div class="card muted">${esc(a.identifier)} · ${esc(a.state)}${a.outcome ? ` · ${esc(a.outcome)}` : ""}: ${esc(a.sentence)}</div>`).join("");
-          return send(res, 200, doc("Approvals", `<h1>Waiting for you (${live.length})</h1>${live.map((a) => cardHtml(a, s, false)).join("") || `<p class="muted">Nothing waits on you.</p>`}${batch ? `<h2>Several at once</h2><div class="card">${batch}</div>` : ""}<h2>Recent</h2>${done}`, s));
-        }
-        case "GET /approvals/:id": {
-          const { live, finished } = await d.cards.ownerCards();
-          const a = live.find((x) => x.id === id);
-          if (a) return send(res, 200, doc(a.sentence, cardHtml(a, s, true), s));
-          const old = finished.find((x) => x.id === id);
-          return send(res, old ? 200 : 404, doc("Approval", old ? `<div class="card">${esc(old.identifier)} · ${esc(old.state)}: ${esc(old.sentence)}${old.outcomeText ? `<pre>${esc(old.outcomeText)}</pre>` : ""}</div>` : `<p>This card isn't waiting for you (decided, replaced, or with the AI reviewer).</p>`, s));
-        }
-        case "POST /approvals/:id/decide": {
-          const decision = f.get("decision") === "approve" ? "approve" : f.get("decision") === "reject" ? "reject" : undefined;
-          if (!decision) throw new Refusal(400, "approve or reject");
-          const r = await d.cards.decideCard(id, f.get("digest") ?? "", decision, by, "web", f.get("reason") ?? "");
-          log("web decision", { card: id, decision, by });
-          return send(res, 200, doc("Decided", `<p class="ok">${decision === "approve" ? "Approved" : "Rejected"}: ${esc(r.sentence)} (${esc(r.identifier)}, now ${esc(r.state)})</p><a href="/approvals">Back to approvals</a>`, s));
-        }
-        case "POST /approvals/batch": {
-          const decision = f.get("decision") === "approve" ? "approve" : f.get("decision") === "reject" ? "reject" : undefined;
-          const items = f.getAll("item").slice(0, 20).map((v) => v.split(":")).filter((p): p is [string, string] => p.length === 2);
-          if (!decision || !items.length) throw new Refusal(400, "pick cards, then approve or reject");
-          // Each card on its own, against the digest the owner saw: one that changed meanwhile fails alone.
-          const lines: string[] = [];
-          for (const [cid, digest] of items) {
-            const r = await d.cards.decideCard(cid, digest, decision, by, "web", f.get("reason") ?? "").then((x) => `<p class="ok">${esc(x.identifier)}: ${esc(x.state)}</p>`, (e: Error) => `<p class="err">${esc(cid)}: ${esc(e.message)}</p>`);
-            lines.push(r);
-          }
-          log("web batch decision", { cards: items.map(([c]) => c), decision, by });
-          return send(res, 200, doc("Decided", `${lines.join("")}<a href="/approvals">Back to approvals</a>`, s));
-        }
+        // The board is the one approvals UI (its Approvals page and #/approvals/<id>, deciding through /v1/owner/decide): an
+        // old link or bookmark to this listener's approvals goes there.
+        case "GET /": case "GET /approvals": return redirect(res, `${d.boardUrl?.() ?? ""}/#/approvals`);
+        case "GET /approvals/:id": return redirect(res, `${d.boardUrl?.() ?? ""}/#/approvals/${id}`);
         case "GET /owner/message": return send(res, 200, doc("Message", form("/owner/message", `<label>Task (optional, e.g. WOR-12)<input name="task" maxlength="100" value="${esc(url.searchParams.get("task") ?? "")}"></label><label>Message<textarea name="text" rows="4" maxlength="8000" required></textarea></label><button class="b">Send</button>`, s)), d.frameOrigins());
         case "POST /owner/message": {
           const r = await d.ownerMessage({ text: f.get("text") ?? "", task: f.get("task") || undefined });

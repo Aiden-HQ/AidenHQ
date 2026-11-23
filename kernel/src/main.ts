@@ -11,7 +11,7 @@
 // - A restart drains (SIGUSR2, sent by ops/run-draining.sh, the unit's main process, which exits at once so the next kernel starts):
 //   this kernel stops its jobs' watchers, timers and listeners at once (the next one binds them as it starts: a gap of its
 //   start-up, which callers retry), lets the model calls in flight finish (at most DRAIN_MS) and exits.
-// - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/) and the approval pages.
+// - The admin listener (127.0.0.1:3120, admin.ts): admins' sign-in (accounts.ts, data/kernel/auth/); its old approval addresses redirect to the board.
 // - The sign-in listener (127.0.0.1:3129, signin.ts): the gate's half of shared apps' sign-in (Better Auth's steps, handoffs,
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
 import { execFile } from "node:child_process";
@@ -724,7 +724,7 @@ const githubApp = Object.hasOwn(modulesFile().modules ?? {}, "github") ? {
   save: (app: MadeApp) => saveGithubApp(app, githubVault),
   remove: () => removeGithubApp(githubVault),
 } : undefined;
-const admin = accounts && createAdmin({ accounts, firstRun, model, githubApp, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], cards: channels, ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
+const admin = accounts && createAdmin({ accounts, firstRun, model, githubApp, uiOrigins, updates, doorSource: () => doorSource(gateInfo()), boardUrl: () => boardOrigins[0], ownerMessage: (b) => channels.ownerMessageAs("web", b, () => chiefOfStaff(grantsTable().agents)), owner: ownerApi, hosts: () => adminHosts, origins: () => adminOrigins, frameOrigins: () => boardOrigins, log });
 
 // Claimed records a restart left without an outcome: their executors say how they went (never replayed). Executors may
 // still be starting at boot, so once, a minute in.

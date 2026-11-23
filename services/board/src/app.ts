@@ -85,7 +85,7 @@ export interface AppOptions {
   mode?: "lan" | "internal";
   /** GitHub's REST API for a marketplace's newest pinnable commit (tests: a fake). */
   fetch?: typeof fetch;
-  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in and its approval pages. */
+  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in. */
   adminUrl?: string;
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
@@ -1690,7 +1690,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made
     // at once, shown after the fact; read apart so they never crowd the cards out). A card is decided by its own
-    // route below (the kernel checks the session), on the kernel's page or in a channel.
+    // route below (one card or a batch; the kernel checks the session) or in a channel.
     {
       method: "GET",
       path: /^\/api\/approvals$/,

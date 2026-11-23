@@ -261,18 +261,22 @@ plugin can only read projects).
   idempotency key, so two first sights of one repo make one project and a fill never lands over a tag.
 - **New installs**: no projects until the first PR or tag; GitHub optional (`local/…` repos map the same way).
 
-### Single-approval route
+### One approvals UI: the board
 
-`#/approvals/<k-id>` opens one card inside the board: the full `ApprovalCard` (sentence, reads, changes, cost, details, the
-reviewer's note, Explain) with Approve and Reject. Every board link to a card goes there (Agent work's Needs you callout, a
-chat's card, the Approvals list); the board no longer opens the kernel's page in a new tab, and the board's batch bar goes (each
-card is decided on its own; the kernel's own page keeps its batch form). A card no longer pending shows its outcome.
+The board is the only approvals UI (owner, 2026-11-23: one UI, one flow). `#/approvals/<k-id>` opens one card inside the board:
+the full `ApprovalCard` (sentence, reads, changes, cost, the whole diff under review, the reviewer's note, Explain), read by its
+id whatever its age, with Approve and Reject (an optional reason). Every link to a card goes there: Agent work's Needs you
+callout, a chat's card, the card id on the list, Telegram's card ("on the board"), the MCP's `status` and `approvals` (`link`).
+On the Approvals list each pending card has a box, with "Select all" above; picking any shows one bar, Approve n or Reject n
+with one reason, and each card is decided on its own against the digest it showed (one that changed fails alone and is named).
 
 Deciding: the board's `POST /api/approvals/:id/decide {digest, decision, reason}` forwards the signed-in admin's board session to the
-kernel's `POST /v1/owner/decide` with `{board: <session token>}` beside today's MCP bearer: the kernel checks the session
-(`uiSession("board")`, a ready admin, as for a settings save), decides as `account:<id>` via `board`, against the digest the card
-showed (a changed card fails alone). This widens "cards are decided only on the kernel's pages, by channel token or an admin's
-MCP token" to the board session, the authority a settings save already has; Conventions and `admin.ts` say so.
+kernel's `POST /v1/owner/decide` with `{board: <session token>}` beside the MCP bearer: the kernel checks the session
+(`uiSession("board")`, a ready admin, as for a settings save) and decides as `account:<id>` via `board`. The route needs an Origin
+header besides the board's JSON, board-header and same-origin checks. The kernel's approval pages are gone: `/`, `/approvals` and
+`/approvals/<id>` on its admin listener redirect to the board (the board is reachable in every exposure mode wherever the admin
+listener is: public, tailscale, cloudflare and the local tunnel), and no card is decided by a kernel form any more. Telegram decides
+by its own channel tokens (taps and typed replies), never through a kernel page.
 
 ### Richer waiting and scheduled cards
 

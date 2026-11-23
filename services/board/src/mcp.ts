@@ -194,7 +194,7 @@ export function createMcp(d: McpDeps) {
         // The setup page's own verdict (not done, not dismissed), so a connected module is never listed.
         const todo = [...down, ...(setup ?? []).map((f) => ({ module: f.module, problem: f.title, link: `${ctx.origin}/#/setup/${f.module}` }))];
         const text = `${needs?.counts?.needs_you ?? 0} waiting on you, ${pending.length} pending cards, ${failing.length} apps failing, ${todo.length} to set up or fix.`;
-        return out(text, { needs_you: needs ?? {}, approvals_pending: pending.length, approvals: (pending.slice(0, 10).map(cardRow)) as object[], apps_failing: failing, setup_todo: todo, instance: settings?.instance ?? null, unavailable });
+        return out(text, { needs_you: needs ?? {}, approvals_pending: pending.length, approvals: (pending.slice(0, 10).map(cardRow(ctx.origin))) as object[], apps_failing: failing, setup_todo: todo, instance: settings?.instance ?? null, unavailable });
       },
     );
 
@@ -271,7 +271,7 @@ export function createMcp(d: McpDeps) {
         const all = collapse(comments as any[]);
         const p = newest(all, a.cursor, a.limit);
         const who = await agentOf([task, ...(crew as any[]).map((c) => ({ assignee: c.agent }))]);
-        const linked = (cards.approvals as any[]).filter((c) => c.identifier === view.identifier).map(cardRow);
+        const linked = (cards.approvals as any[]).filter((c) => c.identifier === view.identifier).map(cardRow(ctx.origin));
         return out(`${view.identifier}: ${p.items.length} of ${all.length} comments.`, { task: { ...task, assignee: who(task.assignee) }, thread: p.items.map((c) => clip(c, "body")), next_cursor: p.next_cursor, files, sub_tasks: (crew as any[]).map((c) => (c.agent ? { ...c, agent: who(c.agent) } : c)), approvals: linked });
       },
     );
@@ -340,7 +340,7 @@ export function createMcp(d: McpDeps) {
         const all = approvals.filter((c) => (a.id ? c.id === a.id : a.state === "recent" || c.state === "pending"));
         const p = page(all, a.cursor, a.limit);
         const explanation = a.id ? (await call("GET", `/api/approvals/${a.id}/explain`).catch(() => undefined))?.explanation : undefined;
-        return out(`${p.items.length} of ${all.length} cards.`, { approvals: p.items.map(cardRow), next_cursor: p.next_cursor, explanation: (explanation) });
+        return out(`${p.items.length} of ${all.length} cards.`, { approvals: p.items.map(cardRow(ctx.origin)), next_cursor: p.next_cursor, explanation: (explanation) });
       },
     );
 
@@ -486,7 +486,8 @@ export function createMcp(d: McpDeps) {
 }
 
 /** A card as a tool shows it: what to decide on, with the digest to decide it by (the executor's args stay in the kernel). */
-const cardRow = (c: any) => ({ id: c.id, identifier: c.identifier, action: c.action, tier: c.tier, state: c.state, digest: c.digest, sentence: c.sentence, changes: c.changes, review: c.review, requestedBy: c.requestedBy, decidedBy: c.decidedBy, outcome: c.outcome, reason: c.reason, createdAt: c.createdAt });
+/** `link`: the card on the board (#/approvals/<id>), where the owner reads it whole and decides it. */
+const cardRow = (origin: string) => (c: any) => ({ id: c.id, link: `${origin}/#/approvals/${c.id}`, identifier: c.identifier, action: c.action, tier: c.tier, state: c.state, digest: c.digest, sentence: c.sentence, changes: c.changes, review: c.review, requestedBy: c.requestedBy, decidedBy: c.decidedBy, outcome: c.outcome, reason: c.reason, createdAt: c.createdAt });
 const slimTask = (t: any) => ({ identifier: t.identifier, title: t.title, status: t.status, assignee: t.assignee, priority: t.priority, activityAt: t.activityAt });
 
 /** A sign-in with no setup flow: its state, Connect link and, when connected, the live check (the board's Test button). */

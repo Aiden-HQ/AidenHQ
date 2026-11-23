@@ -1,5 +1,5 @@
 // The kernel's records, read-only (kernel/src/records.ts keeps them; the board keeps no approval store). Cards are decided
-// by the kernel (its approval page, a channel, or a card's Approve or Reject here through /v1/owner/decide); the board lists them with the board's key (gateway_board_key) and shows them.
+// by the kernel (a channel, or a card's Approve or Reject here through /v1/owner/decide); the board lists them with the board's key (gateway_board_key) and shows them.
 import type { ReviewCode } from "./reason-codes.js";
 import type { Probe } from "./settings.js";
 import { explain, type Explanation, type RecordWhole } from "./explain.js";

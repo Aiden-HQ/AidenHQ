@@ -175,7 +175,7 @@ export interface Session {
   googleConnect?: boolean;
   /** The modules' sign-ins (board.signins) work from this address: the board's https address, or loopback. */
   signInConnect?: boolean;
-  /** The kernel's admin listener: sign-in, your password and its approval pages. */
+  /** The kernel's admin listener: sign-in and your password. */
   adminUrl?: string | null;
 }
 
@@ -229,7 +229,7 @@ export const accountsApi = {
   newLink: (id: string) => call<{ url: string | null }>("POST", `/api/accounts/${id}/link`, {}),
 };
 
-/** The kernel's admin listener (from /api/session): sign-in and its approval pages. */
+/** The kernel's admin listener (from /api/session): sign-in. */
 export const admin = { url: "" };
 
 export const api = {
