@@ -64,7 +64,7 @@ export const PostArgsSchema = z.object({
 export type PostArgs = z.infer<typeof PostArgsSchema>;
 
 /** The commands people on the PR may write (a comment whose first word is `aiden`); never with an `@`, which would ping a user. */
-export const COMMANDS = "`aiden review` (again) · `aiden review full` · `aiden review always` / `stop` · `aiden review focus: <text>` · `aiden review status` / `help`";
+export const COMMANDS = "`aiden review` (again) · `aiden review full` · `aiden recheck` (check the earlier findings again) · `aiden review always` / `stop` · `aiden review focus: <text>` · `aiden review status` / `help`";
 /** Why a review didn't run: a fixed vocabulary, so a notice carries no text a model or an author wrote. */
 export const SKIP_REASONS = {
   draft: "this is a draft pull request",

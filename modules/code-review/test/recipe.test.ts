@@ -108,6 +108,32 @@ test("a claim recheck (recheck_only): only the previous findings are rechecked, 
   assert.deepEqual([r.fixed, r.cleared, r.coverage.incomplete], [[id], [id], null]);
 });
 
+test("a recheck judges each finding on its own: an incomplete answer clears the listed ones, and the omitted one stays and is named in the gap", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const [x, y, z] = ["0123456789abcdef", "1123456789abcdef", "2123456789abcdef"];
+  const run = async () => ({ read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: [x], still: [y], unsafe: [] }) });
+  const previous = JSON.stringify({ findings: [x, y, z].map((id) => ({ id, severity: "important", path: "src/pay.js", line: 2, title: `T${id}`, gating: true })) });
+  const r = await review({ spec: spec({ combo: combo({ recheck_only: true }), previous }), ...box({ head, base }), run });
+  assert.deepEqual([r.fixed, r.cleared, r.still], [[x], [x], [y]]);
+  assert.match(r.coverage.incomplete, new RegExp(`left 1 earlier finding unanswered.*${z}`));
+});
+
+test("a recheck asks about every finding, in chunks, and judges across them", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const ids = Array.from({ length: 40 }, (_, i) => i.toString(16).padStart(16, "0"));
+  const asked = [];
+  const run = async (_e, o) => {
+    const here = [...o.prompt.matchAll(/"id": "([0-9a-f]{16})"/g)].map((m) => m[1]);
+    asked.push(here);
+    return { read: true, calls: [{ tool: "read_file", path: "src/pay.js" }], message: JSON.stringify({ fixed: here, still: [], unsafe: [] }) };
+  };
+  const previous = JSON.stringify({ findings: ids.map((id) => ({ id, severity: "important", path: "src/pay.js", line: 2, title: `T${id}`, gating: true })) });
+  const r = await review({ spec: spec({ combo: combo({ recheck_only: true }), previous }), ...box({ head, base }), run });
+  assert.ok(asked.length > 1 && asked.every((a) => a.length <= 15), "more findings than one chunk: several calls, each small");
+  assert.deepEqual(asked.flat().sort(), [...ids].sort(), "every finding is asked");
+  assert.deepEqual([r.cleared.length, r.coverage.incomplete], [40, null]);
+});
+
 test("a claim recheck still asks about the open findings when the PR text matches the steering scan, and can clear a pending claim", async () => {
   const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
   const id = "0123456789abcdef", prompts = [];
