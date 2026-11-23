@@ -71,6 +71,8 @@ export const STATUSES = "backlog,todo,in_progress,in_review,blocked,done,cancell
 const PAGE = 500;
 /** The longest one reconcile pass may take (a hung read must not hold the next pass off forever). */
 const RECONCILE_TIMEOUT_MS = 20 * 60_000;
+/** How long one pass keeps starting rebuilds (change polling is independent of it), so a pass always ends. */
+const TICK_MS = 60_000;
 /** How often a complete reconcile pass runs. */
 const RECONCILE_MS = 6 * 3600_000;
 /** How often the recently updated issues are read. */
@@ -260,7 +262,7 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       polling = false;
     }
   }
-  /** One pass of the worker: poll, then rebuild what is due (live changes before the backfill) until nothing is, 8 at a time. */
+  /** One pass of the worker: poll, then rebuild what is due (live changes before the backfill) for up to a minute, 8 at a time. */
   async function tick(): Promise<number> {
     if (!sql() || !(await poll()) || working) return 0;
     working = true;
@@ -279,9 +281,9 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       };
       // A rolling pool: a free slot takes the next due row at once (live changes before the backfill, read afresh each time),
       // so one slow rebuild holds back only itself.
-      for (;;) {
+      for (const until = Date.now() + TICK_MS; ; ) {
         const next = (db.prepare("SELECT task, gen, tries FROM search_dirty WHERE due <= ? ORDER BY backfill, due LIMIT ?").all(now(), WORKERS) as { task: string; gen: number; tries: number }[]).find((r) => !flying.has(r.task));
-        if (!next || active.size >= WORKERS) { if (!active.size) break; await Promise.race(active); continue; }
+        if (!next || active.size >= WORKERS || Date.now() >= until) { if (!active.size) break; await Promise.race(active); continue; }
         flying.add(next.task);
         const p: Promise<void> = run(next).finally(() => { flying.delete(next.task); active.delete(p); });
         active.add(p);
