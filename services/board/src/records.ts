@@ -45,6 +45,9 @@ export interface Approval {
   replaced: boolean;
   panel: boolean;
   reviewFirst: "final" | "owner" | null;
+  /** Whether its outcome is posted to the task: a decided record, or one a module filed for its agent. A Tier 0 record an
+   * agent filed itself answers that call inline and wakes nobody (kernel/src/writes.ts). */
+  wakes: boolean;
 }
 
 /** What GET /v1/writes returns: the kernel's record, its state already as a person sees it. */
@@ -52,7 +55,7 @@ type KernelRecord = {
   id: string; kind: string; args: unknown; digest: string; tier: Tier; panel: boolean; task: string; identifier?: string | null; state: string; review: string | null;
   review_code?: string | null; review_first?: "final" | "owner" | null; rule?: string | null; decided_by: string | null; decided_at?: string | null; replaced?: boolean;
   outcome: { ok: boolean; text: string } | null; wait?: string | null; created_at: string; updated_at: string;
-  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string };
+  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string; filed_by?: string };
 };
 const KIND: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
 // `claimed` has a state of its own: it is live, and `used` is only ever an end (done/failed/unknown).
@@ -87,7 +90,7 @@ export function recordApproval(r: KernelRecord): Approval {
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null,
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: r.tier > 0 || r.requester.filed_by !== undefined,
   };
 }
 

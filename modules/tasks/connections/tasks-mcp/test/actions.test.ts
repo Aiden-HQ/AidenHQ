@@ -110,7 +110,10 @@ test("task_approvals reads the run's own cards for an Engineer without private d
     req.resume();
     req.on("end", () => {
       asked.push(new URL(req.url ?? "/", "http://x").searchParams.get("issue"));
-      res.setHeader("content-type", "application/json").end(JSON.stringify({ approvals: [] }));
+      res.setHeader("content-type", "application/json").end(JSON.stringify({ approvals: [
+        { id: "k-1", action: "merge", state: "running", target: "https://github.com/a/b/pull/1", outcome: null, wakes: true, createdAt: "2026-11-23T00:00:00Z" },
+        { id: "k-2", action: "merge", state: "used", target: "https://github.com/a/b/pull/1", outcome: "applied", wakes: false, outcomeText: `merged-prs: [{"repo":"a/b","number":1,"head":"${"a".repeat(40)}","sha":"${"b".repeat(40)}"}]\n\nMerged https://github.com/a/b/pull/1.\n${"x".repeat(500)}`, createdAt: "2026-11-22T00:00:00Z" },
+      ] }));
     });
   };
   const world = async (me) => {
@@ -129,8 +132,12 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   const pub = await world({ profile: "engineer" });
   assert.match(parse(await pub.call("task_approvals", { issue: "WOR-4" })).error, /without private reads/);
   assert.deepEqual(asked, [], "refused before the board is asked");
-  parse(await pub.call("task_approvals", {}));
+  const own = parse(await pub.call("task_approvals", {})).out;
   assert.deepEqual(asked, ["cur"], "no issue: the run's own task");
+  // Whether a card wakes the task, and the whole `merged-prs` line the rule's evidence is.
+  assert.deepEqual(own.approvals.map((a: { id: string; wakes: boolean }) => [a.id, a.wakes]), [["k-1", true], ["k-2", false]]);
+  assert.ok(own.approvals[1].outcomeText.startsWith("merged-prs: ") && own.approvals[1].outcomeText.includes("a".repeat(40)) && own.approvals[1].outcomeText.includes("b".repeat(40)), "the merge evidence line is never cut");
+  assert.ok(own.approvals[1].outcomeText.length < 500, "the rest of a long outcome is capped");
   asked.length = 0;
   const priv = await world({ profile: "engineer", private_reads: true });
   parse(await priv.call("task_approvals", { issue: "WOR-4" }));

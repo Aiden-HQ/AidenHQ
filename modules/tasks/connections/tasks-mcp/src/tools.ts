@@ -1304,7 +1304,14 @@ const TOOLS: Record<string, Tool> = {
       if (issue && me.profile === "engineer" && me.private_reads !== true) throw new Error("Refused: without private reads you read only the task this run is working on: leave out `issue`.");
       const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(target)}`);
       return {
-        approvals: approvals.map((a: Json) => ({ id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, ...(a.outcomeText ? { outcomeText: String(a.outcomeText).slice(0, 300) } : {}), createdAt: a.createdAt })),
+        // `wakes`: whether the outcome is posted to the task (a decided record, or one a module filed for its agent). A merge's
+        // evidence is its `merged-prs` line, so the first line is never cut; the rest of a long outcome is.
+        approvals: approvals.map((a: Json) => {
+          const text = a.outcomeText ? String(a.outcomeText) : "";
+          const [first, ...rest] = text.split("\n");
+          const outcomeText = rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : text;
+          return { id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), createdAt: a.createdAt };
+        }),
       };
     },
   },
