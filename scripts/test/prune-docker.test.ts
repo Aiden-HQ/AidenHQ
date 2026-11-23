@@ -699,3 +699,24 @@ test("both image prunes skip the computer images, which the browser Dockerfile l
   }
   assert.match(readFileSync(join(repo, "services/computer/images/browser/Dockerfile"), "utf8"), /^LABEL aidenhq\.keep=true$/m);
 });
+
+test("the superseded-image sweep removes labelled images the config no longer names and keeps the current ones", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prune-computer-images-"));
+  mkdirSync(join(dir, "ops"));
+  mkdirSync(join(dir, "config"));
+  mkdirSync(join(dir, "bin"));
+  writeFileSync(join(dir, "ops/prune-computer-images.sh"), readFileSync(join(repo, "ops/prune-computer-images.sh")));
+  writeFileSync(join(dir, "config/computers.json"), JSON.stringify({ images: { browser: "aidenhq/computer-browser:new", "agent-base": "aidenhq/computer-agent-base:new" } }));
+  writeFileSync(join(dir, "bin/docker"), `#!/bin/sh
+case "$1 $2" in
+  "image ls") case "$*" in *label=aidenhq.keep=true*) printf '%s\\n' aidenhq/computer-browser:new aidenhq/computer-browser:current aidenhq/computer-browser:old aidenhq/computer-engineer:old ;; esac ;;
+  "image rm") echo "rm $3" >> "$CALLS" ;;
+esac
+`);
+  chmodSync(join(dir, "bin/docker"), 0o755);
+  const calls = join(dir, "calls");
+  writeFileSync(calls, "");
+  const r = spawnSync("bash", [join(dir, "ops/prune-computer-images.sh")], { env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`, CALLS: calls }, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(calls, "utf8"), "rm aidenhq/computer-browser:old\nrm aidenhq/computer-engineer:old\n");
+});
