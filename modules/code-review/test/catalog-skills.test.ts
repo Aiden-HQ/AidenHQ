@@ -4,7 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCatalog } from "../recipe/catalog.ts";
@@ -233,6 +234,7 @@ test("the shell guard: a known dead shell, or the first commands failing with on
   assert.match(String(g(false, "bwrap: Creating new namespace failed")), /can't run commands/);
   // A command's own output that mentions the sandbox (a diff of this very file) is a command that ran.
   assert.equal(shellGuard()(false, "Exit code 1\ndiff --git a/x b/x\n+bwrap: loopback: Failed RTM_NEWADDR"), undefined);
+  assert.equal(shellGuard()(false, "Exit code 1\nbwrap: loopback: Failed RTM_NEWADDR\n(a saved log)\ncheck failed"), undefined);
   // Commands that ran and failed quietly (grep with no match) or differently are a skill's business.
   const quiet = shellGuard();
   for (let i = 0; i < 9; i++) assert.equal(quiet(false, i % 2 ? "Exit code 1" : `Exit code 2\nrg: f${i}: not found`), undefined);
@@ -297,10 +299,15 @@ test("a Claude Code run's shell executes a command, in the recipe's jail: read-o
 });
 
 test("the jail: a skill's checkout is writable, its .git and everything else read-only", { skip: !jailed && "claude or a working bwrap isn't here" }, () => {
-  const d = mkdtempSync(join(tmpdir(), "cr-jail-")), out = mkdtempSync(join(tmpdir(), "cr-out-"));
+  // `out` beside this file, outside the jail's private /tmp (run it from a checkout outside /tmp): visible, so a refused write is the
+  // read-only mount, not a missing directory.
+  const d = mkdtempSync(join(tmpdir(), "cr-jail-")), out = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), ".jail-"));
   execFileSync("git", ["init", "-q", d]);
   const sh = (c: string) => { try { execFileSync("bwrap", [...claudeJail([d]), "sh", "-c", c], { stdio: "ignore" }); return true; } catch { return false; } };
   assert.equal(sh(`touch ${d}/report.md`), true);
   assert.equal(sh(`echo x >> ${d}/.git/config`), false, "its git config is the recipe's");
-  assert.equal(sh(`touch ${out}/result.json`), false);
+  try {
+    assert.equal(sh(`test -d ${out}`), true, "the rest of the box is visible");
+    assert.equal(sh(`touch ${out}/result.json`), false);
+  } finally { rmSync(out, { recursive: true, force: true }); }
 });

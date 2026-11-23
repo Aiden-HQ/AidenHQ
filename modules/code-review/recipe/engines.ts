@@ -270,9 +270,9 @@ async function deepsecEngine({ model, effort, root, base, trusted, minutes, scra
 
 const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$/, "");
 
-/** What a shell says, as the whole of its answer, when it can't run any command: its sandbox failed to start (bubblewrap's own
- * error, or a harness's word for it). Anchored at the start: a command's own output (a diff that mentions bwrap) never matches. */
-const DEAD_SHELL = /^(?:bwrap: \S|sandbox (?:failed|is unavailable|could not start|is required)\b)/i;
+/** What a shell says, as the whole of its answer (one line), when it can't run any command: its sandbox failed to start
+ * (bubblewrap's own error, or a harness's word for it). A command's own output that mentions one, anywhere, never matches. */
+const DEAD_SHELL = /^(?:bwrap: \S[^\n]*|sandbox (?:failed|is unavailable|could not start|is required)\b[^\n]*)$/i;
 /** The first commands, all failing with the same output, that end the run: a shell that answers everything with one error. */
 const SAME_FAILS = 3;
 /**
