@@ -346,10 +346,13 @@ save_hit_cap() { # <rc> <dest> <err> <cap>
 save_call() { # <cap bytes, empty for none> <secs> <docker args...>
   local cap="$1" secs="$2" rc floor_bytes pid docker_root; shift 2
   if [ -z "$cap" ]; then docker_call "$secs" "$@"; return; fi
-  secs="$(deadline_secs "$secs")" || return 124
+  local limit="$secs"
+  deadline_secs "$limit" >/dev/null || return 124
   floor_bytes=$(( min_free_gb * 1073741824 ))
   docker_root="$(docker_call 5 info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
   [ -n "$docker_root" ] && [ -d "$docker_root" ] || docker_root=""
+  # The budget is read again after that probe: a slow `docker info` must not hand the save time the pass no longer has.
+  secs="$(deadline_secs "$limit")" || return 124
   # The file ceiling bounds the CLI's output, not what the daemon stages in its own temp dir while producing it (the
   # classic image store copies the layers first). Both count against a filesystem, so the export is watched too: if free
   # space on the archive's filesystem or the daemon's root falls to the floor while it runs, it is stopped. That protects
