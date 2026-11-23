@@ -220,9 +220,18 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
   const cwd = join(mkdtempSync(join(i.scratch, "skill-")), "repo"), head = gitSafe(i.root, ["rev-parse", "--verify", `${i.head ?? "HEAD"}^{commit}`]).trim();
   snapshot(i.root, head, cwd);
   const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd, target: i.target }, i.skillsRoot), cwd, head, idle: new Set<number>() };
-  const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
+  const run = { ...i, instructions: `${i.instructions}\n\n${skillRun(cwd, i.target)}` };
+  const r = await (i.harness === "codex" ? codex(run, sk) : claudeCode(run, sk));
   return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!), sk.idle);
 }
+
+/**
+ * What a skill's run is told on top of the brief. Left to itself on a large change (a whole repository), a model ran a sampled
+ * pass of its own instead of the skill's workflow ("a full multi-agent pass is not practical here") and never dispatched the
+ * skill's sub-agents; it also tried to read the skill's files with the repo tools, which read only the repository, and took the
+ * brief's read-only shell as a ban on the skill's own run files (2026-11-23, ce-code-review and Cloudflare's security audit).
+ */
+export const skillRun = (cwd: string, target?: "tree" | "pr") => `You run an installed review skill, and its own workflow is this review. Run it in full as its files say, whatever the size of ${target === "tree" ? "the repository (the whole repository is the intended scope)" : "the change"}: every stage and step, the sub-agents it dispatches (your agent tool; where it names an agent type you don't have, use the general-purpose one), its verifiers and its run files. The run has the time and budget for the whole workflow, so a sampled or lead-only pass in its place is not this review. The skill's files are outside the repository: read them with the shell. Your working directory (${cwd}, a throwaway checkout of the head) and /tmp are yours to write in, for the skill's run files; leave the review's own checkout as it is.`;
 
 /**
  * A finished skill run as the review takes it: the restated answer says, per skill in order, whether it reviewed the code and
@@ -246,7 +255,7 @@ export function skillOutcome(r: EngineResult, names: string[], idle = new Set<nu
 
 /** Our restate step after a skill run (or Claude Code's own review): its findings in our shape and, after skills, whether each ran. */
 const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk ? `
-Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "partial": false, "why": ""} when it reviewed all the code it was given and finished; "ran": true, "partial": true with a one-line "why" naming what it left out when it reviewed only part (a sampled pass, or steps of its workflow not run), or reported a partial status; or "ran": false with a one-line "why" when it reviewed no code: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed or skipped status.` : ""}
+Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "partial": false, "why": ""} when it reviewed all the code it was given and finished; "ran": true, "partial": true with a one-line "why" naming what it left out when it reviewed only part of the code it was given or cut its own workflow short (a sampled pass, steps or verifiers not run); or "ran": false with a one-line "why" when it reviewed no code: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed or skipped status.` : ""}
 ${prompt}`;
 
 /**

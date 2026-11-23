@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCatalog } from "../recipe/catalog.ts";
@@ -145,6 +145,7 @@ printf '%s\\n' '${JSON.stringify({ type: "user", message: { content: [{ type: "t
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 printf '%s|%s|%s|%s\\n' "$(echo "$2" | head -1 | cut -c1-20)" "$PWD" "$(git rev-parse HEAD)" "$(git diff --name-only | tr '\\n' ' ')" >> '${log}'
 cp "$CLAUDE_CONFIG_DIR/settings.json" '${bin}/settings.json'
+prev=""; for a in "$@"; do [ "$prev" = "--append-system-prompt" ] && printf '%s' "$a" > '${bin}/instructions'; prev="$a"; done
 test "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" && echo "\${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB-unset}" > '${bin}/scrub'
 ${init}
 ${dead}
@@ -161,7 +162,7 @@ esac
     try { return await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base, minutes: 1, scratch, own: true, harness: "claude-code", skills, skillsRoot: root }); } finally { process.env.PATH = path; }
   };
   const turns = () => readFileSync(log, "utf8").trim().split("\n").map((l) => { const [task, cwd, at, dirty] = l.split("|"); return { task, cwd, at, dirty: dirty!.trim() }; });
-  return { root, base, head, run, turns, scrub: () => readFileSync(join(bin, "scrub"), "utf8").trim(), settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")) };
+  return { root, base, head, run, turns, scrub: () => readFileSync(join(bin, "scrub"), "utf8").trim(), settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")), instructions: () => readFileSync(join(bin, "instructions"), "utf8") };
 }
 const ran = (...r: boolean[]) => JSON.stringify({ findings: [], stale_guidance: [], skills: r.map((x, i) => ({ skill: `/p:${["one", "two"][i]}`, ran: x, why: x ? "" : "it found no change to review" })) });
 
@@ -235,6 +236,18 @@ test("Claude Code runs with its own sandbox off (gVisor refuses its network name
   assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
   assert.deepEqual(f.settings(), { sandbox: { enabled: false } }); // in the config dir claude reads (HOME/.claude)
   assert.equal(f.scrub(), "unset", "its env scrub makes Claude Code require a sandbox gVisor can't start");
+});
+
+test("a skill run is told to run its whole workflow, sub-agents included, and where it may write", async () => {
+  const f = fakeRun({ restate: ran(true) });
+  assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
+  const text = f.instructions();
+  assert.ok(text.startsWith("x\n\n"), "the brief first");
+  assert.match(text, /Run it in full as its files say/);
+  assert.match(text, /the sub-agents it dispatches/);
+  assert.match(text, /a sampled or lead-only pass in its place is not this review/);
+  const cwd = /Your working directory \((\S+), a throwaway checkout of the head\)/.exec(text)?.[1];
+  assert.equal(cwd && realpathSync(cwd), realpathSync(f.turns()[0]!.cwd!), "its working directory, the throwaway checkout, is where it writes");
 });
 
 test("a run whose shell can't run ends at once, never spending the review", async () => {
