@@ -67,7 +67,8 @@ jobs:
           (cd scripts && npm ci --ignore-scripts)
           # The checkout keeps no credentials: pass the read-only token for this one fetch.
           git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$PR_BASE"
-          node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
+          # The checker is the PR's own code: drop the token (and the entry it came from) before running it.
+          env -u GH_TOKEN node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
         # Runs PR code (`npm ci` and the suites): no token or secret is exposed to it, and this job cannot write a check.
         env:
