@@ -2,6 +2,7 @@
 // The module owns the runs, the PR state and every GitHub write; the board only reads them, starts one-off runs,
 // and files the owner's change to settings.code_review through the normal settings change. Types mirror the module's API.
 import { z } from "zod";
+import type { Accepts } from "./model-catalog.js";
 
 export type Severity = "important" | "nit" | "pre_existing";
 export interface Finding {
@@ -105,7 +106,7 @@ export interface ReposView {
 }
 /** GET /engines: the catalog the pickers offer (the module's ENGINES). */
 export type Engine = "codex" | "claude-code" | "codegenie" | "codex-native";
-export type EngineCatalog = Record<Engine, { label: string; efforts: string[]; models: string[] }>;
+export type EngineCatalog = Record<Engine, { label: string; efforts: string[]; models: string[]; accepts: Accepts }>;
 /** One review run's reviewer: its engine, model and effort. */
 export interface Combo {
   engine: Engine;
@@ -120,6 +121,13 @@ export type Lens = (typeof LENSES)[number];
 /** GET /catalog?repo=&commit=: what a repo review can run at that commit; `recommended` options come pre-ticked. */
 export interface CatalogOption {
   id: string;
+  /** The words the form shows: a proper name, and what it finds. */
+  name: string;
+  description: string;
+  /** What past repo reviews of this option cost, by model and effort: the average of `n` finished runs (absent: none yet). */
+  past?: { model: string; effort: string; n: number; usd: number }[];
+  /** Why it can't run on this repo (listed last, greyed); absent: it can. */
+  unavailable?: string;
   lens: Lens;
   kind: "tool" | "skill" | "engine";
   recommended: boolean;
@@ -149,8 +157,10 @@ export interface TreeBatch {
   primer_url?: string;
   /** The report's Primer outcome is in (a link or a refusal). */
   published?: boolean;
+  /** The options it ran with, by name. */
+  option_names?: string[];
   /** Each option's run, whose page lists its findings (the report may leave some out to fit Primer). */
-  runs?: { id: string; option: string; status: RunStatus; important: number; nit: number; pre_existing: number }[];
+  runs?: { id: string; option: string; names?: string[]; status: RunStatus; important: number; nit: number; pre_existing: number }[];
 }
 export const TreeRequestSchema = z
   .object({

@@ -3,16 +3,17 @@
 // here and in module.yaml; a repo that doesn't validate is dropped loudly (its error is listed), never half-used.
 
 // The recipe's values (recipe/engines.ts runs the review in its own box: no shared import across that image boundary).
-// `models`: the short list the board and the Reviewer Manager offer for each (any other OpenRouter id may be typed; the gateway
-// refuses one OpenRouter doesn't list).
+// `models`: the short list the board and the Reviewer Manager offer for each, the "Recommended" group of the board's picker.
+// `accepts`: which of OpenRouter's models the engine can run, which filters the picker's full list: `provider` one vendor's
+// models only, `tools` models that call tools. The gateway refuses an id OpenRouter doesn't list.
 export const ENGINES = {
-  codex: { label: "Codex", efforts: ["minimal", "low", "medium", "high", "xhigh"],
+  codex: { label: "Codex", accepts: { tools: true }, efforts: ["minimal", "low", "medium", "high", "xhigh"],
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"] },
-  "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high", "xhigh", "max"],
+  "claude-code": { label: "Claude Code", accepts: { provider: "anthropic" }, efforts: ["low", "medium", "high", "xhigh", "max"],
     models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"] },
-  codegenie: { label: "Codegenie", efforts: ["low", "medium", "high", "xhigh", "max"],
+  codegenie: { label: "Codegenie", accepts: { tools: true }, efforts: ["low", "medium", "high", "xhigh", "max"],
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "z-ai/glm-5.3"] },
-  "codex-native": { label: "Codex review", efforts: ["minimal", "low", "medium", "high", "xhigh"],
+  "codex-native": { label: "Codex review", accepts: { tools: true }, efforts: ["minimal", "low", "medium", "high", "xhigh"],
     models: ["openai/gpt-6.2-sol", "~openai/gpt-terra-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "~deepseek/deepseek-flash-latest"] },
 } as const;
 export type Engine = keyof typeof ENGINES;

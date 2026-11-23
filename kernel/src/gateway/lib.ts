@@ -15,6 +15,8 @@
 //   GET /v1/spend/summary         (Bearer gateway_board_key) the install's spend against its limits, as the gateway counts it:
 //                                 {day, month, install: {day: {spent, cap}, month: {spent, cap}}, agents: [{agent_id, spent}]}:
 //                                 every granted agent and any other that spent today (the board's header and Costs tab)
+//   GET /v1/models/catalog        (Bearer gateway_board_key) the text models of OpenRouter's list the gateway already holds, for the
+//                                 board's model picker: {models: [{id, name, provider, created, context, in, out, tools, reasoning}]}
 //   GET /health
 // CI listener (gateway.ts, the CI runners' bridge address; only these routes, only `ahqci_` credentials, never on the others):
 //   POST /ci/token                (Bearer: a GitHub Actions OIDC token, ci.ts) -> {token, expires_at, review}: an opaque CI
@@ -907,6 +909,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const agents = [...ids].map((agent_id) => ({ agent_id, spent: r4((q.spentDay.get(agent_id, today) as Sum).s) })).sort((a, b) => b.spent - a.spent);
         const m = month(t), monthSpent = (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s;
         return send(res, 200, { day: today, month: m, install: { day: { spent: r4((q.spentAll.get(today) as Sum).s), cap: set.day }, month: { spent: r4(monthSpent), cap: set.month } }, agents });
+      }
+      if (req.method === "GET" && path === "/v1/models/catalog") {
+        boardKeyed(req);
+        return send(res, 200, { models: await prices.catalog() });
       }
       send(res, 404, { error: { code: 404, type: "not_found", message: "no such route" } });
     } catch (err) {

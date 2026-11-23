@@ -154,10 +154,14 @@ RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
     # Claude Code plugins: anthropics/claude-plugins-official's three, and EveryInc's (the repo root is the plugin).
     pin /tmp/cpo anthropics/claude-plugins-official b5b01ac4f889fec0c4c6bb89f27ca7c8574473f6; \
     for p in pr-review-toolkit code-modernization security-guidance; do cp -r "/tmp/cpo/plugins/$p" "/opt/review/plugins/$p"; done; rm -rf /tmp/cpo; \
+    # Trail of Bits plugins (their commands, agents and skills as a plugin), from the pinned skills checkout above.
+    for p in audit-context-building insecure-defaults sharp-edges fp-check differential-review variant-analysis; do cp -r "/opt/review/skills/trailofbits__skills/plugins/$p" "/opt/review/plugins/$p"; done; \
     pin /opt/review/plugins/compound-engineering EveryInc/compound-engineering-plugin ee46dde75a40e297bd8eac4055a410a771d3ac1d; \
     # Left out: gemini-cli-extensions/code-review (no gemini CLI in the image) and openai/codex-plugin-cc (inactive since 2026-07,
     # and it calls a local codex outside our gateway).
     chmod -R a+rX /opt/review; \
     test -f /opt/review/skills/cloudflare__security-audit-skill/skills/security-audit/SKILL.md; \
     test -f /opt/review/plugins/pr-review-toolkit/.claude-plugin/plugin.json; \
-    test -f /opt/review/plugins/compound-engineering/.claude-plugin/plugin.json
+    test -f /opt/review/plugins/compound-engineering/.claude-plugin/plugin.json; \
+    test -f /opt/review/plugins/insecure-defaults/commands/audit.md; \
+    test -f /opt/review/skills/mattpocock__skills/skills/engineering/codebase-design/SKILL.md

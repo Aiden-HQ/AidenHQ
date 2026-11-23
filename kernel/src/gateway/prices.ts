@@ -2,7 +2,7 @@
 // with its pricing): the gateway reserves each call at these prices before it is sent (lib.ts). What a call is recorded at is
 // OpenRouter's own per-call cost (usage.cost), not these. The list is held in memory, refreshed hourly; a failed refresh keeps
 // the last good one. A model the list doesn't name is looked up again (at most once a minute, so a new model works without
-// waiting for the hour); with no list at all yet (a cold start) the fetch is retried before the call is turned away.
+// waiting for the hour); the same list feeds the board's model picker (catalog); with no list at all yet (a cold start) the fetch is retried before the call is turned away.
 
 /** A model's prices for a reservation: USD per million tokens, each the dearest tier the list shows, and the output ceiling. */
 export type Price = { in: number; cached_in: number; out: number; max_output: number };
@@ -16,7 +16,22 @@ const REFRESH_MS = 3600_000;
 const MISS_MS = 60_000;
 
 type Pricing = Record<string, unknown> & { overrides?: Record<string, unknown>[] };
-type Entry = { id?: unknown; context_length?: unknown; pricing?: Pricing; top_provider?: { max_completion_tokens?: unknown } | null };
+type Entry = { id?: unknown; name?: unknown; created?: unknown; context_length?: unknown; pricing?: Pricing; top_provider?: { max_completion_tokens?: unknown } | null; architecture?: { input_modalities?: unknown; output_modalities?: unknown } | null; supported_parameters?: unknown };
+
+/** One text model of the list as the board's model picker shows it: USD per million tokens, `created` in unix seconds. */
+export type CatalogModel = { id: string; name: string; provider: string; created: number; context: number; in: number; out: number; tools: boolean; reasoning: boolean };
+
+/** One list entry → its catalog row, or undefined when it isn't a priced text-in, text-out model (an image model, a router's -1, a batch-only model). */
+export function catalogOf(e: Entry): CatalogModel | undefined {
+  // A `:batch` model answers only the batch endpoint, which no interactive route (chat, messages, responses) reaches.
+  if (typeof e.id !== "string" || e.id.endsWith(":batch")) return undefined;
+  const modes = (v: unknown) => (Array.isArray(v) ? v : ["text"]);
+  if (!modes(e.architecture?.input_modalities).includes("text") || !modes(e.architecture?.output_modalities).includes("text")) return undefined;
+  const inn = perM(e.pricing?.prompt), out = perM(e.pricing?.completion);
+  if (inn === undefined || out === undefined) return undefined;
+  const params = Array.isArray(e.supported_parameters) ? e.supported_parameters : [];
+  return { id: e.id, name: typeof e.name === "string" && e.name ? e.name : e.id, provider: e.id.replace(/^~/, "").split("/")[0]!, created: Number(e.created) || 0, context: Number(e.context_length) || 0, in: inn, out, tools: params.includes("tools"), reasoning: params.includes("reasoning") };
+}
 
 /** USD per token as listed → USD per million; undefined when it isn't a price (a router's -1, a missing field). */
 const perM = (v: unknown) => { const n = Number(v); return v !== undefined && v !== null && v !== "" && Number.isFinite(n) && n >= 0 ? n * 1e6 : undefined; };
@@ -39,6 +54,7 @@ export function priceOf(e: Entry): Price | undefined {
 
 export function createPrices({ url, now = Date.now, retryMs = [1000, 3000], log = () => {} }: { url: string; now?: () => number; retryMs?: number[]; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   let list = new Map<string, Price>();
+  let catalog: CatalogModel[] = [];
   let tried = 0;
   let pending: Promise<void> | undefined;
   /** One fetch of the list, shared by every caller waiting on it; the last good list stays on any failure. */
@@ -49,9 +65,16 @@ export function createPrices({ url, now = Date.now, retryMs = [1000, 3000], log 
       if (!res.ok) throw new Error(`OpenRouter's models list answered ${res.status}`);
       const data = ((await res.json()) as { data?: Entry[] }).data;
       const next = new Map<string, Price>();
-      for (const e of Array.isArray(data) ? data : []) { const p = typeof e?.id === "string" ? priceOf(e) : undefined; if (p) next.set(e.id as string, p); }
+      const rows: CatalogModel[] = [];
+      for (const e of Array.isArray(data) ? data : []) {
+        const p = typeof e?.id === "string" ? priceOf(e) : undefined;
+        if (p) next.set(e.id as string, p);
+        const row = e && catalogOf(e);
+        if (row) rows.push(row);
+      }
       if (!next.size) throw new Error("OpenRouter's models list was empty");
       list = next;
+      catalog = rows;
     } catch (e) {
       log("model prices refresh failed", { err: String((e as Error).message).slice(0, 200) });
     }
@@ -68,6 +91,11 @@ export function createPrices({ url, now = Date.now, retryMs = [1000, 3000], log 
       if (!list.size) return { unavailable: true };
       const missing = absent();
       return missing.length ? { missing } : { prices: ids.map((id) => list.get(id)!) };
+    },
+    /** The text models of the same list (the board's model picker); a cold start reads it first (at most once a minute), [] when it can't be read. */
+    async catalog(): Promise<CatalogModel[]> {
+      if (!catalog.length && (pending || now() - tried >= MISS_MS)) await refresh(); // a read already under way is waited for
+      return catalog;
     },
     close: () => clearInterval(timer),
   };

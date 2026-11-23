@@ -132,7 +132,7 @@ export function checkTyped(ch: unknown, { compiled, catalog, self }: Sources): v
       if (!KEY.test(String(c.routine).replace(/-/g, "_")) || !has(compiled?.routines, c.routine)) refuse(`there is no routine ${c.routine}`);
       const v = c.value;
       const schedule = (s: unknown) => isMap(s) && Object.keys(s).every((k) => ["cron", "timezone", "label"].includes(k)) && typeof s.cron === "string" && /^[0-9*/,\- ]{9,100}$/.test(s.cron) && (s.timezone == null || (typeof s.timezone === "string" && /^[A-Za-z_]+(\/[A-Za-z0-9_+\-]+){0,2}$|^UTC$/.test(s.timezone))) && (s.label == null || (plain(s.label) && s.label.length <= 60));
-      const okFor = ({ schedules: () => Array.isArray(v) && v.length <= 10 && v.every(schedule), model: () => typeof v === "string" && MODEL.test(v) } as Record<string, () => boolean>);
+      const okFor = ({ schedules: () => Array.isArray(v) && v.length <= 10 && v.every(schedule), model: () => v === null || (typeof v === "string" && MODEL.test(v)) } as Record<string, () => boolean>);
       const ok = Object.hasOwn(okFor, c.field) ? okFor[c.field] : undefined;
       if (!ok) refuse(`${c.field} isn't a routine field the board may change`);
       if (!ok!()) refuse(`${c.routine}.${c.field} can't be ${JSON.stringify(v).slice(0, 200)}`);
@@ -311,7 +311,9 @@ export function planFiles(changes: Change[], { read, localOf, teamOf, moduleHand
         set([...fieldsOf(ch.agent), ch.field], ch.value);
         break;
       case "routine":
-        set(["overrides", "routines", ch.routine, ch.field], ch.value);
+        // A model of null puts the routine back on its agent's model (the override goes).
+        if (ch.value === null) drop(["overrides", "routines", ch.routine, ch.field]);
+        else set(["overrides", "routines", ch.routine, ch.field], ch.value);
         break;
       case "grants":
         if (ch.tools === null) drop(["overrides", "agents", ch.agent, "connections", ch.connection]);

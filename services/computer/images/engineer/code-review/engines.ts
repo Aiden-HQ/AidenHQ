@@ -60,7 +60,7 @@ const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 export interface Combo {
   engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean;
   /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skills` (see resolveSkills). */
-  harness?: string; skills?: string[];
+  harness?: string; skills?: SkillRef[]; tools?: string[];
 }
 export interface EngineInput {
   prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string;
@@ -77,7 +77,7 @@ export interface EngineInput {
   /** `tree`: the whole tree at the head (base is the empty tree); else the change. */
   target?: "tree" | "pr";
   /** Skill engines: the harness, the skills (resolveSkills) and where the image keeps skills (default /opt/review). */
-  harness?: string; skills?: string[]; skillsRoot?: string;
+  harness?: string; skills?: SkillRef[]; tools?: string[]; skillsRoot?: string;
   /** deepsec: its spend cap, and the files of a pending setup (JSON: path to text) to scan with instead of setting up. */
   budget_usd?: number; setupFiles?: Record<string, string>;
 }
@@ -119,7 +119,8 @@ export const callOf = (tool: string, a: Record<string, unknown> | undefined): Ca
 export function comboProblem(c: Combo | null | undefined) {
   if (!c || typeof c !== "object") return "a combo is an object";
   const skill = typeof c.engine === "string" && c.engine.startsWith("skill:");
-  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x !== "string"))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
+  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x?.skill !== "string" || typeof x.args !== "string" || (x.also !== undefined && !Array.isArray(x.also))))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
+  if (c.tools !== undefined && (!Array.isArray(c.tools) || c.tools.some((t) => !["Skill", "Workflow"].includes(t)))) return "tools are Skill and/or Workflow";
   const e = skill ? ENGINES[c.harness!] : ENGINES[c.engine];
   if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}, skill:<option>`;
   if (typeof c.model !== "string" || !MODEL.test(c.model)) return "model is an OpenRouter model id (e.g. ~deepseek/deepseek-flash-latest)";
@@ -151,6 +152,8 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
 }
 
 /** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
+/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit), and `also`, skills it loads itself (linked, never invoked). */
+export interface SkillRef { skill: string; args: string; also?: string[] }
 export interface Skill { invocations: string[]; skillDirs: string[]; pluginDirs: string[] }
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
 const SKILLS_ROOT = "/opt/review";
@@ -160,7 +163,7 @@ export function parseSkill(skill: string) {
   const repo = /^([\w.-]+)\/([\w.-]+):([\w.-]+)$/.exec(skill);
   const cmd = /^\/([\w.-]+)(?::([\w.-]+))?$/.exec(skill);
   if (!repo && !cmd) throw new Error(`skill "${skill}" is /<name>, /<plugin>:<command> or <owner>/<repo>:<name>`);
-  return repo ? { owner: repo[1]!, repo: repo[2]!, name: repo[3]! } : { plugin: cmd![2] ? cmd![1]! : undefined, name: cmd![2] ?? cmd![1]! };
+  return repo ? { owner: repo[1]!, repo: repo[2]!, name: repo[3]!, plugin: undefined } : { owner: undefined, repo: undefined, plugin: cmd![2] ? cmd![1]! : undefined, name: cmd![2] ?? cmd![1]! };
 }
 
 /**
@@ -169,23 +172,28 @@ export function parseSkill(skill: string) {
  * `/code-review`); and `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>`
  * (`$<name>` in codex). Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
  */
-export function resolveSkills(skills: string[], harness: string, root = SKILLS_ROOT): Skill {
+export function resolveSkills(skills: SkillRef[], harness: string, base: string, root = SKILLS_ROOT): Skill {
   const all: Skill = { invocations: [], skillDirs: [], pluginDirs: [] };
-  for (const skill of skills) {
-    const p = parseSkill(skill), sigil = harness === "codex" ? "$" : "/";
-    if ("plugin" in p && p.plugin) {
+  const sigil = harness === "codex" ? "$" : "/";
+  // One spec installed: its invocation (a plugin's is its own spec) and the folders it needs.
+  const install = (skill: string) => {
+    const p = parseSkill(skill);
+    if (p.plugin) {
       const dir = join(root, "plugins", p.plugin);
       if (harness !== "claude-code" || !existsSync(dir)) throw new Error(`plugin ${p.plugin} isn't installed for ${harness}`);
-      all.invocations.push(skill);
       all.pluginDirs.push(dir);
-      continue;
+      return skill;
     }
-    const base = "repo" in p ? join(root, "skills", `${p.owner}__${p.repo}`) : join(root, "skills");
+    const from = p.owner ? join(root, "skills", `${p.owner}__${p.repo}`) : join(root, "skills");
     let found: string[] = [];
-    try { found = readdirSync(base, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === p.name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(base, dirname(f))); } catch {}
-    if (!found.length && "repo" in p) throw new Error(`skill ${p.name} isn't installed from ${p.owner}/${p.repo}`);
-    all.invocations.push(`${sigil}${p.name}`);
+    try { found = readdirSync(from, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === p.name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(from, dirname(f))); } catch {}
+    if (!found.length && p.owner) throw new Error(`skill ${p.name} isn't installed from ${p.owner}/${p.repo}`);
     all.skillDirs.push(...found.slice(0, 1));
+    return `${sigil}${p.name}`;
+  };
+  for (const { skill, args, also = [] } of skills) {
+    all.invocations.push(`${install(skill)} ${args.replaceAll("{base}", base)}`.trim());
+    for (const a of also) install(a);
   }
   return all;
 }
@@ -198,11 +206,11 @@ function linkSkills(sk: Skill | undefined, dir: string) {
 }
 
 async function skillEngine(i: EngineInput): Promise<EngineResult> {
-  const sk = resolveSkills(i.skills ?? [], String(i.harness), i.skillsRoot);
+  const sk = resolveSkills(i.skills ?? [], String(i.harness), i.base, i.skillsRoot);
   if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
   const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
   // It ran its own way: a finished run counts as read, and says its coverage isn't tracked.
-  return r.cause ? r : { ...r, read: true, untracked: `${sk.invocations.join(" ")} reads the code its own way, so which files it read isn't tracked` };
+  return r.cause ? r : { ...r, read: true, untracked: `${sk.invocations.map((v) => v.split(" ")[0]).join(" ")} reads the code its own way, so which files it read isn't tracked` };
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
@@ -239,7 +247,7 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   if (sk && own) {
     // The skill's own run over the range, its findings then restated as our JSON in the same thread.
     for (const inv of sk.invocations) {
-      const t = await turn(`${inv} ${base}..HEAD`, session);
+      const t = await turn(inv, session);
       if (!t.done || !(t.thread ?? session)) return { message: "", read: false, calls, cause: t.done ? "codex gave no thread to continue" : stopped(t.r, t.said) };
       session ??= t.thread;
     }
@@ -263,7 +271,7 @@ const REPO_TOOLS = ["diff", "log", "show", "blame", "read_file", "list_files", "
 type CodexEvent = { type?: string; thread_id?: string; message?: string; error?: { message?: string }; item?: { type?: string; tool?: string; status?: string; error?: unknown; result?: { isError?: boolean }; arguments?: Record<string, unknown>; aggregated_output?: string; command?: string } };
 type ClaudeEvent = { type?: string; subtype?: string; session_id?: string; result?: string; is_error?: boolean; message?: { content?: { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown; input?: { path?: unknown; command?: unknown } }[] } };
 
-async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
+async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own, tools }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "claude-"));
   const home = join(tmp, "home"), cwd = join(tmp, "cwd");
   mkdirSync(home);
@@ -286,8 +294,8 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", // its Bash never sees the token
   };
-  const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", "Agent,Bash",
-    ...(sk?.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]), "--allowedTools", ["Agent", "Bash", ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
+  const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", ["Agent", "Bash", ...(tools ?? [])].join(","),
+    ...(sk?.pluginDirs ?? []).flatMap((d) => ["--plugin-dir", d]), "--allowedTools", ["Agent", "Bash", ...(tools ?? []), ...REPO_TOOLS.map((t) => `mcp__repo__${t}`)].join(","), "--append-system-prompt", instructions, "--output-format", "stream-json", "--verbose"];
   const calls: Call[] = [];
   const turn = async (task: string, resume?: string) => {
     const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes });
@@ -312,7 +320,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   if (own) {
     // Claude Code's own review of the change (base..HEAD in the box's history), or the skill's command over that range, its
     // findings then restated as our JSON.
-    for (const task of sk ? sk.invocations.map((v) => `${v} ${base}..HEAD`) : [`/code-review ${effort} ${base}..HEAD --max-findings all`]) {
+    for (const task of sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]) {
       const t = await turn(task, session);
       if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
       if (!t.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };

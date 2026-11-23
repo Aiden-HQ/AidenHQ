@@ -411,7 +411,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
 
   // What a skill or deepsec engine needs besides the brief: its harness and skill, the target, the spend cap, a pending setup.
   const engineSpec = {
-    target: spec.target ?? "pr", harness: combo.harness, skills: combo.skills,
+    target: spec.target ?? "pr", harness: combo.harness, skills: combo.skills, tools: combo.tools,
     ...(Number(spec.budget_usd) > 0 ? { budget_usd: Number(spec.budget_usd) } : {}),
     ...(spec.setup_files ? { setupFiles: setupFilesOf(spec.setup_files) } : {}),
   };
