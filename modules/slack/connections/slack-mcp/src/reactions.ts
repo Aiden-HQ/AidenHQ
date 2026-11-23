@@ -87,8 +87,10 @@ export function planReactionSearch(name: string, args: Record<string, unknown>):
   if (query) {
     const tokens = query.split(/\s+/).filter(Boolean);
     if (!tokens.every((t) => MODIFIER.test(t))) return { kind: "pass" }; // a term clause: the search tool's job
-    // Both filled with modifiers only: two modifier sets, which reactions.list can't reconcile into one scope.
-    if (filters && (tokens.some((t) => REACTION_PREFIX.test(t)) || filters.split(/\s+/).some((t) => REACTION_PREFIX.test(t)))) {
+    // Both filled with modifiers only: two modifier sets, which reactions.list can't reconcile into one scope. A reaction
+    // filter on either side — positive or negated — makes the pair a reaction scope this path can't compute.
+    const reactionish = (t: string) => REACTION_PREFIX.test(t) || NEGATED_REACTION.test(t);
+    if (filters && (tokens.some(reactionish) || filters.split(/\s+/).some(reactionish))) {
       return { kind: "unsupported", filter: `${query} ${filters}`, reason: `a modifier-only query combined with filters:${filters} is ambiguous` };
     }
     if (filters) return { kind: "pass" }; // modifiers on both sides and no reaction among them: the search tool's
