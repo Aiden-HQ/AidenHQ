@@ -107,12 +107,13 @@ test("the host's apply generations: the pin skips a refused apply, and a missing
 
 test("an agent's jobs and the records and billed cost since a time are reads of the role", async (t) => {
   const { work, records } = setup();
-  records.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, agent_id TEXT, cost_usd REAL, component TEXT, task_subject TEXT)");
+  records.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, agent_id TEXT, cost_usd REAL, component TEXT, task_subject TEXT, status TEXT NOT NULL DEFAULT 'ok')");
   const call = records.db.prepare("INSERT INTO calls (key, at, day, agent_id, cost_usd, component, task_subject) VALUES (?, ?, ?, ?, ?, ?, ?)");
   call.run("c1", "2026-01-02T10:00:00.000Z", "2026-01-02", "a1", 0.5, "Engineer", "WOR-1");
   call.run("c2", "2026-01-02T11:00:00.000Z", "2026-01-02", "a1", null, "Engineer", "WOR-1");
   call.run("c3", "2025-12-01T11:00:00.000Z", "2025-12-01", "a1", 9, "Engineer", "WOR-1");
   call.run("c4", "2026-01-02T12:00:00.000Z", "2026-01-02", null, 4, "Check jobs", "code-review:r1");
+  records.db.prepare("INSERT INTO calls (key, at, day, agent_id, cost_usd, component, task_subject, status) VALUES ('c5', '2026-01-02T13:00:00.000Z', '2026-01-02', 'a1', 50, 'Engineer', 'WOR-9', 'reserved')").run(); // an estimate: never spend
   records.db.prepare("UPDATE jobs SET exit = 1, state = 'failed', progress = ? WHERE id = 'j-1'").run(JSON.stringify({ steps: [1, 2] }));
   const whoami = async () => ({ kind: "module", module: "fleet-steward", roles: ["kernel.work-read"], tools: [] });
   const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, graderToken: () => "tok" });
@@ -121,10 +122,11 @@ test("an agent's jobs and the records and billed cost since a time are reads of 
   const get = (path) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: "Bearer m" } });
   const a = await (await get("/v1/work?agent=a1")).json();
   assert.deepEqual(a.jobs.map((j) => [j.id, j.state, j.exit, j.steps]), [["j-2", "running", null, 0], ["j-1", "failed", 1, 2]]);
-  assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: null, day: "2026-01-02", cost_usd: 4, calls: 1, priced: 1 }, { agent: "a1", day: "2026-01-02", cost_usd: 0.5, calls: 2, priced: 1 }]);
+  assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: null, day: "2026-01-02", cost_usd: 4, calls: 1, priced: 1 }, { agent: "a1", day: "2026-01-02", cost_usd: 50.5, calls: 3, priced: 2 }]);
   // What the day's spend was on: its costliest components and subjects, so a spike names its cause.
   const spend = await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json();
-  assert.deepEqual(spend.spend_components, [{ day: "2026-01-02", name: "Check jobs", cost_usd: 4, calls: 1 }, { day: "2026-01-02", name: "Engineer", cost_usd: 0.5, calls: 2 }]);
+  assert.deepEqual(spend.spend_days, [{ day: "2026-01-02", cost_usd: 4.5, priced: 2 }]);
+  assert.deepEqual(spend.spend_components, [{ day: "2026-01-02", name: "Check jobs", cost_usd: 4, calls: 1 }, { day: "2026-01-02", name: "Engineer", cost_usd: 0.5, calls: 1 }]);
   assert.deepEqual(spend.spend_subjects.map((s) => s.name), ["code-review:r1", "WOR-1"]);
   assert.equal((await get("/v1/work?since=yesterday")).status, 400);
   // A reviewer's malice rejection is `judged`; code's own refusal (a moved head) is not.

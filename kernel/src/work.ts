@@ -11,8 +11,8 @@
 //                            and for the board's timeline the wake that started it, why it ended, its billed cost, whether
 //                            it was a quiet routine run and the records the agent filed while it ran: { jobs }
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
-//                            UTC day from the gateway ledger: { records, usage, spend_components, spend_subjects } (the last two: each day's
-//                            five costliest components and subjects; the Fleet Steward's scorecards and spend check; each record says
+//                            UTC day from the gateway ledger: { records, usage, spend_days, spend_components, spend_subjects } (the last three: each day's
+//                            settled billed total and five costliest components and subjects; the Fleet Steward's scorecards and spend check; each record says
 //                            whether it is a `judged` rejection: the AI reviewer's, not code's)
 //   GET /v1/work?generations=1  the host's apply generations: the current product pin and the last 20 applies (generations.ts)
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*) over the same rows
@@ -88,8 +88,11 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       const usage = rows("SELECT agent_id AS agent, day, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS calls, COUNT(cost_usd) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day", from, to);
       // What the spend was on, per day: the five costliest components and subjects (a check run's `code-review:<run>`, a task) of each day,
       // so a spike names its cause (the Fleet Steward's spend check reads them with the totals above).
-      const top = (col: string) => rows(`SELECT day, name, cost_usd, calls FROM (SELECT day, ${col} AS name, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS calls, ROW_NUMBER() OVER (PARTITION BY day ORDER BY COALESCE(SUM(cost_usd), 0) DESC) AS n FROM calls WHERE at >= ? AND at < ? AND ${col} IS NOT NULL GROUP BY day, ${col}) WHERE n <= 5 ORDER BY day, cost_usd DESC`, from, to);
-      return { records: recs, usage, spend_components: top("component"), spend_subjects: top("task_subject") };
+      // Settled calls only: a `reserved` call's amount is an estimate and an `unsettled` one the gateway's fail-closed hold, not spend.
+      const settled = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL";
+      const spend_days = rows(`SELECT day, SUM(cost_usd) AS cost_usd, COUNT(*) AS priced FROM calls WHERE at >= ? AND at < ? AND ${settled} GROUP BY day ORDER BY day`, from, to);
+      const top = (col: string) => rows(`SELECT day, name, cost_usd, calls FROM (SELECT day, ${col} AS name, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls, ROW_NUMBER() OVER (PARTITION BY day ORDER BY SUM(cost_usd) DESC) AS n FROM calls WHERE at >= ? AND at < ? AND ${settled} AND ${col} IS NOT NULL GROUP BY day, ${col}) WHERE n <= 5 ORDER BY day, cost_usd DESC`, from, to);
+      return { records: recs, usage, spend_days, spend_components: top("component"), spend_subjects: top("task_subject") };
     },
     generations: () => fleetGenerations(generationsFile),
     /** One write record (an approval card) by id, for a reader that only has the id a report cited; null for none. */

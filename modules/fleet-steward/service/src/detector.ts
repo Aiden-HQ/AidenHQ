@@ -35,27 +35,32 @@ export function failingScopes(rows: FailingScope[]): { key: string; reason: stri
 }
 
 type SpendTop = { day: string; name: string; cost_usd: number; calls: number };
-type SpendRead = { usage?: { day: string; cost_usd: number; priced: number }[]; spend_components?: SpendTop[]; spend_subjects?: SpendTop[] };
-const SPEND_FACTOR = 2; // today's billed spend over this many times the prior days' daily average
-const SPEND_BASELINE_DAYS = 3; // priced days (of the prior 7) a baseline needs: a new install has none and stays silent
+type SpendRead = { spend_days?: { day: string; cost_usd: number; priced: number }[]; spend_components?: SpendTop[]; spend_subjects?: SpendTop[] };
+const SPEND_FACTOR = 2; // a day's billed spend over this many times the average of the 7 days before it
+const SPEND_BASELINE_DAYS = 3; // priced days (of those 7) a baseline needs: a new install has none and stays silent
 const SPEND_FLOOR_USD = 10; // below this a doubling is noise, not spend
 /**
- * Billed spend today (UTC) above 2x the average of the prior 7 complete days that had priced spend, once at least 3 such
- * days exist. The incident names the day's costliest components and subjects; subjects can carry a caller's text (a check's
- * name), so they reach the Steward fenced.
+ * A day's settled billed spend (UTC) above 2x the average of the 7 complete days before it that had priced spend, once at least 3
+ * such days exist. Today and yesterday are both checked (a spike after the last poll before midnight, or a call settling after
+ * it, is seen against yesterday's own baseline); the incident is keyed by the day. It names the day's costliest components and
+ * subjects; subjects can carry a caller's text (a check's name), so they reach the Steward fenced.
  */
 export function spendSpike(r: SpendRead, t: number): { key: string; reason: string }[] {
-  const today = new Date(t).toISOString().slice(0, 10);
-  const first = new Date(t - 7 * DAY_MS).toISOString().slice(0, 10);
+  const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
   const byDay = new Map<string, number>();
-  for (const u of r.usage ?? []) if (u.priced > 0) byDay.set(u.day, (byDay.get(u.day) ?? 0) + (u.cost_usd ?? 0));
-  const prior = [...byDay].filter(([day, usd]) => day >= first && day < today && usd > 0).map(([, usd]) => usd);
-  const spent = byDay.get(today) ?? 0;
-  if (prior.length < SPEND_BASELINE_DAYS) return [];
-  const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
-  if (spent < SPEND_FLOOR_USD || spent <= SPEND_FACTOR * avg) return [];
-  const list = (rows: SpendTop[] | undefined) => (rows ?? []).filter((x) => x.day === today).map((x) => `${x.name} $${x.cost_usd.toFixed(2)} (${x.calls} calls)`).join("; ") || "none recorded";
-  return [{ key: today, reason: `billed spend today is $${spent.toFixed(2)}, ${(spent / avg).toFixed(1)}x the $${avg.toFixed(2)} daily average of the prior ${prior.length} days.\nTop components: ${list(r.spend_components)}.\nTop subjects:\n${fence(list(r.spend_subjects), "spend.subjects")}` }];
+  for (const u of r.spend_days ?? []) if (u.priced > 0 && u.cost_usd > 0) byDay.set(u.day, u.cost_usd);
+  const out: { key: string; reason: string }[] = [];
+  for (const day of [dayOf(t - DAY_MS), dayOf(t)]) {
+    const from = dayOf(Date.parse(day) - 7 * DAY_MS);
+    const prior = [...byDay].filter(([d, usd]) => d >= from && d < day && usd > 0).map(([, usd]) => usd);
+    const spent = byDay.get(day) ?? 0;
+    if (prior.length < SPEND_BASELINE_DAYS) continue;
+    const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
+    if (spent < SPEND_FLOOR_USD || spent <= SPEND_FACTOR * avg) continue;
+    const list = (rows: SpendTop[] | undefined) => (rows ?? []).filter((x) => x.day === day).map((x) => `${x.name} $${x.cost_usd.toFixed(2)} (${x.calls} calls)`).join("; ") || "none recorded";
+    out.push({ key: day, reason: `billed spend on ${day} is $${spent.toFixed(2)}, ${(spent / avg).toFixed(1)}x the $${avg.toFixed(2)} daily average of the prior ${prior.length} days.\nTop components: ${list(r.spend_components)}.\nTop subjects:\n${fence(list(r.spend_subjects), "spend.subjects")}` });
+  }
+  return out;
 }
 
 /** A source scope whose last two completed passes each fetched fewer records than the source reported. */
@@ -940,7 +945,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
     // Billed spend today far above the recent days' (the kernel's one work read, which carries the day's top components and subjects).
     async spend() {
       const t = now();
-      const from = new Date(Date.parse(new Date(t).toISOString().slice(0, 10)) - 7 * DAY_MS).toISOString();
+      const from = new Date(Date.parse(new Date(t).toISOString().slice(0, 10)) - 8 * DAY_MS).toISOString();
       return spendSpike((await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`)) as SpendRead, t);
     },
     // Monitoring alerts (alerts.ts): one incident per firing alert, recovered when it resolves.
