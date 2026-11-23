@@ -92,6 +92,7 @@ describe("planReactionSearch", () => {
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", after: "2026-11-01" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", before: "2026-11-01" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "files" })).toMatchObject({ kind: "unsupported" });
+    expect(planReactionSearch("slack_search_public_and_private", { filters: "hasmy::pushpin:", channel_types: "im,mpim" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "messages" })).toMatchObject({ kind: "mine" });
   });
 
@@ -224,6 +225,14 @@ describe("scanMyReactions", () => {
     const pages = Array.from({ length: 3 }, (_, i) => page([item("C1", `${i}.0`)], `c${i + 1}`));
     const { fetchImpl } = fakeSlack(pages);
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 })).toMatchObject({ ok: true, nextCursor: "c3" });
+  });
+
+  it("does not report numbered pages cut off at the cap as complete: there is no cursor to hand back", async () => {
+    const numbered = (async (url: string | URL) => {
+      const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
+      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 1, total: 9, page: n, pages: 9 } });
+    }) as unknown as typeof fetch;
+    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered, maxPages: 2 })).toMatchObject({ ok: false });
   });
 });
 
@@ -413,6 +422,24 @@ describe("interception through the proxy", () => {
     expect(body.result.isError).toBe(true);
     expect(body.result.structuredContent).toMatchObject({ error: "needs_owner" });
     none.close();
+    // Signed out on /mcp/read the proxy lists no reads: the refusal must still be the sign-in to fix, not "not a read".
+    const signedOut = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({}), refresh: async () => {}, status: () => ({ state: "expired", since: "" }), mark: () => {}, signedIn: () => false },
+      log,
+      readKey: "rd",
+      reads: ["slack_search_public"],
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({}), authState: () => "expired", servedRead: async () => false, readKey: "rd", caller: async () => ({}) }),
+    });
+    const signedOutBase = await listen(signedOut);
+    const readRes = await fetch(`${signedOutBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const readBody = (await readRes.json()) as any;
+    expect(readBody.result.structuredContent).toMatchObject({ error: "needs_owner", need: { cause: "not_connected" } });
+    signedOut.close();
   });
 
   it("consults the proxy's own read admission: a read-tagged, read-only tool is served; a read-tagged write is refused", async () => {

@@ -97,6 +97,9 @@ export function planReactionSearch(name: string, args: Record<string, unknown>):
   // A bound outside the filter text would narrow the set in a way reactions.list can't repeat: answer it, don't widen it.
   const bounds = ["after", "before"].filter((k) => text(args[k]));
   if (bounds.length) return { kind: "unsupported", filter: only, reason: `${only} with ${bounds.map((k) => `${k}:${text(args[k])}`).join(" ")} is a date-scoped search` };
+  // A channel-type scope (im,mpim,public,private) narrows the set in a way this path can't reproduce: answer it.
+  const channelTypes = filterText(args.channel_types);
+  if (channelTypes) return { kind: "unsupported", filter: only, reason: `${only} with channel_types:${channelTypes} is a channel-type-scoped search` };
   // reactions.list's message items are messages; a search that also asks for files would come back short.
   const types = filterText(args.content_types);
   if (types && types.split(",").map((t) => t.trim()).some((t) => t && t !== "messages")) return { kind: "unsupported", filter: only, reason: `${only} with content_types:${types} also asks for non-message content` };
@@ -237,6 +240,8 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     }
     return { ok: true, messages, nextCursor: null };
   }
+  // The cap: a cursor continues the set, but numbered paging has none to hand back, so the set is unknown.
+  if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
   return { ok: true, messages, nextCursor: cursor };
 }
 
@@ -386,6 +391,11 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   if (plan.kind === "pass") return false;
   // /mcp/read serves only what the proxy itself would: the manifest's read tag and the upstream's read-only hint.
   if (readOnly && o.servedRead && !(await o.servedRead(name).catch(() => false))) {
+    // Signed out, the proxy lists no read tools at all: that is a sign-in to fix, not a tool that isn't a read.
+    if (o.authState() !== "ok") {
+      send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." })));
+      return true;
+    }
     send(res, 200, answer(message.id, reactionError("refused", `Tool ${name} is not a read: the read endpoint serves reads only.`)));
     return true;
   }
