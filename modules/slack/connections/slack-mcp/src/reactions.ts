@@ -204,7 +204,9 @@ export interface ScanOptions {
 /** The scan's outcome: the whole set (`nextCursor: null`), or what stopped it from computing one. */
 export type ScanResult =
   | { ok: true; messages: ReactionMessage[]; nextCursor: string | null }
-  | { ok: false; detail: string; error?: string; needed?: unknown; method?: string };
+  // `messages` rides along only when matches were verified before the failure: the answer reports them as an incomplete
+  // set rather than discarding them, and still says plainly that the whole set is unknown.
+  | { ok: false; detail: string; error?: string; needed?: unknown; method?: string; messages?: ReactionMessage[] };
 
 // A continuation: the caller's `limit` was reached, so the token carries the messages already returned and the upstream
 // page size. A resume walks the feed from the start again and skips those messages by identity. Positions are never
@@ -377,7 +379,10 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // Any stop after verified matches were found (a failed page, the deadline) hands them back with a continuation that
     // resumes past this page, rather than discarding them for an error the next run would repeat from the start.
     // Any page after the first is an advance, whether Slack pages by cursor or by number, so verified matches are kept.
-    if (!r.ok) return messages.length && (full || cursor || numbered !== undefined) ? { ok: true, messages, nextCursor: continuation() } : r;
+    if (!r.ok) {
+      if (messages.length && (full || cursor || numbered !== undefined)) return { ok: true, messages, nextCursor: continuation() };
+      return messages.length ? { ...r, messages } : r;
+    }
     const { json } = r;
     // A page without an item list isn't an empty page: it is an answer this scan can't read. When matches were already
     // verified (and there is a way to resume) they are kept with a continuation; otherwise the set is unknown.
@@ -445,8 +450,10 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // The cap. When the caller's limit was reached, what was verified is real: hand it back with a continuation, which
   // resumes past this page (a Slack cursor still advances), rather than discarding it for an error a retry would repeat.
   if (full && cursor) return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, from: cursor }) };
-  if (full) return { ok: false, detail: `the reaction feed ran past the scan's ${maxPages}-page limit before the set ended` };
-  if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
+  // Numbered pages have no cursor to hand back, so a capped walk can't resume; matches verified before the cap are
+  // still real and ride along with the failure, which says the set is unknown.
+  const capped = `reactions.list's pages ran past the scan's ${maxPages}-page limit before the set ended`;
+  if (full || numbered !== undefined) return { ok: false, detail: capped, ...(messages.length ? { messages } : {}) };
   // A Slack cursor still advances: hand it back inside a continuation that carries what was returned, so a capped walk
   // continues past this page and a message Slack lists again after it isn't returned twice.
   return { ok: true, messages, nextCursor: cursor ? encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, from: cursor }) : null };
@@ -718,7 +725,10 @@ async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "
     }
     // Slack refusing the token is the owner's to fix; anything else is a plain error the caller retries or reports.
     if (AUTH_ERROR.test(scan.detail)) return need(`The reaction set is unknown: Slack refused the sign-in (${scan.detail}).`);
-    return reactionError("reactions_list_failed", `The reaction set is unknown: ${scan.detail}.`, { filter: plan.filter });
+    // Matches verified before the failure ride along: the error still says the set is unknown (no `next_cursor`), but the
+    // caller isn't made to discard messages Slack did return.
+    const partial = scan.messages?.length ? { messages: scan.messages } : {};
+    return reactionError("reactions_list_failed", `The reaction set is unknown: ${scan.detail}.`, { filter: plan.filter, ...partial });
   }
   o.log?.({ tool: name, filter: plan.filter, messages: scan.messages.length, complete: scan.nextCursor === null }, "answered a reaction search from reactions.list");
   return reactionResult(scan);

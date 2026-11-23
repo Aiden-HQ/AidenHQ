@@ -371,14 +371,15 @@ describe("scanMyReactions", () => {
     const { fetchImpl } = fakeSlack(pages);
     const scan = await scanMyReactions({ ...plan, limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 });
     expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1" }], nextCursor: expect.stringMatching(/^aidenhq:pos:/) });
-    // Numbered pages have no cursor to hand back, so a full result at the cap stays unknown: a continuation couldn't
-    // advance past the same cap.
+    // Numbered pages have no cursor to hand back, so a full result at the cap stays unknown, but the verified match is
+    // not thrown away: it rides along with the failure, which says the set is unknown.
     const numbered = (async (url: string | URL) => {
       const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
       // Only page 1 carries the pinned reaction: later pages are walked just to see whether the set ends.
       return Response.json({ ok: true, items: [item("C1", `${n}.0`, n === 1 ? "pushpin" : "eyes")], paging: { count: 1, total: 4, page: n, pages: 4 } });
     }) as unknown as typeof fetch;
-    expect(await scanMyReactions({ ...plan, limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered, maxPages: 3 })).toMatchObject({ ok: false, detail: expect.stringContaining("page limit") });
+    const capped = await scanMyReactions({ ...plan, limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered, maxPages: 3 });
+    expect(capped).toMatchObject({ ok: false, detail: expect.stringContaining("page limit"), messages: [expect.objectContaining({ channel: "C1", ts: "1.0" })] });
   });
 
   it("stops at the caller's limit and hands back the cursor for the next unread page, so nothing is skipped", async () => {
@@ -396,6 +397,17 @@ describe("scanMyReactions", () => {
     expect(third).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C5" })], nextCursor: null });
     // A continuation re-walks from the start and skips by identity, so the feed is read more than once by design.
     expect(calls.filter((c) => c.includes("reactions.list")).length).toBeGreaterThan(3);
+  });
+
+  it("returns verified matches inside the error when the scan can't offer a continuation", async () => {
+    // Numbered pages past the cap have no cursor to resume, so the answer is an error — but it carries the match Slack
+    // did return, with no `next_cursor`, so the caller knows the set is unknown and still has the message.
+    const numbered = (async (url: string | URL) => {
+      const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
+      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 1, total: 5, page: n, pages: 5 } });
+    }) as unknown as typeof fetch;
+    const scan = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered, maxPages: 2 });
+    expect(scan).toMatchObject({ ok: false, detail: expect.stringContaining("page limit"), messages: [{ channel: "C1", ts: "1.0" }, { channel: "C1", ts: "2.0" }] });
   });
 
   it("keeps the matches it already found when a later page fails, and says the set is not complete", async () => {
