@@ -159,8 +159,15 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
 /** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
 /** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). `uncommitted`: it finds the change as the checkout's uncommitted changes (`git status`, `git diff`), so for its turn the checkout's HEAD and index are the base, its files still the head's. `tree`: its contract in a whole-repo review (target tree, base the empty tree): the arguments it takes there, or false when it only reviews a change (it isn't run there); absent, `args`. */
 export interface SkillRef { skill: string; args: string; also?: string[]; uncommitted?: boolean; tree?: string | false }
-/** `cwd`: the run's throwaway checkout of `head` (skillEngine), where it runs. `idle`: the turns (by index) that called no tool. */
-export interface Skill { invocations: string[]; uncommitted: boolean[]; skillDirs: string[]; pluginDirs: string[]; cwd?: string; head?: string; idle?: Set<number> }
+/** `cwd`: the run's throwaway checkout of `head` (skillEngine), where it runs. `idle`: the turns (by index) that called no tool.
+ * `cut`: the turn stopped at the skills' time limit (the ones after it never started). */
+export interface Skill { invocations: string[]; uncommitted: boolean[]; skillDirs: string[]; pluginDirs: string[]; cwd?: string; head?: string; idle?: Set<number>; cut?: number }
+/**
+ * A skill run's own turns share this many turn allowances (`minutes`: 120 at the default 20, inside the check's 180): a skill's
+ * whole workflow with its sub-agents took 13 minutes on a whole repository and over 16 on one module (2026-11-23), past one turn's
+ * 20. A turn stopped at that limit still gets the restate, so what it found is kept (the review is incomplete).
+ */
+const SKILL_TURNS = 6;
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
 const SKILLS_ROOT = "/opt/review";
 
@@ -223,7 +230,7 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
   const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd, target: i.target }, i.skillsRoot), cwd, head, idle: new Set<number>() };
   const run = { ...i, instructions: `${i.instructions}\n\n${skillRun(cwd, i.target)}` };
   const r = await (i.harness === "codex" ? codex(run, sk) : claudeCode(run, sk));
-  return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!), sk.idle);
+  return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!), sk.idle, sk.cut);
 }
 
 /**
@@ -241,21 +248,23 @@ export const skillRun = (cwd: string, target?: "tree" | "pr") => `You run an ins
  * that reviewed anything, or an answer that doesn't say, is no review at all. A run that reviewed counts as read and says its
  * coverage isn't tracked.
  */
-export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>()): EngineResult {
+export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>(), cut?: number): EngineResult {
   const said = answer(r.message)?.skills as { ran?: unknown; partial?: unknown; why?: unknown }[] | undefined;
   if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean" || (s.partial !== undefined && typeof s.partial !== "boolean"))) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
-  // A turn that called no tool read no code, whatever the restate says of it.
-  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i]!.why || "no reason given").slice(0, 300)}`;
-  const reviewed = (i: number) => said[i]!.ran === true && !idle.has(i);
+  // A turn that called no tool read no code, whatever the restate says of it; one stopped at the time limit that did reviewed part.
+  const late = (i: number) => cut !== undefined && i > cut;
+  const why = (i: number) => `${names[i]}: ${late(i) ? "not started: the skills' time ran out" : idle.has(i) ? "it called no tool" : i === cut ? "stopped at the skills' time limit" : String(said[i]!.why || "no reason given").slice(0, 300)}`;
+  const reviewed = (i: number) => !late(i) && !idle.has(i) && (said[i]!.ran === true || i === cut);
   const not = names.flatMap((_, i) => (reviewed(i) ? [] : [why(i)]));
-  const part = names.flatMap((_, i) => (reviewed(i) && said[i]!.partial === true ? [why(i)] : []));
+  const part = names.flatMap((_, i) => (reviewed(i) && (said[i]!.partial === true || i === cut) ? [why(i)] : []));
   if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
   const gaps = [not.length ? `a skill didn't review the code (${not.join("; ")})` : "", part.length ? `a skill reviewed only part of the code (${part.join("; ")})` : ""].filter(Boolean);
   return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(gaps.length ? { incomplete: gaps.join("; ") } : {}) };
 }
 
 /** Our restate step after a skill run (or Claude Code's own review): its findings in our shape and, after skills, whether each ran. */
-const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk ? `
+const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk?.cut !== undefined ? `
+The run was stopped at its time limit during ${sk.invocations[sk.cut]!.split(" ")[0]}: restate what it found until then, without continuing it.` : ""}${sk ? `
 Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "partial": false, "why": ""} when it reviewed all the code it was given and finished; "ran": true, "partial": true with a one-line "why" naming what it left out when it reviewed only part of the code it was given or cut its own workflow short (a sampled pass, steps or verifiers not run); or "ran": false with a one-line "why" when it reviewed no code: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed or skipped status.` : ""}
 ${prompt}`;
 
@@ -326,8 +335,8 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
     const it = e?.type === "item.completed" ? e.item : undefined;
     return it?.type === "command_execution" ? guard(it.status === "completed" && it.exit_code === 0, String(it.aggregated_output ?? "")) : undefined;
   };
-  const turn = async (task: string, resume?: string) => {
-    const r = await run("codex", ["exec", ...(resume ? ["resume", resume] : []), "--skip-git-repo-check", "--ignore-rules", "--json", "-o", out, task], { cwd, minutes, env: codexEnv(home), watch });
+  const turn = async (task: string, resume?: string, limit = minutes) => {
+    const r = await run("codex", ["exec", ...(resume ? ["resume", resume] : []), "--skip-git-repo-check", "--ignore-rules", "--json", "-o", out, task], { cwd, minutes: limit, env: codexEnv(home), watch });
     const events: CodexEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
     calls.push(...events.filter((e) => e?.type === "item.completed" && e.item?.type === "mcp_tool_call" && e.item.status === "completed" && !e.item.error && !e.item.result?.isError)
       .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []));
@@ -339,9 +348,12 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   let session: string | undefined;
   if (sk && own) {
     // The skill's own run over the range, its findings then restated as our JSON in the same thread.
+    const until = Date.now() + Number(minutes ?? 20) * SKILL_TURNS * 60_000;
     for (const [n, inv] of sk.invocations.entries()) {
       stage(sk, n, base);
-      const t = await turn(inv, session);
+      const t = await turn(inv, session, Math.max((until - Date.now()) / 60_000, 0.1));
+      // Stopped at the time limit after it started work: what it found so far is restated (skillOutcome: partial).
+      if (t.r.timedOut && t.acted && (t.thread ?? session)) { sk.cut = n; session ??= t.thread; break; }
       if (!t.done || !(t.thread ?? session)) return { message: "", read: false, calls, cause: t.done ? "codex gave no thread to continue" : stopped(t.r, t.said) };
       // A skill that ran no command or tool read no code: it counts as not run (skillOutcome).
       if (!t.acted) sk.idle?.add(n);
@@ -413,8 +425,8 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     }
     return undefined;
   };
-  const turn = async (task: string, resume?: string) => {
-    const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes, watch });
+  const turn = async (task: string, resume?: string, limit = minutes) => {
+    const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes: limit, watch });
     const events: ClaudeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
     // Claude Code's own review reads the diff with its shell too (`git diff`): a read that came back whole (no error, not cut
     // short by Claude Code's output limit) counts like the repo tools' diff.
@@ -431,15 +443,19 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     }
     const end = events.findLast((e) => e.type === "result");
     const acted = events.some((e) => e.type === "assistant" && (e.message?.content ?? []).some((c) => c.type === "tool_use"));
-    return { r, end, acted, ok: r.code === 0 && end?.subtype === "success" && !end.is_error, commands: events.find((e) => e.type === "system" && e.subtype === "init")?.slash_commands };
+    const init = events.find((e) => e.type === "system" && e.subtype === "init");
+    return { r, end, acted, ok: r.code === 0 && end?.subtype === "success" && !end.is_error, commands: init?.slash_commands, id: end?.session_id ?? init?.session_id };
   };
   let session: string | undefined;
   if (own) {
     // Claude Code's own review of the change (base..HEAD in the box's history), or the skill's command over that range, its
     // findings then restated as our JSON.
+    const until = Date.now() + Number(minutes ?? 20) * SKILL_TURNS * 60_000;
     for (const [n, task] of (sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]).entries()) {
       if (sk) stage(sk, n, base);
-      const t = await turn(task, session);
+      const t = await turn(task, session, sk ? Math.max((until - Date.now()) / 60_000, 0.1) : minutes);
+      // Stopped at the time limit after it started work: what it found so far is restated (skillOutcome: partial).
+      if (sk && t.r.timedOut && t.acted && (t.id ?? session)) { sk.cut = n; session = t.id ?? session; break; }
       if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
       // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. One that called no
       // tool read nothing: it counts as not run (skillOutcome), and the next skill still runs.

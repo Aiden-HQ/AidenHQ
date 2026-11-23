@@ -122,7 +122,7 @@ test("a plugin skill is a plugin folder, invoked by its spec", () => {
 // to its log: the task, its cwd, the checkout's HEAD and its uncommitted files; it prints `init` (its slash commands), `tool` (a
 // tool call, when set) and answers the restate turn with `restate`.
 // `dead`: the shell's error text; the fake's every Bash call fails with it, then it hangs (a run that would burn its time).
-function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: string; dead?: string }) {
+function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: string; dead?: string; slow?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "cr-repo-")), bin = mkdtempSync(join(tmpdir(), "cr-claude-")), scratch = mkdtempSync(join(tmpdir(), "cr-scratch-"));
   const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: root, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   git("init", "-q");
@@ -152,14 +152,15 @@ ${dead}
 case "$2" in
   "Now restate"*) echo '${result(o.restate)}' ;;
   *) ${tool}
+     ${o.slow ? "sleep 30" : ""}
      echo '${result("done")}' ;;
 esac
 `);
   chmodSync(join(bin, "claude"), 0o755);
-  const run = async (skills: { skill: string; args: string; uncommitted?: boolean }[]) => {
+  const run = async (skills: { skill: string; args: string; uncommitted?: boolean }[], minutes = 1) => {
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path}`;
-    try { return await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base, minutes: 1, scratch, own: true, harness: "claude-code", skills, skillsRoot: root }); } finally { process.env.PATH = path; }
+    try { return await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base, minutes, scratch, own: true, harness: "claude-code", skills, skillsRoot: root }); } finally { process.env.PATH = path; }
   };
   const turns = () => readFileSync(log, "utf8").trim().split("\n").map((l) => { const [task, cwd, at, dirty] = l.split("|"); return { task, cwd, at, dirty: dirty!.trim() }; });
   return { root, base, head, run, turns, scrub: () => readFileSync(join(bin, "scrub"), "utf8").trim(), settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")), instructions: () => readFileSync(join(bin, "instructions"), "utf8") };
@@ -223,6 +224,17 @@ test("a skill that reviewed only part of the code keeps its findings, and the re
   assert.match(String(skillOutcome({ ...r, message: said({ ran: true, partial: true, why: "x" }) }, ["/p:one"], new Set([0])).cause), /no skill reviewed the code \(\/p:one: it called no tool/);
   assert.match(String(skillOutcome({ ...r, message: said({ ran: false, why: "it stopped" }) }, ["/p:one"]).cause), /no skill reviewed the code/);
   assert.match(String(skillOutcome({ ...r, message: said({ ran: true, partial: "yes" as never }) }, ["/p:one"]).cause), /didn't say/);
+});
+
+test("a skill stopped at the skills' time limit keeps what it found: the restate runs, the review is incomplete", async () => {
+  const t0 = Date.now();
+  const f = fakeRun({ restate: ran(true, true), slow: true });
+  const r = await f.run([{ skill: "/p:one", args: "" }, { skill: "/p:two", args: "" }], 0.01); // 6 turn allowances: 3.6 s
+  assert.ok(Date.now() - t0 < 20_000, "stopped at the limit, not after the skill's 30 s");
+  assert.equal(r.cause, undefined);
+  assert.equal(r.read, true);
+  assert.match(String(r.incomplete), /didn't review the code \(\/p:two: not started: the skills' time ran out\).*reviewed only part of the code \(\/p:one: stopped at the skills' time limit\)/);
+  assert.deepEqual(f.turns().map((t) => t.task!.slice(0, 11)), ["/p:one", "Now restate"], "the next skill never starts; the restate does");
 });
 
 test("the restated skill list is read in order and must cover every skill", () => {
