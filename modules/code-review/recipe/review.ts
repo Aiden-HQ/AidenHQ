@@ -378,7 +378,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     if (addressed && (fixed.length || (!combo.recheck_only && result.cleared?.length))) {
       fixed.length = 0;
       if (!combo.recheck_only) result.cleared = [];
-      gaps.push("the change holds text addressed to a reviewer, so no earlier finding is closed by this recheck");
+      gaps.push("the change holds text addressed to a reviewer, so this recheck confirms no finding fixed outright");
     }
     result.fixed = fixed;
     result.unsafe = unsafe;
