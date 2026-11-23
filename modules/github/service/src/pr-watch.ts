@@ -122,6 +122,8 @@ export function startPrWatch(o: PrWatchOptions) {
   let findingsWakes = 0; // review-findings wakes sent in this pass
   let gateDown = false;  // code review answered unreachable in this pass: no more verdict calls until the next
   let probes = 0;        // Actions job reads this pass's recovery paths have spent (PROBES_PER_PASS)
+  let budgetAt = "";      // the PR whose recovery probes spent the pass's budget (PROBES_PER_PASS): the next pass starts after it
+  let probing = "";       // the PR being scanned, for a probe that spends the budget
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => ({}));
@@ -154,6 +156,8 @@ export function startPrWatch(o: PrWatchOptions) {
     state.wedged ??= {};     // `<repo>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's re-run ask, and whether GitHub took it (the job is the repository's, so a second PR at the head shares the ask)
     state.wedgedTold ??= {}; // `<pr url>:merge` and `<pr url>:optional` -> the head whose wedged check the task was told about
     state.wedgedAt ??= {};   // `<repo>:<head>` -> the check a pass's probe budget ran out at, so the next pass starts there
+    state.neverStartedAt ??= {}; // `<pr url>:<head>` -> the failed check a never-started probe pass ran out at
+    state.scanFrom ??= "";   // PR url the last pass's probe budget ran out in: the next pass scans the PRs after it first
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
@@ -229,7 +233,7 @@ export function startPrWatch(o: PrWatchOptions) {
     /** One Actions job read, charged to this pass's budget: undefined once the budget is spent, so the check waits for the
      * next tick instead of holding the scan (and every later PR's merge) on one PR's unfinished jobs. */
     async function probeJob(id: string): Promise<{ status: number; body: any } | undefined> {
-      if (probes >= PROBES_PER_PASS) return undefined;
+      if (probes >= PROBES_PER_PASS) { budgetAt ||= probing; return undefined; }
       probes++;
       return gh("GET", `/repos/${repo}/actions/jobs/${id}`);
     }
@@ -243,14 +247,18 @@ export function startPrWatch(o: PrWatchOptions) {
       const listed = await latestRuns(pr.headRefOid);
       if (!listed || !listed.complete) return false; // an unread list cannot say a job never started: the red-head rules decide
       const unstarted: Json[] = [];
-      for (const n of own.length ? own : red) {
+      const checks = own.length ? own : red;
+      // Resume where the last pass's budget ran out, so the same first checks do not spend every pass's probes.
+      const cursorKey = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
+      const start = checks.length ? Number(state.neverStartedAt[cursorKey] ?? 0) % checks.length : 0;
+      for (let i = 0; i < checks.length; i++) {
+        const n = checks[(start + i) % checks.length];
         if (n.__typename !== "CheckRun") return false;
         const run = runOf(listed.runs, n);
         const jobId = run && jobIdOf(run);
         if (!jobId) return false; // no Actions job in REST's own answer: not this rule's
         const job = await probeJob(jobId);
-        if (!job) return true; // this pass's budget is spent: nothing is known about the job, so the red-head rules must
-        // not wake the task for what may be an environment failure; the next tick reads it.
+        if (!job) { state.neverStartedAt[cursorKey] = (start + i) % checks.length; save(); return true; } // budget spent: resume here next pass
         if (job.status >= 300 || !Array.isArray(job.body?.steps) || job.body.steps.length) return false; // a step ran: it judged the commit
         if (job.body.head_sha !== pr.headRefOid || !String(job.body.check_run_url ?? "").endsWith(`/check-runs/${run.id}`)) return false;
         unstarted.push(n);
@@ -586,8 +594,14 @@ export function startPrWatch(o: PrWatchOptions) {
 
     if (!main.oid) return open.length;
     const opened = readJson(prTasksFile(o.cacheDir), {});
-    for (const pr of [...open].reverse()) { // oldest first
+    // Oldest first, except when the last pass's probe budget ran out partway: then this pass starts at the PR after the one
+    // it stopped in, so an older PR with many unfinished checks cannot spend every pass's probes and starve a newer PR.
+    const ordered = [...open].reverse();
+    const at = state.scanFrom ? ordered.findIndex((p) => p.url.toLowerCase() === state.scanFrom) : -1;
+    const scanOrder = at >= 0 && at + 1 < ordered.length ? [...ordered.slice(at + 1), ...ordered.slice(0, at + 1)] : ordered;
+    for (const pr of scanOrder) {
       const url = pr.url.toLowerCase();
+      probing = url;
       const opener = opened[url];
       // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
       // finished (at the last one's end). The task is the agent's that opened it, if one did.
@@ -749,6 +763,8 @@ export function startPrWatch(o: PrWatchOptions) {
         if (w === "sent") log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
       }
     }
+    state.scanFrom = budgetAt;
+    if (budgetAt) save();
     return open.length;
   }
 
@@ -759,6 +775,8 @@ export function startPrWatch(o: PrWatchOptions) {
     findingsWakes = 0;
     gateDown = false;
     probes = 0;
+    budgetAt = "";
+    probing = "";
     if (o.connected && !o.connected()) return open;
     for (const { repo, duties } of o.repos) {
       try { open += await scan(repo, duties, all); }

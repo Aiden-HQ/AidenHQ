@@ -818,3 +818,22 @@ test("recovery probes are bounded per pass, so a PR with many unfinished checks 
   assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "ten probes, then the rest wait for the next tick");
   assert.equal(c.merges.length, 1, "the green PR's merge is still filed in the same pass");
 });
+
+// The budget's cursor: a pass that runs out starting at an older PR's unfinished checks must not starve a newer PR's
+// recovery forever. The next pass starts at the PR after the one it stopped in.
+test("a probe budget spent on an older PR does not starve a newer PR's wedged check on the next pass", async (t) => {
+  const many = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: 12 }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `old-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } };
+  const one = (id) => ({ state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: `CR_${id}`, databaseId: id, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 600 } } }] } });
+  const c = await rig(t, {
+    restRuns: (head) => head === "h60"
+      ? Array.from({ length: 12 }, (_, i) => ({ id: i + 1, node_id: `CR_${i + 1}`, name: `old-${i + 1}`, status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${i + 1}` }))
+      : [{ id: 90, node_id: "CR_90", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 600 }, details_url: `https://github.com/acme/app/actions/runs/600/job/90` }],
+  });
+  // The PR list is newest first, as GitHub's CREATED_AT DESC query returns it: 60 is the older PR.
+  c.set([c.agentPr(61, { commits: { nodes: [{ commit: { statusCheckRollup: one(90) } }] }, headRefOid: "h61" }), c.agentPr(60, { commits: { nodes: [{ commit: { statusCheckRollup: many } }] }, headRefOid: "h60" })]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "the pass stays bounded");
+  assert.ok(!c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the newer PR is behind the spent budget this pass");
+  await c.watch.tick();
+  assert.ok(c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the next pass starts at the newer PR, so its check is probed");
+});
