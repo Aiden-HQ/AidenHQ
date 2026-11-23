@@ -26,8 +26,10 @@ export const Check = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
 
-export function SearchPicker({ label, value, display, sections, query, onQuery, searchPlaceholder, onPick, footer, empty, onOpen, disabled, autoFocus }: {
+export function SearchPicker({ label, triggerLabel, value, display, sections, query, onQuery, searchPlaceholder, onPick, footer, empty, onOpen, disabled, autoFocus }: {
   label: string;
+  /** The button's accessible name, naming what is picked (default: the label). */
+  triggerLabel?: string;
   /** The id picked now (its row shows a check). */
   value: string;
   /** What the button shows. */
@@ -100,7 +102,7 @@ export function SearchPicker({ label, value, display, sections, query, onQuery, 
         className="ui-select ui-mp-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={label}
+        aria-label={triggerLabel ?? label}
         disabled={disabled}
         onClick={() => (open ? close(false) : show())}
         onKeyDown={(e) => { if (e.key === "ArrowDown" && !open) { e.preventDefault(); show(); } }}

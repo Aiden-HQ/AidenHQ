@@ -47,7 +47,8 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
   const shown = value ? shortId(value) : placeholder ?? "Choose a model";
   return (
     <SearchPicker
-      label={`${label}: ${shown}`}
+      label={label}
+      triggerLabel={`${label}: ${shown}`}
       value={value}
       display={<span className={value ? "" : "ui-mp-none"} title={shown}>{shown}</span>}
       sections={sections}

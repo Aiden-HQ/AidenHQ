@@ -895,12 +895,14 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   const paid = chosen.filter((o) => o.cost !== "free");
   const guess = paid.reduce((n, o) => n + optionCost(o.cost, model), 0);
   const e = c ? engines[c.engine] : undefined;
+  // Any check may run on any engine (Codex, Claude Code, ...): the efforts they all take.
+  const efforts = Object.values(engines).map((x) => x.efforts).reduce((a, b) => a.filter((x) => b.includes(x)));
   const run = async () => {
     if (!c || !sha || !chosen.length) return;
     setBusy(true);
     setErr("");
     try {
-      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen.map((o) => o.id), combo: { model: c.model, effort: c.effort } });
+      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen.map((o) => o.id), combo: { model: c.model, effort: efforts.includes(c.effort) ? c.effort : "medium" } });
       location.hash = `#/reviews/b/${encodeURIComponent(r.batch)}`;
     } catch (x) {
       setErr((x as Error).message);
@@ -986,7 +988,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
             {c && e && (
               <div className="rv-model-row">
                 <ModelPicker label="Review model" value={c.model} catalog={models} recommended={e.models} accepts={e.accepts} onOpen={refreshModels} onChange={(m) => setCombos([{ ...c, model: m }])} />
-                <Select aria-label="Effort" value={c.effort} options={e.efforts.map((x) => [x, x] as const)} onChange={(x) => setCombos([{ ...c, effort: x }])} />
+                <Select aria-label="Effort" value={efforts.includes(c.effort) ? c.effort : "medium"} options={efforts.map((x) => [x, x] as const)} onChange={(x) => setCombos([{ ...c, effort: x }])} />
               </div>
             )}
             <span className="ui-field-help">Free checks don't use it. Effort is how hard the model thinks.</span>
@@ -1007,13 +1009,14 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
 /** Pick a repo your GitHub sign-in can read, or type owner/name (a combobox). `taken` repos (lower case) are listed but not pickable. */
 function RepoPicker({ repo, onPick, taken, takenWord, autoFocus }: { repo: string; onPick: (repo: string) => void; taken?: Set<string>; takenWord?: [string, string]; autoFocus?: boolean }) {
   const [q, setQ] = useState("");
-  const [found, setFound] = useState<{ repo: string; private: boolean }[] | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // The results and the search they answer: a row of an older search is never offered for the current one.
+  const [answer, setAnswer] = useState<{ q: string; repos: { repo: string; private: boolean }[] } | null>(null);
   useEffect(() => {
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => void api.reviewAvailable(q.trim()).then((r) => setFound(r.repos), () => setFound([])), q ? 250 : 0);
-    return () => clearTimeout(timer.current);
+    let stale = false;
+    const timer = setTimeout(() => void api.reviewAvailable(q.trim()).then((r) => !stale && setAnswer({ q: q.trim(), repos: r.repos }), () => !stale && setAnswer({ q: q.trim(), repos: [] })), q ? 250 : 0);
+    return () => { stale = true; clearTimeout(timer); };
   }, [q]);
+  const found = answer?.q === q.trim() ? answer.repos : null;
   const typed = REPO_NAME.test(q.trim()) ? q.trim() : "";
   const isTaken = (r: string) => Boolean(taken?.has(r.toLowerCase()));
   const row = (name: string, note: string) => <><span className="ui-mp-id">{name}</span><span className="ui-mp-meta">{note}</span></>;
@@ -1028,6 +1031,7 @@ function RepoPicker({ repo, onPick, taken, takenWord, autoFocus }: { repo: strin
       <SearchPicker
         label="Repository"
         value={repo}
+        triggerLabel={`Repository: ${repo || "none chosen"}`}
         display={<span className={repo ? "" : "ui-mp-none"}>{repo || "Choose a repository"}</span>}
         sections={sections}
         query={q}
