@@ -99,8 +99,9 @@ const authorized = (req: IncomingMessage) => {
 };
 
 /**
- * POST /search {q, closed_before?, after?, limit?, keyword?} (the board, through the kernel) -> {ids, done, next, semantic}:
- * the ranked hits' ids, those closed before `closed_before` as cards paged newest first (`after`: the last page's `next`);
+ * POST /search {q, closed_before?, after?, limit?, keyword?} (the board, through the kernel) -> {ids, recent, done, next,
+ * semantic}: the ranked hits' ids; on the first page those closed since `closed_before` as cards (`recent`); those closed
+ * before it as cards paged newest first (`done`; `after`: the last page's `next`);
  * `semantic: false`: keyword hits only. A failure is a 503.
  */
 createServer(async (req, res) => {
@@ -116,7 +117,7 @@ createServer(async (req, res) => {
     const after = typeof b.after === "string" && /^[^|]{1,40}\|[\w-]{1,100}$/.test(b.after) ? (b.after.split("|") as [string, string]) : undefined;
     if (b.after !== undefined && !after) return send(400, { error: "after is a page's `next`" });
     const r = await search.search(b.q.trim(), { ...(before ? { closedBefore: new Date(before).toISOString() } : {}), ...(after ? { after } : {}), ...(Number.isInteger(b.limit) ? { limit: b.limit } : {}), ...(b.keyword === true ? { keyword: true } : {}) });
-    return send(200, { ids: r.hits.map((h) => h.id), done: r.done, next: r.next ? r.next.join("|") : null, semantic: r.semantic });
+    return send(200, { ids: r.hits.map((h) => h.id), recent: r.recent, done: r.done, next: r.next ? r.next.join("|") : null, semantic: r.semantic });
   } catch (e) {
     const status = (e as { status?: number }).status ?? 503;
     return send(status, { error: `task search is unavailable: ${String((e as Error).message).slice(0, 200)}` });

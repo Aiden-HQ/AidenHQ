@@ -177,8 +177,8 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
   }
 
   /**
-   * Rebuilds one task's row at `gen` from its canonical inputs. "ok": written; "retry": written without an embedding (the embed
-   * failed), so it comes back; "stale": the stored row is as new or newer, so nothing was written (a queue behind the rows, as
+   * Rebuilds one task's row at `gen` from its canonical inputs. "ok": written; "retry": written without an embedding or a summary
+   * (a model call failed), so it comes back; "stale": the stored row is as new or newer, so nothing was written (a queue behind the rows, as
    * after a crash between the write and its queue update, or a restored backup): the counter moves past the stored generation
    * and the task comes back above it. Throws when an input couldn't be read: nothing written.
    */
@@ -199,10 +199,11 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     const prev = (await s.query("SELECT content_hash, summary, tags, embed_hash, embedding IS NOT NULL AS has FROM src_tasks.task_search WHERE task_id = $1", [task])).rows[0] as
       | { content_hash: string | null; summary: string | null; tags: string[] | null; embed_hash: string | null; has: boolean } | undefined;
     const chash = contentHash(input);
-    let extra: { summary: string; tags: string[] } | null = null;
+    let extra: { summary: string; tags: string[] } | null = null, unsummarized = false;
     if (m.summarize) {
       if (prev?.content_hash === chash && prev.summary) extra = { summary: prev.summary, tags: prev.tags ?? [] };
-      else extra = await m.summarize(buildDoc(input)).catch((e: Error) => (log("search summary failed", { task, err: e.message.slice(0, 200) }), null));
+      // A failed summary: indexed without one this time, and the task comes back for it (as a failed embed does).
+      else extra = await m.summarize(buildDoc(input)).catch((e: Error) => (log("search summary failed", { task, err: e.message.slice(0, 200) }), (unsummarized = true), null));
     }
     const doc = buildDoc(input, extra);
     const ehash = embedHash(doc, m.model);
@@ -220,7 +221,7 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       embedding: vec(embedding), deleted: false,
     }, keep);
     if (!wrote) return stale(s, task);
-    return keep || embedding ? "ok" : "retry";
+    return (keep || embedding) && !unsummarized ? "ok" : "retry";
   }
   /** A write the stored row refused: the counter moves past its generation. */
   async function stale(s: Sql, task: string): Promise<"stale"> {
@@ -275,8 +276,8 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
   async function reconcile(): Promise<{ listed: number; marked: number; complete: boolean }> {
     const s = await store();
     const comp = await companyId();
-    const m = models().model;
-    const rows = new Map(((await s.query("SELECT task_id, updated_at, model, deleted FROM src_tasks.task_search")).rows as { task_id: string; updated_at: Date | null; model: string | null; deleted: boolean }[]).map((r) => [r.task_id, r]));
+    const { model: m, summarize } = models();
+    const rows = new Map(((await s.query("SELECT task_id, updated_at, model, deleted, summary IS NOT NULL AS summed FROM src_tasks.task_search")).rows as { task_id: string; updated_at: Date | null; model: string | null; deleted: boolean; summed: boolean }[]).map((r) => [r.task_id, r]));
     const seen = new Set<string>();
     let marked = 0, complete = false;
     try {
@@ -286,7 +287,8 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
           for (const i of page) {
             seen.add(i.id);
             const r = rows.get(i.id);
-            if (!r || r.deleted || r.model !== m || (i.updatedAt && (!r.updated_at || Date.parse(i.updatedAt) > new Date(r.updated_at).getTime()))) { markIn(i.id, 0, true); marked++; }
+            // A row made with the summaries setting the other way is redone too (its summary added or dropped).
+            if (!r || r.deleted || r.model !== m || r.summed !== Boolean(summarize) || (i.updatedAt && (!r.updated_at || Date.parse(i.updatedAt) > new Date(r.updated_at).getTime()))) { markIn(i.id, 0, true); marked++; }
           }
         });
         if (page.length < PAGE) { complete = true; break; }
@@ -316,10 +318,10 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
    * two. `done`: the matches closed before it, newest close first, a page of `limit` after the cursor `after` ([closed_at,
    * task id] of the last one read), with `next` while more remain: the board's Done lane pages them, never a ranked cut.
    */
-  async function search(q: string, o: { closedBefore?: string; after?: [string, string]; limit?: number; keyword?: boolean } = {}): Promise<{ hits: Hit[]; done: (Hit & { crew: string[] })[]; next: [string, string] | null; semantic: boolean }> {
+  async function search(q: string, o: { closedBefore?: string; after?: [string, string]; limit?: number; keyword?: boolean } = {}): Promise<{ hits: Hit[]; recent: (Hit & { crew: string[] })[]; done: (Hit & { crew: string[] })[]; next: [string, string] | null; semantic: boolean }> {
     const s = await store();
     const terms = q.replace(/\\/g, " ").split(/\s+/).filter(Boolean).slice(0, 32);
-    if (!terms.length) return { hits: [], done: [], next: null, semantic: true };
+    if (!terms.length) return { hits: [], recent: [], done: [], next: null, semantic: true };
     const m = models();
     // A later page keeps its first page's mode (`keyword`: that one was keyword only), so a cursor never skips meaning hits:
     // a later page whose embedding fails is refused (the board asks again) rather than answered by keywords alone.
@@ -351,11 +353,14 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     const closed = rows.filter(old).map(hit).sort((a, b) => (newer(key(a), key(b)) ? -1 : 1)).filter((h) => !o.after || newer(o.after, key(h)));
     const limit = Math.min(MAX_DONE_PAGE, Math.max(1, o.limit ?? 25));
     const page = closed.slice(0, limit);
+    // The matches closed since `closedBefore`, as cards too (the first page only): a recent close the board's own Done doesn't
+    // hold (no kernel state for it yet) still shows.
+    const recent = o.closedBefore && !o.after ? rows.filter((r) => r.closed_at != null && !old(r)).map(hit) : [];
     // Their crew (the agents on their subtasks, as the board's Agent work counts it): the board holds none of these tasks.
-    const crew = new Map(page.length ? ((await s.query(`SELECT parent_id, array_agg(DISTINCT assignee_agent_id) AS crew FROM src_tasks.task_search
-      WHERE parent_id = ANY($1::text[]) AND NOT deleted AND assignee_agent_id IS NOT NULL GROUP BY parent_id`, [page.map((h) => h.id)])).rows as { parent_id: string; crew: string[] }[]).map((r) => [r.parent_id, r.crew]) : []);
-    const done = page.map((h) => ({ ...h, crew: (crew.get(h.id) ?? []).filter((a) => a !== h.assignee) }));
-    return { hits, done, next: closed.length > limit ? key(page.at(-1)!) : null, semantic: v !== null };
+    const crew = new Map(page.length + recent.length ? ((await s.query(`SELECT parent_id, array_agg(DISTINCT assignee_agent_id) AS crew FROM src_tasks.task_search
+      WHERE parent_id = ANY($1::text[]) AND NOT deleted AND assignee_agent_id IS NOT NULL GROUP BY parent_id`, [[...recent, ...page].map((h) => h.id)])).rows as { parent_id: string; crew: string[] }[]).map((r) => [r.parent_id, r.crew]) : []);
+    const withCrew = (h: Hit) => ({ ...h, crew: (crew.get(h.id) ?? []).filter((a) => a !== h.assignee) });
+    return { hits, recent: recent.map(withCrew), done: page.map(withCrew), next: closed.length > limit ? key(page.at(-1)!) : null, semantic: v !== null };
   }
 
   return { mark, tick, reconcile, reconcileDue, rebuild, search, pending: () => (db.prepare("SELECT COUNT(*) AS n FROM search_dirty").get() as { n: number }).n };

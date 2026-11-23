@@ -34,8 +34,11 @@ const NONE: Answer = { n: 0, done: [], next: null, keyword: false, busy: false, 
 type Reply = Awaited<ReturnType<typeof api.search>>;
 const answerOf = (n: number, r: Reply): Answer => ({ n, hits: new Set(r.ids), done: r.done, next: r.next, keyword: !r.semantic, busy: false, note: r.semantic ? null : "keyword" });
 
-/** `active`: the Tasks page is on screen; elsewhere the answer stays as it is, with no refresh and no pages read. */
-export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean, active: boolean): TaskSearch {
+/**
+ * `active`: the Tasks page is on screen; elsewhere the answer stays as it is, with no refresh and no pages read. `older`: an
+ * older closed card could pass the filters (a lane filter without Done can't): without it no page is read and none is offered.
+ */
+export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean, active: boolean, older = true): TaskSearch {
   const q = text.trim();
   const [a, setA] = useState<Answer>(NONE);
   const loaded = useRef(0);
@@ -82,17 +85,17 @@ export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean, acti
   // The next page of older closed hits while the filters keep fewer than wanted: only from the answer to the query in the field.
   const kept = a.done.filter(keep).length;
   useEffect(() => {
-    if (!q || !active || a.busy || a.n !== seq.current || a.paging || a.stalled || !a.next || kept >= want) return;
+    if (!q || !active || !older || a.busy || a.n !== seq.current || a.paging || a.stalled || !a.next || kept >= want) return;
     const n = a.n, page = { after: a.next, keyword: a.keyword };
     setA((s) => ({ ...s, paging: true }));
     api.search(q, page).then(
       (r) => { if (n === seq.current) setA((s) => (s.n !== n ? s : { ...s, paging: false, done: [...s.done, ...r.done.filter((c) => !s.done.some((d) => d.id === c.id))], next: r.next })); },
       () => { if (n === seq.current) setA((s) => (s.n !== n ? s : { ...s, paging: false, stalled: true })); },
     );
-  }, [q, active, a.busy, a.n, a.paging, a.stalled, a.next, a.keyword, kept, want]);
+  }, [q, active, older, a.busy, a.n, a.paging, a.stalled, a.next, a.keyword, kept, want]);
   // The older closed cards are hits too (the module pages them apart from the ranked ids).
   const hits = useMemo(() => (a.hits ? new Set([...a.hits, ...a.done.map((c) => c.id)]) : undefined), [a.hits, a.done]);
-  return { hits, done: a.done, hasMore: !!a.next, more: () => { setA((s) => ({ ...s, stalled: false })); setWant((w) => w + WANT * 4); }, busy: a.busy, note: a.note };
+  return { hits, done: a.done, hasMore: older && !!a.next, more: () => { setA((s) => ({ ...s, stalled: false })); setWant((w) => w + WANT * 4); }, busy: a.busy, note: a.note };
 }
 
 export const NOTE_TEXT = { keyword: "Meaning search unavailable; showing keyword matches.", unavailable: "Search unavailable right now; showing every task." } as const;

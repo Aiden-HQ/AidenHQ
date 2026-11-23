@@ -52,7 +52,7 @@ warehouse, no search), and one owner keeps the index, the worker, the query and 
 3. `embed_hash` = sha256 of the embedding text and model. The row is always rewritten at the new generation (card fields
    fresh); an unchanged, already embedded text keeps its stored vector without a model call.
 4. Summaries on (below): reuse the stored summary when the content part of the hash is unchanged, else ask the cheap model;
-   a failed call means no summary this time (the row is indexed without one).
+   a failed call indexes the row without one and the task comes back for it, as a failed embed does.
 5. Embed. A failed embed still writes the row (keyword search finds it) with `embedding` null, and the task is marked again
    at a new generation (backing off to an hour), so its retry always wins over the row it wrote.
 6. One statement: `INSERT … ON CONFLICT (task_id) DO UPDATE … WHERE task_search.gen < EXCLUDED.gen`. A write from an older
@@ -72,7 +72,8 @@ While the warehouse can't hold the rows (down, or no pgvector yet) the queue wai
 again ten minutes on), paging through the company's issues (every
 status, routine runs included), with three separate rules:
 - discovery: an issue with no row, or `updatedAt` newer than its row's, is marked as its page is read;
-- re-embedding: a row embedded by another model is marked (the query only compares vectors of the current model);
+- re-embedding: a row embedded by another model, or made with the summaries setting the other way, is marked (the query
+  only compares vectors of the current model; a summary is added or dropped);
 - deletion: only after every page was read (ending on a short page) are live rows the listing never named marked, and their
   rebuild clears one only on a 404. A failed page ends the pass having marked what it saw; listing drift during a pass at
   worst marks a live task, whose rebuild finds it.
@@ -89,7 +90,8 @@ status, routine runs included), with three separate rules:
    eval's negative queries). Exact cosine over ~11k rows is tens of milliseconds.
 3. Rank by reciprocal-rank fusion (k 60) of the keyword rank (`ts_rank_cd`) and the cosine rank.
 4. Answer `{ids, done, next, semantic}`: `ids`, every match not closed before `closed_before`, ranked (ids only: the board
-   holds those cards, and the answer stays far under the board API's 4 MB); `done`, the matches closed before it, newest close first, a page of `limit` after the cursor `after`
+   holds those cards, and the answer stays far under the board API's 4 MB); `recent`, on the first page, the matches closed
+   since `closed_before` as cards (the board may lack one: a close with no task state yet); `done`, the matches closed before it, newest close first, a page of `limit` after the cursor `after`
    (`closed_at|task id`), and `next` while more remain. No ranked cut anywhere, so a filter never hides the newest match.
 
 ## Board
@@ -108,6 +110,7 @@ status, routine runs included), with three separate rules:
 - While a query stays in the field and Tasks is on screen it is asked again every 30 s, so a task created or renamed
   meanwhile joins the hits; the older closes are read again as far as the owner had paged and swapped in with them at once. A
   page of older closes is only ever read for the answer to the text in the field.
+- With a lane filter that leaves Done out, no page of older closes is read or offered.
 - My day's Done shows only the older hits its own Done would hold (assigned to the owner or a crew agent: `mine`); Agent work
   shows them all.
 - `semantic: false`: a quiet note in the filter row, "Meaning search unavailable; showing keyword matches." The search

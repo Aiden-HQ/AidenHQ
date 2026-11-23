@@ -8,7 +8,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import { createSearch, type Issue, type Models } from "../src/search.ts";
 
-async function setup({ issues, failEmbed = () => false, listFails = () => false, recent = () => [] }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; recent?: () => Issue[] }) {
+async function setup({ issues, failEmbed = () => false, listFails = () => false, recent = () => [], summarize }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; recent?: () => Issue[]; summarize?: () => Models["summarize"] }) {
   const pg = new PGlite({ extensions: { vector } });
   await pg.exec("CREATE EXTENSION vector; CREATE SCHEMA src_meta; CREATE SEQUENCE src_meta.seq; CREATE SCHEMA src_tasks;");
   const db = new DatabaseSync(":memory:");
@@ -21,7 +21,7 @@ async function setup({ issues, failEmbed = () => false, listFails = () => false,
     embed: async (texts) => { embeds.push(texts); if (failEmbed(texts)) throw new Error("upstream down"); return texts.map(axis); },
   };
   const search = createSearch({
-    db, facts: async () => ({ facts: [], tail: 0 }), sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => models, now: () => t,
+    db, facts: async () => ({ facts: [], tail: 0 }), sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => ({ ...models, ...(summarize?.() ? { summarize: summarize() } : {}) }), now: () => t,
     cp: {
       company: async () => "co-1",
       issue: async (id) => issues.get(id) ?? null,
@@ -111,12 +111,13 @@ test("keyword and meaning hits come back together with summaries off; a failed q
 
 test("tasks closed before the window page out newest first by a cursor, never cut by rank", async () => {
   const closed = (id: string, at: string) => issue(id, "Lens cleanup", { status: "done", completedAt: at, updatedAt: at });
-  const issues = new Map([["t-10", issue("t-10", "Lens work in progress")], ["t-11", closed("t-11", "2026-09-01T00:00:00Z")], ["t-12", closed("t-12", "2026-10-01T00:00:00Z")], ["t-13", closed("t-13", "2026-08-01T00:00:00Z")]]);
+  const issues = new Map([["t-10", issue("t-10", "Lens work in progress")], ["t-11", closed("t-11", "2026-09-01T00:00:00Z")], ["t-12", closed("t-12", "2026-10-01T00:00:00Z")], ["t-13", closed("t-13", "2026-08-01T00:00:00Z")], ["t-14", closed("t-14", "2026-11-22T00:00:00Z")]]);
   const { search, drain } = await setup({ issues });
   for (const id of issues.keys()) search.mark(id);
   await drain();
   const first = await search.search("lens", { closedBefore: "2026-11-21T00:00:00Z", limit: 2 });
-  assert.deepEqual(first.hits.map((h) => h.id), ["t-10"]);
+  assert.deepEqual(first.hits.map((h) => h.id).sort(), ["t-10", "t-14"]);
+  assert.deepEqual(first.recent.map((h) => h.id), ["t-14"], "a close inside the window comes as a card too");
   assert.deepEqual(first.done.map((h) => h.id), ["t-12", "t-11"]);
   const rest = await search.search("lens", { closedBefore: "2026-11-21T00:00:00Z", limit: 2, after: first.next! });
   assert.deepEqual({ done: rest.done.map((h) => h.id), next: rest.next }, { done: ["t-13"], next: null });
@@ -184,4 +185,23 @@ test("a queue behind the rows (a crash, a restored backup) moves past them inste
   assert.equal((await pg.query<{ title: string }>("SELECT title FROM src_tasks.task_search WHERE task_id = 't-90'")).rows[0]!.title, "After");
   assert.equal(search.pending(), 0);
   assert.deepEqual((await search.search("blocked")).hits.map((h) => h.id), ["t-90"], "its status is a keyword");
+});
+
+test("a failed summary comes back for it, and turning summaries off redoes the summarized rows", async () => {
+  const issues = new Map([["t-95", issue("t-95", "Summarize me")]]);
+  let on = true, down = true;
+  const summarize = async () => { if (down) throw new Error("timeout"); return { summary: "About lenses.", tags: ["lens"] }; };
+  const { pg, search, drain, advance } = await setup({ issues, summarize: () => (on ? summarize : undefined) });
+  search.mark("t-95");
+  await drain();
+  assert.equal(search.pending(), 1, "indexed, and back for its summary");
+  down = false;
+  advance(3600_000);
+  await drain();
+  const summary = async () => (await pg.query<{ summary: string | null }>("SELECT summary FROM src_tasks.task_search WHERE task_id = 't-95'")).rows[0]!.summary;
+  assert.equal(await summary(), "About lenses.");
+  on = false;
+  assert.equal((await search.reconcile()).marked, 1);
+  await drain();
+  assert.equal(await summary(), null);
 });

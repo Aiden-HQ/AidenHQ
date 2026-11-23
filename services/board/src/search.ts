@@ -10,8 +10,12 @@ export type Hit = {
   id: string; identifier: string; title: string; status: string; closedAt: string | null; updatedAt: string | null; assignee: string | null;
   assigneeUser: string | null; createdByAgent: string | null; projectId: string | null; labels: { id: string; name: string }[]; priority: string | null;
 };
-/** `done` hits carry their crew: the agents on their subtasks (other than the assignee), as Agent work counts it. */
-export type SearchAnswer = { ids: string[]; done: (Hit & { crew: string[] })[]; next: string | null; semantic: boolean };
+/**
+ * `recent` (the first page only): the hits closed in the board's window, as cards too, for one its inventory lacks (no task
+ * state yet). `recent` and `done` hits carry their crew: the agents on their subtasks (other than the assignee), as Agent work
+ * counts it.
+ */
+export type SearchAnswer = { ids: string[]; recent?: (Hit & { crew: string[] })[]; done: (Hit & { crew: string[] })[]; next: string | null; semantic: boolean };
 export type TaskSearch = { search(q: string, page: { closedBefore: string; after?: string; keyword?: boolean; limit: number }): Promise<SearchAnswer> };
 
 export function kernelSearch(k: { url: string; token: string }): TaskSearch {
@@ -26,15 +30,15 @@ export function kernelSearch(k: { url: string; token: string }): TaskSearch {
 }
 
 /**
- * What the Tasks page takes from an answer: the ids of the hits its inventory holds (rank order), and the page of older closed
- * hits as Done cards, newest close first, drawn by the board's own card projection (workCard). Only what Agent work would
+ * What the Tasks page takes from an answer: the ids of the hits its inventory holds (rank order), and the closed hits as Done
+ * cards (the recent ones, which the page drops where it holds them, then the page of older ones), newest close first, drawn by the board's own card projection (workCard). Only what Agent work would
  * show: not the brief, the owner's settings tasks or setup's log tasks. Their state is Paperclip's own close (no task-state row is
  * read for a task closed long ago).
  */
 export function searchView(a: SearchAnswer, ctx: { me: string; labels: Label[]; assignees: Assignee[]; logs: Set<string> }): { ids: string[]; done: (WorkCard & { mine: boolean })[]; next: string | null; semantic: boolean } {
   const colour = new Map(ctx.labels.map((l) => [l.id, l.color]));
   const done: (WorkCard & { mine: boolean })[] = [];
-  for (const h of a.done) {
+  for (const h of [...(a.recent ?? []), ...a.done]) {
     if (ctx.logs.has(h.id) || ctx.logs.has(h.identifier)) continue;
     const closed = h.closedAt ?? h.updatedAt ?? "";
     const issue = {
