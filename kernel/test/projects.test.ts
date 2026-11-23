@@ -98,6 +98,8 @@ test("tasks whose PRs came before the table are queued once and filled; a restar
   const { owner, issues, projects } = fake();
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE facts (seq INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, version TEXT, task TEXT, source TEXT, data TEXT)");
+  // The previous release had remembered t1 already, without queuing it.
+  db.exec("CREATE TABLE project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL); INSERT INTO project_tasks VALUES ('t1', 'acme/widgets')");
   const add = db.prepare("INSERT INTO facts (type, version, task, source, data) VALUES ('pr.opened', 'github/1', ?, 'live', ?)");
   add.run("t1", JSON.stringify({ repo: "Acme/Widgets" }));
   add.run("t1", JSON.stringify({ repo: "acme/other" }));

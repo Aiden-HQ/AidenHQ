@@ -38,15 +38,19 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
   // `product`: the row came from the products map (1), else it is the repo's own project (0).
   db.exec(`CREATE TABLE IF NOT EXISTS project_repos (company TEXT NOT NULL, repo TEXT NOT NULL, project TEXT NOT NULL, product INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (company, repo));
     CREATE TABLE IF NOT EXISTS project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS project_pending (task TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY (task, repo))`);
+    CREATE TABLE IF NOT EXISTS project_pending (task TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY (task, repo));
+    CREATE TABLE IF NOT EXISTS project_backfilled (done INTEGER)`);
   // The tasks PRs touched before this table existed: from the fact log's pr.opened, once (a repo's own facts name it lower-case).
-  // Only the facts the live path takes (backplane's /v1/facts): a code host's own, recorded live, first one per task. Each task not
-  // yet remembered is also queued for a fill, before it is remembered (a run cut short queues it again), so existing work joins its
-  // repo's project through the minute's retry; a task remembered already is never queued again.
-  const past = "FROM facts WHERE type = 'pr.opened' AND source = 'live' AND (version LIKE 'github/%' OR version LIKE 'codehost-local/%') AND task IS NOT NULL AND json_extract(data, '$.repo') IS NOT NULL";
+  // Only the facts the live path takes (backplane's /v1/facts): a code host's own, recorded live, first one per task. Each is also
+  // queued for a fill, so existing work joins its repo's project through the minute's retry (a task with a project is left alone).
+  // Once, by a marker in this db: a task is queued before it is remembered, and the marker comes last, so a run cut short is done again.
   try {
-    db.exec(`INSERT OR IGNORE INTO project_pending (task, repo) SELECT task, repo FROM (SELECT task, lower(json_extract(data, '$.repo')) AS repo, min(seq) ${past} GROUP BY task) WHERE task NOT IN (SELECT task FROM project_tasks)`);
-    db.exec(`INSERT OR IGNORE INTO project_tasks (task, repo) SELECT task, lower(json_extract(data, '$.repo')) ${past} ORDER BY seq`);
+    if (!db.prepare("SELECT 1 FROM project_backfilled").get()) {
+      const past = "FROM facts WHERE type = 'pr.opened' AND source = 'live' AND (version LIKE 'github/%' OR version LIKE 'codehost-local/%') AND task IS NOT NULL AND json_extract(data, '$.repo') IS NOT NULL";
+      db.exec(`INSERT OR IGNORE INTO project_pending (task, repo) SELECT task, repo FROM (SELECT task, lower(json_extract(data, '$.repo')) AS repo, min(seq) ${past} GROUP BY task)`);
+      db.exec(`INSERT OR IGNORE INTO project_tasks (task, repo) SELECT task, lower(json_extract(data, '$.repo')) ${past} ORDER BY seq`);
+      db.exec("INSERT INTO project_backfilled VALUES (1)");
+    }
   } catch { /* no fact log here */ }
   let chain: Promise<unknown> = Promise.resolve();
   /** One write at a time, in order. */
