@@ -12,18 +12,19 @@ Description=AidenHQ Docker cleanup (build cache over 20 GB, images unused for tw
 # also has its own `timeout`, well under TimeoutStartSec, so a daemon that hangs one prune cannot stop systemd from
 # reaching the later steps and the verification.
 #
-# The cap is attempted in both flag forms because which one the CLI knows depends on whether the buildx plugin is
-# installed. On this host both forms run buildx: `--max-used-space` caps the cache, while `--keep-storage` is a
-# deprecated alias for `--reserved-space` (a reservation, not a cap); the second form stays as the classic builder's cap
-# on a host without the plugin.
+# The prune is unbounded: neither form carries a size flag. Buildx's `--max-used-space` counts only unshared records and
+# returns early when that total is under the budget; on the containerd image store records stay shared while their base
+# image exists, so it deletes nothing (moby/buildkit#7352). `--keep-storage` is a deprecated alias for `--reserved-space`,
+# a floor rather than a cap. With no size flag keepBytes=0 and no early return, so `-a` deletes unused records including
+# shared ones. The accepted trade-off is that the build cache starts cold every four hours.
 #
 # `-a` on both is what lets the prune reach internal/frontend and shared-with-image records. Without it they survive and
 # `docker system df` still counts them in Size and Reclaimable, so the cache never falls to the ceiling.
 # Each records its status through the same wrapper as the other steps: one failing is expected (`unknown flag` on a CLI
 # that lacks that form), but both failing means no form capped the cache, and the verification must see that even when a
 # cache under its ceiling would otherwise read clean.
-ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -af --max-used-space 20GB
-ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -af --keep-storage 20GB
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -af
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -af
 # The cache as it is once the two builder prunes have finished, read here — before the image and container prunes, which
 # take minutes on a large host — so the verification judges the ceiling on the result of pruning, not on a snapshot a build
 # started since has grown. Prefixed like every other step; its status and rows are what the verification reads.
