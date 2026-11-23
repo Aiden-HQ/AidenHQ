@@ -260,7 +260,7 @@ test("a wedged check run's job re-run GitHub refused is asked again after its ba
   const c = await rig(t, { jobRerun: () => 502 });
   c.set([c.agentPr(43, stuckPr(43))]);
   await c.watch.tick();
-  const key = "https://github.com/acme/app/pull/43:h43:77";
+  const key = "acme/app:h43:77";
   const asks = () => c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length;
   assert.equal(asks(), 1);
   const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
@@ -333,7 +333,7 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
   open = [pr(47, { author: { __typename: "Bot", login: "aidenhq" } }), pr(48, { ...stuckPr(48, 77), number: 48, url: "https://github.com/acme/app/pull/48", headRefOid: "h48", headRefName: "b48", author: { __typename: "Bot", login: "aidenhq" } })];
   await real.tick();
   const rows = JSON.parse(readFileSync(join(cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
-  assert.match(String(rows.reran?.["https://github.com/acme/app/pull/48:h48:77"]), /^retry:/, "the unanswered read backs off instead of being lost");
+  assert.match(String(rows.reran?.["acme/app:h48:77"]), /^retry:/, "the unanswered read backs off instead of being lost");
 });
 
 
