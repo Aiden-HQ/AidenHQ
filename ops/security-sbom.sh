@@ -623,21 +623,39 @@ scan_wave() { # <first plan index>
       scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
       rm -f "$archive"; remaining=$(( remaining - size_gb ))
     done
-    # A round that scanned nothing: the archives themselves now exceed the room, so drop the smallest remaining one (the
-    # values are real bytes, not the plan's) to give the rest its room, and retry them.
+    # A round that scanned nothing: the archives themselves now exceed the room (their real bytes are the sizes read
+    # here, not the plan's). Two kinds of line are possible. One that cannot fit with the others still held but could
+    # alone (size > room_now - remaining, i.e. the others are what block it) is dropped smallest first, so the rest get
+    # its room. One that cannot fit even alone (twice its size > room_now) can never scan, so it is dropped first: giving
+    # it room would only crowd out an image that can.
     if [ "${#rest[@]}" -eq "${#pending[@]}" ]; then
-      local -a dropped=()
-      local drop="" drop_size=0 largest=0
+      local -a keep=()
+      local kk drop="" drop_size=0 largest=0 avail_now room_cap
+      avail_now="$(free_gb)"; room_cap=$(( avail_now - min_free_gb ))
+      for k in "${rest[@]}"; do [ "${size_of[$k]}" -gt "$largest" ] && largest="${size_of[$k]}"; done
       for k in "${rest[@]}"; do
-        [ "${size_of[$k]}" -gt "$largest" ] && largest="${size_of[$k]}"
-        if [ -z "$drop" ] || [ "${size_of[$k]}" -lt "$drop_size" ]; then drop="$k"; drop_size="${size_of[$k]}"; fi
+        # Unrunnable alone: with only its own archive held, the others' bytes are free too, so it needs twice its size
+        # within everything now held plus the room. If even that does not fit, no round can scan it.
+        if [ "$avail_now" -lt "$min_free_gb" ] || [ $(( 2 * size_of[$k] )) -gt $(( room_cap + remaining )) ]; then
+          i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${size_of[$k]}"
+          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_cap" $(( size_gb - room_cap )))"
+          rm -f "$archive"; remaining=$(( remaining - size_gb )); continue
+        fi
+        keep+=("$k")
       done
-      for k in "${rest[@]}"; do [ "$k" = "$drop" ] || dropped+=("$k"); done
-      i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="$drop_size"
-      avail="$(free_gb)"; room_now=$(( avail - min_free_gb ))
-      fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_now" $(( size_gb + largest - room_now )))"
-      rm -f "$archive"; remaining=$(( remaining - size_gb ))
-      rest=("${dropped[@]}")
+      if [ "${#keep[@]}" -eq "${#rest[@]}" ]; then
+        # All could scan alone: the others still held are what block them, so drop the smallest of them.
+        for kk in "${rest[@]}"; do
+          if [ -z "$drop" ] || [ "${size_of[$kk]}" -lt "$drop_size" ]; then drop="$kk"; drop_size="${size_of[$kk]}"; fi
+        done
+        i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="$drop_size"
+        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_cap" $(( size_gb - room_cap )))"
+        rm -f "$archive"; remaining=$(( remaining - size_gb ))
+        local -a dropped=()
+        for k in "${rest[@]}"; do [ "$k" = "$drop" ] || dropped+=("$k"); done
+        keep=("${dropped[@]}")
+      fi
+      rest=("${keep[@]}")
     fi
     pending=("${rest[@]}")
   done

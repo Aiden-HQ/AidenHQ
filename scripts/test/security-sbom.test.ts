@@ -1000,6 +1000,30 @@ test("security-sbom: when a wave's real bytes outgrow its room, the smallest def
   assert.match(small[2], /does not fit/);
 });
 
+test("security-sbom: an archive no round can scan is dropped before one that still can", { skip: NOT_LINUX }, async () => {
+  // 62 GB free, a 30 GB floor: 32 GB of room. The daemon reports 9 GB and 8 GB, so one wave admits both. The archives are
+  // really 18 GB and 7 GB (25 GB held, 7 GB above the floor): neither scan fits beside the other. The 7 GB image would
+  // scan alone, but the 18 GB one needs 36 GB and can scan in no round. Dropping the 18 GB archive first leaves 25 GB for
+  // the 7 GB image (7 GB held plus 7 GB to unpack), so it must be scanned, not crowded out by the unreachable one.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(62 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 9 * 1024 ** 3, "sha256:b2": 8 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 18 * 1024 ** 3, "sha256:b2": 7 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const small = targets.find((t) => t[0] === "image:big2:local");
+  const huge = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(small && huge, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(small[1], "-", `the scannable image must be scanned: ${small[2]}`);
+  assert.equal(huge[1], "-", "the archive no round can scan is the line");
+  assert.match(huge[2], /does not fit/);
+});
+
 test("security-sbom: an archive is admitted only when its own scan has workspace left", { skip: NOT_LINUX }, async () => {
   // 40 GB free, a 30 GB floor: 10 GB of room. A 9 GB image's archive fits, but unpacking it beside the archive needs its
   // size again, so the scan would refuse it and the pass would save it every night and never read it. It must be a line
