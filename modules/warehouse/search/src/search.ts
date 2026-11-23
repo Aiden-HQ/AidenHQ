@@ -346,10 +346,11 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
 
   /**
    * The search: keyword and meaning in one statement over every live row. Keyword: every typed term, its words as a phrase
-   * (`task_wait` is `task` then `wait`, not both anywhere), the last one's as prefixes, so a half-typed word or identifier
-   * matches. Meaning: cosine to the query's embedding at least the model's threshold. Each side brings its best PER_SIDE
-   * (keyword by `ts_rank_cd`, meaning by cosine). A task whose identifier is the query ranks first, and then meaning brings
-   * nothing (an identifier's meaning is noise). An embedding that fails or is late leaves keyword hits only (`semantic: false`).
+   * (`task_wait` is `task` then `wait`, not both anywhere; `code-review` is `code` then `review`, so "code review" matches),
+   * the last one's as prefixes, so a half-typed word or identifier matches. Meaning: cosine to the query's embedding at least
+   * the model's threshold. Each side brings its best PER_SIDE (keyword by `ts_rank_cd`, meaning by cosine), among the hits
+   * and among the older closes each, so neither takes the other's room. A task whose identifier is the query ranks first,
+   * and then meaning brings nothing (an identifier's meaning is noise). An embedding that fails or is late leaves keyword hits only (`semantic: false`).
    *
    * `hits`: every match not closed before `closedBefore` (all of them without it), ranked by reciprocal-rank fusion of the
    * two. `done`: the matches closed before it, newest close first, a page of `limit` after the cursor `after` ([closed_at,
@@ -366,23 +367,24 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     if (o.after && !o.keyword && !v) throw Object.assign(new Error("meaning search failed on a later page; ask again"), { status: 503 });
     const rows = (await s.query(`WITH q AS (
         SELECT (SELECT string_agg(phrase, ' & ' ORDER BY ord)::tsquery FROM (
-                  SELECT ord, string_agg(CASE WHEN prev IS NULL THEN '' ELSE '<' || (p - prev) || '> ' END || quote_literal(lexeme)
-                    || CASE WHEN ord = cardinality($1::text[]) THEN ':*' ELSE '' END, ' ' ORDER BY p) AS phrase
-                  FROM (SELECT ord, lexeme, p, lag(p) OVER (PARTITION BY ord ORDER BY p) AS prev
-                        FROM unnest($1::text[]) WITH ORDINALITY AS u(term, ord), unnest(to_tsvector('simple', term)) AS x, unnest(x.positions) AS p) l
+                  SELECT ord, string_agg(quote_literal(lexemes[1]) || CASE WHEN ord = cardinality($1::text[]) THEN ':*' ELSE '' END, ' <-> ' ORDER BY tok) AS phrase
+                  FROM unnest($1::text[]) WITH ORDINALITY AS u(term, ord), ts_debug('simple', term) WITH ORDINALITY AS d(alias, description, token, dictionaries, dictionary, lexemes, tok)
+                  WHERE cardinality(lexemes) > 0 AND alias NOT IN ('asciihword', 'hword', 'numhword')
                   GROUP BY ord) t) AS tq,
                $2::vector AS v),
       m AS (
         SELECT task_id, identifier, title, status, closed_at, updated_at, assignee_agent_id, assignee_user_id, created_by_agent_id, project_id, labels, priority,
-          coalesce(lower(identifier) = $5, false) AS own,
+          coalesce(lower(identifier) = $5, false) AS own, coalesce(closed_at < $7::timestamptz, false) AS old,
           CASE WHEN q.tq IS NOT NULL AND tsv @@ q.tq THEN ts_rank_cd(tsv, q.tq) END AS lex,
           CASE WHEN q.v IS NOT NULL AND embedding IS NOT NULL AND model = $3 THEN 1 - (embedding <=> q.v) END AS cos
         FROM src_tasks.task_search, q
-        WHERE NOT deleted AND ((q.tq IS NOT NULL AND tsv @@ q.tq) OR (q.v IS NOT NULL AND embedding IS NOT NULL AND model = $3 AND 1 - (embedding <=> q.v) >= $4)))
-      SELECT * FROM m WHERE task_id IN (
-        (SELECT task_id FROM m WHERE lex IS NOT NULL ORDER BY own DESC, lex DESC, task_id LIMIT $6)
-        UNION (SELECT task_id FROM m WHERE cos >= $4 AND NOT EXISTS (SELECT 1 FROM m WHERE own) ORDER BY cos DESC, task_id LIMIT $6))`,
-      [terms.map((t) => t.toLowerCase()), vec(v), m.model, m.threshold, q.toLowerCase(), PER_SIDE])).rows as (Record<string, any> & { own: boolean; lex: number | null; cos: number | null })[];
+        WHERE NOT deleted AND ((q.tq IS NOT NULL AND tsv @@ q.tq) OR (q.v IS NOT NULL AND embedding IS NOT NULL AND model = $3 AND 1 - (embedding <=> q.v) >= $4))),
+      r AS (
+        SELECT *, row_number() OVER (PARTITION BY old ORDER BY own DESC, lex DESC NULLS LAST, task_id) AS lr,
+          row_number() OVER (PARTITION BY old ORDER BY cos DESC NULLS LAST, task_id) AS cr, bool_or(own) OVER () AS found
+        FROM m)
+      SELECT * FROM r WHERE (lex IS NOT NULL AND lr <= $6) OR (cos >= $4 AND NOT found AND cr <= $6)`,
+      [terms.map((t) => t.toLowerCase()), vec(v), m.model, m.threshold, q.toLowerCase(), PER_SIDE, o.closedBefore ?? null])).rows as (Record<string, any> & { own: boolean; lex: number | null; cos: number | null })[];
     const byId = (a: Record<string, any>, b: Record<string, any>) => (a.task_id < b.task_id ? -1 : a.task_id > b.task_id ? 1 : 0);
     const rank = (key: "lex" | "cos") => new Map(rows.filter((r) => r[key] != null)
       .sort((a, b) => b[key]! - a[key]! || byId(a, b)).map((r, i) => [r.task_id as string, i + 1]));
@@ -393,8 +395,7 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       assignee: r.assignee_agent_id ?? null, assigneeUser: r.assignee_user_id ?? null, createdByAgent: r.created_by_agent_id ?? null, projectId: r.project_id ?? null,
       labels: Array.isArray(r.labels) ? r.labels : [], priority: r.priority ?? null,
     });
-    const cut = o.closedBefore ? Date.parse(o.closedBefore) : NaN;
-    const old = (r: Record<string, any>) => r.closed_at != null && new Date(r.closed_at).getTime() < cut;
+    const old = (r: Record<string, any>) => r.old === true;
     const hits = rows.filter((r) => !old(r)).sort((a, b) => Number(b.own) - Number(a.own) || score(b.task_id) - score(a.task_id) || byId(a, b)).map(hit);
     const key = (h: Hit): [string, string] => [h.closedAt ?? "", h.id];
     const newer = (a: [string, string], b: [string, string]) => (a[0] !== b[0] ? a[0] > b[0] : a[1] > b[1]);

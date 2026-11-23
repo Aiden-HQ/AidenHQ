@@ -85,12 +85,13 @@ status, routine runs included), with three separate rules:
 `/v1/board-api/warehouse/search`. One operation:
 
 1. Embed `q` (timeout 2.5 s). A failure, timeout or spend refusal sets `semantic: false` and the query goes on keyword only.
-2. One SQL statement over every live row: the typed terms ANDed, each term's lexemes as a phrase (`task_wait` is `task`
-   then `wait`, not both anywhere in the task) and the last term's as prefixes (so `WOR-12`, `dispat`, `code-rev` and
-   `kernel/src/jo` match as typed), OR `1 − (embedding <=> v) ≥ threshold` (calibrated per model by the eval's negative
+2. One SQL statement over every live row: the typed terms ANDed, each term's words as a phrase (`task_wait` is `task`
+   then `wait`, not both anywhere in the task; `code-review` is `code` then `review`, so "code review" matches too) and the
+   last term's as prefixes (so `WOR-12`, `dispat`, `code-rev` and `kernel/src/jo` match as typed), OR `1 − (embedding <=> v) ≥ threshold` (calibrated per model by the eval's negative
    queries). Exact cosine over ~11k rows is tens of milliseconds.
 3. **Each side brings at most its best 50** (`PER_SIDE`): the keyword matches by `ts_rank_cd`, the meaning matches by
-   cosine, ties by task id. The union is the match set, at most 100 tasks. When a task's identifier is the query
+   cosine, ties by task id, among the hits and among the closes before `closed_before` each (so older closes never take
+   the hits' room). The union is the match set: at most 100 hits and 100 older closes. When a task's identifier is the query
    (`WOR-10957`), it ranks first and meaning brings nothing: an identifier's meaning is noise.
 4. Rank by reciprocal-rank fusion (k 60) of the keyword rank and the cosine rank, each over the returned rows (a keyword
    match below the cosine floor still gets its cosine rank: meaning orders the keyword matches; a vote only from the side
@@ -98,8 +99,10 @@ status, routine runs included), with three separate rules:
 5. Answer `{ids, done, next, semantic}`: `ids`, every match not closed before `closed_before`, ranked (ids only: the board
    holds those cards, and the answer stays far under the board API's 4 MB); `recent`, on the first page, the matches closed
    since `closed_before` as cards (the board may lack one: a close with no task state yet); `done`, the matches closed before it, newest close first, a page of `limit` after the cursor `after`
-   (`closed_at|task id`), and `next` while more remain. A chip ANDs with the match set, so a task past a side's best 50
-   doesn't show under a chip either: a narrower query finds it.
+   (`closed_at|task id`), and `next` while more remain. A chip ANDs with the match set, and Done pages the older closes in
+   it by date, so a task past a side's best 50 doesn't show under a chip or deep in Done either: a narrower query finds it.
+   The board keeps each lane's own order (the hits decide membership), so an identifier's own task is the only card for an
+   exact id, not the first of many.
 
 ## Board
 
@@ -147,8 +150,8 @@ PGlite (Postgres in WASM, with pgvector) runs the real SQL offline in the module
 rejection, tombstone safety (a partial listing deletes nothing; a late write can't resurrect), cursor paging of old closes, keyword + meaning union with
 summaries off, the query-time embed failure falling back to keyword hits, live changes ahead of the backfill and an
 edit pulling a backed-off retry forward, an edit found among the recently updated tasks, older closed hits carrying
-their crew, each side's cut at `PER_SIDE`, an identifier query (its own task first, no meaning hits), a term's words as a
-phrase and a half-typed compound as a prefix. The kernel suite covers the seams: `GET /v1/facts` behind its role, and a task's work read naming its PRs, paths
+their crew, each side's cut at `PER_SIDE` (older closes outranking the hits take none of their room), an identifier query (its own task first, no meaning hits), a term's words as a
+phrase and a compound (half-typed, or its words spaced). The kernel suite covers the seams: `GET /v1/facts` behind its role, and a task's work read naming its PRs, paths
 and last final.
 
 ## New installs
@@ -205,11 +208,11 @@ duplicate group is) and the 12 negatives, the after column from the shipped SQL 
 
 | Set | Matches, mean (max) | Precision@all | Recall at the result count | R@10 | nDCG@10 |
 | --- | --- | --- | --- | --- | --- |
-| All 45 | 636 (5,948) → 46 (100) | 0.439 → 0.601 | 0.713 → 0.404 | 0.725 → 0.727 | 0.680 → 0.709 |
+| All 45 | 636 (5,948) → 46 (100) | 0.439 → 0.599 | 0.713 → 0.403 | 0.725 → 0.725 | 0.680 → 0.709 |
 | Paraphrase (16) | 255 → 43 | 0.244 → 0.314 | 0.491 → 0.331 | 0.362 → 0.356 | 0.342 → 0.337 |
-| Identifier, path (13) | 335 → 34 | 0.471 → 0.538 | 0.819 → 0.703 | 0.850 → 0.865 | 0.809 → 0.863 |
-| Area word (10) | 1,236 → 64 | 0.673 → 0.925 | 0.764 → 0.176 | 0.990 → 0.980 | 0.942 → 0.949 |
-| Half-typed (6) | 1,308 → 51 | 0.497 → 0.961 | 0.989 → 0.328 | 0.983 → 1.000 | 0.870 → 0.972 |
+| Identifier, path (13) | 335 → 34 | 0.471 → 0.536 | 0.819 → 0.703 | 0.850 → 0.857 | 0.809 → 0.860 |
+| Area word (10) | 1,236 → 64 | 0.673 → 0.922 | 0.764 → 0.175 | 0.990 → 0.980 | 0.942 → 0.949 |
+| Half-typed (6) | 1,308 → 51 | 0.497 → 0.954 | 0.989 → 0.327 | 0.983 → 1.000 | 0.870 → 0.972 |
 
 Negatives with any match: 0/12 → 0/12. The owner's queries: "review module" 1,378 → 75, "slack reactions" 4,582 → 63,
 "code review recheck" 2,063 → 67, "approval card on the board" 475 → 89, "task search" 628 → 98, "kernel spend cap" 16 →

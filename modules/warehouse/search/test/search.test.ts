@@ -130,6 +130,12 @@ test("each side brings its best PER_SIDE, so a word every task shares doesn't re
   await drain();
   assert.equal((await search.search("lens")).hits.length, PER_SIDE, "keyword side");
   assert.equal((await search.search("critique")).hits.length, PER_SIDE, "meaning side");
+  // Older closes that outrank them take none of the hits' room: each gets its own best PER_SIDE.
+  for (const id of [...issues.keys()].slice(0, PER_SIDE)) issues.set(id, { ...issues.get(id)!, title: "Review lens lens lens", status: "done", completedAt: "2026-09-01T00:00:00Z" });
+  for (const id of issues.keys()) search.mark(id);
+  await drain();
+  const r = await search.search("lens", { closedBefore: "2026-11-21T00:00:00Z", limit: 100 });
+  assert.deepEqual({ hits: r.hits.length, done: r.done.length }, { hits: 5, done: PER_SIDE });
 });
 
 test("a task whose identifier is the query ranks first and meaning brings nothing; a term's words match as a phrase", async () => {
@@ -146,7 +152,8 @@ test("a task whose identifier is the query ranks first and meaning brings nothin
   // "REVIEW-1" is near WOR-22 in (fake) meaning; its own task and the tasks citing it are what it finds.
   assert.deepEqual((await search.search("REVIEW-1")).hits.map((h) => h.identifier), ["REVIEW-1", "REVIEW-10"]);
   assert.deepEqual((await search.search("task_wait")).hits.map((h) => h.identifier), ["WOR-23"], "not task and wait anywhere");
-  assert.deepEqual((await search.search("code-rev", { keyword: true })).hits.map((h) => h.identifier), ["WOR-24"], "a half-typed compound is a prefix");
+  assert.deepEqual((await search.search("code-rev", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24"], "a half-typed compound is a prefix");
+  assert.deepEqual((await search.search("code-review", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24"], "a compound finds its words spaced too");
 });
 
 test("live changes go before the backfill, and a fresh edit pulls a backed-off retry forward", async () => {
