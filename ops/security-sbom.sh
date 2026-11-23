@@ -361,7 +361,9 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
   # leave that file behind, and nothing this script removes would reclaim it. Each save writes into a private staging
   # directory, removed whole on any failure, and only a complete archive is moved into place.
   local stage rc
-  stage="$(mktemp -d "${dest%/*}/.save.XXXXXX")"
+  if ! stage="$(mktemp -d "${dest%/*}/.save.XXXXXX")" || [ -z "$stage" ]; then
+    export_err="could not create a staging directory beside $dest"; return 1
+  fi
   if [ "$save_platform" = 1 ]; then
     export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$stage/archive.tar" "$ref" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -677,7 +679,9 @@ save_wave() { # <wave>
         continue
       fi
       plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx"
-      written=$(( written + szb )); [ "$szb" -gt "$written_big" ] && written_big="$szb"
+      # The resident bytes are the archive's measured size; the workspace a scan needs is the image's own size, which an
+      # archive of compressed layers can be much smaller than. Both are kept: a scan unpacks layers, not the tar.
+      written=$(( written + szb )); [ "${p_bytes[$idx]}" -gt "$written_big" ] && written_big="${p_bytes[$idx]}"
     elif [ "$export_space" = 1 ]; then
       # The write was stopped at the cap: the archive needs more room than was left above the floor. With archives of this
       # wave already written, those bytes come back when the wave is scanned, so a later wave may still hold it: defer it
@@ -704,9 +708,9 @@ save_wave() { # <wave>
 # Its bytes go back before the next target, and the line states the admitted total, its size, the largest archive, the
 # room and the shortfall.
 scan_wave() { # <first plan index>
-  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes
+  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes workspace
   local floor_bytes=$(( min_free_gb * 1073741824 ))
-  local -A bytes_of=() gb_of=()
+  local -A bytes_of=() gb_of=() space_of=()
   local -a pending=()
   if [ "${#plan_target[@]}" -le "$first" ]; then return 0; fi
   while IFS=$'\t' read -r _ i; do [ -n "$i" ] && pending+=("$i"); done \
@@ -714,7 +718,11 @@ scan_wave() { # <first plan index>
   for i in "${pending[@]}"; do
     archive="${plan_source[$i]#archive:}"
     sz_bytes="$(stat -c %s "$archive" 2>/dev/null || echo 0)"
-    bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; remaining_bytes=$(( remaining_bytes + sz_bytes ))
+    # Resident bytes are the archive's; the workspace a scan unpacks is the image's own size, which a compressed archive
+    # can be much smaller than. A scan must have room for both the archive and that workspace above the floor.
+    bytes_of[$i]="$sz_bytes"; gb_of[$i]="$(ceil_gb "$sz_bytes")"; space_of[$i]="${plan_size[$i]}"
+    [ "${space_of[$i]}" -gt 0 ] || space_of[$i]="$sz_bytes"
+    remaining_bytes=$(( remaining_bytes + sz_bytes ))
   done
   while [ "${#pending[@]}" -gt 0 ]; do
     local -a rest=()
@@ -722,7 +730,10 @@ scan_wave() { # <first plan index>
       target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
       if [ ! -f "$archive" ]; then remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); fail "$target" "docker save: its archive is gone"; continue; fi
       avail_bytes="$(free_bytes)"; room_bytes=$(( avail_bytes - floor_bytes ))
-      if [ "$avail_bytes" -lt "$floor_bytes" ] || [ "${bytes_of[$i]}" -gt "$room_bytes" ]; then rest+=("$i"); continue; fi
+      # The archive stays on disk while this image is unpacked beside it: the room must hold the held archives' bytes plus
+      # this scan's workspace (the image's size), which is the same model the plan admitted waves with.
+      workspace="${space_of[$i]}"
+      if [ "$avail_bytes" -lt "$floor_bytes" ] || [ $(( remaining_bytes + workspace )) -gt "$room_bytes" ]; then rest+=("$i"); continue; fi
       scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
       rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] ))
     done
