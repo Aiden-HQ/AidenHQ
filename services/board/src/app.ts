@@ -1103,11 +1103,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
         // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". This task's merge cards are
         // read by kind, past the page cap, so no number of newer writes of other kinds can hide the one the run waits on.
-        const [recent, merges] = await Promise.all([
+        // The merge history by kind, and the merges still waiting on the reviewer or the owner — no terminal card can push one of
+        // those out of the page.
+        const kinds = ["github.merge", "codehost-local.merge"];
+        const [recent, merges, waiting] = await Promise.all([
           cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
-          cardsOf("recent", { task, limit: 1000, tier0: true, strict: true, kinds: ["github.merge", "codehost-local.merge"] }),
+          cardsOf("recent", { task, limit: 1000, tier0: true, strict: true, kinds }),
+          cardsOf("pending", { task, limit: 1000, strict: true, kinds }),
         ]);
-        const shown = [...new Map([...recent, ...merges].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        const shown = [...new Map([...recent, ...merges, ...waiting].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(approvalView) };
       },
     },
