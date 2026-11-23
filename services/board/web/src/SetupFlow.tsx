@@ -3,9 +3,10 @@
 // secret, then the sign-in's Connect button or a pairing code, as numbered stages. Nothing here knows which module it is.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
-import { HttpStatusError, SignInRequired, api, type AdvancedFlowView, type SetupChoice, type SetupFlowView } from "./api";
+import { HttpStatusError, SignInRequired, api, type SetupChoice, type SetupFlowView } from "./api";
 import { ConnectButton } from "./Connect";
 import { forgetFlows } from "./SetupButton";
+import { SetupPaths } from "./SetupPaths";
 import { useEvents } from "./events";
 import { Markdown } from "./markdown";
 import { ChangeProgress, Page } from "./settings-ui";
@@ -87,7 +88,12 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
       Skip this step
     </button>
   );
-  const head = <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={flow.effort} admin={flow.admin} />} />;
+  // Two options: each card says its own effort; the header says there is a choice.
+  const head = flow.advanced ? (
+    <PageHeader title={flow.title} sub="Two ways to set it up. Start with either; the first can take the second's extras later." />
+  ) : (
+    <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={flow.effort} admin={flow.admin} />} />
+  );
 
   const connect = flow.signin ? `/${flow.signin}/connect` : flow.connect_url;
   let n = 1;
@@ -95,6 +101,16 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
     <main className="st-page setup-page">
       {head}
       {flow.done && change && <Banner>Changing setup: your current choices are shown. A new pick files a settings change for approval; pasting a secret replaces the saved one (its value is never shown).</Banner>}
+      {flow.advanced ? (
+        <>
+          <SetupPaths flow={flow} board={board} org={org} reload={reload} fail={fail} restartFor={restartFor} onSaved={setSavedRestart} />
+          {error && (
+            <p className="setup-error" role="alert">
+              {error}
+            </p>
+          )}
+        </>
+      ) : (
       <div className="setup-grid">
         {viaOrg ? (
           <Step n={n++} title={`Using ${org}'s app`} state="done">
@@ -154,7 +170,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
           )}
         </div>
       </div>
-      {flow.advanced && <Advanced flow={flow} advanced={flow.advanced} board={board} reload={reload} fail={fail} />}
+      )}
       <footer className="setup-foot">
         <span className={flow.done ? "setup-ok-line" : "setup-hint"}>{flow.done ? `${flow.title} is set up.` : <>You can finish this later from <a href="#/settings">Settings</a>.</>}</span>
         {flow.done ? (
@@ -260,7 +276,7 @@ function Choose({ flow, choose, picked, reload, fail }: { flow: SetupFlowView; c
 }
 
 /** One numbered stage of the flow: open (its turn), done (a check), or waiting on an earlier one. */
-function Step({ n, title, state, children }: { n: number; title: string; state: "open" | "done" | "wait"; children: ReactNode }) {
+export function Step({ n, title, state, children }: { n: number; title: string; state: "open" | "done" | "wait"; children: ReactNode }) {
   return (
     <section className={`setup-card setup-step ${state}`}>
       <h2>
@@ -474,7 +490,7 @@ export function Pairing({ flow, reload, fail, restartFor }: { flow: SetupFlowVie
 }
 
 /** The flow's honest labels: how long it takes, and who else may need to approve. */
-function Effort({ effort, admin }: { effort: string; admin?: string }) {
+export function Effort({ effort, admin }: { effort: string; admin?: string }) {
   return (
     <span className="setup-labels">
       <span className="setup-effort">{effort}</span>
@@ -484,7 +500,7 @@ function Effort({ effort, admin }: { effort: string; admin?: string }) {
 }
 
 /** Paste fields for a flow's secrets (each checked against its pattern here; the kernel checks again on save). */
-function SecretFields({ module, fields, present, done, elsewhere, reload, fail, onSaved }: { module: string; fields: NonNullable<SetupFlowView["fields"]>; present: Record<string, boolean>; done: boolean; elsewhere?: boolean; reload: () => Promise<void>; fail: (e: unknown) => void; onSaved?: (restartFor: number) => void }) {
+export function SecretFields({ module, fields, present, done, elsewhere, reload, fail, onSaved }: { module: string; fields: NonNullable<SetupFlowView["fields"]>; present: Record<string, boolean>; done: boolean; elsewhere?: boolean; reload: () => Promise<void>; fail: (e: unknown) => void; onSaved?: (restartFor: number) => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const filled = fields.filter((f) => values[f.secret]?.trim());
@@ -534,68 +550,6 @@ function SecretFields({ module, fields, present, done, elsewhere, reload, fail, 
         </button>
       </div>
     </>
-  );
-}
-
-/**
- * A module's advanced flow (`mode: advanced`): what the person's own app unlocks, then its steps, secrets and pairing, folded
- * until opened. Its parts start once its secrets exist; the basic sign-in above keeps working either way.
- */
-function Advanced({ flow, advanced: a, board, reload, fail }: { flow: SetupFlowView; advanced: AdvancedFlowView; board: Board; reload: () => Promise<void>; fail: (e: unknown) => void }) {
-  const [open, setOpen] = useState(a.done || (a.secrets ?? []).some((x) => flow.present[x]));
-  const [savedRestart, setSavedRestart] = useState(0);
-  const restartFor = Math.max(savedRestart, flow.restarting_for ?? 0) || undefined;
-  const fields = a.fields ?? [];
-  const saved = fields.every((f) => flow.present[f.secret]);
-  let n = 1;
-  return (
-    <section className={`setup-adv${open ? " open" : ""}`} aria-label={a.title}>
-      <header className="setup-adv-head">
-        <div className="setup-adv-intro">
-          <h2>Unlock more with your own app</h2>
-          <p>{a.why}</p>
-          <Effort effort={a.effort} admin={a.admin} />
-        </div>
-        <ul className="setup-caps">
-          {a.capabilities.map((c) => (
-            <li key={c}>
-              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              {c}
-            </li>
-          ))}
-        </ul>
-        <div className="setup-adv-act">
-          {a.done ? <p className="setup-ok-line">Your app is set up.</p> : null}
-          <button className="btn" aria-expanded={open} onClick={() => setOpen(!open)}>
-            {open ? "Hide the steps" : a.done ? "Show the steps" : `Set up ${a.title}`}
-          </button>
-        </div>
-      </header>
-      {open && (
-        <div className="setup-grid">
-          <Step n={n++} title="Instructions" state="open">
-            <Steps text={a.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
-            {a.console_url && (
-              <a className="btn" href={a.console_url} target="_blank" rel="noreferrer">
-                Open {a.title} ↗
-              </a>
-            )}
-          </Step>
-          <div className="setup-side">
-            {fields.length > 0 && (
-              <Step n={n++} title="Paste the details" state={saved ? "done" : "open"}>
-                <SecretFields module={flow.module} fields={fields} present={flow.present} done={saved} reload={reload} fail={fail} onSaved={setSavedRestart} />
-              </Step>
-            )}
-            {a.pair_url && (
-              <Step n={n++} title="Pair" state={flow.paired ? "done" : saved ? "open" : "wait"}>
-                {saved ? <Pairing flow={flow} reload={reload} fail={fail} restartFor={restartFor} /> : <p className="setup-hint">Save the details above first.</p>}
-              </Step>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
   );
 }
 

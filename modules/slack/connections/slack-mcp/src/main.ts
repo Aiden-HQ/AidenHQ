@@ -8,6 +8,7 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { servedTool, type Ask } from "./admission.js";
 import { interceptReactionSearch } from "./reactions.js";
 import { READ_SCOPES, slackAnswer, upstreamArgs, WRITE_SCOPES } from "./slack.js";
+import { relay } from "./relay.js";
 import { oauth } from "./vendor/oauth.js";
 import { createVendorProxy } from "./vendor/proxy.js";
 
@@ -32,6 +33,9 @@ const auth = oauth({
   resource: false,
   tokenAnswer: slackAnswer,
 });
+
+// slack-live's gap sync reads and slack_owner go through the sign-in here (src/relay.ts): one owner token, never lent out.
+const relayed = relay({ key: readToken(process.env.RELAY_KEY_FILE), tokenFile, headers: () => auth.headers(), signedIn: () => auth.signedIn() });
 
 // The loopback address of this connection, for the admission probe below.
 const port = Number(process.env.PORT ?? 8082);
@@ -61,7 +65,8 @@ const http = createVendorProxy({
   hooks: { args: (name, args) => upstreamArgs(name, args) },
   // A filters-only `hasmy::<emoji>:` search has no term clause for Slack's search to match, so it is answered from
   // reactions.list before the proxy would send it upstream (src/reactions.ts); everything else passes through.
-  routes: (req, res) =>
+  routes: async (req, res) =>
+    (await relayed(req, res)) ||
     interceptReactionSearch(req, res, {
       tokenFile,
       headers: () => auth.headers(),

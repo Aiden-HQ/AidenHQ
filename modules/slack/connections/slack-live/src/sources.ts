@@ -1,6 +1,6 @@
 // src_slack writer (shared sources, docs/design/sources.md). Every Socket Mode event is
 // teed here before any of the Triage filters: bot posts kept, edits update the row (the old text goes to the change log as
-// the revision), deletes become tombstones, thread replies kept. A gap sync with the owner's user token fills disconnects:
+// the revision), deletes become tombstones, thread replies kept. A gap sync, read as the owner through slack-mcp's sign-in (its relay), fills disconnects:
 // conversations.history per channel the owner is in, plus conversations.replies for recently active threads; once a week it
 // re-reads the last week in full and tombstones what Slack no longer returns (Events have no replay). No LLM.
 import { toSourceEvent, type SourceEvent } from "./map.js";
@@ -148,11 +148,11 @@ export function slackTee(store: SourceStore, log: Logger): (body: unknown) => vo
 
 export type Api = (method: string, params: Record<string, string>) => Promise<Record<string, any>>;
 
-/** Slack Web API GET with the owner's token; waits out 429s (Retry-After) and retries. */
-export function slackApi(token: string, fetchFn: typeof fetch = fetch, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Api {
+/** Slack Web API GET as the owner, through slack-mcp's relay (`base`, its key); waits out 429s (Retry-After) and retries. */
+export function slackApi(base: string, key: string, fetchFn: typeof fetch = fetch, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Api {
   return async (method, params) => {
     for (let attempt = 0; ; attempt++) {
-      const res = await fetchFn(`https://slack.com/api/${method}?${new URLSearchParams(params)}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
+      const res = await fetchFn(`${base}/internal/slack/${method}?${new URLSearchParams(params)}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(30_000) });
       if (res.status === 429 && attempt < 5) {
         await sleep((Number(res.headers.get("retry-after")) || 30) * 1000);
         continue;
@@ -354,13 +354,22 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
   return written;
 }
 
-/** Runs the gap sync every `everyMs` (15 minutes), one pass at a time, each recorded in src_meta.ingest_run. */
-export function startGapSync(store: SourceStore, token: string, log: Logger, forward?: (e: SourceEvent) => Promise<void>, everyMs = 15 * 60_000): void {
-  const api = slackApi(token);
+/**
+ * Runs the gap sync every `everyMs` (15 minutes), one pass at a time, each recorded in src_meta.ingest_run, read as the owner
+ * through slack-mcp (`api`). While Slack isn't connected (`owner` answers null) a pass is skipped.
+ */
+export function startGapSync(store: SourceStore, api: Api, owner: () => Promise<unknown>, log: Logger, forward?: (e: SourceEvent) => Promise<void>, everyMs = 15 * 60_000): void {
+  let warned = false;
   const tick = async () => {
     try {
-      const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log, PASS_BUDGET_MS, forward));
-      log.info({ rows }, "src_slack gap sync done");
+      if (!(await owner())) {
+        if (!warned) log.warn("Slack isn't connected; src_slack gets live events only until Connect");
+        warned = true;
+      } else {
+        warned = false;
+        const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log, PASS_BUDGET_MS, forward));
+        log.info({ rows }, "src_slack gap sync done");
+      }
     } catch (err) {
       log.warn({ err: String(err).slice(0, 300) }, "src_slack gap sync failed");
     }

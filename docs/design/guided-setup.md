@@ -259,7 +259,8 @@ The flow is done when paired.
    - New work: the bot gets a `/start <code>` pairing handler. The paired chat id is the Telegram service's own state
      (its data dir), not `.env`, the vault or a setting, so pairing needs no apply.
 3. **Aiden in Slack** (`slack`, advanced part, was `channel-slack`; `secret` then `pair`): talk to Aiden and get approvals in Slack.
-   - A "Create the Slack app" link pre-fills the manifest (Slack's `?new_app=1&manifest_json=` URL).
+   - The app is made (or updated) by Slack's API from a pasted App Configuration Token (2026-11-23, spec
+     `docs/superpowers/specs/2026-11-23-slack-setup-design.md`).
    - One line says "a workspace admin may need to approve it".
    - Paste two tokens (app-level `xapp-` and bot `xoxb-`), then Save.
    - Pair by DMing the bot the one-time code. The owner's Slack id comes from that DM, not typed and not guessed.
@@ -482,4 +483,3 @@ form.
 - OpenRouter's PKCE flow accepts `http://127.0.0.1:3121/...` (Mac) and a bare-IP HTTPS callback. If not, the paste field
   becomes primary there.
 - The `google` module runs idle with no OAuth client.
-- Slack's manifest pre-fill URL still works as described.

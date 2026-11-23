@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile, organisations } from "../modules.ts";
+import { MANIFESTS_JSON, manifestsJson } from "../slack-manifest.ts";
 
 const mods = join(dirname(fileURLToPath(import.meta.url)), "fixtures/mods");
 const inst = (modules) => {
@@ -37,4 +38,8 @@ test("organisations: listed clients reach the board for enabled modules, and onl
   assert.equal(organisations([{ ...org({ m_client_id: "42" })[0], note: "A client ID is public." }], defs, defs)[0].note, undefined);
   assert.throws(() => organisations([{ ...org({ m_client_id: "42" })[0], note: "x".repeat(501) }], defs, defs), /note is a text/);
   assert.throws(() => organisations([{ ...org({ m_client_id: "42" })[0], secrets: {} }], defs, defs), /unknown secrets/);
+});
+
+test("slack-live sends the manifest in slack-app-manifest.yml (node scripts/slack-manifest.ts --write)", () => {
+  assert.equal(readFileSync(MANIFESTS_JSON, "utf8"), manifestsJson());
 });

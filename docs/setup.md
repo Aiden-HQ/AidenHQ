@@ -300,22 +300,24 @@ Slack is one module (`slack`) with two parts, both served by one Slack app made 
 
 **a. Slack reads for agents** (basic, through Slack's own MCP server):
 
-1. [org admin] At api.slack.com/apps: *Create New App*, *From an app manifest*, and paste the manifest's basic part (the
-   board's setup page opens it pre-filled). A workspace that requires admin approval queues the install for an admin.
-   The manifest turns on Slack's MCP server (`is_mcp_enabled`) and PKCE with the loopback redirect
-   `http://localhost:3121/slack/callback`, so there is no client secret and no step in the app's Agents page.
-2. Add `slack` to `modules:` in `instance.yaml` and apply.
-3. Open the board's Slack setup (`#/setup/slack`) [human]: paste the app's Client ID (Basic Information) and press Connect.
+1. Add `slack` to `modules:` in `instance.yaml` and apply.
+2. Open the board's Slack setup (`#/setup/slack`) [human] and pick **Read Slack as you**. With an organisation's app
+   (Settings, Connections, Your organisation) there is nothing to make. Otherwise paste a Slack App Configuration Token
+   (api.slack.com/apps, Your App Configuration Tokens, Generate Token; it is used once and never kept): slack-live makes
+   the app from `modules/slack/slack-app-manifest.yml` (`apps.manifest.create`) and the board saves its Client ID. A
+   workspace that requires admin approval queues the install for an admin. The app is PKCE with the loopback redirect
+   `http://localhost:3121/slack/callback`, so there is no client secret.
+3. Press Connect.
 
-**b. Owner channel, advanced** (Aiden DMs you, agents post to channels you list, live events; your own app, never shared):
+**b. Aiden's bot** (Aiden DMs you, agents post to channels you list, live events, Slack triage and 📌 tasks; your own
+app, never shared):
 
-1. [org admin] In your app, replace its manifest with the advanced one the setup page shows, and install it in the workspace.
-2. Save three tokens in the vault: the app-level token (`xapp-`, scope `connections:write`, under Basic Information,
-   App-Level Tokens) as `slack_live_app_token`, the bot token (`xoxb-`) as `slack_live_bot_token`, and your user token
-   (`xoxp-`) as `slack_live_user_token`. Or paste the first two on the board's Slack setup page.
-3. Pair on the board's Slack setup page: DM the bot the code it shows. The paired account is whose words count and who
-   gets paged.
-4. Apply, then `docker compose up -d --force-recreate slack-live`.
+1. Pick **Slack with Aiden's bot** on the same page and paste an App Configuration Token: the board makes the full app,
+   adds the bot to the app it made for the sign-in, or (beside an organisation's sign-in) makes your own bot app. An app
+   made before 2026-11-23 is offered **Update your bot app** instead (its App ID, `apps.manifest.update`).
+2. [human] Install it on the app's Install page in Slack (the setup page links it), then paste the Bot User OAuth Token
+   (`xoxb-`) and an app-level token (`xapp-`, scope `connections:write`; Slack has no API that makes one).
+3. Pair: DM the bot the code the page shows. The paired account is whose words count and who gets paged.
 
 An instance that ran the old `channel-slack` module needs nothing: `replaces` keeps its `instance.yaml` working, and the
 apply moves its listener's data and restarts it under the `slack` module.

@@ -1,0 +1,147 @@
+{
+  "basic": {
+    "display_information": {
+      "name": "AidenHQ",
+      "description": "Your AI chief of staff. Reads the Slack you can see; posts only as a labelled bot, or as you when you allow it.",
+      "background_color": "#1a1a2e"
+    },
+    "oauth_config": {
+      "redirect_urls": [
+        "http://localhost:3121/slack/callback"
+      ],
+      "pkce_enabled": true,
+      "scopes": {
+        "user": [
+          "search:read.public",
+          "search:read.private",
+          "search:read.im",
+          "search:read.mpim",
+          "search:read.users",
+          "search:read.files",
+          "channels:history",
+          "groups:history",
+          "im:history",
+          "mpim:history",
+          "channels:read",
+          "groups:read",
+          "im:read",
+          "mpim:read",
+          "users:read",
+          "users:read.email",
+          "users.profile:read",
+          "usergroups:read",
+          "emoji:read",
+          "files:read",
+          "canvases:read",
+          "lists:read",
+          "reactions:read"
+        ]
+      }
+    },
+    "settings": {
+      "org_deploy_enabled": false,
+      "socket_mode_enabled": false,
+      "token_rotation_enabled": false,
+      "is_mcp_enabled": true
+    }
+  },
+  "advanced": {
+    "display_information": {
+      "name": "AidenHQ",
+      "description": "Your AI chief of staff. Reads the Slack you can see; posts only as a labelled bot, or as you when you allow it.",
+      "background_color": "#1a1a2e"
+    },
+    "oauth_config": {
+      "redirect_urls": [
+        "http://localhost:3121/slack/callback"
+      ],
+      "pkce_enabled": true,
+      "scopes": {
+        "user": [
+          "search:read.public",
+          "search:read.private",
+          "search:read.im",
+          "search:read.mpim",
+          "search:read.users",
+          "search:read.files",
+          "channels:history",
+          "groups:history",
+          "im:history",
+          "mpim:history",
+          "channels:read",
+          "groups:read",
+          "im:read",
+          "mpim:read",
+          "users:read",
+          "users:read.email",
+          "users.profile:read",
+          "usergroups:read",
+          "emoji:read",
+          "files:read",
+          "canvases:read",
+          "lists:read",
+          "reactions:read"
+        ],
+        "bot": [
+          "chat:write",
+          "chat:write.public",
+          "reactions:write",
+          "app_mentions:read",
+          "commands",
+          "im:history",
+          "im:read",
+          "im:write",
+          "channels:history",
+          "groups:history",
+          "channels:read",
+          "groups:read",
+          "mpim:read"
+        ]
+      }
+    },
+    "settings": {
+      "org_deploy_enabled": false,
+      "socket_mode_enabled": true,
+      "token_rotation_enabled": false,
+      "is_mcp_enabled": true,
+      "interactivity": {
+        "is_enabled": true
+      },
+      "event_subscriptions": {
+        "bot_events": [
+          "app_mention",
+          "message.im",
+          "member_joined_channel",
+          "channel_left"
+        ],
+        "user_events": [
+          "message.channels",
+          "message.groups",
+          "message.im",
+          "message.mpim",
+          "reaction_added",
+          "reaction_removed"
+        ]
+      }
+    },
+    "features": {
+      "bot_user": {
+        "display_name": "AidenHQ (AI)",
+        "always_online": true
+      },
+      "slash_commands": [
+        {
+          "command": "/aiden",
+          "description": "Assign this channel to an agent (owner only)",
+          "usage_hint": "assign-channel <agent-key> | unassign-channel | channels",
+          "should_escape": false
+        }
+      ],
+      "app_home": {
+        "home_tab_enabled": false,
+        "messages_tab_enabled": true,
+        "messages_tab_read_only_enabled": false
+      }
+    }
+  }
+}

@@ -34,6 +34,27 @@ export interface SetupFlowPoint {
   admin?: string;
   /** Its `mode: advanced` flow: the person's own app, for what basic can't do; done once its secrets exist (and it is paired). */
   advanced?: AdvancedFlow;
+  /** With an advanced flow: the basic option's short name, and what it gives, on the page's two option cards. */
+  label?: string;
+  capabilities?: string[];
+  /** The module makes or updates the vendor app from a pasted short-lived token (never stored), on its service that pairs. */
+  app?: AppSpec;
+}
+
+export interface AppSpec {
+  url: string;
+  label: string;
+  pattern: string;
+  help: string;
+  console_url?: string;
+}
+
+/** What the module says of the app it made or updated last (GET on `app.url`). */
+export interface AppStatus {
+  app_id: string | null;
+  part: "basic" | "advanced" | null;
+  current: boolean;
+  url: string | null;
 }
 
 /** A saved secret's services are still being recreated: the board's pairing waits on this, not on every module 409. */
@@ -107,6 +128,8 @@ export interface SetupFlowDeps {
   settings: () => SettingsView;
   /** Files settings changes as the owner's own task (the board's settings change path); resolves to its task. */
   file: (changes: SettingChangeInput[]) => Promise<{ identifier: string }>;
+  /** The secrets the chosen organisation supplies: an app the module makes never replaces them. */
+  orgSecrets?: () => string[];
   /** A flow's state changed: the open boards refresh their setup state (the `setup` event). */
   onSetupChange?: () => void;
   fetchImpl?: typeof fetch;
@@ -228,6 +251,26 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
     if (!res.ok) throw new AccountError(res.status === 409 ? 409 : 502, String(data.error ?? `${f.module} answered ${res.status}`));
     return data;
   };
+  /** The module's app endpoint, with the pair token; its refusal's words are the owner's to read. */
+  const appCall = async (f: SetupFlowPoint & { token?: string }, body?: unknown): Promise<Record<string, unknown>> => {
+    if (!f.app || !f.token) throw new AccountError(404, "this module makes no app");
+    const res = await doFetch(f.app.url, {
+      method: body ? "POST" : "GET",
+      headers: { authorization: `Bearer ${f.token}`, ...(body ? { "content-type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(body ? 45_000 : 5_000),
+    }).catch((e: unknown) => {
+      throw new AccountError((e as Error)?.name === "TimeoutError" ? 504 : 503, (e as Error)?.name === "TimeoutError" ? `${f.module} didn't answer in time` : `${f.module} isn't reachable yet`);
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) throw new AccountError(res.status === 400 || res.status === 504 ? res.status : 502, String(data.error ?? `${f.module} answered ${res.status}`).slice(0, 400));
+    return data;
+  };
+  const appStatusOf = async (f: SetupFlowPoint & { token?: string }): Promise<AppStatus | undefined> => {
+    if (!f.app || !f.token) return undefined;
+    const r = await appCall(f).catch(() => undefined);
+    return r && { app_id: typeof r.app_id === "string" ? r.app_id : null, part: r.part === "basic" || r.part === "advanced" ? r.part : null, current: r.current === true, url: typeof r.url === "string" && r.url.startsWith("https://") ? r.url : null };
+  };
   const chosenOf = (module: string): string | null => d.store.meta(`setup_choice:${module}`) ?? null;
   const holds = (when: Record<string, string | string[]> | undefined, settings: SettingsView) =>
     Object.entries(when ?? {}).every(([k, v]) => [v].flat().map(String).includes(String(settings?.[k]?.value)));
@@ -272,7 +315,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
       handle: async (_m, _b, who, host) => {
         const gone = new Set(dismissed());
         const flows = await Promise.all(
-          d.flows.map(async ({ token: _t, pair_token: _p, connect_url, advanced, ...f }) => {
+          d.flows.map(async ({ token: _t, pair_token: _p, connect_url, advanced, app: appSpec, ...f }) => {
             const full = d.flows.find((x) => x.module === f.module)!;
             const present = f.secrets?.length || advanced?.secrets?.length ? (await d.accounts.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: f.module })).secrets : {};
             // A connect path counts only if the board serves it; then its connection's state is the sign-in's.
@@ -289,10 +332,11 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             const adv = advanced && (({ pair_token: _a, ...a }) => ({ ...a, done: (a.secrets ?? []).every((s) => present[s]) && (a.pair_url ? pairing?.paired === true : true) }))(advanced);
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
+            const app = appSpec ? { app: { label: appSpec.label, pattern: appSpec.pattern, help: appSpec.help, ...(appSpec.console_url ? { console_url: appSpec.console_url } : {}), status: (await appStatusOf(full)) ?? null, org_secrets: (d.orgSecrets?.() ?? []).filter((x) => [...(f.secrets ?? []), ...(advanced?.secrets ?? [])].includes(x)) } } : {};
             const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
             // How long the wait has left, not when it ends: the page counts it down on its own clock, which need not agree with the board's.
             const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
-            return { ...f, ...choose, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired: pairing?.paired === true, done, dismissed: gone.has(f.module), ...(restarting_for > 0 ? { restarting: true, restarting_for } : {}) };
+            return { ...f, ...choose, ...app, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired: pairing?.paired === true, done, dismissed: gone.has(f.module), ...(restarting_for > 0 ? { restarting: true, restarting_for } : {}) };
           }),
         );
         const boardUrl = d.boardUrl(host);
@@ -348,6 +392,36 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         d.store.setMeta(`setup_choice:${f.module}`, value);
         changed();
         return { ok: true, ...(filed ? { identifier: filed.identifier } : {}) };
+      },
+    },
+    {
+      // The module makes or updates its vendor app from the owner's pasted token (sent on, never kept or logged here), and the
+      // public values a new app has are saved as this flow's own fields: only those, and never one the chosen organisation supplies.
+      method: "POST",
+      path: /^\/api\/setup-flows\/([a-z0-9-]{1,63})\/app$/,
+      handle: async (m, body, who) => {
+        if (!who.account.owner) throw new AccountError(403, "only the owner can make the app");
+        const f = flow(m[1]!);
+        if (!f.app) throw new AccountError(404, "this module makes no app");
+        const parsed = z.object({ token: z.string().min(1).max(600), part: z.enum(["basic", "advanced"]), app_id: z.string().max(40).optional() }).strict().safeParse(body);
+        if (!parsed.success) throw new AccountError(400, "a token and an option are required");
+        if (!new RegExp(f.app.pattern).test(parsed.data.token.trim())) throw new AccountError(400, `That doesn't look like an ${f.app.label}.`);
+        const r = await appCall(f, { ...parsed.data, token: parsed.data.token.trim() });
+        // Only the basic flow's fields: a new app's public client. Never a token of the advanced part, whatever the module says.
+        const fields = f.fields ?? [];
+        const supplied = new Set(d.orgSecrets?.() ?? []);
+        const saved: string[] = [];
+        let restarting = false;
+        for (const [secret, value] of Object.entries((r.secrets ?? {}) as Record<string, unknown>)) {
+          const field = fields.find((x) => x.secret === secret);
+          if (!field || supplied.has(secret) || typeof value !== "string" || !new RegExp(field.pattern).test(value)) continue;
+          const out = await d.accounts.call<{ ok: boolean; restarted?: string[] }>("save_secret", who, { module: f.module, secret, value });
+          restarting ||= Boolean(out.restarted?.length);
+          saved.push(secret);
+        }
+        if (restarting) d.store.setMeta(RESTARTING(f.module), String(Date.now() + RESTART_MS));
+        changed();
+        return { status: await appStatusOf(f), saved };
       },
     },
     {

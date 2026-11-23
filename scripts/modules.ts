@@ -574,7 +574,8 @@ export function setupFlows(defs: Obj, compiled: Obj, settings: Obj = {}) {
     const advanced = f.mode === "advanced";
     if (flows.filter((x: Obj) => x.module === f.module && (x.mode === "advanced") === advanced).length > 1) fail(`${where}: one ${advanced ? "advanced" : "basic"} flow per module`);
     if (advanced && !f.capabilities?.length) fail(`${where}: an advanced flow lists the capabilities it unlocks`);
-    if (!advanced && f.capabilities) fail(`${where}: capabilities belong on the advanced flow`);
+    if (!advanced && (f.capabilities || f.label) && !flows.some((x: Obj) => x.module === f.module && x.mode === "advanced")) fail(`${where}: label and capabilities on a basic flow name its option beside an advanced flow`);
+    if (advanced && (f.label || f.app)) fail(`${where}: label and app belong on the basic flow`);
     if (advanced && !flows.some((x: Obj) => x.module === f.module && x.mode !== "advanced")) fail(`${where}: an advanced flow needs the module's basic flow`);
     if (f.pair_url != null && flows.some((x: Obj) => x !== f && x.module === f.module && x.pair_url != null)) fail(`${where}: one pairing per module`);
     f.fields = fieldsOf(f.module, f.secrets, where);
@@ -600,6 +601,11 @@ export function setupFlows(defs: Obj, compiled: Obj, settings: Obj = {}) {
     def.generated_secrets = [...new Set([...(def.generated_secrets ?? []), token])];
     def.board_env = { ...def.board_env, [`${token.toUpperCase()}_FILE`]: `\${secrets.${token}}` };
     f.pair_token = token;
+  }
+  // A flow's `app` is made by the module's service that pairs: the board reaches it there, with the pair token.
+  for (const f of flows.filter((x: Obj) => x.app)) {
+    const pair = [f, ...flows.filter((x: Obj) => x.module === f.module && x.mode === "advanced")].find((x: Obj) => x.pair_url)?.pair_url;
+    if (!pair || new URL(pair).host !== new URL(f.app.url).host) fail(`module ${f.module}: setup_flows app.url must be on the service its pair_url names`);
   }
   // The advanced flow rides on its basic one: the board reads one flow per module.
   for (const a of flows.filter((x: Obj) => x.mode === "advanced")) {
@@ -628,7 +634,7 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
     ids.add(o.id);
     if (typeof o.name !== "string" || !o.name.trim() || o.name.length > 60) fail(`${where}: name is a short text`);
     // `note`: why its values are safe to publish (JSON has no comments); never shown.
-    const extra = Object.keys(o).filter((k) => !["id", "name", "domains", "clients", "note"].includes(k));
+    const extra = Object.keys(o).filter((k) => !["id", "name", "domains", "clients", "note", "read_only"].includes(k));
     if (extra.length) fail(`${where}: unknown ${extra.join(", ")}`);
     if (o.note != null && (typeof o.note !== "string" || o.note.length > 500)) fail(`${where}: note is a text of 500 characters at most`);
     if (!Array.isArray(o.domains) || !o.domains.length || o.domains.some((d: unknown) => typeof d !== "string" || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(d))) fail(`${where}: domains are lowercase email domains`);
@@ -639,7 +645,9 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
       if (typeof value !== "string" || !new RegExp(c.pattern).test(value)) fail(`${where}: ${secret} doesn't fit its pattern`);
       return { module: c.module, secret, value };
     });
-    return { id: o.id, name: o.name, domains: o.domains, clients: clients.filter((c) => c.module in enabledDefs) };
+    // `read_only`: modules whose app here grants reads only: their Connect offers no write scopes (Slack refuses them anyway).
+    if (o.read_only != null && (!Array.isArray(o.read_only) || o.read_only.some((m: unknown) => !clients.some((c) => c.module === m)))) fail(`${where}: read_only lists modules among its clients`);
+    return { id: o.id, name: o.name, domains: o.domains, clients: clients.filter((c) => c.module in enabledDefs), ...(o.read_only?.length ? { read_only: o.read_only } : {}) };
   }).filter((o: Obj) => o.clients.length);
 }
 

@@ -6,13 +6,14 @@
   "properties": {
     "order": { "type": "integer", "minimum": 0, "maximum": 999, "description": "where it sits among the flows, lowest first" },
     "title": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "label": { "type": "string", "minLength": 1, "maxLength": 40, "description": "basic, with an advanced flow: the basic option's short name on the page's two option cards (the advanced one's is its title)" },
     "why": { "type": "string", "minLength": 1, "maxLength": 160, "description": "one sentence: what the person gets" },
     "effort": { "type": "string", "minLength": 1, "maxLength": 80, "description": "e.g. about 2 minutes, needs the Telegram app" },
     "wizard": { "type": "boolean", "description": "shown in the first-run wizard" },
     "mode": { "enum": ["basic", "advanced"], "description": "basic (the default): the module's own setup, usually a sign-in; done once it is connected (and paired, if it pairs). advanced: the optional second flow, 'your own app' for more, shown under the basic one; done once its secrets exist (and it is paired, if it pairs); its services start once their secrets exist" },
-    "capabilities": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 160 }, "description": "advanced only: what the person's own app unlocks, one short phrase each (a bot people can DM, live events)" },
+    "capabilities": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 160 }, "description": "what each option gives, one short phrase each (a bot people can DM, live events): required on the advanced flow; on the basic one, shown on its option card" },
     "admin": { "type": "string", "minLength": 1, "maxLength": 120, "description": "who else may need to approve, plainly (your Slack admin may need to approve the app)" },
-    "steps": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "markdown; {board_url} becomes the board's own address (where its sign-ins return), {redirect_url} the exact redirect the flow's sign-in sends (what a hand-made client must list), and inline code gets a copy button" },
+    "steps": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "markdown; {board_url} becomes the board's own address (where its sign-ins return), {redirect_url} the exact redirect the flow's sign-in sends (what a hand-made client must list), {app_url} the settings page of the app `app` made or updated (the vendor's console until then), and inline code gets a copy button" },
     "secrets": { "type": "array", "maxItems": 8, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, "description": "names of this module's secrets with `setup:`, shown as paste fields in this order" },
     "choose": {
       "type": "object", "additionalProperties": false, "required": ["setting", "options"],
@@ -48,6 +49,17 @@
     "signin": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,30}$", "description": "an id from this module's board.signins: its connect button" },
     "pair_url": { "type": "string", "pattern": "^http://[a-z][a-z0-9-]{0,62}:[0-9]{2,5}/pair$", "description": "the pairing endpoint of one of this module's services" },
     "connect_url": { "type": "string", "pattern": "^/[a-z][a-z0-9-]{0,30}/connect$", "description": "a connect path the board already serves for a connection that is not a board.signins entry: its Connect button; done once that connection is signed in" },
-    "console_url": { "type": "string", "pattern": "^https://[^\\s]{1,300}$", "description": "the vendor's page where the owner makes the client this flow's secrets ask for: a button beside the steps" }
+    "console_url": { "type": "string", "pattern": "^https://[^\\s]{1,300}$", "description": "the vendor's page where the owner makes the client this flow's secrets ask for: a button beside the steps" },
+    "app": {
+      "type": "object", "additionalProperties": false, "required": ["url", "label", "pattern", "help"],
+      "description": "basic only: the module makes or updates the vendor app for the person from a pasted, short-lived token (never stored). The board sends it, with the option picked (basic or advanced) and an app id to update, to `url` with the module's pair token, and saves the public values it answers (the basic flow's own fields only, never a token of the advanced part or a value the chosen organisation supplies). GET on `url` answers the app it made or updated last and whether that app has today's manifest",
+      "properties": {
+        "url": { "type": "string", "pattern": "^http://[a-z][a-z0-9-]{0,62}:[0-9]{2,5}/setup/app$", "description": "on the module's service that pairs (the board reaches it with the pair token)" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "help": { "type": "string", "minLength": 1, "maxLength": 600, "description": "markdown: where to make the token" },
+        "console_url": { "type": "string", "pattern": "^https://[^\\s]{1,300}$", "description": "the vendor's page where the token is made: {app_url} until the module has made an app" }
+      }
+    }
   }
 }

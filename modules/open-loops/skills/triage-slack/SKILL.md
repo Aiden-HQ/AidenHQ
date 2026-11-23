@@ -5,7 +5,7 @@ description: "Decides each event of a Slack live-feed batch as nothing, a task (
 
 # Slack triage
 
-`slack_owner` once gives the owner's Slack ID, `<me>`; unpaired: finish "Slack not paired". `routine_events` with the batch id from the task (`New events: batch …`); `pending`: call again after `retry_after_s`; none: finish; `expired`: finish saying the batch's events were gone before this run. Each event has `id`, `resource` (the channel), `kind`, `author` (a Slack user ID), `text`, `url` (the permalink) and, on a reply, `thread` (its thread's root ts). A message's `id` is `<channel>:<ts>`.
+`slack_owner` once gives the owner's Slack ID, `<me>`; null: finish "Slack not connected". `routine_events` with the batch id from the task (`New events: batch …`); `pending`: call again after `retry_after_s`; none: finish; `expired`: finish saying the batch's events were gone before this run. Each event has `id`, `resource` (the channel), `kind`, `author` (a Slack user ID), `text`, `url` (the permalink) and, on a reply, `thread` (its thread's root ts). A message's `id` is `<channel>:<ts>`.
 
 Decide each event on its own text the moment you see it, however recent. Default is nothing. An event marked `truncated` carries only its first 2000 characters: read the whole message (`slack_read_thread` with its thread, or its own ts) before you decide it.
 

@@ -11,6 +11,8 @@ export interface OrganisationPoint {
   name: string;
   domains: string[];
   clients: { module: string; secret: string; value: string }[];
+  /** Modules whose app here grants reads only: their Connect offers no write scopes. */
+  read_only?: string[];
 }
 
 export function organisationPoints(file: string): OrganisationPoint[] {
@@ -23,7 +25,7 @@ export function suggested(orgs: OrganisationPoint[], email: string): string | nu
   return orgs.find((o) => o.domains.some((d) => domain === d || domain.endsWith(`.${d}`)))?.id ?? null;
 }
 
-const CHOSEN = "organisation";
+export const CHOSEN = "organisation";
 
 export function organisationRoutes(d: { orgs: OrganisationPoint[]; accounts: KernelAuth; store: Store; onApplied?: () => void }): SetupRoute[] {
   const routes: SetupRoute[] = [
