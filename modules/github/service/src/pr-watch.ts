@@ -245,9 +245,9 @@ export function startPrWatch(o: PrWatchOptions) {
      */
     async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
-      const rollup = rollupOf(pr);
-      if (rollup?.contexts?.pageInfo?.hasNextPage) return []; // not every check run is here: a complete verdict needs them all
-      const stuck = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED");
+      // Each stuck check is judged on its own REST entry, so the rollup's first page is enough: a check past it is handled
+      // when the rollup pages to it, and the ones here are never held back by the rest.
+      const stuck = (rollupOf(pr)?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED" && n.id);
       if (!stuck.length) return [];
       const url = pr.url.toLowerCase();
       // The latest check run of each name, as the rollup carries them: no superseded attempt, and the node id below picks
