@@ -226,10 +226,12 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     const known = visibility.get(channel);
     if (known !== undefined) return known;
     const r = await get("conversations.info", { channel });
-    if (!r.ok) return r.detail;
+    // A channel Slack won't describe (no metadata scope for its kind) is simply not shown: it never fails a search
+    // whose own scope is satisfied by other channels.
+    if (!r.ok) return (visibility.set(channel, false), false);
     const kind = channelKind(r.json.channel ?? {});
-    if (!kind) return `Slack didn't say what kind of conversation ${channel} is`;
-    const ok = plan.publicOnly ? kind === "public" : plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]);
+    if (!kind) return (visibility.set(channel, false), false);
+    const ok = plan.scopes === undefined ? kind === "public" : plan.scopes.has(SEARCH_SCOPE[kind]);
     visibility.set(channel, ok);
     return ok;
   };
@@ -256,7 +258,8 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     }
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
     if (next) {
-      if (cursors.has(next)) return { ok: true, messages, nextCursor: next }; // a repeated cursor: not the end of the set
+      // A cursor already visited can't advance: the set is incomplete, and handing the same cursor back would loop.
+      if (cursors.has(next)) return { ok: false, detail: "reactions.list returned a cursor this scan had already followed" };
       cursor = next;
       numbered = undefined;
       continue;
@@ -450,12 +453,13 @@ async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "
     return o.authState() === "expired" ? need(detail) : reactionError("reactions_list_failed", detail, { filter: plan.filter });
   }
   if (!authorization) return need("The reaction set is unknown: Slack's sign-in has no user token.");
-  // The tool's own scope split: a public-only search shows public channels; the all-channels one shows only the kinds
-  // the sign-in granted a search scope for. Without the stored scopes there is no honest answer.
-  let scopes: Set<string> | undefined;
-  if (!plan.publicOnly) {
-    scopes = readScopes(o.tokenFile);
-    if (!scopes) return reactionError("scopes_unknown", "The reaction set is unknown: the sign-in's granted scopes couldn't be read (Reconnect on the board).", { filter: plan.filter });
+  // The tool's own scope split: a public-only search shows public channels (and needs search:read.public); the
+  // all-channels one shows only the kinds the sign-in granted a search scope for. Without the stored scopes there is no
+  // honest answer.
+  const scopes = readScopes(o.tokenFile);
+  if (!scopes) return reactionError("scopes_unknown", "The reaction set is unknown: the sign-in's granted scopes couldn't be read (Reconnect on the board).", { filter: plan.filter });
+  if (plan.publicOnly && !scopes.has(SEARCH_SCOPE.public)) {
+    return reactionError("scope", "The reaction set is unknown: the sign-in has no search:read.public scope, so public search isn't granted (Reconnect on the board and allow it).", { filter: plan.filter });
   }
   const scan = await scanMyReactions({ ...plan, scopes }, { authorization, userId }, { fetchImpl: o.fetchImpl, sleep: o.sleep, maxPages: o.maxPages, deadlineMs: o.deadlineMs });
   if (!scan.ok) {
