@@ -159,8 +159,8 @@ export function createEvents(o: {
       if (b && own && r?.status === "active" && r.assignee === job.agent) {
         if (b.state === "fired") {
           const events = (db.prepare("SELECT body FROM event_queue WHERE batch = ? AND body IS NOT NULL ORDER BY seq").all(b.id) as { body: string }[]).map((q) => JSON.parse(q.body));
-          // Fewer bodies than the batch held: they are gone (kept a day after it fired), never an empty batch.
-          return events.length < b.count ? { expired: true, count: b.count } : { count: b.count, events };
+          // Kept a day after it fired: past that, or with fewer bodies than the batch held, it is expired, never an empty batch.
+          return events.length < b.count || now() - (b.dispatched_at ?? 0) > BODY_MS ? { expired: true, count: b.count } : { count: b.count, events };
         }
         if (b.state === "firing" && now() - (b.sealed_at ?? 0) < FIRING_MS) return { pending: true, retry_after_s: PENDING_RETRY_S };
       }
