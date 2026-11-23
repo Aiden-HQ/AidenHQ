@@ -52,6 +52,11 @@ export type ReactionPlan =
   | { kind: "mine"; emoji: string; filter: string; publicOnly: boolean; limit?: number; cursor?: string }
   | { kind: "unsupported"; filter: string; reason: string };
 
+/** A conversation's kind, as the search tool's own scopes split them. */
+export type ChannelKind = "public" | "private" | "im" | "mpim";
+/** The search scope each kind needs; the same split the tool's own visibility follows. */
+export const SEARCH_SCOPE: Record<ChannelKind, string> = { public: "search:read.public", private: "search:read.private", im: "search:read.im", mpim: "search:read.mpim" };
+
 const text = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
 /** `filters` as the tool documents it (a string); an array is accepted too, as some clients send one. */
 const filterText = (v: unknown): string => (typeof v === "string" ? v : Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").join(" ") : "").trim();
@@ -121,6 +126,26 @@ export function readUserId(file: string): string | undefined {
   }
 }
 
+/** The scopes the sign-in granted (token.json's `scope`), so a reaction read never exceeds what the search tool may see. */
+export function readScopes(file: string): Set<string> | undefined {
+  try {
+    const t = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    if (typeof t.scope !== "string") return undefined;
+    return new Set(t.scope.split(/[,\s]+/).filter(Boolean));
+  } catch {
+    return undefined;
+  }
+}
+
+/** A `conversations.info` channel as the kind its search scope names; undefined when Slack's flags don't say. */
+export function channelKind(c: Record<string, any>): ChannelKind | undefined {
+  if (c.is_im === true) return "im";
+  if (c.is_mpim === true) return "mpim";
+  if (c.is_private === true || c.is_group === true) return "private";
+  if (c.is_channel === true) return "public";
+  return undefined;
+}
+
 export interface ScanOptions {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -159,7 +184,7 @@ const messageOf = (item: Record<string, any>, emoji: string, userId: string): Re
  * DM, a group DM), classified through `conversations.info`; a channel it can't classify fails the scan rather than
  * being guessed either way.
  */
-export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolean; limit?: number; cursor?: string }, signIn: { authorization: string; userId: string }, o: ScanOptions = {}): Promise<ScanResult> {
+export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolean; scopes?: Set<string>; limit?: number; cursor?: string }, signIn: { authorization: string; userId: string }, o: ScanOptions = {}): Promise<ScanResult> {
   const fetchImpl = o.fetchImpl ?? fetch;
   const sleep = o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = o.now ?? Date.now;
@@ -192,16 +217,21 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     return { ok: true, json };
   };
 
-  /** Whether a public-only search may show this channel; a channel Slack can't describe fails the scan. */
-  const isPublic = async (channel: string): Promise<boolean | string> => {
+  /**
+   * Whether this search may show the channel: `slack_search_public` shows public channels only, and
+   * `slack_search_public_and_private` shows a kind only when the sign-in granted that kind's search scope, so a
+   * reaction read never returns what the tool itself is not allowed to. A channel Slack can't describe fails the scan.
+   */
+  const visible = async (channel: string): Promise<boolean | string> => {
     const known = visibility.get(channel);
     if (known !== undefined) return known;
     const r = await get("conversations.info", { channel });
     if (!r.ok) return r.detail;
-    const c = r.json.channel ?? {};
-    const pub = c.is_channel === true && c.is_private !== true && c.is_im !== true && c.is_mpim !== true && c.is_group !== true;
-    visibility.set(channel, pub);
-    return pub;
+    const kind = channelKind(r.json.channel ?? {});
+    if (!kind) return `Slack didn't say what kind of conversation ${channel} is`;
+    const ok = plan.publicOnly ? kind === "public" : plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]);
+    visibility.set(channel, ok);
+    return ok;
   };
 
   // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives.
@@ -214,10 +244,10 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     for (const item of Array.isArray(json.items) ? json.items : []) {
       const message = messageOf(item, plan.emoji, signIn.userId);
       if (!message) continue;
-      if (plan.publicOnly) {
-        const pub = await isPublic(message.channel);
-        if (typeof pub === "string") return { ok: false, detail: `couldn't tell whether ${message.channel} is public (${pub})` };
-        if (!pub) continue;
+      if (plan.publicOnly || plan.scopes) {
+        const show = await visible(message.channel);
+        if (typeof show === "string") return { ok: false, detail: `couldn't tell what ${message.channel} is (${show})` };
+        if (!show) continue;
       }
       const key = `${message.channel}\u0000${message.ts}`;
       if (seen.has(key)) continue;
@@ -267,7 +297,7 @@ const bearer = (req: IncomingMessage, token: string): boolean => {
  * The body is always handed back before the stream ends: a stream that has ended can't be replayed, so this settles
  * the moment a complete JSON value parses, which is at or before the last chunk.
  */
-type Peeked = { kind: "message"; message: Record<string, any> } | { kind: "batch"; messages: Record<string, any>[] } | { kind: "pass" } | { kind: "invalid" };
+type Peeked = { kind: "message"; message: Record<string, any> } | { kind: "pass" } | { kind: "invalid" };
 
 function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
   return new Promise((resolve) => {
@@ -294,8 +324,7 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       } catch {
         return undefined;
       }
-      if (Array.isArray(value)) return { kind: "batch", messages: value.filter((m): m is Record<string, any> => Boolean(m) && typeof m === "object") };
-      return value && typeof value === "object" ? { kind: "message", message: value as Record<string, any> } : { kind: "pass" };
+      return value && typeof value === "object" && !Array.isArray(value) ? { kind: "message", message: value as Record<string, any> } : { kind: "pass" };
     };
     const onData = (chunk: Buffer) => {
       chunks.push(chunk);
@@ -339,8 +368,6 @@ export interface InterceptOptions {
   readKey?: string;
   /** The kernel's signed caller assertion on /mcp (the proxy verifies the same one). */
   caller: (req: IncomingMessage) => Promise<unknown>;
-  /** The proxy's own call path, for a batch's entries this module doesn't answer (its deny, hooks and upstream). */
-  call?: (name: string, args: Record<string, unknown>) => Promise<CallToolResult>;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   maxPages?: number;
@@ -372,13 +399,12 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   const peeked = await peekJson(req, BODY_LIMIT);
   // A body the proxy can't parse either: answer as the proxy would, since its bytes are spent.
   if (peeked.kind === "invalid") return (send(res, 500, { error: "bad request" }), true);
-  if (peeked.kind === "pass") return false;
-  const messages = peeked.kind === "batch" ? peeked.messages : [peeked.message];
-  const plans = messages.map((m) => ({ m, plan: m?.method === "tools/call" ? planReactionSearch(nameOf(m), argsOf(m)) : ({ kind: "pass" } as ReactionPlan) }));
-  // Nothing this path answers: the request is the proxy's, unchanged.
-  if (!plans.some((p) => p.plan.kind !== "pass")) return false;
-  // A batch with a tool call only the proxy can run needs the proxy's own `call` to keep the rest of the batch.
-  if (plans.some((p) => p.m?.method === "tools/call" && p.plan.kind === "pass") && !o.call) return false;
+  // Only a single tools/call is intercepted. A batch (no caller here sends one) is the proxy's, unchanged.
+  if (peeked.kind === "pass" || peeked.message.method !== "tools/call") return false;
+  const message = peeked.message;
+  const name = nameOf(message);
+  const plan = planReactionSearch(name, argsOf(message));
+  if (plan.kind === "pass") return false;
 
   // The proxy's own admission, in its order: nothing is answered before the caller is the kernel's.
   if (!readOnly) {
@@ -386,21 +412,13 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
       await o.caller(req);
     } catch (err) {
       const reason = (err as Error).message;
-      o.log?.({ reason }, "tool call refused");
-      const refused = (m: Record<string, any>) => answer(m.id, reactionError("refused", `Refused: ${reason}.`));
-      send(res, 200, peeked.kind === "batch" ? messages.map(refused) : refused(messages[0]!));
+      o.log?.({ tool: name, reason }, "tool call refused");
+      send(res, 200, answer(message.id, reactionError("refused", `Refused: ${reason}.`)));
       return true;
     }
   }
 
-  // Each entry answers in place. A non-call entry in a batch (a tools/list beside a call) can't be run through the
-  // proxy's own `call`, so it answers an error that says to send it on its own rather than being silently mangled.
-  const out = await Promise.all(plans.map(async ({ m, plan }) => {
-    if (m?.method !== "tools/call") return { jsonrpc: "2.0", id: m?.id ?? null, error: { code: -32601, message: `${String(m?.method)} can't be served in a batch with a reaction search: send it on its own` } };
-    const result = plan.kind === "pass" ? await o.call!(nameOf(m), argsOf(m)) : await serveReaction(nameOf(m), plan, readOnly, o);
-    return answer(m.id, result);
-  }));
-  send(res, 200, peeked.kind === "batch" ? out : out[0]);
+  send(res, 200, answer(message.id, await serveReaction(name, plan, readOnly, o)));
   return true;
 }
 
@@ -432,7 +450,14 @@ async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "
     return o.authState() === "expired" ? need(detail) : reactionError("reactions_list_failed", detail, { filter: plan.filter });
   }
   if (!authorization) return need("The reaction set is unknown: Slack's sign-in has no user token.");
-  const scan = await scanMyReactions(plan, { authorization, userId }, { fetchImpl: o.fetchImpl, sleep: o.sleep, maxPages: o.maxPages, deadlineMs: o.deadlineMs });
+  // The tool's own scope split: a public-only search shows public channels; the all-channels one shows only the kinds
+  // the sign-in granted a search scope for. Without the stored scopes there is no honest answer.
+  let scopes: Set<string> | undefined;
+  if (!plan.publicOnly) {
+    scopes = readScopes(o.tokenFile);
+    if (!scopes) return reactionError("scopes_unknown", "The reaction set is unknown: the sign-in's granted scopes couldn't be read (Reconnect on the board).", { filter: plan.filter });
+  }
+  const scan = await scanMyReactions({ ...plan, scopes }, { authorization, userId }, { fetchImpl: o.fetchImpl, sleep: o.sleep, maxPages: o.maxPages, deadlineMs: o.deadlineMs });
   if (!scan.ok) {
     o.log?.({ tool: name, filter: plan.filter, detail: scan.detail }, "reactions.list could not compute the set");
     // Slack refusing the token is the owner's to fix; anything else is a plain error the caller retries or reports.
