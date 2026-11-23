@@ -215,6 +215,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
         db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
         db.exec("CREATE INDEX IF NOT EXISTS jobs_identifier ON jobs (identifier, state)"); // workspaces.ts: a folder's liveness
+        db.exec("CREATE INDEX IF NOT EXISTS jobs_agent_at ON jobs (agent, at DESC)"); // work.ts: an agent's newest jobs first
         // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
         if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
         db.exec("COMMIT");
