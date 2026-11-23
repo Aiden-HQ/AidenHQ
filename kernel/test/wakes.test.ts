@@ -15,16 +15,34 @@ const iso = (ms) => new Date(ms).toISOString();
 function world() {
   let clock = Date.parse("2026-11-18T10:00:00Z");
   const issues = {}, comments = {}, fail = { moves: 0, get: {} }, reads = {};
+  // A row the read returns out of date (`staleOnRead`): the task moved on the control plane after the caller's last look.
+  const stale = {};
+  // The agents' companies (`fail.agents` makes one lookup answer 503, as a control plane under load does).
+  const agentCompanies = {};
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
   const owner = async (method, path, body) => {
     const u = new URL(path, "http://cp");
     let m;
-    if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1", status: "idle", lifecycleHolds: [] } };
+    if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) {
+      if (fail.agents?.[m[1]]) return { status: fail.agents[m[1]], json: {} };
+      return { status: 200, json: { id: m[1], companyId: agentCompanies[m[1]] ?? "c-1", status: "idle", lifecycleHolds: [] } };
+    }
     // A list row may leave blockedBy out (`omitBlocked`): the single-issue read still has it.
-    if (u.pathname === "/api/companies/c-1/issues") {
+    if ((m = /^\/api\/companies\/([^/]+)\/issues$/.exec(u.pathname))) {
+      // A done window's later page failing (`fail.donePages`): the traversal is cut short, so its cursor must not move.
+      if (u.searchParams.get("status") === "done" && fail.donePages && (u.searchParams.has("afterId") ? 1 : 0) >= fail.donePages) return { status: 503, json: {} };
       const since = u.searchParams.get("updatedSince");
-      return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) && (!since || Date.parse(i.updatedAt) >= Date.parse(since))).map((i) => ({ ...i, blockedBy: i.omitBlocked ? undefined : i.blockedBy })) };
+      let rows = Object.values(issues).filter((i) => ((agentCompanies[i.assigneeAgentId] ?? "c-1") === m[1] || !i.assigneeAgentId) && (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) && (!since || Date.parse(i.updatedAt) >= Date.parse(since)));
+      // `sortField=id&afterId=` is the poll's stable cursor; a plain list keeps insertion order (the offset it may page by).
+      if (u.searchParams.get("sortField") === "id") {
+        rows = rows.sort((a, b) => a.id.localeCompare(b.id));
+        const after = u.searchParams.get("afterId");
+        if (after) rows = rows.slice(rows.findIndex((i) => i.id === after) + 1);
+      }
+      const offset = Number(u.searchParams.get("offset") ?? 0);
+      const limit = u.searchParams.has("limit") ? Number(u.searchParams.get("limit")) : rows.length;
+      return { status: 200, json: rows.slice(offset, offset + limit).map((i) => ({ ...i, blockedBy: i.omitBlocked ? undefined : i.blockedBy })) };
     }
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
       if (fail.comments?.[m[1]]) return { status: fail.comments[m[1]], json: {} };
@@ -37,10 +55,13 @@ function world() {
     if ((m = /^\/api\/routines\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], concurrencyPolicy: "coalesce_if_active" } };
     if (method === "PATCH" && (m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) {
       const i = issues[m[1]];
+      // An owner's close landing right after the reopen is written (`fail.cancelOnPatch`): the write cannot refuse it.
+      if (fail.cancelOnPatch?.[m[1]]) { delete fail.cancelOnPatch[m[1]]; Object.assign(i, { status: "cancelled", cancelledAt: iso(clock) }); }
       if (body.status && fail.moves > 0) return (fail.moves--, { status: 500, json: {} }); // a status write that times out
       if (body.status && i.blockedBy?.some((x) => x.status !== "done")) return { status: 409, json: {} }; // a cancelled blocker still refuses
       if (body.blockedByIssueIds) i.blockedBy = i.blockedBy.filter((x) => body.blockedByIssueIds.includes(x.id));
       if (body.status) Object.assign(i, { status: body.status, updatedAt: iso(clock), ...(i.statusVersion ? { statusVersion: i.statusVersion + 1 } : {}) });
+      if (fail.cancelAfterPatch?.[m[1]]) { delete fail.cancelAfterPatch[m[1]]; Object.assign(i, { status: "cancelled", cancelledAt: iso(clock) }); }
       if (body.comment) (comments[i.id] ??= []).push({ id: `c-p${(comments[i.id] ?? []).length}`, body: body.comment, authorAgentId: null, createdAt: iso(clock) });
       return { status: 200, json: i };
     }
@@ -50,6 +71,7 @@ function world() {
       if (method === "GET") reads[m[1]] = (reads[m[1]] ?? 0) + 1;
       const i = issues[m[1]];
       if (fail.get[m[1]]) return { status: fail.get[m[1]], json: {} };
+      if (stale[m[1]]) return { status: 200, json: { ...(stale[m[1]] as object) } };
       return i ? { status: 200, json: i.omitSingle ? { ...i, blockedBy: undefined } : i } : { status: 404, json: {} };
     }
     return { status: 404, json: {} };
@@ -58,9 +80,12 @@ function world() {
   const posts = [];
   const post = async (job, req) => { posts.push({ ...job, ...req }); if (req.status) issues[job.task].status = req.status; return { comment: `c-${posts.length}`, status: req.status ?? null }; };
   const facts = openFacts(db);
-  const wakes = createWakes({ db, facts, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && a === AGENT, agents: (mod) => (mod === "dispatch" ? [AGENT] : []) } });
+  const dispatched = [AGENT];
+  const wakes = createWakes({ db, facts, owner, post, now: () => clock, routineKey: (id) => ({ rt: "digest" })[id], dispatches: { may: (mod, a) => mod === "dispatch" && dispatched.includes(a), agents: (mod) => (mod === "dispatch" ? [...dispatched] : []) } });
   const w = {
-    db, wakes, issues, posts, facts, fail, comments, reads,
+    db, wakes, issues, posts, facts, fail, comments, reads, agentCompanies, stale,
+    /** A second polled agent (its own company unless told otherwise): the poll's cursors are per agent. */
+    join: (agent, company = "c-1") => { dispatched.push(agent); agentCompanies[agent] = company; },
     tick: (ms = 1000) => (clock += ms),
     issue: (id, f = {}) => (issues[id] = { id, status: "todo", assigneeAgentId: AGENT, updatedAt: iso(clock), statusVersion: 1, ...issues[id], ...f }),
     comment: (task, id, f = {}) => { (comments[task] ??= []).push({ id, body: "hi", authorAgentId: null, createdAt: iso(clock), ...f }); issues[task].updatedAt = iso(clock); },
@@ -818,6 +843,90 @@ test("a reopen retry whose chat no longer holds an owner reply is cleared, not r
   await w.wakes.poll();
   assert.equal(w.issues.chat.status, "done");
   assert.equal(w.db.prepare("SELECT count(*) n FROM chat_reopen").get().n, 0, "no row left to re-scan");
+});
+
+test("a reply that lands while the read still shows the chat open is judged against a fresh status, not that snapshot", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  const closed = "2026-11-18T10:00:02.500Z";
+  w.tick(5000);
+  // The poll reads the row as open (`updatedAt` from before the close), while the task has finished and the owner replied.
+  w.stale.chat = { ...w.issues.chat };
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  delete w.stale.chat;
+  // The scan started from that open snapshot reads the comment as a comment on an open chat; it must re-read the status before
+  // filing anything, so the chat is reopened and the reply's wake starts on it rather than being refused `task-closed`.
+  await w.wakes.scan({ ...w.issues.chat, status: "todo", updatedAt: "2026-11-18T10:00:02.000Z" }, { source: "poll" });
+  assert.equal(w.issues.chat.status, "todo", "the fresh read saw the close and reopened it");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+});
+
+test("a chat closed again by the time the reopen is written is not reopened and files nothing", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  const closed = "2026-11-18T10:00:02.500Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.event({ issueId: "chat" });
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  // The owner cancels between the reopen's re-read and the control plane applying the write: no conditional status write exists
+  // there, so the outcome is checked instead. The cancel stands and no wake is filed on the closed chat.
+  w.fail.cancelAfterPatch = { chat: true };
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.issues.chat.status, "cancelled", "the cancel stands: the reopen's outcome was read back");
+  assert.deepEqual(w.rows("chat"), [], "nothing filed on a closed chat");
+});
+
+test("an agent whose company cannot be read holds its own chat window, not a colleague's", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll(); // AGENT's cursor starts here
+  // OTHER joins now, so its company lookup is the one that fails below (its cached company would skip the lookup).
+  w.join(OTHER);
+  const closed = "2026-11-18T10:00:02.500Z";
+  for (const [task, agent] of [["chat", AGENT], ["other", OTHER]]) {
+    w.issue(task, { status: "done", assigneeAgentId: agent, statusVersion: 2, updatedAt: closed, completedAt: closed, labels: [{ name: "chat" }] });
+    w.db.prepare("DELETE FROM wakes WHERE task = ?").run(task);
+  }
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  w.comment("other", "c2", { authorUserId: "u1" });
+  // OTHER's company lookup fails on this poll: its window must not move, while AGENT's (read cleanly) does.
+  w.fail.agents = { [OTHER]: 503 };
+  await w.wakes.poll();
+  delete w.fail.agents;
+  assert.equal(w.issues.other.status, "done", "the failed agent's own window was not passed");
+  assert.equal(w.issues.chat.status, "todo", "the healthy agent's window advanced on its own");
+  // Its company is known now: the next poll reads its own window and finds the reply.
+  await w.wakes.poll();
+  assert.equal(w.issues.other.status, "todo", "its reply was found on the next poll");
+  assert.deepEqual(w.rows("other"), ["comment:c2 open"]);
+});
+
+test("a done window whose later page fails leaves the cursor so the next poll reads the reply it did not reach", async () => {
+  const w = world();
+  w.issue("seed", { status: "todo" });
+  await w.wakes.poll(); // AGENT's cursor starts here
+  w.tick(60_000);
+  const closed = "2026-11-18T10:01:00.000Z";
+  // More finished chats than one page (200), all inside the window the next poll reads.
+  for (let i = 0; i < 210; i++) w.issue(`chat-${String(i).padStart(3, "0")}`, { status: "done", labels: [{ name: "chat" }], statusVersion: 2, updatedAt: closed, completedAt: closed });
+  w.db.prepare("DELETE FROM wakes").run();
+  w.tick(5000);
+  w.comment("chat-209", "c1", { authorUserId: "u1" });
+  // Its first page is full, so a second is read; that page fails. The cursor must stay or the reply would fall behind it.
+  w.fail.donePages = 1;
+  await w.wakes.poll();
+  delete w.fail.donePages;
+  assert.equal(w.issues["chat-209"].status, "done", "the truncated traversal acted on nothing it read");
+  await w.wakes.poll();
+  assert.equal(w.issues["chat-209"].status, "todo", "the held cursor read the same window again");
+  assert.deepEqual(w.rows("chat-209"), ["comment:c1 open"]);
 });
 
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
