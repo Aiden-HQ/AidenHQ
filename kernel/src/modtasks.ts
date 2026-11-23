@@ -66,6 +66,8 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
+  // Every task a module filed, kept for good: admission reads it (a module's task carries no platform authority).
+  db.exec("CREATE TABLE IF NOT EXISTS module_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
   /**
    * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
    * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
@@ -154,6 +156,7 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
       idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
+    db.prepare("INSERT OR IGNORE INTO module_tasks (task, module) VALUES (?, ?)").run(String(r.json.id), module);
     // Graded status is the kernel's own row, never the task's editable text. A dedup hit takes a rubric only on a task this
     // module filed graded.
     if (graded) {

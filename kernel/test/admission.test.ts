@@ -18,7 +18,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     "agent-1": { key: "acme-crew", tools: { slack: ["search"], tasks: ["create"] }, models: ["acme/m1", "acme/m2"], model: "acme/m1", effort: "high", skills: [{ id: "engineering.write-code", dir: "/x" }], routines: { digest: { model: "acme/m2", effort: "low" } } },
     "agent-2": { key: "acme-engineer", profile: "engineer", tools: { github: ["read"] }, jobcaps: ["gh-read"], max_parallel: 2 },
     "agent-3": { key: "acme-other", tools: {} },
-    "agent-4": { key: "engineer", profile: "engineer", roles: ["platform-engineer"], tools: {}, max_parallel: 5 },
+    "agent-4": { key: "engineer", profile: "engineer", roles: ["platform-engineer"], tools: {}, max_parallel: 10 },
     "agent-5": { key: "architect", tools: {}, roles: ["architect"] },
   };
   // The wake inbox (wakes.ts): a row the dispatcher claimed; admission binds a job to it, or gives it back for another try.
@@ -29,7 +29,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     return key;
   };
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
-  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5", "task-11": "agent-4", "task-12": "agent-4" };
+  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5", "task-11": "agent-4", "task-12": "agent-4", "task-13": "agent-4" };
   const launched = [], released = [];
   // What the control plane says of a task beyond its assignee (`origins`: its creator), per task.
   const origins = {};
@@ -105,11 +105,14 @@ test("a module that doesn't dispatch the agent â†’ 403; a wake it didn't claim â
 
 
 test("the platform-engineer role holds only on a task no agent filed, a routine's run, or one the Architect filed", async () => {
-  const { adm, wake, origins } = setup();
+  const { adm, wake, origins, db } = setup();
   const roles = async (key, task, origin) => { origins[task] = origin; return (await adm.admit("acme-dispatch", req(wake(key, task, "agent-4")))).authority.roles; };
   assert.deepEqual(await roles("w7", "task-7", {}), ["platform-engineer"], "the owner's task");
   assert.deepEqual(await roles("w8", "task-8", { createdByAgentId: "agent-5" }), ["platform-engineer"], "the Architect filed it");
   assert.deepEqual(await roles("w9", "task-9", { createdByAgentId: "agent-1" }), [], "a crew agent filed it");
   assert.deepEqual(await roles("w10", "task-11", { description: "Review this PR.\n\n<!-- aidenhq-module:code-review -->" }), [], "a module filed it: no creator, its marker");
   assert.deepEqual(await roles("w11", "task-12", { originKind: "routine_execution" }), ["platform-engineer"], "a routine's run");
+  // The kernel's own row of a module's task holds even when its marker is edited out of the description.
+  db.prepare("INSERT INTO module_tasks (task, module) VALUES ('task-13', 'code-review')").run();
+  assert.deepEqual(await roles("w12", "task-13", { description: "Review this PR." }), [], "a module filed it: the kernel's row");
 });
