@@ -10,7 +10,7 @@ import { createPool } from "../src/pool.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createJobTools } from "../src/jobtools.ts";
 
-function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
+function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g, routineKey = undefined } = {}) {
   const db = new DatabaseSync(":memory:");
   const facts = openFacts(db);
   const jobs = createJobs({ db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" });
@@ -29,7 +29,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     return key;
   };
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
-  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5", "task-11": "agent-4", "task-12": "agent-4", "task-13": "agent-4" };
+  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5", "task-11": "agent-4", "task-12": "agent-4", "task-13": "agent-4", "task-14": "agent-4" };
   const launched = [], released = [];
   // What the control plane says of a task beyond its assignee (`origins`: its creator), per task.
   const origins = {};
@@ -43,6 +43,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     // A launch that returns started the job: its first start writes the queue facts (jobs.ts start).
     launch: async (job) => { launched.push(job); await launch(job); queueFacts(db, (f) => facts.record(f), job.id, grants[job.agent]?.key ?? job.agent); },
     release: async (id) => void released.push(id),
+    routineKey,
     log: () => {},
   });
   return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, released, origins };
@@ -104,15 +105,26 @@ test("a module that doesn't dispatch the agent â†’ 403; a wake it didn't claim â
 });
 
 
-test("the platform-engineer role holds only on a task no agent filed, a routine's run, or one the Architect filed", async () => {
+test("the platform-engineer role holds only on a task with a known filer: the owner, a module filing to the role, the Architect, a routine's run", async () => {
   const { adm, wake, origins, db } = setup();
   const roles = async (key, task, origin) => { origins[task] = origin; return (await adm.admit("acme-dispatch", req(wake(key, task, "agent-4")))).authority.roles; };
-  assert.deepEqual(await roles("w7", "task-7", {}), ["platform-engineer"], "the owner's task");
+  const filed = (task, filer) => db.prepare("INSERT INTO task_filers (task, filer) VALUES (?, ?)").run(task, filer);
+  filed("task-7", "owner");
+  assert.deepEqual(await roles("w7", "task-7", {}), ["platform-engineer"], "the owner filed it on the board");
   assert.deepEqual(await roles("w8", "task-8", { createdByAgentId: "agent-5" }), ["platform-engineer"], "the Architect filed it");
   assert.deepEqual(await roles("w9", "task-9", { createdByAgentId: "agent-1" }), [], "a crew agent filed it");
   assert.deepEqual(await roles("w11", "task-12", { originKind: "routine_execution" }), ["platform-engineer"], "a routine's run");
-  assert.deepEqual(await roles("w10", "task-11", { description: "Review this PR.\n\n<!-- aidenhq-module:code-review -->" }), [], "a module filed it: its marker, there from creation");
-  // The kernel's own row of a module's task holds even when its marker is edited out of the description.
-  db.prepare("INSERT INTO module_tasks (task, module) VALUES ('task-13', 'code-review')").run();
-  assert.deepEqual(await roles("w12", "task-13", { description: "Review this PR." }), [], "a module filed it: the kernel's row");
+  assert.deepEqual(await roles("w10", "task-11", {}), [], "no filer the kernel saw: none");
+  filed("task-13", "module:code-review");
+  assert.deepEqual(await roles("w12", "task-13", {}), [], "a module's task to an agent");
+  filed("task-14", "role:platform-engineer");
+  assert.deepEqual(await roles("w13", "task-14", {}), ["platform-engineer"], "a module filed it to the platform-engineer role (a Dependabot PR)");
+});
+
+test("a later job on a routine run's task is still that routine's: its model and its row", async () => {
+  const { adm, wake, origins, db } = setup({ routineKey: (id) => (id === "r-digest" ? "digest" : undefined) });
+  origins["task-1"] = { originKind: "routine_execution", originId: "r-digest" };
+  const a = await adm.admit("acme-dispatch", req(wake("w-retry", "task-1", "agent-1", "scheduled: retry")));
+  assert.equal(a.authority.model, "acme/m2", "the routine's own model");
+  assert.equal(db.prepare("SELECT routine FROM jobs WHERE task = 'task-1'").get().routine, "digest");
 });

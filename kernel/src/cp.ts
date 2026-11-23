@@ -321,7 +321,7 @@ const BOARD_MAX_BODY = 16 * 1024 * 1024;
  * answers pass as they are (an attachment upload is multipart, its content bytes). `X-AidenHQ-Account` names the signed-in
  * admin a write is for (none: the board's own timers and notices); it is logged with the write.
  */
-export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, log = () => {} }: { /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, ownerFiled = () => {}, log = () => {} }: { /** A task the owner filed on the board (admission.ts reads it: platform authority). */ ownerFiled?: (task: string) => void; /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   return async function boardCp(req: IncomingMessage, res: ServerResponse, lane: string, path: string, query: string): Promise<void> {
     const method = String(req.method);
     const allowed = lane === "read" ? method === "GET" && BOARD_READ_PATHS.some((re) => re.test(path)) : BOARD_WRITE_PATHS.some(([m, re]) => m === method && re.test(path));
@@ -335,6 +335,13 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     const type = req.headers["content-type"];
     // An owner write that would leave an open task with no holder (leavesNoHolder) is refused before it reaches the control plane.
     const created = method === "POST" && /^\/api\/companies\/[^/]+\/issues$/.test(path), changed = method === "PATCH" && /^\/api\/issues\/[^/]+$/.test(path);
+    // A routine the board makes is an owner's recurring task, titled "Repeats: …": that prefix is the board's alone (compile
+    // refuses it for a module's routine), so setup can tell the board's routines from its own.
+    if (method === "POST" && /^\/api\/companies\/[^/]+\/routines$/.test(path)) {
+      let title = "";
+      try { title = String(JSON.parse(body!.toString("utf8") || "{}").title ?? ""); } catch { /* refused below */ }
+      if (!title.startsWith("Repeats: ")) throw fail(403, "forbidden", 'the board makes only recurring tasks\' routines, titled "Repeats: …"');
+    }
     if (created || changed) {
       let b: Record<string, unknown>;
       try { b = JSON.parse(body!.toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
@@ -367,6 +374,7 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     if (lane === "owner" && r.ok && (created || changed)) {
       try {
         const issue = JSON.parse(out.toString("utf8")) as { id?: unknown };
+        if (typeof issue.id === "string" && created) ownerFiled(issue.id);
         if (typeof issue.id === "string") await observe?.(issue as { id: string }, account ? `account:${account}` : "unknown");
       } catch (e) { log("observe failed", { path, err: (e as Error).message }); }
     }

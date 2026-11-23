@@ -68,7 +68,10 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, nextTurn, launch, release, facts, log }: {
+export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, nextTurn, launch, release, facts, routineKey = () => undefined, log }: {
+  /** A Paperclip routine's compiled key (grants.json routine_keys): a routine run's task names its routine (originId), so a
+   * later job on it (a retry, a reopen) is still that routine's. */
+  routineKey?: (id: string) => string | undefined;
   /** Flow's fact log (facts.ts): job.queued and wake.bound with a job's first start (jobs.ts queueFacts) or its couldn't-start end, job.held when it is refused or deferred. */
   facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
@@ -86,7 +89,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   /** The spend limits a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
-  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; createdByAgentId?: string | null } | undefined> };
+  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; originId?: string | null; createdByAgentId?: string | null } | undefined> };
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
@@ -97,8 +100,9 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   // Strict: each fact is written in the transaction of the change it describes, which fails with it.
   const fact = facts ? strictFact(facts) : () => {};
   /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
-  // The tasks modules filed (modtasks.ts writes it; made here too so admission reads it in any order).
-  db.exec("CREATE TABLE IF NOT EXISTS module_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
+  // Who filed a task with no agent creator, as the kernel itself saw it: the owner on the board (cp.ts createBoardCp) or a module
+  // through /v1/tasks with the role it filed to (modtasks.ts). Made here too, so admission reads it in any order.
+  db.exec("CREATE TABLE IF NOT EXISTS task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL)");
   const launching = new Set<string>();
   const keyOf = (agent: string) => grants()[agent]?.key ?? agent;
   /**
@@ -114,24 +118,22 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   };
 
   /**
-   * Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent or module filed
-   * (the owner's, or a routine's run), or one the Architect or the Fleet Steward filed. The filer is the control plane's
-   * creator: the kernel's plugin creates a job's task as that job's agent, and no write changes it. A module's task (kernel
-   * /v1/tasks) has no creator: its module marker says so from the moment it exists (modtasks.ts writes it into the create
-   * request), and the kernel's own row of it (module_tasks) still does if the marker is later edited out. A module may carry
-   * outside text (a stranger's PR comment) into its task.
+   * Platform authority comes only from a known filer, never from a missing one: a job holds the platform-engineer role on a
+   * task the owner filed on the board, one a module filed to that role (a Dependabot PR, a pin bump, a release), one the
+   * Architect or the Fleet Steward filed (the control plane's creator: the kernel's plugin creates a job's task as that job's
+   * agent, and no write changes it), or a routine's run (an event routine never runs as a platform agent: compile). Anything
+   * else (a Slack mention, a module's other tasks, a task whose filer the kernel never saw) holds no platform authority.
    */
-  function platformTask(t: { id?: string; originKind?: string | null; createdByAgentId?: string | null; description?: string | null }): boolean {
+  function platformTask(t: { id?: string; originKind?: string | null; createdByAgentId?: string | null }): boolean {
     if (t.originKind === "routine_execution") return true;
     if (t.createdByAgentId) return heldRoles(grants(), t.createdByAgentId).some((r) => PLATFORM_FILERS.includes(r));
-    if (/<!--\s*aidenhq-module:[\w-]+\s*-->/.test(t.description ?? "")) return false;
-    return !(t.id && db.prepare("SELECT 1 FROM module_tasks WHERE task = ?").get(t.id));
+    const filer = t.id ? (db.prepare("SELECT filer FROM task_filers WHERE task = ?").get(t.id) as { filer: string } | undefined)?.filer : undefined;
+    return filer === "owner" || filer === `role:${PLATFORM}`;
   }
 
-  function freeze(g: AgentGrant, cause: string, platform: boolean): Authority {
+  function freeze(g: AgentGrant, key: string | undefined, platform: boolean): Authority {
     const profile: Profile = g.profile ?? "crew";
     if (!PROFILES.includes(profile)) throw new JobError(403, "bad-profile", `profile ${profile} isn't one of ${PROFILES.join(", ")}`);
-    const key = /^routine:(.+)$/.exec(cause)?.[1];
     const routine = key ? g.routines?.[key] : undefined;
     // A check job runs repo code: no tools, no writes, nothing to reach.
     const tools = profile === "check" ? {} : Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
@@ -180,7 +182,9 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "max-parallel", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);
       if (over.length) throw new JobError(429, "over-cap", `${over.map((o) => (o.scope === "task" ? "the task's spend cap" : `the install's ${o.scope === "day" ? "daily" : "monthly"} spend limit`)).join(" and ")} is used up`);
-      const authority = freeze(g, w.cause, platformTask(t));
+      // The routine whose run this is: the wake's cause, else the routine its task came from (a retry or reopen of a run).
+      const routineOf = /^routine:(.+)$/.exec(w.cause)?.[1] ?? (t.originKind === "routine_execution" && t.originId ? routineKey(t.originId) : undefined);
+      const authority = freeze(g, routineOf, platformTask(t));
       // The last job's `aidenhq engine`: applied when the agent may still run it now, else ignored loudly (refusing would
       // wedge the task: the request would stand at every retry). Never widens `models`.
       const asked = nextTurn.pending(task);
@@ -191,7 +195,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       }
       const fresh = asked?.fresh === true;
       db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?)")
-        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), /^routine:(.+)$/.exec(w.cause)?.[1] ?? null, identifier);
+        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), routineOf ?? null, identifier);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };

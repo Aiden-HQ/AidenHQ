@@ -36,3 +36,18 @@ test("the board reads and writes as the owner through the kernel, only on its li
   // (A read with another bearer is a module's read: the module routes refuse it.)
   assert.equal((await at("GET", "/v1/cp/read/api/issues/issue-1", { token: "the-runners-key" })).status, 401);
 });
+
+test("a task the owner files on the board is recorded as the owner's (admission's platform authority); a comment is not", async () => {
+  const { createBoardCp } = await import("../src/cp.ts");
+  const { Readable } = await import("node:stream");
+  const filed: string[] = [];
+  const fetch = async (url: string | URL, init: RequestInit) => new Response(JSON.stringify(String(url).endsWith("/issues") ? { id: "t-new" } : { id: "c-1" }), { status: 200, headers: { "content-type": "application/json" } });
+  const cp = createBoardCp({ controlUrl: "http://cp", key: () => "k", fetch: fetch as never, ownerFiled: (id) => void filed.push(id) });
+  const call = (path: string, body: object) => cp(Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { method: "POST", headers: { "content-type": "application/json" } }) as never, { writeHead: () => ({ end: () => {} }), end: () => {} } as never, "owner", path, "");
+  await call("/api/companies/co-1/issues", { title: "Do it", assigneeAgentId: "a-1", status: "todo" });
+  await call("/api/issues/t-new/comments", { body: "hi" });
+  assert.deepEqual(filed, ["t-new"]);
+  // The board's routines are recurring tasks' alone: any other title is refused before the control plane hears of it.
+  await assert.rejects(call("/api/companies/co-1/routines", { title: "Prepare daily brief" }), /Repeats: /);
+  await call("/api/companies/co-1/routines", { title: "Repeats: ACME-1" });
+});
