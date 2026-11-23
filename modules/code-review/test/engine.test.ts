@@ -769,7 +769,18 @@ test("a database from before combos starts fresh (at the current data version)",
   world({ db });
   assert.ok((db.prepare("PRAGMA table_info(runs)").all()).some((c) => c.name === "engine"));
   assert.equal(db.prepare("SELECT COUNT(*) n FROM runs").get().n, 0);
-  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
+});
+
+test("a data version 2 database closes its pending fixed claims as fixed (claim rechecks are gone)", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.db.exec("UPDATE findings SET claim = 'fixed: moved the check' WHERE id = 'f1'; PRAGMA user_version = 2");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["findings"]);
+  w.restart();
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+  assert.equal(w.db.prepare("PRAGMA user_version").get().user_version, 3);
 });
 
 test("a one-off of a merged PR runs and posts on a task of its own, closed once settled; one closed unmerged is refused", async () => {
@@ -1865,4 +1876,14 @@ test("push_rounds 1: a push superseded mid-review isn't a round; after the one p
   assert.equal(w.engine.verdict(REPO, 2, sha("5")).verdict, "pass");
   w.later(1000); w.say(2, "alice", "aiden review"); await w.tick();
   assert.deepEqual(w.started.slice(3).map((s) => [s.head, label(s)]), [[sha("5"), "codex/medium"]], "a writer's ask beats the cap");
+});
+
+test("push_rounds: an advisory push review that finishes first never uses up the round while the mandatory one runs", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH, CLAUDE], push_rounds: 1 }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(2, NONE); await w.tick(); // the advisory run at 3 is done; the mandatory one still runs
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.ok(w.started.some((s) => s.head === sha("4") && s.mandatory), "4 still gets the push review");
 });

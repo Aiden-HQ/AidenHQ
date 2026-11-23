@@ -102,7 +102,7 @@ const REPO_ENTRY = {
     repo: { type: "string", description: "owner/name" },
     on_open: { ...COMBOS, description: `when a PR opens (default codex, ~deepseek/deepseek-flash-latest, medium). ${COMBOS.description}` },
     on_push: { ...COMBOS, description: `on each push, only the new changes (default codex-native, openai/gpt-6.2-sol, low). ${COMBOS.description}` },
-    push_rounds: { type: ["integer", "null"], minimum: 0, description: "how many pushes of a PR get an on_push review (default 1; null: every push); later pushes are gated by the findings still open" },
+    push_rounds: { type: ["integer", "null"], minimum: 0, maximum: 100, description: "how many pushes of a PR get an on_push review (default 1; null: every push); later pushes are gated by the findings still open" },
     drafts: { type: "boolean" },
     forks: { type: "string", enum: ["manual", "auto"] },
     ignore: { type: "array", items: { type: "string" } },

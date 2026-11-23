@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS replies (repo TEXT NOT NULL, number INTEGER NOT NULL,
  * fresh (its runs, its PRs and today's spend counts are dropped: the first look at each repo then records what is open, as on a new
  * install). 2: repo reviews (batches, setups; runs' target, option and profile) and findings per option observation
  * (their key gains the option): a version 1 database keeps every run, review and finding. */
-export const DATA_VERSION = 2;
+export const DATA_VERSION = 3;
 
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 export type EngineDeps = {
@@ -220,6 +220,15 @@ export function createEngine(d: EngineDeps) {
       CREATE INDEX IF NOT EXISTS findings_pr ON findings (repo, number, outcome);
       PRAGMA user_version = ${DATA_VERSION};
       COMMIT;`);
+  }
+  // 2 → 3: a `fixed` answer closes its finding at once (no claim recheck): the claims still pending close as fixed, and a claim
+  // recheck still queued or running is retired (it ran no finder, so it never covers a head).
+  if (version >= 1 && version < 3) {
+    const at = new Date((d.now ?? Date.now)()).toISOString();
+    db.prepare("UPDATE findings SET outcome = 'fixed', outcome_at = ? WHERE outcome IS NULL AND claim LIKE 'fixed:%'").run(at);
+    if ((db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).some((c) => c.name === "recheck_only"))
+      db.prepare("UPDATE runs SET status = 'skipped', why = 'retired: claim rechecks are gone', ended = ? WHERE recheck_only = 1 AND status IN ('queued', 'running')").run(at);
+    db.exec(`PRAGMA user_version = ${DATA_VERSION}`);
   }
   // A send a restart cut off (its claim still set) is tried again: the summary is recoverable, never dropped.
   db.exec("UPDATE askers SET claim = NULL WHERE claim IS NOT NULL");
@@ -430,9 +439,10 @@ export function createEngine(d: EngineDeps) {
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); });
   };
 
-  /** A PR's on_push rounds: its pushed heads whose automatic push review finished and was stored (superseded, skipped and carried
-   * runs never count, nor an `aiden review`). */
-  const pushRounds = (repo: string, n: number) => one<{ c: number }>("SELECT COUNT(DISTINCT runs.head) c FROM runs JOIN reviews ON reviews.run = runs.id WHERE repo = ? AND number = ? AND kind = 'auto' AND moment = 'push' AND status = 'done'", repo, n)!.c;
+  /** A PR's on_push rounds: its pushed heads whose automatic push runs all finished (done or failed), one with a review stored
+   * (posted or not). A head with a run still going or superseded never counts, nor a carried run or an `aiden review`. */
+  const pushRounds = (repo: string, n: number) => one<{ c: number }>(`SELECT COUNT(DISTINCT r.head) c FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.kind = 'auto' AND r.moment = 'push' AND r.status IN ('done', 'failed')
+    AND NOT EXISTS (SELECT 1 FROM runs q WHERE q.repo = r.repo AND q.number = r.number AND q.head = r.head AND q.kind = 'auto' AND q.moment = 'push' AND q.status NOT IN ('done', 'failed'))`, repo, n)!.c;
   /** The PR has had the push reviews its repo's push_rounds allows: later heads get no on_push run. */
   const capped = (cfg: Repo, n: number) => cfg.push_rounds !== null && pushRounds(cfg.repo, n) >= cfg.push_rounds;
   /** openOnly for one PR: its repo has no mandatory on_push, or the PR's push rounds are used up; either way its later heads are
@@ -1321,7 +1331,8 @@ export function createEngine(d: EngineDeps) {
     // `aiden review always` is a writer's standing ask for every push: it runs past the cap, as advice once the cap is reached.
     if (which === "push" && row.mode !== "always" && capped(cfg, p.number)) return skip(p, list[0]!, "auto", `push review cap reached: ${cfg.push_rounds} push review${cfg.push_rounds === 1 ? "" : "s"} done; later pushes are gated by the findings still open, or say \`aiden review\``);
     if (p.draft && !cfg.drafts) return skip(p, list[0]!, "auto", "draft: drafts are reviewed when marked ready, or when someone with write access asks");
-    if (p.fork && cfg.forks === "manual") {
+    // `aiden review always` is a writer's ask, so a fork's PR under it is reviewed like any other.
+    if (p.fork && cfg.forks === "manual" && row.mode !== "always") {
       // A gated repo's mandatory combos review a fork's PR by themselves (its merge waits on them); the others wait to be asked.
       const must = list.filter((c) => c.mandatory);
       if (!must.length) return skip(p, list[0]!, "auto", "fork: a PR from a fork is reviewed when someone with write access asks (`aiden review`)");

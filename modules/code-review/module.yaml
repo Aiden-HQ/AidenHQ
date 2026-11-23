@@ -187,4 +187,4 @@ generated_secrets:
   - code_review_token
   - code_review_api_token
   - code_review_service_key
-data_version: 2 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+data_version: 3 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
