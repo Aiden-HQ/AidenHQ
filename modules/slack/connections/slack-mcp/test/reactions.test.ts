@@ -285,15 +285,24 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("already followed") });
   });
 
-  it("stops at the page guard with a continuation that resumes the set without repeating a message", async () => {
-    // Four cursor pages, but only three are read: the fourth item is still reachable from the continuation.
+  it("hands back Slack's own cursor at the page cap, which still advances the set", async () => {
     const pages = Array.from({ length: 4 }, (_, i) => page([item("C1", `${i}.0`)], `c${i + 1}`));
     const { fetchImpl } = fakeSlack(pages);
-    const first = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 });
-    expect(first).toMatchObject({ ok: true, messages: [{ ts: "0.0" }, { ts: "1.0" }, { ts: "2.0" }], nextCursor: expect.any(String) });
-    const tail = page([item("C1", "3.0")]);
-    const rest = await scanMyReactions({ ...plan, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl: (async () => Response.json(tail)) as unknown as typeof fetch });
-    expect(rest).toEqual({ ok: true, messages: [expect.objectContaining({ ts: "3.0" })], nextCursor: null });
+    // No result limit: the Slack cursor resumes the walk past this page, so nothing is skipped.
+    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 })).toMatchObject({ ok: true, nextCursor: "c3" });
+  });
+
+  it("is not a complete set when the page cap is hit after the result limit was reached", async () => {
+    // Page 1 holds the one match; the later pages hold none, so the walk must reach the cap before it can say the set is
+    // complete. A continuation that starts over could never get past the same cap: the honest answer is unknown.
+    const pages = [
+      page([item("C1", "1.0")], "c2"),
+      page([item("C2", "2.0", "eyes")], "c3"),
+      page([item("C3", "3.0", "eyes")], "c4"),
+      page([item("C4", "4.0", "eyes")], "c5"),
+    ];
+    const { fetchImpl } = fakeSlack(pages);
+    expect(await scanMyReactions({ ...plan, limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 })).toMatchObject({ ok: false, detail: expect.stringContaining("page limit") });
   });
 
   it("stops at the caller's limit and hands back the cursor for the next unread page, so nothing is skipped", async () => {
