@@ -34,11 +34,13 @@ export type Served = { account?: string; orgs?: string[] };
 export function signedIn<T extends object>(result: T, who?: string | Served): T & { _meta: Record<string, unknown> } {
   const { account, orgs } = typeof who === "string" ? { account: who } : who ?? {};
   const meta = (result as { _meta?: Record<string, unknown> })._meta;
+  // Proof is the connection's own evidence: an upstream's `_meta` (a vendor proxy relays one) can never claim it.
+  const { [PROVED_ORGS]: _upstream, ...inherited } = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
   const proved = orgs?.filter(Boolean) ?? [];
   return {
     ...result,
     _meta: {
-      ...(meta && typeof meta === "object" ? meta : {}),
+      ...inherited,
       [SIGNED_IN]: account || true,
       ...(proved.length ? { [PROVED_ORGS]: proved } : {}),
     },
