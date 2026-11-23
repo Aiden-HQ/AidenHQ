@@ -26,12 +26,12 @@ const head = (s: string, n: number) => (s.length <= n ? s : [...s].slice(0, n).j
 const tail = (s: string, n: number) => (s.length <= n ? s : [...s].slice(-n).join(""));
 
 /**
- * Keyword-only terms (never embedded): each path's segments and basenames without the extension, since Postgres' parser keeps
+ * Keyword-only terms (never embedded): the status (`blocked`, `in_progress`), each path's segments and basenames without the extension, since Postgres' parser keeps
  * `kernel/src/jobs.ts` as one token (a search for `jobs.ts`, `jobs` or `kernel` would otherwise miss it), and the identifier's
  * bare number (`WOR-10795` is the tokens `wor` and `-10795`, so a search for `10795` would miss it).
  */
-export function keywordTerms(d: Pick<DocInput, "identifier" | "paths">): string {
-  const out = new Set<string>();
+export function keywordTerms(d: Pick<DocInput, "identifier" | "paths"> & { status?: string }): string {
+  const out = new Set<string>(d.status ? [d.status] : []);
   for (const p of d.paths.slice(0, PATHS)) {
     for (const seg of p.split("/").filter(Boolean)) {
       out.add(seg);

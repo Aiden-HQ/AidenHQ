@@ -295,7 +295,8 @@ export function App() {
   const query = tb.filters.text ?? "";
   const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
   // The search field's answer (search.ts): the hits every filter's text term reads, and the closed hits Done shows.
-  const found = useTaskSearch(query, (c) => cardMatches(c, { ...tb.filters, text: "" }));
+  // My day shows only what its own Done would (the owner's and the crew's); Agent work shows every hit.
+  const found = useTaskSearch(query, (c) => (tb.layout === "work" || c.mine !== false) && cardMatches(c, { ...tb.filters, text: "" }), view === "board");
   useEffect(() => setDoneShown(DONE_PAGE), [query]);
   const filtering = !isEmpty(tb.filters);
   const [saveOpen, setSaveOpen] = useState(0);
@@ -702,7 +703,7 @@ export function App() {
   const held = new Set([...board.work, ...board.done].map((c) => c.id));
   const older = searching ? found.done.filter((c) => !held.has(c.id)) : [];
   const workCards = applyFilters([...board.work, ...older], tb.filters, found.hits);
-  const doneCards = applyFilters([...board.done, ...older], tb.filters, found.hits);
+  const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false)], tb.filters, found.hits);
   // My day's Done column: when asked for, or while a search answer has matches there.
   const doneColumn = showDone || (searching && (doneCards.length > 0 || found.hasMore));
 

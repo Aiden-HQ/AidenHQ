@@ -31,9 +31,9 @@ export function kernelSearch(k: { url: string; token: string }): TaskSearch {
  * show: not the brief, the owner's settings tasks or setup's log tasks. Their state is Paperclip's own close (no task-state row is
  * read for a task closed long ago).
  */
-export function searchView(a: SearchAnswer, ctx: { labels: Label[]; assignees: Assignee[]; logs: Set<string> }): { ids: string[]; done: WorkCard[]; next: string | null; semantic: boolean } {
+export function searchView(a: SearchAnswer, ctx: { me: string; labels: Label[]; assignees: Assignee[]; logs: Set<string> }): { ids: string[]; done: (WorkCard & { mine: boolean })[]; next: string | null; semantic: boolean } {
   const colour = new Map(ctx.labels.map((l) => [l.id, l.color]));
-  const done: WorkCard[] = [];
+  const done: (WorkCard & { mine: boolean })[] = [];
   for (const h of a.done) {
     if (ctx.logs.has(h.id) || ctx.logs.has(h.identifier)) continue;
     const closed = h.closedAt ?? h.updatedAt ?? "";
@@ -46,7 +46,9 @@ export function searchView(a: SearchAnswer, ctx: { labels: Label[]; assignees: A
     } as Issue;
     if (!isWork(issue)) continue;
     const state = { task: h.id, identifier: h.identifier, idle_wakes: 0, kind: "done" as const, reason: h.status === "cancelled" ? ("cancelled" as const) : ("closed" as const), since: closed, holder: null, attention: [], lane: "done" as const };
-    done.push(workCard(issue, ctx.assignees, state, null, h.crew));
+    // `mine`: what My day's own Done would hold (app.ts mine()): assigned to the owner or a crew agent.
+    const mine = h.assignee ? ctx.assignees.some((x) => x.key === h.assignee) : h.assigneeUser === ctx.me;
+    done.push({ ...workCard(issue, ctx.assignees, state, null, h.crew), mine });
   }
   return { ids: a.ids, done, next: a.next, semantic: a.semantic };
 }

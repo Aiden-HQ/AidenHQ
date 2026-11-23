@@ -170,3 +170,18 @@ test("an edit that makes no fact is found among the recently updated tasks and r
   await drain();
   assert.equal((await pg.query<{ title: string }>("SELECT title FROM src_tasks.task_search WHERE task_id = 't-80'")).rows[0]!.title, "New title");
 });
+
+test("a queue behind the rows (a crash, a restored backup) moves past them instead of dropping the change", async () => {
+  const issues = new Map([["t-90", issue("t-90", "Before", { status: "blocked" })]]);
+  const { pg, db, search, drain } = await setup({ issues });
+  search.mark("t-90");
+  await drain();
+  db.prepare("UPDATE search_meta SET v = '0' WHERE k = 'gen'").run(); // the counter starts over below the stored row
+  issues.set("t-90", issue("t-90", "After", { status: "blocked" }));
+  search.mark("t-90");
+  await drain(); // refused by the stored row: marked again above it
+  await drain();
+  assert.equal((await pg.query<{ title: string }>("SELECT title FROM src_tasks.task_search WHERE task_id = 't-90'")).rows[0]!.title, "After");
+  assert.equal(search.pending(), 0);
+  assert.deepEqual((await search.search("blocked")).hits.map((h) => h.id), ["t-90"], "its status is a keyword");
+});

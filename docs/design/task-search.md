@@ -29,13 +29,14 @@ warehouse, no search), and one owner keeps the index, the worker, the query and 
   config, GIN-indexed): the head line at weight A, the fields without their markers, and the keyword-only terms. The table comes from `tableDdl` in `kernel/sdk/src/source-store.ts`
   and `migrate()` under its advisory lock (the SourceStore pattern). Not readable by `agents_open`: the schema grants nothing to it.
   Agents get search later as a tool of the module under their own grants, never raw rows.
-- **Document.** `buildDoc()` (one function, `modules/warehouse/search/src/search-doc.ts`): identifier and title; labels, project, agent,
-  status; each PR (`repo#number title`, from `pr.opened` facts) and its URL; changed paths of the task's landed writes (at
+- **Document.** `buildDoc()` (one function, `modules/warehouse/search/src/search-doc.ts`): identifier and title; labels, project, agent;
+  each PR (`repo#number title`, from `pr.opened` facts) and its URL; changed paths of the task's landed writes (at
   most 60, each also as its segments so `jobs.ts` and `kernel` match: Postgres keeps `kernel/src/jobs.ts` as one token).
   A write now keeps its plan's paths on its record (`records.paths`); a record filed before that gives what its stored
   card diff names, which a long diff cut short, so older tasks' paths are partial. Then the description
   (4 KB), the comments (4 KB, newest kept), the last job's final message (2 KB); then the summary and tags when present. The
-  embedding input is the document cut to 8,000 characters.
+  embedding input is the document cut to 8,000 characters. The status is a keyword-only term (so `blocked` finds blocked tasks), never
+  embedded: a status change never asks for a new vector.
 - **Embedding model:** `google/gemini-embedding-001`, cosine ≥ 0.63 (the eval below), through the kernel's model
   gateway like every other call, with the source writers' key (`gateway_source_key`), so spend lands in the ledger (as
   "Source writers") and under the install's limits. The gateway gains a generic `POST /api/v1/embeddings` (priced from OpenRouter's `/embeddings/models`
@@ -55,7 +56,9 @@ warehouse, no search), and one owner keeps the index, the worker, the query and 
 5. Embed. A failed embed still writes the row (keyword search finds it) with `embedding` null, and the task is marked again
    at a new generation (backing off to an hour), so its retry always wins over the row it wrote.
 6. One statement: `INSERT … ON CONFLICT (task_id) DO UPDATE … WHERE task_search.gen < EXCLUDED.gen`. A write from an older
-   generation changes nothing, so a late answer can never overwrite a newer edit or bring back a tombstone.
+   generation changes nothing, so a late answer can never overwrite a newer edit or bring back a tombstone. A refused write
+   whose queue entry is still current (a crash between the write and its queue update, a restored backup) moves the counter
+   past the stored generation and comes back above it, so no change is dropped.
 
 **Dirty queue** (`search_dirty` in the service's own SQLite, `/data/search.db`: task, gen, due, tries, backfill). `mark(task)` takes the next `gen` from one
 counter and sets `due` 20 s out, keeping an earlier one, so a burst of events costs one rebuild and an edit pulls a backed-off
@@ -102,9 +105,11 @@ status, routine runs included), with three separate rules:
   links), each with its close date. The board reads pages until the
   chips keep enough to show (25, then more per "Show more"), so chips apply before any cut; the count reads "33+" while
   pages remain. Clearing the query returns Done to 48 hours. In "All tasks" the search spans every project.
-- While a query stays in the field it is asked again every 30 s, so a task created or renamed meanwhile joins the hits
-  (the whole answer while only the first page of older closes is read, else the hits alone, so pages read on "Show more"
-  stay); a page of older closes is only ever read for the answer to the text in the field.
+- While a query stays in the field and Tasks is on screen it is asked again every 30 s, so a task created or renamed
+  meanwhile joins the hits; the older closes are read again as far as the owner had paged and swapped in with them at once. A
+  page of older closes is only ever read for the answer to the text in the field.
+- My day's Done shows only the older hits its own Done would hold (assigned to the owner or a crew agent: `mine`); Agent work
+  shows them all.
 - `semantic: false`: a quiet note in the filter row, "Meaning search unavailable; showing keyword matches." The search
   route failing: "Search unavailable right now; showing every task." Never an empty error.
 

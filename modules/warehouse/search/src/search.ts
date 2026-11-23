@@ -177,16 +177,17 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
   }
 
   /**
-   * Rebuilds one task's row at `gen` from its canonical inputs. "ok": written (or a newer generation already was); "retry":
-   * written without an embedding (the embed failed), so it comes back. Throws when an input couldn't be read: nothing written.
+   * Rebuilds one task's row at `gen` from its canonical inputs. "ok": written; "retry": written without an embedding (the embed
+   * failed), so it comes back; "stale": the stored row is as new or newer, so nothing was written (a queue behind the rows, as
+   * after a crash between the write and its queue update, or a restored backup): the counter moves past the stored generation
+   * and the task comes back above it. Throws when an input couldn't be read: nothing written.
    */
-  async function rebuild(task: string, gen: number): Promise<"ok" | "retry"> {
+  async function rebuild(task: string, gen: number): Promise<"ok" | "retry" | "stale"> {
     const s = await store();
     const [issue, comp] = await Promise.all([cp.issue(task), companyId()]);
     if (!issue || (issue.companyId && issue.companyId !== comp)) {
       // Confirmed gone (a 404), or not this company's: a tombstone at this generation, so no older write brings it back.
-      await write(s, gen, { task_id: task, deleted: true }, false);
-      return "ok";
+      return (await write(s, gen, { task_id: task, deleted: true }, false)) ? "ok" : stale(s, task);
     }
     const [comments, k] = await Promise.all([cp.comments(task), local(task)]);
     const m = models();
@@ -209,16 +210,23 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     let embedding: number[] | null = null;
     if (!keep) embedding = await m.embed([embedText(doc)], 30_000).then((v) => v[0]!, (e: Error) => (log("search embed failed", { task, err: e.message.slice(0, 200) }), null));
     const closed = issue.status === "done" || issue.status === "cancelled";
-    await write(s, gen, {
+    const wrote = await write(s, gen, {
       task_id: task, identifier: issue.identifier ?? null, title: issue.title ?? null, status: issue.status ?? null,
       closed_at: closed ? iso(issue.completedAt ?? issue.cancelledAt ?? issue.updatedAt) : null, updated_at: iso(issue.updatedAt),
       assignee_agent_id: issue.assigneeAgentId ?? null, assignee_user_id: issue.assigneeUserId ?? null, created_by_agent_id: issue.createdByAgentId ?? null,
       project_id: issue.projectId ?? null, labels: (issue.labels ?? []).filter((l) => l.id).map((l) => ({ id: String(l.id), name: String(l.name ?? "") })),
       priority: issue.priority ?? null, origin_kind: issue.originKind ?? null, parent_id: issue.parentId ?? null,
-      doc, keyword: { head: headLine(input), text: keywordText(input, extra), terms: keywordTerms(input) }, content_hash: chash, summary: extra?.summary ?? null, tags: extra?.tags ?? null, embed_hash: keep || embedding ? ehash : null, model: m.model,
+      doc, keyword: { head: headLine(input), text: keywordText(input, extra), terms: keywordTerms({ ...input, status: issue.status ?? "" }) }, content_hash: chash, summary: extra?.summary ?? null, tags: extra?.tags ?? null, embed_hash: keep || embedding ? ehash : null, model: m.model,
       embedding: vec(embedding), deleted: false,
     }, keep);
+    if (!wrote) return stale(s, task);
     return keep || embedding ? "ok" : "retry";
+  }
+  /** A write the stored row refused: the counter moves past its generation. */
+  async function stale(s: Sql, task: string): Promise<"stale"> {
+    const g = Number((await s.query("SELECT gen FROM src_tasks.task_search WHERE task_id = $1", [task])).rows[0]?.gen ?? 0);
+    tx(() => { if (Number(getMeta("gen") ?? 0) < g) setMeta("gen", String(g)); });
+    return "stale";
   }
 
   let working = false, unready = "";
@@ -245,6 +253,8 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
         await Promise.all(due.slice(i, i + WORKERS).map(async ({ task, gen, tries }) => {
           const r = await rebuild(task, gen).catch((e: Error) => (log("search rebuild failed", { task, err: String(e.message).slice(0, 200) }), "retry" as const));
           if (r === "ok") { db.prepare("DELETE FROM search_dirty WHERE task = ? AND gen = ?").run(task, gen); done++; }
+          // Refused by a newer stored row: again now, above it (a newer mark made meanwhile keeps its own generation).
+          else if (r === "stale") tx(() => db.prepare("UPDATE search_dirty SET gen = ?, due = ? WHERE task = ? AND gen = ?").run(nextGen(), now(), task, gen));
           // Again later, at a new generation (the row this one wrote must lose to it), backing off to an hour.
           // (A newer mark made meanwhile keeps its own generation and due time.)
           else tx(() => db.prepare("UPDATE search_dirty SET gen = ?, due = ?, tries = tries + 1 WHERE task = ? AND gen = ?").run(nextGen(), now() + Math.min(3600_000, 30_000 * 2 ** tries), task, gen));

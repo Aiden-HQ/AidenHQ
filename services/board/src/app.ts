@@ -1797,7 +1797,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           opts.search.search(q, page).catch((e: Error) => { log.warn({ err: String(e.message).slice(0, 200) }, "task search failed"); throw new HttpError(503, "task search is unavailable"); }),
           context(),
         ]);
-        return searchView(answer, { labels: ctx.labels, assignees: ctx.assignees, logs: logTasks() });
+        return searchView(answer, { me: ctx.me, labels: ctx.labels, assignees: ctx.assignees, logs: logTasks() });
       },
     },
     // The Flow page (flow.ts): the period's bottlenecks, DORA and idle items in one read; one item's waterfall; the code host's history import.
