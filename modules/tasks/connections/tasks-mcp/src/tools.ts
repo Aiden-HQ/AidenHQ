@@ -1948,8 +1948,8 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_finish: {
-    description: "Mark a task done, with a summary comment: the task this run is working on, or another task assigned to you (a fleet settler: another agent's task waiting in review). Not your part of the owner's task: it stays open for their replies, so finish it with `task_handoff` (this run's task or one named with `issue`), not here. A task you created and handed to the owner is the owner's to close: `task_finish` with `issue` is refused on it (only this job's own task, or one its agent holds, is finished); comment on it with `task_comment` instead.",
-    inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you (a fleet settler: another agent's task waiting in review), not one you created and the owner holds; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
+    description: "Mark a task done, with a summary comment: the task this run is working on, or another task assigned to you (a fleet settler: an agent-filed task waiting in review). Not your part of the owner's task: it stays open for their replies, so finish it with `task_handoff` (this run's task or one named with `issue`), not here. A task you created and handed to the owner is the owner's to close: `task_finish` with `issue` is refused on it (only this job's own task, or one its agent holds, is finished); comment on it with `task_comment` instead.",
+    inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you (a fleet settler: an agent-filed task waiting in review), not one you created and the owner holds; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
       const target = issue ?? CURRENT();
@@ -1986,8 +1986,8 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_cancel: {
-    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: any agent's stale or superseded task). Only a task you filed, one assigned to you, or (a fleet settler) any agent's stale or superseded task can be cancelled: a task the owner created and holds themselves is not yours. Your part of the owner's task stays open for their replies: finish it with task_handoff.",
-    inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task you filed, one assigned to you, or (a fleet settler) any agent's stale or superseded task; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
+    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: an agent-filed task, stale or superseded). Only a task you filed, one assigned to you, or (a fleet settler) any agent-filed stale or superseded task can be cancelled: a task the owner created and holds themselves is not yours. Your part of the owner's task stays open for their replies: finish it with task_handoff.",
+    inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task you filed, one assigned to you, or (a fleet settler) any agent-filed stale or superseded task; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
       const target = issue ?? CURRENT();

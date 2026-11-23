@@ -52,7 +52,7 @@ test("the task_finish description says an owner-held task the caller created is 
   assert.notEqual(at, -1, "the tools list has task_finish");
   const description = /description: "([^"]*)"/.exec(tools.slice(at))?.[1] ?? "";
   assert.match(description, /the task this run is working on/, "the run's own task stays finishable");
-  assert.match(description, /or another task assigned to you \(a fleet settler: another agent's task waiting in review\)/, "a task assigned to the caller, and the fleet settler's, stay");
+  assert.match(description, /or another task assigned to you \(a fleet settler: an agent-filed task waiting in review\)/, "a task assigned to the caller, and the fleet settler's, stay");
   assert.doesNotMatch(description, /another task assigned to you or one you delegated/, "a created task handed to the owner was promised as finishable");
   assert.match(description, /Not your part of the owner's task: it stays open for their replies, so finish it with `task_handoff` \(this run's task or one named with `issue`\), not here/, "the handoff exception is stated for both forms");
   assert.match(description, /A task you created and handed to the owner is the owner's to close/, "an owner-held task is the owner's to close");
@@ -67,8 +67,8 @@ test("the task_cancel description says the owner's own task is not the agent's t
   const at = tools.indexOf("task_cancel: {");
   assert.notEqual(at, -1, "the tools list has task_cancel");
   const description = /description: "([^"]*)"/.exec(tools.slice(at))?.[1] ?? "";
-  assert.match(description, /Only a task you filed, one assigned to you, or \(a fleet settler\) any agent's stale or superseded task can be cancelled/, "cancel is for a task the agent filed or holds, with the settler's exception");
+  assert.match(description, /Only a task you filed, one assigned to you, or \(a fleet settler\) any agent-filed stale or superseded task can be cancelled/, "cancel is for a task the agent filed or holds, with the settler's exception");
   assert.match(description, /a task the owner created and holds themselves is not yours/, "the owner's own task is theirs");
   const param = /issue: \{ type: "string", description: "([^"]*)"/.exec(tools.slice(at))?.[1] ?? "";
-  assert.match(param, /a task you filed, one assigned to you, or \(a fleet settler\) any agent's stale or superseded task/, "the `issue` parameter says the same scope as the description");
+  assert.match(param, /a task you filed, one assigned to you, or \(a fleet settler\) any agent-filed stale or superseded task/, "the `issue` parameter says the same scope as the description");
 });
