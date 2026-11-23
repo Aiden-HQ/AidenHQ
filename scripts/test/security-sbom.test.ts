@@ -1,8 +1,8 @@
 // ops/security-sbom.sh with a fake `docker` on PATH: the syft invocations it would run are read back from the fake's
 // log, so the host scan's scope is its argument list, not an inference from the script's text.
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -36,6 +36,9 @@ async function run(env = {}, {
   held = null,
   inspectErrors = [],
   saveErrors = {},
+  saveGrow = {},
+  takeAfterSave = {},
+  freeTaken = 0,
   sizeErrors = [],
   sizeJunk = {},
   seed,
@@ -53,12 +56,17 @@ async function run(env = {}, {
   const heldIdsFile = join(dir, "held-ids");
   const brokenFile = join(dir, "broken");
   const saveErrorsFile = join(dir, "save-errors");
+  const growFile = join(dir, "save-grow");
+  const takeFile = join(dir, "take-after-save");
+  const freeTakenFile = join(dir, "free-taken");
   const sizesFile = join(dir, "sizes");
   const sizeErrorsFile = join(dir, "size-errors");
   const sizeJunkFile = join(dir, "size-junk");
   const platformManifestsFile = join(dir, "platform-manifests");
   const platformSizesFile = join(dir, "platform-sizes");
-  writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\necho 0\n"); // the Docker socket's group
+  // The Docker socket's group for `stat -c %g /var/run/docker.sock`; everything else is the real stat, so a size read on
+  // an archive (`stat -c %s`) is the archive's own, as on the host.
+  writeFileSync(join(dir, "bin/stat"), "#!/usr/bin/env bash\nif [ \"$1\" = -c ] && [ \"$2\" = %g ]; then echo 0; exit 0; fi\nexec /usr/bin/stat \"$@\"\n");
   // `tar -xOf <archive> <member>` for the archive check: with FAKE_ARCHIVE_SLEEP it stops answering, as a multi-GB archive
   // on slow storage does, so a test can prove the read is bounded by the snapshot deadline. Otherwise the real tar runs.
   writeFileSync(join(dir, "bin/tar"), `#!/usr/bin/env bash
@@ -67,8 +75,23 @@ if [ "$1" = -xOf ] && [ -n "\${FAKE_ARCHIVE_SLEEP:-}" ]; then
 fi
 exec /usr/bin/tar "$@"
 `);
-  // `df -Pk <dir>`: the fake filesystem's free space in 1K blocks, so a test can put the pass near the floor.
-  writeFileSync(join(dir, "bin/df"), "#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' \"${FAKE_FREE_KB:-400000000}\"\n");
+  // `df -Pk <dir>`: the fake filesystem's free space in 1K blocks, so a test can put the pass near the floor. FAKE_FREE_KB
+  // is the free space with no archives; the archives directory's bytes are subtracted, as a real filesystem would, so a
+  // test can model free space falling as archives are written and rising again as scans free them.
+  writeFileSync(join(dir, "bin/df"), `#!/usr/bin/env bash
+used="$(find "\${AIDENHQ_DATA_DIR:-.}/modules/security/sbom/.archives" -type f -printf '%s\\n' 2>/dev/null | awk '{ s += $1 } END { printf "%d", s / 1024 }')"
+# FAKE_FREE_TAKEN_KB: bytes another writer on the filesystem took, so a test can model room vanishing between a save and
+# its scan.
+taken="$(awk '{ s += $1 } END { printf "%d", s / 1024 }' "\${FAKE_FREE_TAKEN:-$FREE_TAKEN}" 2>/dev/null)"
+# FAKE_TAKE_AFTER_DF <n> <bytes>: another writer's bytes appear only after <n> free-space reads, so a test can put the
+# pressure after the survey's own read and before every save.
+n=""; [ -f "$DIR/df-count" ] && read -r n < "$DIR/df-count"; n=$(( \${n:-0} + 1 )); printf '%s\n' "$n" > "$DIR/df-count"
+if [ -n "\${FAKE_TAKE_AFTER_DF:-}" ] && [ "$n" -gt "\${FAKE_TAKE_AFTER_DF}" ] && [ -n "\${FAKE_TAKE_BYTES:-}" ]; then
+  taken=$(( taken + FAKE_TAKE_BYTES / 1024 ))
+fi
+kb=$(( \${FAKE_FREE_KB:-400000000} - \${used:-0} - \${taken:-0} ))
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' "$kb"
+`);
   writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
 # A fake daemon: containers (id<TAB>.Image<TAB>.Config.Image<TAB>compose image label\`), the tag table (ref<TAB>
 # top-level id<TAB>platform manifest) and the image ids it holds. Every syft run and save is logged.
@@ -79,6 +102,19 @@ case "$1" in run|save) printf '%s\\n' "$*" >> "$CALLS" ;; esac
 # can put the snapshot deadline inside it and prove the deadline ends with the snapshot.
 if [ "$1" = run ] && [ -n "$FAKE_HOST_SCAN_SLEEP" ] && [[ "$*" == *"--source-name host"* ]]; then
   read -r -t "$FAKE_HOST_SCAN_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_HOST_SCAN_SLEEP")
+fi
+# An apply that starts while the scans run: FAKE_TAKE_LOCK_ON_HOST_SCAN has a background process hold the apply lock as the
+# host scan begins, so a later wave cannot export and must record its images rather than leave a gap. It writes a marker
+# once it holds the lock and keeps holding it until the test removes the marker, so nothing races a timeout. The host scan
+# waits for the marker, so the lock is held before any scan runs. The holder's stdout is closed so the host scan's command
+# substitution does not wait on it.
+if [ "$1" = run ] && [ -n "\${FAKE_TAKE_LOCK_ON_HOST_SCAN:-}" ] && [[ "$*" == *"--source-name host"* ]]; then
+  marker="\${FAKE_APPLY_LOCK%/*}/late-holder"
+  # Bounded (60s) so an interrupted test cannot leave a holder polling for ever; the test's cleanup removes the marker
+  # as soon as the pass returns.
+  ( exec 9>>"$FAKE_APPLY_LOCK"; flock 9; : > "$marker"
+    for _ in $(seq 1 1200); do [ -f "$marker" ] || break; sleep 0.05; done ) >/dev/null 2>&1 </dev/null &
+  for _ in $(seq 1 200); do [ -f "$marker" ] && break; sleep 0.05; done
 fi
 # rm -f clears a container the script named before a run; a name nothing holds is a normal answer, not a failure.
 [ "$1" = rm ] && exit 0
@@ -103,6 +139,9 @@ case "$1" in
     if [[ "$*" == *APIVersion* ]]; then printf '%s\\n' "\${FAKE_API:-1.48}"; exit 0; fi
     printf 'linux/amd64\\n' ;;
   ps)
+    # FAKE_TAKE_ON_PS: another writer takes room once the survey has listed the containers, so the survey's room is whole
+    # but every save sees less. This models pressure that begins between the survey and the saves.
+    [ -n "\${FAKE_TAKE_ON_PS:-}" ] && printf '%s\n' "$FAKE_TAKE_ON_PS" >> "$FREE_TAKEN"
     nps=0; [ -f "$DIR/ps-count" ] && read -r nps < "$DIR/ps-count"; nps=$((nps + 1)); printf '%s\\n' "$nps" > "$DIR/ps-count"
     if [ "$PS_FAILS" = 1 ] || { [ -n "\${PS_FAILS_NTH:-}" ] && [ "$nps" -ge "$PS_FAILS_NTH" ]; }; then
       echo "Error response from daemon: cannot list containers" >&2; exit 1
@@ -198,7 +237,25 @@ case "$1" in
             ( cd "$d" && tar -cf "$file" $(find . -type f | sed 's|^\./||') )
             rm -rf "$d"
           fi
+          # An archive whose bytes differ from the size the daemon reported: FAKE_SAVE_GROW ref<TAB>bytes makes that
+          # reference's archive exactly that many bytes, as a save's real bytes can exceed the inspect size a little. A
+          # write with a ulimit -f ceiling (1024-byte blocks, 0 = none) stops at that ceiling and fails, as a real write
+          # running out of room does, rather than shrinking to fit.
+          grow="$(awk -F '\t' -v ref="$id" '$1 == ref { print $2; found = 1 }' "$SAVE_GROW" 2>/dev/null)"
+          lim="$(ulimit -f)"
+          if [ -n "$grow" ]; then
+            if [ "$lim" != 0 ] && [ "$grow" -gt $(( lim * 1024 )) ]; then
+              truncate -s $(( lim * 1024 )) "$file"
+              echo "Error response from daemon: write $file: no space left on device" >&2
+              echo "Error response from daemon: write $file: file too large" >&2
+              kill -XFSZ $$
+            fi
+            truncate -s "$grow" "$file"
+          fi
         fi
+        # A concurrent writer takes bytes as the save finishes: FAKE_TAKE_AFTER_SAVE ref<TAB>bytes.
+        take="$(awk -F '\t' -v ref="$id" '$1 == ref { print $2; found = 1 }' "$TAKE_AFTER_SAVE" 2>/dev/null)"
+        [ -n "$take" ] && printf '%s\n' "$take" >> "$FREE_TAKEN"
         : > "$SAVED"; exit 0
       fi
       echo "Error response from daemon: No such image: $id" >&2; exit 1
@@ -285,6 +342,9 @@ exit 0
   writeFileSync(heldIdsFile, heldIds.join("\n") + "\n");
   writeFileSync(brokenFile, inspectErrors.join("\n") + "\n");
   writeFileSync(saveErrorsFile, Object.entries(saveErrors).map(([id, err]) => `${id}\t${err}`).join("\n") + "\n");
+  writeFileSync(growFile, Object.entries(saveGrow).map(([id, bytes]) => `${id}\t${bytes}`).join("\n") + "\n");
+  writeFileSync(takeFile, Object.entries(takeAfterSave).map(([id, bytes]) => `${id}\t${bytes}`).join("\n") + "\n");
+  if (freeTaken) writeFileSync(freeTakenFile, `${freeTaken}\n`);
   writeFileSync(sizesFile, Object.entries(sizes).map(([ref, bytes]) => `${ref}\t${bytes}`).join("\n") + "\n");
   writeFileSync(sizeErrorsFile, sizeErrors.join("\n") + "\n");
   writeFileSync(sizeJunkFile, Object.entries(sizeJunk).map(([ref, out]) => `${ref}\t${out}`).join("\n") + "\n");
@@ -302,16 +362,28 @@ exit 0
       env: {
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, HELD_IDS: heldIdsFile, BROKEN: brokenFile,
-        SAVE_ERRORS: saveErrorsFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
+        SAVE_ERRORS: saveErrorsFile, SAVE_GROW: growFile, TAKE_AFTER_SAVE: takeFile, FREE_TAKEN: freeTakenFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
         DIR: dir, ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
+  // A fixture that held the apply lock is released here, whatever the pass returned: a failing assertion must not leave
+  // a background holder behind for the next test. `lateHeld` says whether it ever took the lock.
+  const lockDir = join(dirname(dirname(scriptPath_)), "data");
+  const lateMarker = join(lockDir, "late-holder");
+  const lateHeld = existsSync(lateMarker);
+  if (lateHeld) {
+    rmSync(lateMarker, { force: true });
+    for (let i = 0; i < 100; i++) {
+      try { execFileSync("flock", ["-n", join(lockDir, "apply.lock"), "-c", "true"], { stdio: "ignore" }); break; }
+      catch { await new Promise((r) => setTimeout(r, 20)); }
+    }
+  }
   const batch = join(data, "modules/security/sbom/current/targets.tsv");
   const batchRaw = existsSync(batch) ? readFileSync(batch, "utf8") : null;
   const targets = batchRaw ? batchRaw.split("\n").filter(Boolean).map((l) => l.split("\t")) : [];
   return {
-    ...r, targets, batchRaw, root: dirname(scriptPath_), dir,
+    ...r, targets, batchRaw, root: dirname(scriptPath_), dir, lateHeld,
     locks: existsSync(join(dir, "locks")) ? readFileSync(join(dir, "locks"), "utf8").trim().split("\n").filter(Boolean) : [],
     calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean) : [],
     workStates: existsSync(join(dir, "clean")) ? readFileSync(join(dir, "clean"), "utf8").trim().split("\n").filter(Boolean) : [],
@@ -837,6 +909,269 @@ test("security-sbom: two containers running one index on different platforms are
   assert.equal(saves.length, 2, `one archive per variant:\n${calls.join("\n")}\ntargets:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   assert.ok(saves.some((c) => /--platform linux\/amd64 /.test(c)), saves.join("\n"));
   assert.ok(saves.some((c) => /--platform linux\/arm64\/v8 /.test(c)), saves.join("\n"));
+});
+
+test("security-sbom: a set whose archives plus the largest exceed the room is scanned in waves, every image scanned", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. The five archives total 40 GB and the largest is 10 GB, so the whole set at
+  // once needs 50 GB and cannot fit. Scanned in waves, each wave's archives plus its largest fit: 6+7+8 GB with 8 GB
+  // unpacked is 29 GB, and 9+10 GB with 10 GB unpacked is 29 GB. Every image must be inventoried, with no skip line, and
+  // the second wave's saves must run only after the first wave's scans have freed their archives.
+  const ids = ["sha256:a1", "sha256:a2", "sha256:a3", "sha256:a4", "sha256:a5"];
+  const sizes = [6, 7, 8, 9, 10];
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "62914560" }, {
+    containers: ids.map((id, i) => ({ id: `c${i + 1}`, image: id, config: `svc${i + 1}:local`, label: id })),
+    tags: Object.fromEntries(ids.map((id, i) => [`svc${i + 1}:local`, id])),
+    held: ids,
+    sizes: Object.fromEntries(ids.map((id, i) => [id, sizes[i] * 1024 ** 3])),
+  });
+  assert.equal(status, 0, out);
+  const rows = targets.filter((t) => t[0].startsWith("image:"));
+  assert.equal(rows.length, ids.length, rows.map((t) => t.join("\t")).join("\n"));
+  for (const row of rows) assert.notEqual(row[1], "-", `${row[0]} was skipped: ${row[2]}`);
+  assert.ok(!rows.some((t) => /does not fit|skipped/.test(t[2])), `a target was space-skipped:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, ids.length);
+  const firstScan = calls.findIndex((c) => c.startsWith("run ") && c.includes("--source-name image:"));
+  const lastSave = calls.map((c, i) => (c.startsWith("save ") ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+  const secondWaveSave = calls.findIndex((c, i) => i > firstScan && c.startsWith("save "));
+  assert.ok(secondWaveSave > firstScan, `a later wave was saved before the first wave's scans freed its archives:\n${calls.join("\n")}`);
+  assert.ok(lastSave > firstScan, "every save must be accounted for");
+});
+
+test("security-sbom: a size that only fits in bytes is admitted, not rounded out of its wave", { skip: NOT_LINUX }, async () => {
+  // 41.25 GB free, a 30 GB floor: 11.25 GB of room. The image is 5.25 GiB: its archive plus its own workspace is 10.5 GiB,
+  // which fits. Rounded up to 6 GB the admission would ask for 12 GB and reject the image, even though the byte-exact save
+  // and scan both fit. It must be saved and scanned.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(11.25 * 1024 * 1024 + 30 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    held: ["sha256:1111"],
+    sizes: { "sha256:1111": Math.round(5.25 * 1024 ** 3) },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(row[1], "-", `the image fits and must be scanned: ${row[2]}`);
+});
+
+test("security-sbom: a target no wave can hold is a line naming the admitted total, its size, the largest and the room", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 6 GB image needs its 6 GB archive held to scan plus 6 GB to unpack it, 12 GB
+  // in all, which no wave of 10 GB ever has. The line must state the budget that decided it rather than "6 GB does not fit
+  // in 10 GB", which reads as though the image alone were over the room.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "41943040" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 6 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-");
+  assert.match(line[2], /admitted 0 GB of archives/);
+  assert.match(line[2], /this 6 GB image/);
+  assert.match(line[2], /largest archive 6 GB/);
+  assert.match(line[2], /room 10 GB above the 30 GB floor/);
+  assert.match(line[2], /short by 2 GB/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran for an image no wave can hold:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an apply that takes the lock between waves leaves those images as lines, not gaps", { skip: NOT_LINUX }, async () => {
+  // The first wave exports and scans; an apply starts while the scans run and holds the apply lock, so the second wave
+  // cannot export. The images it would have carried must be recorded with the reason, never silently dropped.
+  const ids = ["sha256:a1", "sha256:a2", "sha256:a3", "sha256:a4", "sha256:a5"];
+  const sizes = [6, 7, 8, 9, 10];
+  const { status, out, targets, calls, lateHeld } = await run({ FAKE_FREE_KB: "62914560", FAKE_TAKE_LOCK_ON_HOST_SCAN: "1" }, {
+    containers: ids.map((id, i) => ({ id: `c${i + 1}`, image: id, config: `svc${i + 1}:local`, label: id })),
+    tags: Object.fromEntries(ids.map((id, i) => [`svc${i + 1}:local`, id])),
+    held: ids,
+    sizes: Object.fromEntries(ids.map((id, i) => [id, sizes[i] * 1024 ** 3])),
+  });
+  assert.equal(status, 0, out);
+  // The fixture held the lock from the host scan through the pass, past the second wave's save attempt, so that wave
+  // could not export. `run` released it (and waited for it) whatever the pass returned.
+  assert.ok(lateHeld, "the fixture never took the apply lock");
+  const rows = targets.filter((t) => t[0].startsWith("image:"));
+  assert.equal(rows.length, ids.length, `every running image has a row:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  const scanned = rows.filter((t) => t[1] !== "-");
+  const unreached = rows.filter((t) => /not reached/.test(t[2]));
+  assert.ok(scanned.length >= 1, `the first wave was still scanned:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.ok(unreached.length >= 1, `the later wave's images are lines:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(scanned.length + unreached.length, ids.length, rows.map((t) => t.join("\t")).join("\n"));
+  assert.match(out, /an apply took the apply lock between waves/);
+  // The later wave wrote no bytes, and the pass still swapped its batch in.
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, scanned.length);
+});
+
+test("security-sbom: a save that overshoots its estimate is deleted rather than left under the floor", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. The daemon reports a 5 GB image, but the save would write 15 GB and take
+  // the disk under the floor. The write is capped at the room above the floor, so the kernel stops it before the host's
+  // reserve is spent, the partial archive is removed, and the image is a line naming the room it outgrew.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(40 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" }],
+    tags: { "big1:local": "sha256:b1" },
+    held: ["sha256:b1"],
+    sizes: { "sha256:b1": 5 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 15 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(row[1], "-", "the overshooting save is not scanned");
+  assert.match(row[2], /archive outgrew the 10 GB above the 30 GB floor/);
+  assert.doesNotMatch(row[2], /^15 GB/);
+});
+
+test("security-sbom: a save stopped at its cap is retried in a solo wave, not skipped for the pass", { skip: NOT_LINUX }, async () => {
+  // 68 GB free, a 30 GB floor: 38 GB of room. Five 5 GB images and one reported at 6 GB are admitted together, but the
+  // last one's save really writes 15 GB while the five archives already hold 25 GB: 40 GB, over the room, so the cap
+  // stops it. Its scan needs 15 GB more, 30 GB in all, which a wave of its own holds but not beside the others'
+  // archives. It must be deferred and scanned alone, not lost for the pass.
+  const containers = [];
+  const tags = {};
+  const sizes = {};
+  const saveGrow = {};
+  for (let i = 1; i <= 5; i++) {
+    containers.push({ id: `c${i}`, image: `sha256:s${i}`, config: `small${i}:local`, label: `sha256:s${i}` });
+    tags[`small${i}:local`] = `sha256:s${i}`;
+    sizes[`sha256:s${i}`] = 5 * 1024 ** 3;
+  }
+  containers.push({ id: "c6", image: "sha256:big", config: "big:local", label: "sha256:big" });
+  tags["big:local"] = "sha256:big";
+  sizes["sha256:big"] = 6 * 1024 ** 3;
+  saveGrow["sha256:big"] = 15 * 1024 ** 3;
+  for (let i = 1; i <= 5; i++) saveGrow[`sha256:s${i}`] = 5 * 1024 ** 3;
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(68 * 1024 * 1024) }, {
+    containers, tags, held: Object.keys(tags).map((k) => tags[k]), sizes, saveGrow,
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(row[1], "-", `the capped save must be retried in a solo wave: ${row[2]}`);
+  assert.match(out, /image:big:local deferred to wave/);
+});
+
+test("security-sbom: a first save blocked by temporary pressure is deferred, then a line if it persists", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 5 GB image needs 10 GB, so the survey admits it. Once the survey has read
+  // the disk, another writer takes 6 GB, so the image's first save sees only 4 GB and is blocked with nothing of its own
+  // written. That may be temporary: it is deferred to a wave of its own, not skipped on first sight. The retry meets the
+  // same pressure, so the second block is a line with the numbers.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(40 * 1024 * 1024), FAKE_TAKE_AFTER_DF: "1", FAKE_TAKE_BYTES: String(6 * 1024 ** 3) }, {
+    containers: [{ id: "c1", image: "sha256:b1", config: "big:local", label: "sha256:b1" }],
+    tags: { "big:local": "sha256:b1" },
+    held: ["sha256:b1"],
+    sizes: { "sha256:b1": 5 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.match(out, /image:big:local deferred to wave/);
+  assert.equal(row[1], "-", `the second block is a line: ${row[2]}`);
+});
+
+test("security-sbom: a save that no longer fits beside its wave's archives is deferred, then scanned", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. The daemon reports 7 GB and 9 GB, so one wave admits both (16 GB of
+  // archives plus a 9 GB workspace = 25 GB). The 7 GB image's archive is really 14 GB: after it is written only 16 GB are
+  // left above the floor, so the 9 GB image plus its 9 GB workspace no longer fits and its save is refused. That is the
+  // wave's own archives holding the room, not the disk: it must be deferred to the next wave, where the first archive is
+  // scanned and freed, and scanned there rather than skipped on every pass.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(60 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 7 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 14 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const rows = targets.filter((t) => t[0].startsWith("image:"));
+  for (const name of ["image:big1:local", "image:big2:local"]) {
+    const row = rows.find((t) => t[0] === name);
+    assert.ok(row, rows.map((t) => t.join("\t")).join("\n"));
+    assert.notEqual(row[1], "-", `${name} was not scanned: ${row[2]}`);
+  }
+  assert.match(out, /image:big2:local deferred to wave 2/);
+  assert.doesNotMatch(out, /skipped:/);
+});
+
+test("security-sbom: an archive too large for its wave is retried after the others are freed, not skipped", { skip: NOT_LINUX }, async () => {
+  // 55 GB free, a 30 GB floor: 25 GB of room. The daemon reports 7 GB and 9 GB, so one wave admits both (16 GB of
+  // archives plus a 9 GB workspace = 25 GB). The 9 GB image's archive is really 10 GB. The two archives therefore hold
+  // 17 GB, leaving only 8 GB above the floor: unpacking the 10 GB image beside the 7 GB archive needs 17 GB, so the
+  // largest scan fails its first check. It must be retried, not dropped: once the 7 GB archive is scanned and removed,
+  // its own 10 GB archive plus 10 GB to unpack fits in the 15 GB that are then free above the floor.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: String(55 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 9 * 1024 ** 3, "sha256:b2": 7 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 10 * 1024 ** 3, "sha256:b2": 7 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  for (const name of ["image:big1:local", "image:big2:local"]) {
+    const row = targets.find((t) => t[0] === name);
+    assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+    assert.notEqual(row[1], "-", `${name} was not scanned: ${row[2]}`);
+  }
+  const scans = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:"));
+  assert.equal(scans.length, 2, `both images were scanned:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: when a wave's real bytes outgrow its room, the smallest archive is deferred with the numbers", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. The daemon reports 10 GB and 9 GB, so one wave admits both. The archives
+  // are really 12 GB and 10 GB: both save, and the two hold 22 GB, leaving only 8 GB above the floor, so neither scan can
+  // unpack its workspace there (10 > 8 and 9 > 8). Removing the smaller 10 GB archive leaves 18 GB of room for the 12 GB
+  // archive and its 10 GB workspace, and the smaller image is saved again in a later wave (where it fits alone) rather
+  // than skipped for the pass. Nothing is skipped at all.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(60 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 10 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 12 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const small = targets.find((t) => t[0] === "image:big2:local");
+  const large = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(small && large, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(large[1], "-", `the larger image must be scanned: ${large[2]}`);
+  assert.notEqual(small[1], "-", `the smaller image is scanned in a later wave: ${small[2]}`);
+  // The deferral states the real budget in gigabytes, not the raw bytes the round measured, and names the smaller archive
+  // as the one taken out.
+  assert.match(out, /image:big2:local deferred to wave 2: admitted 12 GB of archives, this 10 GB image, largest archive 12 GB, room 8 GB above the 30 GB floor on .*, short by 1 GB/);
+  assert.doesNotMatch(out, /skipped:/);
+});
+
+test("security-sbom: an archive whose scan can never fit is dropped at scan time, after both saves", { skip: NOT_LINUX }, async () => {
+  // 68 GB free, a 30 GB floor: 38 GB of room. The daemon reports 14 GB and 10 GB, so both are admitted (24 GB of archives
+  // plus a 14 GB workspace = 38 GB). The 14 GB image's archive is really 25 GB: 35 GB held leaves 3 GB, so neither scan
+  // fits yet. Both saves must happen first; then the round drops the archive that can never scan (25 GB held plus 14 GB of
+  // workspace is 39 GB, over the whole pool), and the 10 GB image scans in the room that frees.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: String(68 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 14 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 25 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, 2, `both archives were saved before pruning:\n${calls.join("\n")}`);
+  const small = targets.find((t) => t[0] === "image:big2:local");
+  const huge = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(small && huge, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(small[1], "-", `the scannable image must be scanned: ${small[2]}`);
+  assert.equal(huge[1], "-", `the archive whose scan can never fit is the line: ${huge[2]}`);
+  assert.match(huge[2], /does not fit/);
 });
 
 test("security-sbom: an archive is admitted only when its own scan has workspace left", { skip: NOT_LINUX }, async () => {
