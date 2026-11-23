@@ -59,8 +59,6 @@ const QUIET_MS = 20_000;
  * pace is this over a rebuild's latency: 8 reaches the whole corpus (about 11k tasks) in about an hour at 2-3 s a task.
  */
 const WORKERS = 8;
-/** How long one tick keeps starting rebuilds, so the next tick (the fact log, the edits poll) comes within about a minute. */
-const TICK_MS = 30_000;
 /** The query's embedding: past this it is answered with keyword hits only. */
 const QUERY_EMBED_MS = 2_500;
 /** Reciprocal-rank fusion's constant. */
@@ -235,14 +233,15 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     return "stale";
   }
 
-  let working = false, unready = "";
+  let working = false, polling = false, unready = "";
   /**
-   * One pass of the worker: follow the fact log, then rebuild what is due (live changes before the backfill), a few at a time.
-   * While the warehouse can't hold the rows (down, or no pgvector yet) the queue waits untouched, so nothing backs off for it.
+   * Change discovery: follow the fact log and the recently updated issues, each tick and never held up by the rebuilds in
+   * flight (a slow backfill must not delay a live change being noticed). The warehouse when it can hold the rows, else
+   * undefined: the queue then waits untouched, so nothing backs off for it.
    */
-  async function tick(): Promise<number> {
-    if (working || !sql()) return 0;
-    working = true;
+  async function poll(): Promise<Sql | undefined> {
+    if (polling) return undefined;
+    polling = true;
     try {
       await follow();
       let s: Sql;
@@ -250,9 +249,19 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
         const err = String((e as Error).message).slice(0, 200);
         if (err !== unready) log("search waits for the warehouse", { err });
         unready = err;
-        return 0;
+        return undefined;
       }
       await edits(s);
+      return s;
+    } finally {
+      polling = false;
+    }
+  }
+  /** One pass of the worker: poll, then rebuild what is due (live changes before the backfill) until nothing is, 8 at a time. */
+  async function tick(): Promise<number> {
+    if (!sql() || !(await poll()) || working) return 0;
+    working = true;
+    try {
       const flying = new Set<string>();
       const active = new Set<Promise<void>>();
       let done = 0;
@@ -267,9 +276,9 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       };
       // A rolling pool: a free slot takes the next due row at once (live changes before the backfill, read afresh each time),
       // so one slow rebuild holds back only itself.
-      for (const until = Date.now() + TICK_MS; Date.now() < until || active.size; ) {
+      for (;;) {
         const next = (db.prepare("SELECT task, gen, tries FROM search_dirty WHERE due <= ? ORDER BY backfill, due LIMIT ?").all(now(), WORKERS) as { task: string; gen: number; tries: number }[]).find((r) => !flying.has(r.task));
-        if (!next || active.size >= WORKERS || Date.now() >= until) { if (!active.size) break; await Promise.race(active); continue; }
+        if (!next || active.size >= WORKERS) { if (!active.size) break; await Promise.race(active); continue; }
         flying.add(next.task);
         const p: Promise<void> = run(next).finally(() => { flying.delete(next.task); active.delete(p); });
         active.add(p);
