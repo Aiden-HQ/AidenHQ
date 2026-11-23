@@ -724,21 +724,25 @@ function DetailSection({ title, hint, children }: { title: string; hint?: string
   );
 }
 
-function Title({ issue, editable, save }: { issue: IssueView; editable: boolean; save: (t: string) => Promise<void> }) {
-  const [value, setValue] = useState(issue.title);
-  useEffect(() => setValue(issue.title), [issue.title]);
+/** The task's title, edited in place. An edit in progress is the owner's: a refresh that changes the title meanwhile never replaces it. */
+export function Title({ issue, editable, save }: { issue: IssueView; editable: boolean; save: (t: string) => Promise<void> }) {
+  // null: not edited, so the task's own title shows (and follows refreshes).
+  const [draft, setDraft] = useState<string | null>(null);
+  // Escape blurs too: the blur that follows must drop the draft, not save it (its handler still sees this render's draft).
+  const cancelled = useRef(false);
   const commit = () => {
-    const t = value.trim();
-    if (t && t !== issue.title) void save(t);
-    else setValue(issue.title);
+    const t = cancelled.current ? undefined : draft?.trim();
+    cancelled.current = false;
+    if (t && t !== issue.title) void save(t).finally(() => setDraft(null));
+    else setDraft(null);
   };
   return (
     <textarea
       className="title-input"
       rows={1}
-      value={value}
+      value={draft ?? issue.title}
       readOnly={!editable}
-      onChange={(e) => setValue(e.target.value.replace(/\n/g, " "))}
+      onChange={(e) => setDraft(e.target.value.replace(/\n/g, " "))}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
@@ -746,7 +750,7 @@ function Title({ issue, editable, save }: { issue: IssueView; editable: boolean;
           (e.target as HTMLTextAreaElement).blur();
         }
         if (e.key === "Escape") {
-          setValue(issue.title);
+          cancelled.current = true;
           e.stopPropagation();
           (e.target as HTMLTextAreaElement).blur();
         }
