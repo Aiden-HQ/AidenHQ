@@ -23,7 +23,7 @@ import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, h
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, requireAgentCaller, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
@@ -135,7 +135,35 @@ const approvalView = (approval: Approval) => {
   const { args: _args, ...a } = approval;
   return { ...a, ...(a.wait !== null ? { wait: shownWait(a.wait) } : {}) };
 };
+/**
+ * Which snapshot of one card to keep when two reads returned it. The kernel's own `updated_at` decides, because a state is not
+ * one-way: `hold()` moves an approved card back to `owner` when its cap no longer holds, and a Tier 0 record's `auto` is its
+ * word both while queued and once it ended. A record whose stamp would not parse loses to one that has it.
+ */
+const newer = (a: Approval, b: Approval) => {
+  const ta = Date.parse(a.updatedAt), tb = Date.parse(b.updatedAt);
+  if (Number.isNaN(ta)) return false;
+  // A tie: a record only moves forward, and an ended one never returns to live, so the terminal snapshot is the current one.
+  if (!Number.isNaN(tb) && ta === tb) return a.live !== true && b.live === true;
+  return Number.isNaN(tb) || ta > tb;
+};
+/** The registered merge kinds: the two code hosts' (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
+ * A card of any other kind — a module's own `.merge`, say — says only what the board's own view says, whatever its args hold. */
+const MERGE_KINDS = ["merge", "github.merge", "codehost-local.merge"];
+const isMergeKind = (action: string) => MERGE_KINDS.includes(action);
+/** A merge card's view: the PRs and heads it is bound to (never the args whole), so a run can match the head it published. */
+const mergeView = (a: Approval) => {
+  // A module's own args are its own shape: only an array of well-formed bindings is read, so one odd record never fails the
+  // whole read and hides a merge card.
+  const raw = isMergeKind(a.action) ? (a.args as { prs?: unknown } | null)?.prs : undefined;
+  const prs = (Array.isArray(raw) ? raw : [])
+    .filter((p): p is { repo: string; number: number; head: string } => typeof (p as { repo?: unknown })?.repo === "string" && Number.isInteger((p as { number?: unknown })?.number) && typeof (p as { head?: unknown })?.head === "string")
+    .map((p) => ({ repo: String(p.repo), number: Number(p.number), head: String(p.head) }));
+  return { ...approvalView(a), ...(prs.length ? { prs } : {}) };
+};
 
+/** Pages of a task's merge history one approval read walks (500 records a page): far past any task's real history. */
+const HISTORY_PAGES = 20;
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;
 /** How long a board read waits for the parents outside its inventory (Agent work's "part of" links). */
@@ -367,6 +395,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const ok = (g: { roles?: string[]; tools?: Record<string, string[]> }) => (g.tools?.paperclip_tasks ?? []).includes(tool) && (!role || (g.roles ?? []).includes(role));
     try {
       return await requireAgent(pc, req, ok, `only an agent granted ${tool}${role ? ` with the ${role} role` : ""} may call this`);
+    } catch (err) {
+      throw err instanceof Refused ? new HttpError(403, err.message) : err;
+    }
+  }
+  /** As requireAgentTool, with the caller's claims and the grants entry the check just read fresh (not a module's cached copy). */
+  async function requireAgentToolCaller(req: IncomingMessage, tool: string) {
+    const ok = (g: { tools?: Record<string, string[]> }) => (g.tools?.paperclip_tasks ?? []).includes(tool);
+    try {
+      return await requireAgentCaller(pc, req, ok, `only an agent granted ${tool} may call this`);
     } catch (err) {
       throw err instanceof Refused ? new HttpError(403, err.message) : err;
     }
@@ -1095,9 +1132,51 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       handle: async (_m, _b, url, req) => {
         const issue = url.searchParams.get("issue");
         if (!issue) throw new HttpError(400, "issue=<task>");
-        await requireAgentTool(req, "task_approvals");
-        const task = await pc.issue(issue).then((i) => i.id, () => undefined);
-        return { approvals: task ? (await cardsOf("recent", { task, limit: 50 })).map(approvalView) : [] };
+        const { caller, grant } = await requireAgentToolCaller(req, "task_approvals");
+        // A lookup that failed is not a task with no cards: the run's check for a merge card must be able to tell them apart.
+        const found = await pc.issue(issue).then((i) => i, (e: Error) => {
+          throw new HttpError(502, `couldn't read ${issue}: ${String(e?.message ?? e).slice(0, 200)}`);
+        });
+        const task = found.id;
+        // The kernel stores a record under the task its filer named, which is a run's workspace *identifier* for a merge it files
+        // itself (kernel/src/localmerge.ts) and the task id for a tool call. Reading by both finds either; authorization above
+        // is on the id alone.
+        const refs = [...new Set([task, found.identifier].filter((r): r is string => Boolean(r)))];
+        // An Engineer without private reads reads only the task its run is working on: the check is against the grants table as
+        // it is now, not a bridge's cached copy, so revoking that access takes effect on the next call.
+        if (grant.profile === "engineer" && grant.private_reads !== true && task !== caller.task) {
+          throw new HttpError(403, "refused: without private reads an Engineer reads only the task its run is working on");
+        }
+        // `strict`: a kernel that didn't answer must not read as "no cards". This task's merges are read by kind, over every
+        // page of the states one can still be in (the reviewer's or owner's wait, and the approved or claimed run): a Tier 0
+        // merge the fleet filed for a green PR reaches the read there, so the newest page stays the reviewed cards alone and a
+        // run of Tier 0 writes can never push a decision that still blocks the task out of it.
+        const kinds = ["github.merge", "codehost-local.merge"];
+        const mine = (a: Approval) => refs.some((r) => a.issueId === r || a.identifier === r);
+        // The history read pages newest-first filtered to the merge kinds, so a merge that landed a while ago is still found
+        // behind newer writes, while its other cards can never crowd it out. Only merges are paged up: a bounded number of
+        // pages, well past a task's plausible history, and any page failing throws rather than reading as "no merge". The live
+        // read is every kind: a card still waiting on the reviewer or the owner blocks the task whatever it is (a deploy, an
+        // apply), and a full page of newer writes must never hide it.
+        const [recent, history, live] = await Promise.all([
+          Promise.all(refs.map((r) => cardsOf("recent", { task: r, limit: 50, strict: true }))).then((p) => p.flat()),
+          Promise.all(refs.map((r) => records.allOf("recent", kinds, r, HISTORY_PAGES))).then((p) => p.flat()),
+          Promise.all(refs.map((r) => records.allOf("live", undefined, r))).then((p) => p.flat()),
+        ]);
+        // The reads run side by side, and one card can be in two of them: the later snapshot wins, so an ended card's
+        // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished, and a card approved
+        // between the two reads is never reported as still waiting on a decision. A record only moves forward through these
+        // states, so the rank orders the two snapshots without trusting either read's timing.
+        const byId = new Map<string, Approval>();
+        for (const a of [...recent, ...history, ...live.filter(mine)]) {
+          const seen = byId.get(a.id);
+          if (!seen || newer(a, seen)) byId.set(a.id, a);
+        }
+        // Newest first. Two different attempts for one PR can share a millisecond (one filed under the task id, one under its
+        // identifier, in reads that are separate and so carry no shared row order): the one that can still land is the current
+        // attempt, so it sorts ahead of an ended one. The other snapshot tiebreak (same card) is `newer`'s.
+        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? Number(b.live === true) - Number(a.live === true) : a.createdAt < b.createdAt ? 1 : -1));
+        return { approvals: shown.map(mergeView) };
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.

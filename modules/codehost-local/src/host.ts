@@ -119,26 +119,31 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   }
 
   /** The change squashed onto the default branch as one commit, a compare-and-swap on its ref; refused on a conflict. */
-  function land(repo: string, n: number, head: string) {
+  function land(repo: string, n: number, head: string, checkedBase?: string) {
     return locked(repo, async () => {
       const c = await readChange(repo, n);
       if (c.state !== "open") throw fail(409, `${changeUrl(repo, n)} is ${c.state}`);
       const moved = headMoved(changeUrl(repo, n), c.head, head);
       if (moved) throw fail(409, moved);
       if (!c.base) throw fail(409, `${changeUrl(repo, n)} shares no history with its default branch`);
+      // The base the checks ran against: the default branch moved under them, so the merge base is another one nobody checked.
+      // Refused, never landed. A base that moved changes `c.base`, so the sweep's own `prior` check files the merge again at the
+      // new base; a destination that moved without the base changing is left to the compare-and-swap below.
+      if (checkedBase !== undefined && checkedBase !== c.base) throw fail(409, `${changeUrl(repo, n)}: the default branch moved while its checks ran, so their base is no longer the one it would merge onto; asking for the merge again`);
       const def = await defaultBranch(repo);
       const tree = await g(repo, ["merge-tree", "--write-tree", `--merge-base=${c.base}`, c.main, head]).catch((e: { code?: number }) => (e.code === 1 ? "" : Promise.reject(e)));
       if (!tree) throw fail(409, `${changeUrl(repo, n)} conflicts with ${def} as it is now: rebase it and publish again`);
       const message = `${String(c.meta.title ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 300) || c.meta.branch} (change ${n})\n\n${await g(repo, ["log", "-1", "--format=%B", head])}`;
       const sha = await g(repo, ["commit-tree", tree.split("\n")[0]!, "-p", c.main, "-m", message], { env: IDENTITY });
-      // Compare-and-swap on the base ref: a base that moved under the merge is refused, never overwritten (its checks were run
-      // against the base read above, and nobody reviewed a merge onto another).
-      await g(repo, ["update-ref", `refs/heads/${def}`, sha, c.main]).catch(async (e: { code?: number }) => {
+      // Compare-and-swap on the base ref, and the merged marker, in one transaction: a base that moved under the merge is refused,
+      // never overwritten (its checks were run against the base read above, and nobody reviewed a merge onto another), and a
+      // commit that reached the default branch always leaves the marker that says the change landed. A marker written on its
+      // own could fail after the branch moved, leaving a landed change that still reads open.
+      await refs(repo, [`update refs/heads/${def} ${sha} ${c.main}`, `create refs/changes/${n}/merged ${sha}`]).catch(async (e: { code?: number }) => {
         const clash = baseMoved(changeUrl(repo, n), c.main, await rev(repo, `refs/heads/${def}`));
         if (clash) throw fail(409, clash);
         throw e;
       });
-      await refs(repo, [`create refs/changes/${n}/merged ${sha}`]);
       await g(repo, ["update-ref", "-d", `refs/heads/${c.meta.branch}`, head]).catch(() => {});
       return sha;
     });
@@ -290,23 +295,34 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
       }
       if (action === "merge") {
         const merged: { repo: string; number: number; head: string; sha: string }[] = [];
-        for (const p of a.prs) {
-          const c = await readChange(p.repo, Number(p.number));
-          const t0 = Date.now(), task = (c.meta.task as string | undefined) ?? null;
-          const why = await green(p.repo, p.head, c.base);
-          const at = new Date().toISOString();
-          // A wait on the checks, and CI's end on this head (the same facts as codehost-github's merge queue).
-          if (Date.now() - t0 > 2000) { const since = new Date(t0).toISOString(); fact({ type: "work.waiting", subject: subject(p.repo, c.n), version: since, at: since, task, data: { reason: "checks" } }); fact({ type: "work.resumed", subject: subject(p.repo, c.n), version: since, at, task, data: { reason: "checks" } }); }
-          fact({ type: "pr.checks_completed", subject: `${subject(p.repo, c.n)}@${p.head}`, version: `${p.head}:1`, at, task, data: { head: p.head, conclusion: why ? "failure" : "success", failed: why ? ["checks"] : [] } });
-          if (why) return { ok: false, text: `${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
-          const sha = await land(p.repo, c.n, p.head);
-          fact({ type: "pr.merged", subject: subject(p.repo, c.n), version: p.head, at: new Date().toISOString(), task: (c.meta.task as string | undefined) ?? null, data: { sha, head: p.head } });
-          void churnLocal(p.repo).catch(() => {}); // churn never delays or fails a merge
-          merged.push({ repo: p.repo, number: c.n, head: p.head, sha });
-          done.push(`${changeUrl(p.repo, c.n)} as ${sha.slice(0, 12)}`);
+        // The evidence line for whatever landed, on a failure as much as on success: a batch that landed one change before the
+        // next failed must not read as "nothing merged".
+        const evidence = () => (merged.length ? `merged-prs: ${JSON.stringify(merged)}\n` : "");
+        // Every failure path through the batch carries the evidence: a read of a later change, its checks, or its land.
+        const failed = (why: string) => new Error(`${evidence()}${why}`);
+        try {
+          for (const p of a.prs) {
+            const c = await readChange(p.repo, Number(p.number));
+            const t0 = Date.now(), task = (c.meta.task as string | undefined) ?? null;
+            const why = await green(p.repo, p.head, c.base);
+            const at = new Date().toISOString();
+            // A wait on the checks, and CI's end on this head (the same facts as codehost-github's merge queue).
+            if (Date.now() - t0 > 2000) { const since = new Date(t0).toISOString(); fact({ type: "work.waiting", subject: subject(p.repo, c.n), version: since, at: since, task, data: { reason: "checks" } }); fact({ type: "work.resumed", subject: subject(p.repo, c.n), version: since, at, task, data: { reason: "checks" } }); }
+            fact({ type: "pr.checks_completed", subject: `${subject(p.repo, c.n)}@${p.head}`, version: `${p.head}:1`, at, task, data: { head: p.head, conclusion: why ? "failure" : "success", failed: why ? ["checks"] : [] } });
+            // A batch that landed some of its PRs before one refused still reports them as merged: the evidence line comes first,
+            // as the success text's does, so a run reading the outcome knows which heads did land.
+            if (why) return { ok: false, text: `${evidence()}${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
+            const sha = await land(p.repo, c.n, p.head, c.base);
+            fact({ type: "pr.merged", subject: subject(p.repo, c.n), version: p.head, at: new Date().toISOString(), task: (c.meta.task as string | undefined) ?? null, data: { sha, head: p.head } });
+            void churnLocal(p.repo).catch(() => {}); // churn never delays or fails a merge
+            merged.push({ repo: p.repo, number: c.n, head: p.head, sha });
+            done.push(`${changeUrl(p.repo, c.n)} as ${sha.slice(0, 12)}`);
+          }
+        } catch (e) {
+          throw failed(`${(e as Error).message.slice(0, 300)}`);
         }
         // The first line as codehost-github's merge queue writes it (merges.ts MERGED_LINE): what the grader reads as merged.
-        return { ok: true, text: `merged-prs: ${JSON.stringify(merged)}\nMerged: ${done.join(", ")}` };
+        return { ok: true, text: `${evidence()}Merged: ${done.join(", ")}` };
       }
       if (action === "close") {
         for (const p of a.prs) {

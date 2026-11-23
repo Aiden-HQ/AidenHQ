@@ -809,6 +809,24 @@ const clip = (text: string, max: Json, more: Json) => {
   return t.length > max ? `${t.slice(0, max)}\n[truncated, ${t.length - max} more chars: ${more}]` : t;
 };
 const DESC_MAX = 8000;
+/** A merge's evidence line parsed and checked: a JSON array of {repo, number, head} bindings, or undefined (its text is then
+ * prose, fenced like any other). A malformed or truncated line must never pass for "these PRs landed". */
+function mergedEvidence(said: string): string | undefined {
+  let v: unknown;
+  try { v = JSON.parse(said); } catch { return undefined; }
+  const SLUG = /^[\w.-]+\/[\w.-]+$/, SHA = /^[0-9a-f]{40}$/;
+  const ok = Array.isArray(v) && v.every((p: Json) => p && typeof p.repo === "string" && SLUG.test(p.repo) && Number.isInteger(p.number) && p.number > 0 && typeof p.head === "string" && SHA.test(p.head) && (p.sha === undefined || (typeof p.sha === "string" && SHA.test(p.sha))));
+  if (!ok) return undefined;
+  // Reserialize only the validated fields: the record's own text is not returned, so no extra key or prose in a binding's
+  // strings can ride out of the fence as if it were structured evidence.
+  return JSON.stringify((v as { repo: string; number: number; head: string; sha?: string }[]).map(({ repo, number, head, sha }) => ({ repo, number, head, ...(sha === undefined ? {} : { sha }) })));
+}
+/** Text inside a fence, with no `<` or `>`: a one-pass tag strip can rebuild a closing tag from a nested one, so every angle
+ * bracket goes, and the content can never end the fence it is in. */
+const inert = (t: string) => t.replace(/[<>]/g, " ");
+/** The actions whose outcome is merge evidence: the board's short `merge` and the two registered code-host merge kinds. A module's
+ * own kind, whatever its name or text, is never merge evidence. */
+const MERGE_KINDS = ["merge", "github.merge", "codehost-local.merge"];
 const READ_COMMENT_MAX = 1500;
 const SNIPPET_MAX = 300;
 
@@ -1291,21 +1309,50 @@ const TOOLS: Record<string, Tool> = {
   },
   task_approvals: {
     description:
-      "Read-only: the approval cards filed on a task (push, PR, merge, apply, deploy) with their state and outcome, newest first. A card lives on the task it was filed on: an Engineer's sub-task, or the task fleet_control ran on; not on the chat above it.",
-    inputSchema: { type: "object", properties: { issue: { type: "string", description: "the task the card was filed on, e.g. WOR-45" } }, required: ["issue"], additionalProperties: false },
+      "Read-only: the approval cards filed on a task (push, PR, merge, apply, deploy) with their state and outcome, newest first. A card lives on the task it was filed on: an Engineer's sub-task, or the task fleet_control ran on; not on the chat above it. An Engineer without private reads reads only its own task's cards.",
+    inputSchema: { type: "object", properties: { issue: { type: "string", description: "the task the card was filed on, e.g. WOR-45; default: the current task" } }, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async ({ issue }: Args) => {
-      // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task.
+      const target = issue ?? CURRENT();
+      if (!target) throw new Error("no current task");
+      // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task. A
+      // caller the directory doesn't hold has no entry to establish its scope, so a named task is refused, never read. Naming
+      // the run's own task (by id or identifier) is fine: only another task is refused.
       const me = dirAgents()[cx().caller.agent];
-      if (me?.profile === "engineer" && me.private_reads !== true) {
+      const asked = String(issue ?? "").trim();
+      if (asked && me == null) throw new Error("Refused: the agent directory has no entry for this caller, so only the task this run is working on is readable: leave out `issue`.");
+      if (asked && me.profile === "engineer" && me.private_reads !== true) {
         const mine = CURRENT();
-        if (!mine) throw new Error("no current task");
-        const asked = String(issue ?? "").trim();
-        if (asked && asked !== mine && (await api("GET", `/api/issues/${issueRef(asked)}`)).id !== mine) throw new Error("Refused: without private reads you read only the task this run is working on: pass this run's own task.");
+        const same = mine && (asked === mine || (await api("GET", `/api/issues/${issueRef(asked)}`).then((i: Json) => i.id === mine, () => false)));
+        if (!same) throw new Error("Refused: without private reads you read only the task this run is working on: leave out `issue`.");
       }
-      const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(issue)}`);
+      const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(target)}`);
       return {
-        approvals: approvals.map((a: Json) => ({ id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, ...(a.outcomeText ? { outcomeText: String(a.outcomeText).slice(0, 300) } : {}), createdAt: a.createdAt })),
+        // `wakes`: whether the outcome is posted to the task (a decided record, or one a module filed for its agent). A merge's
+        // evidence is its `merged-prs` line, returned whole as `mergedPrs`; any card's prose is untrusted text, fenced and capped.
+        approvals: approvals.map((a: Json) => {
+          const text = a.outcomeText ? String(a.outcomeText) : "";
+          const [first, ...rest] = text.split("\n");
+          // `merged-prs:` is evidence only on a merge kind's own outcome: any other card's text is a module's own words, whatever
+          // it begins with, and must not pass for a merge that landed the PR. The evidence line is structured and returned whole
+          // as `mergedPrs`; the executor's prose is untrusted text, fenced and labelled (300 characters at most), as its notice is.
+          const merge = MERGE_KINDS.includes(a.action);
+          // Only a complete, well-formed list is evidence: a truncated line (the kernel's own outcome cap) or a producer's odd
+          // payload stays a module's words in the fence, where nothing reads it as a landing.
+          const evidence = merge && (first ?? "").startsWith("merged-prs: ") ? mergedEvidence((first ?? "").slice("merged-prs: ".length)) : undefined;
+          const prose = inert(evidence !== undefined ? rest.join("\n") : text).trim().slice(0, 300);
+          const outcomeText = prose ? `<untrusted-outcome source="${a.action} card ${a.id}, ${a.state}">\n${prose}\n</untrusted-outcome>` : "";
+          // A rejection's reason is the reviewer's or the owner's words, which may quote the diff: fenced and labelled, so a run
+          // that finds the card on a later check knows what to change without reading them as an instruction.
+          // An owner's own rejection reason comes first: it is what the run must change, where a review's note may only explain.
+          // The owner's own reason is the condition for refiling, so it is returned whole (the kernel caps it at 500 characters
+          // when it is written); a reviewer's note is only an explanation, and is cut with a mark where it was.
+          const owner = a.ownerReason ? String(a.ownerReason) : "";
+          const said = owner ? `the owner: ${owner}` : String(a.review ?? a.reason ?? "");
+          const cut = owner ? inert(said) : inert(said).slice(0, 300);
+          const why = a.state === "rejected" ? `<untrusted-card-reason source="${a.action} card ${a.id}, ${a.state}">\n${cut}\n</untrusted-card-reason>` : "";
+          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(evidence !== undefined ? { mergedPrs: evidence } : {}), ...(why ? { reason: why } : {}), createdAt: a.createdAt };
+        }),
       };
     },
   },

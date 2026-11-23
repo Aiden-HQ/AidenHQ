@@ -228,7 +228,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   closed meanwhile: the kernel's closed-task rule ends an agent's leftover request only.
 - **Findings.** A finding stays open (`findings.outcome` null) until a mandatory run's recheck confirms it fixed, it is answered
   on its thread, or the owner dismisses it on the board. Old and new findings gate alike. Every new head's first mandatory run gets
-  every open gating finding with its evidence (whatever the change touched; `spec.previous` fits 16 KB by shrinking texts first)
+  every open gating finding with its evidence (whatever the change touched; `spec.previous` is shared over six 16 KB spec fields, shrinking texts first; a recheck asks about every answered and gating finding, in chunks of 15 judged one by one)
   and the finders get the open findings as already reported: one that restates an open one on the same file at no higher severity
   is dropped (a mandatory review's important one only by a gating one). A result for a head the PR moved on from is discarded. Each
   change is a row in `dispositions` (finding, head, state, reason, evidence, who decided).

@@ -67,6 +67,23 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
  * empty. option and lens are the catalog option's (empty for a combo); setup_files a pending deepsec setup branch's files.
  * `code-review-tools` (the selected tool options, token-free): the base (a tree's: the commit itself) and the options (toolSpec).
  */
+/** The previous findings ride in PREVIOUS_FIELDS json spec fields (the kernel holds 16 KB each): `previous`, `previous_b`, … The
+ * budget leaves room for an entry that doesn't fit the end of a field. */
+export const PREVIOUS_FIELDS = 6, PREVIOUS_BUDGET = PREVIOUS_FIELDS * 13_500;
+const FIELD_MAX = 15_000;
+function shards(findings: unknown[]): Record<string, string> {
+  const out: unknown[][] = Array.from({ length: PREVIOUS_FIELDS }, () => []);
+  let at = 0, size = 0;
+  for (const f of findings) {
+    const n = JSON.stringify(f).length + 1;
+    // A finding that fits no field stays open (never marked fixed unseen).
+    if (size + n > FIELD_MAX && out[at]!.length) { if (at === PREVIOUS_FIELDS - 1) continue; at++; size = 0; }
+    out[at]!.push(f);
+    size += n;
+  }
+  return Object.fromEntries(out.map((l, i) => [i ? `previous_${"bcdef"[i - 1]}` : "previous", JSON.stringify({ findings: l })]));
+}
+
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   const tree = s.target === "tree";
   const base = tree ? s.head : s.merge_base;
@@ -78,7 +95,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
-    previous: JSON.stringify({ findings: s.previous }),
+    ...shards(s.previous),
   };
 }
 

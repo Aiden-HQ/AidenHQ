@@ -31,7 +31,7 @@ import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, openOnly, REPO_DE
 import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
 import { detect, toolSpec, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
-import { SETUP_PATH } from "./adapters.ts";
+import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
@@ -476,21 +476,21 @@ export function createEngine(d: EngineDeps) {
      FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.outcome IS NULL GROUP BY f.id ORDER BY gating DESC, MAX(f.rowid) DESC`, repo, n).map(({ rank, ...f }) => ({ ...f, severity: ["important", "nit", "pre_existing"][rank]! }));
   /** The open findings that gate the PR's merge (openImportant). */
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
-  /** What a run rechecks (spec.previous, at most 16 KB): every gating finding with its evidence, then up to 50 others. Texts
-   * shrink before a gating finding is left out; one that can't fit even bare stays open (never marked fixed unseen). */
+  /** What a run rechecks (spec.previous, shared over PREVIOUS_FIELDS spec fields of 16 KB): every gating finding with its evidence,
+   * every answered one, every other open one. Texts shrink before a finding is left out; one that can't fit even bare stays open
+   * (never marked fixed unseen). */
   function recheckList(repo: string, n: number) {
     // Findings closed by a reply (fixed, disputed, by design, won't fix): rechecked only for a fix or reason that is unsafe.
-    const claimed = all<{ id: string; path: string; line: number; title: string; claim: string }>("SELECT id, MIN(path) path, MIN(line) line, MIN(title) title, MAX(claim) claim FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND outcome NOT IN ('open_at_merge', 'open_at_close') GROUP BY id ORDER BY MAX(rowid) DESC LIMIT 30", repo, n)
+    const claimed = all<{ id: string; path: string; line: number; title: string; claim: string }>("SELECT id, MIN(path) path, MIN(line) line, MIN(title) title, MAX(claim) claim FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND outcome NOT IN ('open_at_merge', 'open_at_close') GROUP BY id ORDER BY MAX(rowid) DESC", repo, n)
       .map((f) => ({ id: f.id, severity: "important", path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), claim: f.claim.slice(0, 300) }));
     const open = stillOpen(repo, n);
-    const gating = open.filter((f) => f.gating), other = open.filter((f) => !f.gating).slice(0, 50);
-    const size = (v: unknown) => JSON.stringify({ findings: v }).length;
+    const gating = open.filter((f) => f.gating), other = open.filter((f) => !f.gating);
+    const size = (v: unknown) => JSON.stringify(v).length;
     const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
       ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
-    let out: ReturnType<typeof entry>[] = [];
-    for (const text of [400, 150, 0]) if (size((out = gating.map((f) => entry(f, text)))) <= 15_000) break;
-    while (out.length && size(out) > 15_000) out.pop();
-    for (const f of [...claimed, ...other.map((f) => entry(f, 0))]) { if (size([...out, f]) > 15_000) break; out.push(f as never); }
+    let out: object[] = [];
+    for (const text of [400, 150, 0]) if (size((out = [...gating.map((f) => entry(f, text)), ...claimed, ...other.map((f) => entry(f, 0))])) <= PREVIOUS_BUDGET) break;
+    while (out.length && size(out) > PREVIOUS_BUDGET) out.pop();
     return out;
   }
   const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });
