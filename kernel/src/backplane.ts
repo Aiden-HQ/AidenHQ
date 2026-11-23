@@ -92,6 +92,7 @@
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
+import type { Projects } from "./projects.ts";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
@@ -282,9 +283,11 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
+  /** Projects (projects.ts): a code host's new PR fills in its task's project. */
+  projects?: Pick<Projects, "touch">;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
   idle?: Idle;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
@@ -416,6 +419,7 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             return r?.requester.key ? `agent:${r.requester.key}` : undefined;
           };
           let recorded = 0;
+          const opened: { task: string; repo: string }[] = [];
           // Facts older than the log keeps (facts.ts prune, 400 days) would be pruned at once: skipped, not refused (a history backfill).
           const kept = t - 400 * 864e5;
           records.db.exec("BEGIN IMMEDIATE");
@@ -425,13 +429,18 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
               const data = f.data ?? {};
               const actor = (data.job != null ? agentOf(data.job) : undefined) ?? (f.subject.startsWith("pr:") ? prAgent(f.subject, f.task) : undefined) ?? `module:${w.module}`;
               // The module's name is part of the version (so of the id): two modules declaring one type can never pre-empt each other's facts.
-              if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) recorded++;
+              if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) {
+                recorded++;
+                // A code host's new PR on a task: the task joins the repo's project (projects.ts touch).
+                if (f.type === "pr.opened" && CODEHOSTS.includes(w.module!) && typeof f.task === "string" && f.task && typeof data.repo === "string" && f.source !== "backfill") opened.push({ task: f.task, repo: data.repo });
+              }
             }
             records.db.exec("COMMIT");
           } catch (e) {
             records.db.exec("ROLLBACK");
             throw e;
           }
+          for (const o of opened) void projects?.touch(o.task, o.repo).catch((e: Error) => log("project fill failed", { task: o.task, repo: o.repo, err: e.message }));
           return send(res, 200, { recorded });
         }
         case "GET /v1/whoami": {

@@ -551,10 +551,16 @@ export interface ShownState {
   note?: string;
   /** When the open owner wait began (present whenever one is open, whatever the task shows first). */
   wait_since?: string;
+  /** When the earliest open scheduled wake is due. */
+  scheduled_for?: string;
+  /** The agent (id) an open delegator wait's question went to. */
+  waits_on?: string;
   /** What `ref` names, in a few words: a card's sentence, a blocker's identifier, how a job ended. */
   refLabel?: string;
   /** The same for each attention entry's ref and the blocker's, by ref. */
   refs?: Record<string, string>;
+  /** The name of the agent `waits_on` names. */
+  waits_on_name?: string;
   /** A holder Paperclip reports removed: its name. */
   holder_name?: string;
   holder_gone?: true;

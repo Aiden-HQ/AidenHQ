@@ -8,7 +8,8 @@
 // - Every POST carries this listener's own Origin, exactly (cookies ignore ports, so the board's origin on the same host is
 //   refused here), and, signed in, a token bound to the session that only a page from this origin carries (A6).
 // - Every page sends frame-ancestors 'none', except /owner/message, which the board's origins may frame: it only sends what
-//   the owner typed into it (A7). Every one-click owner action happens on a top-level page here.
+//   the owner typed into it (A7). Every one-click owner action here happens on a top-level page; the board's own Approve and
+//   Reject decide through /v1/owner/decide with the admin's board session instead (auth-api.ts), never by framing a page here.
 // - /setup (spec §6.10, A42): the first-run page, only with the single-use token ops/setup.sh --unattended prints and only
 //   while no admin exists. A GET changes nothing; the submit is checked in full, then spends the token, makes the owner's
 //   account and hands over to /auth/enrol for the authenticator. The owner then picks the model on /setup/model: Connect

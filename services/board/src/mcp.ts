@@ -85,10 +85,10 @@ const VALID = new Map<string, Valid>(Object.entries({
   decision: oneOf("approve", "reject"),
   outcome: oneOf("applied", "failed"),
   action: oneOf("push", "pr", "merge", "apply", "create_repo", "deploy_app", "app_run", ...UPDATES),
-  holder: agentish, agent: agentish, assignee: agentish, by: agentish, requestedBy: agentish, decidedBy: agentish, owner: agentish, key: agentish,
+  holder: agentish, agent: agentish, assignee: agentish, by: agentish, requestedBy: agentish, decidedBy: agentish, owner: agentish, key: agentish, waits_on: agentish,
   module: (s, c) => Boolean(c.known?.has(s)), signin: (s, c) => Boolean(c.known?.has(s)), connection: (s, c) => Boolean(c.known?.has(s)),
   link, connect_link: link,
-  ...Object.fromEntries(["wait_since", "lastChangeAt", "createdAt", "updatedAt", "activityAt", "decidedAt", "at", "since", "lastUsed", "expires", "nextRunAt", "nextRun", "deployed_at", "deployedAt", "lastRunAt", "checkedAt", "lastOkAt", "startedAt", "finishedAt", "opened_at"].map((k) => [k, time])),
+  ...Object.fromEntries(["wait_since", "scheduled_for", "lastChangeAt", "createdAt", "updatedAt", "activityAt", "decidedAt", "at", "since", "lastUsed", "expires", "nextRunAt", "nextRun", "deployed_at", "deployedAt", "lastRunAt", "checkedAt", "lastOkAt", "startedAt", "finishedAt", "opened_at"].map((k) => [k, time])),
 }));
 /** One line of data: the server instructions say once what the marker means; the closing marker inside the text is neutralised. */
 const fence = (text: string, source: string) => `${FENCE_OPEN} source="${String(source).replace(/[^\w.:/-]/g, "_").slice(0, 60)}">${text.replace(/<\/?untrusted-data/gi, (m) => m.replace("<", "&lt;"))}${FENCE_CLOSE}`;

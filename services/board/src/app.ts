@@ -319,13 +319,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // A task's own ref (a handback, an orphaned task) names itself: nothing to read.
     const refs = rows.flatMap((r) => [r.ref, r.blocker, ...r.attention.map((a) => a.ref)].filter((x): x is string => Boolean(x) && x !== `task:${r.task}`));
     const blockers = [...new Set(refs.filter((x) => x.startsWith("task:")).map((x) => x.slice(5)).filter((t) => !known.has(t)))];
-    const [named, cards, activity] = await Promise.all([
+    const [named, cards, activity, agents] = await Promise.all([
       blockers.length ? statesOf(taskStates, blockers) : new Map<string, StateRow>(),
       refs.some((x) => x.startsWith("record:")) ? records.list("pending").catch(() => []) : [],
       refs.some((x) => x.startsWith("job:")) ? kernelActivity() : undefined,
+      rows.some((r) => r.waits_on) ? pc.agents().catch(() => []) : [],
     ]);
     const jobs = new Map((activity?.recent ?? []).map((j) => [j.id, j]));
-    return rows.map((r) => shown(r, { identifier: (t) => known.get(t) ?? named.get(t)?.identifier ?? undefined, card: (id) => cards.find((c) => c.id === id)?.sentence, job: (id) => jobs.get(id) }));
+    return rows.map((r) => shown(r, { identifier: (t) => known.get(t) ?? named.get(t)?.identifier ?? undefined, card: (id) => cards.find((c) => c.id === id)?.sentence, job: (id) => jobs.get(id), agent: (id) => agents.find((a) => a.id === id)?.name }));
   }
   /** The state of each task (by id) the kernel has facts for; a task it has none for isn't in the map and shows none. */
   async function stateRows(ids: string[]): Promise<Map<string, ShownState>> {
