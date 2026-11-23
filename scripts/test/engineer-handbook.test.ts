@@ -77,7 +77,7 @@ test("the reply rule leaves a run that hands its task back with one comment, its
   const start = text.indexOf("On a task, that is one comment per turn");
   const rule = text.slice(start, text.indexOf("A run note is a few lines", start));
   assert.match(rule, /the run's final message is that comment/, "the final message is the one comment");
-  assert.match(rule, /never post a `task_comment` and then repeat it in the final message: the final message is the task's comment/, "the run picks one, never both");
+  assert.match(rule, /Never post a `task_comment` and then repeat it in the final message: the final message is the task's comment/, "the run picks one, never both");
   assert.match(rule, /When the run closes the very task it is working on, `task_finish` and `task_handoff` record their comment on that task, so it is the run's one comment: put the whole update, a deliverable included, in that comment, post no `task_comment` before it, and end with exactly NO_REPLY/, "a close of the run's own task makes its comment the one comment and the final message NO_REPLY");
   assert.match(rule, /A close of another task \(a `task_finish` with its `issue`\) leaves this run's own reply untouched/, "closing another task leaves the run's own reply alone");
 });

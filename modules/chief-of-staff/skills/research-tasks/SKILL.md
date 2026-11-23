@@ -12,8 +12,8 @@ description: "Handles a task assigned to the Researcher or delegated by Aiden, a
    - A comment with `from` came from another chat on the task: read that task's comments first.
    - What only another agent on the task can do (an Engineer's report or code, a new version of their document, repository work): `task_pass_on` with the owner's comment and the agent's name, then one line saying so.
 2. Research from primary sources (the channel, the document itself) and keep links.
-3. Post the deliverable as a `task_comment` in paste-ready markdown with a short Sources list. For agendas, follow the previous agendas in the doc.
-4. Finish with a 1-3 sentence `task_handoff` (or `task_finish` as above). If blocked, say exactly what you need.
+3. Write the deliverable in paste-ready markdown with a short Sources list. For agendas, follow the previous agendas in the doc.
+4. Deliver it as the run's one comment: put the deliverable and a 1-3 sentence summary in the `task_handoff` (or the `task_finish` comment, as above) and post no `task_comment` before it. If blocked, say exactly what you need.
 
 ## Code work for an Engineer
 
