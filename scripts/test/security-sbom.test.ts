@@ -82,12 +82,14 @@ if [ "$1" = run ] && [ -n "$FAKE_HOST_SCAN_SLEEP" ] && [[ "$*" == *"--source-nam
 fi
 # An apply that starts while the scans run: FAKE_TAKE_LOCK_ON_HOST_SCAN has a background process hold the apply lock as the
 # host scan begins, so a later wave cannot export and must record its images rather than leave a gap. It writes a marker
-# once it holds the lock and keeps holding it until the test removes the marker, so nothing races a timeout. Its stdout is
-# closed so the host scan's command substitution does not wait on it.
+# once it holds the lock and keeps holding it until the test removes the marker, so nothing races a timeout. The host scan
+# waits for the marker, so the lock is held before any scan runs. The holder's stdout is closed so the host scan's command
+# substitution does not wait on it.
 if [ "$1" = run ] && [ -n "\${FAKE_TAKE_LOCK_ON_HOST_SCAN:-}" ] && [[ "$*" == *"--source-name host"* ]]; then
   marker="\${FAKE_APPLY_LOCK%/*}/late-holder"
   ( exec 9>>"$FAKE_APPLY_LOCK"; flock 9; : > "$marker"
     while [ -f "$marker" ]; do sleep 0.05; done ) >/dev/null 2>&1 </dev/null &
+  for _ in $(seq 1 200); do [ -f "$marker" ] && break; sleep 0.05; done
 fi
 # rm -f clears a container the script named before a run; a name nothing holds is a normal answer, not a failure.
 [ "$1" = rm ] && exit 0
