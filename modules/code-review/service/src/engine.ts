@@ -218,7 +218,7 @@ export function createEngine(d: EngineDeps) {
       DROP TABLE findings;
       ALTER TABLE findings_v2 RENAME TO findings;
       CREATE INDEX IF NOT EXISTS findings_pr ON findings (repo, number, outcome);
-      PRAGMA user_version = ${DATA_VERSION};
+      PRAGMA user_version = 2;
       COMMIT;`);
   }
   // 2 → 3: a `fixed` answer closes its finding at once (no claim recheck): the claims still pending close as fixed, and a claim
