@@ -135,10 +135,16 @@ const approvalView = (approval: Approval) => {
   const { args: _args, ...a } = approval;
   return { ...a, ...(a.wait !== null ? { wait: shownWait(a.wait) } : {}) };
 };
+/** A merge kind's action: the kernel's own kinds (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
+ * A card of any other kind says only what the board's own view says, whatever its args hold. */
+const isMergeKind = (action: string) => action === "merge" || action.endsWith(".merge");
 /** A merge card's view: the PRs and heads it is bound to (never the args whole), so a run can match the head it published. */
 const mergeView = (a: Approval) => {
-  const prs = ((a.args as { prs?: { repo?: unknown; number?: unknown; head?: unknown }[] } | null)?.prs ?? [])
-    .filter((p) => typeof p?.repo === "string" && Number.isInteger(p?.number) && typeof p?.head === "string")
+  // A module's own args are its own shape: only an array of well-formed bindings is read, so one odd record never fails the
+  // whole read and hides a merge card.
+  const raw = isMergeKind(a.action) ? (a.args as { prs?: unknown } | null)?.prs : undefined;
+  const prs = (Array.isArray(raw) ? raw : [])
+    .filter((p): p is { repo: string; number: number; head: string } => typeof (p as { repo?: unknown })?.repo === "string" && Number.isInteger((p as { number?: unknown })?.number) && typeof (p as { head?: unknown })?.head === "string")
     .map((p) => ({ repo: String(p.repo), number: Number(p.number), head: String(p.head) }));
   return { ...approvalView(a), ...(prs.length ? { prs } : {}) };
 };

@@ -151,6 +151,33 @@ describe("internal listener", () => {
     }
   });
 
+  it("only a merge card's view decodes `prs`: another kind's args cannot break the read", async () => {
+    const records = fakeRecords([
+      card({ id: "k-0000000000000040", issueId: issue.id, identifier: issue.identifier, action: "apply", tier: 1, state: "used", outcome: "applied", args: { prs: "not-an-array" } }),
+      card({ id: "k-0000000000000041", issueId: issue.id, identifier: issue.identifier, action: "github.merge", tier: 1, state: "running", live: true, args: { prs: { repo: "a/b" } } }),
+      card({ id: "k-0000000000000042", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "running", live: true, args: { prs: [{ repo: "a/b", number: 2, head: "b".repeat(40) }] } }),
+    ]);
+    const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
+    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
+    const port6 = (board.address() as AddressInfo).port;
+    try {
+      const out = await new Promise<{ approvals: { id: string; prs?: unknown }[] }>((resolve, reject) => {
+        request({ host: "127.0.0.1", port: port6, method: "GET", path: `/internal/approvals?issue=${issue.identifier}`, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve(JSON.parse(text)));
+        }).on("error", reject).end();
+      });
+      const byId = (id: string) => out.approvals.find((a) => a.id === id)!;
+      // A string or an object where a merge's args should hold a list: neither is a binding, and neither fails the read.
+      expect(byId("k-0000000000000040").prs).toBeUndefined();
+      expect(byId("k-0000000000000041").prs).toBeUndefined();
+      expect(byId("k-0000000000000042").prs).toEqual([{ repo: "a/b", number: 2, head: "b".repeat(40) }]);
+    } finally {
+      board.close();
+    }
+  });
+
   it("a failed task or records lookup is an error, never an empty card list", async () => {
     const failing = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records: { ...fakeRecords([]), list: async () => { throw new Error("the kernel answered 503"); } } });
     await new Promise<void>((r) => failing.listen(0, "127.0.0.1", r));
