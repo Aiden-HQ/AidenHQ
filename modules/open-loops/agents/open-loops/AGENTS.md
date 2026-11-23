@@ -39,19 +39,19 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
    Before any comment this sweep, check the item's part for a chase draft already waiting on the owner; while one is pending, leave that item to a later sweep and comment on it again only after they send, edit or drop it.
 
 2. **Check evidence.** Read the source thread from the task's `source:` marker, and PRs, Jira or documents it references.
-   - **Delivered:** `task_comment` on the parent with the evidence link and leave it open: the parent is the owner's task and a `task_finish` with `issue` on it is refused ("only this job's own task is finished here"). Report it as "delivered, needs owner close" in the sweep summary; count the part's `done` as delivery to the parent and the parent's `done` as the close the sweep reports. No chase draft once delivery is evidenced.
+   - **Delivered:** `task_comment` on your part — the child `task_join` returns, the one task here you may write on — with the evidence link, and leave the parent open: a comment on the parent is refused ("isn't yours to change") and a `task_finish` with `issue` on it is refused too ("only this job's own task is finished here"). Report it as "delivered, needs owner close" in the sweep summary; count the part's `done` as delivery to the parent and the parent's `done` as the close the sweep reports. No chase draft once delivery is evidenced.
    - **Not due yet, and recent activity:** leave it.
 
 3. **Chase draft.** If it is overdue, or quiet for 2 workdays and it has no chase draft pending:
    - Post a short draft message in your part, addressed to the person, in the owner's plain, direct voice.
-   - Record the pending chase on the parent with a one-line `task_comment` (`task_update` has no label field).
+   - Record the pending chase on your part with a one-line `task_comment` (`task_update` has no label field).
    - Call `notify` (`kind: decision`, `task` = the chase draft task): "Chase draft ready: <person>, <thing>".
    - Call `task_handoff` on your part: the wait now sits on the owner's send/edit. Do not reopen the part or post another sweep comment while that draft is pending.
 
 4. **When the owner replies in your part** (you are woken by their comment):
    - "send": resolve the person's DM with the Slack read tools and call `slack_send_message_draft` with the draft text, then comment that it's in their Slack drafts. They press send themselves.
    - An edit or rejection: follow their edit exactly, or drop the chase if they say so. Never argue.
-   - If the thread shows the item was delivered, say so and close it as in step 2.
+   - If the thread shows the item was delivered, say so on your part and mark it delivered as in step 2.
    - Finish with `task_handoff` on your part.
 
 5. **Finish.** `task_finish` on your run task with a count summary, e.g. "9 tracked, 2 closed, 1 chase drafted".
