@@ -232,3 +232,15 @@ test("the owner's cards: only those that reached them, newest first, a page at a
   assert.deepEqual([...first.cards, ...second.cards].map((c) => c.id).sort(), [a.id, b.id].sort());
   assert.equal(second.next, null);
 });
+
+test("a card held for the owner after its approval counts from when it was held, not when it was filed", async () => {
+  const { records, work } = setup();
+  const card = { target: "x", sentence: "Push it.", changes: "", reads: "", cost: "", details: "" };
+  const file = (tier, state) => records.file({ kind: "github.push", module: "github", args: { n: Math.random() }, targets: {}, executor: { module: "github" }, policy: "p", tier, card, requester: { agent: "", key: "eng", name: "Eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state });
+  const held = file(1, "approved");
+  await new Promise((r) => setTimeout(r, 5));
+  const later = file(2, "owner");
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(records.hold(held.id, { by: "autonomy", value: "off" }, "autonomy is off"));
+  assert.deepEqual(work.ownerCards(undefined, 10).cards.map((c) => c.id), [held.id, later.id]);
+});

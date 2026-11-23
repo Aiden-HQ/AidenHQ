@@ -68,12 +68,19 @@ export async function graduationCheck(rest: Rest, repo: string, tag: string): Pr
   if (Date.parse(run.created_at) < Date.parse(rel.published_at ?? rel.created_at)) throw new GitHubRefused(`the latest graduation run started before ${tag} was published: it never tested it`);
   const jobs: any[] = (await get(rest, `/repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`)).jobs ?? [];
   const job = (n: string) => jobs.find((j) => j.name === n);
-  if (releases.some((r) => r.id !== rel.id && String(r.body ?? "").includes(run.html_url))) throw new GitHubRefused(`graduation run ${run.id} judged another release, not ${tag}`);
+  // The run's own link, whole: run 900 is never run 9001.
+  const names = (text: unknown) => new RegExp(`${run.html_url.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?![\\w/])`).test(String(text ?? ""));
+  if (releases.some((r) => r.id !== rel.id && names(r.body))) throw new GitHubRefused(`graduation run ${run.id} judged another release, not ${tag}`);
+  if (String(rel.body ?? "").split("\n").some((l) => l.startsWith("graduation: incomplete ") && names(l))) throw new GitHubRefused(`graduation run ${run.id} reached ${tag}'s own stage and never finished: that is the candidate's, so it gets a fix (or is tested again)`);
   const bootstrap = job("select")?.conclusion === "failure";
-  const issues: any[] = bootstrap ? [] : await get(rest, `/repos/${repo}/issues?state=all&creator=${encodeURIComponent("github-actions[bot]")}&per_page=100`);
-  const judged = job("reject")?.conclusion === "success" && !String(rel.body ?? "").split("\n").includes(`graduation: incomplete ${run.html_url}`)
-    && issues.some((i) => !i.pull_request && i.title === `Graduation of ${tag} didn't finish` && String(i.body ?? "").includes(`Run: ${run.html_url}`));
-  if (!bootstrap && !judged) throw new GitHubRefused(`graduation run ${run.id} isn't shown to have failed ${tag} before its candidate stage (its reject job's "Graduation of ${tag} didn't finish" issue names another run, or none): ${tag} stays a pre-release. When an older open issue for ${tag} names an earlier run, close it: the next graduation run opens a new one naming itself.`);
+  if (!bootstrap) {
+    if (job("reject")?.conclusion !== "success") throw new GitHubRefused(`graduation run ${run.id} recorded no verdict (its reject job didn't run to success): ${tag} stays a pre-release`);
+    const issues: any[] = await get(rest, `/repos/${repo}/issues?state=all&creator=${encodeURIComponent("github-actions[bot]")}&per_page=100`);
+    const mine = issues.filter((i) => !i.pull_request && i.title === `Graduation of ${tag} didn't finish`);
+    if (!mine.some((i) => String(i.body ?? "").split("\n").some((l) => l.trim() === `Run: ${run.html_url}`))) throw new GitHubRefused(mine.length
+      ? `the "Graduation of ${tag} didn't finish" issue names an earlier run, not ${run.id}: close it, and the next graduation run opens a new one naming itself`
+      : `graduation run ${run.id} opened no "Graduation of ${tag} didn't finish" issue: it isn't shown to have failed before ${tag}'s stage`);
+  }
   return { release: { id: rel.id, body: String(rel.body ?? "") }, run: run.html_url };
 }
 
