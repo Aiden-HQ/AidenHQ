@@ -387,8 +387,8 @@ exact email match only).
   retry each pass, so a role created after they started is picked up without a restart.
 - The DevOps Engineer checks `src_meta.ingest_run` on each heartbeat and posts a source stale for over an hour to the
   "Fleet issues" task (its handbook, "Shared sources").
-- Slack's gap sync needs the owner's user token of the Slack live app in `slack_live_user_token` (scopes in
-  `modules/slack/module.yaml`); without it src_slack gets live events only.
+- Slack's gap sync reads as the owner through slack-mcp's relay of the Slack sign-in (`slack_relay_key`, its read scopes);
+  until the owner connects Slack, src_slack gets live events only.
 - Each pass writes `src_meta.ingest_run` (source, scope, rows, error; `status` holds a non-error marker, e.g. `retired`
   for a security target whose replacement was scanned). src_docs has two scopes: `drive` (code) and
   `summaries` (OpenRouter, the root `openrouter_key`; model `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`,

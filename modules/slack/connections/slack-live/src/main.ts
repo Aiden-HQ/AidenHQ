@@ -19,9 +19,11 @@ import { postMessage, transportSend, type SlackConfig } from "./send.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { SourceStore } from "./source-store.js";
-import { slackTee, startGapSync } from "./sources.js";
+import { slackApi as relayApi, slackTee, startGapSync } from "./sources.js";
+import { AppError, apps as appsOf, type Part } from "./apps.js";
+import { ownerReader } from "./signin.js";
 
-const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "slack-live" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
+const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "slack-live" }, redact: ["authorization", "*.authorization", "token", "*.token", "config_token"] });
 const jwks = kernelJwks();
 const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
 // Secrets come from NAME_FILE (a compose secret) or NAME.
@@ -66,13 +68,26 @@ function authorized(req: IncomingMessage): boolean {
 }
 
 const appToken = env("SLACK_APP_TOKEN");
-// Whether Slack is set up (the board's Settings shows it): booleans only, never a token.
-const health = JSON.stringify({ ok: true, channels: { slack: Boolean(appToken && cfg.botToken) } });
+// The owner's sign-in lives in slack-mcp: whose it is (slack_owner) and the gap sync's reads go through its relay.
+const slackMcp = (process.env.SLACK_MCP_URL ?? "http://slack-mcp:8082").replace(/\/$/, "");
+const relayKey = env("RELAY_KEY");
+const owner = ownerReader(slackMcp, relayKey);
+// The Slack app made or updated from a pasted App Configuration Token (the board's setup page, with the pair token).
+const slackApps = appsOf(store);
+// Whether the bot is set up (the board's Connections shows it): booleans only, never a token. Once the owner uses Slack (signed
+// in) but has no bot, the connection needs them: Slack triage and 📌 tasks (Intake) come only from the bot's live events.
+const bot = Boolean(appToken && cfg.botToken);
+const health = async () =>
+  JSON.stringify(
+    bot || !(await owner().catch(() => null))
+      ? { ok: true, channels: { slack: bot } }
+      : { ok: false, detail: "Bot not set up: Slack triage and 📌 tasks need it. Add it on the Slack setup page (Slack with Aiden's bot).", channels: { slack: false } },
+  );
 
 const http = createServer(async (req, res) => {
   let url: URL;
   try { url = new URL(req.url ?? "/", "http://localhost"); } catch { return void res.writeHead(400).end(); }
-  if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(health);
+  if (url.pathname === "/healthz") return void res.writeHead(200, { "content-type": "application/json" }).end(await health());
   if (url.pathname === "/pair") {
     // The board's pairing endpoint: only with the pair token (a signed-in admin with an authenticator reaches it there).
     const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
@@ -82,6 +97,27 @@ const http = createServer(async (req, res) => {
     if (req.method === "POST") return json({ code: pairing.mint() });
     if (req.method === "GET") return json({ paired: pairing.paired(), ...(pairing.pairedAt() ? { paired_at: pairing.pairedAt() } : {}) });
     return void res.writeHead(405).end();
+  }
+  if (url.pathname === "/setup/app") {
+    // The board's Slack app endpoint (its setup page's "make the app"): only with the pair token, like pairing.
+    const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
+    const expected = Buffer.from(pairToken);
+    if (!pairToken || presented.length !== expected.length || !timingSafeEqual(presented, expected)) return void res.writeHead(401).end();
+    const json = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+    if (req.method === "GET") return json(200, slackApps.status());
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    try {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const b = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { token?: unknown; part?: unknown; app_id?: unknown };
+      if (typeof b.token !== "string" || (b.part !== "basic" && b.part !== "advanced") || (b.app_id !== undefined && typeof b.app_id !== "string")) return json(400, { error: "token and part are required" });
+      return json(200, await slackApps.apply({ token: b.token, part: b.part as Part, ...(b.app_id ? { app_id: b.app_id } : {}) }));
+    } catch (err) {
+      // Never the request (it holds the token): only the words made for the owner.
+      if (err instanceof AppError) return json(err.status, { error: err.message });
+      log.error({ err: String((err as Error).message).slice(0, 200) }, "slack app setup failed");
+      return json(500, { error: "slack-live couldn't make the app" });
+    }
   }
   if (await executor(req, res)) return;
   if (url.pathname === "/transport/send") {
@@ -120,7 +156,7 @@ const http = createServer(async (req, res) => {
         return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!)));
       }
     }
-    const server = buildServer(store, cfg, caller && { key: caller.key });
+    const server = buildServer(store, cfg, owner, caller && { key: caller.key });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();
@@ -142,13 +178,13 @@ const chat = { owner: pairing.owner, deliver: async (text: string) => void (awai
 const pair = (body: unknown) =>
   handlePairingDm(pairing, body, (channel, text) => postMessage(cfg, { channel, text }), (o) => void (cfg.ownerId = o.user));
 
-// src_slack (shared sources): every event teed to the warehouse, and a gap sync with the owner's user token. Off until the
-// warehouse password (WAREHOUSE_PASSWORD_FILE) is there; the gap sync also needs SLACK_USER_TOKEN.
+// src_slack (shared sources): every event teed to the warehouse, and a gap sync read as the owner through slack-mcp's relay.
+// Off until the warehouse password (WAREHOUSE_PASSWORD_FILE) is there.
 const sources = SourceStore.fromEnv("slack");
 const tee = sources ? slackTee(sources, log) : undefined;
-const userToken = env("SLACK_USER_TOKEN");
-if (sources && userToken) startGapSync(sources, userToken, log, channelToken ? (e) => forward(e) : undefined);
-else log.warn(sources ? "SLACK_USER_TOKEN not set; src_slack gets live events only (no gap sync)" : "warehouse not configured; src_slack is off");
+// Missed messages go on to the event router (triage) only with the bot: without it, triage is off, as the setup page says.
+if (sources && relayKey) startGapSync(sources, relayApi(slackMcp, relayKey), owner, log, channelToken && bot ? (e) => forward(e) : undefined);
+else log.warn(sources ? "RELAY_KEY not set; src_slack gets live events only (no gap sync)" : "warehouse not configured; src_slack is off");
 
 // Channel binding: the owner's /aiden commands (a kernel record each) and @mentions in bound channels (a task each).
 const slackApi = (method: string, body: unknown) => fetch(`https://slack.com/api/${method}`, { method: "POST", headers: { authorization: `Bearer ${cfg.botToken}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body) });

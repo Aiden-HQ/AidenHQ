@@ -68,5 +68,7 @@ describe("slack sign-in", () => {
     await auth.signIn!.finish(u.searchParams.get("state")!, "code");
     expect(JSON.parse(readFileSync(join(dir, "token.json"), "utf8"))).toMatchObject({ access_token: "user-token-b", user_id: "U2", team_id: "T1", client_id: "1.2" });
     expect(slackAnswer({ ok: false, error: "invalid_refresh_token" })).toEqual({ error: "invalid_refresh_token" });
+    // The token at the top level, whose it is under authed_user: the id is kept either way.
+    expect(slackAnswer({ ok: true, access_token: "xoxp-1", authed_user: { id: "U7" } })).toMatchObject({ access_token: "xoxp-1", user_id: "U7" });
   });
 });

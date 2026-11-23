@@ -176,6 +176,30 @@ export interface SetupFlowView {
   /** Its sign-in is a device code (Connect opens the code dialog). */
   signin_mode?: "device";
   advanced?: AdvancedFlowView;
+  /** With an advanced flow: the basic option's short name and what it gives (the page's two option cards). */
+  label?: string;
+  capabilities?: string[];
+  /** The module makes or updates the vendor app from a pasted short-lived token. */
+  app?: SetupAppView;
+}
+
+/** A module's app maker (board.setup_flows `app`): the token's field, and the app it made or updated last. */
+export interface SetupAppView {
+  label: string;
+  pattern: string;
+  help: string;
+  console_url?: string;
+  /** null: the module didn't answer. */
+  status: SetupAppStatus | null;
+  /** This flow's secrets the chosen organisation supplies (its app is the sign-in's). */
+  org_secrets: string[];
+}
+export interface SetupAppStatus {
+  app_id: string | null;
+  part: "basic" | "advanced" | null;
+  /** The app has today's manifest for its part. */
+  current: boolean;
+  url: string | null;
 }
 
 export interface SetupChoice {
@@ -304,6 +328,7 @@ export const api = {
   setupSecret: (module: string, secret: string, value: string) => call<{ ok: boolean; restarted?: string[]; restarting_for?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/secret`, { secret, value }),
   setupChoose: (module: string, value: string, inputs: Record<string, string>) => call<{ ok: boolean; identifier?: string }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/choose`, { value, inputs }),
   setupDismiss: (module: string) => call<{ ok: boolean }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/dismiss`, {}),
+  setupApp: (module: string, token: string, part: "basic" | "advanced", appId?: string, own?: boolean) => call<{ status?: SetupAppStatus; saved: string[] }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/app`, { token, part, ...(appId ? { app_id: appId } : {}), ...(own ? { own: true } : {}) }),
   setupPair: (module: string) => call<{ code: string; link?: string; minted_at: number; expires_in?: number }>("POST", `/api/setup-flows/${encodeURIComponent(module)}/pair`, {}),
   setupPaired: (module: string) => call<{ paired: boolean; paired_at?: string | number }>("GET", `/api/setup-flows/${encodeURIComponent(module)}/pair`),
   welcome: () => call<WelcomeState>("GET", "/api/welcome"),

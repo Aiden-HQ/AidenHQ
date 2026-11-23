@@ -42,7 +42,7 @@ import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { deviceRoutes } from "./device-signin.js";
 import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, vendorWords, type McpAuth, type McpAuthStatus } from "./mcpauth.js";
-import { organisationRoutes, type OrganisationPoint } from "./organisations.js";
+import { appliedKey, organisationRoutes, type OrganisationPoint } from "./organisations.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
@@ -1324,7 +1324,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const id = m[1]!;
         const s = (opts.signIns ?? []).find((x) => x.id === id);
         if (!s) throw new HttpError(404, "no such sign-in");
-        const [status, offer] = await Promise.all([s.auth.status(0), s.auth.scopes()]);
+        const [status, offered] = await Promise.all([s.auth.status(0), s.auth.scopes()]);
+        // The chosen organisation's app for this module grants reads only: its writes aren't offered (Slack would refuse them).
+        const module = opts.setupFlows?.flows.find((f) => f.signin === s.id)?.module;
+        const offer = offered && module && appliedOrganisation(module)?.read_only?.includes(module) ? { supported: offered.recommended, recommended: offered.recommended } : offered;
         // Signed in: the picker opens on what the token grants now, not on the recommended set.
         const granted = status?.state === "ok" && offer ? (status.scope ?? "").split(/[\s,]+/).filter((x) => x && x !== "offline_access" && offer.supported.includes(x)) : [];
         return {
@@ -2300,6 +2303,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     send(res, 200, JSON.stringify(await route.handle(url.pathname.match(route.path)!, body, url, req)), "application/json");
   }
 
+  /** The organisation whose app a module's client is now (a pasted or own client clears it: setup-flows.ts). */
+  const appliedOrganisation = (module: string) => opts.organisations?.find((o) => o.id === store.meta(appliedKey(module)));
   /** Account administration on the board: any admin, and never the owner's account. The kernel acts as that admin's session. */
   const RoleSchema = z.enum(["admin", "user"]);
   const setupFlows = opts.setupFlows?.flows.length && opts.accounts ? setupFlowRoutes({
@@ -2308,6 +2313,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     store,
     settings: () => readSources(settingsFiles()).compiled?.settings,
     file: fileSettingsChange,
+    orgSecrets: (module) => appliedOrganisation(module)?.clients.filter((c) => c.module === module).map((c) => c.secret) ?? [],
     // "none": the connection needs no sign-in (Grafana with grafana_source: local), so its flow is done.
     onSetupChange: () => store.events.emit("setup"),
     signedIn: async (id) => ["ok", "none"].includes((await signInStates()).find((x) => x.id === id)?.status?.state ?? ""),

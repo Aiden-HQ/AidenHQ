@@ -3,7 +3,8 @@
 // Neutral sample data only. Writes answer ok and change nothing. GET /__mock?welcome=1|0 shows or hides the first-run wizard;
 // GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
-// ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`.
+// ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
+// Slack setup page's state (nothing yet, sign-in only, an organisation's sign-in, sign-in and bot, a bot app that predates the manifest).
 import { createServer } from "node:http";
 
 const port = Number(process.env.PORT ?? 3120);
@@ -23,7 +24,7 @@ const MODEL_CATALOG = ([
   ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
   ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
 ] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, out: o, tools: !!tools, reasoning: !!reasoning }));
-const mock = { welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false };
+const mock = { welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none" };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
@@ -267,6 +268,37 @@ const explanation = (id: string) => ({
 });
 
 const welcome = () => ({ finished: !mock.welcome, modelReady: true, recoveryKeyWaiting: mock.welcome, wizard: ["google", "telegram"] });
+/** The Slack flow in the state ?slack= names (modules/slack/module.yaml, as GET /api/setup-flows serves it). */
+const slackFlow = () => {
+  const k = mock.slack;
+  const signedIn = k !== "none";
+  const bot = k === "full" || k === "old";
+  return {
+    module: "slack", order: 30, title: "Slack", label: "Read Slack as you", wizard: true,
+    why: "Agents search and read the Slack you can see, save drafts for you, and (if you allow it) post as you, each post reviewed first.",
+    effort: "about 1 minute", admin: "a Slack workspace admin may need to approve the app",
+    capabilities: ["search and read the Slack you can see", "drafts, and reviewed posts as you when you allow it"],
+    steps: "On Connect you pick which permissions to grant: the reads are pre-selected. To let agents act as you too, add the **User Token Scopes** you want under **OAuth & Permissions** (`chat:write`, `reactions:write`) and Connect again.",
+    secrets: ["slack_client_id"], fields: [{ secret: "slack_client_id", label: "Slack app Client ID", pattern: "^[0-9]{6,20}\\.[0-9]{6,20}$" }], signin: "slack",
+    app: {
+      label: "App Configuration Token", pattern: "^xoxe\\.xoxp-[A-Za-z0-9-]{20,400}$", console_url: "https://api.slack.com/apps",
+      help: "Open [Your Apps](https://api.slack.com/apps) in Slack. Under **Your App Configuration Tokens**, press **Generate Token**, pick your workspace and copy the **Access Token** (it starts xoxe.xoxp-). It lasts 12 hours; AidenHQ uses it once to make your app and keeps nothing.",
+      status: k === "full" ? { app_id: "A0ACME0001", part: "advanced", current: true, url: "https://api.slack.com/apps/A0ACME0001" } : k === "signin" ? { app_id: "A0ACME0001", part: "basic", current: true, url: "https://api.slack.com/apps/A0ACME0001" } : { app_id: null, part: null, current: false, url: null },
+      org_secrets: k === "org" ? ["slack_client_id"] : [],
+    },
+    present: { slack_client_id: k !== "none" && k !== "org", slack_live_bot_token: bot, slack_live_app_token: bot },
+    signedIn, scopes: true, paired: bot, done: signedIn, dismissed: false,
+    advanced: {
+      title: "Slack with Aiden's bot", why: "Everything on the left, plus a bot of your own app's that you DM, and live Slack events. The bot is always your own app's.",
+      effort: "about 5 minutes", admin: "a Slack workspace admin may need to approve the app",
+      capabilities: ["DM Aiden; approvals and alerts as Slack messages", "Slack triage and 📌 tasks (Intake)", "live events for the src_slack warehouse", "/aiden assign-channel: a channel's @mentions become an agent's tasks"],
+      steps: "1. [Open your app's Install page]({app_url}/install-on-team), press **Install to Workspace** (or **Reinstall**), then **Allow**. A workspace admin may need to approve it.\n2. [Open OAuth & Permissions]({app_url}/oauth), copy the **Bot User OAuth Token** (it starts xoxb-) and paste it here.\n3. [Open Basic Information]({app_url}/general), scroll to **App-Level Tokens**, press **Generate Token and Scopes**, add the scope `connections:write`, press **Generate** and paste the token (it starts xapp-) here. Slack has no API that makes this token, so it is the one copy by hand.",
+      secrets: ["slack_live_bot_token", "slack_live_app_token"],
+      fields: [{ secret: "slack_live_bot_token", label: "Slack bot token", pattern: "^xoxb-[A-Za-z0-9-]{20,300}$", help: "OAuth & Permissions, Bot User OAuth Token (starts xoxb-)." }, { secret: "slack_live_app_token", label: "Slack app-level token", pattern: "^xapp-[A-Za-z0-9-]{20,300}$", help: "Basic Information, App-Level Tokens, scope connections:write (starts xapp-)." }],
+      pair_url: "http://slack-live:8089/pair", done: bot,
+    },
+  };
+};
 const googleFlow = () => ({
   module: "google", order: 40, title: "Google", why: "Aiden reads your calendar, Drive and Gmail (read-only) to brief you and follow up.", effort: "about 5 minutes, in the Google Cloud console",
   secrets: ["google_client_id", "google_client_secret"], connect_url: "/google/connect",
@@ -287,6 +319,7 @@ const flows = () => ({
   board_url: "https://board.example.com", named: true,
   flows: [
     { ...googleFlow(), present: { google_client_id: false, google_client_secret: false }, signedIn: false, paired: false, done: false, dismissed: false },
+    slackFlow(),
     { module: "telegram", order: 2, title: "Talk to Aiden on Telegram", why: "Reach Aiden from your phone and approve with one tap.", effort: "3 minutes", wizard: true, steps: "1. Open @BotFather and create a bot.\n2. Paste its token below.", fields: [{ secret: "telegram_bot_token", label: "Bot token", pattern: "^\\d+:[\\w-]+$" }], present: { telegram_bot_token: false }, signedIn: false, paired: false, done: false, dismissed: false },
   ],
 });
@@ -362,7 +395,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/board": return [200, board()];
     case "/api/search": return search(url.searchParams.get("q") ?? "", url.searchParams.get("after"));
     case "/api/welcome": return [200, welcome()];
-    case "/api/organisations": return [200, mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null, applied: {} } : { organisations: [], suggested: null, chosen: null, applied: {} }];
+    case "/api/organisations": return [200, mock.slack === "org" ? { organisations: [{ id: "acme", name: "Acme", domains: ["acme.example"], connections: ["slack"] }], suggested: "acme", chosen: "acme", applied: { slack: "acme" } } : mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null, applied: {} } : { organisations: [], suggested: null, chosen: null, applied: {} }];
     case "/api/setup-flows": return [200, flows()];
     case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
@@ -438,6 +471,7 @@ createServer((req, res) => {
     if (url.searchParams.has("email")) mock.email = url.searchParams.get("email") ?? mock.email;
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
     if (url.searchParams.has("search")) mock.search = url.searchParams.get("search") ?? "ok";
+    if (url.searchParams.has("slack")) mock.slack = url.searchParams.get("slack") ?? "none";
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(mock));
   }
   if (url.pathname === "/api/events") {

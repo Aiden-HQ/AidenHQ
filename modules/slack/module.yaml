@@ -4,9 +4,9 @@ replaces: [ channel-slack ] # an instance written for the two modules runs on th
 requires:
   - warehouse # src_slack lives in the shared warehouse
   - board # its sign-in and setup flows
-# Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flows (setup_flows.json): basic is the
-# sign-in; advanced is "your own app" for the bot. Both make their Slack app from the one manifest in slack-app-manifest.yml: the link
-# and the manifest below come from it (node scripts/slack-manifest.ts --write; a test fails while they differ).
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json), and its setup flow (setup_flows.json): two
+# options side by side, the sign-in alone (basic) or with the bot (advanced). The Slack app is made or updated by slack-live from
+# a pasted App Configuration Token (`app:`), from the one manifest in slack-app-manifest.yml.
 contributes:
   board.signins:
     - { id: slack, label: Slack, status_url: "http://slack-mcp:8082/auth/status", connect_url: /slack/connect, callback: /slack/callback,
@@ -14,35 +14,41 @@ contributes:
   board.setup_flows:
     - order: 30
       title: Slack
-      why: Agents can search and read the Slack messages you can see, save drafts for you, and (if you grant it) post as you, reviewed first.
-      effort: about 1 minute; a Slack workspace admin may need to approve the app
+      label: Read Slack as you
+      why: Agents search and read the Slack you can see, save drafts for you, and (if you allow it) post as you, each post reviewed first.
+      effort: about 1 minute
+      admin: a Slack workspace admin may need to approve the app
       wizard: true
+      capabilities:
+        - search and read the Slack you can see
+        - drafts, and reviewed posts as you when you allow it
       secrets: [ slack_client_id ]
       signin: slack
+      app:
+        url: http://slack-live:8089/setup/app
+        label: App Configuration Token
+        pattern: '^xoxe\.xoxp-[A-Za-z0-9-]{20,400}$'
+        console_url: https://api.slack.com/apps
+        help: "Open [Your Apps](https://api.slack.com/apps) in Slack. Under **Your App Configuration Tokens**, press **Generate Token**, pick your workspace and copy the **Access Token** (it starts xoxe.xoxp-). It lasts 12 hours; AidenHQ uses it once to make your app and keeps nothing."
       steps: |
-        1. [Create a Slack app](https://api.slack.com/apps?new_app=1&manifest_json=%7B%22display_information%22%3A%7B%22name%22%3A%22AidenHQ%22%2C%22description%22%3A%22Your%20AI%20chief%20of%20staff.%20Reads%20the%20Slack%20you%20can%20see%3B%20posts%20only%20as%20a%20labelled%20bot%2C%20or%20as%20you%20when%20you%20allow%20it.%22%2C%22background_color%22%3A%22%231a1a2e%22%7D%2C%22oauth_config%22%3A%7B%22redirect_urls%22%3A%5B%22http%3A%2F%2Flocalhost%3A3121%2Fslack%2Fcallback%22%5D%2C%22pkce_enabled%22%3Atrue%2C%22scopes%22%3A%7B%22user%22%3A%5B%22search%3Aread.public%22%2C%22search%3Aread.private%22%2C%22search%3Aread.im%22%2C%22search%3Aread.mpim%22%2C%22search%3Aread.users%22%2C%22search%3Aread.files%22%2C%22channels%3Ahistory%22%2C%22groups%3Ahistory%22%2C%22im%3Ahistory%22%2C%22mpim%3Ahistory%22%2C%22channels%3Aread%22%2C%22groups%3Aread%22%2C%22im%3Aread%22%2C%22mpim%3Aread%22%2C%22users%3Aread%22%2C%22users%3Aread.email%22%2C%22users.profile%3Aread%22%2C%22usergroups%3Aread%22%2C%22emoji%3Aread%22%2C%22files%3Aread%22%2C%22canvases%3Aread%22%2C%22lists%3Aread%22%2C%22reactions%3Aread%22%5D%7D%7D%2C%22settings%22%3A%7B%22org_deploy_enabled%22%3Afalse%2C%22socket_mode_enabled%22%3Afalse%2C%22token_rotation_enabled%22%3Afalse%2C%22is_mcp_enabled%22%3Atrue%7D%7D) from the ready-made manifest: pick your workspace and press **Create**. A workspace admin may need to approve it.
-        2. Under **Basic Information**, copy the **Client ID** and paste it below. There is no secret: the sign-in uses PKCE, and the manifest turns on Slack's MCP server.
-        3. Press **Connect Slack** and allow access.
-
-        On Connect you pick which permissions to grant: the reads are pre-selected. Agents act as you, so they see only what you can see. To let them act as you too (every post, reaction or change is reviewed first), add the **User Token Scopes** you want under **OAuth & Permissions** (`chat:write`, `reactions:write`, `channels:write`, `groups:write`, `im:write`, `mpim:write`, `files:write`, `canvases:write`, `lists:write`) and Connect again.
+        On Connect you pick which permissions to grant: the reads are pre-selected. Agents act as you, so they see only what you can see. To let them act as you too (every post, reaction or change is reviewed first), add the **User Token Scopes** you want under **OAuth & Permissions** in your app (`chat:write`, `reactions:write`, `channels:write`, `groups:write`, `im:write`, `mpim:write`, `files:write`, `canvases:write`, `lists:write`) and Connect again.
     - order: 31
       mode: advanced
-      title: Aiden in Slack, with your own app
-      why: A bot you can DM, live Slack events and a channel per agent; the bot is always your own app's, never shared.
-      effort: about 5 minutes; a Slack workspace admin may need to approve the app
+      title: Slack with Aiden's bot
+      why: Everything on the left, plus a bot of your own app's that you DM, and live Slack events. The bot is always your own app's.
+      effort: about 5 minutes
+      admin: a Slack workspace admin may need to approve the app
       capabilities:
-        - a bot you can DM, with approvals and alerts as Slack messages
-        - live Slack events for triage and the warehouse
+        - DM Aiden; approvals and alerts as Slack messages
+        - Slack triage and 📌 tasks (Intake)
+        - live events for the src_slack warehouse
         - "/aiden assign-channel: a channel's @mentions become an agent's tasks"
-        - posts as the labelled bot, reviewed first
-      secrets: [ slack_live_app_token, slack_live_bot_token ]
+      secrets: [ slack_live_bot_token, slack_live_app_token ]
       pair_url: http://slack-live:8089/pair
       steps: |
-        1. In your own Slack app (make one from step 1 above if you sign in with your organisation's app), open **App Manifest**, replace its contents with `{"display_information":{"name":"AidenHQ","description":"Your AI chief of staff. Reads the Slack you can see; posts only as a labelled bot, or as you when you allow it.","background_color":"#1a1a2e"},"oauth_config":{"redirect_urls":["http://localhost:3121/slack/callback"],"pkce_enabled":true,"scopes":{"user":["search:read.public","search:read.private","search:read.im","search:read.mpim","search:read.users","search:read.files","channels:history","groups:history","im:history","mpim:history","channels:read","groups:read","im:read","mpim:read","users:read","users:read.email","users.profile:read","usergroups:read","emoji:read","files:read","canvases:read","lists:read","reactions:read"],"bot":["chat:write","chat:write.public","reactions:write","app_mentions:read","commands","im:history","im:read","im:write","channels:history","groups:history","channels:read","groups:read","mpim:read"]}},"settings":{"org_deploy_enabled":false,"socket_mode_enabled":true,"token_rotation_enabled":false,"is_mcp_enabled":true,"interactivity":{"is_enabled":true},"event_subscriptions":{"bot_events":["app_mention","message.im","member_joined_channel","channel_left"],"user_events":["message.channels","message.groups","message.im","message.mpim","reaction_added","reaction_removed"]}},"features":{"bot_user":{"display_name":"AidenHQ (AI)","always_online":true},"slash_commands":[{"command":"/aiden","description":"Assign this channel to an agent (owner only)","usage_hint":"assign-channel <agent-key> | unassign-channel | channels","should_escape":false}],"app_home":{"home_tab_enabled":false,"messages_tab_enabled":true,"messages_tab_read_only_enabled":false}}}` and press **Save**.
-        2. Open **Install App** and press **Install to Workspace** (or **Reinstall**), then **Allow**. A workspace admin may need to approve it. An app made before 2026-11-23 repeats steps 1 and 2 once: its event subscriptions lack the 📌 reactions Intake turns into tasks.
-        3. Open **Basic Information**, scroll to **App-Level Tokens**, press **Generate Token and Scopes**, add the scope `connections:write`, press **Generate**, and paste the `xapp-` token below.
-        4. Open **OAuth & Permissions**, copy the **Bot User OAuth Token** (`xoxb-`), and paste it below.
-        5. Save the tokens and wait a few seconds for Slack to connect. Then ask for a pairing code, find **AidenHQ (AI)** under Apps in Slack, and send it the code as a direct message. A code posted in a channel pairs nobody.
+        1. [Open your app's Install page]({app_url}/install-on-team), press **Install to Workspace** (or **Reinstall**), then **Allow**. A workspace admin may need to approve it.
+        2. [Open OAuth & Permissions]({app_url}/oauth), copy the **Bot User OAuth Token** (it starts xoxb-) and paste it here.
+        3. [Open Basic Information]({app_url}/general), scroll to **App-Level Tokens**, press **Generate Token and Scopes**, add the scope `connections:write`, press **Generate** and paste the token (it starts xapp-) here. Slack has no API that makes this token, so it is the one copy by hand.
   # Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
   warehouse.sources:
     - schema: src_slack
@@ -67,7 +73,7 @@ providers:
     auth: slack_live_service_key
 connections:
   slack:
-    setup: "Open its setup on the board (#/setup/slack): create the Slack app, paste its Client ID and press Connect."
+    setup: "Open its setup on the board (#/setup/slack): choose your organisation's app or paste an App Configuration Token to make yours, then press Connect."
     guide: "Slack directly: a full thread or channel history, exact messages and their timestamps, the newest messages Glean hasn't indexed yet. Search Glean first to find where to look."
     url: http://slack-mcp:8082/mcp
     auth: slack_service_key
@@ -85,7 +91,7 @@ connections:
     # slack_read_channel reaches.
     events: { resource: "channel id", kinds: [ message, app_mention, reaction_added, reaction_removed ], filter: [ kind, author, contains, bot ], reads: [ slack_read_channel ] }
   slack_live:
-    setup: "Set it up on the board (#/setup/slack, Aiden in Slack with your own app): paste the two tokens, then DM the bot the pairing code. The app's manifest: slack-app-manifest.yml."
+    setup: "Set it up on the board (#/setup/slack, Slack with Aiden's bot): make or update the app from an App Configuration Token, install it, paste its two tokens, then DM the bot the pairing code. The app's manifest: slack-app-manifest.yml."
     url: http://slack-live:8089/mcp
     auth: slack_live_service_key
     tools:
@@ -165,9 +171,6 @@ optional_secrets:
   - slack_client_id
   - slack_live_app_token
   - slack_live_bot_token
-  # The owner's user token (xoxp-) of the Slack live app, for the src_slack gap sync: channels:history, groups:history,
-  # im:history, mpim:history, channels:read, groups:read, im:read, mpim:read, users:read (users:read.email for emails).
-  - slack_live_user_token
 services:
   data: true
   run:
@@ -187,6 +190,8 @@ services:
         MCP_TOKEN_FILE: ${secrets.slack_service_key}
         MCP_READ_TOKEN_FILE: ${secrets.slack_mcp_read_token}
         # The read endpoint serves only these: the connection's read tags (CI checks they match).
+        # slack-live's key to the sign-in's relay (src/relay.ts): whose sign-in it is, and the gap sync's reads as the owner.
+        RELAY_KEY_FILE: ${secrets.slack_relay_key}
         READ_TOOLS: "slack_search_public,slack_search_public_and_private,slack_search_channels,slack_search_users,slack_read_channel,slack_read_thread,slack_read_user_profile,slack_list_user_channels,slack_read_canvas,slack_list_channel_members,slack_read_file,slack_read_list,slack_search_emojis,slack_get_reactions"
     # The advanced part: the one Socket Mode consumer of the instance's Slack app. It idles until its tokens are saved.
     slack-live:
@@ -209,9 +214,9 @@ services:
         PAIR_TOKEN_FILE: ${secrets.slack_pair_token}
         SLACK_APP_TOKEN_FILE: ${secrets.slack_live_app_token}
         SLACK_BOT_TOKEN_FILE: ${secrets.slack_live_bot_token}
-        # Shared sources (src_slack): its warehouse login, and the owner's user token (xoxp, history scopes) for the gap sync.
+        # Shared sources (src_slack): its warehouse login; the gap sync reads as the owner through slack-mcp's relay.
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_slack_password}
-        SLACK_USER_TOKEN_FILE: ${secrets.slack_live_user_token}
+        RELAY_KEY_FILE: ${secrets.slack_relay_key}
 # The board's Connect/Reconnect for Slack: its sign-in token, only while this module is on.
 board_env:
   SLACK_AUTH_TOKEN_FILE: ${secrets.slack_auth_token}
@@ -220,6 +225,8 @@ generated_secrets:
   - slack_auth_token
   - slack_live_service_key
   - slack_token
+  # slack-live's key to slack-mcp's relay of the owner's sign-in (whose it is; the gap sync's reads).
+  - slack_relay_key
   # src_slack's warehouse login (ops/warehouse-sources.sh gives the role this password).
   - warehouse_src_slack_password
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

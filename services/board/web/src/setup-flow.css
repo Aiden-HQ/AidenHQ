@@ -88,20 +88,34 @@
 .setup-labels { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 .setup-admin { font-size: var(--text-xs); font-weight: 600; color: var(--warn-text); background: color-mix(in srgb, var(--warn) 14%, var(--surface)); padding: 3px 8px; border-radius: var(--radius-sm); }
 
-/* A module's advanced flow (SetupFlow.tsx Advanced): what your own app unlocks, its steps folded below. */
-.setup-adv { display: grid; gap: var(--stack); margin-top: var(--stack); }
-.setup-adv-head { display: grid; gap: 14px 28px; padding: 18px 20px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-left: 3px solid var(--accent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); }
-@media (width >= 1000px) {
-  .setup-adv-head { grid-template-columns: minmax(240px, 1.1fr) minmax(0, 1.4fr) auto; align-items: center; }
-}
-.setup-adv-intro { display: grid; gap: 6px; justify-items: start; }
-.setup-adv-intro h2 { margin: 0; font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }
-.setup-adv-intro p { margin: 0; font-size: var(--text-base); color: var(--muted); line-height: 1.5; }
-.setup-caps { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px 18px; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
-.setup-caps li { display: flex; gap: 8px; align-items: baseline; font-size: var(--text-base); line-height: 1.4; }
-.setup-caps svg { flex: none; color: var(--accent); transform: translateY(2px); }
-.setup-adv-act { display: grid; gap: 6px; justify-items: start; }
-@media (width >= 1000px) { .setup-adv-act { justify-items: end; } }
+/* A flow with two options (SetupPaths.tsx): the options side by side as cards, then the chosen one's numbered steps. */
+.paths { display: grid; gap: var(--stack); margin-bottom: var(--stack); }
+@media (width >= 760px) { .paths { grid-template-columns: 1fr 1fr; } }
+.path { display: grid; gap: 10px; align-content: start; text-align: left; padding: 18px 20px; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--hue-1); border-radius: var(--radius); box-shadow: var(--shadow); cursor: pointer; transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
+.path-advanced { border-top-color: var(--hue-6); }
+.path:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.path:focus-visible { outline: none; box-shadow: var(--ring); }
+.path.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+.path-head { display: flex; align-items: center; gap: 10px; }
+.path-head strong { font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }
+.path-radio { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border-strong); background: var(--surface); }
+.path.on .path-radio { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 4px, var(--surface) 5px); }
+.path-state { margin-left: auto; font-style: normal; font-size: var(--text-xs); font-weight: 600; color: var(--ok-text); background: color-mix(in srgb, var(--working) 14%, var(--surface)); padding: 3px 8px; border-radius: var(--radius-sm); white-space: nowrap; }
+.path-why { font-size: var(--text-base); color: var(--muted); line-height: 1.5; }
+.path-list { display: grid; gap: 6px; }
+.path-give, .path-lack { display: flex; gap: 8px; align-items: baseline; font-size: var(--text-base); line-height: 1.4; }
+.path-give svg { flex: none; color: var(--ok-text); transform: translateY(2px); }
+.path-lack { color: var(--faint); }
+.path-lack svg { flex: none; transform: translateY(2px); }
+.path-lack small { font-size: var(--text-xs); font-weight: 600; color: var(--hue-6); }
+.path-foot { padding-top: 4px; }
+.paths-pick { text-align: center; }
+.paths-steps { display: grid; gap: var(--stack); align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); }
+.paths-steps .setup-step.open { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
+.paths-make { display: grid; gap: 12px; }
+.paths-more summary { cursor: pointer; font-size: var(--text-sm); font-weight: 600; color: var(--accent); }
+.paths-more[open] summary { margin-bottom: 8px; }
+.paths-more .setup-steps { font-size: var(--text-sm); }
 
 /* A pairing link as a QR code beside its Open button. */
 .setup-pair-link { display: flex; gap: 14px; align-items: center; }
