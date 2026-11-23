@@ -271,9 +271,10 @@ export function startPrWatch(o: PrWatchOptions) {
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head, check: String(c.name ?? "").slice(0, 100) }); continue; }
         // A refused or unanswered read backs off before anything else, so an Actions outage is not hit on every tick.
         const prior: string | undefined = state.reran[`${repo.toLowerCase()}:${head}:${jobId}`];
-        // Inside the backoff nothing is asked and nothing is reported: a report needs the job read to show it finished, which
-        // the next tick past the backoff does.
-        if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) continue;
+        // Re-run already at this repository's head (a sibling PR saw the same job), or a refusal still backing off: nothing
+        // is asked. The accepted re-run is the sibling PR's to report; nothing is reported during a backoff, since a report
+        // needs the job read to show it finished, which the tick past the backoff makes.
+        if (prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) continue;
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         let job: { status: number; body: any };
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
