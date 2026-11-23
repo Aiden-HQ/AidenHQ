@@ -565,6 +565,18 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: refused })).toMatchObject({ ok: false, error: "missing_scope", needed: "reactions:read" });
   });
 
+  it("a permission error after pages were read stays a failure naming the cause, with the matches riding along", async () => {
+    for (const error of ["missing_scope", "not_allowed_token_type"]) {
+      const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "next"), { ok: false, error, needed: "reactions:read" }]);
+      expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, error, messages: [{ channel: "C1", ts: "1.1" }] });
+    }
+  });
+
+  it("a non-permission failure after pages were read still hands back a continuation", async () => {
+    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "next"), { ok: false, error: "internal_error" }]);
+    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1" }] });
+  });
+
   it("does not report numbered pages cut off at the cap as complete: there is no cursor to hand back", async () => {
     const numbered = (async (url: string | URL) => {
       const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
