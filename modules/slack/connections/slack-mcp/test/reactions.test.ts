@@ -257,6 +257,21 @@ describe("scanMyReactions", () => {
     expect(asked).toEqual(["", "2"]);
   });
 
+  it("continues numbered pages at the size Slack actually used, not the cursor-shaped limit it ignored", async () => {
+    const counts: string[] = [];
+    const numbered = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      counts.push(u.searchParams.get("count") ?? "");
+      const n = Number(u.searchParams.get("page") ?? "1");
+      // Slack answers page 1 at its own 50-item size although the request carried limit=200: page 2 must use 50, or
+      // items 51-200 are skipped.
+      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 50, total: 100, page: n, pages: 2 } });
+    }) as unknown as typeof fetch;
+    const scan = await scanMyReactions({ emoji: "pushpin", limit: 500 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered });
+    expect(scan).toMatchObject({ ok: true, nextCursor: null, messages: [{ ts: "1.0" }, { ts: "2.0" }] });
+    expect(counts).toEqual(["", "50"]);
+  });
+
   it("stops at its deadline with what it has, so it never outlives the caller", async () => {
     let clock = 0;
     const fetchImpl = (async () => {
