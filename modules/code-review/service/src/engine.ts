@@ -428,9 +428,9 @@ export function createEngine(d: EngineDeps) {
    * the next head, so a deploy or a settings change never re-reviews every open PR). */
   const reviewers = (repo: string, n: number, head: string) => {
     const seen = new Set<string>();
-    // A recheck-only run stands for a combo only where no review of the head has its key: it never shadows the review the head waits on.
-    const runs = all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' ORDER BY recheck_only, created DESC", repo, n, head);
-    return runs.filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); }).sort((a, b) => b.created - a.created);
+    // A recheck-only run is no review of the head: it never stands for one (the verdict still waits on an active one, verdict()).
+    return all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' AND recheck_only = 0 ORDER BY created DESC", repo, n, head)
+      .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); });
   };
 
   /** What the verdict waits on at a head: the mandatory reviewers that reviewed it (reviewers()). On a repo with no mandatory on_push
@@ -469,21 +469,20 @@ export function createEngine(d: EngineDeps) {
   const openGating = (repo: string, n: number) => stillOpen(repo, n).filter((f) => f.gating);
   /** What a run rechecks (spec.previous, shared over PREVIOUS_FIELDS spec fields of 16 KB): every gating finding with its evidence,
    * every answered one, every other open one. Texts shrink before a finding is left out; one that can't fit even bare stays open
-   * (never marked fixed unseen). */
+   * (never marked fixed unseen; the check says how many were left out). */
   function recheckList(repo: string, n: number) {
     // Findings closed by a reply (fixed, disputed, by design, won't fix): rechecked only for a fix or reason that is unsafe.
     const claimed = all<{ id: string; path: string; line: number; title: string; claim: string }>("SELECT id, MIN(path) path, MIN(line) line, MIN(title) title, MAX(claim) claim FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome IS NOT NULL AND outcome NOT IN ('open_at_merge', 'open_at_close') GROUP BY id ORDER BY MAX(rowid) DESC", repo, n)
-      .map((f) => ({ id: f.id, severity: "important", path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), claim: f.claim.slice(0, 300) }));
+      .map((f) => ({ id: f.id, severity: "important", path: f.path, line: f.line, title: f.title.slice(0, 80), claim: f.claim.slice(0, 300) }));
     const open = stillOpen(repo, n);
     // An open finding carrying an agent's `fixed` claim goes first: it is what the next review is to settle, and what is cut stays open.
     const byClaim = (a: Open, b: Open) => b.pending - a.pending;
     const gating = open.filter((f) => f.gating).sort(byClaim), other = open.filter((f) => !f.gating).sort(byClaim);
     const size = (v: unknown) => JSON.stringify(v).length;
-    const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path.slice(0, 120), line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
+    const entry = (f: Open, text: number) => ({ id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title.slice(0, 80), ...(f.gating ? { gating: true } : {}),
       ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
     let out: object[] = [];
     for (const text of [400, 150, 0]) if (size((out = [...gating.map((f) => entry(f, text)), ...claimed, ...other.map((f) => entry(f, 0))])) <= PREVIOUS_BUDGET) break;
-    while (out.length && size(out) > PREVIOUS_BUDGET) out.pop();
     return out;
   }
   const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });
@@ -518,7 +517,7 @@ export function createEngine(d: EngineDeps) {
       // The PR's stated intent, fenced as data in the brief; a fork's author is an outsider, so none.
       const pr = await d.source.get(r.repo, r.number);
       const intent = pr.fork ? "" : [pr.title, pr.body].filter(Boolean).join("\n\n");
-      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", focus: r.focus, intent,
+      const { check } = await d.runner.start({ repo: r.repo, number: r.number, base: r.base, head: r.head, merge_base, combo: comboOf(r), target: "pr", profile: "code-review", ...(r.recheck_only ? { run: r.id } : {}), focus: r.focus, intent,
         incremental_from, full: incremental_from === null, previous, mandatory: !!r.mandatory, recheck_only: !!r.recheck_only, ignore: cfg?.ignore ?? [], max_nits: cfg?.max_nits ?? 5 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -1444,7 +1443,7 @@ export function createEngine(d: EngineDeps) {
    * review until a mandatory one reviewed the PR. A head that has one is never queued again here: a changed setting applies from
    * the next head. */
   function missing(cfg: Repo, p: PullRequest) {
-    const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff'${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
+    const mandatory = (head?: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND mandatory = 1 AND kind != 'oneoff' AND recheck_only = 0${head ? " AND head = ?" : ""}`, p.repo, p.number, ...(head ? [head] : []));
     // No mandatory on_push: a later head needs no review of its own, only a PR never reviewed by a mandatory combo gets one.
     if (openOnly(cfg)) {
       // Its opening review lacks a mandatory run (a push superseded one): the newest head gets each such combo (as a batch of its
@@ -1459,7 +1458,7 @@ export function createEngine(d: EngineDeps) {
     }
     if (!mandatory(p.head)) trigger(cfg, p, pushed(p) && mandatory() ? "push" : "open");
   }
-  const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped'", p.repo, p.number);
+  const runsOn = (p: PullRequest) => !!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND status != 'skipped' AND recheck_only = 0", p.repo, p.number);
 
   const CLOSE_MS = 10_000;
   /** Closes the review tasks of PRs a poll found closed, side by side and each bounded; one that fails or hangs is tried again next tick. */

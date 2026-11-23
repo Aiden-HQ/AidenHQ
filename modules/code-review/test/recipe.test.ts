@@ -118,6 +118,17 @@ test("a recheck judges each finding on its own: an incomplete answer clears the 
   assert.match(r.coverage.incomplete, new RegExp(`left 1 earlier finding unanswered.*${z}`));
 });
 
+test("a bad previous shard is a gap naming it, the other shards still count; a verdict without a file read is a gap", async () => {
+  const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
+  const [x, y] = ["0123456789abcdef", "1123456789abcdef"];
+  const run = async () => ({ read: true, calls: [], message: JSON.stringify({ fixed: [x], still: [], unsafe: [] }) });
+  const f = (id) => ({ id, severity: "important", path: "src/pay.js", line: 2, title: `T${id}`, gating: true });
+  const r = await review({ spec: spec({ combo: combo({ recheck_only: true }), previous: JSON.stringify({ findings: [f(x), f(y)], cut: 3 }), previous_c: "null" }), ...box({ head, base }), run });
+  assert.deepEqual([r.fixed, r.cleared], [[], []], "no file was opened: nothing clears");
+  assert.match(r.coverage.incomplete, /3 earlier findings didn't fit/);
+  assert.match(r.coverage.incomplete, /spec field 3 were unreadable/);
+});
+
 test("a recheck asks about every finding, in chunks, and judges across them", async () => {
   const base = { "src/pay.js": "a\n" }, head = { "src/pay.js": "a\nb\n" };
   const ids = Array.from({ length: 40 }, (_, i) => i.toString(16).padStart(16, "0"));
