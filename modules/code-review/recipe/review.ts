@@ -303,7 +303,16 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // The PR's title and body (spec.intent) too: steering text there is the same attempt.
   const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer) || (!tree && atReviewer(String(spec.intent ?? "").split("\n").map((l) => `+${l}`).join("\n")));
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
-  const previous = tree ? [] : (() => { try { return ([spec.previous, spec.previous_b, spec.previous_c, spec.previous_d, spec.previous_e, spec.previous_f]).flatMap((t) => { const p = JSON.parse(t ?? "{}").findings; return Array.isArray(p) ? p : []; }); } catch { return []; } })()
+  // Each shard is read on its own: a bad one is a gap naming it, never every earlier finding lost; `cut` is how many the
+  // service couldn't fit in the check.
+  const shardGaps: string[] = [];
+  const previous = tree ? [] : ([spec.previous, spec.previous_b, spec.previous_c, spec.previous_d, spec.previous_e, spec.previous_f] as (string | undefined)[]).flatMap((t, i) => {
+    try {
+      const j = JSON.parse(t ?? "{}");
+      if (Number(j.cut) > 0) shardGaps.push(`${Number(j.cut)} earlier findings didn't fit in this check and were not rechecked`);
+      return Array.isArray(j.findings) ? j.findings : [];
+    } catch { shardGaps.push(`earlier findings in spec field ${i + 1} were unreadable and not rechecked`); return []; }
+  })
     .filter((f) => f && /^[0-9a-f]{16}$/.test(f.id) && typeof f.path === "string")
     .map((f) => ({ id: f.id as string, severity: (SEVERITIES.includes(f.severity) ? f.severity : "pre_existing") as Severity, path: f.path as string, line: Number(f.line) || 1, title: cap(f.title, 120), why: cap(f.why, 1000), evidence: cap(f.evidence, 1000), gating: f.gating === true, claim: typeof f.claim === "string" && f.claim ? cap(f.claim, 300) : undefined }));
   const reported = new Map(previous.map((f) => [f.id, f]));
@@ -324,10 +333,10 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     coverage: { reviewed, excluded: excluded.map((e) => `${e.path} (${e.why})`), incomplete: null },
     findings: [], fixed: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], guidance: guides.map((g) => g.path), downgraded: 0,
   };
-  const gaps = [];
+  const gaps = [...shardGaps];
   const hidden = excluded.filter((e) => e.gap);
   if (hidden.length) gaps.push(`${hidden.length} changed file${hidden.length > 1 ? "s" : ""} got no findings pass (${hidden.slice(0, 5).map((e) => `${e.path}: ${e.why}`).join("; ")}${hidden.length > 5 ? "; …" : ""})`);
-  const ids = (l: string[]) => `${l.slice(0, 10).join(", ")}${l.length > 10 ? `, … (${l.length} in all)` : ""}`;
+  const ids = (l: string[]) => `${l.slice(0, 5).join(", ")}${l.length > 5 ? ", …" : ""}`;
   /** The PR's earlier findings at this head (`again`: found or restated by this run): which are fixed, which answers unsafe. */
   async function recheck(again: Set<string>, claimsOnly = false) {
     const root = ws.replace(/\/$/, "");
@@ -336,7 +345,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
     const ask = previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
     const unsafe: Unsafe[] = [];
-    const named = new Set<string>(), cleared: string[] = [], still: string[] = [], omitted: string[] = [];
+    const named = new Set<string>(), cleared: string[] = [], still: string[] = [], omitted: string[] = [], unread: string[] = [], failed: string[] = [];
     let answered = false;
     // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
     const by = asker(combo);
@@ -348,7 +357,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       const j = answer(v.message);
       // A malformed `still` is no usable answer (never read as "nothing is still there").
       if (!(j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string"))) {
-        return void gaps.push(`the recheck of ${chunk.length} earlier finding${chunk.length > 1 ? "s" : ""} didn't finish (${v.cause ?? "no usable answer"}), so ${chunk.length > 1 ? "they stay" : "it stays"} as ${chunk.length > 1 ? "they were" : "it was"}: ${ids(chunk.map((f) => f.id))}`);
+        failed.push(...chunk.map((f) => f.id));
+        return void gaps.push(`the recheck of ${chunk.length} earlier finding${chunk.length > 1 ? "s" : ""} didn't finish (${v.cause ?? "no usable answer"}), so ${chunk.length > 1 ? "they stay" : "it stays"} as ${chunk.length > 1 ? "they were" : "it was"}`);
       }
       answered = true;
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
@@ -361,6 +371,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         if (!gone.has(f.id) && !j.fixed.includes(f.id)) omitted.push(f.id);
         else if (gone.has(f.id) && seen(f)) still.push(f.id);
         else if (!gone.has(f.id) && seen(f)) cleared.push(f.id);
+        else unread.push(f.id);
       }
       // An unsafe entry needs a reason: a bare id, null or an entry without a why is silence, and the finding stays closed.
       const claims = new Map(chunk.filter((f) => f.claim).map((f) => [f.id, f]));
@@ -368,6 +379,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         const id = u && typeof u === "object" && typeof u.id === "string" ? u.id : "";
         const why = u && typeof u === "object" && typeof u.why === "string" ? u.why.trim() : "";
         const f = claims.get(id);
+        if (f && why && !seen(f)) unread.push(id);
         if (!f || !why || named.has(id) || !seen(f)) continue;
         named.add(id);
         // The defect's line at the head, when it gives one inside the post schema's range; else the finding keeps its own.
@@ -378,7 +390,11 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     // Every asked finding is checked, in chunks small enough to be answered whole; a few at a time.
     const chunks = Array.from({ length: Math.ceil(ask.length / RECHECK_CHUNK) }, (_, i) => ask.slice(i * RECHECK_CHUNK, (i + 1) * RECHECK_CHUNK));
     for (let i = 0; i < chunks.length; i += RECHECK_PARALLEL) await Promise.all(chunks.slice(i, i + RECHECK_PARALLEL).map(ask1));
-    if (omitted.length) gaps.push(`the recheck left ${omitted.length} earlier finding${omitted.length > 1 ? "s" : ""} unanswered, so ${omitted.length > 1 ? "they stay" : "it stays"} as ${omitted.length > 1 ? "they were" : "it was"}: ${ids(omitted)}`);
+    if (omitted.length) gaps.push(`the recheck left ${omitted.length} earlier finding${omitted.length > 1 ? "s" : ""} unanswered, so ${omitted.length > 1 ? "they stay" : "it stays"} as ${omitted.length > 1 ? "they were" : "it was"}`);
+    if (unread.length) gaps.push(`the recheck gave a verdict on ${unread.length} earlier finding${unread.length > 1 ? "s" : ""} without opening ${unread.length > 1 ? "their files" : "its file"}, so ${unread.length > 1 ? "they stay" : "it stays"} as ${unread.length > 1 ? "they were" : "it was"}`);
+    // A post resolves at most 100 threads (review-post.ts RESOLVE_MAX): the rest stay open for the next recheck, and it says so.
+    if (cleared.length > 100) { gaps.push(`${cleared.length - 100} more earlier findings are fixed; the next recheck confirms them`); cleared.length = 100; }
+    if (failed.length + omitted.length + unread.length) gaps.push(`ids left as they were: ${ids([...failed, ...omitted, ...unread])}`);
     // The ones it looked at and cleared are fixed; the ones it called still there are shown to the agent who claimed them fixed.
     // An agent's pending `fixed` claim on a finding it neither cleared nor called still there stands.
     const fixed = [...cleared];
