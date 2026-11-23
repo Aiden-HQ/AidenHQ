@@ -110,9 +110,9 @@ export function readonlyPool(secretsDir: string): pg.Pool | undefined {
 }
 
 /**
- * One statement, read-only, 15 s, at most ROWS rows. The extended protocol refuses a second statement. Whatever session
- * setting the query changes (set_config('statement_timeout', '0', false)) the ROLLBACK undoes; a connection whose ROLLBACK
- * failed is closed rather than pooled, so no later query inherits it.
+ * One statement, read-only, 15 s, at most ROWS rows. The extended protocol refuses a second statement. The connection is
+ * closed afterwards, never pooled: what the agent's SQL left on its session (a session-level advisory lock, which a ROLLBACK
+ * keeps) reaches no later query.
  */
 export async function warehouseQuery(d: WarehouseDeps, sql: string): Promise<{ rows: Record<string, unknown>[]; truncated: boolean }> {
   const body = sql.trim().replace(/;\s*$/, "");
@@ -126,7 +126,8 @@ export async function warehouseQuery(d: WarehouseDeps, sql: string): Promise<{ r
     const got = parseRows(r.rows.slice(0, ROWS));
     return { rows: got.rows, truncated: got.cut || r.rows.length > ROWS || got.rows.some((x) => "_truncated_row" in x) };
   } finally {
-    c.release(await c.query("ROLLBACK").then(() => undefined, (e: Error) => e));
+    await c.query("ROLLBACK").catch(() => undefined);
+    c.release(true);
   }
 }
 

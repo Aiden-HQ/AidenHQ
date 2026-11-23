@@ -32,6 +32,7 @@ services:
         for s in paperclip_auth_secret paperclip_agent_jwt_secret; do
         test -f "/run/secrets/$$s" && test -s "/run/secrets/$$s" || { echo "paperclip: the secret $$s is missing or empty" >&2; exit 1; };
         done;
+        case "$${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-}" in false) ;; *) export PAPERCLIP_AUTH_DISABLE_SIGN_UP=true ;; esac;
         export BETTER_AUTH_SECRET="$$(cat /run/secrets/paperclip_auth_secret)"
         PAPERCLIP_AGENT_JWT_SECRET="$$(cat /run/secrets/paperclip_agent_jwt_secret)";
         exec /usr/bin/tini -- docker-entrypoint.sh "$$@"
@@ -49,7 +50,8 @@ services:
       PAPERCLIP_API_URL: http://localhost:3100
       # "paperclip" lets ops-mcp and the watcher reach the API by service name.
       PAPERCLIP_ALLOWED_HOSTNAMES: paperclip,localhost
-      # Closed unless .env opens it: ops/setup.sh (and .env.example) open it for the owner's first account, then close it.
+      # Closed unless .env opens it with exactly `false` (the entrypoint closes any other value): .env.example opens it for the
+      # owner's first account and ops/setup.sh closes it after.
       PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_DISABLE_SIGN_UP:-true}"
       USER_UID: "${PUID:-1000}"
       USER_GID: "${PGID:-100}"

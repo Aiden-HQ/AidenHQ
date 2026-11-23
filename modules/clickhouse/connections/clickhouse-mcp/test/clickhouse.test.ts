@@ -65,6 +65,8 @@ describe("query check", () => {
     ["SELECT * FROM \u201curl\u201d('https://evil.example/', 'CSV')", /url\(\)/],
     ["SELECT * FROM url\u200b('https://evil.example/', 'CSV')", /url\(\)/],
     ["SELECT 1 AS a$$ FROM url('https://evil.example/', 'CSV') -- $$", /url\(\)/],
+    ["SELECT * FROM `\\x75rl`('https://evil.example/', 'CSV')", /backslash escape/],
+    ['SELECT * FROM "\\x75rl"(\'https://evil.example/\', \'CSV\')', /backslash escape/],
     // What the lexer's own rules would decide is refused instead of guessed.
     ["SELECT 1$$ FROM url('https://evil.example/', 'CSV') $$", /\$ is allowed only/],
     ["SELECT $1", /\$ is allowed only/],
@@ -86,6 +88,7 @@ describe("query check", () => {
 
   it("reads past comments, quotes and escapes the way ClickHouse does", () => {
     expect(normalize("SELECT 'it''s', 'a\\'b' -- note\n FROM `my table` /* a /* nested */ comment */ # end")).toBe("SELECT '', '' FROM my table");
+    expect(normalize("SELECT `it``s` FROM t")).toBe("SELECT it`s FROM t");
     expect(normalize("SELECT $$it's$$, $t$x$t$, \u2018a\u2019, \u201cmy col\u201d FROM t // c")).toBe("SELECT '', '', '', my col FROM t");
   });
 

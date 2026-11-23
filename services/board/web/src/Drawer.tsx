@@ -60,15 +60,18 @@ export function Drawer({ refId, focus, board, onClose, onChanged, onMove, onSnoo
     };
   }, [load]);
 
-  async function update(u: Update, note?: string) {
-    if (!issue) return;
+  /** Saves a change to the task; false when it failed (the toast says why). */
+  async function update(u: Update, note?: string): Promise<boolean> {
+    if (!issue) return false;
     setBusy(true);
     try {
       setIssue(await api.update(issue.id, u));
       onChanged();
       if (note) toast(note);
+      return true;
     } catch (e) {
       toast(`Couldn't save: ${(e as Error).message}`);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -102,7 +105,7 @@ interface BodyProps {
   focus?: string;
   board: Board;
   busy: boolean;
-  update: (u: Update, note?: string) => Promise<void>;
+  update: (u: Update, note?: string) => Promise<boolean>;
   setStatus: (s: "todo" | "in_progress" | "done" | "cancelled") => Promise<void>;
   onClose: () => void;
   onMove: (id: string, bucket: Bucket) => Promise<void>;
@@ -343,7 +346,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
 }
 
 /** The task itself: what it's about, its files, who's on it, and the team chat (kept on the task until an agent is named). */
-function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<void>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
+function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<unknown>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
   const mine = issue.assignee === "me";
   const closed = issue.status === "done" || issue.status === "cancelled";
   const assistant = board.assignees.find((a) => a.kind === "assistant");
@@ -725,7 +728,7 @@ function DetailSection({ title, hint, children }: { title: string; hint?: string
 }
 
 /** The task's title, edited in place. An edit in progress is the owner's: a refresh that changes the title meanwhile never replaces it. */
-export function Title({ issue, editable, save }: { issue: IssueView; editable: boolean; save: (t: string) => Promise<void> }) {
+export function Title({ issue, editable, save }: { issue: IssueView; editable: boolean; save: (t: string) => Promise<boolean> }) {
   // null: not edited, so the task's own title shows (and follows refreshes).
   const [draft, setDraft] = useState<string | null>(null);
   // Escape blurs too: the blur that follows must drop the draft, not save it (its handler still sees this render's draft).
@@ -733,8 +736,9 @@ export function Title({ issue, editable, save }: { issue: IssueView; editable: b
   const commit = () => {
     const t = cancelled.current ? undefined : draft?.trim();
     cancelled.current = false;
-    // Once saved, the draft gives way to the task's title, unless the owner has typed on since (a newer draft stays).
-    if (t && t !== issue.title) void save(t).finally(() => setDraft((d) => (d === draft ? null : d)));
+    // Once saved, the draft gives way to the task's title, unless the owner has typed on since (a newer draft stays). A failed
+    // save keeps it, for another try.
+    if (t && t !== issue.title) void save(t).then((ok) => ok && setDraft((d) => (d === draft ? null : d)));
     else setDraft(null);
   };
   return (
@@ -763,7 +767,7 @@ export function Title({ issue, editable, save }: { issue: IssueView; editable: b
   );
 }
 
-function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Assignee; update: (u: Update) => Promise<void> }) {
+function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Assignee; update: (u: Update) => Promise<unknown> }) {
   const [models, setModels] = useState<Models | null>(null);
   const [catalog, refreshCatalog] = useModelCatalog();
   useEffect(() => {
@@ -813,7 +817,7 @@ function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Ass
 // Machine labels, and waiting-on (no longer used: only your own actions become tasks).
 const HIDDEN_LABELS = new Set(["daily-brief", "system-error", "waiting-on"]);
 
-function Labels({ all, selected, disabled, save }: { all: Label[]; selected: string[]; disabled: boolean; save: (ids: string[]) => Promise<void> }) {
+function Labels({ all, selected, disabled, save }: { all: Label[]; selected: string[]; disabled: boolean; save: (ids: string[]) => Promise<unknown> }) {
   const set = new Set(selected);
   return (
     <div className="label-picker">
@@ -834,7 +838,7 @@ function Labels({ all, selected, disabled, save }: { all: Label[]; selected: str
   );
 }
 
-function Description({ issue, prefix, editable, save }: { issue: IssueView; prefix: string; editable: boolean; save: (d: string) => Promise<void> }) {
+function Description({ issue, prefix, editable, save }: { issue: IssueView; prefix: string; editable: boolean; save: (d: string) => Promise<unknown> }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(issue.description);
   useEffect(() => {

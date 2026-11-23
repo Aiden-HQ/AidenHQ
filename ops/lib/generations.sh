@@ -60,9 +60,14 @@ switch (op) {
     const g = rows.find((x) => x.n === Number(a[0]));
     if (!g) { console.error(`generation: no generation ${a[0]}`); process.exit(1); }
     const dir = a[1] + "/modules", gone = [];
-    for (const m of (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((m) => /^[a-z0-9][a-z0-9-]*$/.test(m)).sort()) {
+    // A module whose restore was cut off between its two renames (genRestore) has only its .replaced-<m> dir: read that one.
+    const names = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+    const mods = new Set(names.filter((m) => /^[a-z0-9][a-z0-9-]*$/.test(m)));
+    for (const r of names) { const m = /^\.replaced-([a-z0-9][a-z0-9-]*)$/.exec(r)?.[1]; if (m) mods.add(m); }
+    for (const m of [...mods].sort()) {
       let v = 0;
-      try { const f = `${dir}/${m}/.data_version`; if (fs.lstatSync(f).isFile()) v = Number(fs.readFileSync(f, "utf8")); } catch {}
+      const at = names.includes(m) ? m : `.replaced-${m}`;
+      try { const f = `${dir}/${at}/.data_version`; if (fs.lstatSync(f).isFile()) v = Number(fs.readFileSync(f, "utf8")); } catch {}
       if (!(v > (g.data_versions?.[m] ?? 0))) continue;
       const k = rows.find((x) => x.n > g.n && x.snapshot && fs.existsSync(`${x.snapshot}/${m}.tar`));
       if (k) out(`${m} ${k.n} ${k.snapshot_at ?? k.at} ${k.snapshot}/${m}.tar`); else gone.push(m);
@@ -183,6 +188,6 @@ genRestore() {
     rm -rf "$new" "$old"; mkdir "$new"
     tar -C "$new" --numeric-owner -xpf -
     if [ -e "/m/$M" ] || [ -L "/m/$M" ]; then mv "/m/$M" "$old"; fi
-    mv "$new" "/m/$M"
+    mv "$new" "/m/$M" || { [ ! -e "$old" ] || mv "$old" "/m/$M"; exit 1; }
     rm -rf "$old"' < "$tar"
 }

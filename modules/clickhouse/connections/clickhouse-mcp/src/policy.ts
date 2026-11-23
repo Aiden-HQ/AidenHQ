@@ -73,6 +73,8 @@ export function normalize(sql: string): string {
       let j = i + 1;
       let text = "";
       for (; j < sql.length; j++) {
+        // ClickHouse decodes a name's escapes (\x75rl is url) before it looks the name up: only strings may hold one.
+        if (sql[j] === "\\" && c !== "'") throw new QueryRefused("a quoted name can't hold a backslash escape");
         if (sql[j] === "\\") (text += sql[j + 1] ?? ""), j++;
         else if (sql[j] === c && sql[j + 1] === c) (text += c), j++;
         else if (sql[j] === c) break;

@@ -51,9 +51,9 @@ it("source_new / source_ack: per-agent, per-filter cursor, filters as parameters
   await expect(sourceAck(d, "agent-a", "src_slack.messages", "1; DROP")).rejects.toThrow(/cursor/);
 });
 
-// A query may change its session's settings (set_config('statement_timeout', '0', false)); the ROLLBACK undoes that, so a
-// connection whose ROLLBACK failed is closed, never pooled for the next query.
-it("warehouse_query closes a connection whose ROLLBACK failed, and pools one that rolled back", async () => {
+// The agent's SQL may leave state on its session that a ROLLBACK keeps (a session-level advisory lock): its connection is
+// closed, never pooled for the next query, whether or not the ROLLBACK went through.
+it("warehouse_query never returns its connection to the pool", async () => {
   const run = async (rollback: "ok" | "fails") => {
     const released: unknown[] = [];
     const client = {
@@ -67,6 +67,6 @@ it("warehouse_query closes a connection whose ROLLBACK failed, and pools one tha
     await warehouseQuery(d, "SELECT set_config('statement_timeout', '0', false)");
     return released;
   };
-  expect(await run("ok")).toEqual([undefined]);
-  expect(await run("fails")).toEqual([expect.any(Error)]);
+  expect(await run("ok")).toEqual([true]);
+  expect(await run("fails")).toEqual([true]);
 });

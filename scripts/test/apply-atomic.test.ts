@@ -11,7 +11,7 @@ import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -928,7 +928,9 @@ test("an auto-revert whose data restore fails stops there, and the rollback its 
   assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed .* putting acme's data back from .* failed, so generation 2 was not re-applied/);
   assert.doesNotMatch(readFileSync(w.d("state/apply-3.log"), "utf8"), /was reverted to generation 2/);
   assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /run ops\/rollback\.sh 2 from the owner's shell/);
-  // What the alert says to do, once the cause is fixed: the rollback puts acme's data back from generation 3's snapshot.
+  // What the alert says to do, once the cause is fixed: the rollback puts acme's data back from generation 3's snapshot, even
+  // from a restore cut off between its renames (only .replaced-acme left).
+  renameSync(w.d("prod/data/modules/acme"), w.d("prod/data/modules/.replaced-acme"));
   rmSync(w.d("ctrl/badrestore"));
   rmSync(w.d("ctrl/break"));
   const back = await w.sh("ops/rollback.sh", "2");
