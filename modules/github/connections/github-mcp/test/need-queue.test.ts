@@ -285,6 +285,40 @@ describe("a successful owner call to an org", () => {
     expect(k.seen.slice(before).map((s) => s.body), "acme's stale report is not replayed").not.toContainEqual(expect.objectContaining({ need: expect.objectContaining({ org: "Acme" }) }));
   });
 
+  it("a flush does not send or delete a newer report that replaced an entry it started with", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "needs-"));
+    const file = join(dir, "connection-needs.json");
+    const kept = (url: string, org = "acme") => ({ cause: "restricted", detail: "d", org, url });
+    writeFileSync(file, JSON.stringify([
+      { key: ["restricted", "", "other", ""].join("\u0000"), need: kept("https://github.com/settings/connections/applications/old", "other") },
+      { key: ["restricted", "", "acme", ""].join("\u0000"), need: kept("https://github.com/settings/connections/applications/old") },
+    ]));
+    let release: (r: Response) => void = () => {};
+    const seen: { need: { org?: string; url?: string } }[] = [];
+    let hang = true, busyOnce = false;
+    const fetcher = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      seen.push(body);
+      if (hang) { hang = false; return new Promise<Response>((r) => (release = r)); }
+      // acme refused again meets a kernel that cannot take it now, so the newer report is kept (the next pass takes it).
+      if (body.need.org === "acme" && body.need.url?.endsWith("/new") && !busyOnce) { busyOnce = true; return new Response("busy", { status: 503 }); }
+      return ok();
+    }) as unknown as typeof fetch;
+    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher, waitMs: 50, file });
+    const pass = q.flush();
+    await new Promise((r) => setTimeout(r, 20));
+    // The org is refused again with a newer link while the pass is on the first entry: it replaces acme's old entry.
+    await q.tell(new GitHubNeed({ cause: "restricted", org: "acme", url: "https://github.com/settings/connections/applications/new" }));
+    release(ok());
+    await pass;
+    const tail = () => seen.map((b) => `${b.need.org}:${b.need.url?.split("/").at(-1)}`);
+    expect(tail(), "the stale payload for acme never went in that pass").toEqual(["other:old", "acme:new"]);
+    expect(q.pending(), "and the newer acme report is still kept").toBe(1);
+    await q.flush();
+    expect(tail(), "it is sent on its own turn").toEqual(["other:old", "acme:new", "acme:new"]);
+    expect(q.pending()).toBe(0);
+  });
+
   it("a success while a flush awaits an earlier report does not let that pass send the forgotten one", async () => {
     // Two needs kept by an earlier process, read back from disk: nothing is sent until the flush.
     const dir = mkdtempSync(join(tmpdir(), "needs-"));

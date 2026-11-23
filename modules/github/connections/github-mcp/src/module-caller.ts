@@ -165,8 +165,9 @@ export function needQueue(o: {
     try {
       // One entry per kept key at the start: a failure re-keeps it without being visited again in this pass.
       for (const [k, p] of [...pending]) {
-        // A success fixed it while this pass awaited an earlier report: no longer kept, so it is not sent.
-        if (!pending.has(k)) continue;
+        // A success fixed it, or a newer report for the same key replaced it, while this pass awaited an earlier one: the entry
+        // this pass started with is gone, so the older payload is not sent (and the newer entry is left to its own turn).
+        if (pending.get(k) !== p) continue;
         if (stale(p)) {
           pending.delete(k);
           changed = true;
@@ -181,8 +182,8 @@ export function needQueue(o: {
         }
         const r = await postNeed(o.kernelUrl, o.key(), { connection: "github", need: p.need }, o.log, o.fetcher ?? fetch, 5_000);
         if (r === "retry") continue;
-        pending.delete(k);
-        changed = true;
+        // Only this pass's own entry: a newer report staged for the same key while it was sent stays to be replayed.
+        if (pending.get(k) === p) { pending.delete(k); changed = true; }
       }
     } finally { flushing = false; if (cap() || changed) save(); }
   };
@@ -197,9 +198,11 @@ export function needQueue(o: {
       // takes never evicts a kept one.
       pending.set(k, { need: body.need, gen: gen() });
       save();
+      const kept = pending.get(k)!;
       const r = await reportNeed(o.kernelUrl, o.key(), err, o.log, o.fetcher, waitMs);
       if (r === "retry") { cap(); save(); return; }
-      if (pending.delete(k)) save();
+      // A newer report staged for the same key while this one was sent is not this one's to delete.
+      if (pending.get(k) === kept && pending.delete(k)) save();
     },
     flush,
     /** A call to `org` succeeded: any kept sso/restricted need for it is the owner's fix already made, not a report to replay. */
