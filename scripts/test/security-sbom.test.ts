@@ -2,7 +2,7 @@
 // log, so the host scan's scope is its argument list, not an inference from the script's text.
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -81,10 +81,13 @@ if [ "$1" = run ] && [ -n "$FAKE_HOST_SCAN_SLEEP" ] && [[ "$*" == *"--source-nam
   read -r -t "$FAKE_HOST_SCAN_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_HOST_SCAN_SLEEP")
 fi
 # An apply that starts while the scans run: FAKE_TAKE_LOCK_ON_HOST_SCAN has a background process hold the apply lock as the
-# host scan begins, so a later wave cannot export and must record its images rather than leave a gap. It lives longer than
-# the pass and dies on its own (its stdout is closed, so the host scan's command substitution does not wait on it).
+# host scan begins, so a later wave cannot export and must record its images rather than leave a gap. It writes a marker
+# once it holds the lock and keeps holding it until the test removes the marker, so nothing races a timeout. Its stdout is
+# closed so the host scan's command substitution does not wait on it.
 if [ "$1" = run ] && [ -n "\${FAKE_TAKE_LOCK_ON_HOST_SCAN:-}" ] && [[ "$*" == *"--source-name host"* ]]; then
-  ( exec 9>>"$FAKE_APPLY_LOCK"; flock 9; read -r -t 5 _ < <(exec perl -e "select undef, undef, undef, 5") ) >/dev/null 2>&1 </dev/null &
+  marker="\${FAKE_APPLY_LOCK%/*}/late-holder"
+  ( exec 9>>"$FAKE_APPLY_LOCK"; flock 9; : > "$marker"
+    while [ -f "$marker" ]; do sleep 0.05; done ) >/dev/null 2>&1 </dev/null &
 fi
 # rm -f clears a container the script named before a run; a name nothing holds is a normal answer, not a failure.
 [ "$1" = rm ] && exit 0
@@ -898,13 +901,23 @@ test("security-sbom: an apply that takes the lock between waves leaves those ima
   // cannot export. The images it would have carried must be recorded with the reason, never silently dropped.
   const ids = ["sha256:a1", "sha256:a2", "sha256:a3", "sha256:a4", "sha256:a5"];
   const sizes = [6, 7, 8, 9, 10];
-  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "62914560", FAKE_TAKE_LOCK_ON_HOST_SCAN: "1" }, {
+  const { status, out, targets, calls, dir } = await run({ FAKE_FREE_KB: "62914560", FAKE_TAKE_LOCK_ON_HOST_SCAN: "1" }, {
     containers: ids.map((id, i) => ({ id: `c${i + 1}`, image: id, config: `svc${i + 1}:local`, label: id })),
     tags: Object.fromEntries(ids.map((id, i) => [`svc${i + 1}:local`, id])),
     held: ids,
     sizes: Object.fromEntries(ids.map((id, i) => [id, sizes[i] * 1024 ** 3])),
   });
   assert.equal(status, 0, out);
+  // The fixture held the lock from the host scan through the pass, past the second wave's save attempt, so that wave
+  // could not export. Release the fixture now and wait for it to drop the lock, so a later test never inherits it.
+  const checkout = join(dir, "checkout");
+  for (let i = 0; i < 100 && !existsSync(join(checkout, "data/late-holder")); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(existsSync(join(checkout, "data/late-holder")), "the fixture never took the apply lock");
+  rmSync(join(checkout, "data/late-holder"), { force: true });
+  for (let i = 0; i < 100; i++) {
+    try { execFileSync("flock", ["-n", join(checkout, "data/apply.lock"), "-c", "true"], { stdio: "ignore" }); break; }
+    catch { await new Promise((r) => setTimeout(r, 20)); }
+  }
   const rows = targets.filter((t) => t[0].startsWith("image:"));
   assert.equal(rows.length, ids.length, `every running image has a row:\n${rows.map((t) => t.join("\t")).join("\n")}`);
   const scanned = rows.filter((t) => t[1] !== "-");

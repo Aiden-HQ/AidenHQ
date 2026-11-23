@@ -569,14 +569,15 @@ save_wave() { # <wave>
     [ "${wave_of[$idx]:-0}" = "$w" ] || continue
     key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
     # Free space is read again with this wave's archives already written: the plan's budget counted them, but another
-    # writer on the same filesystem can have taken room since, and a save that starts below the floor fills the disk the
-    # host runs on. That image is a line with the numbers that decided it.
-    # Below the floor the room is negative, and it must stay negative here: clamping it to 0 would let a free image save
-    # while the filesystem is already under the floor.
+    # writer on the same filesystem can have taken room since. Judge the same peak the plan did, with this room: all the
+    # wave's archives on disk plus its largest unpacked beside them. Checking only this archive's size would let a save
+    # land that its own scan then had to drop, and the image would be saved and skipped every pass. Below the floor the
+    # room is negative and must stay so: clamping it to 0 would let a free image save while the disk is already under the
+    # floor.
     avail_now=$(( $(free_gb) - min_free_gb ))
-    if [ "$avail_now" -lt "$sz" ]; then
-      top=$(( sz > written_big ? sz : written_big ))
-      fail "image:$key" "skipped: ${sz} GB image does not fit: $(space_need "$written" "$sz" "$top" "$avail_now" $(( sz - avail_now )))"
+    top=$(( sz > written_big ? sz : written_big ))
+    if [ $(( written + sz + top )) -gt "$avail_now" ]; then
+      fail "image:$key" "skipped: ${sz} GB image does not fit: $(space_need "$written" "$sz" "$top" "$avail_now")"
       continue
     fi
     # Exported now, under the lock, from the reference resolved by the survey: the archive holds exactly what runs, and
