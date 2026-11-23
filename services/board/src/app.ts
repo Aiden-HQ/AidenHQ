@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
@@ -60,6 +60,9 @@ import { CreateViewSchema, UpdateViewSchema, ViewSpecSchema, type View } from ".
 import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
+/** The board's record of a chat's opening message (store meta key prefix + the chat's id). */
+const CHAT_OPENING = "chat-opening:";
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
@@ -816,6 +819,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    * the wait's), with the options of the agent's newest reply that offered some. Only work the chat's own agent or the owner put
    * under it counts: another agent can't hang a task under his chat to collect his words.
    */
+  /** A board chat's opening message, as the board recorded it when the owner started the chat: a comment of his, id = the chat's id. */
+  const openingOf = (chat: Issue, me: string): Comment | undefined => {
+    const raw = store.meta(`${CHAT_OPENING}${chat.id}`);
+    if (!raw) return undefined;
+    const { sha, length, createdAt } = JSON.parse(raw) as { sha: string; length: number; createdAt: string };
+    const description = String(chat.description ?? "");
+    if (sha256(description) !== sha) throw new Refused("refused: the chat's opening message was edited since the owner wrote it; ask the owner again");
+    return { id: chat.id, body: description.slice(0, length), authorType: "user", authorUserId: me, createdAt } as Comment;
+  };
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
   async function asksOf(chat: Issue, kids: Issue[], states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>) {
@@ -1032,7 +1044,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
-      // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's task. The agent picks the
+      // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's or the Researcher's task. The agent picks the
       // comment and the task, never the words; it lands as the owner's own comment with the delivered-from marker, so the runner acts on it.
       method: "POST",
       path: /^\/internal\/relay$/,
@@ -1041,11 +1053,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const { comment_id, target } = parse(RelaySchema, body);
           const ctx = await context();
           const chats = (await pc.openIssues()).filter((i) => i.assigneeAgentId === cos.id && (i.labels ?? []).some((l) => l.name === "chat"));
-          let source: { chat: Issue; comment: Comment } | undefined;
-          for (const chat of chats) {
-            const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
-            if (comment) source = { chat, comment };
-          }
+          // The chat's own id names its opening message; any other id, a comment on one of the chats.
+          const opened = chats.find((c) => c.id === comment_id);
+          const opening = opened && openingOf(opened, ctx.me);
+          let source: { chat: Issue; comment: Comment } | undefined = opened && opening ? { chat: opened, comment: opening } : undefined;
+          if (!opened)
+            for (const chat of chats) {
+              const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
+              if (comment) source = { chat, comment };
+            }
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
           if (!REF.test(target)) throw new Refused("refused: target must be a task identifier");
@@ -1065,24 +1081,30 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
             if (!askedAt) throw new Refused("refused: the kernel has no open question on that task; answer on the task");
             if (source.comment.createdAt <= askedAt) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
           }
-          if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's task, or a task handed out from this chat whose agent is asking the owner");
+          if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's or the Researcher's task, or a task handed out from this chat whose agent is asking the owner");
           // One set of tasks that could take the owner's words: whenever more than one could, the words must name the target.
           // Engineer tasks that could take the owner's words: those with their review or checks under way (the kernel's state).
           const engineers = (await pc.openIssues()).filter((i) => ctx.assignees.some((a) => a.key === i.assigneeAgentId && a.kind === "engineer"));
           const engineerStates = await stateRows(engineers.map((i) => i.id));
           const inReview = engineers.filter((i) => ["card_review", "card_owner", "module_wait"].includes(engineerStates.get(i.id)?.reason ?? "")).map((i) => i.identifier);
           const waiting = [...new Set([...inReview, ...asking.filter((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)?.kind !== "engineer").map((k) => k.identifier)])];
-          assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
-          // Once per message, whatever the target: reserved before posting, released if the post fails.
-          const key = `relayed:${comment_id}`;
-          if (store.meta(key)) throw new Refused("refused: that message was already relayed");
-          store.setMeta(key, new Date().toISOString());
+          // The owner's ask for the Researcher (an email or calendar change he asked Aiden for): a task the chat's agent handed
+          // out under this chat. Aiden names the task, so his words go there as they are (task ids in them are the ask's
+          // subject), once per task: one message may ask for several things. An answer to a question it is asking stays bound
+          // like any answer (the target check, once per message).
+          const asked = !ask && agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me);
+          if (!asked) assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
+          // Once per message, whatever the target (per task for an ask): reserved before posting, released if the post fails.
+          // Every delivery also marks its own task, so a message reaches a task at most once whichever path it took.
+          const keys = [`relayed:${comment_id}:${dest.id}`, ...(asked ? [] : [`relayed:${comment_id}`])];
+          if (keys.some((k) => store.meta(k))) throw new Refused("refused: that message was already relayed");
+          for (const k of keys) store.setMeta(k, new Date().toISOString());
           const from: DeliveredFrom = { identifier: source.chat.identifier, commentId: source.comment.id, note: `Written in chat on ${source.chat.identifier}.` };
           let posted: Comment;
           try {
             posted = await pc.addComment(dest.id, `${deliveredText(words, from)}\n\n${fromMarker(from)}\n${RELAY_MARKER}`);
           } catch (err) {
-            store.delMeta(key);
+            for (const k of keys) store.delMeta(k);
             throw err;
           }
           log.info({ chat: source.chat.identifier, task: dest.identifier }, "chat message relayed");
@@ -1741,7 +1763,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         const title = input.text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
-        const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
+        const description = `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`;
+        const issue = await pc.createIssue({ title, description, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
+        // The owner's own opening message (a request: the setup wizard's welcome chat has none), so Aiden can pass it on like his
+        // later messages (/internal/relay, comment_id = the chat's own id). The board keeps only a digest of the description
+        // as created, never the text: an agent's edit to the description no longer matches, so it is never passed on.
+        if (req) store.setMeta(`${CHAT_OPENING}${issue.id}`, JSON.stringify({ sha: sha256(description), length: input.text.length, createdAt: new Date().toISOString() }));
         log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
         return { identifier: issue.identifier };
       },

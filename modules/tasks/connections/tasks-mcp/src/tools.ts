@@ -2022,12 +2022,12 @@ Object.assign(TOOLS, {
   },
   task_relay_owner_words: {
     description:
-      "Chief of Staff only: relay the owner's own chat message to an engineer's task, word for word, so the engineer treats it as the owner's. Use it for every go-ahead or answer an engineer task waits on (\"go\", \"yes do it\"); never delegate it as a new task, the engineer would refuse your words. Pushes, PRs, merges and applies are approval cards: never relay those. The board refuses unless the comment is their own original message (not forwarded or relayed, under 2 hours old) and the target is an engineer's task. Once per message and task. It only delivers the message: not done until the engineer's task reports it.",
+      "Chief of Staff only: relay the owner's own chat message to an engineer's or the Researcher's task, word for word, so that agent treats it as the owner's. Use it for every go-ahead or answer an engineer task waits on (\"go\", \"yes do it\"), and right after delegating an owner's ask that needs his words (an email or calendar change: relay that message to the Researcher task you just made for it); never paraphrase it into a task, the agent would refuse your words. Pushes, PRs, merges and applies are approval cards: never relay those. The board refuses unless the comment is their own original message (not forwarded or relayed, under 2 hours old) and the target is an engineer's or the Researcher's task. Once per message and task. It only delivers the message: not done until that task reports it.",
     inputSchema: {
       type: "object",
       properties: {
-        comment_id: { type: "string", description: "id of the owner's comment on the chat task, from task_comments" },
-        target: { type: "string", description: "the engineer's task identifier, e.g. WOR-45" },
+        comment_id: { type: "string", description: "id of the owner's comment on the chat task, from task_comments; for the message he opened a board chat with (its description), the chat task's own id" },
+        target: { type: "string", description: "the engineer's or Researcher's task identifier, e.g. WOR-45" },
       },
       required: ["comment_id", "target"],
       additionalProperties: false,
