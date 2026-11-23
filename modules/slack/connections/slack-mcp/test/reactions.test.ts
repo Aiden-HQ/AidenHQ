@@ -420,6 +420,17 @@ describe("scanMyReactions", () => {
     expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.stringMatching(/^aidenhq:pos:/) });
   });
 
+  it("keeps a verified match when a later numbered page fails", async () => {
+    // Page 1 holds the match; page 2 is a 503. Numbered pagination advances without a cursor, so the match is still kept.
+    const fetchImpl = (async (url: string | URL) => {
+      const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
+      if (n > 1) return new Response("down", { status: 503 });
+      return Response.json({ ok: true, items: [item("C1", "1.1")], paging: { count: 1, total: 3, page: 1, pages: 3 } });
+    }) as unknown as typeof fetch;
+    const scan = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
+  });
+
   it("stops at the answer's size budget and hands back a continuation, rather than one oversized answer", async () => {
     // Each text is 4 KB, so a 10 KB budget fits two messages and the third opens a continuation.
     const big = "x".repeat(4096);
@@ -800,6 +811,15 @@ describe("interception through the proxy", () => {
     const body = (await res.json()) as any;
     expect(payload(body)).toMatchObject({ error: "admission_unknown", set: "unknown" });
     unconfirmed.close();
+  });
+
+  it("refuses a continuation issued for another Slack account, instead of skipping that account's messages", async () => {
+    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "more"), page([item("C2", "2.2")])]);
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
+    // The owner reconnects as someone else: the same `seen` keys would suppress a message that account reacted to.
+    const other = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer y", userId: "U0OTHER02" }, { fetchImpl });
+    expect(other).toMatchObject({ ok: false, detail: expect.stringContaining("Slack account") });
   });
 
   it("refuses a continuation reused for a different emoji, instead of skipping that search's messages", async () => {

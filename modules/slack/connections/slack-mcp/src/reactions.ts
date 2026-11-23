@@ -212,7 +212,7 @@ export type ScanResult =
 // page, and resuming from a saved page could skip a match that moved earlier. Identity is the only stable key. A walk
 // that itself began at a caller-supplied Slack cursor keeps it (`from`): its earlier results are unknown, so restarting
 // at the head could repeat them.
-type Position = { n: number; seen: string[]; from?: string; e: string; pub: boolean };
+type Position = { n: number; seen: string[]; from?: string; e: string; pub: boolean; u: string };
 const POSITION = "aidenhq:pos:";
 const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
 function decodePosition(value: string): Position | undefined {
@@ -226,8 +226,9 @@ function decodePosition(value: string): Position | undefined {
     const from = typeof v.from === "string" && v.from ? v.from : undefined;
     const e = typeof v.e === "string" ? v.e : undefined;
     const pub = v.pub === true;
-    if (e === undefined) return undefined;
-    return { n, seen, ...(from ? { from } : {}), e, pub };
+    const u = typeof v.u === "string" ? v.u : undefined;
+    if (e === undefined || u === undefined) return undefined;
+    return { n, seen, ...(from ? { from } : {}), e, pub, u };
   } catch {
     return undefined;
   }
@@ -277,9 +278,12 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const position = decodePosition(start);
   // A continuation names the search that issued it: reused against a different emoji or scope it would skip that other
   // search's messages (the identities are channel + ts, not emoji), so it is refused rather than answered short.
-  const scopeKey = { e: plan.emoji, pub: Boolean(plan.publicOnly) };
-  if (position && (position.e !== scopeKey.e || position.pub !== scopeKey.pub)) {
-    return { ok: false, detail: "the cursor belongs to a different reaction search (another emoji or channel scope); start it without a cursor" };
+  // A continuation names the search that issued it — the emoji, the channel scope and the Slack account — since the
+  // `seen` keys identify messages, not one account's reaction to them. Reused after a different sign-in it would skip a
+  // message the new account reacted to, so it is refused rather than answered short.
+  const scopeKey = { e: plan.emoji, pub: Boolean(plan.publicOnly), u: signIn.userId };
+  if (position && (position.e !== scopeKey.e || position.pub !== scopeKey.pub || position.u !== scopeKey.u)) {
+    return { ok: false, detail: "the cursor belongs to a different reaction search (another emoji, channel scope or Slack account); start it without a cursor" };
   }
   // A continuation token walks from the start; any other cursor value is Slack's own, resumed where it names.
   let cursor = position ? position.from ?? "" : start;
@@ -371,7 +375,8 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // honest answer is the failure itself, never an empty page behind a cursor that would keep returning it.
     // Any stop after verified matches were found (a failed page, the deadline) hands them back with a continuation that
     // resumes past this page, rather than discarding them for an error the next run would repeat from the start.
-    if (!r.ok) return messages.length && (full || cursor) ? { ok: true, messages, nextCursor: continuation() } : r;
+    // Any page after the first is an advance, whether Slack pages by cursor or by number, so verified matches are kept.
+    if (!r.ok) return messages.length && (full || cursor || numbered !== undefined) ? { ok: true, messages, nextCursor: continuation() } : r;
     const { json } = r;
     // A page without an item list isn't an empty page: it is an answer this scan can't read, so the set is unknown.
     if (!Array.isArray(json.items)) return { ok: false, detail: "reactions.list answered without an item list" };
