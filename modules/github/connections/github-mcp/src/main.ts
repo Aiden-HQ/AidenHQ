@@ -18,6 +18,7 @@ import { z } from "zod";
 import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { GitHub, GitHubRefused, parseRef } from "./github.js";
 import { Maintainer } from "./maintainer.js";
+import { graduate } from "./graduate.js";
 import { describeRepos, parseRepos } from "./aidenhq-sdk/maintained-repos.js";
 import { isModule, needQueue } from "./module-caller.js";
 import { CodeReviewReader, codeReviewRoute } from "./code-review-read.js";
@@ -448,6 +449,21 @@ function buildServer(caller?: Caller): McpServer {
     }
   };
 
+  server.registerTool(
+    "github_release_graduate",
+    {
+      description: `Graduate a maintained repo's pre-release by hand when graduation stalled on something other than it: code checks that the tag is the next one graduation tests, that its release run passed, and that the latest graduation run failed before the candidate stage (the baseline, the runner, a bootstrap), then makes it a full release and latest. Anything else is refused with the reason. Maintained repos: ${REPOS}.`,
+      inputSchema: { repo: appRepo, tag: z.string().min(1).max(40).describe("the release, e.g. 2026.11.22") },
+      annotations: write,
+    },
+    run(
+      "github_release_graduate",
+      logged("github_release_graduate", (a: { repo: string; tag: string }) => ({ repo: a.repo, tag: a.tag }), async (a: { repo: string; tag: string }) => {
+        const r = maintainer.target(a.repo);
+        return graduate((m, p, b) => access.rest(m, p, b), `${r.owner}/${r.name}`, a.tag.trim());
+      }),
+    ),
+  );
   server.registerTool(
     "github_issue_update",
     {

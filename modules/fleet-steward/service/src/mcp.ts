@@ -9,6 +9,8 @@ export interface Tool {
   inputSchema: object;
   /** Roles of which the caller must hold one; none: any caller the kernel's grants let through. */
   roles?: string[];
+  /** A write: listed without the read-only hint. */
+  write?: boolean;
   run: (args: Record<string, unknown>, caller: Caller & { assertion?: string }) => Promise<unknown>;
 }
 
@@ -24,7 +26,7 @@ export function createMcp(tools: Tool[]) {
   return async function handle(msg: { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } }, caller: () => Promise<Caller & { assertion?: string }>): Promise<object | undefined> {
     const reply = (result: unknown) => ({ jsonrpc: "2.0", id: msg.id ?? null, result });
     if (msg.method === "initialize") return reply({ protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "fleet-steward", version: "0.1.0" } });
-    if (msg.method === "tools/list") return reply({ tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema, annotations: { readOnlyHint: true, openWorldHint: false } })) });
+    if (msg.method === "tools/list") return reply({ tools: tools.map(({ name, description, inputSchema, write }) => ({ name, description, inputSchema, annotations: write ? { readOnlyHint: false, destructiveHint: true, openWorldHint: false } : { readOnlyHint: true, openWorldHint: false } })) });
     if (msg.method === "tools/call") {
       const tool = byName.get(String(msg.params?.name));
       if (!tool) return reply(text(`no tool ${String(msg.params?.name)}`, true));
@@ -56,7 +58,25 @@ export const fleetTools = (d: {
   snooze: (task: string, days: number) => unknown;
   /** The kernel's routing learning loop (POST /v1/routing/<op>), as the calling job: its assertion goes along, never its words about itself. */
   routing: (op: string, args: Record<string, unknown>, assertion: string) => Promise<unknown>;
+  /** GET /v1/work?owner_cards=1: the cards that went to the owner, newest first, a page at a time. */
+  ownerCards: (after: string | undefined, limit: number) => Promise<unknown>;
 }): Tool[] => [
+  {
+    name: "fleet_operate",
+    roles: ["fleet-settle"],
+    write: true,
+    description: "fleet-settle role: one fleet operation, filed as the kernel's `kernel.fleet_op` write (the AI reviewer reads it first; the result says when it ran). `op`: pause_routine / resume_routine (a routine id, from fleet_status), pause_agent / resume_agent (an agent id; never the chief of staff or you), stop_run (a task: its running jobs stop, the task stays open), restart_service (a module's compose service), rollback (`target: last_good`: the host back to its last good apply generation; the next apply of the instance's main moves it forward again). You resume only what you paused yourself. `reason`: one line, why.",
+    inputSchema: { type: "object", properties: { op: { type: "string", enum: ["pause_routine", "resume_routine", "pause_agent", "resume_agent", "stop_run", "restart_service", "rollback"] }, target: { type: "string" }, reason: { type: "string" } }, required: ["op", "target", "reason"], additionalProperties: false },
+    // The kernel's proxy files the write and runs it (kernel/src/fleet-ops.ts): a call that reaches this service went around it.
+    run: async () => { throw new Error("fleet_operate runs in the kernel: call it through your tools"); },
+  },
+  {
+    name: "fleet_owner_cards",
+    roles: ["fleet-settle"],
+    description: "fleet-settle role, read-only: the approval cards that went to the owner (Tier 2), newest first, `limit` (default 20, at most 100) a page; pass the answer's `next` as `after` for the page before. Each: id, kind, state, task, who filed it, the card's sentence and reason, who decided and when. For the daily interruption pass: with `notify_recent`, everything that reached the owner.",
+    inputSchema: { type: "object", properties: { after: { type: "string" }, limit: { type: "number" } }, additionalProperties: false },
+    run: async (a) => d.ownerCards(a.after === undefined ? undefined : String(a.after).slice(0, 64), a.limit === undefined ? 20 : Number(a.limit)),
+  },
   {
     name: "fleet_detector",
     roles: ["fleet-read", "fleet-audit"],
@@ -67,7 +87,7 @@ export const fleetTools = (d: {
   {
     name: "coach_due",
     roles: ["fleet-audit"],
-    description: "fleet-audit role: the agents to review this run (at most 3, in order), computed in code from agent ages, your review log, owner corrections and health-flag changes: each with its reasons and last review. Never you.",
+    description: "fleet-audit role: the agents to review this run (at most 3, in order), computed in code from agent ages, your review log, owner corrections and health-flag changes: each with its reasons and last review, you included.",
     inputSchema: NO_ARGS,
     run: async (_a, caller) => d.due(caller.agent),
   },

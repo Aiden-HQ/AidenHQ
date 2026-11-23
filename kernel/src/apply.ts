@@ -104,7 +104,8 @@ export type ApplyHost = {
   /** land: `official`, the official modules' pin on both sides, for the code host's reviewer-eval gate. */
   codehost: { read(s: Source): Promise<Read>; land(s: Source & { official: { from: OfficialPin; to: OfficialPin } }): Promise<{ landed: string }>; write(w: Write): Promise<{ sha: string }> };
   /** Queues an apply as `unit` (ops/aidenhq-apply): it waits for any apply running, then applies the instance's main. */
-  launch(unit: string): Promise<void>;
+  /** Starts `aidenhq-apply --unit <unit> [args…]` (args: ops/apply-config.sh's, e.g. `--generation <n>` for the Steward's rollback). */
+  launch(unit: string, args?: string[]): Promise<void>;
   unit(unit: string): Promise<Unit>;
   generations(): Generation[];
   /** Whether instance commit `commit` contains `sha` (false when either is unknown here). */
@@ -292,7 +293,7 @@ export function hostApply({ repo, stateDir, instanceDir, resolver, codehost, loc
   return {
     codehost: { read: (s) => provider(s).read(s), land: (s) => provider(s).land(s), write: (w) => provider(w).write(w) },
     // The same entry point as the owner's shell; the unit is collected when it ends, so none is left loaded.
-    launch: async (u) => void (await run("bash", [join(repo, "ops/aidenhq-apply"), "--unit", u])),
+    launch: async (u, args = []) => void (await run("bash", [join(repo, "ops/aidenhq-apply"), "--unit", u, ...args])),
     async unit(u) {
       const p = Object.fromEntries((await run("systemctl", ["--user", "show", `${u}.service`, "-p", "LoadState,ActiveState,SubState,Result"])).trim().split("\n").map((l) => l.split("=", 2) as [string, string]));
       return { loaded: p.LoadState === "loaded", active: p.ActiveState ?? "", sub: p.SubState ?? "", result: p.Result ?? "" };

@@ -584,9 +584,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       if (r.state === "running") watchers.get(id)?.cancel();
       return view(row(id)!);
     },
-    /** The owner's Stop (the board, as `by`, an account id): every running job of a task, or of an agent, whatever module runs it. */
-    stopRunning(f: { task: string } | { agent: string }, by: string) {
-      const [col, v] = "task" in f ? ["task", f.task] : ["agent", f.agent];
+    /** The owner's Stop (the board, as `by`, an account id): every running job of a task, or of an agent, whatever module runs it; or one job (the Steward's reviewed stop). */
+    stopRunning(f: { task: string } | { agent: string } | { job: string }, by: string) {
+      const [col, v] = "task" in f ? ["task", f.task] : "agent" in f ? ["agent", f.agent] : ["id", f.job];
       return (db.prepare(`SELECT * FROM jobs WHERE state = 'running' AND ${col} = ?`).all(v) as Record<string, any>[]).flatMap((r) => {
         const w = watchers.get(r.id);
         if (!w) return [];

@@ -8,8 +8,8 @@ reviewer reads its text as the request. It must be a task assigned to you, one y
 you; naming any other is refused. Leave it out and the card is filed on the task this run is on.
 Never use Paperclip's own approvals (`request_confirmation`, `request_board_approval`, the /approvals API) or any other
 approval mechanism: the owner never sees them, and your work stalls.
-If what you need has no card (e.g. a one-off command inside an app), ask the chief of staff (a task wait `for: delegator`
-reaches it): never assign a manual step to the owner.
+If what you need has no card (e.g. a one-off command inside an app), ask with a task wait `for: delegator` (its result's
+`to` says who got it): never assign a manual step to the owner.
 Cards are tiered by code when filed:
 Tier 0 runs at once, Tier 1 is decided by the AI reviewer, and only Tier 2 (the owner's own veto on the task, or autonomy
 off) waits for the owner.

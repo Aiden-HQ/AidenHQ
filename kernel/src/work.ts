@@ -15,6 +15,10 @@
 //                            five costliest components and subjects; the Fleet Steward's scorecards and spend check; each record says
 //                            whether it is a `judged` rejection: the AI reviewer's, not code's)
 //   GET /v1/work?generations=1  the host's apply generations: the current product pin and the last 20 applies (generations.ts)
+//   GET /v1/work?owner_cards=1[&after=<record id>][&limit=<n>]  the cards that reached the owner, newest first (by when they did), a page at
+//                            a time (default 20, at most 100; `next` is the id to pass as `after`): what interrupted the owner, for
+//                            the Fleet Steward's daily interruption pass. The card's sentence and who filed it, never its args.
+//   GET /v1/work?pauses=1    the Fleet Steward's open pauses (fleet-ops.ts): the detector keeps each one an incident
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
@@ -25,7 +29,7 @@ import type { Records } from "./records.ts";
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
-export function createWork({ db, records, generationsFile = "", capacity = () => 0 }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number }) {
+export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   /** A rejection the AI reviewer judged malicious (tier.ts MALICE), not code's refusal. */
@@ -111,6 +115,25 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       return { records: recs, usage, spend_components: top("component"), spend_subjects: top("task_subject") };
     },
     generations: () => fleetGenerations(generationsFile),
+    pauses: async () => ({ pauses: await pauses() }),
+    /**
+     * The cards that reached the owner (Tier 2: filed at the owner, or put to them later; never his own settings save, which
+     * he decided as he saved it), by when they reached them (the
+     * reviewer's escalation or a hold, else the filing), newest first, `limit` a page from after record `after`.
+     */
+    ownerCards(after: string | undefined, limit: number) {
+      // Put to the owner later: the reviewer's escalation, or a hold (autonomy tightened after an approval). Else the filing.
+      const reached = "COALESCE((SELECT f.at FROM facts f WHERE f.subject = 'record:' || r.id AND ((f.type = 'record.decided' AND f.version = 'reviewer:owner') OR f.type = 'record.held') ORDER BY f.seq DESC LIMIT 1), r.created_at)";
+      const cte = `WITH c AS (SELECT r.id, r.kind, r.state, r.task, r.identifier, r.requester, r.card, r.decided_by, r.created_at, r.decided_at, ${reached} AS reached FROM records r WHERE r.tier = 2 AND COALESCE(r.via, '') != 'save')`;
+      const keyset = after ? " WHERE (reached, id) < ((SELECT reached FROM c WHERE id = ?), ?)" : "";
+      const got = rows(`${cte} SELECT * FROM c${keyset} ORDER BY reached DESC, id DESC LIMIT ?`, ...(after ? [after, after] : []), limit + 1);
+      const cards = got.slice(0, limit).map((r) => {
+        const who = JSON.parse(r.requester || "{}") as { key?: string; module?: string; name?: string };
+        const card = JSON.parse(r.card || "{}") as { sentence?: string; reason?: string };
+        return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, requester: who.key || who.module || who.name || null, sentence: card.sentence ?? null, reason: card.reason ?? null, decided_by: r.decided_by ?? null, reached_owner_at: r.reached, created_at: r.created_at, decided_at: r.decided_at ?? null };
+      });
+      return { cards, next: got.length > limit ? cards.at(-1)!.id : null };
+    },
     /** One write record (an approval card) by id, for a reader that only has the id a report cited; null for none. */
     record(id: string) {
       const r = records.get(id);

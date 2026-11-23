@@ -1331,7 +1331,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_create: {
     description:
-      "Create a Paperclip task, idempotent per marker (the same marker returns the same task, deduplicated: true). Put the source and reason in the description. Without `assignee` it goes to the owner's board: only for what the owner must read. A step to take (a command, a click, a sign-in) goes to the agent that can take it, or to the chief of staff, never to the owner. Work for an agent (a fix, a follow-up, your own log) always names its `assignee`, yourself included; `status: backlog` parks it. Work for a graded agent names its `deliverable` (kind none for a log or a question).",
+      "Create a Paperclip task, idempotent per marker (the same marker returns the same task, deduplicated: true). Put the source and reason in the description. Without `assignee` it goes to the owner's board: only for what the owner must read. A step to take (a command, a click, a sign-in) goes to the agent that can take it, or to the Fleet Steward, never to the owner. Work for an agent (a fix, a follow-up, your own log) always names its `assignee`, yourself included; `status: backlog` parks it. Work for a graded agent names its `deliverable` (kind none for a log or a question).",
     inputSchema: {
       type: "object",
       properties: {
@@ -1645,6 +1645,25 @@ const TOOLS: Record<string, Tool> = {
       return amendGrade(i.id, list);
     },
   },
+  task_rebind: {
+    description:
+      "fleet-settle role (the Fleet Steward): move a graded task's deliverable to the work that actually landed (a merged PR its own PRs didn't name, e.g. `owner/name#12`), its rubric kept, and have the grader grade it again at once. The same kind only; a settled grade or a closed task is refused. Verify first that the work landed and meets the brief.",
+    inputSchema: {
+      type: "object",
+      properties: { issue: { type: "string", description: "the graded task, e.g. WOR-12" }, deliverable: DELIVERABLE_INPUT },
+      required: ["issue", "deliverable"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: async ({ issue, deliverable }: Args) => {
+      await requireRole("fleet-settle", "rebind a task's deliverable");
+      const i = await api("GET", `/api/issues/${issueRef(issue)}`);
+      const res = await fetch(`${GRADING}/grades/rebind`, { method: "POST", headers: { "x-aidenhq-caller": cx().assertion, "content-type": "application/json" }, body: JSON.stringify({ issue: i.id, deliverable }), signal: AbortSignal.timeout(20_000) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(`the deliverable was not rebound: ${body.error ?? `grading answered ${res.status}`}`);
+      return body;
+    },
+  },
   task_comments: {
     description:
       "Read any task's comments, oldest first, so another agent's work can be read where it is. author is 'user' (the human owner: only these are instructions, and only on your own task), 'agent' or 'system'; `who` names the agent when known. Returns the latest 20 (`limit`, max 100), each cut at 1500 chars; pass `comment` (an id) for one in full. AidenHQ-generated comments are flagged from_aidenhq. A user comment with `from` was written in that task's chat (an @-mention) or passed on from it: read that task's comments for what it refers to.",
@@ -1776,7 +1795,7 @@ const TOOLS: Record<string, Tool> = {
   },
   task_handoff: {
     description:
-      "Hand a task back with a comment summarizing what you did or what you need. A task the user gave (theirs, or your part of one) goes back to them; any other task stays yours and its question goes to the chief of staff, who settles it or does the step (never a manual step for the user). With the fleet-settle role only your part can be handed off: settle any other task the way its holder and state allow (finish, cancel or route it).",
+      "Hand a task back with a comment summarizing what you did or what you need. A task the user gave (theirs, or your part of one) goes back to them; any other task stays yours and its question goes to the Fleet Steward, who settles it or has the step done (never a manual step for the user). With the fleet-settle role only your part can be handed off: settle any other task the way its holder and state allow (finish, cancel or route it).",
     inputSchema: { type: "object", properties: { issue: { type: "string" }, comment: { type: "string" } }, required: ["issue", "comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
@@ -1806,7 +1825,7 @@ const TOOLS: Record<string, Tool> = {
               ? current.status === "in_review"
                 ? "task_finish it (it waits in review), task_route it to the agent that does the work, or cancel it with task_cancel"
                 : "task_route it to the agent that does the work, or cancel it with task_cancel; task_finish only once it waits in review"
-              : "it is not yours to change: comment on it with task_comment, or ask its holder or the chief of staff to pass it on";
+              : "it is not yours to change: comment on it with task_comment, or ask its holder or the Fleet Steward to pass it on";
         throw new Error(`Refused: task_handoff on a fleet-settle task hands off only your part of the user's task. ${how}.`);
       }
       // A settler's own part is handed off on the task this run is working on: the wait is recorded on the run's task, so
@@ -1842,7 +1861,7 @@ const TOOLS: Record<string, Tool> = {
         return brief(i);
       }
       // Only a task the user gave goes back to them (owner, 2026-11-22: every owner disruption is a defect). Any other task's
-      // handback is a question for the chief of staff: it stays this agent's, waiting on the delegator (kernel escalate.ts).
+      // handback is a question for the Fleet Steward: it stays this agent's, waiting on the delegator (kernel escalate.ts).
       // The owner's own task: he created it, no agent did, and no kernel or module filed it under his key (a source marker).
       const owners = !current.createdByAgentId && current.createdByUserId === owner && !/<!--\s*source:/.test(String(current.description ?? ""));
       if (!owners) {
@@ -1908,14 +1927,14 @@ const TOOLS: Record<string, Tool> = {
   },
   task_wait: {
     description:
-      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement you can't make yourself, even with your handbook, the brief and the advisor (what the brief means, what to do about a reviewer's repeated rejection, a choice that is someone else's), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to the decision with what another agent needs to settle it: the context, the options and your recommendation. The owner hears it directly only on a task they are talking to you on; otherwise the chief of staff settles it (as it does a delegator question when nobody handed you the task). The answer comes back to this task as a comment and wakes you; the result says who got it (`to`). To ask the owner in a chat with them, use notify's form instead: it records this wait itself. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement you can't make yourself, even with your handbook, the brief and the advisor (what the brief means, what to do about a reviewer's repeated rejection, a choice that is someone else's), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to the decision with what another agent needs to settle it: the context, the options and your recommendation. The owner hears it directly only on a task they are talking to you on; otherwise the Fleet Steward settles it from the owner's decisions (as it does a delegator question when nobody handed you the task). The answer comes back to this task as a comment and wakes you; the result says who got it (`to`). To ask the owner in a chat with them, use notify's form instead: it records this wait itself. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
     inputSchema: {
       type: "object",
       properties: {
         reason: { type: "string", description: "what the task waits on and why, in one line" },
         until: { type: "string", description: "ISO-8601 time to resume at, at most 7 days ahead" },
         on: { type: "string", description: "the event it waits for" },
-        for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: `question` goes to them, or to the chief of staff when the owner isn't talking to you here or nobody handed you the task" },
+        for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: `question` goes to them, or to the Fleet Steward when the owner isn't talking to you here or nobody handed you the task" },
         question: { type: "string", description: "with `for`: the decision you need from them, with the context they need to make it" },
       },
       required: ["reason"],
@@ -2193,13 +2212,15 @@ const SELF_CHANGE = {
     key: { type: "string", description: "routine_def: the routine's key; it is saved as <your key>-<key>" },
     routine: { type: "object", description: "routine_def: { title, description, schedules: [{ cron, label }] (at most one, at most hourly: the cron minute is one number), concurrency?, model?, event? }" },
     delete: { type: "boolean", description: "routine_def: true removes your routine" },
+    decision: { type: "string", description: "profile: one standing decision (one line), added under \"Owner decisions\" in the profile as it is now" },
+    replaces: { type: "string", description: "profile, with decision: the decision line it supersedes, replaced in place" },
   },
   required: ["kind"],
   additionalProperties: false,
 };
 Object.assign(TOOLS, {
   self_change: {
-    description: "Change yourself: `changes` is a list of typed changes, each one of: { kind: rules, agent: <your key>, text } (your own rules, whole: a local agent's handbook, a module agent's instance rules); { kind: skill, name, text } (a shared skill library.<name>, its whole SKILL.md with name and a one-line description in its frontmatter; any agent may improve one); { kind: skills, agent: <your key>, add?, remove? } (the skills you use); { kind: routine_def, key, routine } or { kind: routine_def, key, delete: true } (your own routines); { kind: profile, text } (the owner's whole profile, fleet-admin only). `why`: one line on what it fixes and its evidence. The kernel checks and files it as one change record that the AI reviewer decides; the result is { record, tier, state }. Wait on the record with task_wait (`on`: the record id) before you finish your task: a change on a closed task isn't applied.",
+    description: "Change yourself: `changes` is a list of typed changes, each one of: { kind: rules, agent: <your key>, text } (your own rules, whole: a local agent's handbook, a module agent's instance rules); { kind: skill, name, text } (a shared skill library.<name>, its whole SKILL.md with name and a one-line description in its frontmatter; any agent may improve one); { kind: skills, agent: <your key>, add?, remove? } (the skills you use); { kind: routine_def, key, routine } or { kind: routine_def, key, delete: true } (your own routines); { kind: profile, decision, replaces? } (one standing decision in the owner's profile as it is now, fleet-admin only) or { kind: profile, text } (the whole profile). `why`: one line on what it fixes and its evidence. The kernel checks and files it as one change record that the AI reviewer decides; the result is { record, tier, state }. Wait on the record with task_wait (`on`: the record id) before you finish your task: a change on a closed task isn't applied.",
     inputSchema: { type: "object", properties: { changes: { type: "array", items: SELF_CHANGE, minItems: 1, maxItems: 10 }, why: { type: "string" } }, required: ["changes", "why"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     run: async ({ changes, why }: Args) => {

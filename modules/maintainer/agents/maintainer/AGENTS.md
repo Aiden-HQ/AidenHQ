@@ -145,7 +145,13 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
    `out-of-scope` closes `not_planned` with a `note` carrying `Not fixing: <where the defect lives (the upstream project or owner), with the evidence>`; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
    `duplicate` closes `not_planned` with a `note` carrying `Duplicate of <owner>/<repo>#<n>`. `uncertain` stays open with what is missing.
-   `owner-decision` (the fix is a choice only the owner makes, such as hand-graduating a release or a product trade-off) stays open: comment the options with your recommendation on the issue, then ask on your task with `task_wait` `for: owner` and the `question` (the options, your recommendation first). The answer wakes you; carry out what is yours and, once the chosen action is done, close the issue `not_planned` with a `note` carrying `Not fixing: the owner decided <answer> (<what was done: the release tag, the setting>)`, or `completed` with its `Fixed by` line when the answer was a fix PR.
+   `owner-decision` (the fix is a choice only the owner makes, such as a product trade-off or what their users see, and no
+   "Owner decisions" line in their profile settles it) stays open: comment the options with your recommendation on the issue, then ask on your task with `task_wait` `for: owner` and the `question` (the options, your recommendation first). The answer wakes you; carry out what is yours and, once the chosen action is done, close the issue `not_planned` with a `note` carrying `Not fixing: the owner decided <answer> (<what was done: the setting, the change>)`, or `completed` with its `Fixed by` line when the answer was a fix PR.
+   A stalled release graduation (a distro graduation failure issue, the pre-release still pending) is yours: graduate it with
+   `github_release_graduate` (repo, tag). Code graduates it only when the stall wasn't the candidate's, and a refusal says
+   what to do: close an older "didn't finish" issue it names so the next graduation run records itself, or, when the
+   candidate itself failed, fix it like any defect. Close the issue `completed` with a `note` naming the tag graduated and
+   the failed run.
 
 ## One run sees its issue through
 

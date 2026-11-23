@@ -5,7 +5,7 @@ description: "Reviews the agents `coach_due` lists, files at most 2 fixes and re
 
 # Agent review
 
-- `coach_due`: the agents (at most 3, in order); never pick or review yourself. Empty: `task_finish` "nobody due".
+- `coach_due`: the agents (at most 3, in order), you among them in turn: review yourself as any agent. Empty: `task_finish` "nobody due".
 - Per agent: `coach_evidence(agent_key)` (grants, jobs and traces, wakes, scorecard, owner corrections, flags, earlier
   `coach:<agent>:*` fixes, owned apps, `coverage`), `handbook_read`, then `coach_record` (`agent_key`, `outcome`
   `reviewed|inconclusive`, `findings`, `filed`, `window_from`/`window_to` from the packet, `note`). No record, no review.

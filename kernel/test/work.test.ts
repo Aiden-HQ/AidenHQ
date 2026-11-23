@@ -219,3 +219,30 @@ test("GET /v1/facts: a module holding kernel.flow-read reads the log after a seq
   assert.deepEqual((await (await get("/v1/facts?since=0", "reader")).json()).facts.map((f) => [f.type, f.task]), [["task.created", "t1"]]);
   assert.deepEqual(await (await get(`/v1/facts?since=${tail}`, "reader")).json(), { facts: [], tail });
 });
+
+test("the owner's cards: only those that reached them, newest first, a page at a time", () => {
+  const { records, work } = setup();
+  const card = { target: "x", sentence: "Push it.", changes: "", reads: "", cost: "", details: "" };
+  const file = (tier, state) => records.file({ kind: "github.push", module: "github", args: { n: Math.random() }, targets: {}, executor: { module: "github" }, policy: "p", tier, card, requester: { agent: "", key: "eng", name: "Eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state });
+  const a = file(2, "owner"), b = file(2, "owner");
+  file(1, "review"); // with the reviewer, never the owner's
+  const saved = file(2, "approved"); // the owner's own settings save, decided as he saved it: never an interruption
+  records.db.prepare("UPDATE records SET via = 'save' WHERE id = ?").run(saved.id);
+  const first = work.ownerCards(undefined, 1);
+  assert.deepEqual([first.cards.length, first.cards[0].sentence, first.cards[0].requester], [1, "Push it.", "eng"]);
+  const second = work.ownerCards(first.next, 1);
+  assert.deepEqual([...first.cards, ...second.cards].map((c) => c.id).sort(), [a.id, b.id].sort());
+  assert.equal(second.next, null);
+});
+
+test("a card held for the owner after its approval counts from when it was held, not when it was filed", async () => {
+  const { records, work } = setup();
+  const card = { target: "x", sentence: "Push it.", changes: "", reads: "", cost: "", details: "" };
+  const file = (tier, state) => records.file({ kind: "github.push", module: "github", args: { n: Math.random() }, targets: {}, executor: { module: "github" }, policy: "p", tier, card, requester: { agent: "", key: "eng", name: "Eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state });
+  const held = file(1, "approved");
+  await new Promise((r) => setTimeout(r, 5));
+  const later = file(2, "owner");
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(records.hold(held.id, { by: "autonomy", value: "off" }, "autonomy is off"));
+  assert.deepEqual(work.ownerCards(undefined, 10).cards.map((c) => c.id), [held.id, later.id]);
+});

@@ -1,23 +1,25 @@
 name: fleet-steward
-description: "Fleet Steward: keeps the fleet running and unblocked on its own: settles stuck work (answers waits, accepts finished work, cancels stale tasks, re-routes handbacks), routes every fix to its source, reviews other agents' outcomes, and keeps the notes, the people directory and agents' memory tidy."
+description: "Fleet Steward, the fleet's operator: answers agents' questions from the owner's decisions, settles stuck work, owns each incident until it is resolved live (pause, stop, restart, roll back, the repair seen to production), routes every fix to its source, reviews other agents' outcomes, and keeps the notes, the people directory and agents' memory tidy."
 # One agent for fleet upkeep (roster merge 5.3: Fleet Ops, the Agent Coach and the Knowledge Librarian), one skill per
 # routine. It reads every agent's evidence, so it holds no public write: product bugs go to the Maintainer, which files
 # them upstream (owner, 2026-11-18: no single agent both reads every agent's private data and writes public GitHub issues).
 # Internal task actions are a different matter: it settles stuck work itself with the delegator's and the chief of staff's
-# authority (role fleet-settle, owner 2026-11-22: "its only job is to keep the system running without issues and blockers").
+# authority (role fleet-settle, owner 2026-11-22: "its only job is to keep the system running without issues and blockers"), and
+# it owns every fleet operation (owner 2026-11-23): agents' questions the kernel routes to fleet-settle (escalate.ts) and its
+# typed operations (fleet_operate, kernel.fleet_op).
 requires: [ grading ] # the detector reads the grader's failed passes
 replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
   # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
-  # the Coach; kernel.routines: the detector pauses a routine failing three runs in a row; kernel.tasks: the check task for the Steward and the fleet notices for the chief of staff (a paused routine, a component down, a critical alert, a jammed gate); kernel.owner-notice: the owner's lines for a lost Steward or a stalled dispatch;
+  # the Coach (and the Steward's own pauses and the owner's recent cards); kernel.tasks: the Steward's check tasks (a detector trip, a component down, a critical alert, a jammed gate); kernel.owner-notice: the owner's lines for a lost Steward or a stalled dispatch;
   # apps.read: apps-mcp's status, quality, sources and open PRs; kernel.routing: the routing learning loop's reads and its typed
   # routing changes, each a reviewed kernel.apply filed as the calling agent (routing-tuner role only); kernel.flow-read: Flow's idle work
   # for the detector's stuck rule and its week-over-week stage check, and the flow_report tool; product-issues (the chief of staff's):
   # the product-bug issues' status, which the digest's live-fix check reads.
-  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routines, kernel.routing, kernel.flow-read, apps.read, product-issues ]
+  requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routing, kernel.flow-read, apps.read, product-issues ]
   declares:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
-    - { id: fleet-settle, description: "Settle stuck work on any agent-made task (kernel cp.ts SETTLE): answer a wait, close finished work, cancel stale tasks, hand a task to the agent that does it (task_route)." }
+    - { id: fleet-settle, description: "The fleet's operator: settle stuck work on any agent-made task (kernel cp.ts SETTLE: answer a wait, close finished work, cancel stale tasks, task_route, task_rebind), answer the questions the kernel routes to it (escalate.ts), and file its typed operations (fleet_operate: kernel.fleet_op)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
     - { id: librarian, description: "Read every handbook and decide proposed identity links (tasks bridge, apps-mcp)." }
     - { id: routing-tuner, description: "Read team routing decisions and their outcomes, and propose one change a day to members' repos or routing weights as a reviewed experiment (routing_*)." }
@@ -52,13 +54,15 @@ agents:
       # task, through fleet-settle. task_create/task_delegate only to delegate_to below. task_handoff only on its own part of the
       # owner's task: a todo plus a recorded wait, nothing sent to the owner; any other task is settled with task_route/task_finish/task_cancel.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
-                         task_create, task_comment, task_delegate, task_amend_rubric, task_route, task_handoff, task_block,
+                         task_create, task_comment, task_delegate, task_amend_rubric, task_rebind, task_route, task_handoff, task_block,
                          task_cancel, task_finish,
                          fleet_status, fleet_catalog, fanout_map,
                          coach_record, handbook_list, handbook_read ]
       # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.
       # routing_* through routing-tuner: the routing learning loop.
-      fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, routing_evidence, routing_replay, routing_tune, routing_judge ]
+      # fleet_operate: pause/resume, stop a run, restart a module's service, roll back (kernel.fleet_op, AI-reviewed); fleet_owner_cards:
+      # what reached the owner, for the daily interruption pass.
+      fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, routing_evidence, routing_replay, routing_tune, routing_judge, fleet_operate, fleet_owner_cards ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
     # the Engineer (product and module changes), an app's owner (app-owners; the DevOps Engineer for an app with none), the
     # Agent Architect (an agent's definition), the Maintainer (product bugs upstream), the chief of staff (another agent's rule
@@ -152,13 +156,15 @@ connections:
     auth: fleet_steward_service_key
     returns: untrusted
     tools:
-      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, fleet_stale_followups, flow_report, routing_evidence, routing_replay ]
+      read: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, fleet_stale_followups, flow_report, routing_evidence, routing_replay, fleet_owner_cards ]
       # fleet_generation_status: the apply generations; fleet_stale_followups: the owner's stale todos for the daily brief. Tagged named,
       # so the read shorthand keeps them to the agents that name them (the Fleet Steward, the Maintainer and the chief of staff).
-      named: [ fleet_generation_status, fleet_stale_followups, flow_report, routing_evidence, routing_replay ]
+      # fleet_owner_cards: the cards that went to the owner, for the Steward's daily interruption pass (role fleet-settle).
+      named: [ fleet_generation_status, fleet_stale_followups, flow_report, routing_evidence, routing_replay, fleet_owner_cards ]
       # fleet_followup_snooze: the owner's snooze of a brief line, a note in the steward's own record (role fleet-admin).
       # routing_tune, routing_judge: a routing change or its rollback, each filed as a reviewed kernel.apply (role routing-tuner).
-      write: [ fleet_followup_snooze, routing_tune, routing_judge ]
+      # fleet_operate: the Steward's fleet operations, the kernel's kernel.fleet_op write (kernel/src/fleet-ops.ts, role fleet-settle).
+      write: [ fleet_followup_snooze, routing_tune, routing_judge, fleet_operate ]
 services:
   data: true
   run:

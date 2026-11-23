@@ -5,6 +5,8 @@
 //   POST /check/grade                      the kernel (grading_check_key): the latest verdict that sent a task's work back, for the AI reviewer
 //   POST /grades                           the tasks module, as the delegating agent (its caller assertion, aud tasks): file a rubric
 //   POST /grades/amend                     the same caller: replace a filed rubric in place (the delegator, or the row's filer)
+//   POST /grades/rebind                    the Fleet Steward (task_rebind, role fleet-settle in its signed assertion): move a filed
+//                                          task's deliverable to the work that landed, rubric kept, graded again at once
 //   GET  /grades/<task>                    the same caller: the task's filed grade, before re-filing a corrected one
 //   POST /board/grades, POST /board/grades/<task>/settle   the board (grading_board_key): its reads
 // It reads tasks and settings from the kernel with its own token (kernel.cp-read); it never writes to the control plane itself. Every five minutes it settles rows whose task closed.
@@ -132,6 +134,22 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
     return { amended: true, state: g.state, rubric: g.rubric };
   }
 
+  /** The Fleet Steward's rebind (POST /grades/rebind): its signed role, never an argument, says it may. */
+  async function rebind(req: http.IncomingMessage, body: unknown) {
+    const caller = await rubricCaller(req, ["task_rebind"], "rebind");
+    if (!caller.roles.includes("fleet-settle")) throw new HttpError(403, "only the Fleet Steward (role fleet-settle) rebinds a task's deliverable");
+    const b = (body ?? {}) as { issue?: unknown; deliverable?: unknown };
+    const f = parseFiling({ issue: b.issue, rubric: [], deliverable: b.deliverable });
+    // The grader reads a named PR on GitHub directly; a change on this server's own code host it reads only from the task's own
+    // records (grader/evidence.ts prEvidence), so a rebind there would grade nothing.
+    if (f.deliverable.ref.startsWith("codehost:")) throw new HttpError(400, "deliverable.ref: a rebind names a GitHub PR (owner/name#number or its URL); a change on this server's code host is graded only on the task that opened it");
+    const issue = await kernel.issue(f.issue);
+    await refAllowed(f.deliverable);
+    const g = grades.rebind(issue.id, f.deliverable, { closed: isClosed(issue), held: issue.status === "in_review" });
+    log("deliverable rebound", { task: issue.identifier, by: `agent:${caller.agent}`, kind: g.deliverable.kind, state: g.state });
+    return { rebound: true, state: g.state, deliverable: g.deliverable, rubric: g.rubric };
+  }
+
   /**
    * A task's filed grade, read by the delegating agent before it re-files (GET /grades/<task>): the row, or null when none.
    * A filing tool reads only a task it delegated (as filing does); an amending tool reads any task, because the amendment
@@ -236,6 +254,7 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       }
       if (method === "POST" && path === "/grades") return send(200, await file(req, body));
       if (method === "POST" && path === "/grades/amend") return send(200, await amend(req, body));
+      if (method === "POST" && path === "/grades/rebind") return send(200, await rebind(req, body));
       // The delegating agent reads a task's filed grade before re-filing it on the same task (a corrected deliverable).
       {
         const g = /^\/grades\/([^/]+)$/.exec(path);

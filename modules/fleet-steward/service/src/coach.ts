@@ -57,7 +57,6 @@ export interface DueInput {
   corrections: { agentId: string; at: string }[];
   /** A health flag about the agent that opened or recovered, when. */
   flags: { agentId: string; at: string; key: string }[];
-  callerId: string;
   now: number;
   cap?: number;
 }
@@ -65,14 +64,13 @@ export interface Due { agent_key: string; agent_id: string; name: string; reason
 
 /**
  * Who is due, in order, at most `cap`: the oldest weekly review first (a reserved slot), then new agents and triggered ones
- * (a correction or a health-flag change since the last review), then more weekly ones. Never the caller. An inconclusive
+ * (a correction or a health-flag change since the last review), then more weekly ones, the caller (the Steward) included. An inconclusive
  * review starts a cooldown and is never the weekly one.
  */
 export function dueList(i: DueInput): { due: Due[]; waiting: number } {
   const t = i.now;
   const rows: (Due & { weekly: boolean; other: boolean; since: number; created: number })[] = [];
   for (const a of i.agents) {
-    if (a.id === i.callerId) continue;
     const mine = i.reviews.filter((r) => r.agentId === a.id).sort((x, y) => x.at.localeCompare(y.at));
     const latest = mine.at(-1);
     if (latest?.outcome === "inconclusive" && t - Date.parse(latest.at) < COOLDOWN) continue;
@@ -164,7 +162,7 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
       const [reviews, fixes, apps] = await Promise.all([reviewLog(logId, caller, now), corrections(now).catch(() => []), d.apps<{ name: string; owner?: string }[]>("/internal/apps").catch(() => [])]);
       const s = detectorState(d.kv);
       const keys = [...Object.entries(s.open).map(([key, o]) => ({ key, at: o.at })), ...s.recovered.map((r) => ({ key: r.key, at: r.at }))];
-      const { due, waiting } = dueList({ agents: list, reviews, corrections: fixes, flags: flagsByAgent(keys, list, apps), callerId: caller, now });
+      const { due, waiting } = dueList({ agents: list, reviews, corrections: fixes, flags: flagsByAgent(keys, list, apps), now });
       return { off: false, due, waiting, review_log: logId };
     },
 
