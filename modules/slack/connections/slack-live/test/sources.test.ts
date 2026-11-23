@@ -54,4 +54,20 @@ describe("src_slack", () => {
     expect(writes.filter((w) => w.table === MESSAGE.name)).toEqual([{ table: "message", row: expect.objectContaining({ ts: "150.0", text: "new" }), baseline: false }]);
   });
 
+  it("gap sync: a newly inserted message is replayed to the event router; the baseline is not", async () => {
+    const { store } = fakeStore();
+    const history: any[] = [{ ts: "100.0", text: "old", user: "U1" }];
+    const api: Api = async (method, p) => {
+      if (method === "users.conversations") return { ok: true, channels: [{ id: "C1", name: "general", is_channel: true }] };
+      if (method === "conversations.history") return { ok: true, messages: history.filter((m) => Number(m.ts) > Number(p.oldest)) };
+      return { ok: true, members: [], messages: [] };
+    };
+    const sent: any[] = [];
+    const forward = async (e: unknown) => void sent.push(e);
+    await gapSync(store, api, 200_000, undefined, undefined, forward);
+    expect(sent).toEqual([]);
+    history.push({ ts: "150.0", text: "missed while down", user: "U2" });
+    await gapSync(store, api, 260_000, undefined, undefined, forward);
+    expect(sent).toEqual([expect.objectContaining({ connection: "slack", resource: "C1", id: "C1:150.0", kind: "message", author: "U2", text: "missed while down", bot: false })]);
+  });
 });
