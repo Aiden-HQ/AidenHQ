@@ -84,7 +84,9 @@ export function createEvents(o: {
   db.exec(`CREATE TABLE IF NOT EXISTS event_queue (seq INTEGER PRIMARY KEY AUTOINCREMENT, routine TEXT NOT NULL, id TEXT NOT NULL, batch TEXT NOT NULL, body TEXT, at INTEGER NOT NULL, UNIQUE(routine, id));
     CREATE TABLE IF NOT EXISTS event_batches (id TEXT PRIMARY KEY, routine TEXT NOT NULL, sub TEXT NOT NULL, task TEXT, count INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, sealed_at INTEGER, dispatched_at INTEGER);
     CREATE INDEX IF NOT EXISTS event_queue_batch ON event_queue (batch);
-    CREATE INDEX IF NOT EXISTS event_batches_state ON event_batches (state, routine);`);
+    CREATE INDEX IF NOT EXISTS event_batches_state ON event_batches (state, routine);
+    CREATE INDEX IF NOT EXISTS event_batches_dispatched ON event_batches (dispatched_at);
+    CREATE INDEX IF NOT EXISTS event_batches_task ON event_batches (task);`);
   type Batch = { id: string; routine: string; sub: string; task: string | null; count: number; state: string; tries: number; opened_at: number; sealed_at: number | null; dispatched_at: number | null };
   const subs = () => o.grants().routine_events ?? {};
   /** What a batch was accepted under: a routine that changes its source, resource, filter or agent starts afresh. */
@@ -197,7 +199,8 @@ export function createEvents(o: {
           else log("events: run not taken; retried with the same key", { batch: b.id, status: res.status });
         }
         const t2 = now();
-        db.prepare("UPDATE event_queue SET body = NULL WHERE body IS NOT NULL AND batch IN (SELECT id FROM event_batches WHERE state = 'fired' AND dispatched_at < ?)").run(t2 - BODY_MS);
+        // Only batches still in the queue's 7-day window: older ones' queue rows are gone already.
+        db.prepare("UPDATE event_queue SET body = NULL WHERE body IS NOT NULL AND batch IN (SELECT id FROM event_batches WHERE state = 'fired' AND dispatched_at < ? AND dispatched_at > ?)").run(t2 - BODY_MS, t2 - KEEP_MS - HOUR);
         db.prepare("DELETE FROM event_queue WHERE at < ?").run(t2 - KEEP_MS);
         // A fired batch's row stays (its body is gone after a day): it is what tells the kernel the task read outside text.
         db.prepare("DELETE FROM event_batches WHERE state = 'dropped' AND opened_at < ?").run(t2 - KEEP_MS);

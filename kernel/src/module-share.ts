@@ -77,10 +77,11 @@ export async function exportModule(name: string, d: ExportDeps): Promise<Export>
 
   // Each agent's effective grants as compiled, and whether any writes: an importer runs the module trusted only when it says so.
   const grants = Object.fromEntries(agents.map((k) => [k, Object.entries<string[]>(d.compiled.agents?.[k]?.enabled_tools ?? {}).flatMap(([c, ts]) => ts.map((t) => `${c}.${t}`)).sort()]));
+  // A write as the compiler counts one for an untrusted module (scripts/modules.ts): write and destructive tools, and self_change.
   const writes = Object.values(grants).flat().some((ct) => {
     const [c, t] = ct.split(".") as [string, string];
     const tools = d.compiled.mcp_servers?.[c]?.tools ?? {};
-    return [...(tools.write ?? []), ...(tools.destructive ?? [])].includes(t);
+    return [...(tools.write ?? []), ...(tools.destructive ?? [])].includes(t) || ct === "paperclip_tasks.self_change";
   });
 
   const files: Record<string, string> = {};
@@ -171,8 +172,11 @@ export function createSharing(d: {
     const catalog: Dict[] = JSON.parse(readFileSync(join(d.configDir, "modules.json"), "utf8"));
     // Only the values this instance set: a module default is public text, not the owner's. Both the applied ones and the ones in
     // instance.yaml at the shared commit (set there, not yet applied).
-    const atSha = (YAML.parse(await text(["cat-file", "blob", `${sha}:instance.yaml`]).catch(() => "")) ?? {}).settings ?? {};
-    const settings = { ...Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value])), ...atSha };
+    // Every value a setting has here, side by side: applied, at the shared commit and at the newest main (`also`).
+    const at = async (c: string): Promise<Dict> => (YAML.parse(await text(["cat-file", "blob", `${c}:instance.yaml`]).catch(() => "")) ?? {}).settings ?? {};
+    const sides = [Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value])), await at(sha), await at(profileAt)];
+    const settings: Dict = {};
+    for (const side of sides) for (const [k, v] of Object.entries(side)) settings[k] = [...(settings[k] ?? []), v];
     const profile = await text(["cat-file", "blob", `${profileAt}:owner/profile.md`]).catch(() => "");
     return exportModule(module, { instanceDir: d.instanceDir, sha, catalog, compiled, settings, secrets: d.secrets(), memory: d.memory(), profile, instanceRepo: d.instanceRepo() });
   }

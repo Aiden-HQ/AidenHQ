@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { diffFiles, sameChanges } from "./review-files.ts";
+import { diffFiles, diffPath, sameChanges } from "./review-files.ts";
 import type { FileEntry } from "./review-files.ts";
 import { dataBlock as fence } from "./aidenhq-sdk/fence.ts";
 import { instanceDetails } from "./aidenhq-sdk/reviewer.ts";
@@ -148,7 +148,7 @@ export function diffUnits(diff: string) {
       heading = line;
       continue;
     }
-    const path = /^diff --git a\/(.+) b\/\1$/.exec(line)?.[1] ?? /^diff --git a\/\S+ b\/(\S+)/.exec(line)?.[1];
+    const path = diffPath(line);
     if (path || !units.length || units.at(-1)!.heading !== heading) {
       const repo = heading ? sectionOf(heading.slice(4)).repo : "";
       units.push({ heading, path, name: path ? (repo ? `${repo} ${path}` : path) : "(the change's text)", lines: [] });

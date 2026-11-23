@@ -60,17 +60,22 @@ function unquote(p: string): string {
   return Buffer.from(bytes).toString("utf8");
 }
 
+/** The path a `diff --git` header line names (git's quoted form read back), or undefined for any other line. No renames, so both
+ * sides name the same path (which may hold spaces). */
+export function diffPath(l: string): string | undefined {
+  const q = /^diff --git "a\/((?:[^"\\]|\\.)*)" "b\/(?:[^"\\]|\\.)*"$/.exec(l);
+  if (q) return unquote(q[1]!);
+  return (/^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l))?.[1];
+}
+
 /** The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. */
 export function diffFiles(diff: string | null | undefined) {
   const out: { path: string; add: number; del: number }[] = [];
   let hunk = false;
   for (const l of String(diff ?? "").split("\n")) {
-    // No renames, so both sides name the same path (which may hold spaces). Git quotes a path with special characters
-    // ("a/caf\303\251.txt"): read back to the path itself.
-    const q = /^diff --git "a\/((?:[^"\\]|\\.)*)" "b\/(?:[^"\\]|\\.)*"$/.exec(l);
-    const m = q ? [l, unquote(q[1]!)] : /^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l);
-    if (m) {
-      out.push({ path: m[1]!, add: 0, del: 0 });
+    const path = diffPath(l);
+    if (path !== undefined) {
+      out.push({ path, add: 0, del: 0 });
       hunk = false;
     } else if (l.startsWith("@@")) hunk = true;
     else if (hunk && out.length && l.startsWith("+")) out.at(-1)!.add++;
