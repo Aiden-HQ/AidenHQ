@@ -1,6 +1,6 @@
 // The Red Teamer alerts the owner only when the call is theirs (a credential only they can create, or accepting
-// exposure the fleet cannot fix); a finding whose fix task is already filed belongs on that task and the log, never
-// in an owner alert.
+// exposure the fleet cannot fix). A finding whose fix task is already filed goes on that task and the log rather
+// than the owner, unless that fix is blocked on such a decision, which the run must then alert.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -40,6 +40,50 @@ test("the alert rule names the owner-only decisions", () => {
     text,
     /per run listing new high or critical findings/,
     "the alert rule: no per-run listing of new high or critical findings to the owner",
+  );
+});
+
+test("the exception survives a fix task", () => {
+  const reporting = section(handbook(), "## Reporting a finding");
+  assert.ok(reporting, "the handbook has a `## Reporting a finding` section");
+  assert.match(
+    reporting,
+    /A fix task does not cancel the exception/,
+    "the exception survives a fix task: a blocked credential or accept-exposure call is still the owner's alert",
+  );
+  assert.match(
+    reporting,
+    /that alert is the owner's call/,
+    "the exception reads in the reporting rule itself, not only elsewhere in the handbook",
+  );
+});
+
+test("a blocked owner decision is alerted, not just allowed", () => {
+  const reporting = section(handbook(), "## Reporting a finding");
+  assert.match(
+    reporting,
+    /that alert is required, not optional/,
+    "the blocked owner decision must be alerted: the rule permits the alert and the run must send it",
+  );
+  assert.match(
+    reporting,
+    /names every new or changed blocker still open when you send it/,
+    "one alert carries every blocked decision: a second blocker must not go unreported under the one-alert cap",
+  );
+  assert.match(
+    reporting,
+    /send at most one `notify` \(`kind: alert`\) per run after the last target/,
+    "the alert waits for the last target: a later target's blocker still belongs in the same alert",
+  );
+  assert.match(
+    section(handbook(), "## Daily pass"),
+    /check open fix tasks for an owner-only blocker first and send the alert "Reporting a finding" calls for \(its new-or-changed rule applies here too\)/,
+    "the no-change exit sends the alert, not just checks, and reuses the new-or-changed rule instead of restating it",
+  );
+  assert.match(
+    reporting,
+    /including from open fix tasks and on a run that changed nothing/,
+    "blocker discovery also reads open fix tasks, even on a run with no changes: a new owner dependency must not be missed",
   );
 });
 
