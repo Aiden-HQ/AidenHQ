@@ -91,7 +91,7 @@ test("applying a product without the Docker disk collector removes the stale doc
   // would page on a mtime no running collector can refresh. The apply removes the file and its read cache when the product
   // it applies has no writer for it.
   assert.match(commands(apply), /! grep -q 'write docker\.prom' ops\/host-metrics\.sh/);
-  assert.match(commands(apply), /rm -f "\$docker_prom_dir\/docker\.prom" "\$docker_prom_dir\/docker-df\.json"/);
+  assert.match(commands(apply), /rm -f "\$textfile_dir\/docker\.prom" "\$monitoring_dir\/docker-df\.json"/);
   // And nothing legitimate: while the applied product does write it, the apply leaves both alone.
   assert.match(readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"), /} \| write docker\.prom/);
 });
@@ -101,7 +101,7 @@ test("applying a product without the prune step collector removes the stale prun
   // scrape, and a failed unit's stale step would read as current. The apply removes the file when the applied version has
   // no writer for it; a version that writes it leaves it alone (its first run rewrites it).
   assert.match(commands(apply), /! grep -q 'write prune-docker\.prom' ops\/host-metrics\.sh/);
-  assert.match(commands(apply), /rm -f "\$docker_prom_dir\/prune-docker\.prom"/);
+  assert.match(commands(apply), /rm -f "\$textfile_dir\/prune-docker\.prom"/);
   assert.match(readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"), /} \| write prune-docker\.prom/);
 });
 

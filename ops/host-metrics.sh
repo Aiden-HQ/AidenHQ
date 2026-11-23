@@ -168,11 +168,15 @@ prune="$state/prune-docker"
     for record in "$prune"/*; do
       [ -f "$record" ] || continue
       case "$record" in *.tmp) continue ;; esac
-      read -r invocation rc < "$record" 2>/dev/null || continue
+      # Read the header and the mtime from the same open file: a step replaces its record atomically, so opening it once
+      # cannot pair this invocation's status with the next run's write time. A file that disappears between the glob and
+      # the open is skipped.
+      exec {fd}<"$record" 2>/dev/null || continue
+      { read -r invocation rc <&"$fd"; stamp="$(stat -L -c %Y "/proc/self/fd/$fd" 2>/dev/null || true)"; } 2>/dev/null
+      exec {fd}<&-
       invocation="$(printf '%s' "$invocation" | clean | tr -d '\n')"
       [[ "$rc" =~ ^[0-9]+$ ]] || continue
       [ -n "$invocation" ] || continue
-      stamp="$(stat -c %Y "$record" 2>/dev/null || true)"
       [[ "$stamp" =~ ^[0-9]+$ ]] || continue
       step="$(basename "$record" | clean | tr -d '\n')"
       echo "aidenhq_prune_docker_step_rc{step=\"$step\",invocation=\"$invocation\"} $rc"

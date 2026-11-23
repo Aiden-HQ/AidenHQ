@@ -846,7 +846,12 @@ switchOver() {
   # checkout has, not the ones setup recorded.
   local u
   local prune_env="$HOME/.config/aidenhq-prune-docker.env"
-  printf 'AIDENHQ_DIR=%s\n' "$(realpath "$product_dir")" > "$prune_env.tmp" && mv -f "$prune_env.tmp" "$prune_env"
+  # The state dir the step wrapper records under: the same one the exporter reads. A relative value is the product's, as
+  # ops/lib/data-dir.sh resolves it; the unit's scripts would otherwise fall back to ~/.local/state/aidenhq and the
+  # exporter would read a different directory.
+  local prune_state_dir="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
+  case "$prune_state_dir" in /*) ;; *) prune_state_dir="$product_dir/$prune_state_dir" ;; esac
+  printf 'AIDENHQ_DIR=%s\nAIDENHQ_STATE_DIR=%s\n' "$(realpath "$product_dir")" "$prune_state_dir" > "$prune_env.tmp" && mv -f "$prune_env.tmp" "$prune_env"
   for u in prune-docker; do
     if ! cmp -s "ops/units/$u.service" "$HOME/.config/systemd/user/$u.service" || ! cmp -s "ops/units/$u.timer" "$HOME/.config/systemd/user/$u.timer"; then
       cp "ops/units/$u.service" "ops/units/$u.timer" "$HOME/.config/systemd/user/" && systemctl --user daemon-reload \
@@ -913,15 +918,16 @@ switchOver() {
   # a mtime no running collector can refresh. Applying such a version removes the file and the read cache it came from; a
   # version that writes it leaves them alone (its first run rewrites both). `ops/rollback.sh` runs a full apply, so a
   # rollback takes this path too.
-  local docker_prom_dir="${AIDENHQ_DATA_DIR:-$product_dir/data}/modules/monitoring"
-  case "$docker_prom_dir" in /*) ;; *) docker_prom_dir="$product_dir/$docker_prom_dir" ;; esac
-  if [ -e "$docker_prom_dir/docker.prom" ] && ! grep -q 'write docker.prom' ops/host-metrics.sh 2>/dev/null; then
-    rm -f "$docker_prom_dir/docker.prom" "$docker_prom_dir/docker-df.json" && echo "docker.prom removed (this product version has no Docker disk collector)"
+  local monitoring_dir="${AIDENHQ_DATA_DIR:-$product_dir/data}/modules/monitoring"
+  case "$monitoring_dir" in /*) ;; *) monitoring_dir="$product_dir/$monitoring_dir" ;; esac
+  local textfile_dir="$monitoring_dir/textfile"
+  if [ -e "$textfile_dir/docker.prom" ] && ! grep -q 'write docker.prom' ops/host-metrics.sh 2>/dev/null; then
+    rm -f "$textfile_dir/docker.prom" "$monitoring_dir/docker-df.json" && echo "docker.prom removed (this product version has no Docker disk collector)"
   fi
   # prune-docker.prom is written the same way. A rollback to a product version from before it leaves the last records in
   # the textfile directory, where node-exporter would keep serving a failed unit's stale step as current.
-  if [ -e "$docker_prom_dir/prune-docker.prom" ] && ! grep -q 'write prune-docker.prom' ops/host-metrics.sh 2>/dev/null; then
-    rm -f "$docker_prom_dir/prune-docker.prom" && echo "prune-docker.prom removed (this product version has no prune step collector)"
+  if [ -e "$textfile_dir/prune-docker.prom" ] && ! grep -q 'write prune-docker.prom' ops/host-metrics.sh 2>/dev/null; then
+    rm -f "$textfile_dir/prune-docker.prom" && echo "prune-docker.prom removed (this product version has no prune step collector)"
   fi
   # The security module's daily SBOM batch (ops/security-sbom.sh): its timer runs while the module's security-scanner service
   # is in the compiled compose, and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
