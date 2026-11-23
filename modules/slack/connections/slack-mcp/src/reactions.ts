@@ -199,15 +199,11 @@ export type ScanResult =
   | { ok: true; messages: ReactionMessage[]; nextCursor: string | null }
   | { ok: false; detail: string; error?: string; needed?: unknown };
 
-// Slack's numbered pages have no cursor of their own, so one handed back to the caller is this module's own token.
-const NUMBERED_CURSOR = /^aidenhq:page:(\d+)$/;
-const numberedCursor = (page: number): string => `aidenhq:page:${page}`;
-
-// A continuation: the caller's `limit` was reached, so the token names the page to read again (`c` a Slack cursor, `p` a
-// numbered page, `f` the first page), the upstream page size (fixed for the whole walk, so page boundaries don't move),
-// and the messages already returned. Resume skips by message identity, not by position: a reaction removed from an item
-// between calls shifts positions but not the identities, so nothing is skipped or repeated.
-type Position = { c?: string; p?: number; f?: true; n: number; seen: string[] };
+// A continuation: the caller's `limit` was reached, so the token carries the messages already returned and the upstream
+// page size. A resume walks the feed from the start again and skips those messages by identity. Positions are never
+// reused: Slack's cursors and numbered pages are both positional, so a reaction removed between calls shifts every later
+// page, and resuming from a saved page could skip a match that moved earlier. Identity is the only stable key.
+type Position = { n: number; seen: string[] };
 const POSITION = "aidenhq:pos:";
 const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
 function decodePosition(value: string): Position | undefined {
@@ -218,11 +214,7 @@ function decodePosition(value: string): Position | undefined {
     const n = Number(v.n);
     if (!Number.isInteger(n) || n <= 0) return undefined;
     const seen = Array.isArray(v.seen) ? v.seen.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length < 300) : [];
-    const c = typeof v.c === "string" && v.c ? v.c : undefined;
-    const p = Number.isInteger(v.p) && (v.p as number) > 0 ? (v.p as number) : undefined;
-    const f = v.f === true ? true : undefined;
-    if (!c && p === undefined && !f) return undefined;
-    return { ...(c ? { c } : {}), ...(p !== undefined ? { p } : {}), ...(f ? { f } : {}), n, seen };
+    return { n, seen };
   } catch {
     return undefined;
   }
@@ -267,8 +259,8 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const visibility = new Map<string, boolean>();
   const start = plan.cursor ?? "";
   const position = decodePosition(start);
-  const resumed = NUMBERED_CURSOR.exec(position ? "" : start);
-  let cursor = position ? position.c ?? "" : resumed ? "" : start;
+  // A continuation token walks from the start; any other cursor value is Slack's own, resumed where it names.
+  let cursor = position ? "" : start;
   // Resume skips by identity, not position: an item is dropped when it was already returned, so a reaction removed from an
   // earlier item between calls can't shift the answer past one that was never returned.
 
@@ -315,11 +307,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     return ok;
   };
 
-  // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives.
-  // A continuation names the page it resumes (a cursor, a numbered page, or — for the very first page — `first`), and
-  // only a fresh scan starts at the first page.
-  const first = position?.f === true;
-  let numbered = position?.p ?? (resumed ? Number(resumed[1]) : first || cursor ? undefined : 1);
+  // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives. A
+  // continuation always starts again at the first page and skips by identity, so a feed that shifted can't hide a match.
+  let numbered = cursor ? undefined : 1;
   // The upstream page size is the caller's `limit` when that is larger than the default (so a big ask reads fewer pages),
   // and never smaller than the default: a small result limit must not turn one scan into hundreds of one-item requests.
   // It is fixed for the whole walk and carried in every continuation, so page boundaries don't move.
@@ -331,6 +321,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const reachedLimit = () => plan.limit !== undefined && messages.length >= plan.limit;
   // Once the limit is reached, the rest of the feed is only walked to find out whether one more match exists: the answer
   // says the set is complete when it doesn't, so a continuation is never an empty page (which a caller reads as unknown).
+  // `pending` is that continuation: everything returned so far, which a resume walks past by identity.
   let full = false;
   let pending: Position | undefined;
   for (let page = 0; page < maxPages; page++) {
@@ -339,9 +330,6 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (!r.ok) return r;
     const { json } = r;
     const items: unknown[] = Array.isArray(json.items) ? json.items : [];
-    // Where a continuation for this page would resume, if a match turns up after the limit: the same page, skipping what
-    // was already returned. A later page replaces it with that page's own start.
-    pending = { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] };
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as Record<string, any>;
       const message = messageOf(item, plan.emoji, signIn.userId);
@@ -354,14 +342,14 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       const key = `${message.channel}\u0000${message.ts}`;
       if (seen.has(key)) continue;
       if (full) {
-        // The limit was reached on an earlier page and this is the first match after it: the continuation starts here.
-        return { ok: true, messages, nextCursor: encodePosition({ ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] }) };
+        // The limit was reached on an earlier page and this is the first match after it: there is more to return.
+        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen] }) };
       }
       seen.add(key);
       messages.push(message);
       if (reachedLimit()) full = true;
     }
-    if (full) pending = { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] };
+    if (full) pending = { n: pageSize, seen: [...seen] };
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
     if (next) {
       // A cursor already visited can't advance: the set is incomplete, and handing the same cursor back would loop.
@@ -379,12 +367,12 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     }
     return { ok: true, messages, nextCursor: null };
   }
-  // The cap. With the limit already reached and more of the feed unread, the page just walked is the continuation; without
-  // one (numbered paging, which has no cursor to hand back) the set is unknown.
+  // The cap. With the limit already reached and more of the feed unread, the identities already returned are the
+  // continuation; without one, numbered paging has no cursor to hand back and the set is unknown.
   if (full && pending) return { ok: true, messages, nextCursor: encodePosition(pending) };
   if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
   // A cursor continuation carries the same fixed page size and identities, so resuming can't repeat a message.
-  return { ok: true, messages, nextCursor: cursor ? encodePosition({ c: cursor, n: pageSize, seen: [...seen] }) : null };
+  return { ok: true, messages, nextCursor: cursor ? encodePosition({ n: pageSize, seen: [...seen] }) : null };
 }
 
 /** The search tool's result shape, with the end-of-set marker the scan reads: `next_cursor: null` only when complete. */
