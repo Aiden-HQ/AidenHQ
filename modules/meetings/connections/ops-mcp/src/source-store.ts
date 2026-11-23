@@ -94,8 +94,12 @@ export type Pass = { complete?: { total: number; fetched: number } };
 
 export class SourceStore {
   private migrated = false;
-  constructor(readonly schema: string, readonly pool: pg.Pool) {
-    ident(schema);
+  readonly schema: string;
+  readonly pool: pg.Pool;
+  // Plain fields (no parameter properties): the warehouse search service runs this file directly with Node's type stripping.
+  constructor(schema: string, pool: pg.Pool) {
+    this.schema = ident(schema);
+    this.pool = pool;
   }
 
   /**

@@ -68,8 +68,24 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       // The task's status as the wake scan last saw it (wake_tasks): the one thing of the task itself a module reads here.
       let status: string | null = null;
       try { status = (db.prepare("SELECT status FROM wake_tasks WHERE task = ?").get(task) as { status: string | null } | undefined)?.status ?? null; } catch { /* the wake inbox is off */ }
+      // What the task's work made, whole (outside the lists' limits): its PRs, the files its landed writes changed (as recorded at
+      // filing, or for a record filed before that, what its card's diff names: a long diff was cut for storage, so partial) and
+      // its last job's final message (the agent's words: untrusted).
+      const prs = new Map<string, { repo: string; number: number; title: string }>();
+      for (const r of rows("SELECT data FROM facts WHERE task = ? AND type = 'pr.opened' ORDER BY seq", task)) {
+        const d = JSON.parse(r.data) as { repo?: unknown; number?: unknown; title?: unknown };
+        if (typeof d.repo === "string" && Number.isInteger(d.number)) prs.set(`${d.repo}#${d.number}`, { repo: d.repo, number: d.number as number, title: String(d.title ?? "") });
+      }
+      const paths = new Set<string>();
+      for (const r of rows("SELECT paths, card FROM records WHERE task = ? AND state = 'done' AND (paths IS NOT NULL OR card LIKE '%diff --git%')", task)) {
+        try {
+          if (r.paths) for (const p of JSON.parse(r.paths) as string[]) paths.add(p.slice(p.indexOf(":") + 1));
+          else for (const m of String(JSON.parse(r.card)?.details ?? "").matchAll(/^diff --git a\/(\S+) b\//gm)) paths.add(m[1]!);
+        } catch { /* a malformed row names no paths */ }
+      }
+      const final = (rows("SELECT final FROM jobs WHERE task = ? AND final != '' ORDER BY at DESC LIMIT 1", task)[0]?.final as string | undefined) ?? "";
       return {
-        status, busy: jobs.some((j) => j.state === "running"), jobs,
+        status, busy: jobs.some((j) => j.state === "running"), jobs, prs: [...prs.values()], paths: [...paths], final,
         // An apply's diff is what its grader reads against the rubric (modules/grading evidence.ts applyEvidence): the card's
         // details, sent for apply records only (every other kind's card is not a deliverable's evidence here).
         records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, ...(r.kind === "kernel.apply" ? { details: r.card?.details ?? "" } : {}), decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),

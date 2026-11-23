@@ -9,6 +9,7 @@ import { createBackplane } from "../src/backplane.ts";
 import { createJobs } from "../src/jobs.ts";
 import { openRecords } from "../src/records.ts";
 import { createWork } from "../src/work.ts";
+import { openFacts } from "../src/facts.ts";
 
 function setup() {
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "kernel-work-")), "kernel.db"));
@@ -179,7 +180,6 @@ test("an agent's timeline: each job's wake and who caused it, why it ended, its 
 
 test("an agent's history leaves quiet routine runs out before its limit of 50", async () => {
   const { records, work } = setup();
-  const { openFacts } = await import("../src/facts.ts");
   const facts = openFacts(records.db);
   const ins = records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended) VALUES (?, 'dispatch', 'a9', ?, 'codex', 1, '', '', ?, '[]', 0, 0, ?, ?)");
   ins.run("j-fail", "t9", 3_000_000, "failed", 3_000_100);
@@ -190,4 +190,32 @@ test("an agent's history leaves quiet routine runs out before its limit of 50", 
   assert.deepEqual(work.agent("a9", { shown: true }).jobs.map((j) => j.id), ["j-fail"]);
   // A detector's read keeps them: a quiet success after failures is a success.
   assert.equal(work.agent("a9").jobs.length, 50);
+});
+
+test("a task's read names what its work made: its PRs, the files its landed writes changed, its last final", () => {
+  const { records, work } = setup();
+  const facts = openFacts(records.db);
+  facts.record({ type: "pr.opened", subject: "pr:o/r#7", version: "1", task: "t1", at: "2026-01-01T00:00:00Z", actor: "kernel", source: "live", data: { repo: "o/r", number: 7, title: "Lens" } });
+  records.db.prepare("UPDATE jobs SET final = 'shipped the lens' WHERE id = 'j-1'").run();
+  const rec = records.file({ kind: "runner.pr", module: "runner", args: {}, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t1", state: "review", paths: ["o/r:kernel/src/jobs.ts"] });
+  records.db.prepare("UPDATE records SET state = 'done' WHERE id = ?").run(rec.id);
+  const t = work.task("t1");
+  assert.deepEqual({ prs: t.prs, paths: t.paths, final: t.final }, { prs: [{ repo: "o/r", number: 7, title: "Lens" }], paths: ["kernel/src/jobs.ts"], final: "shipped the lens" });
+});
+
+test("GET /v1/facts: a module holding kernel.flow-read reads the log after a seq; without since, only its tail", async (t) => {
+  const { records } = setup();
+  const facts = openFacts(records.db);
+  facts.record({ type: "task.created", subject: "task:t1", version: "created", task: "t1", at: "2026-01-01T00:00:00Z", actor: "kernel", source: "live" });
+  const whoami = async (token) => ({ kind: "module", module: "warehouse", roles: token === "reader" ? ["kernel.flow-read"] : [], tools: [] });
+  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), facts });
+  const server = http.createServer(handle).listen(0);
+  t.after(() => (server.closeAllConnections(), server.close()));
+  // Its own origin: fetch's pool may still hold a kept-alive socket to an earlier test's server on the same port.
+  const get = (path, token) => fetch(`http://localhost:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await get("/v1/facts?since=0", "other")).status, 403);
+  const tail = (await (await get("/v1/facts", "reader")).json()).tail;
+  assert.ok(tail > 0);
+  assert.deepEqual((await (await get("/v1/facts?since=0", "reader")).json()).facts.map((f) => [f.type, f.task]), [["task.created", "t1"]]);
+  assert.deepEqual(await (await get(`/v1/facts?since=${tail}`, "reader")).json(), { facts: [], tail });
 });

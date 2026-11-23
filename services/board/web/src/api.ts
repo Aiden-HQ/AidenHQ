@@ -4,7 +4,7 @@ import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
 import type { Catalog, CodeReview, Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, ReviewInsights, Run, TreeBatch, TreeRequest } from "../../src/reviews";
-import type { BrowseModule, GrantConnection, MarketplaceRow, SavedView, ViewSpec } from "./types";
+import type { BrowseModule, GrantConnection, MarketplaceRow, SavedView, ViewSpec, WorkCard } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown, answered?: Response): Promise<T> {
   const res = answered ?? await fetch(path, {
@@ -237,6 +237,8 @@ export const api = {
   /** The board's own session ends (the kernel's sign-in stays; sign out there too from Password). */
   signOut: () => call<{ ok: boolean }>("POST", "/api/sign-out", {}),
   board: () => call<Board>("GET", "/api/board"),
+  /** Task search (docs/design/task-search.md): the hit ids, the closed hits as Done cards, and whether meaning search answered. */
+  search: (q: string, page?: { after: string; keyword: boolean }) => call<{ ids: string[]; done: WorkCard[]; next: string | null; semantic: boolean }>("GET", `/api/search?q=${encodeURIComponent(q)}${page ? `&after=${encodeURIComponent(page.after)}${page.keyword ? "&keyword=1" : ""}` : ""}`),
   views: () => call<{ views: SavedView[] }>("GET", "/api/views"),
   addView: (name: string, spec: ViewSpec) => call<SavedView>("POST", "/api/views", { name, spec }),
   /** A 409 (changed or deleted elsewhere) throws ViewConflict with the row as it is now. */

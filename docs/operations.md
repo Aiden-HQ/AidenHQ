@@ -382,6 +382,8 @@ exact email match only).
   after the apply that adds this, deploy it once (the owner's approval) so its container joins `sources`.
 - `ops/warehouse-sources.sh` (run by every apply) creates the writer roles, their schemas and `src_meta`; each writer
   creates its own tables and views at start. While the warehouse isn't running it skips; run it again once it is.
+  The warehouse module's task search needs pgvector, which ships in the warehouse image: after the apply that brings it, deploy the
+  warehouse once, then apply again (or run this script) to create the extension; search answers "unavailable" until then.
 - Writer passwords are generated secrets (`warehouse_src_<source>_password`, made by compile). Writers connect lazily and
   retry each pass, so a role created after they started is picked up without a restart.
 - The DevOps Engineer checks `src_meta.ingest_run` on each heartbeat and posts a source stale for over an hour to the

@@ -308,7 +308,7 @@ const ID = "(?!\\.+(?:/|$))[A-Za-z0-9_.:-]{1,100}";
 export const CP_READ_PATHS: RegExp[] = [
   /^\/api\/companies$/,
   new RegExp(`^/api/companies/${ID}$`),
-  new RegExp(`^/api/companies/${ID}/(agents|labels|issues|live-runs|heartbeat-runs|routines)$`),
+  new RegExp(`^/api/companies/${ID}/(agents|labels|projects|issues|live-runs|heartbeat-runs|routines)$`),
   new RegExp(`^/api/issues/${ID}$`),
   new RegExp(`^/api/issues/${ID}/comments$`),
   new RegExp(`^/api/issues/${ID}/attachments$`),
