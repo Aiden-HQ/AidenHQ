@@ -267,7 +267,7 @@ const bearer = (req: IncomingMessage, token: string): boolean => {
  * The body is always handed back before the stream ends: a stream that has ended can't be replayed, so this settles
  * the moment a complete JSON value parses, which is at or before the last chunk.
  */
-type Peeked = { kind: "message"; message: Record<string, any> } | { kind: "pass" } | { kind: "invalid" };
+type Peeked = { kind: "message"; message: Record<string, any> } | { kind: "batch"; messages: Record<string, any>[] } | { kind: "pass" } | { kind: "invalid" };
 
 function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
   return new Promise((resolve) => {
@@ -294,7 +294,8 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       } catch {
         return undefined;
       }
-      return value && typeof value === "object" && !Array.isArray(value) ? { kind: "message", message: value as Record<string, any> } : { kind: "pass" };
+      if (Array.isArray(value)) return { kind: "batch", messages: value.filter((m): m is Record<string, any> => Boolean(m) && typeof m === "object") };
+      return value && typeof value === "object" ? { kind: "message", message: value as Record<string, any> } : { kind: "pass" };
     };
     const onData = (chunk: Buffer) => {
       chunks.push(chunk);
@@ -338,6 +339,8 @@ export interface InterceptOptions {
   readKey?: string;
   /** The kernel's signed caller assertion on /mcp (the proxy verifies the same one). */
   caller: (req: IncomingMessage) => Promise<unknown>;
+  /** The proxy's own call path, for a batch's entries this module doesn't answer (its deny, hooks and upstream). */
+  call?: (name: string, args: Record<string, unknown>) => Promise<CallToolResult>;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   maxPages?: number;
@@ -369,11 +372,13 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   const peeked = await peekJson(req, BODY_LIMIT);
   // A body the proxy can't parse either: answer as the proxy would, since its bytes are spent.
   if (peeked.kind === "invalid") return (send(res, 500, { error: "bad request" }), true);
-  if (peeked.kind === "pass" || peeked.message.method !== "tools/call") return false;
-  const message = peeked.message;
-  const params = message.params;
-  const name = typeof params?.name === "string" ? params.name : "";
-  const args = params?.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments) ? (params.arguments as Record<string, unknown>) : {};
+  if (peeked.kind === "pass") return false;
+  const messages = peeked.kind === "batch" ? peeked.messages : [peeked.message];
+  const plans = messages.map((m) => ({ m, plan: m?.method === "tools/call" ? planReactionSearch(nameOf(m), argsOf(m)) : ({ kind: "pass" } as ReactionPlan) }));
+  // Nothing this path answers: the request is the proxy's, unchanged.
+  if (!plans.some((p) => p.plan.kind !== "pass")) return false;
+  // A batch with a tool call only the proxy can run needs the proxy's own `call` to keep the rest of the batch.
+  if (plans.some((p) => p.m?.method === "tools/call" && p.plan.kind === "pass") && !o.call) return false;
 
   // The proxy's own admission, in its order: nothing is answered before the caller is the kernel's.
   if (!readOnly) {
@@ -381,35 +386,41 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
       await o.caller(req);
     } catch (err) {
       const reason = (err as Error).message;
-      o.log?.({ tool: name, reason }, "tool call refused");
-      send(res, 200, answer(message.id, reactionError("refused", `Refused: ${reason}.`)));
+      o.log?.({ reason }, "tool call refused");
+      const refused = (m: Record<string, any>) => answer(m.id, reactionError("refused", `Refused: ${reason}.`));
+      send(res, 200, peeked.kind === "batch" ? messages.map(refused) : refused(messages[0]!));
       return true;
     }
   }
 
-  const plan = planReactionSearch(name, args);
-  if (plan.kind === "pass") return false;
+  // Each entry answers in place. A non-call entry in a batch (a tools/list beside a call) can't be run through the
+  // proxy's own `call`, so it answers an error that says to send it on its own rather than being silently mangled.
+  const out = await Promise.all(plans.map(async ({ m, plan }) => {
+    if (m?.method !== "tools/call") return { jsonrpc: "2.0", id: m?.id ?? null, error: { code: -32601, message: `${String(m?.method)} can't be served in a batch with a reaction search: send it on its own` } };
+    const result = plan.kind === "pass" ? await o.call!(nameOf(m), argsOf(m)) : await serveReaction(nameOf(m), plan, readOnly, o);
+    return answer(m.id, result);
+  }));
+  send(res, 200, peeked.kind === "batch" ? out : out[0]);
+  return true;
+}
+
+const nameOf = (m: Record<string, any>): string => (typeof m.params?.name === "string" ? m.params.name : "");
+const argsOf = (m: Record<string, any>): Record<string, unknown> => (m.params?.arguments && typeof m.params.arguments === "object" && !Array.isArray(m.params.arguments) ? (m.params.arguments as Record<string, unknown>) : {});
+
+/** One reaction search as a tool result: the set, or the explicit error that says it is unknown. */
+async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "pass" }>, readOnly: boolean, o: InterceptOptions): Promise<CallToolResult> {
   // /mcp/read serves only what the proxy itself would: the manifest's read tag and the upstream's read-only hint.
   if (readOnly && o.servedRead && !(await o.servedRead(name).catch(() => false))) {
     // Signed out, the proxy lists no read tools at all: that is a sign-in to fix, not a tool that isn't a read.
-    if (o.authState() !== "ok") {
-      send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." })));
-      return true;
-    }
-    send(res, 200, answer(message.id, reactionError("refused", `Tool ${name} is not a read: the read endpoint serves reads only.`)));
-    return true;
+    if (o.authState() !== "ok") return needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." });
+    return reactionError("refused", `Tool ${name} is not a read: the read endpoint serves reads only.`);
   }
   if (plan.kind === "unsupported") {
     o.log?.({ tool: name, filter: plan.filter }, "refused a reaction search reactions.list cannot compute");
-    send(res, 200, answer(message.id, reactionError("unsupported_reaction_filter", `The reaction set is unknown: ${plan.reason}.`, { filter: plan.filter })));
-    return true;
+    return reactionError("unsupported_reaction_filter", `The reaction set is unknown: ${plan.reason}.`, { filter: plan.filter });
   }
-
   // Only the owner can fix a sign-in: the same needs_owner answer every other call gives, so the kernel routes it.
-  const need = (detail: string) => {
-    send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail })));
-    return true;
-  };
+  const need = (detail: string): CallToolResult => needsOwner({ cause: "not_connected", detail });
   const userId = readUserId(o.tokenFile);
   if (!userId) return need("The reaction set is unknown: Slack's sign-in has no stored user id, so reactions.list can't be read.");
   let authorization: string | undefined;
@@ -418,9 +429,7 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   } catch (err) {
     // The proxy's own rule: only an expired sign-in is the owner's; a vendor hiccup on refresh stays a plain error.
     const detail = `The reaction set is unknown: Slack's sign-in couldn't be read (${String((err as Error).message).slice(0, 200)}).`;
-    if (o.authState() === "expired") return need(detail);
-    send(res, 200, answer(message.id, reactionError("reactions_list_failed", detail, { filter: plan.filter })));
-    return true;
+    return o.authState() === "expired" ? need(detail) : reactionError("reactions_list_failed", detail, { filter: plan.filter });
   }
   if (!authorization) return need("The reaction set is unknown: Slack's sign-in has no user token.");
   const scan = await scanMyReactions(plan, { authorization, userId }, { fetchImpl: o.fetchImpl, sleep: o.sleep, maxPages: o.maxPages, deadlineMs: o.deadlineMs });
@@ -428,10 +437,8 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
     o.log?.({ tool: name, filter: plan.filter, detail: scan.detail }, "reactions.list could not compute the set");
     // Slack refusing the token is the owner's to fix; anything else is a plain error the caller retries or reports.
     if (AUTH_ERROR.test(scan.detail)) return need(`The reaction set is unknown: Slack refused the sign-in (${scan.detail}).`);
-    send(res, 200, answer(message.id, reactionError("reactions_list_failed", `The reaction set is unknown: ${scan.detail}.`, { filter: plan.filter })));
-    return true;
+    return reactionError("reactions_list_failed", `The reaction set is unknown: ${scan.detail}.`, { filter: plan.filter });
   }
   o.log?.({ tool: name, filter: plan.filter, messages: scan.messages.length, complete: scan.nextCursor === null }, "answered a reaction search from reactions.list");
-  send(res, 200, answer(message.id, reactionResult(scan)));
-  return true;
+  return reactionResult(scan);
 }
