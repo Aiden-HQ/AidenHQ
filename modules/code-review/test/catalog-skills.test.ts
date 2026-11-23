@@ -115,7 +115,9 @@ function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: strin
   const base = git("rev-parse", "HEAD");
   writeFileSync(join(root, "a.txt"), "two\n");
   writeFileSync(join(root, "b.txt"), "new\n");
-  git("add", "."); git("commit", "-qm", "head");
+  writeFileSync(join(root, ".gitignore"), "*.log\n");
+  writeFileSync(join(root, ":c.log"), "forced\n"); // ignored, force-added, a name git would read as pathspec magic
+  git("add", "."); git("--literal-pathspecs", "add", "-f", "--", ":c.log"); git("commit", "-qm", "head");
   const head = git("rev-parse", "HEAD");
   mkdirSync(join(root, "plugins", "p"), { recursive: true });
   const log = join(bin, "log");
@@ -153,7 +155,7 @@ test("a skill runs in a checkout of the head; one that reads uncommitted changes
   assert.ok(one!.cwd!.endsWith("/repo"));
   assert.equal(readFileSync(join(one!.cwd!, "a.txt"), "utf8"), "two\n", "the head's files");
   assert.match(one!.task!, /^\/p:one base:[0-9a-f]{7}/);
-  assert.deepEqual([one!.at, one!.dirty], [f.base, "a.txt b.txt"], "uncommitted: HEAD at the base, the change (an added file too) uncommitted");
+  assert.deepEqual([one!.at, one!.dirty], [f.base, ".gitignore :c.log a.txt b.txt"], "uncommitted: HEAD at the base, the change (added files too) uncommitted");
   assert.deepEqual([two!.at, two!.dirty, two!.cwd], [f.head, "", one!.cwd], "the next skill: the head, clean, same checkout");
   assert.deepEqual([restate!.at, restate!.dirty], [f.head, ""]);
 });

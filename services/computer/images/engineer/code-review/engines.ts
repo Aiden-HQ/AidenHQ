@@ -247,7 +247,7 @@ function stage(sk: Skill, n: number, base: string) {
   gitSafe(sk.cwd, ["reset", "--quiet", "--mixed", sk.uncommitted[n] ? base : sk.head]);
   if (!sk.uncommitted[n]) return;
   const added = gitSafe(sk.cwd, ["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", base, sk.head]);
-  if (added) execFileSync("git", ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"], { cwd: sk.cwd, input: added, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "ignore", "ignore"] });
+  if (added) execFileSync("git", ["--literal-pathspecs", "add", "--force", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"], { cwd: sk.cwd, input: added, env: { ...process.env, ...gitEnv() }, stdio: ["pipe", "ignore", "ignore"] });
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
