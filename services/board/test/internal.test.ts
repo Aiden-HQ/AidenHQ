@@ -73,7 +73,7 @@ describe("internal listener", () => {
     // card exists, and nothing would wake the task.
     // The merge card is older than 60 newer routine cards on the same task: the read still returns it.
     const inner = fakeRecords([
-      card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "used", outcome: "applied", outcomeText: "merged-prs: []", createdAt: "2026-11-10T10:00:00.000Z" }),
+      card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "running", wait: "code review: 1 important finding open", createdAt: "2026-11-10T10:00:00.000Z" }),
       card({ id: "k-0000000000000002", issueId: "another-task", identifier: "PEN-9", action: "merge", tier: 0, state: "pending" }),
       ...Array.from({ length: 60 }, (_, i) => card({ id: `k-00000000000002${String(i).padStart(2, "0")}`, issueId: issue.id, identifier: issue.identifier, action: "conn.tool", tier: 0, state: "used", outcome: "applied", createdAt: `2026-11-2${i % 4}T10:00:00.000Z` })),
     ]);
@@ -106,7 +106,7 @@ describe("internal listener", () => {
     try {
       const mine = (await (await get(issue.identifier)).json()) as { approvals: { id: string }[] };
       expect(mine.approvals.map((a) => a.id)).toContain("k-0000000000000001");
-      expect(seen.at(-1)).toMatchObject({ tier0: true, strict: true });
+      expect(seen.some((o) => o.tier0 === true && o.strict === true)).toBe(true);
       // Another task's card is never in this task's read, whatever its tier.
       const other = (await (await get("PEN-9")).json()) as { approvals: { id: string }[] };
       expect(other.approvals.map((a) => a.id)).toEqual(["k-0000000000000002"]);

@@ -1101,11 +1101,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           throw new HttpError(502, `couldn't read ${issue}: ${String(e?.message ?? e).slice(0, 200)}`);
         });
         // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
-        // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". The limit is the kernel's
-        // cap, and a merge card older than the newest cards is kept: a routine Tier 0 run never crowds it out.
-        const recent = await cardsOf("recent", { task, limit: 1000, tier0: true, strict: true });
-        const merges = recent.filter((a) => /(^|\.)merge$/.test(a.action));
-        const shown = [...new Map([...recent.slice(0, 50), ...merges].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". `live` walks every page a
+        // claimed record can sit on, whatever its tier: a live merge card is never crowded out by newer routine writes.
+        const [recent, live] = await Promise.all([cardsOf("recent", { task, limit: 50, tier0: true, strict: true }), records.live()]);
+        const mine = live.filter((a) => a.issueId === task || a.identifier === task);
+        const merges = mine.filter((a) => /(^|\.)merge$/.test(a.action));
+        const shown = [...new Map([...recent, ...merges].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(approvalView) };
       },
     },
