@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { needsOwner } from "./aidenhq-sdk/needs.js";
-import { type AuthStatus, GoogleAuthError, GoogleClient, type StoredCredentials } from "./google.js";
-import { type DriveFile, type NormalizedEvent, Workspace } from "./workspace.js";
+import { type AuthStatus, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
+import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace } from "./workspace.js";
 
 /**
  * Credentials file, multi-account:
@@ -47,6 +47,13 @@ export function readCredentials(path: string, forWrite = false): CredentialsFile
 /** Whether the owner pasted a client on the board (the guided flow, which makes a Desktop client). */
 export const pastedClient = (): boolean => Boolean(fileText(process.env.GOOGLE_CLIENT_ID_FILE));
 
+/** The account's sign-in lacks the scope a write needs (connected before Google writes, or unticked at consent): a reconnect grants it. */
+export class ScopeMissing extends Error {
+  constructor(readonly scope: string, readonly account: string) {
+    super(`Google (${account}) hasn't allowed ${scope === WRITE_SCOPE.calendar ? "calendar changes" : "Gmail drafts, sends and labels"} yet: the owner reconnects Google once to grant it`);
+  }
+}
+
 /** No account connected yet: Google isn't set up, which differs from a credentials file that won't load. */
 export class NoGoogleAccounts extends GoogleAuthError {}
 
@@ -68,6 +75,7 @@ export function toolFailure(err: unknown, loaded = true, account?: string): { is
   const msg = err instanceof Error ? err.message.slice(0, 300) : "";
   const who = (err instanceof GoogleAuthError ? err.account : undefined) ?? account;
   if (!loaded || err instanceof NoGoogleAccounts) return needsOwner({ cause: "not_connected", detail: `Google isn't connected${msg ? `: ${msg}` : ""}`, ...(who ? { account: who } : {}) });
+  if (err instanceof ScopeMissing) return needsOwner({ cause: "scope", scope: err.scope, detail: err.message, account: err.account });
   if (err instanceof GoogleAuthError && err.expired) return needsOwner({ cause: "expired", detail: `Google's sign-in stopped working: ${msg}`, ...(who ? { account: who } : {}) });
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "google_api_error", detail: msg }) }] };
 }
@@ -140,6 +148,8 @@ export class MultiWorkspace {
   readonly primary: string;
   private readonly ws = new Map<string, Workspace>();
   private readonly clients = new Map<string, GoogleClient>();
+  /** Each account's granted scopes, as stored at its sign-in. */
+  private readonly scopes = new Map<string, string[]>();
 
   constructor(path: string, calendarId = "primary", fetchImpl: typeof fetch = fetch) {
     const { primary, accounts } = loadAccounts(path);
@@ -147,6 +157,7 @@ export class MultiWorkspace {
     for (const [email, creds] of accounts) {
       const client = new GoogleClient(creds, fetchImpl);
       this.clients.set(email, client);
+      this.scopes.set(email, creds.scopes ?? []);
       this.ws.set(email, new Workspace(client, calendarId));
     }
   }
@@ -155,9 +166,19 @@ export class MultiWorkspace {
     return [...this.ws.keys()];
   }
 
-  /** Each account's sign-in, as of its last token refresh. */
-  authStatus(): (AuthStatus & { email: string; primary: boolean })[] {
-    return [...this.clients].map(([email, c]) => ({ email, primary: email === this.primary, ...c.authStatus() }));
+  /**
+   * Each account's sign-in, as of its last token refresh. `missing`: the write scopes its sign-in lacks (connected before Google
+   * writes): reads work, and the board asks for one reconnect.
+   */
+  authStatus(): (AuthStatus & { email: string; primary: boolean; missing?: string[] })[] {
+    return [...this.clients].map(([email, c]) => {
+      const missing = Object.values(WRITE_SCOPE).filter((s) => !this.granted(email, s));
+      return { email, primary: email === this.primary, ...c.authStatus(), ...(missing.length ? { missing } : {}) };
+    });
+  }
+
+  private granted(account: string, scope: string): boolean {
+    return (this.scopes.get(account) ?? []).includes(`https://www.googleapis.com/auth/${scope}`);
   }
 
   /** Refreshes every account's token now (see GoogleClient.checkAuth). */
@@ -254,6 +275,46 @@ export class MultiWorkspace {
     const found = await this.all(account, (w) => w.gmailSearch(query, max));
     const results = found.map((m) => (typeof m.thread_id === "string" ? { ...m, link: gmailLink(m.thread_id, m.account) } : m));
     return Object.assign(results.sort((a, b) => String((b as Record<string, unknown>).date ?? "").localeCompare(String((a as Record<string, unknown>).date ?? ""))), { served: found.served });
+  }
+
+  /**
+   * One write, on exactly one account (the primary unless given): refused before any call when that account's sign-in lacks
+   * `scope` (ScopeMissing, the owner's reconnect).
+   */
+  private write<T>(account: string | undefined, scope: string, fn: (w: Workspace) => Promise<T>): Promise<T & { account: string }> {
+    const [name] = this.one(account);
+    if (!this.granted(name, scope)) return Promise.reject(new ScopeMissing(scope, name));
+    return this.in(name, fn).then((r) => ({ ...(r as T), account: name }));
+  }
+
+  createEvent(e: EventInput & { attendees?: string[]; meet?: boolean }, sendUpdates: SendUpdates, account?: string) {
+    return this.write(account, WRITE_SCOPE.calendar, (w) => w.createEvent(e, sendUpdates));
+  }
+
+  updateEvent(id: string, e: EventInput & { add_attendees?: string[]; remove_attendees?: string[] }, sendUpdates: SendUpdates, account?: string) {
+    return this.write(account, WRITE_SCOPE.calendar, (w) => w.updateEvent(id, e, sendUpdates));
+  }
+
+  deleteEvent(id: string, sendUpdates: SendUpdates, account?: string) {
+    return this.write(account, WRITE_SCOPE.calendar, (w) => w.deleteEvent(id, sendUpdates));
+  }
+
+  respondToEvent(id: string, response: "accepted" | "declined" | "tentative", comment?: string, account?: string) {
+    return this.write(account, WRITE_SCOPE.calendar, (w) => w.respondToEvent(id, response, comment));
+  }
+
+  async gmailDraft(m: MailInput, account?: string) {
+    const d = await this.write(account, WRITE_SCOPE.gmail, (w) => w.gmailDraft(m));
+    return { ...d, link: gmailLink(d.thread_id, d.account) };
+  }
+
+  async gmailSend(m: MailInput, account?: string) {
+    const s = await this.write(account, WRITE_SCOPE.gmail, (w) => w.gmailSend(m));
+    return { ...s, link: gmailLink(s.thread_id, s.account) };
+  }
+
+  gmailLabel(threadId: string, add: string[], remove: string[], account?: string) {
+    return this.write(account, WRITE_SCOPE.gmail, (w) => w.gmailLabel(threadId, add, remove));
   }
 
   async gmailThread(id: string, maxChars?: number, account?: string) {

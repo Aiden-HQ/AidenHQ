@@ -23,7 +23,8 @@ agents:
       slack: read
       # The owner's Slack user id, for the live events it triages (the slack-triage routine) and the Slack DM page for an urgent one (slack, when installed).
       slack_live?: [ slack_owner ]
-      google_workspace: [ gmail_search, gmail_read_thread ]
+      # gmail_label: clears `Aiden` from a thread whose task is closed (skill triage-email); the owner's own labels only, checked in code.
+      google_workspace: [ gmail_search, gmail_read_thread, gmail_label ]
       owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_comments, task_create, task_update, task_comment, task_block, task_cancel, task_finish ]
   open-loops:

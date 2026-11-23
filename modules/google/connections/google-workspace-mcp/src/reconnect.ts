@@ -6,7 +6,7 @@ import { explainApi, explainGoogle } from "./google-errors.js";
 
 /**
  * Connect a Google account, or reconnect one whose sign-in expired, started from the board. The same
- * flow as src/auth.ts (PKCE, read-only scopes, the client on file), except the board receives Google's redirect
+ * flow as src/auth.ts (PKCE, SCOPES, the client on file), except the board receives Google's redirect
  * and hands the code back here: at its loopback address (a Desktop-app client), or at the board's own https
  * address (`boardRedirects`, a Web-app client with that redirect registered). Only this service sees the
  * refresh token.
@@ -79,9 +79,9 @@ export class Reconnect {
     const res = await this.fetchImpl("https://oauth2.googleapis.com/token", { method: "POST", body, signal: AbortSignal.timeout(15_000) });
     const tokens = (await res.json()) as { refresh_token?: string; access_token?: string; scope?: string; error?: string; error_description?: string };
     if (!res.ok || !tokens.refresh_token || !tokens.access_token) throw new ReconnectError(explainGoogle(tokens.error ?? String(res.status), tokens.error_description));
+    // Saved as granted: Google adds the scopes the client already holds (an older sign-in's readonly ones), and the owner may
+    // untick one at consent. Tool tags and grants decide what agents do; a write checks its own scope (MultiWorkspace.write).
     const granted = (tokens.scope ?? "").split(" ").filter(Boolean);
-    const extra = granted.filter((s) => !SCOPES.includes(s) && !["openid", "email", "profile"].includes(s));
-    if (extra.length) throw new ReconnectError(`unexpected scopes granted (${extra.join(", ")}); nothing saved`);
     const email = await this.emailFor(tokens.access_token);
     // The chooser can sign in as someone else; that must not replace (or add) a different account.
     if (p.account && email.toLowerCase() !== p.account.toLowerCase()) throw new ReconnectError(`you signed in as ${email}, not ${p.account}; nothing changed`);

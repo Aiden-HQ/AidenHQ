@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { GoogleClient } from "./google.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
@@ -10,13 +11,14 @@ interface GEvent {
   status?: string;
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
-  attendees?: { email?: string; displayName?: string; self?: boolean; responseStatus?: string; resource?: boolean }[];
+  attendees?: { email?: string; displayName?: string; self?: boolean; responseStatus?: string; resource?: boolean; comment?: string }[];
   location?: string;
   hangoutLink?: string;
   conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] };
   attachments?: { fileId?: string; title?: string; fileUrl?: string }[];
   htmlLink?: string;
   organizer?: { email?: string; self?: boolean };
+  attendeesOmitted?: boolean;
 }
 
 /** Event shape matching ops-mcp's meeting_match input. */
@@ -118,6 +120,23 @@ export function normalizeEvent(e: GEvent): NormalizedEvent {
   };
 }
 
+/** Who Google emails about a calendar change: everyone (as when the owner does it by hand), outside guests only, or no one. */
+export type SendUpdates = "all" | "externalOnly" | "none";
+/** An event's own fields an agent sets. A time is a date (`2026-11-24`, all day) or an ISO-8601 date-time. */
+export interface EventInput { title?: string; start?: string; end?: string; timezone?: string; description?: string; location?: string }
+
+const when = (t: string, zone?: string) => (/^\d{4}-\d{2}-\d{2}$/.test(t) ? { date: t } : { dateTime: t, ...(zone ? { timeZone: zone } : {}) });
+/** The Google fields of `e` that are set. */
+function eventFields(e: EventInput): Record<string, unknown> {
+  return {
+    ...(e.title !== undefined ? { summary: e.title } : {}),
+    ...(e.start !== undefined ? { start: when(e.start, e.timezone) } : {}),
+    ...(e.end !== undefined ? { end: when(e.end, e.timezone) } : {}),
+    ...(e.description !== undefined ? { description: e.description } : {}),
+    ...(e.location !== undefined ? { location: e.location } : {}),
+  };
+}
+
 const EVENT_FIELDS =
   "items(id,recurringEventId,summary,status,start,end,attendees(email,displayName,self,responseStatus,resource),location,hangoutLink,conferenceData(entryPoints(entryPointType,uri)),attachments(fileId,title,fileUrl),htmlLink),nextPageToken";
 
@@ -148,8 +167,58 @@ export class Workspace {
   }
 
   async getEvent(id: string): Promise<NormalizedEvent> {
-    const e = await this.g.get<GEvent>(`${CAL}/calendars/${encodeURIComponent(this.calendarId)}/events/${encodeURIComponent(id)}`);
-    return normalizeEvent(e);
+    return normalizeEvent(await this.rawEvent(id));
+  }
+
+  private eventUrl(id?: string) {
+    return `${CAL}/calendars/${encodeURIComponent(this.calendarId)}/events${id ? `/${encodeURIComponent(id)}` : ""}`;
+  }
+
+  /** The event as Google holds it, every field: a PATCH of `attendees` replaces the whole list, so it is merged from this. */
+  private rawEvent(id: string): Promise<GEvent> {
+    return this.g.get<GEvent>(this.eventUrl(id));
+  }
+
+  // -------------------------------------------------------------- Calendar writes (each a reviewed tool call)
+
+  async createEvent(e: EventInput & { attendees?: string[]; meet?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
+    const body = {
+      ...eventFields(e),
+      ...(e.attendees?.length ? { attendees: e.attendees.map((email) => ({ email })) } : {}),
+      ...(e.meet ? { conferenceData: { createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } } } : {}),
+    };
+    return normalizeEvent(await this.g.request<GEvent>("POST", this.eventUrl(), { sendUpdates, ...(e.meet ? { conferenceDataVersion: 1 } : {}) }, body));
+  }
+
+  /** Moves, renames or re-describes an event; attendees are added to and removed from the list Google holds. */
+  async updateEvent(id: string, e: EventInput & { add_attendees?: string[]; remove_attendees?: string[] }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
+    const body: Record<string, unknown> = eventFields(e);
+    if (e.add_attendees?.length || e.remove_attendees?.length) {
+      const gone = new Set((e.remove_attendees ?? []).map((a) => a.toLowerCase()));
+      const held = await this.rawEvent(id);
+      // Google left some attendees out of the event it returned (a large event): a PATCH of the list would drop them.
+      if (held.attendeesOmitted) throw new Error("Google didn't return this event's full guest list, so attendees can't be changed safely here");
+      const kept = (held.attendees ?? []).filter((a) => !gone.has(String(a.email).toLowerCase()));
+      const have = new Set(kept.map((a) => String(a.email).toLowerCase()));
+      body.attendees = [...kept, ...(e.add_attendees ?? []).filter((a) => !have.has(a.toLowerCase())).map((email) => ({ email }))];
+    }
+    if (!Object.keys(body).length) throw new Error("nothing to change: pass a new title, time, description, location or attendees");
+    return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), { sendUpdates }, body));
+  }
+
+  /** Deletes the event from the calendar; one the owner organises is cancelled for every attendee. */
+  async deleteEvent(id: string, sendUpdates: SendUpdates): Promise<{ id: string; deleted: true }> {
+    await this.g.request("DELETE", this.eventUrl(id), { sendUpdates });
+    return { id, deleted: true };
+  }
+
+  /** The owner's own answer to an invite: only his attendee entry changes. */
+  async respondToEvent(id: string, response: "accepted" | "declined" | "tentative", comment?: string): Promise<NormalizedEvent> {
+    const self = ((await this.rawEvent(id)).attendees ?? []).find((a) => a.self);
+    if (!self) throw new Error("you aren't an attendee of this event (an event you organise needs no answer)");
+    // Only the owner's own entry, marked as a partial list, so no other guest is touched.
+    const mine = { ...self, responseStatus: response, ...(comment !== undefined ? { comment } : {}) };
+    return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), {}, { attendees: [mine], attendeesOmitted: true }));
   }
 
   async listFiles(q: string, max = 50): Promise<DriveFile[]> {
@@ -277,6 +346,47 @@ export class Workspace {
     };
   }
 
+  // -------------------------------------------------------------- Gmail writes (drafts and sends reviewed; labels upkeep)
+
+  /** A new message, or a reply in `thread_id` (threaded by Gmail and by the recipient's mail client). */
+  private async outgoing(m: MailInput): Promise<{ raw: string; threadId?: string }> {
+    let reply: { inReplyTo?: string; references?: string; subject?: string } = {};
+    if (m.thread_id) {
+      const t = await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(m.thread_id)}`, { format: "metadata" });
+      const last = t.messages?.at(-1);
+      if (!last) throw new Error(`thread ${m.thread_id} has no messages`);
+      const id = header(last, "Message-ID");
+      reply = { inReplyTo: id, references: [header(last, "References"), id].filter(Boolean).join(" ") || undefined, subject: header(last, "Subject") };
+    }
+    const subject = m.subject ?? (reply.subject !== undefined ? (/^re:/i.test(reply.subject) ? reply.subject : `Re: ${reply.subject}`) : undefined);
+    if (subject === undefined) throw new Error("a new message needs a subject");
+    return { raw: mimeMessage({ to: m.to, cc: m.cc, bcc: m.bcc, subject, body: m.body, inReplyTo: reply.inReplyTo, references: reply.references }), ...(m.thread_id ? { threadId: m.thread_id } : {}) };
+  }
+
+  async gmailDraft(m: MailInput): Promise<{ draft_id: string; message_id: string; thread_id: string }> {
+    const d = await this.g.request<{ id: string; message: { id: string; threadId: string } }>("POST", `${GMAIL}/drafts`, {}, { message: await this.outgoing(m) });
+    return { draft_id: d.id, message_id: d.message.id, thread_id: d.message.threadId };
+  }
+
+  async gmailSend(m: MailInput): Promise<{ message_id: string; thread_id: string }> {
+    const sent = await this.g.request<{ id: string; threadId: string }>("POST", `${GMAIL}/messages/send`, {}, await this.outgoing(m));
+    return { message_id: sent.id, thread_id: sent.threadId };
+  }
+
+  /**
+   * Adds and removes the mailbox's own labels on a thread, by name. Only user labels that already exist: system labels (INBOX,
+   * UNREAD, TRASH, SPAM, ...) are never matched, and none is created, so this can't archive, trash or hide mail.
+   */
+  async gmailLabel(threadId: string, add: string[], remove: string[]): Promise<{ thread_id: string; added: string[]; removed: string[] }> {
+    const { labels = [] } = await this.g.get<{ labels?: { id: string; name: string; type?: string }[] }>(`${GMAIL}/labels`);
+    const own = new Map(labels.filter((l) => l.type === "user").map((l) => [l.name.toLowerCase(), l.id]));
+    const ids = (names: string[]) =>
+      names.map((n) => own.get(n.toLowerCase()) ?? (() => { throw new Error(`no label of yours is named "${n}": only your own existing labels can be changed, never system ones (Inbox, Unread, Trash, Spam)`); })());
+    if (!add.length && !remove.length) throw new Error("nothing to change: name a label to add or remove");
+    await this.g.request("POST", `${GMAIL}/threads/${encodeURIComponent(threadId)}/modify`, {}, { addLabelIds: ids(add), removeLabelIds: ids(remove) });
+    return { thread_id: threadId, added: add, removed: remove };
+  }
+
   async readFile(id: string, maxChars = 400_000): Promise<{ file: DriveFile; text: string; truncated: boolean }> {
     const file = await this.g.get<DriveFile>(`${DRIVE}/files/${encodeURIComponent(id)}`, {
       fields: "id,name,mimeType,modifiedTime,createdTime,version,webViewLink,size",
@@ -294,7 +404,33 @@ export class Workspace {
   }
 }
 
-// ---------------------------------------------------------------- Gmail (read-only)
+// ---------------------------------------------------------------- Gmail
+
+const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
+
+/** A message an agent writes: plain text, to named addresses; `thread_id` makes it a reply there. */
+export interface MailInput { to: string[]; cc?: string[]; bcc?: string[]; subject?: string; body: string; thread_id?: string }
+
+/** One header value: refused if it could end the header (CR or LF), non-ASCII as an RFC 2047 encoded word. */
+function headerValue(name: string, v: string): string {
+  if (/[\r\n]/.test(v)) throw new Error(`${name} can't contain a line break`);
+  return /^[\x20-\x7e]*$/.test(v) ? v : `=?UTF-8?B?${Buffer.from(v, "utf8").toString("base64")}?=`;
+}
+
+/** The RFC 2822 message Gmail's API takes (`raw`, base64url): plain text, UTF-8. Gmail sets From to the signed-in account. */
+export function mimeMessage(m: { to: string[]; cc?: string[]; bcc?: string[]; subject: string; body: string; inReplyTo?: string; references?: string }): string {
+  const lines = [
+    ["To", m.to.join(", ")],
+    ...(m.cc?.length ? [["Cc", m.cc.join(", ")]] : []),
+    ...(m.bcc?.length ? [["Bcc", m.bcc.join(", ")]] : []),
+    ["Subject", m.subject],
+    ...(m.inReplyTo ? [["In-Reply-To", m.inReplyTo]] : []),
+    ...(m.references ? [["References", m.references]] : []),
+  ].map(([k, v]) => `${k}: ${headerValue(k!, v!)}`);
+  const body = Buffer.from(m.body, "utf8").toString("base64").replace(/.{76}/g, "$&\r\n");
+  const text = [...lines, "MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", body].join("\r\n");
+  return Buffer.from(text, "utf8").toString("base64url");
+}
 
 interface GmailPart { mimeType?: string; filename?: string; body?: { data?: string; size?: number }; parts?: GmailPart[]; headers?: { name: string; value: string }[] }
 interface GmailMessage { id: string; threadId: string; labelIds?: string[]; snippet?: string; internalDate?: string; payload?: GmailPart }

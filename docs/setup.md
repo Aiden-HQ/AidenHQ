@@ -40,8 +40,8 @@ other connections, board account recovery and shared access for colleagues.
 
 **Google OAuth client** [org admin]: in the Google Cloud console, create a project, enable the Google Calendar,
 Google Drive and Gmail APIs, set up the OAuth consent screen (*Internal* on a Workspace organization skips Google's
-app review), then Credentials, *Create OAuth client ID*, *Web application*. AidenHQ only asks for read-only scopes
-(`calendar.events.readonly`, `drive.readonly`, `gmail.readonly`). You add the redirect URI after step 3, once you know
+app review), then Credentials, *Create OAuth client ID*, *Web application*. AidenHQ asks for
+`calendar.events`, `drive.readonly` and `gmail.modify` (agents' calendar changes and email sends are each reviewed first). You add the redirect URI after step 3, once you know
 the board's address.
 
 **Zero data retention:** OpenRouter privacy settings are per account, and a key made with the management key belongs
