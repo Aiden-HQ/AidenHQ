@@ -146,8 +146,8 @@ export function startPrWatch(o: PrWatchOptions) {
     state.greened ??= {};    // PR url -> the head whose green checks woke its task
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
-    state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<repo>:<head>:<job id>` -> the same for a wedged check run's job (the job is the repository's)
-    state.wedged ??= {};      // `<pr url>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's first re-run ask, and whether GitHub took it
+    state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<repo>:<head>:<job id>` -> a wedged check run's job (the job is the repository's)
+    state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's re-run ask, and whether GitHub took it
     state.wedgedTold ??= {}; // `<pr url>:merge` and `<pr url>:optional` -> the head whose wedged check the task was told about
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
@@ -269,10 +269,10 @@ export function startPrWatch(o: PrWatchOptions) {
         const asked: { at: string; accepted: boolean; job: number } | undefined = state.wedged[name];
         const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head, check: String(c.name ?? "").slice(0, 100) }); continue; }
-        // A refused or unanswered read backs off before anything else, so an Actions outage is not hit on every tick.
+        // A refused or unanswered read backs off before anything else, so an Actions outage is not hit on every tick. Nothing
+        // is reported while it backs off either: a report needs the job read that shows it finished, which the tick past the
+        // backoff makes.
         const prior: string | undefined = state.reran[`${repo.toLowerCase()}:${head}:${jobId}`];
-        // A refusal still backing off: nothing is asked. Nothing is reported either, since a report needs the job read to
-        // show it finished, which the tick past the backoff makes.
         if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) continue;
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         let job: { status: number; body: any };
@@ -294,11 +294,9 @@ export function startPrWatch(o: PrWatchOptions) {
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== head || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt) || Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a fresh job's check run can lag
-        // The ask's clock already runs: the check is reported from it (refreshed below if this tick's retry is taken), and
-        // one this head took is not re-run again. The same job re-run for a sibling PR at this head is not asked again either,
-        // but its report is this PR's own.
-        // A re-run this head took for this very job, or for the job it replaced (a later attempt), is not asked again. A job
-        // of another attempt-1 lineage that merely shares the display name is a check of its own and gets its own ask.
+        // A re-run this head took for this very job, or for the job it replaced (a later attempt), or a re-run a sibling PR
+        // at this head asked for, is not asked again. A job of another attempt-1 lineage that merely shares the display name
+        // is a check of its own and gets its own ask.
         const replaced = !!asked?.accepted && !!job.body && Number(job.body.run_attempt ?? 1) > 1;
         if ((asked?.accepted && (Number(asked.job) === Number(jobId) || replaced)) || (prior && !prior.startsWith("retry:"))) {
           out.push({ at: Date.parse(asked?.at ?? prior!), accepted: true, name: String(c.name ?? ""), key: name });
@@ -574,9 +572,8 @@ export function startPrWatch(o: PrWatchOptions) {
       // the agent-only rules below (a wake would tell its task to fix a check no push can fix).
       if (await clearPolicy(pr)) continue;
       // A check run still not completed well after its re-run was first asked: GitHub's branch rules read the check run too, so
-      // the merge gate is held by it and no push fixes it. The PR's task is told once at this head; a PR with no task here (an
-      // outside author's) has nobody to tell, so it is logged once at the head instead. The check's name is PR-controlled text:
-      // it never enters the wake, which points at `gh pr checks` instead.
+      // the merge gate is held by it and no push fixes it. A PR with no task here (an outside author's) has nobody to tell, so
+      // it is logged instead. The check's name is PR-controlled text: it never enters the wake, which points at `gh pr checks`.
       // The stuck checks whose reporting interval has passed. A check the merge waits on wakes the task once at this head; one
       // that only a matrix job hangs on is logged once, because it holds nothing and must not use up the merge's report.
       const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS);
@@ -601,9 +598,7 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
-      if (state.headAt[url]?.head !== pr.headRefOid) {
-        state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
-      }
+      if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
       // A cancelled task's PR is closed with its branch, once. A done task's unmerged PR is too, unless a merge of it may be in flight
       // (an open github.merge record on the task) or its head is under half an hour old (a just-finished merge isn't raced).
       if (!state.abandoned[url]) {
