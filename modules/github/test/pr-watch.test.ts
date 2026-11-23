@@ -815,7 +815,7 @@ test("recovery probes are bounded per PR, so a PR with many unfinished checks do
   // The first PR (oldest) has 12 unfinished checks; the second is green and must still have its merge filed this tick.
   c.set([c.agentPr(54, { commits: { nodes: [{ commit: { statusCheckRollup: many(12) } }] }, headRefOid: "h54" }), c.agentPr(55)]);
   await c.watch.tick();
-  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "ten probes, then the rest wait for the next tick");
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10 - 2, "its budget less the failed-check reserve, then the rest wait for the next tick");
   assert.equal(c.merges.length, 1, "the green PR's merge is still filed in the same pass");
 });
 
@@ -833,7 +833,7 @@ test("a probe budget spent on an older PR does not starve a newer PR's wedged ch
   c.set([c.agentPr(61, { commits: { nodes: [{ commit: { statusCheckRollup: one } }] }, headRefOid: "h61" }), c.agentPr(60, { commits: { nodes: [{ commit: { statusCheckRollup: many } }] }, headRefOid: "h60" })]);
   await c.watch.tick();
   const probesFor = (re) => c.gh.filter((g) => re.test(g)).length;
-  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/([1-9]|1[0-2])$/), 10, "the older PR stops at its own ten probes");
+  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/([0-9]|10|11|12)$/), 10 - 2, "the older PR stops at its own budget");
   assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/90$/), 1, "the newer PR still gets its own probe this pass");
   assert.ok(c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the newer PR's check is probed in the same pass");
 });

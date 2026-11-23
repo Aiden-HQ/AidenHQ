@@ -73,6 +73,9 @@ const WEDGED_REPORT_MS = 20 * 60_000;
 /** Actions job reads one pass may spend on the recovery paths. Each unfinished check costs one read, serially, at a 30-second
  * timeout, so an older PR with many of them would otherwise hold a newer PR's merge for minutes; the rest wait for the next tick. */
 const PROBES_PER_PASS = 10;
+/** Actions job reads of a PR's budget kept free for the never-started path, so the wedged scan of still-running jobs cannot
+ * spend them all and leave a failed job that never started unjudged (which would be woken as if it had run). */
+const NEVER_STARTED_RESERVE = 2;
 /** Red rounds on one PR before its task stops being woken for them and its asker is told (the CI breaker). */
 const BREAKER_ROUNDS = 3;
 /** Review-findings wakes per pass (oldest PR first): the replies post as the owner's login, and a burst trips GitHub's secondary rate limit. */
@@ -228,9 +231,11 @@ export function startPrWatch(o: PrWatchOptions) {
     /** The full Actions job id a check run's `details_url` names: the rollup's 32-bit `databaseId` no longer holds one. */
     const jobIdOf = (run: Json) => String(run.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
     /** One Actions job read, charged to this PR's budget: undefined once it is spent, so the rest of this PR's checks (and
-     * every later PR's merge) are not held behind a head with many unfinished jobs. The next tick asks the rest. */
-    async function probeJob(id: string): Promise<{ status: number; body: any } | undefined> {
-      if (probes >= PROBES_PER_PASS) return undefined;
+     * every later PR's merge) are not held behind a head with many unfinished jobs. The next tick asks the rest. `reserve`
+     * keeps that many reads free for the other recovery path, so a head of still-running jobs cannot use the whole budget
+     * and leave a failed job that never started unjudged (and so woken as if it had run). */
+    async function probeJob(id: string, reserve = 0): Promise<{ status: number; body: any } | undefined> {
+      if (probes >= PROBES_PER_PASS - reserve) return undefined;
       probes++;
       return gh("GET", `/repos/${repo}/actions/jobs/${id}`);
     }
@@ -329,7 +334,9 @@ export function startPrWatch(o: PrWatchOptions) {
         if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) continue;
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         let job: { status: number; body: any } | undefined;
-        try { job = await probeJob(jobId); }
+        // The failed-check path keeps a read of its own: a head of still-running jobs must not spend the budget and leave a
+        // job that never started unjudged.
+        try { job = await probeJob(jobId, NEVER_STARTED_RESERVE); }
         catch (e) {
           log("wedged check run's job read failed", { pr: pr.url, head, job: jobId, err: String((e as Error).message).slice(0, 200) });
           // A sibling PR at this head may already have had the re-run taken: a failed read never undoes that.
