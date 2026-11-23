@@ -336,7 +336,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const gaps = [...shardGaps];
   const hidden = excluded.filter((e) => e.gap);
   if (hidden.length) gaps.push(`${hidden.length} changed file${hidden.length > 1 ? "s" : ""} got no findings pass (${hidden.slice(0, 5).map((e) => `${e.path}: ${e.why}`).join("; ")}${hidden.length > 5 ? "; …" : ""})`);
-  const ids = (l: string[]) => `${l.slice(0, 2).join(", ")}${l.length > 2 ? ", …" : ""}`;
+  const ids = (l: string[]) => `${l.slice(0, 5).join(", ")}${l.length > 5 ? ", …" : ""}`;
   /** The PR's earlier findings at this head (`again`: found or restated by this run): which are fixed, which answers unsafe. */
   async function recheck(again: Set<string>, claimsOnly = false) {
     const root = ws.replace(/\/$/, "");
@@ -345,7 +345,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
     const ask = previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
     const unsafe: Unsafe[] = [];
-    const named = new Set<string>(), cleared: string[] = [], still: string[] = [], omitted: string[] = [], unread: string[] = [];
+    const named = new Set<string>(), cleared: string[] = [], still: string[] = [], omitted: string[] = [], unread: string[] = [], failed: string[] = [];
     let answered = false;
     // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
     const by = asker(combo);
@@ -357,7 +357,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       const j = answer(v.message);
       // A malformed `still` is no usable answer (never read as "nothing is still there").
       if (!(j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string"))) {
-        return void gaps.push(`the recheck of ${chunk.length} earlier finding${chunk.length > 1 ? "s" : ""} didn't finish (${v.cause ?? "no usable answer"}), so ${chunk.length > 1 ? "they stay" : "it stays"} as ${chunk.length > 1 ? "they were" : "it was"}: ${ids(chunk.map((f) => f.id))}`);
+        failed.push(...chunk.map((f) => f.id));
+        return void gaps.push(`the recheck of ${chunk.length} earlier finding${chunk.length > 1 ? "s" : ""} didn't finish (${v.cause ?? "no usable answer"}), so ${chunk.length > 1 ? "they stay" : "it stays"} as ${chunk.length > 1 ? "they were" : "it was"}`);
       }
       answered = true;
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
@@ -389,10 +390,11 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     // Every asked finding is checked, in chunks small enough to be answered whole; a few at a time.
     const chunks = Array.from({ length: Math.ceil(ask.length / RECHECK_CHUNK) }, (_, i) => ask.slice(i * RECHECK_CHUNK, (i + 1) * RECHECK_CHUNK));
     for (let i = 0; i < chunks.length; i += RECHECK_PARALLEL) await Promise.all(chunks.slice(i, i + RECHECK_PARALLEL).map(ask1));
-    if (omitted.length) gaps.push(`the recheck left ${omitted.length} earlier finding${omitted.length > 1 ? "s" : ""} unanswered, so ${omitted.length > 1 ? "they stay" : "it stays"} as ${omitted.length > 1 ? "they were" : "it was"}: ${ids(omitted)}`);
-    if (unread.length) gaps.push(`the recheck gave a verdict on ${unread.length} earlier finding${unread.length > 1 ? "s" : ""} without opening ${unread.length > 1 ? "their files" : "its file"}, so ${unread.length > 1 ? "they stay" : "it stays"} as ${unread.length > 1 ? "they were" : "it was"}: ${ids(unread)}`);
+    if (omitted.length) gaps.push(`the recheck left ${omitted.length} earlier finding${omitted.length > 1 ? "s" : ""} unanswered, so ${omitted.length > 1 ? "they stay" : "it stays"} as ${omitted.length > 1 ? "they were" : "it was"}`);
+    if (unread.length) gaps.push(`the recheck gave a verdict on ${unread.length} earlier finding${unread.length > 1 ? "s" : ""} without opening ${unread.length > 1 ? "their files" : "its file"}, so ${unread.length > 1 ? "they stay" : "it stays"} as ${unread.length > 1 ? "they were" : "it was"}`);
     // A post resolves at most 100 threads (review-post.ts RESOLVE_MAX): the rest stay open for the next recheck, and it says so.
     if (cleared.length > 100) { gaps.push(`${cleared.length - 100} more earlier findings are fixed; the next recheck confirms them`); cleared.length = 100; }
+    if (failed.length + omitted.length + unread.length) gaps.push(`ids left as they were: ${ids([...failed, ...omitted, ...unread])}`);
     // The ones it looked at and cleared are fixed; the ones it called still there are shown to the agent who claimed them fixed.
     // An agent's pending `fixed` claim on a finding it neither cleared nor called still there stands.
     const fixed = [...cleared];
