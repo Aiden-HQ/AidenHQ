@@ -3,16 +3,14 @@
 // for every engine. An engine runs in the check box with no credentials but the run's capped model token (OPENROUTER_API_KEY,
 // through the gateway at OPENROUTER_BASE_URL), and nothing of the PR loaded as its config.
 //
+// Threat model: docs/design/code-review.md (the review computer is the only boundary; nothing is jailed inside it).
+//
 // One access policy for every engine that runs commands (owner, 2026-11-21: "same settings across all reviewers"): a shell that
-// reads the repo and the system, with the network open, and inherits no credential (codex: shell_environment_policy; Claude
-// Code: its subprocess env scrub). Every result is scrubbed of the token and key-shaped text (review.ts scrub). The box is the
-// isolation boundary: a throwaway gVisor container with no credential but the run's capped token, which a command can read from
-// the engine's process anyway (docs/design/code-review.md). The shell writes nowhere but the engine's own per-run directories,
-// so the checkout, the recipe and the result stay as the review reads them. codex and codex-native get that from codex's own
-// sandbox (a read-only permission profile with the network on: no network namespace, which gVisor can't set up). Claude Code's
-// own sandbox is off: it always gives Bash a network namespace, which gVisor refuses ("bwrap: loopback: Failed RTM_NEWADDR"),
-// so with it on every command failed (2026-11-23). Instead the whole claude process runs in our jail (claudeJail: bubblewrap,
-// read-only but its run directory, its skill checkout and a private /tmp, its own pid namespace, no network namespace).
+// reads the repo and the system, with the network open, and inherits no credential but the run's capped token (codex:
+// shell_environment_policy inherits none; Claude Code's Bash has the token: its env scrub needs its sandbox). Every result is scrubbed of the token and key-shaped text (review.ts scrub). codex and
+// codex-native run in codex's own read-only permission profile with the network on (no network namespace, which gVisor can't
+// set up). Claude Code's own sandbox is off (`sandbox.enabled: false`): it always gives Bash a network namespace, which gVisor
+// refuses ("bwrap: loopback: Failed RTM_NEWADDR"), so with it on every command failed (2026-11-23).
 // A run whose shell can't run at all ends at once (shellGuard), never spending a whole review on a dead shell.
 //
 // codex: our prompts through `codex exec` from an empty cwd, the repo tools (review-tools.ts) as its MCP server and the shell.
@@ -343,18 +341,8 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   return { message: last.done ? message : "", read: calls.some((c) => c.tool === "diff"), calls, cause: last.done ? undefined : stopped(last.r, last.said) };
 }
 
-/** The user settings of every Claude Code run (its only settings: --setting-sources user): its own sandbox off (claudeJail instead). */
+/** The user settings of every Claude Code run (its only settings: --setting-sources user): its own sandbox off. */
 export const CLAUDE_SETTINGS = { sandbox: { enabled: false } };
-/**
- * The bubblewrap arguments a claude run starts under: everything read-only but `writable` (its run directory, a skill's checkout)
- * and a private /tmp, its own pid namespace (the recipe's processes out of sight), the network as the box has it. A writable
- * checkout's .git stays read-only: the recipe runs git there itself (stage), so its config and hooks are never the skill's.
- */
-export const claudeJail = (writable: string[]) => ["--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp",
-  ...writable.flatMap((d) => ["--bind", d, d, "--ro-bind-try", join(d, ".git"), join(d, ".git")]), "--"];
-
-/** A claude run that never started because its jail couldn't (bwrap's own error on stderr), said as that. */
-const jailFailed = (r: { stdout: string; stderr: string }) => (!r.stdout.trim() && /^bwrap: /m.test(r.stderr) ? `the jail claude runs in couldn't start (${r.stderr.match(/^bwrap: .*$/m)![0].slice(0, 200)})` : undefined);
 
 /** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
  * result (never a word inside the diff itself). */
@@ -374,8 +362,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   const home = join(tmp, "home"), cwd = sk?.cwd ?? join(tmp, "cwd");
   mkdirSync(home);
   mkdirSync(cwd, { recursive: true });
-  // Claude Code's own sandbox off (gVisor can't give it its network namespace); the run is jailed instead (claudeJail, the access
-  // policy above). Bash is allowed by --allowedTools.
+  // Claude Code's own sandbox off (gVisor can't give it its network namespace); Bash is allowed by --allowedTools.
   mkdirSync(join(home, ".claude"));
   linkSkills(sk, join(home, ".claude", "skills"));
   writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify(CLAUDE_SETTINGS));
@@ -390,7 +377,8 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     ANTHROPIC_DEFAULT_OPUS_MODEL: m, ANTHROPIC_DEFAULT_SONNET_MODEL: m, ANTHROPIC_DEFAULT_HAIKU_MODEL: m, CLAUDE_CODE_SUBAGENT_MODEL: m,
     CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: "1", CLAUDE_CODE_EFFORT_LEVEL: effort,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-    CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", // its Bash never sees the token
+    // No CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: on Linux it makes Claude Code require bubblewrap and put every Bash command in its own
+    // sandbox ("Sandbox is required but failed to initialize"), which gVisor can't start. Bash sees the run's capped token.
     ...gitEnv(), // its Bash's git reads no attributes or config of the branch's (the same diff as ours)
   };
   const base_args = ["--model", m, "--effort", effort, "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", mcp, "--tools", ["Agent", "Bash", ...(tools ?? [])].join(","),
@@ -411,7 +399,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     return undefined;
   };
   const turn = async (task: string, resume?: string) => {
-    const r = await run("bwrap", [...claudeJail([tmp, ...(sk?.cwd ? [sk.cwd] : [])]), "claude", "-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes, watch });
+    const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes, watch });
     const events: ClaudeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
     // Claude Code's own review reads the diff with its shell too (`git diff`): a read that came back whole (no error, not cut
     // short by Claude Code's output limit) counts like the repo tools' diff.
@@ -437,7 +425,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     for (const [n, task] of (sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]).entries()) {
       if (sk) stage(sk, n, base);
       const t = await turn(task, session);
-      if (!t.ok) return { message: "", read: false, calls, cause: jailFailed(t.r) ?? stopped(t.r, t.end?.result ?? "") };
+      if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
       // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. One that called no
       // tool read nothing: it counts as not run (skillOutcome), and the next skill still runs.
       const name = sk ? task.slice(1).split(" ")[0]! : "";
@@ -450,7 +438,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     prompt = restate(prompt, sk);
   }
   const last = await turn(prompt, session);
-  if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: jailFailed(last.r) ?? stopped(last.r, last.end?.result ?? "") };
+  if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: stopped(last.r, last.end?.result ?? "") };
   return { message: String(last.end?.result ?? ""), read: calls.some((c) => c.tool === "diff"), calls };
 }
 

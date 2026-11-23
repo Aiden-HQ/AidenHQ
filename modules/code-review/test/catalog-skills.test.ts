@@ -4,12 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCatalog } from "../recipe/catalog.ts";
-import { claudeJail, comboProblem, parseSkill, resolveSkills, runEngine, shellGuard, skillOutcome } from "../recipe/engines.ts";
+import { comboProblem, parseSkill, resolveSkills, runEngine, shellGuard, skillOutcome } from "../recipe/engines.ts";
 
 const catalog = loadCatalog(readFileSync(new URL("../service/src/catalog.json", import.meta.url), "utf8"));
 const skillOptions = catalog.filter((o) => o.kind === "skill");
@@ -146,6 +145,7 @@ printf '%s\\n' '${JSON.stringify({ type: "user", message: { content: [{ type: "t
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 printf '%s|%s|%s|%s\\n' "$(echo "$2" | head -1 | cut -c1-20)" "$PWD" "$(git rev-parse HEAD)" "$(git diff --name-only | tr '\\n' ' ')" >> '${log}'
 cp "$CLAUDE_CONFIG_DIR/settings.json" '${bin}/settings.json'
+test "$CLAUDE_CONFIG_DIR" = "$HOME/.claude" && echo "\${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB-unset}" > '${bin}/scrub'
 ${init}
 ${dead}
 case "$2" in
@@ -155,16 +155,13 @@ case "$2" in
 esac
 `);
   chmodSync(join(bin, "claude"), 0o755);
-  // The jail the recipe starts claude in (claudeJail): here it only runs the command after its options.
-  writeFileSync(join(bin, "bwrap"), '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n');
-  chmodSync(join(bin, "bwrap"), 0o755);
   const run = async (skills: { skill: string; args: string; uncommitted?: boolean }[]) => {
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path}`;
     try { return await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base, minutes: 1, scratch, own: true, harness: "claude-code", skills, skillsRoot: root }); } finally { process.env.PATH = path; }
   };
   const turns = () => readFileSync(log, "utf8").trim().split("\n").map((l) => { const [task, cwd, at, dirty] = l.split("|"); return { task, cwd, at, dirty: dirty!.trim() }; });
-  return { root, base, head, run, turns, settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")) };
+  return { root, base, head, run, turns, scrub: () => readFileSync(join(bin, "scrub"), "utf8").trim(), settings: () => JSON.parse(readFileSync(join(bin, "settings.json"), "utf8")) };
 }
 const ran = (...r: boolean[]) => JSON.stringify({ findings: [], stale_guidance: [], skills: r.map((x, i) => ({ skill: `/p:${["one", "two"][i]}`, ran: x, why: x ? "" : "it found no change to review" })) });
 
@@ -215,7 +212,8 @@ test("the restated skill list is read in order and must cover every skill", () =
 test("Claude Code runs with its own sandbox off (gVisor refuses its network namespace), in the recipe's jail instead", async () => {
   const f = fakeRun({ restate: ran(true) });
   assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
-  assert.deepEqual(f.settings(), { sandbox: { enabled: false } });
+  assert.deepEqual(f.settings(), { sandbox: { enabled: false } }); // in the config dir claude reads (HOME/.claude)
+  assert.equal(f.scrub(), "unset", "its env scrub makes Claude Code require a sandbox gVisor can't start");
 });
 
 test("a run whose shell can't run ends at once, never spending the review", async () => {
@@ -253,9 +251,9 @@ test("the shell guard: a known dead shell, or the first commands failing with on
 // The real Claude Code binary (where it is installed: the engineer image, a developer's machine) with the recipe's own settings,
 // against a stub model that asks for one Bash command: the command runs and its output comes back (2026-11-23: inside the box
 // Claude Code's sandbox failed every command with "bwrap: loopback").
-// It runs where claude is installed and bubblewrap can start the recipe's jail (the engineer image under gVisor; not macOS).
-const jailed = (() => { try { execFileSync("sh", ["-c", "command -v claude"]); execFileSync("bwrap", [...claudeJail([tmpdir()]), "true"]); return true; } catch { return false; } })();
-test("a Claude Code run's shell executes a command, in the recipe's jail: read-only but its own directory", { skip: !jailed && "claude or a working bwrap isn't here" }, async () => {
+// It runs where claude is installed (the engineer image under gVisor, a developer's machine).
+const hasClaude = (() => { try { execFileSync("sh", ["-c", "command -v claude"]); return true; } catch { return false; } })();
+test("a Claude Code run's shell executes a command", { skip: !hasClaude && "claude isn't here" }, async () => {
   const { createServer } = await import("node:http");
   const server = createServer((req, res) => {
     let body = "";
@@ -266,7 +264,7 @@ test("a Claude Code run's shell executes a command, in the recipe's jail: read-o
       const result = Array.isArray(last) ? last.find((c: { type?: string }) => c.type === "tool_result") : undefined;
       const block = !j.tools?.length ? { type: "text", text: "ok" }
         : result ? { type: "text", text: `RESULT ${JSON.stringify(result.content)} error=${result.is_error === true}` }
-        : { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: `echo shell-$((6*7)) > out.txt && cat out.txt && touch ${JSON.stringify(join(repo, "planted"))} || echo read-only`, description: "probe" } };
+        : { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: `echo shell-$((6*7)) > out.txt && cat out.txt`, description: "probe" } };
       const stop = block.type === "tool_use" ? "tool_use" : "end_turn";
       const msg = { id: "msg_1", type: "message", role: "assistant", model: j.model, content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } };
       if (!j.stream) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ...msg, content: [block], stop_reason: stop })); return; }
@@ -290,24 +288,9 @@ test("a Claude Code run's shell executes a command, in the recipe's jail: read-o
   try {
     const r = await runEngine("claude-code", { prompt: "run the probe", instructions: "x", model: "m/m", effort: "low", root: repo, base: "HEAD", minutes: 2, scratch: mkdtempSync(join(tmpdir(), "cr-scratch-")) });
     assert.equal(r.cause, undefined);
-    assert.match(r.message, /RESULT .*shell-42.*read-only.* error=false/);
-    assert.equal(existsSync(join(repo, "planted")), false, "the checkout under review is read-only to its shell");
+    assert.match(r.message, /RESULT .*shell-42.* error=false/);
   } finally {
     for (const [k, v] of [["OPENROUTER_BASE_URL", saved.base], ["OPENROUTER_API_KEY", saved.key]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v;
     server.close();
   }
-});
-
-test("the jail: a skill's checkout is writable, its .git and everything else read-only", { skip: !jailed && "claude or a working bwrap isn't here" }, () => {
-  // `out` beside this file, outside the jail's private /tmp (run it from a checkout outside /tmp): visible, so a refused write is the
-  // read-only mount, not a missing directory.
-  const d = mkdtempSync(join(tmpdir(), "cr-jail-")), out = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), ".jail-"));
-  execFileSync("git", ["init", "-q", d]);
-  const sh = (c: string) => { try { execFileSync("bwrap", [...claudeJail([d]), "sh", "-c", c], { stdio: "ignore" }); return true; } catch { return false; } };
-  assert.equal(sh(`touch ${d}/report.md`), true);
-  assert.equal(sh(`echo x >> ${d}/.git/config`), false, "its git config is the recipe's");
-  try {
-    assert.equal(sh(`test -d ${out}`), true, "the rest of the box is visible");
-    assert.equal(sh(`touch ${out}/result.json`), false);
-  } finally { rmSync(out, { recursive: true, force: true }); }
 });
