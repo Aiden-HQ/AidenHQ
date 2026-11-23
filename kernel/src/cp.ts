@@ -230,7 +230,8 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       // Under the projects chain whether named or inherited: the project read is the one the task is filed in.
       const d = await tagged(true, async () => {
         // Its project: the one named, else its parent's, else that of the task the job works on (the delegation chain).
-        const projectId = b.project !== undefined ? await projectNamed(decodeURIComponent(company), b.project) : (parent ?? (await issue(task))).projectId;
+        // Read here, on the chain, so a fill or a move queued before it has landed.
+        const projectId = b.project !== undefined ? await projectNamed(decodeURIComponent(company), b.project) : (await issue(parent?.id ?? task)).projectId;
         if (projectId) child.projectId = projectId;
         // The cap goes on record under the new task's origin (its tag) before the task exists.
         provenance.intend(tag.slice(5, -4), await provenance.carried({ agent, task }));

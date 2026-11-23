@@ -251,10 +251,11 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
   };
   const one: Records["one"] = async (id) => {
     if (!k) return undefined;
-    const res = await fetch(`${k.url}/v1/writes/${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
-    if (res.status === 404) return undefined;
+    // The list route's one-record form: the card as every list shows it (the whole diff under review, the shown state).
+    const res = await fetch(`${k.url}/v1/writes?id=${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
     if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
-    return recordApproval((await res.json()) as KernelRecord);
+    const [r] = ((await res.json()) as { records: KernelRecord[] }).records;
+    return r ? recordApproval(r) : undefined;
   };
   return { list, live, allOf, one, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
 }

@@ -61,6 +61,12 @@ test("moving a repo into a product moves its open and recent tasks, leaves older
   const aidenhq = projects.find((x) => x.name === "AidenHQ").id;
   assert.deepEqual([issues.t1.projectId, issues.t2.projectId, issues.t4.projectId], [aidenhq, aidenhq, distro]);
   assert.ok(!projects.find((x) => x.id === distro).archivedAt);
+  // Taken off the product again, the repo and its open tasks go back to its own project.
+  map.products = { AidenHQ: ["acme/product"] };
+  await p.sync();
+  assert.deepEqual([issues.t1.projectId, issues.t4.projectId], [distro, distro]);
+  map.products = { AidenHQ: ["acme/product", "acme/distro"] };
+  await p.sync();
   issues.t3.projectId = null;
   await p.touch("t3", "acme/distro");
   assert.equal(issues.t3.projectId, aidenhq);
