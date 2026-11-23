@@ -360,8 +360,8 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
 # each wave's saves then happen under a lock hold and its scans after the lock is released (the driver below), so an apply
 # waits only for one wave's saves. Returns 1 when the enumeration itself failed: the caller keeps the previous batch
 # rather than publish a short one.
-plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=(); plan_key=()
-plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}"); plan_key+=("${6:-}"); }
+plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=(); plan_idx=()
+plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}"); plan_idx+=("${6:-0}"); }
 # The units this pass resolved and sized, indexed alike for the wave driver below. The sizes are known before any bytes
 # are written; the driver decides each wave from them, so a later wave never needs to look at the daemon again for size.
 p_key=(); p_pin=(); p_ref=(); p_plat=(); p_bytes=(); p_size=()
@@ -585,7 +585,7 @@ defer_to_next_wave() { # <survey idx> <why>
 # with it. Every archive is written from the reference the survey resolved, re-checked at save time; each failure is a
 # line, never a gap.
 save_wave() { # <wave>
-  local w="$1" idx sz szb key pin ref plat archive top top_gb avail_now written=0 written_big=0
+  local w="$1" idx sz szb key pin ref plat archive top top_gb avail_now why written=0 written_big=0
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   while IFS=$'\t' read -r szb idx; do
     [ -n "$idx" ] || continue
@@ -602,7 +602,6 @@ save_wave() { # <wave>
     # Bytes throughout, and only the line's numbers rounded: rounding a size up here could refuse a save that fits, and
     # the request's sizes come from the daemon in bytes anyway.
     if [ $(( szb + top )) -gt "$avail_now" ]; then
-      local why
       why="$(space_need "$(ceil_gb "$written")" "$sz" "$top_gb" "$(ceil_gb "$avail_now")" $(( (szb + top - avail_now + 1073741823) / 1073741824 )))"
       # This wave's own archives are held in `free` already, so a save that no longer fits may only be waiting on them.
       # Once this wave is scanned those bytes come back: give the image a wave of its own after this one instead of
@@ -618,7 +617,7 @@ save_wave() { # <wave>
     # nothing that moves after this lock is released can change it. The scan only re-opens archives.
     archive="$archives/$((archive_seq += 1)).tar"
     if export_image "$pin" "$ref" "$archive" "$plat"; then
-      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$key"
+      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx"
       written=$(( written + szb )); [ "$szb" -gt "$written_big" ] && written_big="$szb"
     else
       fail "image:$key" "docker save: ${export_err:-failed}"
@@ -636,7 +635,7 @@ save_wave() { # <wave>
 # Its bytes go back before the next target, and the line states the admitted total, its size, the largest archive, the
 # room and the shortfall.
 scan_wave() { # <first plan index>
-  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes idx_of_key
+  local first="$1" i k target archive avail_bytes size_gb remaining_bytes=0 room_bytes sz_bytes largest_bytes
   local floor_bytes=$(( min_free_gb * 1073741824 ))
   local -A bytes_of=() gb_of=()
   local -a pending=()
@@ -692,9 +691,9 @@ scan_wave() { # <first plan index>
         done
         i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$i]}"
         room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
-        idx_of_key=""
-        for kk in "${!p_key[@]}"; do [ "${p_key[$kk]}" = "${plan_key[$i]}" ] && { idx_of_key="$kk"; break; }; done
-        if [ -z "$idx_of_key" ] || ! defer_to_next_wave "$idx_of_key" "$(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"; then
+        # The survey index travels with the archive: two containers on different indexes can share one target name, so
+        # looking the name up would defer (and re-export) the other one and leave this unit never retried.
+        if [ -z "${plan_idx[$i]:-}" ] || ! defer_to_next_wave "${plan_idx[$i]}" "$(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"; then
           fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - drop_bytes )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (drop_bytes - room_now + 1073741823) / 1073741824 )))"
         fi
         rm -f "$archive"; remaining_bytes=$(( remaining_bytes - drop_bytes ))

@@ -97,8 +97,10 @@ fi
 # substitution does not wait on it.
 if [ "$1" = run ] && [ -n "\${FAKE_TAKE_LOCK_ON_HOST_SCAN:-}" ] && [[ "$*" == *"--source-name host"* ]]; then
   marker="\${FAKE_APPLY_LOCK%/*}/late-holder"
+  # Bounded (60s) so an interrupted test cannot leave a holder polling for ever; the test's cleanup removes the marker
+  # as soon as the pass returns.
   ( exec 9>>"$FAKE_APPLY_LOCK"; flock 9; : > "$marker"
-    while [ -f "$marker" ]; do sleep 0.05; done ) >/dev/null 2>&1 </dev/null &
+    for _ in $(seq 1 1200); do [ -f "$marker" ] || break; sleep 0.05; done ) >/dev/null 2>&1 </dev/null &
   for _ in $(seq 1 200); do [ -f "$marker" ] && break; sleep 0.05; done
 fi
 # rm -f clears a container the script named before a run; a name nothing holds is a normal answer, not a failure.
@@ -333,11 +335,23 @@ exit 0
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
+  // A fixture that held the apply lock is released here, whatever the pass returned: a failing assertion must not leave
+  // a background holder behind for the next test. `lateHeld` says whether it ever took the lock.
+  const lockDir = join(dirname(dirname(scriptPath_)), "data");
+  const lateMarker = join(lockDir, "late-holder");
+  const lateHeld = existsSync(lateMarker);
+  if (lateHeld) {
+    rmSync(lateMarker, { force: true });
+    for (let i = 0; i < 100; i++) {
+      try { execFileSync("flock", ["-n", join(lockDir, "apply.lock"), "-c", "true"], { stdio: "ignore" }); break; }
+      catch { await new Promise((r) => setTimeout(r, 20)); }
+    }
+  }
   const batch = join(data, "modules/security/sbom/current/targets.tsv");
   const batchRaw = existsSync(batch) ? readFileSync(batch, "utf8") : null;
   const targets = batchRaw ? batchRaw.split("\n").filter(Boolean).map((l) => l.split("\t")) : [];
   return {
-    ...r, targets, batchRaw, root: dirname(scriptPath_), dir,
+    ...r, targets, batchRaw, root: dirname(scriptPath_), dir, lateHeld,
     locks: existsSync(join(dir, "locks")) ? readFileSync(join(dir, "locks"), "utf8").trim().split("\n").filter(Boolean) : [],
     calls: existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").filter(Boolean) : [],
     workStates: existsSync(join(dir, "clean")) ? readFileSync(join(dir, "clean"), "utf8").trim().split("\n").filter(Boolean) : [],
@@ -934,7 +948,7 @@ test("security-sbom: an apply that takes the lock between waves leaves those ima
   // cannot export. The images it would have carried must be recorded with the reason, never silently dropped.
   const ids = ["sha256:a1", "sha256:a2", "sha256:a3", "sha256:a4", "sha256:a5"];
   const sizes = [6, 7, 8, 9, 10];
-  const { status, out, targets, calls, dir } = await run({ FAKE_FREE_KB: "62914560", FAKE_TAKE_LOCK_ON_HOST_SCAN: "1" }, {
+  const { status, out, targets, calls, lateHeld } = await run({ FAKE_FREE_KB: "62914560", FAKE_TAKE_LOCK_ON_HOST_SCAN: "1" }, {
     containers: ids.map((id, i) => ({ id: `c${i + 1}`, image: id, config: `svc${i + 1}:local`, label: id })),
     tags: Object.fromEntries(ids.map((id, i) => [`svc${i + 1}:local`, id])),
     held: ids,
@@ -942,17 +956,8 @@ test("security-sbom: an apply that takes the lock between waves leaves those ima
   });
   assert.equal(status, 0, out);
   // The fixture held the lock from the host scan through the pass, past the second wave's save attempt, so that wave
-  // could not export. Release the fixture now and wait for it to drop the lock, so a later test never inherits it.
-  const checkout = join(dir, "checkout");
-  for (let i = 0; i < 100 && !existsSync(join(checkout, "data/late-holder")); i++) await new Promise((r) => setTimeout(r, 20));
-  assert.ok(existsSync(join(checkout, "data/late-holder")), "the fixture never took the apply lock");
-  rmSync(join(checkout, "data/late-holder"), { force: true });
-  let released = false;
-  for (let i = 0; i < 100 && !released; i++) {
-    try { execFileSync("flock", ["-n", join(checkout, "data/apply.lock"), "-c", "true"], { stdio: "ignore" }); released = true; }
-    catch { await new Promise((r) => setTimeout(r, 20)); }
-  }
-  assert.ok(released, "the fixture never released the apply lock");
+  // could not export. `run` released it (and waited for it) whatever the pass returned.
+  assert.ok(lateHeld, "the fixture never took the apply lock");
   const rows = targets.filter((t) => t[0].startsWith("image:"));
   assert.equal(rows.length, ids.length, `every running image has a row:\n${rows.map((t) => t.join("\t")).join("\n")}`);
   const scanned = rows.filter((t) => t[1] !== "-");
