@@ -250,11 +250,18 @@ export function startPrWatch(o: PrWatchOptions) {
       const stuck = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED");
       if (!stuck.length) return [];
       const url = pr.url.toLowerCase();
-      let listed: { status: number; body: any };
-      try { listed = await gh("GET", `/repos/${repo}/commits/${pr.headRefOid}/check-runs?filter=all&per_page=100`); }
-      catch (e) { log("wedged check runs' read failed", { pr: pr.url, head: pr.headRefOid, err: String((e as Error).message).slice(0, 200) }); return []; }
-      if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) return [];
-      const runs: Json[] = listed.body.check_runs;
+      // The latest check run of each name, as the rollup carries them: no superseded attempt, and the node id below picks
+      // the very one. A head with more than a page of names is paged until the total is in, so no stuck check is missed.
+      const runs: Json[] = [];
+      try {
+        for (let page = 1; page <= 5; page++) {
+          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${pr.headRefOid}/check-runs?filter=latest&per_page=100&page=${page}`);
+          if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) break;
+          runs.push(...listed.body.check_runs);
+          if (runs.length >= Number(listed.body.total_count ?? 0) || listed.body.check_runs.length < 100) break;
+        }
+      } catch (e) { log("wedged check runs' read failed", { pr: pr.url, head: pr.headRefOid, err: String((e as Error).message).slice(0, 200) }); return []; }
+      if (!runs.length) return [];
       // The REST entry of each stuck check run: the same check run, by the global node id both APIs carry (the numeric ids
       // differ in kind between them, and a name alone would confuse a superseded attempt with the current one).
       const current = stuck.map((n: Json) => {
