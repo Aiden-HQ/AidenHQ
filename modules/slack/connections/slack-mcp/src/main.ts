@@ -32,16 +32,16 @@ const auth = oauth({
   tokenAnswer: slackAnswer,
 });
 
-// Whether the proxy serves a tool on /mcp/read, asked of the proxy itself: its own tools/list there applies its rule
-// (the manifest's read tag *and* the upstream's read-only hint) and connects on demand, so the reaction path answers
-// only where the proxy would. It is asked on every reaction search rather than cached: a sign-in that changed since the
-// last call changes the proxy's answer, and a tool whose admission can't be confirmed now is refused, never served on an
-// old answer.
+// Whether the proxy serves a tool, asked of the proxy itself: its own tools/list applies its rule (the manifest's read
+// tag and the upstream's read-only hint on /mcp/read; the upstream's advertised catalog on /mcp) and connects on demand,
+// so the reaction path answers only where the proxy would. It is asked on every reaction search rather than cached: a
+// sign-in that changed since the last call changes the proxy's answer, and a tool whose admission can't be confirmed now
+// is refused, never served on an old answer.
 const port = Number(process.env.PORT ?? 8082);
-const servedReadTools = async (name: string): Promise<boolean> => {
-  const key = readToken(process.env.MCP_READ_TOKEN_FILE);
+const servedTools = async (readOnly: boolean, name: string): Promise<boolean> => {
+  const key = readOnly ? readToken(process.env.MCP_READ_TOKEN_FILE) : readToken(process.env.MCP_TOKEN_FILE);
   if (!key) return false;
-  const res = await fetch(`http://127.0.0.1:${port}/mcp/read`, {
+  const res = await fetch(`http://127.0.0.1:${port}${readOnly ? "/mcp/read" : "/mcp"}`, {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
@@ -72,7 +72,7 @@ const http = createVendorProxy({
       tokenFile,
       headers: () => auth.headers(),
       authState: () => auth.status().state,
-      servedRead: servedReadTools,
+      served: servedTools,
       serviceKey: readToken(process.env.MCP_TOKEN_FILE),
       readKey: readToken(process.env.MCP_READ_TOKEN_FILE),
       caller,

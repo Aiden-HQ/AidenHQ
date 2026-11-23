@@ -388,10 +388,11 @@ export interface InterceptOptions {
   /** The sign-in's state, as the proxy reads it: a transient refresh failure is not the owner's to fix. */
   authState: () => string;
   /**
-   * Whether the proxy serves `name` on `/mcp/read` (the manifest tag *and* the upstream's read-only hint). Asked of the
-   * proxy itself, so the reaction path can't answer where the proxy would refuse.
+   * Whether the proxy serves `name` on the endpoint the call came to: `/mcp/read`'s manifest tag and the upstream's
+   * read-only hint, or `/mcp`'s upstream catalog. Asked of the proxy itself, so the reaction path can't answer where the
+   * proxy would refuse.
    */
-  servedRead?: (name: string) => Promise<boolean>;
+  served?: (readOnly: boolean, name: string) => Promise<boolean>;
   /** The kernel's bearer on /mcp. */
   serviceKey?: string;
   /** The kernel's read bearer on /mcp/read. */
@@ -436,7 +437,8 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   const plan = planReactionSearch(name, argsOf(message));
   if (plan.kind === "pass") return false;
 
-  // The proxy's own admission, in its order: nothing is answered before the caller is the kernel's.
+  // The proxy's own admission, in its order: nothing is answered before the caller is the kernel's and the tool is one
+  // the proxy itself would serve (on /mcp, the upstream's advertised catalog; on /mcp/read, its read rule).
   if (!readOnly) {
     try {
       await o.caller(req);
@@ -446,6 +448,14 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
       send(res, 200, answer(message.id, reactionError("refused", `Refused: ${reason}.`)));
       return true;
     }
+  }
+  if (o.served && !(await o.served(readOnly, name).catch(() => false))) {
+    // Signed out, the proxy lists nothing: that is a sign-in to fix, not a tool that isn't served.
+    if (o.authState() !== "ok") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
+    const detail = readOnly ? `Tool ${name} is not a read: the read endpoint serves reads only.` : `The reaction set is unknown: Slack doesn't offer ${name}.`;
+    o.log?.({ tool: name }, "refused a tool the proxy would not serve");
+    send(res, 200, answer(message.id, reactionError("refused", detail)));
+    return true;
   }
 
   send(res, 200, answer(message.id, await serveReaction(name, plan, readOnly, o)));
@@ -457,12 +467,6 @@ const argsOf = (m: Record<string, any>): Record<string, unknown> => (m.params?.a
 
 /** One reaction search as a tool result: the set, or the explicit error that says it is unknown. */
 async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "pass" }>, readOnly: boolean, o: InterceptOptions): Promise<CallToolResult> {
-  // /mcp/read serves only what the proxy itself would: the manifest's read tag and the upstream's read-only hint.
-  if (readOnly && o.servedRead && !(await o.servedRead(name).catch(() => false))) {
-    // Signed out, the proxy lists no read tools at all: that is a sign-in to fix, not a tool that isn't a read.
-    if (o.authState() !== "ok") return needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." });
-    return reactionError("refused", `Tool ${name} is not a read: the read endpoint serves reads only.`);
-  }
   if (plan.kind === "unsupported") {
     o.log?.({ tool: name, filter: plan.filter }, "refused a reaction search reactions.list cannot compute");
     return reactionError("unsupported_reaction_filter", `The reaction set is unknown: ${plan.reason}.`, { filter: plan.filter });
