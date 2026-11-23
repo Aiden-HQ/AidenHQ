@@ -720,6 +720,11 @@ test("an owner comment on a done chat reopens it to todo, its agent kept, before
   w.comment("chat", "c2", { authorAgentId: OTHER });
   await w.wakes.event({ issueId: "chat" });
   assert.equal(w.issues.chat.status, "done", "not the owner's word");
+  // A module's tagged comment (a grader's verdict) on a closed task files no wake either: admission would refuse it and the
+  // refusal would reach the owner.
+  w.comment("chat", "c-grader", { authorUserId: "u1", body: "**Graded: done.**\n\n<!-- aidenhq:grader -->" });
+  await w.wakes.event({ issueId: "chat" });
+  assert.ok(!w.rows("chat").some((r) => r.startsWith("comment:c2") || r.startsWith("comment:c-grader")), "no wake for a non-owner comment on a closed task");
   w.issue("chat2", { status: "cancelled", labels: [{ name: "chat" }] });
   await w.wakes.poll();
   w.tick();
