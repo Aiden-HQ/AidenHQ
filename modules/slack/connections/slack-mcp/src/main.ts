@@ -33,10 +33,10 @@ const auth = oauth({
 });
 
 // Whether the proxy serves a tool, asked of the endpoint the call came to so the same rule applies: `/mcp/read` lists
-// only reads (manifest tag and upstream read-only hint), and `/mcp` lists the upstream catalog. The `/mcp` list answers
-// cached stand-ins when the upstream is unreachable, so on `/mcp` a live `/auth/check` (one real upstream list) must also
-// pass: a name from a stand-in list is never admission. Asked on every reaction search rather than cached, since a
-// sign-in or catalog that changed since the last call changes the answer.
+// only reads (manifest tag and upstream read-only hint), and `/mcp` lists the upstream catalog. Both are asked of the
+// proxy itself on every reaction search rather than cached. A name is admission only when the entry is from the live
+// upstream list: the proxy's stand-ins (what it lists while the upstream is unreachable) carry no annotations, while
+// every live entry gets the read/write hints, so a cached stand-in is never taken for live membership.
 const port = Number(process.env.PORT ?? 8082);
 const post = async (path: string, key: string, body: unknown): Promise<Record<string, any> | undefined> => {
   const res = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -52,14 +52,8 @@ const servedTool = async (readOnly: boolean, name: string): Promise<boolean> => 
   if (!key) return false;
   const list = await post(readOnly ? "/mcp/read" : "/mcp", key, { jsonrpc: "2.0", id: 1, method: "tools/list" });
   if (!Array.isArray(list?.result?.tools)) return false; // unconfirmed: refuse
-  if (!list.result.tools.some((t: { name?: unknown }) => String(t?.name ?? "") === name)) return false;
-  if (readOnly) return true; // that list is built from the live upstream: no stand-ins
-  // `/mcp` also answers cached stand-ins while the upstream is down: only a live upstream list makes the name admission.
-  const authKey = readToken(process.env.SLACK_AUTH_TOKEN_FILE);
-  if (!authKey) return false;
-  const res = await fetch(`http://127.0.0.1:${port}/auth/check`, { headers: { authorization: `Bearer ${authKey}` }, signal: AbortSignal.timeout(15_000) }).catch(() => undefined);
-  const check = res?.ok ? ((await res.json().catch(() => undefined)) as { ok?: unknown } | undefined) : undefined;
-  return check?.ok === true;
+  const entry = list.result.tools.find((t: { name?: unknown }) => String(t?.name ?? "") === name) as { annotations?: unknown } | undefined;
+  return Boolean(entry && entry.annotations && typeof entry.annotations === "object");
 };
 
 const http = createVendorProxy({

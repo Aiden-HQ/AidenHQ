@@ -203,9 +203,11 @@ export type ScanResult =
 const NUMBERED_CURSOR = /^aidenhq:page:(\d+)$/;
 const numberedCursor = (page: number): string => `aidenhq:page:${page}`;
 
-// A continuation inside one page: the caller's `limit` was reached part-way through it, so the token names the page to
-// read again (`c` a Slack cursor, `p` a numbered page) and how many of its raw items were already consumed.
-type Position = { c?: string; p?: number; f?: true; skip: number };
+// A continuation: the caller's `limit` was reached, so the token names the page to read again (`c` a Slack cursor, `p` a
+// numbered page, `f` the first page), how many of its raw items were consumed, the upstream page size that must stay the
+// same on resume (a different page size would shift every later page), and the messages already returned (Slack lists a
+// message once per reaction, so the same one can recur on a later page).
+type Position = { c?: string; p?: number; f?: true; skip: number; n: number; seen: string[] };
 const POSITION = "aidenhq:pos:";
 const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
 function decodePosition(value: string): Position | undefined {
@@ -214,12 +216,14 @@ function decodePosition(value: string): Position | undefined {
     const v = JSON.parse(Buffer.from(value.slice(POSITION.length), "base64url").toString("utf8")) as Record<string, unknown>;
     if (!v || typeof v !== "object") return undefined;
     const skip = Number(v.skip);
-    if (!Number.isInteger(skip) || skip < 0) return undefined;
+    const n = Number(v.n);
+    if (!Number.isInteger(skip) || skip < 0 || !Number.isInteger(n) || n <= 0) return undefined;
+    const seen = Array.isArray(v.seen) ? v.seen.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length < 300) : [];
     const c = typeof v.c === "string" && v.c ? v.c : undefined;
     const p = Number.isInteger(v.p) && (v.p as number) > 0 ? (v.p as number) : undefined;
     const f = v.f === true ? true : undefined;
     if (!c && p === undefined && !f) return undefined;
-    return { ...(c ? { c } : {}), ...(p !== undefined ? { p } : {}), ...(f ? { f } : {}), skip };
+    return { ...(c ? { c } : {}), ...(p !== undefined ? { p } : {}), ...(f ? { f } : {}), skip, n, seen };
   } catch {
     return undefined;
   }
@@ -317,12 +321,17 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // only a fresh scan starts at the first page.
   const first = position?.f === true;
   let numbered = position?.p ?? (resumed ? Number(resumed[1]) : first || cursor ? undefined : 1);
+  // The upstream page size is fixed by the first call and carried in every continuation: a later call with a different
+  // `limit` must not resize the pages, since that would shift what every page boundary contains.
+  const pageSize = position?.n ?? plan.limit ?? DEFAULT_LIMIT;
+  // Slack lists a message once per reaction, so it can recur on a later page; the keys already returned ride along.
+  for (const k of position?.seen ?? []) seen.add(k);
   // The caller's `limit` bounds what one answer returns. When it is reached the scan stops and hands back a continuation
   // that resumes exactly where it stopped (mid-page included), so nothing is skipped and `null` still means exhausted.
   const reachedLimit = () => plan.limit !== undefined && messages.length >= plan.limit;
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
-    const r = await get("reactions.list", { full: "true", limit: String(plan.limit ?? DEFAULT_LIMIT), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
+    const r = await get("reactions.list", { full: "true", limit: String(pageSize), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
     if (!r.ok) return r;
     const { json } = r;
     const items: unknown[] = Array.isArray(json.items) ? json.items : [];
@@ -340,7 +349,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       seen.add(key);
       messages.push(message);
       if (reachedLimit()) {
-        const rest = i + 1 < items.length ? { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), skip: i + 1 } : undefined;
+        const rest = i + 1 < items.length ? { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), skip: i + 1, n: pageSize, seen: [...seen] } : undefined;
         if (rest) return { ok: true, messages, nextCursor: encodePosition(rest) };
         break; // this page is done: continue to the cursor below, where the limit check hands the next page back
       }
@@ -350,7 +359,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (next) {
       // A cursor already visited can't advance: the set is incomplete, and handing the same cursor back would loop.
       if (cursors.has(next)) return { ok: false, detail: "reactions.list returned a cursor this scan had already followed" };
-      if (reachedLimit()) return { ok: true, messages, nextCursor: next };
+      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ c: next, skip: 0, n: pageSize, seen: [...seen] }) };
       cursor = next;
       numbered = undefined;
       continue;
@@ -360,7 +369,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (Number.isFinite(pages) && pages > current) {
       if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
       else numbered++;
-      if (reachedLimit()) return { ok: true, messages, nextCursor: numberedCursor(numbered) };
+      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ p: numbered, skip: 0, n: pageSize, seen: [...seen] }) };
       continue;
     }
     return { ok: true, messages, nextCursor: null };

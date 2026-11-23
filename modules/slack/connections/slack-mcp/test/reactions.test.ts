@@ -283,11 +283,11 @@ describe("scanMyReactions", () => {
       page([item("C5", "5.5")]),
     ]);
     const first = await scanMyReactions({ emoji: "pushpin", limit: 2 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(first).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C1" }), expect.objectContaining({ channel: "C2" })], nextCursor: "after-two" });
-    const second = await scanMyReactions({ emoji: "pushpin", limit: 2, cursor: "after-two" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C3" }), expect.objectContaining({ channel: "C4" })], nextCursor: "after-four" });
+    expect(first).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C1" }), expect.objectContaining({ channel: "C2" })], nextCursor: expect.any(String) });
+    const second = await scanMyReactions({ emoji: "pushpin", limit: 2, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C3" }), expect.objectContaining({ channel: "C4" })], nextCursor: expect.any(String) });
     // The last page is reached and the set is exhausted: only then is the cursor null.
-    const third = await scanMyReactions({ emoji: "pushpin", limit: 2, cursor: "after-four" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    const third = await scanMyReactions({ emoji: "pushpin", limit: 2, cursor: (second as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
     expect(third).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C5" })], nextCursor: null });
     expect(calls.filter((c) => c.includes("reactions.list"))).toHaveLength(3);
   });
@@ -308,6 +308,30 @@ describe("scanMyReactions", () => {
     expect(third).toMatchObject({ ok: true, messages: [{ channel: "C3" }] });
     const fourth = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (third as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
     expect(fourth).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C4" })], nextCursor: null });
+  });
+
+  it("does not repeat a message that recurs on a later page, across a continuation", async () => {
+    // C1 carries both reactions, so Slack can list it again on page 2 while the caller pages with limit 1.
+    const { fetchImpl } = fakeSlack([
+      page([item("C1", "1.1")], "page-2"),
+      page([item("C1", "1.1"), item("C2", "2.2")]),
+    ]);
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }] });
+    const second = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C2" })], nextCursor: null });
+  });
+
+  it("keeps the upstream page size from the first call when a continuation asks for a different limit", async () => {
+    const { fetchImpl, calls } = fakeSlack([
+      page([item("C1", "1.1")], "page-2"),
+      page([item("C2", "2.2")]),
+    ]);
+    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
+    await scanMyReactions({ emoji: "pushpin", limit: 10, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    // The continuation's upstream page size stays the first call's 1, even though it asked for 10 results.
+    expect(calls.filter((c) => c.includes("reactions.list")).every((c) => c.includes("limit=1"))).toBe(true);
   });
 
   it("a limit larger than the set still ends at the last page with a null cursor", async () => {
