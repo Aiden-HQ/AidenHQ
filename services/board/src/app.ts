@@ -1119,7 +1119,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           records.allOf("approved", kinds),
           records.allOf("pending", kinds),
         ]);
-        const shown = [...new Map([...recent, ...history, ...running.filter(mine), ...waiting.filter(mine)].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        // The reads run side by side, and one card can be in two of them: the record that ended wins, so an ended card's
+        // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished.
+        const byId = new Map<string, Approval>();
+        for (const a of [...recent, ...history, ...running.filter(mine), ...waiting.filter(mine)]) {
+          const seen = byId.get(a.id);
+          if (!seen || (seen.live && !a.live)) byId.set(a.id, a);
+        }
+        const shown = [...byId.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(mergeView) };
       },
     },

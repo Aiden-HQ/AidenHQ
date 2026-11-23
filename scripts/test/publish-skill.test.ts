@@ -33,7 +33,7 @@ test("a publish never files a merge: the run checks the task's merge card before
   assert.match(publish, /unless the task has several open PRs there, and then the code host wakes the task to merge the one you mean/, "a task with several PRs is woken, not filed for");
   assert.match(publish, /A merge the run files itself sends no Done notice where it runs at Tier 0 \(`wakes: false`\)/, "a self-filed Tier 0 merge has no notice to wait for");
   assert.match(publish, /read its state with `task_approvals`, wait, and read it again/, "a still-running merge is followed up to its end by the run");
-  assert.match(publish, /A card whose head moved is closed and filed again for the current head/, "a moved head is refiled, not waited on as it was");
+  assert.match(publish, /A card merges only the head it names: once the PR's head has moved it cannot land it/, "a card is matched by head, not only by PR");
   assert.match(publish, /A GitHub repo outside the product repo, this instance's agents org and `maintainer_repos` cannot be merged by the fleet/, "a repo the fleet can't merge is reported open, not waited on");
   assert.match(publish, /`codehost-local\.merge` for a repository on this server/, "the kind is named for both code hosts");
   assert.doesNotMatch(publish, /with no merge card the PR is only open/, "the unconditional filing sentence is gone");
