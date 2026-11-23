@@ -53,15 +53,6 @@ describe("functional scenario", () => {
     expect(canonical).toContain("- [ ] Alex — Review the delegated signing proposal");
     expect(canonical).toContain("- [ ] Alice — Send revised architecture diagram (due: Friday)");
 
-    const actionTasks = env.paperclip.byLabel("meeting-action");
-    const waiting = env.paperclip.byLabel("waiting-on");
-    // Only the user's own action becomes a task; Alice's stays in the notes.
-    expect(actionTasks).toHaveLength(1);
-    expect(waiting).toHaveLength(0);
-    expect(actionTasks[0]!.input.description).toContain("## Source");
-    expect(actionTasks[0]!.input.description).toContain("[[Meetings/2026/10/2026-10-04 1400 - OMS Nimbus Integration]]");
-    expect(actionTasks[0]!.input.description).toMatch(/<!-- source:meeting:evt_oms_nimbus_20261004:action:[0-9a-f]{12} -->/);
-
     // Run the exact workflow again.
     const second = await runLibrarian(env);
     expect(second.results).toHaveLength(0);
@@ -70,7 +61,7 @@ describe("functional scenario", () => {
     const noteAgain = readFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), "utf8");
     expect(countOccurrences(noteAgain, "paperclip-meeting:evt_oms_nimbus_20261004")).toBe(1);
     expect(readdirSync(join(env.vault, "Meetings", "2026", "10"))).toHaveLength(1);
-    expect(env.paperclip.issues.size).toBe(1);
+    expect(env.paperclip.issues.size).toBe(0);
     const counts = env.app.db.prepare("SELECT (SELECT COUNT(*) FROM sources) s, (SELECT COUNT(*) FROM meetings) m").get() as { s: number; m: number };
     expect(counts).toEqual({ s: 1, m: 1 });
   });
@@ -121,7 +112,7 @@ describe("manual review scenario", () => {
 });
 
 describe("meetings that were not on the calendar", () => {
-  it("publishes from the user's reply, titled by the Librarian, with the user's actions as tasks", async () => {
+  it("publishes from the user's reply, titled by the Librarian, ", async () => {
     const env = makeEnv({ routing: "routes: []\n" });
     writeAt(join(env.transcripts, "2026-10-04_1501.md"), "[Them] Kinexys...\n", "2026-10-04T15:40:00+02:00");
     env.now.ms = Date.parse("2026-10-04T16:00:00+02:00");
@@ -147,12 +138,11 @@ describe("meetings that were not on the calendar", () => {
     const pub = await env.app.meetings.publish(sourceId, extraction, "none", "Kinexys evidence with JPM");
     expect(pub.status).toBe("processed");
     expect(pub.canonical_note.path).toMatch(/^Meetings\/2026\/10\/2026-10-04 \d{4} - Kinexys evidence with JPM\.md$/);
-    expect(env.paperclip.byLabel("meeting-action").map((t) => t.input.title)).toEqual([expect.stringContaining("transaction evidence report")]);
   });
 });
 
 describe("failure behaviour", () => {
-  it("vault unavailable: meeting kept, tasks created, write retried later", async () => {
+  it("vault unavailable: meeting kept, write retried later", async () => {
     const env = makeEnv();
     writeFileSync(join(env.vault, "Projects", "Open Merchant Stack.md"), OMS_NOTE);
     writeAt(join(env.transcripts, "2026-10-04_1401.md"), TRANSCRIPT);
@@ -160,13 +150,12 @@ describe("failure behaviour", () => {
     renameSync(env.vault, hidden);
     const first = await runLibrarian(env);
     expect(first.results[0]!.status).toBe("obsidian_write_pending");
-    expect(env.paperclip.byLabel("meeting-action")).toHaveLength(1);
 
     renameSync(hidden, env.vault);
     const second = await runLibrarian(env);
     expect(second.results[0]!.status).toBe("processed");
     expect(existsSync(join(env.vault, "Meetings/2026/10/2026-10-04 1400 - OMS Nimbus Integration.md"))).toBe(true);
-    expect(env.paperclip.issues.size).toBe(1);
+    expect(env.paperclip.issues.size).toBe(0);
   });
 
 });

@@ -1,12 +1,7 @@
 {
-  "why": "Intake = Slack Scout + Slack Triage + Email Triage (phase 5 task 5.1). Old: each predecessor's handbook at the commit before the merge, with the instance rules it ran with. New: the Intake mission plus the routine's skill.",
+  "why": "Intake = Slack Triage + Email Triage (phase 5 task 5.1). Old: each predecessor's handbook at the commit before the merge, with the instance rules it ran with. New: the Intake mission plus the routine's skill.",
   "writes": ["task_create", "task_update", "task_comment", "task_cancel (say `issue: <id>` in text when it cancels a task other than the run's)", "notify (the old handbooks call it notify_owner)", "task_finish (say `issue: <id>` in text when it closes a task other than the run's)"],
   "routines": {
-    "slack-scan": {
-      "old": { "ref": "f374f660525f1e178992da3898ec587cbf0b9204", "handbook": "open-loops/agents/slack-scout/AGENTS.md",
-        "extra": "## Pinned messages\n\nSlack search does not reliably honour `hasmy:`/`has:` emoji-reaction filters: it can return an empty or unfiltered page, with no error, for a reaction that exists. Treat a pinned search as evidence of no pins only when it is complete and agrees with the threads. If the pinned search returns no results, or omits a message whose thread still shows the user's emoji, treat the pinned set as unknown: do not conclude there are no pins, skip the unpin-close step, and report `pinned: unavailable` with what failed. Never report `pinned: 0` from such a search, and close a pinned task only after `slack_read_thread` shows the emoji is gone from the message." },
-      "new": { "handbook": "open-loops/agents/inbox-agent/AGENTS.md", "skills": ["open-loops/skills/scan-slack"] }
-    },
     "slack-triage": {
       "old": { "ref": "f374f660525f1e178992da3898ec587cbf0b9204", "handbook": "open-loops/agents/slack-triage/AGENTS.md",
         "extra": "- `labels`: exactly one of `needs-response` or `waiting-on` on every task you create; the Follow-up Tracker only lists `waiting-on`, so an unlabelled waiting-on task is never tracked.\n- **No minimum message age.** A new Slack event is triaged on the scan that sees it, with no minimum message age: a message seconds old is judged like any other. Never skip an event, or wait, because it is recent." },

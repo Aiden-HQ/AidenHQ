@@ -1,22 +1,24 @@
 name: open-loops
-description: "Tracks what others owe you (waiting-on loops) and turns Slack and labelled email into your tasks (Intake)."
+description: "Tracks what others owe you (waiting-on loops) and turns Slack, labelled email, Primer comments and meeting action items into your tasks (Intake)."
 requires:
   - slack
   - google
 agents:
   inbox-agent:
-    skills: [ open-loops.scan-slack, open-loops.triage-email, open-loops.triage-slack, tasks.delegate-work ]
-    # Intake: the Slack scan, the live Slack triage and the inbox scan, one routine and one skill each (design §4.5).
+    skills: [ meetings.meeting-actions, open-loops.triage-email, open-loops.triage-slack, primer.primer-digest, tasks.delegate-work ]
+    # Intake: everything that comes in for the owner (live Slack, labelled email, the Primer digest, meeting action items), one routine and one skill each (design §4.5).
     department: intake
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
     timeout_sec: 1200
-    # A live triage batch never waits behind a half-hour scan.
+    # A live triage batch never waits behind an inbox scan.
     max_parallel: 3
     web_search: disabled
     connections:
       # No web: it reads untrusted email/Slack, so no outbound fetch (owner, 2026-11-11). app_view only.
-      apps: [ app_view ]
+      apps: [ app_view, source_new, source_ack ]
+      # The digest of what others did on the owner's Primer documents (the primer-digest routine).
+      primer?: [ primer_get_digest ]
       # Reads only.
       slack: read
       # The owner's Slack user id, for the live events it triages (the slack-triage routine) and the Slack DM page for an urgent one (slack, when installed).
@@ -40,17 +42,6 @@ agents:
       owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_block, task_cancel, task_join, task_team, task_delegate, task_amend_rubric, task_finish ]
 routines:
-  slack-scan:
-    title: Slack scan
-    agent: inbox-agent
-    description: |
-      Today is {{date}}, now {{timestamp}}. Your Slack user ID is what slack_owner returns. Your task emoji is :pushpin:. Follow your
-      scan-slack skill: find Slack messages that need the user and the messages they pinned with
-      their task emoji, create or update tasks (deduplicated), mark tasks the user has
-      answered or unpinned as answered (a comment, left open for them), then finish this task with a count summary.
-    concurrency: skip_if_active
-    schedules:
-      - { cron: "*/30 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
   open-loops-sweep:
     title: Open loops sweep
     agent: open-loops
@@ -75,10 +66,10 @@ routines:
     title: Slack triage
     agent: inbox-agent
     description: |
-      Today is {{date}}. The user's Slack user ID is what slack_owner returns.
+      Today is {{date}}. The user's Slack user ID is what slack_owner returns. Your task emoji is :pushpin:.
       Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an alert (notify, kind alert); you never post
       to Slack. Then close this task with one line saying what you did.
-    event: { connection: slack, resource: "*", filter: { kind: [message, app_mention], bot: false } } # the kernel's event router fires it once a minute at most
+    event: { connection: slack, resource: "*", filter: { kind: [message, app_mention, reaction_added, reaction_removed], bot: false } } # the kernel's event router fires it once a minute at most
 labels:
   - { name: waiting-on, color: "#7c3aed" }
   - { name: email, color: "#ea580c" }

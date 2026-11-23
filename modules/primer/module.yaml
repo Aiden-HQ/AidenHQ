@@ -2,6 +2,7 @@ name: primer
 description: "Primer: read, and publish documents when asked."
 requires:
   - board # its sign-in
+  - open-loops # Intake sends the digest and files asks of the owner
 # Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
 contributes:
   board.signins:
@@ -76,7 +77,7 @@ connections:
 routines:
   primer-digest:
     title: Primer digest
-    agent: assistant
+    agent: inbox-agent
     description: |
       Today is {{date}}. Follow your primer-digest skill: read Primer's digest of the last day and, when there is
       something in it, send the owner one notify (kind digest). Then close this task with one line.

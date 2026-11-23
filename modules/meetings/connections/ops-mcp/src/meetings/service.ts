@@ -64,7 +64,6 @@ interface PublishResult {
   canonical_note: { path: string; state: "created" | "updated" | "unchanged" | "kept_user_edits" | "pending" };
   targets: { path: string; method: string; state: string }[];
   review_tasks: TaskOutcome[];
-  action_tasks: TaskOutcome[];
   status: string;
   transcript?: { file?: string; audio_deleted?: boolean };
 }
@@ -651,7 +650,6 @@ export class MeetingService {
       canonical_note: { path: "", state: "pending" },
       targets: [],
       review_tasks: [],
-      action_tasks: [],
       status: "processed",
     };
 
@@ -705,15 +703,10 @@ export class MeetingService {
       }
     }
 
-    // 3. Action items → Paperclip tasks (also when the vault is unavailable).
-    // Every action stays in the notes; only the user's own become tasks (by default).
-    for (const a of extraction.actions) {
-      if (this.wantsTask(a.owner)) result.action_tasks.push(await this.actionTask(meeting, notePath, s, a));
-    }
-
+    // Every action stays in the notes and in src_meetings.meetings; Intake files the owner's own as tasks (open-loops, meeting-actions).
     this.sources.setStatus(s.id, result.status === "processed" ? "processed" : "obsidian_write_pending", result.status === "processed" ? undefined : "vault unavailable");
     if (result.status === "processed") result.transcript = this.finishOrganizing(s.id);
-    this.finishRun(runId, "ok", { note: result.canonical_note, targets: result.targets, tasks: result.action_tasks.length });
+    this.finishRun(runId, "ok", { note: result.canonical_note, targets: result.targets });
     this.log.info(
       {
         run_id: runId,
@@ -722,7 +715,6 @@ export class MeetingService {
         event_id: meeting.calendar_event_id,
         obsidian_path: result.canonical_note.path,
         routing: result.targets,
-        task_ids: result.action_tasks.map((t) => t.issue_id),
         status: result.status,
       },
       "meeting published",
@@ -946,52 +938,6 @@ export class MeetingService {
       },
       { meeting_id: meeting.id },
     );
-  }
-
-  private async actionTask(meeting: MeetingRow, notePath: string, s: SourceRow, a: Extraction["actions"][number]): Promise<TaskOutcome> {
-    const owner = a.owner?.trim() || null;
-    const isMine = owner === null || this.cfg.self.names.some((n) => owner.toLowerCase().includes(n.toLowerCase()));
-    const marker = `meeting:${meeting.calendar_event_id}:action:${shortHash(`${(owner ?? "").toLowerCase()}|${a.action.toLowerCase().replace(/\s+/g, " ").trim()}`)}`;
-    const p = localParts(Date.parse(meeting.start_at), this.cfg.timezone);
-    const md = this.sources.metadata(s);
-    const labels = [isMine ? this.cfg.paperclip.labels.meeting_action : "waiting-on"];
-    return this.tasks.upsert(
-      marker,
-      "action",
-      {
-        title: isMine ? inline(a.action) : `${inline(owner!)}: ${inline(a.action)}`,
-        provenance: [
-          { label: "Type", value: "Meeting" },
-          { label: "Meeting", value: `${inline(meeting.title)} — ${p.date} ${p.time}` },
-          { label: "Calendar event", value: meeting.calendar_event_id },
-          { label: "Note", value: `[[${wikiTarget(notePath)}]]` },
-          { label: "Source", value: md.filename ?? s.external_id },
-        ],
-        reason: isMine
-          ? owner
-            ? `Action item assigned to ${inline(owner)} in the meeting.`
-            : "Action item from the meeting with no clear owner."
-          : `Action item owned by ${inline(owner!)}; tracked as waiting-on.`,
-        suggested_action: `${inline(a.action)}${a.deadline ? ` (due: ${inline(a.deadline)}, as stated in the meeting)` : ""}`,
-        extra_sections: a.source_quote ? [{ heading: "Quote", body: `> ${inline(a.source_quote)}` }] : [],
-        labels,
-        assignee_agent_id: this.cfg.paperclip.action_assignee_agent_id,
-      },
-      { meeting_id: meeting.id },
-    );
-  }
-
-  private isMine(owner: string | null): boolean {
-    if (!owner) return false;
-    const o = owner.toLowerCase();
-    return this.cfg.self.names.some((n) => new RegExp(`(^|[^a-z])${escapeRegExp(n.toLowerCase())}([^a-z]|$)`).test(o));
-  }
-
-  private wantsTask(owner: string | null): boolean {
-    const policy = this.cfg.paperclip.meeting_action_tasks;
-    if (this.isMine(owner)) return true;
-    if (!owner?.trim()) return policy !== "mine";
-    return policy === "all";
   }
 
   private matchReviewMarker(s: SourceRow): string {
