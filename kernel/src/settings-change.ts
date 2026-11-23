@@ -69,8 +69,8 @@ export function withDecision(profile: string, decision: string, replaces?: strin
   const entry = `- ${decision.trim().replace(/^-\s+/, "")}`;
   const done = () => {
     const out = `${lines.join("\n")}\n`;
-    // Compile cuts the profile at MEMORY_MAX bytes: a decision past it would be recorded where no agent reads it.
-    if (Buffer.byteLength(out) > MEMORY_MAX) refuse(`profile: with this decision the profile is over ${MEMORY_MAX} bytes, past what agents read: shorten it first (the whole \`text\`)`);
+    // Compile cuts the profile (trimmed) at MEMORY_MAX bytes: a decision past it would be recorded where no agent reads it.
+    if (Buffer.byteLength(out.trim()) > MEMORY_MAX) refuse(`profile: with this decision the profile is over ${MEMORY_MAX} bytes, past what agents read: shorten it first (the whole \`text\`)`);
     return out;
   };
   let head = lines.findIndex((l) => /^#{1,6}\s+Owner decisions\s*$/i.test(l));

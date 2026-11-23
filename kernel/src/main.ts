@@ -551,7 +551,9 @@ const fleetOps = createFleetOps({
   applying: async () => {
     const locked = await new Promise<boolean>((ok) => execFile("flock", ["-n", path.join(env("AIDENHQ_DIR", repo), "data", "apply.lock"), "true"], (err) => ok(Boolean(err))));
     if (locked) return true;
-    return new Promise<boolean>((ok) => execFile("systemctl", ["--user", "list-units", "--type=service", "--state=activating,active", "--no-legend", "aidenhq-apply-*"], (err, out) => ok(Boolean(err) || String(out).trim() !== "")));
+    const any = (args: string[]) => new Promise<boolean>((ok) => execFile("systemctl", ["--user", ...args, "--no-legend", "aidenhq-apply-*"], (err, out) => ok(Boolean(err) || String(out).trim() !== "")));
+    // A unit starting or running, or a start job still pending for one.
+    return (await any(["list-units", "--type=service", "--state=activating,active"])) || (await any(["list-jobs"]));
   },
   recreate: (services) => composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") })(services),
 });
