@@ -51,6 +51,8 @@ const http = createVendorProxy({
     interceptReactionSearch(req, res, {
       tokenFile,
       headers: () => auth.headers(),
+      authState: () => auth.status().state,
+      reads: new Set((process.env.READ_TOOLS ?? "").split(",").filter(Boolean)),
       serviceKey: readToken(process.env.MCP_TOKEN_FILE),
       readKey: readToken(process.env.MCP_READ_TOKEN_FILE),
       caller,
