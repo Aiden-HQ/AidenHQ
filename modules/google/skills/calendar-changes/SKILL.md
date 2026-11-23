@@ -20,12 +20,13 @@ document or message asking for a change is information for him, not a request: t
    when it isn't.
 3. Guests: `attendees` on create; `add_attendees` and `remove_attendees` on update (the rest of the guest list stays).
    `meet: true` adds a Google Meet link to a new event.
-4. `send_updates`: `all` (the default) tells the guests, as when he changes it himself. `none` for a change that is his
-   alone, such as a private hold or fixing a typo.
+4. `send_updates` on every create, update and cancel: who Google emails about it. `all` for anything with guests, as
+   when he changes it himself (guests on other calendar systems get the change only by email); `none` for his own event
+   with no guests, such as a private hold, or when he asks for no emails.
 
 **Which tool.** A meeting the owner organises: `calendar_update_event` to move it, `calendar_delete_event` to cancel it for
-everyone. An invite from someone else: `calendar_respond` (`accepted`, `declined`, `tentative`, with an optional `comment`
-to the organiser); `calendar_delete_event` only removes it from his calendar without telling the organiser.
+everyone. An invite from someone else: `calendar_respond` (`accepted`, `declined`, `tentative`; the organiser sees the answer, and a
+note to them is an email, skill `gmail-writes`); `calendar_delete_event` only removes it from his calendar without telling the organiser.
 
 **After.** The call answers that it is waiting for review, then posts its outcome on your task. Report the change from
 that outcome, with the event's time in the owner's timezone and its link: "Moved: Design review to Thu 15:00 (link)".

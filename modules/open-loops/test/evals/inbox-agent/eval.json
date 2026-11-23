@@ -1,6 +1,6 @@
 {
   "why": "Intake = Slack Triage + Email Triage (phase 5 task 5.1). Old: each predecessor's handbook at the commit before the merge, with the instance rules it ran with. New: the Intake mission plus the routine's skill.",
-  "writes": ["task_create", "task_update", "task_comment", "task_cancel (say `issue: <id>` in text when it cancels a task other than the run's)", "notify (the old handbooks call it notify_owner)", "task_finish (say `issue: <id>` in text when it closes a task other than the run's)"],
+  "writes": ["task_create", "task_update", "task_comment", "task_cancel (say `issue: <id>` in text when it cancels a task other than the run's)", "notify (the old handbooks call it notify_owner)", "gmail_label", "task_finish (say `issue: <id>` in text when it closes a task other than the run's)"],
   "routines": {
     "slack-triage": {
       "old": { "ref": "f374f660525f1e178992da3898ec587cbf0b9204", "handbook": "open-loops/agents/slack-triage/AGENTS.md",

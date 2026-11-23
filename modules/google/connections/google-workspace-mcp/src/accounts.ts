@@ -299,8 +299,8 @@ export class MultiWorkspace {
     return this.write(account, WRITE_SCOPE.calendar, (w) => w.deleteEvent(id, sendUpdates));
   }
 
-  respondToEvent(id: string, response: "accepted" | "declined" | "tentative", comment?: string, account?: string) {
-    return this.write(account, WRITE_SCOPE.calendar, (w) => w.respondToEvent(id, response, comment));
+  respondToEvent(id: string, response: "accepted" | "declined" | "tentative", account?: string) {
+    return this.write(account, WRITE_SCOPE.calendar, (w) => w.respondToEvent(id, response));
   }
 
   async gmailDraft(m: MailInput, account?: string) {

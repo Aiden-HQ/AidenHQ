@@ -217,11 +217,11 @@ export class Workspace {
   }
 
   /** The owner's own answer to an invite: only his attendee entry changes. */
-  async respondToEvent(id: string, response: "accepted" | "declined" | "tentative", comment?: string): Promise<NormalizedEvent> {
+  async respondToEvent(id: string, response: "accepted" | "declined" | "tentative"): Promise<NormalizedEvent> {
     const self = ((await this.rawEvent(id)).attendees ?? []).find((a) => a.self);
     if (!self) throw new Error("you aren't an attendee of this event (an event you organise needs no answer)");
     // Only the owner's own entry, marked as a partial list, so no other guest is touched.
-    const mine = { ...self, responseStatus: response, ...(comment !== undefined ? { comment } : {}) };
+    const mine = { ...self, responseStatus: response };
     return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), {}, { attendees: [mine], attendeesOmitted: true }));
   }
 
@@ -362,7 +362,11 @@ export class Workspace {
       const id = header(last, "Message-ID");
       reply = { inReplyTo: id, references: [header(last, "References"), id].filter(Boolean).join(" ") || undefined, subject: header(last, "Subject") };
     }
-    const subject = m.subject ?? (reply.subject !== undefined ? (/^re:/i.test(reply.subject) ? reply.subject : `Re: ${reply.subject}`) : undefined);
+    // Gmail keeps a reply in its thread only when the subject matches, so a reply always takes the thread's own.
+    if (m.thread_id && m.subject !== undefined) throw new Error("a reply keeps the thread's subject: leave subject out (or start a new message without thread_id)");
+    // A thread whose last message has no subject has nothing to match: refused rather than sent outside the thread.
+    if (m.thread_id && !reply.subject) throw new Error(`thread ${m.thread_id}'s last message has no subject, so a reply can't be kept in it: send a new message instead`);
+    const subject = m.thread_id ? (/^re:/i.test(reply.subject!) ? reply.subject! : `Re: ${reply.subject}`) : m.subject;
     if (subject === undefined) throw new Error("a new message needs a subject");
     return { raw: mimeMessage({ to: m.to, cc: m.cc, bcc: m.bcc, subject, body: m.body, inReplyTo: reply.inReplyTo, references: reply.references }), ...(m.thread_id ? { threadId: m.thread_id } : {}) };
   }

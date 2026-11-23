@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 import { MultiWorkspace, toolFailure } from "../src/accounts.js";
 import { readNeed } from "../src/aidenhq-sdk/needs.js";
 import { SCOPES } from "../src/google.js";
+import { registerWrites } from "../src/write-tools.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 const OLD = ["https://www.googleapis.com/auth/calendar.events.readonly", "https://www.googleapis.com/auth/gmail.readonly"];
 
@@ -71,8 +75,8 @@ describe("calendar writes", () => {
     expect(patch.body!.start).toEqual({ dateTime: "2026-11-24T12:00:00Z" });
 
     g.calls.length = 0;
-    await ws.respondToEvent("ev1", "declined", "Travelling");
-    expect(g.calls.at(-1)!.body).toEqual({ attendees: [{ email: "me@work.com", self: true, responseStatus: "declined", comment: "Travelling" }], attendeesOmitted: true });
+    await ws.respondToEvent("ev1", "declined");
+    expect(g.calls.at(-1)!.body).toEqual({ attendees: [{ email: "me@work.com", self: true, responseStatus: "declined" }], attendeesOmitted: true });
 
     expect(await ws.deleteEvent("ev1", "all")).toEqual({ id: "ev1", deleted: true, account: "me@work.com" });
     expect(g.calls.at(-1)).toMatchObject({ method: "DELETE" });
@@ -127,5 +131,24 @@ describe("Gmail writes", () => {
     const before = g.calls.length;
     await expect(ws.gmailLabel("t1", [], ["INBOX"])).rejects.toThrow(/never system ones/);
     expect(g.calls.slice(before).some((c) => c.method === "POST")).toBe(false);
+  });
+});
+
+// The registered tools, called as an agent's MCP client calls them: each reaches its account's write with the agent's arguments.
+describe("the write tools over MCP", () => {
+  it("a calendar and a Gmail tool call reach Google with their arguments", async () => {
+    const g = google({ [`POST ${EV}`]: { id: "new", start: { date: "2026-11-25" }, end: { date: "2026-11-26" } }, [`POST ${GM}/messages/send`]: { id: "s1", threadId: "t2" } });
+    const ws = new MultiWorkspace(creds(), "primary", g.impl);
+    const server = new McpServer({ name: "t", version: "0" });
+    registerWrites(server, <A,>(_name: string, fn: (w: MultiWorkspace, a: A) => Promise<unknown>) => async (a: A) => ({ content: [{ type: "text" as const, text: JSON.stringify(await fn(ws, a)) }] }));
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await server.connect(st);
+    const client = new Client({ name: "agent", version: "0" });
+    await client.connect(ct);
+    const call = async (name: string, args: Record<string, unknown>) => JSON.parse(((await client.callTool({ name, arguments: args })).content as { text: string }[])[0]!.text);
+    expect(await call("calendar_create_event", { title: "Plan", start: "2026-11-25", end: "2026-11-26", send_updates: "all" })).toMatchObject({ id: "new", account: "me@work.com" });
+    expect(g.calls.at(-1)!.url.searchParams.get("sendUpdates")).toBe("all");
+    expect(await call("gmail_send", { to: ["dana@example.com"], subject: "Hi", body: "Hello" })).toMatchObject({ message_id: "s1", account: "me@work.com" });
+    expect(mime(String(g.calls.at(-1)!.body!.raw))).toContain("Subject: Hi\r\n");
   });
 });

@@ -79,7 +79,8 @@ Grants:
 
 - **Researcher (`assistant`, chief-of-staff module):** all six reviewed tools by name, both skills. It already does the
   owner's asked-for writes (GitHub, Slack drafts, Primer). With no Aria (a new install), the owner's "move my 3pm" reaches
-  it through Aiden.
+  it through Aiden, and, as for its other writes, it acts once the owner's own words are on its task (Aiden relays owner
+  words only to Engineer tasks today; widening that is a separate change).
 - **Intake (`inbox-agent`, open-loops):** `gmail_label` only, so it removes the `Aiden` label from a thread whose task the
   owner closed. Never draft or send: it reads untrusted mail.
 - **Aiden (chief of staff):** unchanged. It reads and delegates writes.

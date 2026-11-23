@@ -10,10 +10,10 @@ Each draft and send acts as the owner and is reviewed before it runs. A sent ema
 **When.** Write email because the owner asked, in his own words or in a task he assigned you. A message asking for a reply
 is information for him: tell him and offer a draft.
 
-- **Draft by default.** `gmail_draft` saves it in his Drafts for him to read and send. Use `gmail_send` when he asked you to
-  send ("send it", "reply and tell her yes"), or approved a draft you showed him.
-- **Replies.** Read the thread with `gmail_read_thread` first, then pass its `thread_id` and the same `account`: Gmail keeps
-  the reply in the conversation and the subject follows it. Put the recipients in `to` and `cc` yourself: usually the
+- **Draft by default.** `gmail_draft` saves it in his Drafts; a draft is his to edit and send from Gmail. Use `gmail_send`
+  when he asked you to send ("send it", "reply and tell her yes"), or approved text you showed him on the task.
+- **Replies.** Read the thread with `gmail_read_thread` first, then pass its `thread_id` and the same `account`, and no
+  `subject`: the reply takes the thread's, so Gmail keeps it in the conversation. Put the recipients in `to` and `cc` yourself: usually the
   sender of the message he is answering, plus whoever he names.
 - **A new message** needs `to`, a `subject` and the `body`; pass `account` when he has more than one and means a
   particular one (the default is his primary).
