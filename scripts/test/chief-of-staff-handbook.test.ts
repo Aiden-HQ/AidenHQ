@@ -32,7 +32,8 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
 
 test("each task the reply run holds has its own close path", () => {
   const bullet = block(read("modules/chief-of-staff/skills/task-replies/SKILL.md"), /\*\*Done or not needed:\*\*/);
-  assert.match(bullet, /A task this run holds closes on its own: `task_finish` for the run's own task, `task_handoff` for its part of the owner's task, and a child of one of its tasks takes `task_comment` and stays open/, "the run's own task is finished, its owner part handed off, a child commented (task-scope.ts scopeOf)");
+  assert.match(bullet, /A task assigned to this agent finishes with `task_finish`; its part of the owner's task goes back with `task_handoff`; a child of one of its tasks takes `task_comment` and stays open/, "an assigned task is finished, an owner part handed off, a child commented (task-scope.ts scopeOf)");
+  assert.match(bullet, /Finishing the run task itself is step 4's, after every reply/, "the run task is finished once, after every reply");
 });
 
 test("the daily brief's \"Still open\" close path does not `task_finish` an owner-held task", () => {
