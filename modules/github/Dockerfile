@@ -22,7 +22,10 @@ FROM debian:sid-slim@sha256:07a3205e8583fdff12d2b05bd030f50437e9fd340ee616df0c05
 COPY --from=node /usr/local /usr/local
 RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --create-home --shell /bin/bash node
 ENV NODE_ENV=production
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+      libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 \
+      && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libkrb5-3)" ge 1.22.3-1 \
+      && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/connections/github-mcp/node_modules ./connections/github-mcp/node_modules
 COPY --from=build /app/connections/github-mcp/dist ./connections/github-mcp/dist
