@@ -65,6 +65,7 @@
     "fork",
     "superseded",
     "stopped",
+    "push_cap",
     "unchanged",
     "ignored",
     "no_access",

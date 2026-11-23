@@ -58,7 +58,7 @@ const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 
 /** One review run's engine, model and effort (JSON from the spec, with the repo's ignore globs and max_nits). */
 export interface Combo {
-  engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean; recheck_only?: boolean;
+  engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean;
   /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skill` (see resolveSkill). */
   harness?: string; skill?: string;
 }

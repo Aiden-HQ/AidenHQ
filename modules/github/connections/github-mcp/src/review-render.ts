@@ -64,13 +64,14 @@ export const PostArgsSchema = z.object({
 export type PostArgs = z.infer<typeof PostArgsSchema>;
 
 /** The commands people on the PR may write (a comment whose first word is `aiden`); never with an `@`, which would ping a user. */
-export const COMMANDS = "`aiden review` (again) · `aiden review full` · `aiden recheck` (check the earlier findings again) · `aiden review always` / `stop` · `aiden review focus: <text>` · `aiden review status` / `help`";
+export const COMMANDS = "`aiden review` (again) · `aiden review full` · `aiden review always` / `stop` · `aiden review focus: <text>` · `aiden review status` / `help`";
 /** Why a review didn't run: a fixed vocabulary, so a notice carries no text a model or an author wrote. */
 export const SKIP_REASONS = {
   draft: "this is a draft pull request",
   fork: "this pull request comes from a fork; a maintainer asks for a review with `aiden review`",
   superseded: "a newer commit arrived",
   stopped: "reviews are stopped on this pull request (`aiden review always` starts them again)",
+  push_cap: "this repository reviews a set number of pushes per pull request and that number is reached; a maintainer asks for another review with `aiden review`",
   unchanged: "nothing changed since the last review",
   ignored: "every changed file is ignored by this repository's review settings",
   no_access: "the pull request can't be read",

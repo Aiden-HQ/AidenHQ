@@ -18,7 +18,7 @@
 // already reported (a finding that restates one is dropped, never reported twice) and rechecked: `fixed` lists the ids a recheck
 // that read the head found gone. A gating one (an important finding a mandatory review made) is always rechecked, full reviews
 // and force-pushes included; any other only where the change since the last reviewed head touched its lines (or removed its
-// file). Never one merely absent from this run, one found again, or, on a full review, anything when the change holds text addressed to a reviewer (a claim recheck always asks). Everything the repo wrote (code, guidance, the focus a commenter typed) is data, fenced,
+// file). Never one merely absent from this run, one found again, or, on a full review, anything when the change holds text addressed to a reviewer. Everything the repo wrote (code, guidance, the focus a commenter typed) is data, fenced,
 // never instructions; guidance grants no authority. Partial coverage is said (`coverage.incomplete`), never shown as clean.
 // Tree target (spec.target "tree", the one-off whole-repo review): the merge base is the empty tree, so the "change" is every
 // file at the head, in one pass, with no previous findings and no guidance (there is no trusted base to read it from). The files
@@ -66,7 +66,7 @@ interface Result {
   coverage: { eligible?: string[]; reviewed: string[]; excluded: string[]; incomplete: string | null; counts?: { eligible: number; reviewed: number } };
   /** Files the engine set the repo up with (deepsec): path to text, the allowlisted ones only. */
   setup?: Record<string, string>;
-  findings: Placed[]; fixed: string[]; unsafe?: Unsafe[]; cleared?: string[]; still?: string[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
+  findings: Placed[]; fixed: string[]; unsafe?: Unsafe[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
   /** Important findings the engine gave without a failure scenario, made nits by code (never posted: the run's record). */
   downgraded: number;
   /** A note on coverage that isn't a gap (an engine that doesn't report what it read); never posted, never incomplete. */
@@ -345,8 +345,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
     const ask = previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
     const unsafe: Unsafe[] = [];
-    const named = new Set<string>(), cleared: string[] = [], still: string[] = [], omitted: string[] = [], unread: string[] = [], failed: string[] = [];
-    let answered = false;
+    const named = new Set<string>(), fixed: string[] = [], omitted: string[] = [], unread: string[] = [], failed: string[] = [];
     // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
     const by = asker(combo);
     const rel = (p: string) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p).replace(/^\.\//, "");
@@ -360,7 +359,6 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         failed.push(...chunk.map((f) => f.id));
         return void gaps.push(`the recheck of ${chunk.length} earlier finding${chunk.length > 1 ? "s" : ""} didn't finish (${v.cause ?? "no usable answer"}), so ${chunk.length > 1 ? "they stay" : "it stays"} as ${chunk.length > 1 ? "they were" : "it was"}`);
       }
-      answered = true;
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
       const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
       const searched = (v.calls ?? []).some((c) => c.tool === "search");
@@ -369,9 +367,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       for (const f of chunk) {
         if (f.claim) continue;
         if (!gone.has(f.id) && !j.fixed.includes(f.id)) omitted.push(f.id);
-        else if (gone.has(f.id) && seen(f)) still.push(f.id);
-        else if (!gone.has(f.id) && seen(f)) cleared.push(f.id);
-        else unread.push(f.id);
+        else if (!seen(f)) unread.push(f.id);
+        else if (!gone.has(f.id)) fixed.push(f.id);
       }
       // An unsafe entry needs a reason: a bare id, null or an entry without a why is silence, and the finding stays closed.
       const claims = new Map(chunk.filter((f) => f.claim).map((f) => [f.id, f]));
@@ -393,27 +390,15 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     if (omitted.length) gaps.push(`the recheck left ${omitted.length} earlier finding${omitted.length > 1 ? "s" : ""} unanswered, so ${omitted.length > 1 ? "they stay" : "it stays"} as ${omitted.length > 1 ? "they were" : "it was"}`);
     if (unread.length) gaps.push(`the recheck gave a verdict on ${unread.length} earlier finding${unread.length > 1 ? "s" : ""} without opening ${unread.length > 1 ? "their files" : "its file"}, so ${unread.length > 1 ? "they stay" : "it stays"} as ${unread.length > 1 ? "they were" : "it was"}`);
     // A post resolves at most 100 threads (review-post.ts RESOLVE_MAX): the rest stay open for the next recheck, and it says so.
-    if (cleared.length > 100) { gaps.push(`${cleared.length - 100} more earlier findings are fixed; the next recheck confirms them`); cleared.length = 100; }
+    if (fixed.length > 100) { gaps.push(`${fixed.length - 100} more earlier findings are fixed; the next recheck confirms them`); fixed.length = 100; }
     if (failed.length + omitted.length + unread.length) gaps.push(`ids left as they were: ${ids([...failed, ...omitted, ...unread])}`);
-    // The ones it looked at and cleared are fixed; the ones it called still there are shown to the agent who claimed them fixed.
-    // An agent's pending `fixed` claim on a finding it neither cleared nor called still there stands.
-    const fixed = [...cleared];
-    if (answered) { result.still = still; result.cleared = cleared; }
-    // Text addressed to a reviewer never closes a finding: `fixed` is withheld, and so is `cleared` (a pending claim standing) on a full review.
-    // A claim recheck still answers for pending claims (the kernel applies `cleared` only to a finding with a pending `fixed` claim).
-    if (addressed && (fixed.length || (!combo.recheck_only && result.cleared?.length))) {
+    // Text addressed to a reviewer never closes a finding: `fixed` is withheld.
+    if (addressed && fixed.length) {
       fixed.length = 0;
-      if (!combo.recheck_only) result.cleared = [];
       gaps.push("the change holds text addressed to a reviewer, so this recheck confirms no finding fixed outright");
     }
     result.fixed = fixed;
     result.unsafe = unsafe;
-  }
-  if (combo.recheck_only) {
-    // A claim recheck: the previous findings only (open ones and answers), no finders and no verifier, so no new findings.
-    await recheck(new Set());
-    result.coverage.incomplete = gaps.join("; ") || null;
-    return bound(result);
   }
   if (!reviewed.length) {
     // Nothing to review (lockfiles, ignored or binary files only) is no gap; a hiding place the change adds is.
@@ -463,10 +448,10 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   result.downgraded += down.n;
   const cleaned = down.findings;
   // A finder's own `same_as` restatement counts as still there only at a line that exists at the head: placed under the earlier id.
-  const refound = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).filter((f) => !f.why.startsWith("[on a file this change deletes")).map((f) => f.id)); // a real line only
-  const restated = new Set(refound); // only a restatement at a real line skips that finding's recheck
+  // Only a restatement at a real line skips that finding's recheck.
+  const restated = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).filter((f) => !f.why.startsWith("[on a file this change deletes")).map((f) => f.id)); // a real line only
   let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
-  for (const f of candidates) if (restates(f, f.id) && !f.why.startsWith("[on a file this change deletes")) { restated.add(f.id); refound.add(f.id); }
+  for (const f of candidates) if (restates(f, f.id) && !f.why.startsWith("[on a file this change deletes")) restated.add(f.id);
   candidates = candidates.filter((f) => !restates(f, f.id));
   result.stale_guidance = [...new Set(good.filter(Boolean).flatMap((j) => (Array.isArray(j.stale_guidance) ? j.stale_guidance : [])).filter((s) => typeof s === "string" && s.trim()).map((s) => cap(s, 300)))].slice(0, 10);
 
@@ -508,7 +493,6 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
 
   // Previous findings: fixed only when confirmed gone (never merely missing from this run, never found again or restated now).
   await recheck(new Set([...kept.map((f) => f.id), ...restated]));
-  result.still = [...new Set([...(result.still ?? []), ...previous.filter((f) => !f.claim && refound.has(f.id)).map((f) => f.id)])];
   result.coverage.incomplete = gaps.length ? gaps.join("; ") : null;
   if (tree) {
     // The eligible files, apart from what was actually covered: the files the engine says it analysed, else those whose diff a

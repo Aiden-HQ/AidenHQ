@@ -93,7 +93,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
     option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
-    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory, ...(s.recheck_only ? { recheck_only: true } : {}) }), focus: s.focus ?? "",
+    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
     ...shards(s.previous),
@@ -119,11 +119,12 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
 }
 
 /** A reason as the notice's fixed words name it (seams' `why` starts with its key): a skip's, or a refused post's. */
-export function reasonOf(why: string | undefined): "post_refused" | "draft" | "fork" | "superseded" | "stopped" | undefined {
+export function reasonOf(why: string | undefined): "post_refused" | "draft" | "fork" | "superseded" | "stopped" | "push_cap" | undefined {
   const w = String(why ?? "");
   // A post the kernel refused after its review ran (refused, stale, rejected): the run row keeps the reason, the PR's notice
   // says in fixed words that this head's review was not posted. Checked first: its words are never read as a skip's.
   if (/^not posted:/.test(w)) return "post_refused";
+  if (/^push review cap reached:/.test(w)) return "push_cap";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? (key as "draft" | "fork" | "superseded" | "stopped") : undefined;
 }

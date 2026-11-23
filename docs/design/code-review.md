@@ -33,7 +33,8 @@ code_review:
       on_open:                   # defaults shown; a list of combos (at most 4), each its own run and post; [] runs none
         - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium }
       on_push:                   # only the new changes since the last reviewed head
-        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: low }   # mandatory: true gates merges
+        - { engine: codex-native, model: "openai/gpt-6.2-sol", effort: low }   # mandatory: true gates merges
+      push_rounds: 1             # pushes per PR that get an on_push review; null: every push
       drafts: false
       forks: manual              # manual: only when someone with write access asks; auto: like any PR
       ignore: ["**/generated/**"]
@@ -41,7 +42,7 @@ code_review:
 ```
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
-claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service, the board and the compile all say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge and a `fixed` claim is still rechecked, at the pushed head, by the first mandatory `on_open` combo at low effort; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
+claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service, the board and the compile all say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
 short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
 price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
@@ -89,7 +90,9 @@ PR state, not config.
 
 The service reads the watched repos every `code_review_poll_seconds` (default 60); finished checks, filed posts, due runs and the status mirror move every 10 seconds (only the kernel is asked), so a review posts within seconds of its check ending. A new PR (or one leaving draft, or one already open when the repo is first watched) runs each `on_open`
 combo; a push runs each `on_push` combo incrementally, debounced 1 minute (a burst is one batch; another push replaces the
-queued batch). One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
+queued batch). Only the first `push_rounds` pushes of a PR (default 1; null: every push) get one: a round is a pushed head
+whose push review completed (a superseded one doesn't count); later heads are skipped ("push review cap reached") and gated
+as a repo with no mandatory `on_push` (the findings still open decide); `aiden review` and `aiden review always` still run. One trigger is a batch: one run per combo, each posting its own review; its first mandatory run (else its first)
 rechecks the PR's still-open findings (whichever combo found them). A new head is a push once any review of the PR (but a one-off)
 completed, whole or partial, whatever became of its post; a PR pushed to before that gets its first review (`on_open`)
 at the newest head. A skipped or superseded run never counts, so the opening batch never runs twice for one PR. A failed run
@@ -107,7 +110,6 @@ that starts "aiden review is ..." is no command), never a later line, a quote, a
 | Comment | Effect |
 |---|---|
 | `aiden review [full]` | one review now with the repo's `on_open` combos (`full` is not incremental) |
-| `aiden recheck` | one recheck-only run at the current head: every answered finding and every gating open one is checked again, each judged on its own (no new findings) |
 | `aiden review always` / `stop` | review every push / stop automatic reviews and drop queued ones (on a gated repo the mandatory combos still review each push: anyone posting as the owner can write a command) |
 | `aiden review focus: <text>` | a focus handed to the reviewers as data (300 characters) |
 | `aiden review status` / `help` | the last run's phase, combo, findings and cost / the command list |
@@ -232,7 +234,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   change is a row in `dispositions` (finding, head, state, reason, evidence, who decided).
 - **Answers (owner, 2026-11-21).** A reply on Aiden's own thread (the service's record) for an open gating finding, from the PR's
   author (not a fork's) or someone with write access now, whose first word is `fixed`, `disputed`, `by design` or `won't fix`
-  followed by a reason, closes it (`fixed`, else `dismissed`, keeping the answer as `claim`). An agent records the same answer with the
+  followed by a reason, closes it at once (`fixed`, else `dismissed`, keeping the answer as `claim`; owner, 2026-11-23: no recheck of a `fixed` claim). An agent records the same answer with the
   `code_review_resolve` tool (engine `resolve`, the same `answer` path, no GitHub write: a GitHub refusal never holds a merge);
   an important finding's answer is then replied on its thread by the service (the `code-review.reply` write, Tier 0, queued in
   the `replies` table and filed again later when refused; it never holds the outcome), a nit's is not. A human's thread reply

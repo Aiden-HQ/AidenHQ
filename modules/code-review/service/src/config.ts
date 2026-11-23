@@ -13,7 +13,7 @@ export const ENGINES = {
   codegenie: { label: "Codegenie", efforts: ["low", "medium", "high", "xhigh", "max"],
     models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "z-ai/glm-5.3"] },
   "codex-native": { label: "Codex review", efforts: ["minimal", "low", "medium", "high", "xhigh"],
-    models: ["~openai/gpt-terra-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "~deepseek/deepseek-flash-latest"] },
+    models: ["openai/gpt-6.2-sol", "~openai/gpt-terra-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "~deepseek/deepseek-flash-latest"] },
 } as const;
 export type Engine = keyof typeof ENGINES;
 
@@ -26,6 +26,9 @@ export type Repo = {
   repo: string;
   /** The combos run when a PR opens (or leaves draft), and on each push (only the new changes); each posts its own review. []: none. */
   on_open: Combo[]; on_push: Combo[];
+  /** How many pushes of a PR get an on_push review (a round: a pushed head whose on_push review completed); later heads are gated
+   * like a repo with no mandatory on_push (engine.ts openOnlyPr). null: every push. */
+  push_rounds: number | null;
   drafts: boolean;
   /** manual: a fork PR is reviewed only when someone with write access asks; auto: like any other. */
   forks: "manual" | "auto";
@@ -36,7 +39,8 @@ export type Config = { repos: Repo[]; errors: string[] };
 export const DEFAULT_MODEL = "~deepseek/deepseek-flash-latest";
 export const REPO_DEFAULTS: Omit<Repo, "repo"> = {
   on_open: [{ engine: "codex", model: DEFAULT_MODEL, effort: "medium", mandatory: false }],
-  on_push: [{ engine: "codex", model: DEFAULT_MODEL, effort: "low", mandatory: false }],
+  on_push: [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "low", mandatory: false }],
+  push_rounds: 1,
   drafts: false, forks: "manual", ignore: [], max_nits: 5,
 };
 /** A repo is gated (its merges wait for code review) when any of its combos is mandatory. */
@@ -93,8 +97,9 @@ function repo(raw: unknown): Repo | { error: string } {
   }
   if (typeof out.drafts !== "boolean") return { error: "drafts is true or false" };
   // A mandatory on_push combo needs one in on_open (a PR's first head is reviewed by on_open's). on_push without one is fine: the
-  // opening review then stands for every later head, and open findings and claim rechecks still decide.
+  // opening review then stands for every later head, and the findings still open decide.
   if (out.on_push.some((c) => c.mandatory) && !out.on_open.some((c) => c.mandatory)) return { error: "a mandatory on_push combo needs a mandatory on_open one (a PR's first head is reviewed by on_open's)" };
+  if (out.push_rounds !== null && !(Number.isInteger(out.push_rounds) && out.push_rounds >= 0 && out.push_rounds <= 100)) return { error: "push_rounds is a whole number of pushes reviewed (0 to 100), or null for every push" };
   if (!["manual", "auto"].includes(out.forks)) return { error: "forks is manual or auto" };
   if (Number.isNaN(num(out.max_nits, 0))) return { error: "max_nits is a number" };
   if (!Array.isArray(out.ignore) || !out.ignore.every((g) => typeof g === "string" && g.length <= 200)) return { error: "ignore is a list of globs" };
