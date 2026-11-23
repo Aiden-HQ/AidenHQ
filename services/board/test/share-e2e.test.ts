@@ -110,7 +110,8 @@ describe("sharing a local module (V4)", () => {
     writeFileSync(join(config, "modules.json"), JSON.stringify([{ name: "review-chaser", tier: "local", enabled: true }, { name: "library", tier: "local", enabled: true }, { name: "github", tier: "official", enabled: true }]));
     const vault = join(root, "vault");
     mkdirSync(join(vault, "github-app"), { recursive: true });
-    writeFileSync(join(vault, "github-app", "key"), SECRET);
+    // A vault file holding the secret inside it (a JSON credential): its value is still found when copied alone.
+    writeFileSync(join(vault, "github-app", "key"), JSON.stringify({ client_id: "Iv1.example", private_token: SECRET }));
 
     // What the backplane does (its routes are thin), with lifecycle pieces made below with these routes (the board's key), and an executor's outcome.
     const kernel = await listen(async (req, res) => {

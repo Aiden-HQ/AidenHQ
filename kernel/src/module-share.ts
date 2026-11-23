@@ -94,7 +94,10 @@ export async function exportModule(name: string, d: ExportDeps): Promise<Export>
 
   // The backstop scan: what never leaves, in case prose copied it in.
   const values = (list: string[], min: number) => [...new Set(list.map((v) => v.trim()).filter((v) => v.length >= min))];
-  const secrets = values(d.secrets, 6).flatMap(forms);
+  // A vault file whole, and each value inside one (a JSON credential, a key file's lines): the pieces that look like a value
+  // (16+ characters with a digit), so a field name like "refresh_token" is no finding.
+  const pieces = d.secrets.flatMap((s) => [s, ...s.split(/[\s"'`=:,{}[\]]+/).filter((p) => p.length >= 16 && /\d/.test(p))]);
+  const secrets = values(pieces, 6).flatMap(forms);
   const settings = Object.entries(d.settings).flatMap(([k, v]) => values(scalars(v), 6).flatMap((s) => forms(s).map((f) => [k, f] as const)));
   const facts = values(d.memory, 20);
   const profile = values(d.profile.split("\n").map((l) => l.replace(/^\s*(?:[-*>#]+\s*)+/, "")), 20);

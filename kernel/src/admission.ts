@@ -112,13 +112,21 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   };
 
   /**
-   * Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the
-   * Architect or the Fleet Steward filed. The filer is the control plane's creator (a routine's run has none): the kernel's
-   * plugin creates a job's task as that job's agent, and no write changes it.
+   * Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent or module filed
+   * (the owner's, or a routine's run), or one the Architect or the Fleet Steward filed. The filer is the control plane's
+   * creator: the kernel's plugin creates a job's task as that job's agent, and no write changes it. A module's task (kernel
+   * /v1/tasks, modtasks.ts) has no creator, so it is known by its module marker or by the task.created fact that recorded it
+   * (wakes.ts: origin `module:<name>`), either one: a module may carry outside text (a stranger's PR comment) into its task.
    */
-  function platformTask(t: { originKind?: string | null; createdByAgentId?: string | null }): boolean {
-    const by = t.originKind === "routine_execution" ? undefined : t.createdByAgentId;
-    return !by || heldRoles(grants(), by).some((r) => PLATFORM_FILERS.includes(r));
+  function platformTask(t: { id?: string; originKind?: string | null; createdByAgentId?: string | null; description?: string | null }): boolean {
+    if (t.originKind === "routine_execution") return true;
+    if (t.createdByAgentId) return heldRoles(grants(), t.createdByAgentId).some((r) => PLATFORM_FILERS.includes(r));
+    if (/<!--\s*aidenhq-module:[\w-]+\s*-->/.test(t.description ?? "")) return false;
+    try {
+      const row = t.id ? (db.prepare("SELECT data FROM facts WHERE subject = ? AND type = 'task.created' LIMIT 1").get(`task:${t.id}`) as { data: string } | undefined) : undefined;
+      if (row && String(JSON.parse(row.data)?.origin ?? "").startsWith("module:")) return false;
+    } catch { /* no fact log in this database: the marker above decides */ }
+    return true;
   }
 
   function freeze(g: AgentGrant, cause: string, platform: boolean): Authority {

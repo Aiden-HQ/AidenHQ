@@ -29,7 +29,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     return key;
   };
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
-  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5" };
+  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5", "task-11": "agent-4", "task-12": "agent-4" };
   const launched = [], released = [];
   // What the control plane says of a task beyond its assignee (`origins`: its creator), per task.
   const origins = {};
@@ -110,4 +110,6 @@ test("the platform-engineer role holds only on a task no agent filed, a routine'
   assert.deepEqual(await roles("w7", "task-7", {}), ["platform-engineer"], "the owner's task");
   assert.deepEqual(await roles("w8", "task-8", { createdByAgentId: "agent-5" }), ["platform-engineer"], "the Architect filed it");
   assert.deepEqual(await roles("w9", "task-9", { createdByAgentId: "agent-1" }), [], "a crew agent filed it");
+  assert.deepEqual(await roles("w10", "task-11", { description: "Review this PR.\n\n<!-- aidenhq-module:code-review -->" }), [], "a module filed it: no creator, its marker");
+  assert.deepEqual(await roles("w11", "task-12", { originKind: "routine_execution" }), ["platform-engineer"], "a routine's run");
 });

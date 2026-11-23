@@ -90,8 +90,10 @@ export function createMemory(o: { dir: string; now?: () => number }) {
     const n = used.get(job) ?? 0;
     if (n >= WRITES_PER_JOB) throw new MemoryError(429, `at most ${WRITES_PER_JOB} memory changes per job`);
     write();
-    if (used.size > 5000) used.clear();
+    // Most recently written last (Map order): past 5000 jobs the oldest ones go, long ended, never a job writing now.
+    used.delete(job);
     used.set(job, n + 1);
+    for (const old of used.keys()) { if (used.size <= 5000) break; used.delete(old); }
   };
   const today = () => new Date(now()).toISOString().slice(0, 10);
   const known = (d: Doc, fact: string) => {
