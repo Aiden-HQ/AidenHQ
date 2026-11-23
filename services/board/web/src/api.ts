@@ -265,6 +265,9 @@ export const api = {
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   agentTimeline: (key: string) => call<{ entries: TimelineEntry[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/timeline`),
+  /** One card decided on the board, against the digest it showed (the kernel checks the board session). */
+  decide: (id: string, digest: string, decision: "approve" | "reject", reason?: string) =>
+    call<{ id: string; ok: boolean; state?: string }>("POST", `/api/approvals/${encodeURIComponent(id)}/decide`, { digest, decision, ...(reason ? { reason } : {}) }),
   explain: (id: string) => call<{ explanation: Explanation }>("GET", `/api/approvals/${encodeURIComponent(id)}/explain`),
   scorecard: (id: string) => call<Scorecard>("GET", `/api/agents/${encodeURIComponent(id)}/scorecard`),
   signIn: (id: string) => call<SignInView>("GET", `/api/sign-ins/${encodeURIComponent(id)}`),

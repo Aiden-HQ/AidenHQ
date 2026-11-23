@@ -3,7 +3,6 @@
 // card shows the one line its lane needs, linked to what it names (the question, the approval, the run, the blocker).
 import { useMemo, useState } from "react";
 import { LANES, LANE_NAMES, laneOf } from "./filters";
-import { admin } from "./api";
 import { Bone } from "./Skeleton";
 import { Monogram } from "./ui";
 import { hueClass } from "./ui/hue";
@@ -30,9 +29,9 @@ export function holderName(c: WorkCard, crew: Assignee[]): string {
 }
 
 /** The amber or red callout: what the card waits on, linked to it. */
-function Callout({ tone, head, body, href, external }: { tone: "needs" | "bad"; head: string; body?: string; href: string; /** The kernel's approval page: a page of its own. */ external?: boolean }) {
+function Callout({ tone, head, body, href }: { tone: "needs" | "bad"; head: string; body?: string; href: string }) {
   return (
-    <a className={`aw-callout ${tone}`} href={href} onClick={stop} {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
+    <a className={`aw-callout ${tone}`} href={href} onClick={stop}>
       <b>{head}</b>
       {body && <q>{body}</q>}
     </a>
@@ -47,7 +46,7 @@ function LaneLine({ c, s, timeZone }: { c: WorkCard; s: ShownState | null; timeZ
   if (!s) return <Status tone="idle" text="No reported state" />;
   if (lane === "needs_you") {
     const a = s.attention.find((x) => x.who === "owner")!;
-    if (a.why === "card") return <Callout tone="needs" head="Needs you" body={`Your approval: ${named(a.ref) ?? "a card waits"}`} href={`${admin.url}/approvals/${encodeURIComponent(a.ref.replace(/^record:/, ""))}`} external />;
+    if (a.why === "card") return <Callout tone="needs" head="Needs you" body={`Your approval: ${named(a.ref) ?? "a card waits"}`} href={`#/approvals/${a.ref.replace(/^record:/, "")}`} />;
     if (a.why === "handback") return <Callout tone="needs" head="Needs you" body="Handed back to you" href={self} />;
     return <Callout tone="needs" head="Needs you" body={s.question ?? "Your answer"} href={self} />;
   }

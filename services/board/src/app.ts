@@ -1579,6 +1579,23 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         return { entries: timelineOf(jobs, { agents, issues: [...open, ...closed], routines }) };
       },
     },
+    // A card's Approve or Reject (the single-approval route, #/approvals/<id>): the signed-in admin's board session goes to the kernel,
+    // which checks it and decides the card as that account against the digest the card showed. Same-origin only, and the
+    // Origin must be there: a decision is never made by a request whose origin can't be checked.
+    {
+      method: "POST",
+      path: /^\/api\/approvals\/(k-[0-9a-f]{16})\/decide$/,
+      handle: async (m, body, _u, req) => {
+        if (!opts.accounts) throw new HttpError(503, "deciding needs board accounts");
+        if (!req.headers.origin) throw new HttpError(403, "no origin");
+        const b = parse(DecideSchema, body);
+        const token = (await opts.accounts.sessionOf(req))?.token;
+        if (!token) throw new HttpError(401, "sign in");
+        const o = await opts.accounts.boardDecide(token, { id: m[1]!, ...b });
+        if (!o.ok) throw new HttpError(409, o.error ?? "not decided");
+        return o;
+      },
+    },
     // A card's "Explain" (explain.ts): who decided, why, what was asked and what it would change.
     {
       method: "GET",
@@ -2730,6 +2747,8 @@ const staticCompressed = new Map<string, Promise<Buffer>>();
 
 
 const PR_URL = z.string().max(300).regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d{1,9}\/?$/, "a pull request link, like https://github.com/acme/payments/pull/42");
+/** A card's decision on the board: against the digest it showed; a reason only with a reject. */
+const DecideSchema = z.object({ digest: z.string().min(1).max(200), decision: z.enum(["approve", "reject"]), reason: z.string().max(500).optional() }).strict();
 const OneOffSchema = z.object({ pr_url: PR_URL, combos: CombosSchema.min(1).optional(), focus: z.string().max(500).regex(/^[^\x00-\x1f\x7f]*$/).optional(), full: z.boolean().optional() }).strict();
 const CatalogQuerySchema = z.object({ repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), commit: z.string().regex(/^[0-9a-f]{40}$/i).optional() }).strict();
 const ReviewConfigSchema = z.object({ value: z.unknown() }).strict();

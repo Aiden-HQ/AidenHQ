@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { admin } from "./api";
+import { api } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import { QUERIES, useQuery } from "./queries";
@@ -8,6 +8,7 @@ import { Explain } from "./Explain";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ShownState } from "./types";
 import { StatusDot } from "./ui/StatusDot";
+import { Button, EmptyState, Input } from "./ui";
 import { TaskState } from "./ui/TaskState";
 import { ago } from "./util";
 
@@ -29,8 +30,48 @@ const forOwner = (a: Approval) => a.state === "pending" && a.tier === 2;
 const withAI = (a: Approval) => a.state === "pending" && !forOwner(a);
 
 /**
- * One approval card: one sentence, what it reads and changes, the cost, Details; the outcome stays here. A pending card is
- * decided on the kernel's approval page (a top-level page of its own: the board can't decide), linked from here.
+ * A pending Tier 2 card's Approve and Reject (a reason is optional with a reject: the agent is told). The board forwards the
+ * signed-in admin's session; the kernel checks it and decides against the digest this card shows, so a card that changed
+ * meanwhile fails alone and says so.
+ */
+function Decide({ a }: { a: Approval }) {
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const decide = async (d: "approve" | "reject") => {
+    setBusy(d);
+    setError(null);
+    try {
+      await api.decide(a.id, a.digest, d, d === "reject" ? reason.trim() || undefined : undefined);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="approval-decide">
+      {rejecting ? (
+        <form className="approval-actions" onSubmit={(e) => (e.preventDefault(), void decide("reject"))}>
+          <Input className="decide-reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} placeholder="Why not? (optional, the agent is told)" aria-label="Reason for rejecting" autoFocus />
+          <Button type="submit" variant="danger" disabled={busy !== null}>{busy === "reject" ? "Rejecting…" : "Reject"}</Button>
+          <Button variant="quiet" onClick={() => setRejecting(false)} disabled={busy !== null}>Cancel</Button>
+        </form>
+      ) : (
+        <div className="approval-actions">
+          <Button variant="primary" className="approve" onClick={() => void decide("approve")} disabled={busy !== null}>{busy === "approve" ? "Approving…" : "Approve"}</Button>
+          <Button onClick={() => setRejecting(true)} disabled={busy !== null}>Reject…</Button>
+        </div>
+      )}
+      {error && <p className="decide-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * One approval card: one sentence, what it reads and changes, the cost, Details; the outcome stays here. A pending Tier 2 card
+ * is decided here (Decide); its id opens it alone (#/approvals/<id>).
  * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
  */
 export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Approval; open: (identifier: string) => void; inline?: boolean; prefix?: string; unfold?: boolean }) {
@@ -69,14 +110,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
       </li>
     );
   }
-  const buttons = forOwner(a) && (
-    <div className="approval-actions">
-      <a className="btn primary approve" href={`${admin.url}/approvals/${encodeURIComponent(a.id)}`} target="_blank" rel="noopener noreferrer">
-        Decide on the approval page
-      </a>
-    </div>
-  );
-  const top = !inline && forOwner(a);
+  const buttons = forOwner(a) && <Decide a={a} />;
   const label = a.outcome === "applied" ? "Applied." : a.outcome === "failed" ? "Failed:" : OUTCOME[a.state];
   const text = a.outcome === "applied" ? (a.outcomeText ?? "") : a.outcome === "failed" ? (a.outcomeText ?? "no reason given") : a.state === "running" ? (a.wait ?? "") : "";
   return (
@@ -86,13 +120,12 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
           <span className="chat-agent">{a.requestedBy}</span>
           <span className="chat-title">{!inline ? "Open the chat" : a.state === "auto" ? "ran it at once (Tier 0)" : a.state === "running" ? "is running" : a.tier === 1 && a.state === "pending" ? "asks the AI reviewer" : "asks for your approval"}</span>
         </button>
-        <span className="muted small">{a.id}</span>
+        <a className="muted small approval-id" href={`#/approvals/${a.id}`} title="Open this card alone">{a.id}</a>
         {inline && shown && (
           <button className="link-btn small" onClick={() => setShown(false)} aria-label="Fold this card to one line">
             Fold
           </button>
         )}
-        {top && buttons}
       </div>
       <p className="approval-sentence">{a.sentence}</p>
       <dl className="approval-facts">
@@ -140,7 +173,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold }: { a: Appr
       </button>
       {explained && <Explain id={a.id} />}
       {a.state === "pending" ? (
-        !top && <div className="row-end">{buttons}</div>
+        buttons
       ) : (
         <div className={`approval-outcome ${a.outcome === "failed" || a.state === "unknown" ? "bad" : ""}`}>
           {label && <b>{label}</b>}
@@ -178,7 +211,7 @@ function groups(list: Approval[]): Approval[][] {
 }
 
 /** Approvals: what waits for you first, big; then the history as one line per request, open to the full card. */
-export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) => void; onSignIn: () => void }) {
+export function ApprovalsView({ open, onSignIn, card }: { open: (identifier: string) => void; onSignIn: () => void; /** One card alone (#/approvals/<id>). */ card?: string }) {
   // The cards (the board's own store: fast) show first; what else waits on you (Paperclip: slower) fills in after.
   // Both are kept in memory only; a card shown from an earlier visit can't be decided until the fresh copy lands.
   const approvalsQ = useQuery(QUERIES.approvals, onSignIn);
@@ -207,6 +240,30 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
   const past = groups(all.filter((a) => !forOwner(a) && !withAI(a) && (showCalls || !toolCall(a))));
   const history = past.filter((g) => inFilter(g[0]!, f));
   const count = (k: Filter) => (k === "pending" ? waitingCount : k === "all" ? waitingCount + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
+  if (card) {
+    const a = all.find((x) => x.id === card);
+    return (
+      <main className="page wide approvals-page approval-one">
+        <header className="page-head">
+          <div>
+            <p className="ui-crumb"><a href="#/approvals">Approvals</a></p>
+            <h1>{a ? (forOwner(a) ? "Waiting for you" : outcomeOf(a).text) : "Approval"}</h1>
+            <p className="page-sub">{a ? `${a.requestedBy} on ${a.identifier}` : card}</p>
+          </div>
+        </header>
+        {error && <div className="alert">{error}</div>}
+        {!cards ? (
+          !error && <CardListSkeleton />
+        ) : a ? (
+          <ul className="approval-list pending-grid">
+            <ApprovalCard a={a} open={open} unfold />
+          </ul>
+        ) : (
+          <EmptyState action={<a className="btn" href="#/approvals">All approvals</a>}>This card isn't among the recent ones: it may have expired or been replaced.</EmptyState>
+        )}
+      </main>
+    );
+  }
   return (
     <main className="page wide approvals-page">
       <header className="page-head">
@@ -232,15 +289,6 @@ export function ApprovalsView({ open, onSignIn }: { open: (identifier: string) =
         !error && <CardListSkeleton />
       ) : (
         <>
-          {(f === "pending" || f === "all") && pending.length > 1 && (
-            <div className="batch-bar">
-              <span className="muted small">Decide several at once on the approval page.</span>
-              <span className="spacer" />
-              <a className="btn" href={`${admin.url}/approvals`} target="_blank" rel="noopener noreferrer">
-                Open the approval page
-              </a>
-            </div>
-          )}
           {(f === "pending" || f === "all") && pending.length > 0 && (
             <ul className="approval-list pending-grid">
               {pending.map((a) => (
