@@ -76,7 +76,8 @@ function shards(findings: unknown[]): Record<string, string> {
   let at = 0, size = 0;
   for (const f of findings) {
     const n = JSON.stringify(f).length + 1;
-    if (size + n > FIELD_MAX && out[at]!.length && at < PREVIOUS_FIELDS - 1) (at++, size = 0);
+    // A finding that fits no field stays open (never marked fixed unseen).
+    if (size + n > FIELD_MAX && out[at]!.length) { if (at === PREVIOUS_FIELDS - 1) continue; at++; size = 0; }
     out[at]!.push(f);
     size += n;
   }

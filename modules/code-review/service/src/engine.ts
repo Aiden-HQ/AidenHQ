@@ -1794,7 +1794,8 @@ export function createEngine(d: EngineDeps) {
     // Each mandatory reviewer that reviewed the head (reviewers()) has a run there that is done (whole or partial: a partial review
     // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the next poll starts it.
     const latest = gateRuns(cfg, repo, n, head);
-    const busy = latest.filter((r) => r.status === "queued" || r.status === "running");
+    // A mandatory recheck-only run (`aiden recheck`, a claim's recheck) still going holds the merge too: it may reopen a closed finding.
+    const busy = [...latest, ...all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck_only = 1", repo, n, head)].filter((r, i, a) => (r.status === "queued" || r.status === "running") && a.findIndex((x) => x.id === r.id) === i);
     // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A
     // post refused once (filed again in the background) holds nothing: its findings are pending, never blocking.
     const posting = latest.filter((r) => r.status === "done" && r.posted === "pending" && !r.post_tries);

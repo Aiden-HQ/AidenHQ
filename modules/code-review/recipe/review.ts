@@ -527,6 +527,12 @@ export function bound(result: Result, max = 200_000) {
   // Sizes summed, not the whole result restringified per finding (a tools run can have thousands); 600 bytes of room for the
   // counts' digits and the note below.
   const size = (x: unknown) => Buffer.byteLength(JSON.stringify(x)) + 1;
+  // Unsafe verdicts (a recheck of many answered findings can name hundreds) keep to 60 KB: the rest are said, never the result lost.
+  if (result.unsafe) {
+    let n = 0, bytes = 0;
+    while (n < result.unsafe.length && (bytes += size(result.unsafe[n])) <= 60_000) n++;
+    if (n < result.unsafe.length) { gap(`${result.unsafe.length - n} more unsafe verdicts not listed`); result.unsafe = result.unsafe.slice(0, n); }
+  }
   let total = size(result) + 600;
   const withhold = (all: boolean) => {
     for (let i = result.findings.length - 1; i >= 0 && total > max; i--) {
