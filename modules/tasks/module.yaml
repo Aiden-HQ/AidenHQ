@@ -38,7 +38,7 @@ connections:
       # memory_note: a comment on the caller's own memory inbox task (a note for the Fleet Steward), so trial agents have it too.
       # coach_record: the fleet-audit role's (the Fleet Steward); its coach_due and coach_evidence reads are the fleet-steward module's.
       read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note ]
-      write: [ coach_record, project_fold, task_create, task_delegate, task_route, task_propose_rule, task_join, task_schedule, task_recurring, task_merge, task_update, task_amend_rubric, task_pass_on, task_handoff, task_comment, task_file_upload, task_finish, task_wait, task_block, task_cancel, task_relay_owner_words, app_request_from_owner, fleet_control ]
+      write: [ coach_record, task_create, task_delegate, task_route, task_propose_rule, task_join, task_schedule, task_recurring, task_merge, task_update, task_amend_rubric, task_pass_on, task_handoff, task_comment, task_file_upload, task_finish, task_wait, task_block, task_cancel, task_relay_owner_words, app_request_from_owner, fleet_control ]
 services:
   data: true
   run:

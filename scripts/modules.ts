@@ -405,6 +405,25 @@ function resolveEnabled(all: Map<string, Obj>, wanted: string[]) {
  */
 const codehostOrgs = (enabled: Obj, settings: Obj) => [...(enabled.includes("github") && settings.agents_org ? [{ org: settings.agents_org, host: "github" }] : []), ...(enabled.includes("codehost-local") ? [{ org: "local", host: "local" }] : [])];
 
+/** instance.yaml `projects:` checked: names to lists of owner/name repos, no repo under two products. */
+export function productsOf(v: unknown): Record<string, string[]> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) fail("projects: a map of a product's name to its repos (owner/name)");
+  const out: Record<string, string[]> = {};
+  const seen = new Map<string, string>();
+  for (const [name, repos] of Object.entries(v as Obj)) {
+    if (!name.trim() || name.length > 100) fail(`projects: "${name}" is not a project name (1 to 100 characters)`);
+    if (!Array.isArray(repos) || !repos.length) fail(`projects.${name}: a list of repos (owner/name)`);
+    out[name] = (repos as unknown[]).map((r) => {
+      const k = String(r).trim().toLowerCase();
+      if (!/^[\w.-]+\/[\w.-]+$/.test(k)) fail(`projects.${name}: ${String(r)} is not a repo (owner/name)`);
+      if (seen.has(k) && seen.get(k) !== name) fail(`projects: ${k} is listed under both ${seen.get(k)} and ${name}`);
+      seen.set(k, name);
+      return k;
+    });
+  }
+  return out;
+}
+
 /** Fails on a spend setting this release removed (SPEND_GONE), naming it. */
 function spendGone(instance: Obj) {
   const st = instance.settings ?? {}, cr = st.code_review ?? {};
@@ -775,6 +794,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   settings.owner_terms = ownerTerms(instance.settings ?? {}, settings, declaredSettings.map(([, defs]) => defs));
 
   const paperclip: Obj = { company: { name: String(settings.company_name), description: KERNEL_DEFAULTS.company_description }, ...(settings.owner_name ? { owner_name: String(settings.owner_name) } : {}), agents_orgs: codehostOrgs(enabled, settings), autonomy: String(settings.autonomy ?? "off"), settings: shownSettings, labels: [], mcp_servers: {}, agents: {}, routines: {} };
+  // The instance's products (instance.yaml `projects:`, a project's name → its repos): the kernel puts each listed repo's tasks in
+  // that project (kernel/src/projects.ts); an unlisted repo gets a project of its own. A repo belongs to one product.
+  if (instance.projects != null) paperclip.projects = productsOf(instance.projects);
   const apps: Obj[] = [];
   const instanceAppDefs = existsSync(join(instanceDir, "apps.yaml")) ? (readYaml(join(instanceDir, "apps.yaml")).apps ?? []) : [];
   const instanceApps = instanceAppDefs.map((a: Obj) => a.name);

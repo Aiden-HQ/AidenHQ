@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
@@ -210,8 +210,44 @@ function groups(list: Approval[]): Approval[][] {
   return [...by.values()];
 }
 
-/** Approvals: what waits for you first, big; then the history as one line per request, open to the full card. */
+/** The Approvals page, or one card alone. */
 export function ApprovalsView({ open, onSignIn, card }: { open: (identifier: string) => void; onSignIn: () => void; /** One card alone (#/approvals/<id>). */ card?: string }) {
+  if (card) return <OneApproval key={card} id={card} open={open} />;
+  return <AllApprovals open={open} onSignIn={onSignIn} />;
+}
+
+/** One card alone (#/approvals/<id>), read by its id whatever its age, decided here; it follows the card live. */
+function OneApproval({ id, open }: { id: string; open: (identifier: string) => void }) {
+  const [a, setA] = useState<Approval | null | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => api.approval(id).then((r) => (setA(r.approval), setError(null)), (e: Error & { status?: number }) => (e.status === 404 ? setA(null) : setError(e.message))), [id]);
+  useEffect(() => void load(), [load]);
+  useLive(["approvals"], load, 5_000);
+  return (
+    <main className="page wide approvals-page approval-one">
+      <header className="page-head">
+        <div>
+          <p className="ui-crumb"><a href="#/approvals">Approvals</a></p>
+          <h1>{a ? (forOwner(a) ? "Waiting for you" : outcomeOf(a).text) : "Approval"}</h1>
+          <p className="page-sub">{a ? `${a.requestedBy} on ${a.identifier}` : id}</p>
+        </div>
+      </header>
+      {error && <div className="alert">{error}</div>}
+      {a === undefined ? (
+        !error && <CardListSkeleton />
+      ) : a ? (
+        <ul className="approval-list pending-grid">
+          <ApprovalCard a={a} open={open} unfold />
+        </ul>
+      ) : (
+        <EmptyState action={<a className="btn" href="#/approvals">All approvals</a>}>There is no card {id}.</EmptyState>
+      )}
+    </main>
+  );
+}
+
+/** Approvals: what waits for you first, big; then the history as one line per request, open to the full card. */
+function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; onSignIn: () => void }) {
   // The cards (the board's own store: fast) show first; what else waits on you (Paperclip: slower) fills in after.
   // Both are kept in memory only; a card shown from an earlier visit can't be decided until the fresh copy lands.
   const approvalsQ = useQuery(QUERIES.approvals, onSignIn);
@@ -240,30 +276,6 @@ export function ApprovalsView({ open, onSignIn, card }: { open: (identifier: str
   const past = groups(all.filter((a) => !forOwner(a) && !withAI(a) && (showCalls || !toolCall(a))));
   const history = past.filter((g) => inFilter(g[0]!, f));
   const count = (k: Filter) => (k === "pending" ? waitingCount : k === "all" ? waitingCount + past.length : past.filter((g) => inFilter(g[0]!, k)).length);
-  if (card) {
-    const a = all.find((x) => x.id === card);
-    return (
-      <main className="page wide approvals-page approval-one">
-        <header className="page-head">
-          <div>
-            <p className="ui-crumb"><a href="#/approvals">Approvals</a></p>
-            <h1>{a ? (forOwner(a) ? "Waiting for you" : outcomeOf(a).text) : "Approval"}</h1>
-            <p className="page-sub">{a ? `${a.requestedBy} on ${a.identifier}` : card}</p>
-          </div>
-        </header>
-        {error && <div className="alert">{error}</div>}
-        {!cards ? (
-          !error && <CardListSkeleton />
-        ) : a ? (
-          <ul className="approval-list pending-grid">
-            <ApprovalCard a={a} open={open} unfold />
-          </ul>
-        ) : (
-          <EmptyState action={<a className="btn" href="#/approvals">All approvals</a>}>This card isn't among the recent ones: it may have expired or been replaced.</EmptyState>
-        )}
-      </main>
-    );
-  }
   return (
     <main className="page wide approvals-page">
       <header className="page-head">

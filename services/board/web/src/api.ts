@@ -175,7 +175,7 @@ export interface Session {
   googleConnect?: boolean;
   /** The modules' sign-ins (board.signins) work from this address: the board's https address, or loopback. */
   signInConnect?: boolean;
-  /** The kernel's admin listener: sign-in, your password, and the approval page every card is decided on. */
+  /** The kernel's admin listener: sign-in, your password and its approval pages. */
   adminUrl?: string | null;
 }
 
@@ -229,7 +229,7 @@ export const accountsApi = {
   newLink: (id: string) => call<{ url: string | null }>("POST", `/api/accounts/${id}/link`, {}),
 };
 
-/** The kernel's admin listener (from /api/session): sign-in, and the approval page where every card is decided. */
+/** The kernel's admin listener (from /api/session): sign-in and its approval pages. */
 export const admin = { url: "" };
 
 export const api = {
@@ -265,6 +265,8 @@ export const api = {
     return call<{ rows: TaskRow[]; next: number | null }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/tasks?${p}`);
   },
   agentTimeline: (key: string) => call<{ entries: TimelineEntry[] }>("GET", `/api/agents/by-key/${encodeURIComponent(key)}/timeline`),
+  /** One card by its id, whatever its age. */
+  approval: (id: string) => call<{ approval: Approval }>("GET", `/api/approvals/${encodeURIComponent(id)}`),
   /** One card decided on the board, against the digest it showed (the kernel checks the board session). */
   decide: (id: string, digest: string, decision: "approve" | "reject", reason?: string) =>
     call<{ id: string; ok: boolean; state?: string }>("POST", `/api/approvals/${encodeURIComponent(id)}/decide`, { digest, decision, ...(reason ? { reason } : {}) }),

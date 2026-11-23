@@ -47,12 +47,16 @@ const REASON: Record<ShownState["reason"], (s: ShownState, timeZone?: string) =>
   history_expired: () => "unknown, history expired",
 };
 
-/** The tone, word and detail a state shows with (times in `timeZone`, the board's). A chat waiting on the owner's next message (no attention) is quiet. */
-export function stateWords(s: ShownState, timeZone?: string): { tone: StatusTone; word: string; detail: string } {
+/** The board's timezone (App sets it from the board's read): every state's time reads in it, in every view. */
+let boardZone: string | undefined;
+export const setBoardTimezone = (tz: string | undefined) => void (boardZone = tz);
+
+/** The tone, word and detail a state shows with (times in the board's timezone). A chat waiting on the owner's next message (no attention) is quiet. */
+export function stateWords(s: ShownState): { tone: StatusTone; word: string; detail: string } {
   const tone: StatusTone = s.kind === "working" ? "working" : s.kind === "done" ? "done" : s.reason === "failed" ? "failed" : needsOwner(s) ? "needs" : "idle";
   const word = s.reason === "cancelled" ? "Stopped" : KIND_WORD[s.kind];
   const stalled = s.attention.find((a) => a.why === "stalled_wait");
-  const reason = stalled ? `stalled · ${moduleWords(stalled.ref)}` : REASON[s.reason](s, timeZone);
+  const reason = stalled ? `stalled · ${moduleWords(stalled.ref)}` : REASON[s.reason](s, boardZone);
   const note = s.note && s.note !== reason ? (s.note.length > 60 ? `${s.note.slice(0, 59)}…` : s.note) : "";
   return { tone, word, detail: [reason, note, s.stage].filter(Boolean).join(" · ") };
 }

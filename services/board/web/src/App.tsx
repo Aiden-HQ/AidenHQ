@@ -43,6 +43,7 @@ import { AgentWork, AgentWorkLoading } from "./AgentWork";
 import { BoardTabs, ConflictBanner, FilterChips, FilterSheet, SaveButton, useTaskBoard } from "./TaskTools";
 import { applyFilters, isEmpty } from "./filters";
 import { Banner, Segmented } from "./ui";
+import { setBoardTimezone } from "./ui/TaskState";
 import "./shell.css";
 
 // Pages off the first screen load as their own chunks (warmed on hover and when the browser is idle: queries.ts).
@@ -206,6 +207,8 @@ function cachedBoard(): Board | undefined {
 export function App() {
   // The device's last board (main.tsx adopted its account) paints at once; /api/board, already on its way, replaces it.
   const [board, setBoard] = useState<Board | null>(() => cachedBoard() ?? null);
+  // Every view's state words read times in the board's timezone (ui/TaskState.tsx).
+  setBoardTimezone(board?.timezone);
   const [session, setSession] = useState<Session | null>(null);
   const [needsSignIn, setNeedsSignIn] = useState(false);
   const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);

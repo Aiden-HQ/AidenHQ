@@ -224,7 +224,7 @@ with `--ring` focus; state is a word as well as a colour; the live dot is a smal
 ## New installs
 
 A fresh install sees My day unchanged, Agent work with empty lanes ("No tasks yet"), no saved views, no Project filter (no
-project exists until a job clones a repo or an agent names one). Nothing
+project exists until a PR opens or an agent names one). Nothing
 depends on an optional module: lanes read the kernel only. Another owner's modules plug in through the kernel's reasons and
 stages: a module wait arrives as `module_wait` with its `ref` and shows in Waiting with its own words.
 
@@ -240,23 +240,26 @@ plugin can only read projects).
   Paperclip's project workspaces: a workspace pulls a project into Paperclip's execution-workspace machinery (an issue in the
   project gets a default workspace, and re-pointing its `projectId` then trips the workspace-match check), and `repositoryUrls`
   takes github.com only, so `local/<name>` repos would not fit. Paperclip keeps the project and the task's `projectId`.
-- **Automatic from repos**: every repo a job works on is cloned through the kernel (`aidenhq clone`, at admission and on demand:
-  backplane's clone route, `jobTools.clone`), so a successful clone calls `projects.touch(task, repo)`: the repo's project, made on
-  first sight (named after the repo), and set on the task only while it has none. One signal; PRs come from that clone.
-- **Seeding**: lazy, no config. The kernel knows its own repos (`AIDENHQ_PRODUCT_REPO`, `AIDENHQ_INSTANCE_REPO`, the distro,
-  `updates.ts` `DISTRO`): the first of them seen maps all three to one project named "AidenHQ". A fresh install has no projects.
+- **Automatic from repos**: a code host's `pr.opened` fact for a task (backplane's `/v1/facts`, github and codehost-local) calls
+  `projects.touch(task, repo)`: the repo's project, made on first sight, set on the task only while it has none (a PR is the signal
+  that a task's work touches a repo; a clone isn't: admission clones every repo a task merely mentions). A failed fill is tried
+  again a minute later, three times.
+- **Products are instance data**: `instance.yaml` `projects:` (a product's name → its repos; compile checks it, setup writes it
+  into the grants table). A listed repo belongs to its product's project; any other repo gets a project of its own named after
+  it (in full, `partner/api`, beside another org's `api`). This instance lists AidenHQ, aidenhq-distro and aidenhq-instance under
+  "AidenHQ"; nothing in the product names them. Moving a repo into a product later is editing the map: the kernel (`sync`, each
+  minute when the map changed) moves the repo and its open tasks and those closed in the last two days (`project_tasks`
+  remembers which tasks a repo's PRs touched); older tasks stay, nothing is archived.
 - **Agents tag by name**: `task_create` and `task_update` take `project` (a name). The kernel's agent route (`cp.ts`) resolves it:
-  trimmed, case-insensitive match among the company's unarchived projects, else a new project of that name; the plugin's
-  `post` action writes `projectId` (`post.js` `PATCH_KEYS`, `CHILD_KEYS`). When to tag lives once, in the tool's description:
-  the product or standing area the work belongs to; when unsure, leave it out ("No project").
+  trimmed, case-insensitive match among the company's unarchived projects, else a new project of that name; two of one name is an
+  error the agent sees. The plugin's `post` action writes `projectId` (`post.js` `PATCH_KEYS`, `CHILD_KEYS`). When to tag lives
+  once, in the tool's description: the product or standing area the work belongs to; when unsure, leave it out ("No project").
 - **Inheritance**: a task an agent creates with no `project` takes its parent's project, else the project of the task the job
   works on (the chain escalate uses: `parentId`, else the creating job's task). An explicit `project` wins.
-- **Precedence**: an explicit tag (create or update) sets or replaces; a repo touch fills only an empty project.
-- **Folding**: `project_fold {project, into}` (tasks-mcp, the chief of staff: role fleet-admin), served by `POST /v1/projects/fold`:
-  the folded project's repos map to `into`, its open and recent tasks move to `into`, and it is archived, so the filter keeps no
-  ghost. Asked in chat ("aidenhq-distro is part of AidenHQ"), Aiden folds it.
-- Creates are serialised per company in the kernel (one promise chain), so two jobs cloning a new repo at once make one project.
-- **New installs**: no projects until the first clone or tag; GitHub optional (`local/…` repos map the same way).
+- **Precedence**: an explicit tag (create or update) sets or replaces; a repo's PR fills only an empty project.
+- Every project write runs on one kernel chain (task creates and tags in `cp.ts` too), and each create carries Paperclip's
+  idempotency key, so two first sights of one repo make one project and a fill never lands over a tag.
+- **New installs**: no projects until the first PR or tag; GitHub optional (`local/…` repos map the same way).
 
 ### Single-approval route
 

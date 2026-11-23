@@ -1362,18 +1362,6 @@ const TOOLS: Record<string, Tool> = {
       };
     },
   },
-  project_fold: {
-    description:
-      "Fold one project into another (the chief of staff only): its repos map to `into` from now on, its tasks move there, and it is archived. For when the owner says a repo or area is part of a product (\"aidenhq-distro is part of AidenHQ\"). Both are project names.",
-    inputSchema: {
-      type: "object",
-      properties: { project: { type: "string", description: "the project to fold away" }, into: { type: "string", description: "the project it becomes part of" } },
-      required: ["project", "into"],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ project, into }: Args) => api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/projects/fold`, { project: String(project), into: String(into) }),
-  },
   task_create: {
     description:
       "Create a Paperclip task, idempotent per marker (the same marker returns the same task, deduplicated: true). Put the source and reason in the description. Without `assignee` it goes to the owner's board: only for what the owner must read. A step to take (a command, a click, a sign-in) goes to the agent that can take it, or to the chief of staff, never to the owner. Work for an agent (a fix, a follow-up, your own log) always names its `assignee`, yourself included; `status: backlog` parks it. Work for a graded agent names its `deliverable` (kind none for a log or a question).",

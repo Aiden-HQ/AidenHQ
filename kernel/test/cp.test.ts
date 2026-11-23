@@ -154,13 +154,12 @@ test("no control-plane identity, no call: a caller whose agent the kernel holds 
   assert.equal(plugin.length, 0);
 });
 
-test("a task's project: named by the agent, else its parent's, else that of the job's own task; a fold is the chief of staff's", async (t) => {
+test("a task's project: named by the agent, else its parent's, else that of the job's own task", async (t) => {
   const P = (n) => `90000000-0000-4000-8000-00000000000${n}`;
   const named = [];
   const projects = {
     serial: (f) => f(),
     named: async (co, name) => (named.push([co, name]), name === "Hiring" ? P(2) : P(3)),
-    fold: async (co, project, into) => ({ project: into, repos: [], moved: 0, co }),
   };
   const { h, act } = await setup(t, { projects });
   h.issues[OWN].projectId = P(1);
@@ -175,8 +174,4 @@ test("a task's project: named by the agent, else its parent's, else that of the 
   r = await act("ada", "PATCH", "/api/issues/WOR-1", { project: "Infra" });
   assert.deepEqual([r.status, h.issues[OWN].projectId], [200, P(3)]);
   assert.deepEqual(named, [["co", "Hiring"], ["co", "Infra"]]);
-  // Folding is the chief of staff's.
-  assert.equal((await act("ada", "POST", "/api/companies/co/projects/fold", { project: "Infra", into: "Hiring" })).status, 403);
-  r = await act("cos", "POST", "/api/companies/co/projects/fold", { project: "Infra", into: "Hiring" });
-  assert.deepEqual([r.status, r.json.project], [200, "Hiring"]);
 });

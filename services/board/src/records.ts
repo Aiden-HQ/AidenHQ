@@ -1,5 +1,5 @@
 // The kernel's records, read-only (kernel/src/records.ts keeps them; the board keeps no approval store). Cards are decided
-// on the kernel's approval page or in a channel; the board lists them with the board's key (gateway_board_key) and shows them.
+// by the kernel (its approval page, a channel, or a card's Approve or Reject here through /v1/owner/decide); the board lists them with the board's key (gateway_board_key) and shows them.
 import type { ReviewCode } from "./reason-codes.js";
 import type { Probe } from "./settings.js";
 import { explain, type Explanation, type RecordWhole } from "./explain.js";
@@ -123,6 +123,8 @@ export type Records = {
   /** Every page of a state (`live` is every state a record can still act in), for one task and optionally one kind: a card
    * moving between states mid-read is never missed, and it is never behind the page cap, however many records follow it. */
   allOf(state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages?: number): Promise<Approval[]>;
+  /** One record by its id, whatever its age (a card's own page): undefined when the kernel has no such record. */
+  one(id: string): Promise<Approval | undefined>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -247,5 +249,12 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
     return explain((await rec.json()) as RecordWhole, asked);
   };
-  return { list, live, allOf, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
+  const one: Records["one"] = async (id) => {
+    if (!k) return undefined;
+    const res = await fetch(`${k.url}/v1/writes/${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
+    if (res.status === 404) return undefined;
+    if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
+    return recordApproval((await res.json()) as KernelRecord);
+  };
+  return { list, live, allOf, one, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
 }

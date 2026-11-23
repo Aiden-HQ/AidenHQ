@@ -85,7 +85,7 @@ export interface AppOptions {
   mode?: "lan" | "internal";
   /** GitHub's REST API for a marketplace's newest pinnable commit (tests: a fake). */
   fetch?: typeof fetch;
-  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in, and the approval page where every card is decided. */
+  /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in and its approval pages. */
   adminUrl?: string;
   /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
   lan?: { url: string; googleConnect?: boolean };
@@ -1579,6 +1579,16 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         return { entries: timelineOf(jobs, { agents, issues: [...open, ...closed], routines }) };
       },
     },
+    // One card by its id, whatever its age (#/approvals/<id>: an old card still waiting is never lost behind newer ones).
+    {
+      method: "GET",
+      path: /^\/api\/approvals\/(k-[0-9a-f]{16})$/,
+      handle: async (m) => {
+        const a = await records.one(m[1]!);
+        if (!a) throw new HttpError(404, "no such card");
+        return { approval: shownApproval(await bylines(), await named(a)) };
+      },
+    },
     // A card's Approve or Reject (the single-approval route, #/approvals/<id>): the signed-in admin's board session goes to the kernel,
     // which checks it and decides the card as that account against the digest the card showed. Same-origin only, and the
     // Origin must be there: a decision is never made by a request whose origin can't be checked.
@@ -1679,8 +1689,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       },
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made
-    // at once, shown after the fact; read apart so they never crowd the cards out). Read-only: every card is decided on the
-    // kernel's approval page (or in a channel).
+    // at once, shown after the fact; read apart so they never crowd the cards out). A card is decided by its own
+    // route below (the kernel checks the session), on the kernel's page or in a channel.
     {
       method: "GET",
       path: /^\/api\/approvals$/,

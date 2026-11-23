@@ -96,7 +96,7 @@ import { createWork } from "./work.ts";
 import { ensureStateDirs, readEngines } from "./sandbox.ts";
 import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
-import { DISTRO, createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
+import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
 import { TYPED, limitIssueLists, markCode } from "./cplimit.ts";
 
@@ -241,7 +241,7 @@ const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api =
 };
 const ownerApi = asApi(cpApi);
 // Projects (projects.ts): repos map into products; a PR's repo fills in its task's project, agents tag one by name.
-const projects = createProjects({ db: records.db, owner: ownerApi, ownRepos: () => [baseRepos.product, baseRepos.instance, DISTRO], log });
+const projects = createProjects({ db: records.db, owner: ownerApi, products: () => (grantsTable().projects ?? {}) as Record<string, string[]>, log });
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
 const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)), modules: modulesFile, facts, log });
 // The owner's messages: the kernel's own (alerts, the approvals digest) and the board's and the runner's, queued for
@@ -308,6 +308,8 @@ const afterPrevious = (fn: () => void) => {
   timers.push(t);
 };
 every(() => void advisories.tick(), 10 * 60_000);
+// The instance's products map (instance.yaml `projects:`): a repo moved into a product moves its project, at start and after an apply.
+every(() => void projects.sync().catch((e: Error) => log("project sync failed", { err: e.message })), 60_000);
 once(() => void advisories.tick(), 30_000);
 // The public front door's certificate (exposure public, compiled into config/exposure; the IP is the host's .env): hourly.
 const certWatch = createCertWatch({

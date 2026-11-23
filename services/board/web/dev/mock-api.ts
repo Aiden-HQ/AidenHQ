@@ -263,6 +263,8 @@ const catalog = () => ({ sha: "4e1a9c2f0b7d".padEnd(40, "0"), options: [
 const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9c2`\n\n## Security\n\n- **Important** `src/billing/charge.ts:88`: a retried charge can post twice.\n  - Evidence: the idempotency key is written after the provider call.\n  - Found by: sec.quick-scan\n\n## Coverage\n\n| Option | Result |\n| --- | --- |\n| sec.quick-scan | done |\n| maint.knip | done |\n\nCost $6.80.";
 
 function route(method: string, url: URL): [number, unknown] {
+  const one = /^\/api\/approvals\/(k-[0-9a-f]{16})$/.exec(url.pathname)?.[1];
+  if (one && method === "GET") { const a = approvals().find((x) => x.id === one); return a ? [200, { approval: a }] : [404, { error: "no such card" }]; }
   const p = url.pathname;
   if (method === "POST" && p === "/api/reviews") return [200, { batch: "b-000000000003" }];
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
@@ -291,6 +293,7 @@ function route(method: string, url: URL): [number, unknown] {
       { identifier: "WOR-650", title: "An old task whose history expired", agent: "Engineer", state: named("WOR-650", EXPIRED) },
     ] }];
     case "/api/approvals": return [200, { approvals: approvals() }];
+
     case "/api/agents/roster": return [200, { roster: mock.empty ? roster.slice(0, 1) : roster }];
     case "/api/agents": return [200, { sessions: [{ id: "s1", agent: "Engineer", agentId: "a3", state: "working", startedAt: ago(12), said: "Running the export tests", run: { identifier: "WOR-790", title: "Ship the invoices app's export" }, tasks: [] }], finished: [], roster }];
     case "/api/apps": return [200, { apps: apps() }];

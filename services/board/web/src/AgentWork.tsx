@@ -39,7 +39,7 @@ function Callout({ tone, head, body, href }: { tone: "needs" | "bad"; head: stri
 }
 
 /** The one line a card's lane needs, read from its attention entries and refs (never only the primary reason). */
-function LaneLine({ c, s, timeZone }: { c: WorkCard; s: ShownState | null; timeZone: string }) {
+function LaneLine({ c, s }: { c: WorkCard; s: ShownState | null }) {
   const lane = laneOf(c);
   const self = `#/t/${c.identifier}`;
   const named = (ref: string) => s?.refs?.[ref];
@@ -63,7 +63,7 @@ function LaneLine({ c, s, timeZone }: { c: WorkCard; s: ShownState | null; timeZ
     return <Callout tone="bad" head={stuck ? STUCK[stuck.why]! : "Blocked"} body={cap(stateWords(s).detail)} href={self} />;
   }
   if (lane === "done") return <Status tone="done" text={s.reason === "cancelled" ? "Stopped" : s.grade ? `Done, graded ${s.grade}` : "Done"} />;
-  return <Status tone={lane === "waiting" ? "wait" : "idle"} text={cap(stateWords(s, timeZone).detail) || (lane === "waiting" ? "Waiting" : "Idle")} />;
+  return <Status tone={lane === "waiting" ? "wait" : "idle"} text={cap(stateWords(s).detail) || (lane === "waiting" ? "Waiting" : "Idle")} />;
 }
 
 function Status({ tone, text, live }: { tone: "working" | "wait" | "idle" | "done"; text: string; live?: boolean }) {
@@ -98,7 +98,7 @@ export function WorkCardView({ c, board }: { c: WorkCard; board: Board }) {
           part of {c.parent}
         </a>
       )}
-      <LaneLine c={c} s={s} timeZone={board.timezone} />
+      <LaneLine c={c} s={s} />
       <div className="aw-foot">
         <Monogram name={who} size={18} />
         <span className="aw-who">{who}</span>

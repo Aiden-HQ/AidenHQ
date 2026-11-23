@@ -50,8 +50,6 @@ export const CP_AGENT_PATHS: [string, RegExp][] = [
   ["GET", new RegExp(`^/api/companies/${ID}$`)],
   ["GET", new RegExp(`^/api/companies/${ID}/(agents|labels|issues)$`)],
   ["POST", new RegExp(`^/api/companies/${ID}/issues$`)],
-  // The kernel's own route, not Paperclip's: the chief of staff folds one project into another (projects.ts fold).
-  ["POST", new RegExp(`^/api/companies/${ID}/projects/fold$`)],
   ["GET", new RegExp(`^/api/issues/${ID}$`)],
   ["PATCH", new RegExp(`^/api/issues/${ID}$`)],
   ["GET", new RegExp(`^/api/issues/${ID}/(comments|attachments)$`)],
@@ -80,8 +78,8 @@ export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: 
 export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
 
 export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, observe, projects, log = () => {} }: {
-  /** Projects (projects.ts): an agent's `project` tag by name, and the chief of staff's fold. */
-  projects?: Pick<Projects, "serial" | "named" | "fold">;
+  /** Projects (projects.ts): an agent's `project` tag by name. */
+  projects?: Pick<Projects, "serial" | "named">;
   /** The wake inbox's observe (wakes.ts): a task this route just changed has its facts recorded at once, from the issue the write returned. */
   observe?: (issue: Issue, actor: string) => Promise<void>;
   /** Flow's fact log (facts.ts): task.commented for each comment a job writes through here. */
@@ -216,16 +214,6 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     /** `f` alone with every other project write (projects.ts serial) when it sets a project: a PR's fill never lands over a tag. */
     const tagged = <T>(on: boolean, f: () => Promise<T>) => (on && projects ? projects.serial(f) : f());
 
-    // POST /api/companies/:cid/projects/fold: the chief of staff folds a project (its repos and tasks) into another, by name.
-    const folding = method === "POST" ? new RegExp(`^/api/companies/(${ID})/projects/fold$`).exec(path)?.[1] : undefined;
-    if (folding) {
-      if (!roles.includes("fleet-admin")) throw fail(403, "forbidden", "the chief of staff folds projects: ask it");
-      if (decodeURIComponent(folding) !== (await viaPlugin(() => plugin.company(agent)))) throw fail(403, "forbidden", "a job folds projects in its own company only");
-      if (!projects) throw fail(503, "unavailable", "projects are off");
-      if (typeof b.project !== "string" || typeof b.into !== "string" || Object.keys(b).some((k) => k !== "project" && k !== "into")) throw fail(400, "bad_request", "a fold is {project, into}: two project names");
-      try { return answer(200, Buffer.from(JSON.stringify(await projects.fold(decodeURIComponent(folding), b.project, b.into)))); } catch (e) { throw e instanceof ProjectError ? fail(400, "bad_request", e.message) : e; }
-    }
-
     // POST /api/companies/:cid/issues: a new task, as the job's agent, in its own company.
     const company = method === "POST" ? new RegExp(`^/api/companies/(${ID})/issues$`).exec(path)?.[1] : undefined;
     if (company) {
@@ -239,7 +227,8 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
       const child: Record<string, unknown> = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
       const tag = tagOf("created", op);
-      const d = await tagged(b.project !== undefined, async () => {
+      // Under the projects chain whether named or inherited: the project read is the one the task is filed in.
+      const d = await tagged(true, async () => {
         // Its project: the one named, else its parent's, else that of the task the job works on (the delegation chain).
         const projectId = b.project !== undefined ? await projectNamed(decodeURIComponent(company), b.project) : (parent ?? (await issue(task))).projectId;
         if (projectId) child.projectId = projectId;
