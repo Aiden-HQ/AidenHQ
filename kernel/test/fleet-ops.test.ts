@@ -2,13 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createFleetOps, FLEET_OP_KIND } from "../src/fleet-ops.ts";
-import { validate } from "../src/writes.ts";
+import { createWrites, validate } from "../src/writes.ts";
+import { openRecords } from "../src/records.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const STEWARD = { agent: "a-steward", key: "fleet-steward", name: "Fleet Steward", roles: ["fleet-settle"], kind: "run" };
 const OTHER = { agent: "a-eng", key: "engineer", name: "Engineer", roles: [], kind: "run" };
 
-function world() {
-  const db = new DatabaseSync(":memory:");
+function world(db = new DatabaseSync(":memory:")) {
   const routines = { r1: { id: "r1", title: "Daily brief", status: "active", triggers: [{ id: "tr1", kind: "schedule", enabled: true, cronExpression: "0 9 * * *" }] } };
   const agents = { "a-eng": { id: "a-eng", name: "Engineer", status: "idle", lifecycleHolds: [] }, "a-cos": { id: "a-cos", name: "Aiden", status: "idle", lifecycleHolds: [] } };
   const calls = [];
@@ -45,7 +48,7 @@ function world() {
     if (plan.satisfied) return { satisfied: plan.satisfied.evidence };
     return ops.execute({ id: `rec-${calls.length}`, requester, args, targets: plan.targets });
   };
-  return { ops, file, routines, agents, calls, launched, recreated, stopped, gens };
+  return { ops, file, routines, agents, calls, launched, recreated, stopped, gens, db };
 }
 
 test("fleet_operate is the Steward's alone: another agent's request is refused at plan and again at execute", async () => {
@@ -98,4 +101,34 @@ test("stop, restart and roll back: a run stopped with its task open, only a modu
   const r = await w.ops.execute({ id: "late", requester: STEWARD, args: plan.args, targets: plan.targets });
   assert.deepEqual([r.ok, w.launched.length], [false, 1]);
   assert.match(r.text, /now 7, not the 6/);
+  // After a rollback to 6 (its re-apply is generation 9, lkg 6), the next one goes further back to 5, never forward to 7 or 8.
+  w.gens.unshift({ n: 9, product: "b".repeat(40), health: "good", lkg: 6 });
+  assert.match((await w.file(STEWARD, { op: "rollback", target: "last_good", reason: "still bad" })).text, /generation 5/);
+});
+
+test("through the write lifecycle: the tool files kernel.fleet_op for the AI reviewer, its approval runs it, and only a holder of the tool and the role gets that far", async () => {
+  const records = openRecords(join(mkdtempSync(join(tmpdir(), "fleet-ops-")), "kernel.db"));
+  const w = world(records.db);
+  const open = { yes: true };
+  const writes = createWrites({
+    records, registry: () => ({ "kernel.fleet_op": FLEET_OP_KIND }), connections: () => ({}), secret: () => "", resolver: {},
+    onTask: { open: async () => open.yes, notify: async () => {} }, replay: async () => ({ ok: false, text: "" }), autonomy: () => "full",
+    native: { "kernel.fleet_op": (r) => w.ops.execute(r) }, planners: { "kernel.fleet_op": (b) => w.ops.plan(b) },
+  });
+  const who = (roles, tools) => ({ kind: "run", agent: "a-steward", key: "fleet-steward", name: "Fleet Steward", roles, task: "t-check", tools });
+  const args = { op: "pause_routine", target: "r1", reason: "3 failures in a row" };
+  await assert.rejects(writes.request(who(["fleet-settle"], {}), { kind: "kernel.fleet_op", args }), { status: 403 }, "no tool grant");
+  await assert.rejects(writes.request(who([], { fleet_steward: ["fleet_operate"] }), { kind: "kernel.fleet_op", args }), { status: 403 }, "no role");
+  const r = await writes.request(who(["fleet-settle"], { fleet_steward: ["fleet_operate"] }), { kind: "kernel.fleet_op", args });
+  assert.deepEqual([r.tier, r.state, r.card.sentence], [1, "review", "Pause routine Daily brief."]);
+  assert.equal(w.routines.r1.status, "active", "nothing runs before the reviewer");
+  await writes.review(r.id, { verdict: { decision: "approve", reason: "fine", model: "acme/reviewer" }, request: {} });
+  for (let i = 0; i < 100 && records.get(r.id).state !== "done"; i++) await new Promise((ok) => setTimeout(ok, 5));
+  assert.deepEqual([records.get(r.id).state, w.routines.r1.status], ["done", "paused"]);
+  // A rollback approved after its run task closed never runs: the Steward keeps its task open until the result (fleet-check).
+  open.yes = false;
+  const rb = await writes.request(who(["fleet-settle"], { fleet_steward: ["fleet_operate"] }), { kind: "kernel.fleet_op", args: { op: "rollback", target: "last_good", reason: "bad apply" } });
+  await writes.review(rb.id, { verdict: { decision: "approve", reason: "fine", model: "acme/reviewer" }, request: {} });
+  for (let i = 0; i < 100 && records.get(rb.id).state === "approved"; i++) await new Promise((ok) => setTimeout(ok, 5));
+  assert.equal(w.launched.length, 0);
 });

@@ -35,7 +35,7 @@ const ARGS: Schema = {
 export const FLEET_OP_KIND: Kind = { module: "kernel", floor: 1, tools: ["fleet_steward.fleet_operate"], args: ARGS };
 
 type Api = (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>;
-type Gen = { n: number | null; product: string | null; health: string | null };
+type Gen = { n: number | null; product: string | null; health: string | null; lkg?: number | null };
 const refuse = (message: string, status = 422) => Object.assign(new Error(message), { status });
 
 export function createFleetOps({ db, owner, roles, services, running, stop, note, generations, launch, recreate, log = () => {} }: {
@@ -122,11 +122,15 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
     return {};
   }
 
-  /** The newest good generation older than the one running now. */
+  /**
+   * The newest good generation older than the one running now. A generation that re-applied an older one (a rollback, the
+   * auto-revert: its `lkg`) counts as that one, so a second rollback goes further back, never forward to what it left.
+   */
   function lastGood(): Gen {
     const gens = generations().filter((g) => g.health !== "refused");
     const current = gens[0];
-    const to = gens.slice(1).find((g) => g.health === "good" && typeof g.n === "number");
+    const base = current?.lkg ?? current?.n;
+    const to = typeof base === "number" ? gens.find((g) => g.health === "good" && typeof g.n === "number" && g.n < base) : undefined;
     if (!current || !to) throw refuse("no earlier good apply generation to roll back to");
     return to;
   }
