@@ -174,6 +174,30 @@ describe("internal listener", () => {
     }
   });
 
+  it("a Tier 0 merge that finished between the reads reports its end, not the running snapshot", async () => {
+    const running = card({ id: "k-0000000000000060", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "running", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 4, head: "d".repeat(40) }] } });
+    const ended = card({ id: "k-0000000000000060", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "auto", live: false, wakes: false, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":4,"head":"${"d".repeat(40)}","sha":"${"e".repeat(40)}"}]`, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 4, head: "d".repeat(40) }] } });
+    const inner = fakeRecords([ended]);
+    const records: typeof inner = { ...inner, allOf: async (state, kinds, task) => (state === "live" ? [running] : inner.allOf(state, kinds, task)) };
+    const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
+    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
+    const port8 = (board.address() as AddressInfo).port;
+    try {
+      const out = await new Promise<{ approvals: { id: string; state: string; outcomeText?: string }[] }>((resolve, reject) => {
+        request({ host: "127.0.0.1", port: port8, method: "GET", path: `/internal/approvals?issue=${issue.identifier}`, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve(JSON.parse(text)));
+        }).on("error", reject).end();
+      });
+      const mine = out.approvals.find((a) => a.id === "k-0000000000000060")!;
+      expect(mine.state).toBe("auto");
+      expect(mine.outcomeText).toMatch(/^merged-prs: /);
+    } finally {
+      board.close();
+    }
+  });
+
   it("only a merge card's view decodes `prs`: another kind's args cannot break the read", async () => {
     const records = fakeRecords([
       card({ id: "k-0000000000000040", issueId: issue.id, identifier: issue.identifier, action: "apply", tier: 1, state: "used", outcome: "applied", args: { prs: "not-an-array" } }),

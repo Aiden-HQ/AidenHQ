@@ -31,7 +31,7 @@ test("a publish never files a merge: the run checks the task's merge card before
   assert.match(publish, /with such a card but `wakes` false nothing wakes the task: when it still waits on the reviewer or the owner, end the run with `task_wait` on that decision and check again when it wakes/, "a pending decision is a durable wait, never an in-run poll");
   assert.match(publish, /a card's outcome that already names this PR at this head \(`merged-prs`\) means it has landed, so wait for nothing/, "a landed merge is not filed again");
   assert.match(publish, /In the product repo and this instance's agents org a green PR's merge is filed for you and sends a \*\*Done\*\* notice/, "the watched repos file the merge and its notice");
-  assert.match(publish, /on a repository on this server the kernel files it too, at Tier 0, where it wakes nobody: check its outcome rather than waiting for a notice/, "a local merge is filed without a notice");
+  assert.match(publish, /on a repository on this server the kernel files it too; read that card's `wakes` to know whether its outcome reaches you/, "a local merge's card says whether it wakes the task");
   assert.match(publish, /a watched PR the code host woke you about because the task has several open there/, "the watcher's handoff to merge by hand is named");
   assert.match(publish, /A merge that runs at Tier 0 and wakes nobody \(`wakes: false`\) sends no Done notice/, "a Tier 0 merge has no notice to wait for");
   assert.match(publish, /read its state with `task_approvals`, wait, and read it again/, "a still-running merge is followed up to its end by the run");
