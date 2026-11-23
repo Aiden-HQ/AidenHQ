@@ -279,7 +279,8 @@ export function startPrWatch(o: PrWatchOptions) {
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
         catch (e) {
           log("wedged check run's job read failed", { pr: pr.url, head, job: jobId, err: String((e as Error).message).slice(0, 200) });
-          state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+          // A sibling PR at this head may already have had the re-run taken: a failed read never undoes that.
+          if (!prior || prior.startsWith("retry:")) state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
           continue;
         }
@@ -287,7 +288,7 @@ export function startPrWatch(o: PrWatchOptions) {
         // running is not stuck, and a details URL never points another head's or check's job here.
         // A rate limit or an outage on the read backs off like an unanswered one: GitHub is not asked again on every tick.
         if (job.status === 429 || job.status >= 500) {
-          state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+          if (!prior || prior.startsWith("retry:")) state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
           continue;
         }
@@ -299,7 +300,8 @@ export function startPrWatch(o: PrWatchOptions) {
         // is a check of its own and gets its own ask.
         const replaced = !!asked?.accepted && !!job.body && Number(job.body.run_attempt ?? 1) > 1;
         if ((asked?.accepted && (Number(asked.job) === Number(jobId) || replaced)) || (prior && !prior.startsWith("retry:"))) {
-          out.push({ at: Date.parse(asked?.at ?? prior!), accepted: true, name: String(c.name ?? ""), key: name });
+          const at = prior && !prior.startsWith("retry:") ? Date.parse(prior) : Date.parse(asked?.at ?? "");
+          out.push({ at, accepted: true, name: String(c.name ?? ""), key: name });
           continue;
         }
         const tell = () => {
@@ -577,7 +579,10 @@ export function startPrWatch(o: PrWatchOptions) {
       // The stuck checks whose reporting interval has passed. A check the merge waits on wakes the task once at this head; one
       // that only a matrix job hangs on is logged once, because it holds nothing and must not use up the merge's report.
       const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS);
-      const held = due.filter((w) => named.some((c) => c.pending && c.name === w.name));
+      // A rollup with more contexts than one page cannot show whether a check is required, and the merge gate refuses a
+      // truncated rollup: a check it does not list is unknown, not optional.
+      const truncated = !!rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
+      const held = due.filter((w) => truncated || named.some((c) => c.pending && c.name === w.name));
       const optional = due.filter((w) => !held.includes(w));
       if (held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
