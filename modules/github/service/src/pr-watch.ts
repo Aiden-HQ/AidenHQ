@@ -126,7 +126,7 @@ export function startPrWatch(o: PrWatchOptions) {
   // The wedged check runs this pass:
   let wedgedReads = 0;   // their Actions jobs read, across every PR of every repo
   let wedgedAsks = 0;    // the re-runs asked
-  let wedgedAt = 0;      // where the last PR's list stopped, so the next visit resumes rather than starving its tail
+  const wedgedAt = new Map<string, number>(); // `<pr url>:<head>` -> where its next visit starts, so the limit starves none
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => ({}));
@@ -257,6 +257,10 @@ export function startPrWatch(o: PrWatchOptions) {
      */
     async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
+      // Every context the rollup carries is finished: there is nothing to recover, and the REST read is not made at all
+      // (a healthy head costs the scan nothing).
+      const rollup = rollupOf(pr);
+      if (rollup?.state === "SUCCESS" && !(rollup.contexts?.nodes ?? []).some((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED")) return [];
       const url = pr.url.toLowerCase(), head = pr.headRefOid;
       const runs: Json[] = [];
       let total = 0;
@@ -275,11 +279,11 @@ export function startPrWatch(o: PrWatchOptions) {
       // bounded number of their jobs and asks for a bounded number of re-runs, across all PRs, so a queued matrix cannot hold
       // a later PR's merge. The scan starts from where this head's last visit stopped, so no check is starved by the limit.
       const live = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed");
-      const start = live.length ? wedgedAt % live.length : 0;
-      wedgedAt = start;
+      const cursor = `${url}:${head}`, start = live.length ? (wedgedAt.get(cursor) ?? 0) % live.length : 0;
+      wedgedAt.set(cursor, start);
       const readsAt = wedgedReads, asksAt = wedgedAsks;
       for (const c of [...live.slice(start), ...live.slice(0, start)]) {
-        if (wedgedReads >= WEDGED_READS_PER_PASS || wedgedAsks >= WEDGED_ASKS_PER_PASS || wedgedReads - readsAt >= WEDGED_READS_PER_PR || wedgedAsks - asksAt >= WEDGED_ASKS_PER_PR) { wedgedAt = start + 1; break; }
+        if (wedgedReads >= WEDGED_READS_PER_PASS || wedgedAsks >= WEDGED_ASKS_PER_PASS || wedgedReads - readsAt >= WEDGED_READS_PER_PR || wedgedAsks - asksAt >= WEDGED_ASKS_PER_PR) { wedgedAt.set(cursor, start + 1); break; }
         const ledgerKey = `${url}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
         const seen: { at: string; done: { check: number; attempt: number; accepted: boolean }[] } | undefined = state.wedged[ledgerKey];
         const myself = seen?.done.find((d) => d.check === Number(c.id));
@@ -335,7 +339,7 @@ export function startPrWatch(o: PrWatchOptions) {
         save();
         // A refusal keeps the first ask's time, so a check GitHub keeps refusing is reported once the interval has passed.
         if (r.status >= 300 && Date.now() - Date.parse(state.wedged[ledgerKey].at) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(state.wedged[ledgerKey].at), accepted: false });
-        wedgedAt = start + 1;
+        wedgedAt.set(cursor, start + 1);
       }
       return out;
     }
