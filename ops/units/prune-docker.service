@@ -13,14 +13,17 @@ Description=AidenHQ Docker cleanup (build cache over 20 GB, images unused for tw
 # reaching the later steps and the verification.
 #
 # The cap is attempted in both flag forms because which one the CLI knows depends on whether the buildx plugin is
-# installed (2026-11-21: a deploy logged `buildx Docker CLI plugin not found: falling back to the classic builder`).
-# `--max-used-space` is buildx's; the classic fallback only knows `--keep-storage`. Where one is accepted it caps at
-# 20 GB and the other is a no-op (buildx's `--keep-storage` is its deprecated alias, a floor, never a wider retention).
+# installed. On this host both forms run buildx: `--max-used-space` caps the cache, while `--keep-storage` is a
+# deprecated alias for `--reserved-space` (a reservation, not a cap); the second form stays as the classic builder's cap
+# on a host without the plugin.
+#
+# `-a` on both is what lets the prune reach internal/frontend and shared-with-image records. Without it they survive and
+# `docker system df` still counts them in Size and Reclaimable, so the cache never falls to the ceiling.
 # Each records its status through the same wrapper as the other steps: one failing is expected (`unknown flag` on a CLI
 # that lacks that form), but both failing means no form capped the cache, and the verification must see that even when a
 # cache under its ceiling would otherwise read clean.
-ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -f --max-used-space 20GB
-ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -f --keep-storage 20GB
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -af --max-used-space 20GB
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -af --keep-storage 20GB
 # The cache as it is once the two builder prunes have finished, read here — before the image and container prunes, which
 # take minutes on a large host — so the verification judges the ceiling on the result of pruning, not on a snapshot a build
 # started since has grown. Prefixed like every other step; its status and rows are what the verification reads.
