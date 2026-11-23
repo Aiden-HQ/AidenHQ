@@ -808,8 +808,8 @@ test("two PRs at one head share one accepted re-run ask", async (t) => {
   assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/78/rerun").length, 0, "the replacement job is not re-run by the second PR");
 });
 
-// A pass spends at most PROBES_PER_PASS Actions job reads on the recovery paths: later PRs are still scanned this tick.
-test("recovery probes are bounded per pass, so a PR with many unfinished checks does not hold the next PR's merge", async (t) => {
+// PROBES_PER_PASS Actions job reads per PR on the recovery paths: later PRs are still scanned in the same tick.
+test("recovery probes are bounded per PR, so a PR with many unfinished checks does not hold the next PR's merge", async (t) => {
   const many = (n) => ({ state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: n }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `job-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } });
   const c = await rig(t);
   // The first PR (oldest) has 12 unfinished checks; the second is green and must still have its merge filed this tick.
@@ -819,21 +819,40 @@ test("recovery probes are bounded per pass, so a PR with many unfinished checks 
   assert.equal(c.merges.length, 1, "the green PR's merge is still filed in the same pass");
 });
 
-// The budget's cursor: a pass that runs out starting at an older PR's unfinished checks must not starve a newer PR's
-// recovery forever. The next pass starts at the PR after the one it stopped in.
-test("a probe budget spent on an older PR does not starve a newer PR's wedged check on the next pass", async (t) => {
+// The budget is per PR: an older PR with many unfinished checks spends only its own probes, so a newer PR's recovery
+// still happens in the same pass instead of queueing behind it for many ticks.
+test("a probe budget spent on an older PR does not starve a newer PR's wedged check", async (t) => {
   const many = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: 12 }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `old-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } };
-  const one = (id) => ({ state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: `CR_${id}`, databaseId: id, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 600 } } }] } });
+  const one = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: "CR_90", databaseId: 90, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 600 } } }] } };
   const c = await rig(t, {
     restRuns: (head) => head === "h60"
       ? Array.from({ length: 12 }, (_, i) => ({ id: i + 1, node_id: `CR_${i + 1}`, name: `old-${i + 1}`, status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${i + 1}` }))
       : [{ id: 90, node_id: "CR_90", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 600 }, details_url: `https://github.com/acme/app/actions/runs/600/job/90` }],
   });
-  // The PR list is newest first, as GitHub's CREATED_AT DESC query returns it: 60 is the older PR.
-  c.set([c.agentPr(61, { commits: { nodes: [{ commit: { statusCheckRollup: one(90) } }] }, headRefOid: "h61" }), c.agentPr(60, { commits: { nodes: [{ commit: { statusCheckRollup: many } }] }, headRefOid: "h60" })]);
+  // Newest first, as GitHub's query returns them: 60 is the older PR.
+  c.set([c.agentPr(61, { commits: { nodes: [{ commit: { statusCheckRollup: one } }] }, headRefOid: "h61" }), c.agentPr(60, { commits: { nodes: [{ commit: { statusCheckRollup: many } }] }, headRefOid: "h60" })]);
   await c.watch.tick();
-  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "the pass stays bounded");
-  assert.ok(!c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the newer PR is behind the spent budget this pass");
+  const probesFor = (re) => c.gh.filter((g) => re.test(g)).length;
+  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/([1-9]|1[0-2])$/), 10, "the older PR stops at its own ten probes");
+  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/90$/), 1, "the newer PR still gets its own probe this pass");
+  assert.ok(c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the newer PR's check is probed in the same pass");
+});
+
+// A head with more failed jobs than one budget covers: the next pass finishes judging and asks for the re-run, rather than
+// reading the same first slice again or waking the task for a job that only looks red.
+test("a never-started check whose job the budget could not read is judged on the next pass, then re-run", async (t) => {
+  const fails = (count) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: count }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `job-${i + 1}`, status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } })) } });
+  const c = await rig(t, {
+    steps: [],
+    restRuns: () => Array.from({ length: 11 }, (_, i) => ({ id: i + 1, node_id: `CR_${i + 1}`, name: `job-${i + 1}`, status: "completed", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${i + 1}` })),
+  });
+  c.set([c.agentPr(62, { commits: { nodes: [{ commit: { statusCheckRollup: fails(11) } }] }, headRefOid: "h62" })]);
   await c.watch.tick();
-  assert.ok(c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the next pass starts at the newer PR, so its check is probed");
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "the first pass reads ten");
+  assert.equal(c.woke.length, 0, "an unprobed job never looks like a judged one: no red-head wake");
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 0);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 11, "the next pass reads only the one left");
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 1, "all eleven judged: the re-run is asked");
+  assert.equal(c.woke.length, 0);
 });
