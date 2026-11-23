@@ -34,6 +34,36 @@ export function failingScopes(rows: FailingScope[]): { key: string; reason: stri
   return rows.filter((x) => !PER_TARGET_ERRORS.has(x.source)).map((x) => ({ key: `${x.source}:${x.scope}`, reason: `source src_${x.source}, scope ${x.scope}: every pass has failed since ${x.since ? `its last good pass at ${x.since}` : "it started"}; the latest error:\n${fence(x.error, "ingest.error")}` }));
 }
 
+type SpendTop = { day: string; name: string; cost_usd: number; calls: number };
+type SpendRead = { usage?: { day: string; cost_usd: number; priced: number }[]; spend_components?: SpendTop[]; spend_subjects?: SpendTop[] };
+const SPEND_FACTOR = 2; // today's billed spend over this many times the prior days' daily average
+const SPEND_BASELINE_DAYS = 3; // priced days (of the prior 7) a baseline needs: a new install has none and stays silent
+const SPEND_FLOOR_USD = 10; // below this a doubling is noise, not spend
+/**
+ * Billed spend today (UTC) above 2x the average of the prior 7 complete days that had priced spend, once at least 3 such
+ * days exist. The incident names the day's costliest components and subjects; subjects can carry a caller's text (a check's
+ * name), so they reach the Steward fenced.
+ */
+export function spendSpike(r: SpendRead, t: number): { key: string; reason: string }[] {
+  const today = new Date(t).toISOString().slice(0, 10);
+  const first = new Date(t - 7 * DAY_MS).toISOString().slice(0, 10);
+  const byDay = new Map<string, number>();
+  for (const u of r.usage ?? []) if (u.priced > 0) byDay.set(u.day, (byDay.get(u.day) ?? 0) + (u.cost_usd ?? 0));
+  const prior = [...byDay].filter(([day, usd]) => day >= first && day < today && usd > 0).map(([, usd]) => usd);
+  const spent = byDay.get(today) ?? 0;
+  if (prior.length < SPEND_BASELINE_DAYS) return [];
+  const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
+  if (spent < SPEND_FLOOR_USD || spent <= SPEND_FACTOR * avg) return [];
+  const list = (rows: SpendTop[] | undefined) => (rows ?? []).filter((x) => x.day === today).map((x) => `${x.name} $${x.cost_usd.toFixed(2)} (${x.calls} calls)`).join("; ") || "none recorded";
+  return [{ key: today, reason: `billed spend today is $${spent.toFixed(2)}, ${(spent / avg).toFixed(1)}x the $${avg.toFixed(2)} daily average of the prior ${prior.length} days.\nTop components: ${list(r.spend_components)}.\nTop subjects:\n${fence(list(r.spend_subjects), "spend.subjects")}` }];
+}
+
+/** A source scope whose last two completed passes each fetched fewer records than the source reported. */
+type ShortScope = { source: string; scope: string; total: number; fetched: number };
+export function shortScopes(rows: ShortScope[]): { key: string; reason: string }[] {
+  return rows.map((x) => ({ key: `${x.source}:${x.scope}:incomplete`, reason: `source src_${x.source}, scope ${x.scope}: its last two completed passes fetched fewer records than the source reported (${x.fetched} of ${x.total} in the latest): records are being missed (paging, a filter or a cap in the writer)` }));
+}
+
 const PR_OPEN_MS = 60 * MIN; // a pull request the fleet published open this long without merging (the warehouse lags GitHub by up to 15 minutes)
 
 type PrRow = { repo: string; number: number; opened_at: string; draft: boolean; ready_at?: string | null; preview_url?: string };
@@ -903,9 +933,15 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       return down > DOWN_MS ? [{ key: "apps-mcp", critical: true, reason: `apps-mcp (the apps platform) not answering for ${mins(down)}` }] : [];
     },
     async source() {
-      const r = await d.apps<{ sources?: SourceRow[]; failing_scopes?: FailingScope[] }>("/internal/sources");
+      const r = await d.apps<{ sources?: SourceRow[]; failing_scopes?: FailingScope[]; short_scopes?: ShortScope[] }>("/internal/sources");
       if (!r.sources) return undefined; // the warehouse isn't set up
-      return [...staleSources(r.sources, now()), ...failingScopes(r.failing_scopes ?? [])];
+      return [...staleSources(r.sources, now()), ...failingScopes(r.failing_scopes ?? []), ...shortScopes(r.short_scopes ?? [])];
+    },
+    // Billed spend today far above the recent days' (the kernel's one work read, which carries the day's top components and subjects).
+    async spend() {
+      const t = now();
+      const from = new Date(Date.parse(new Date(t).toISOString().slice(0, 10)) - 7 * DAY_MS).toISOString();
+      return spendSpike((await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`)) as SpendRead, t);
     },
     // Monitoring alerts (alerts.ts): one incident per firing alert, recovered when it resolves.
     alert: d.alerts,

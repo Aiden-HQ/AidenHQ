@@ -89,6 +89,9 @@ CREATE INDEX IF NOT EXISTS change_entity ON ${s}.change (entity, entity_id);`;
 const asText = (v: unknown): string | null => (v == null ? null : typeof v === "string" ? v : v instanceof Date ? v.toISOString() : JSON.stringify(v));
 const capped = (v: unknown) => capText(asText(v)).text;
 
+/** What a pass reports beyond its row count (SourceStore.run). */
+export type Pass = { complete?: { total: number; fetched: number } };
+
 export class SourceStore {
   private migrated = false;
   constructor(readonly schema: string, readonly pool: pg.Pool) {
@@ -216,21 +219,25 @@ export class SourceStore {
 
   /**
    * One ingest pass: records src_meta.ingest_run (rows = rows written with a difference) and rethrows a failure.
-   * `commit` is the git HEAD a repo target was read at, when the pass covers a checkout.
+   * `commit` is the git HEAD a repo target was read at, when the pass covers a checkout. A pass that read a scope to its end and
+   * got a reliable count of what the source holds for it (the API's total) says so on `pass.complete`: `total` (the source's count)
+   * and `fetched` (distinct records the pass read). The Fleet Steward flags a scope whose completed passes keep fetching fewer.
+   * A pass that stopped early, resumed mid-scope or whose API gives no total leaves it unset.
    */
-  async run(source: string, scope: string, fn: () => Promise<number>, meta: { commit?: string | null } = {}): Promise<number> {
+  async run(source: string, scope: string, fn: (pass: Pass) => Promise<number>, meta: { commit?: string | null } = {}): Promise<number> {
     const started = new Date();
     let rows = 0;
     let error: string | null = null;
+    const pass: Pass = {};
     try {
-      rows = await fn();
+      rows = await fn(pass);
       return rows;
     } catch (err) {
       error = String((err as Error).message ?? err).slice(0, 500);
       throw err;
     } finally {
       await this.pool
-        .query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error, commit) VALUES ($1, $2, $3, $4, $5, $6)`, [source, scope, started, rows, error, meta.commit || null])
+        .query(`INSERT INTO src_meta.ingest_run (source, scope, started_at, rows, error, commit, total, fetched) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [source, scope, started, rows, error, meta.commit || null, error ? null : (pass.complete?.total ?? null), error ? null : (pass.complete?.fetched ?? null)])
         .catch(() => undefined);
     }
   }

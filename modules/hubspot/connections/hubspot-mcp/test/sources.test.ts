@@ -207,3 +207,19 @@ it("an out-of-range headcount is stored as null and the type goes on", async () 
   await syncObject(store, async () => answer([company("1", "3000000000"), company("2", "250")]), "companies", opts());
   expect(writes.map((w) => w.row.employees)).toEqual([null, 250]);
 });
+
+it("a search that ran from its start to its end reports HubSpot's total against the distinct records read; a short one is the gap", async () => {
+  const mk = (total: number, ids: string[]) => async () => answer(ids.map((id) => deal(id, "2026-11-10T10:00:00.000Z")), ids.length, total);
+  const whole = { pass: {} as any };
+  await syncObject(fakeStore().store, mk(2, ["1", "2"]), "deals", opts(whole));
+  expect(whole.pass.complete).toEqual({ total: 2, fetched: 2 });
+  const gap = { pass: {} as any };
+  await syncObject(fakeStore().store, mk(5000, ["1", "2"]), "deals", opts(gap));
+  expect(gap.pass.complete).toEqual({ total: 5000, fetched: 2 });
+  // A pass resumed inside a bulk-edit time counts from the middle: no comparison.
+  const f = fakeStore();
+  await f.store.saveScope("deals", "2026-11-10T10:00:00.000Z#7", false);
+  const resumed = { pass: {} as any };
+  await syncObject(f.store, async (tool, args: any) => answer([deal("8", "2026-11-10T10:00:00.000Z")], 1, 9), "deals", opts(resumed));
+  expect(resumed.pass.complete).toBeUndefined();
+});

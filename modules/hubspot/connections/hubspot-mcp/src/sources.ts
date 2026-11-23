@@ -8,7 +8,7 @@
 // HubSpot sends no delete signal, so a record deleted there stays here. No LLM.
 import type { Logger } from "pino";
 import { ACTIVITY_TYPES, dealStages, isoOf, ownersPage, OBJECTS, SEARCH_LIMIT, searchPage, searchTie, SETTING_OBJECTS, type CallHubSpot, type CrmRecord, type ObjectDef } from "./adapter.js";
-import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
+import { capText, SourceStore, tableDdl, USERS, type Pass, type Row, type Table } from "./source-store.js";
 
 const CONTACT: Table = {
   name: "contact",
@@ -164,16 +164,19 @@ export function selected(setting: string[]): string[] {
  * (rows at that time are read again: unchanged rows are no-ops), so a record edited meanwhile can't shift another out of a page.
  * A time shared by more than one page of records (a bulk edit) can't be passed that way, so it is read by id instead (`afterId`
  * resumes inside it): `state.tieId` is the id read last (undefined outside such a time) and `state.doneMs` the latest such time
- * read whole.
+ * read whole. A pass that starts fresh (not inside a bulk-edit time) keeps HubSpot's `total` for its first search (the records
+ * modified since the cursor) and the distinct ids it read, which `syncObject` compares when the search ended.
  */
-async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string; doneMs?: number }, deadline: number): AsyncGenerator<CrmRecord> {
+async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string> }, deadline: number): AsyncGenerator<CrmRecord> {
   let since = Date.parse(from.sinceIso);
   let afterId = from.afterId;
   for (;;) {
     if (afterId === undefined) {
-      const page = await searchPage(call, def, since);
+      const { records: page, total } = await searchPage(call, def, since);
+      if (from.afterId === undefined && state.total === undefined) state.total = total;
       let last = since;
       for (const r of page) {
+        state.seen.add(r.id);
         yield r;
         const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
         if (t > last) last = t;
@@ -194,6 +197,7 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       for (const r of page) {
         id = r.id;
         state.tieId = id;
+        state.seen.add(r.id);
         yield r;
       }
       if (page.length < SEARCH_LIMIT) break;
@@ -206,8 +210,8 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
   }
 }
 
-/** One object type's pass. Returns rows written with a difference. */
-export async function syncObject(store: SourceStore, call: CallHubSpot, kind: string, o: { days: number; deadline: number; now?: number; log?: Pick<Logger, "warn"> }): Promise<number> {
+/** One object type's pass. Returns rows written with a difference; `o.pass` receives the completeness (HubSpot's total against the records read) of a search that ran from its start to its end. */
+export async function syncObject(store: SourceStore, call: CallHubSpot, kind: string, o: { days: number; deadline: number; now?: number; log?: Pick<Logger, "warn">; pass?: Pass }): Promise<number> {
   const def = OBJECTS[kind]!;
   const isActivity = (ACTIVITY_TYPES as readonly string[]).includes(kind);
   const scope = isActivity ? `activity:${kind}` : kind;
@@ -222,7 +226,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
   const from = newest;
   let tieId = cursorId || undefined;
-  const state: { ended: boolean; tieId?: string; doneMs?: number } = { ended: false };
+  const state: { ended: boolean; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string> } = { ended: false, seen: new Set() };
   try {
     for await (const r of records(call, def, { sinceIso: newest, afterId: tieId }, state, o.deadline)) {
       let row: Row;
@@ -251,6 +255,8 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
     await store.saveScope(scope, tieId ? `${newest}#${tieId}` : back, state.ended);
   }
   if (skipped) o.log?.warn({ kind, skipped }, "src_hubspot: records skipped");
+  // Only a search that began at its start (a resumed bulk-edit read counts from the middle) and ended is comparable with HubSpot's total.
+  if (o.pass && state.ended && typeof state.total === "number") o.pass.complete = { total: state.total, fetched: state.seen.size };
   return written;
 }
 
@@ -289,7 +295,7 @@ export function startSync(store: SourceStore, call: CallHubSpot, kinds: string[]
     for (const kind of kinds) {
       if (Date.now() >= passEnd) break;
       try {
-        const rows = await store.run("hubspot", kind, () => syncObject(store, call, kind, { ...o, deadline: Math.min(passEnd, Date.now() + slice), log }));
+        const rows = await store.run("hubspot", kind, (pass) => syncObject(store, call, kind, { ...o, deadline: Math.min(passEnd, Date.now() + slice), log, pass }));
         log.info({ kind, rows }, "src_hubspot sync done");
       } catch (err) {
         log.warn({ kind, err: String(err).slice(0, 300) }, "src_hubspot sync failed");
