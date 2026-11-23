@@ -297,7 +297,13 @@ export function startPrWatch(o: PrWatchOptions) {
         // The ask's clock already runs: the check is reported from it (refreshed below if this tick's retry is taken), and
         // one this head took is not re-run again. The same job re-run for a sibling PR at this head is not asked again either,
         // but its report is this PR's own.
-        if (asked?.accepted || (prior && !prior.startsWith("retry:"))) { out.push({ at: Date.parse(asked?.at ?? prior!), accepted: true, name: String(c.name ?? ""), key: name }); continue; }
+        // A re-run this head took for this very job, or for the job it replaced (a later attempt), is not asked again. A job
+        // of another attempt-1 lineage that merely shares the display name is a check of its own and gets its own ask.
+        const replaced = !!asked?.accepted && !!job.body && Number(job.body.run_attempt ?? 1) > 1;
+        if ((asked?.accepted && (Number(asked.job) === Number(jobId) || replaced)) || (prior && !prior.startsWith("retry:"))) {
+          out.push({ at: Date.parse(asked?.at ?? prior!), accepted: true, name: String(c.name ?? ""), key: name });
+          continue;
+        }
         const tell = () => {
           const now = { at: Date.parse(state.wedged[name].at), accepted: state.wedged[name].accepted, name: String(c.name ?? ""), key: name };
           const i = out.findIndex((o) => o.key === now.key);
