@@ -809,6 +809,14 @@ const clip = (text: string, max: Json, more: Json) => {
   return t.length > max ? `${t.slice(0, max)}\n[truncated, ${t.length - max} more chars: ${more}]` : t;
 };
 const DESC_MAX = 8000;
+/** A merge's evidence line parsed and checked: a JSON array of {repo, number, head} bindings, or undefined (its text is then
+ * prose, fenced like any other). A malformed or truncated line must never pass for "these PRs landed". */
+function mergedEvidence(said: string): string | undefined {
+  let v: unknown;
+  try { v = JSON.parse(said); } catch { return undefined; }
+  const ok = Array.isArray(v) && v.every((p) => p && typeof p.repo === "string" && Number.isInteger(p.number) && typeof p.head === "string");
+  return ok ? said : undefined;
+}
 /** The actions whose outcome is merge evidence: the board's short `merge` and the two registered code-host merge kinds. A module's
  * own kind, whatever its name or text, is never merge evidence. */
 const MERGE_KINDS = ["merge", "github.merge", "codehost-local.merge"];
@@ -1322,7 +1330,9 @@ const TOOLS: Record<string, Tool> = {
           // it begins with, and must not pass for a merge that landed the PR. The evidence line is structured and returned whole
           // as `mergedPrs`; the executor's prose is untrusted text, fenced and labelled (300 characters at most), as its notice is.
           const merge = MERGE_KINDS.includes(a.action);
-          const evidence = merge && (first ?? "").startsWith("merged-prs: ") ? (first ?? "").slice("merged-prs: ".length) : undefined;
+          // Only a complete, well-formed list is evidence: a truncated line (the kernel's own outcome cap) or a producer's odd
+          // payload stays a module's words in the fence, where nothing reads it as a landing.
+          const evidence = merge && (first ?? "").startsWith("merged-prs: ") ? mergedEvidence((first ?? "").slice("merged-prs: ".length)) : undefined;
           const prose = (evidence !== undefined ? rest.join("\n") : text).replace(/<\/?untrusted-outcome[^>]*>/gi, "").trim().slice(0, 300);
           const outcomeText = prose ? `<untrusted-outcome source="${a.action} card ${a.id}, ${a.state}">\n${prose}\n</untrusted-outcome>` : "";
           // A rejection's reason is the reviewer's or the owner's words, which may quote the diff: fenced and labelled, so a run
