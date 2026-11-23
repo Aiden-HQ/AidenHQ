@@ -148,6 +148,22 @@ export function channelKind(c: Record<string, any>): ChannelKind | undefined {
   return undefined;
 }
 
+/**
+ * The kind a `missing_scope` answer names, from the `needed` field Slack fills in. A sign-in without `im:read` can't
+ * describe a DM, but it can still say the conversation is one: that is enough to keep it out of a public-only search.
+ * More than one kind named is ambiguous, so it stays unknown rather than being guessed.
+ */
+const KIND_SCOPE: Record<string, ChannelKind> = { "channels:read": "public", "groups:read": "private", "im:read": "im", "mpim:read": "mpim" };
+export function kindFromNeeded(needed: unknown): ChannelKind | undefined {
+  const scopes = (typeof needed === "string" ? needed : Array.isArray(needed) ? needed.filter((s): s is string => typeof s === "string").join(",") : "").split(/[,\s]+/).filter(Boolean);
+  const kinds = new Set<ChannelKind>();
+  for (const scope of scopes) {
+    const kind = KIND_SCOPE[scope];
+    if (kind) kinds.add(kind);
+  }
+  return kinds.size === 1 ? [...kinds][0] : undefined;
+}
+
 export interface ScanOptions {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -198,7 +214,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const visibility = new Map<string, boolean>();
   let cursor = plan.cursor ?? "";
 
-  const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string }> => {
+  const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string; error?: string; needed?: unknown }> => {
     const url = new URL(`https://slack.com/api/${method}`);
     for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
     let res: Response | undefined;
@@ -215,23 +231,26 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     }
     if (!res.ok) return { ok: false, detail: `${method} answered HTTP ${res.status}` };
     const json = (await res.json().catch(() => undefined)) as Record<string, any> | undefined;
-    if (!json || json.ok !== true) return { ok: false, detail: `${method} refused the read (${String(json?.error ?? "no answer")})` };
+    if (!json || json.ok !== true) return { ok: false, detail: `${method} refused the read (${String(json?.error ?? "no answer")})`, ...(json ? { error: String(json.error ?? ""), needed: json.needed } : {}) };
     return { ok: true, json };
   };
 
   /**
    * Whether this search may show the channel: `slack_search_public` shows public channels only, and
    * `slack_search_public_and_private` shows a kind only when the sign-in granted that kind's search scope, so a
-   * reaction read never returns what the tool itself is not allowed to. A channel Slack can't describe fails the scan.
+   * reaction read never returns what the tool itself is not allowed to. A channel Slack can't describe fails the scan,
+   * unless its `missing_scope` answer names the kind: that is still enough to scope it correctly.
    */
   const visible = async (channel: string): Promise<boolean | string> => {
     const known = visibility.get(channel);
     if (known !== undefined) return known;
     const r = await get("conversations.info", { channel });
-    // A channel that is gone or that this sign-in can't see is simply not shown. A `missing_scope` (or any transient
-    // failure) means we can't tell whether it is in scope at all: the set is unknown, never silently short.
-    if (!r.ok) return UNREACHABLE.test(r.detail) ? (visibility.set(channel, false), false) : r.detail;
-    const kind = channelKind(r.json.channel ?? {});
+    // A channel that is gone or that this sign-in can't see is simply not shown. Any other failure means we can't tell
+    // whether it is in scope at all: the set is unknown, never silently short. A `missing_scope` that names the kind
+    // (Slack's `needed` field) still says what the conversation is, so it can be scoped like a described one.
+    if (!r.ok && UNREACHABLE.test(r.detail)) return visibility.set(channel, false), false;
+    const kind = r.ok ? channelKind(r.json.channel ?? {}) : r.error === "missing_scope" ? kindFromNeeded(r.needed) : undefined;
+    if (!r.ok && !kind) return r.detail;
     if (!kind) return `Slack didn't say what kind of conversation ${channel} is`;
     const ok = (plan.publicOnly ? kind === "public" : true) && (plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]));
     visibility.set(channel, ok);
