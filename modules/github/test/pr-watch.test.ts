@@ -135,7 +135,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204 } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restStatus } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -155,7 +155,8 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (headRuns) {
       const head = open.find((p) => p.headRefOid === headRuns[1]);
       const nodes = head?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-      return { status: 200, body: { check_runs: nodes.filter((n) => n.__typename === "CheckRun").map((n) => ({ id: n.databaseId, node_id: n.id, name: n.name, status: n.status, app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/${n.checkSuite?.workflowRun?.databaseId ?? 500}/job/${n.databaseId}` })) } };
+      const runs = nodes.filter((n) => n.__typename === "CheckRun").map((n) => ({ id: n.databaseId, node_id: n.id, name: n.name, status: restStatus?.(n) ?? n.status, app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/${n.checkSuite?.workflowRun?.databaseId ?? 500}/job/${n.databaseId}` }));
+      return { status: 200, body: { total_count: runs.length, check_runs: runs } };
     }
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (method === "POST" && /^\/repos\/acme\/app\/actions\/jobs\/\d+\/rerun$/.test(path)) return { status: jobRerun(), body: {} };
@@ -248,6 +249,14 @@ test("a check run still in_progress after its job completed is re-run once at th
   assert.ok(!fresh.gh.includes("POST /repos/acme/app/actions/jobs/77/rerun"), "a job inside the grace period is waited for");
 });
 
+test("a check run that completed before the REST read is not re-run again", async (t) => {
+  // The pass's rollup still says in_progress, but GitHub's REST list, read afterwards, already has it completed.
+  const c = await rig(t, { restStatus: () => "completed" });
+  c.set([c.agentPr(52, stuckPr(52))]);
+  await c.watch.tick();
+  assert.ok(!c.gh.includes("POST /repos/acme/app/actions/jobs/77/rerun"), "nothing is re-run for a check GitHub already concluded");
+});
+
 test("a wedged check run's job re-run GitHub refused is asked again after its backoff, not recorded as handled", async (t) => {
   const c = await rig(t, { jobRerun: () => 502 });
   c.set([c.agentPr(43, stuckPr(43))]);
@@ -322,7 +331,8 @@ test("a re-run GitHub kept refusing is reported after the interval, and an unans
     const head = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/)?.[1];
     if (head) {
       const nodes = open.find((p) => p.headRefOid === head)?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-      return { status: 200, body: { check_runs: nodes.map((n) => ({ id: n.databaseId, node_id: n.id, name: n.name, status: n.status, app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${n.databaseId}` })) } };
+      const runs = nodes.map((n) => ({ id: n.databaseId, node_id: n.id, name: n.name, status: n.status, app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${n.databaseId}` }));
+      return { status: 200, body: { total_count: runs.length, check_runs: runs } };
     }
     if (path.startsWith("/repos/acme/app/actions/jobs/")) throw new Error("The operation was aborted due to timeout");
     return { status: 200, body: {} };

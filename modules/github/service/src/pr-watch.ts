@@ -237,40 +237,30 @@ export function startPrWatch(o: PrWatchOptions) {
      * uses (a refused or unanswered re-run is asked again after five minutes, never counted as handled). Not on a
      * cross-repository PR.
      *
-     * The check run is matched to its REST entry (which carries the full Actions job id in `details_url`, with the app and the
-     * job's own `check_run_url` and `head_sha` proving it belongs here) by its suite and its start, so a superseded attempt
-     * with the same name is never mistaken for the current one: the rollup's `databaseId` is a 32-bit GraphQL Int and no
-     * longer holds a job id. The bookkeeping is keyed by the check's suite and name at the head, so a re-run's replacement is
-     * the same stuck check rather than a new one, and the first ask's time is kept across refusals.
+     * The list is REST's own: it carries the full Actions job id in `details_url` (the rollup's `databaseId` is a 32-bit
+     * GraphQL Int and no longer holds one), every page, and the job's `check_run_url` and `head_sha` prove the job belongs
+     * here. The bookkeeping is keyed by the check's suite and name at the head, so a re-run's replacement is the same stuck
+     * check rather than a new one, and the first ask's time is kept across refusals.
      */
     async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
-      // Each stuck check is judged on its own REST entry, so the rollup's first page is enough: a check past it is handled
-      // when the rollup pages to it, and the ones here are never held back by the rest.
-      const stuck = (rollupOf(pr)?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED" && n.id);
-      if (!stuck.length) return [];
-      const url = pr.url.toLowerCase();
-      // The latest check run of each name, as the rollup carries them: no superseded attempt, and the node id below picks
-      // the very one. A head with more than a page of names is paged until the total is in, so no stuck check is missed.
+      // The head's current check runs over REST (the latest of each name, every page): that list is complete where the
+      // rollup's first page is not, and it is fresher than the rollup read earlier in the pass. Only GitHub Actions' own,
+      // still unfinished checks have a job to re-run: another app's is not ours to fix.
       const runs: Json[] = [];
+      let total = 0;
+      const url = pr.url.toLowerCase();
       try {
         for (let page = 1; page <= 5; page++) {
           const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${pr.headRefOid}/check-runs?filter=latest&per_page=100&page=${page}`);
           if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) break;
           runs.push(...listed.body.check_runs);
-          if (runs.length >= Number(listed.body.total_count ?? 0) || listed.body.check_runs.length < 100) break;
+          total = Number(listed.body.total_count ?? 0);
+          if (runs.length >= total || listed.body.check_runs.length < 100) break;
         }
       } catch (e) { log("wedged check runs' read failed", { pr: pr.url, head: pr.headRefOid, err: String((e as Error).message).slice(0, 200) }); return []; }
-      if (!runs.length) return [];
-      // The REST entry of each stuck check run: the same check run, by the global node id both APIs carry (the numeric ids
-      // differ in kind between them, and a name alone would confuse a superseded attempt with the current one).
-      const current = stuck.map((n: Json) => {
-        const same = runs.filter((c: Json) => c.app?.slug === "github-actions" && n.id && c.node_id === n.id);
-        if (same.length > 1) log("wedged check run could not be told apart", { pr: pr.url, head: pr.headRefOid, check: String(n.name ?? "").slice(0, 100) });
-        // No Actions job to re-run (another app's, or the GitHub App's own check): only a stuck Actions check is ours to fix.
-        if (!same.length) log("wedged check run has no Actions job", { pr: pr.url, head: pr.headRefOid, check: String(n.name ?? "").slice(0, 100) });
-        return same.length === 1 ? same[0] : undefined;
-      }).filter(Boolean) as Json[];
+      if (total && runs.length < total) log("wedged check runs only partly read", { pr: pr.url, head: pr.headRefOid, got: runs.length, total });
+      const current = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed");
       const out: { at: number; accepted: boolean }[] = [];
       for (const c of current) {
         const named = `${url}:${pr.headRefOid}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
@@ -294,9 +284,9 @@ export function startPrWatch(o: PrWatchOptions) {
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== pr.headRefOid || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt)) continue;
-        // A re-run GitHub took for this check: a replacement that wedges again is not re-run a second time. Neither is the
-        // first ask moved, so the report still goes out once the interval since it has passed.
-        // A re-run still within the grace period is a fresh job, not a stuck one.
+        // A re-run GitHub took for this check: a replacement that wedges again is not re-run a second time, and one that is
+        // still within the grace period is a fresh job, not a stuck one. The first ask is not moved, so the report still goes
+        // out once the interval since it has passed.
         if (seen?.accepted) {
           if (Date.now() - completedAt >= WEDGED_GRACE_MS) out.push({ at: Date.parse(seen.at), accepted: true });
           continue;
