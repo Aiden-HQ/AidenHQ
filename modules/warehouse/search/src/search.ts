@@ -355,7 +355,7 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     const page = closed.slice(0, limit);
     // The matches closed since `closedBefore`, as cards too (the first page only): a recent close the board's own Done doesn't
     // hold (no kernel state for it yet) still shows.
-    const recent = o.closedBefore && !o.after ? rows.filter((r) => r.closed_at != null && !old(r)).map(hit) : [];
+    const recent = o.closedBefore && !o.after ? rows.filter((r) => r.closed_at != null && !old(r)).map(hit).sort((a, b) => (newer(key(a), key(b)) ? -1 : 1)) : [];
     // Their crew (the agents on their subtasks, as the board's Agent work counts it): the board holds none of these tasks.
     const crew = new Map(page.length + recent.length ? ((await s.query(`SELECT parent_id, array_agg(DISTINCT assignee_agent_id) AS crew FROM src_tasks.task_search
       WHERE parent_id = ANY($1::text[]) AND NOT deleted AND assignee_agent_id IS NOT NULL GROUP BY parent_id`, [[...recent, ...page].map((h) => h.id)])).rows as { parent_id: string; crew: string[] }[]).map((r) => [r.parent_id, r.crew]) : []);

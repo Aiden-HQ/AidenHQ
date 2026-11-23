@@ -703,7 +703,7 @@ export function App() {
   const held = new Set([...board.work, ...board.done].map((c) => c.id));
   const older = searching ? found.done.filter((c) => !held.has(c.id)) : [];
   const workCards = applyFilters([...board.work, ...older], tb.filters, found.hits);
-  const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false)], tb.filters, found.hits);
+  const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false && !c.recent)], tb.filters, found.hits);
   // My day's Done column: when asked for, or while a search answer has matches there.
   const doneColumn = showDone || (searching && (doneCards.length > 0 || found.hasMore));
 

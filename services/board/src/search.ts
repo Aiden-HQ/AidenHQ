@@ -35,9 +35,10 @@ export function kernelSearch(k: { url: string; token: string }): TaskSearch {
  * show: not the brief, the owner's settings tasks or setup's log tasks. Their state is Paperclip's own close (no task-state row is
  * read for a task closed long ago).
  */
-export function searchView(a: SearchAnswer, ctx: { me: string; labels: Label[]; assignees: Assignee[]; logs: Set<string> }): { ids: string[]; done: (WorkCard & { mine: boolean })[]; next: string | null; semantic: boolean } {
+export function searchView(a: SearchAnswer, ctx: { me: string; labels: Label[]; assignees: Assignee[]; logs: Set<string> }): { ids: string[]; done: (WorkCard & { mine: boolean; recent?: true })[]; next: string | null; semantic: boolean } {
   const colour = new Map(ctx.labels.map((l) => [l.id, l.color]));
-  const done: (WorkCard & { mine: boolean })[] = [];
+  const done: (WorkCard & { mine: boolean; recent?: true })[] = [];
+  const recent = new Set((a.recent ?? []).map((h) => h.id));
   for (const h of [...(a.recent ?? []), ...a.done]) {
     if (ctx.logs.has(h.id) || ctx.logs.has(h.identifier)) continue;
     const closed = h.closedAt ?? h.updatedAt ?? "";
@@ -51,7 +52,8 @@ export function searchView(a: SearchAnswer, ctx: { me: string; labels: Label[]; 
     if (!isWork(issue)) continue;
     const state = { task: h.id, identifier: h.identifier, idle_wakes: 0, kind: "done" as const, reason: h.status === "cancelled" ? ("cancelled" as const) : ("closed" as const), since: closed, holder: null, attention: [], lane: "done" as const };
     // `mine`: what My day's own Done would hold (log tasks are already left out above).
-    done.push({ ...workCard(issue, ctx.assignees, state, null, h.crew), mine: onMyDay(issue, ctx) });
+    // `recent`: closed in the board's window (My day's own Done lists every such close it shows; Agent work may lack one).
+    done.push({ ...workCard(issue, ctx.assignees, state, null, h.crew), mine: onMyDay(issue, ctx), ...(recent.has(h.id) ? { recent: true as const } : {}) });
   }
   return { ids: a.ids, done, next: a.next, semantic: a.semantic };
 }
