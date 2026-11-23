@@ -624,22 +624,20 @@ scan_wave() { # <first plan index>
       rm -f "$archive"; remaining=$(( remaining - size_gb ))
     done
     # A round that scanned nothing: the archives themselves now exceed the room (their real bytes are the sizes read
-    # here, not the plan's). Two kinds of line are possible. One that cannot fit even alone (twice its size > the
-    # capacity) can never scan in any round, so it is dropped first: giving it room would only crowd out an image that
-    # can. A scannable one is then dropped smallest first, because the others still held are what block it, and the rest
-    # get its room. The capacity is what the wave had above the floor when it began (free space during the round plus
-    # everything still held), and deleting archives does not change it: every byte freed by a deletion was already
-    # counted in `remaining`, so re-reading the free-space would double-count it.
+    # here, not the plan's). The capacity is what the wave had above the floor when it began; deleting archives does not
+    # change it, because every byte a deletion frees was already counted in `remaining`, so re-reading the free space
+    # would double-count it.
     if [ "${#rest[@]}" -eq "${#pending[@]}" ]; then
       local -a keep=()
       local kk drop="" drop_size=0 largest=0 avail_now room_cap capacity
       avail_now="$(free_gb)"; room_cap=$(( avail_now - min_free_gb ))
       capacity=$(( room_cap + remaining ))
       for k in "${rest[@]}"; do [ "${size_of[$k]}" -gt "$largest" ] && largest="${size_of[$k]}"; done
+      # First drop every archive that cannot fit even alone (twice its size over the capacity): no round can scan one,
+      # and giving it room would only crowd out an image that can. This is done before any viable archive is considered,
+      # so a wave that starts below the floor still keeps its scannable images.
       for k in "${rest[@]}"; do
-        # A deletion freed its bytes, so read the room again before deciding the next one.
-        avail_now="$(free_gb)"
-        if [ "$avail_now" -lt "$min_free_gb" ] || [ $(( 2 * size_of[$k] )) -gt "$capacity" ]; then
+        if [ $(( 2 * size_of[$k] )) -gt "$capacity" ]; then
           i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${size_of[$k]}"
           fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_cap" $(( 2 * size_gb - capacity )))"
           rm -f "$archive"; remaining=$(( remaining - size_gb )); continue
@@ -647,11 +645,12 @@ scan_wave() { # <first plan index>
         keep+=("$k")
       done
       if [ "${#keep[@]}" -eq "${#rest[@]}" ]; then
+        # All could scan alone, so the others still held are what block them: drop the smallest, so the largest get the
+        # most room, and the rest are retried.
         for kk in "${rest[@]}"; do
           if [ -z "$drop" ] || [ "${size_of[$kk]}" -lt "$drop_size" ]; then drop="$kk"; drop_size="${size_of[$kk]}"; fi
         done
         i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="$drop_size"
-        # It can scan alone; the others still held are what block it, so the shortfall is against the room that was left.
         room_now=$(( $(free_gb) - min_free_gb ))
         fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_now" $(( size_gb - room_now )))"
         rm -f "$archive"; remaining=$(( remaining - size_gb ))
