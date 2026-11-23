@@ -16,6 +16,10 @@
 // The title gate: a title-only edit starts no workflow run, so the red `policy` (and `ci-required`) it caused stays on the head.
 // Any open same-repo PR whose only failed jobs in that run are `policy` and `ci-required`, and whose title now passes
 // ci.yml's Conventional Commit test, has that run's failed jobs re-run in place, once per head and title.
+// Any open same-repo PR with a check run still not completed while its Actions job has finished has that job re-run at its
+// source (POST .../actions/jobs/<id>/rerun), once per head and job, so GitHub reposts the check run the merge gate waits on;
+// a check run still not completed 20 minutes after that re-run wakes the PR's task once at that head (and is logged for a PR
+// with no task), because no push fixes it and the merge gate would otherwise wait on it silently.
 // Task text is fixed here: a PR's title, body, commits and check output never reach a task (only the breaker's fenced note).
 //
 // Started by main.ts. Not ported from the runner: the environment receipt comment on the task, rebaseInCode's replay of approved commits and approval move (GitHub updates the branch instead), and the parked-branch refusal (MAX_REJECTS).
@@ -60,6 +64,12 @@ const UPDATE_STUCK_AFTER = 3;
 /** How long an accepted branch update is waited for. GitHub moves the head as the update lands (seconds), so one that never shows
  * after this long was lost: the watcher asks again, and the request counts towards the wake. */
 const UPDATE_OK_WAIT_MIN = 10;
+/** A check run left not completed while its Actions job finished is re-run only once the job's completion is this old: a fresh
+ * job's check run can lag by seconds, and a spurious re-run wastes a whole run. */
+const WEDGED_GRACE_MS = 3 * 60_000;
+/** How long after a re-run was asked a check run still not completed is reported to its task: the merge gate waits on it, so a
+ * still-stuck head is reported rather than waited on silently. */
+const WEDGED_REPORT_MS = 20 * 60_000;
 /** Red rounds on one PR before its task stops being woken for them and its asker is told (the CI breaker). */
 const BREAKER_ROUNDS = 3;
 /** Review-findings wakes per pass (oldest PR first): the replies post as the owner's login, and a burst trips GitHub's secondary rate limit. */
@@ -136,7 +146,9 @@ export function startPrWatch(o: PrWatchOptions) {
     state.greened ??= {};    // PR url -> the head whose green checks woke its task
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
-    state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run
+    state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<pr url>:<head>:<job id>` -> the same for a wedged check run
+    state.wedged ??= {};     // `<pr url>:<head>:<check name>` -> { job, at, accepted }: the first re-run asked for a wedged check run, kept across a re-run's replacement job
+    state.wedgedTold ??= {}; // `<pr url>:<head>` -> when the task was told its check run is still wedged after a re-run
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
@@ -218,6 +230,59 @@ export function startPrWatch(o: PrWatchOptions) {
       state.reran[key] = refused ? `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}` : new Date().toISOString();
       save();
       return true;
+    }
+    /**
+     * A check run GitHub never gave a conclusion, while its Actions job has finished: re-run that job, so GitHub reposts the
+     * check run and the merge gate is no longer held by it. Once per head per job, with the refusal backoff `neverStarted` uses
+     * (a refused re-run is asked again after five minutes, never counted as handled). Not on a cross-repository PR.
+     *
+     * A re-run gives its job a new id, so the bookkeeping is also keyed by the check's name at the head: a replacement that
+     * wedges again is the same stuck check, not a new one, and is not re-run (nor its report deadline restarted) forever. The
+     * first ask's time is kept across refusals too, so a re-run GitHub keeps refusing is reported rather than retried unseen.
+     * Returns the stuck checks asked about at this head with their first ask's time, for the report.
+     */
+    async function wedgedAfterJob(pr: Json): Promise<{ job: number; at: number; accepted: boolean }[]> {
+      if (pr.isCrossRepository !== false) return [];
+      const rollup = rollupOf(pr);
+      if (rollup?.contexts?.pageInfo?.hasNextPage) return []; // not every check run is here: a complete verdict needs them all
+      const stuck = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED" && n.databaseId);
+      for (const n of stuck) {
+        const url = pr.url.toLowerCase(), jobId = String(n.databaseId);
+        const name = String(n.name ?? "");
+        const key = `${url}:${pr.headRefOid}:${jobId}`, named = `${url}:${pr.headRefOid}:${name}`;
+        const prior: string | undefined = state.reran[key];
+        const seen: { accepted?: boolean } | undefined = state.wedged[named];
+        // A re-run GitHub took for this check at this head: a replacement that wedges again is not re-run a second time.
+        if (seen?.accepted) continue;
+        // Asked about at this head, or a refusal still backing off: nothing is asked this tick.
+        if (prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) continue;
+        // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
+        let job: { status: number; body: any };
+        try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
+        catch (e) {
+          log("wedged check run's job read failed", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
+          state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+          save();
+          continue;
+        }
+        if (job.status >= 300 || job.body?.status !== "completed" || !job.body?.completed_at) continue;
+        if (Date.now() - Date.parse(job.body.completed_at) < WEDGED_GRACE_MS) continue;
+        // Only a re-run GitHub took is recorded as done: a refusal backs off and is asked again instead of leaving the head
+        // marked as handled with its check run still wedged. Neither is this check's first ask moved.
+        state.wedged[named] ??= { job: Number(n.databaseId), at: new Date().toISOString() };
+        let r: { status: number };
+        try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
+        catch (e) { log("wedged check run's re-run failed to send", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) }); state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`; save(); continue; }
+        log(r.status < 300 ? "wedged check run's job re-run" : "wedged check run's re-run refused", { pr: pr.url, head: pr.headRefOid, job: jobId, status: r.status });
+        if (r.status < 300) state.wedged[named] = { ...state.wedged[named], accepted: true };
+        state.reran[key] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+        save();
+      }
+      return stuck.flatMap((n: Json) => {
+        const seen: { job: number; at: string; accepted?: boolean } | undefined = state.wedged[`${pr.url.toLowerCase()}:${pr.headRefOid}:${String(n.name ?? "")}`];
+        const at = Date.parse(seen?.at ?? "");
+        return Number.isFinite(at) ? [{ job: seen!.job, at, accepted: !!seen!.accepted }] : [];
+      });
     }
     /**
      * A title-only edit starts no workflow run, so a red `policy` (the Conventional Commit title gate) stays on the head, and
@@ -455,9 +520,28 @@ export function startPrWatch(o: PrWatchOptions) {
         o.flow.checksCompleted(repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), ends.length ? new Date(Math.max(...ends)).toISOString() : undefined, task);
         save();
       }
+      // A check run still not completed while its Actions job has finished is re-run at its source (the job), for every same-repo
+      // PR: GitHub's branch rules read the check run, so the merge gate cannot pass until GitHub reposts it.
+      const wedged = await wedgedAfterJob(pr);
       // Any open PR whose title now passes but whose head still carries the title gate's red `policy`: clear it in place, before
       // the agent-only rules below (a wake would tell its task to fix a check no push can fix).
       if (await clearPolicy(pr)) continue;
+      // A check run still not completed well after its re-run was first asked: GitHub's branch rules read the check run too, so
+      // the merge gate is held by it and no push fixes it. The PR's task is told once at this head; a PR with no task here (an
+      // outside author's) has nobody to tell, so it is logged once at the head instead. The check's name is PR-controlled text:
+      // it never enters the wake, which points at `gh pr checks` instead.
+      if (wedged.length && state.wedgedTold[url] !== pr.headRefOid && Date.now() - Math.min(...wedged.map((w) => w.at)) >= WEDGED_REPORT_MS) {
+        const how = wedged.every((w) => w.accepted)
+          ? "after its Actions job completed and the job had been re-run"
+          : "after its Actions job completed, and the request to re-run the job was refused";
+        const text = `${pr.url}'s check run is still \`in_progress\` at \`${pr.headRefOid}\` ${how}, and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${pr.url}\` names it.`;
+        const w = opener && opener.branch === pr.headRefName ? await wake(pr, opener.task, text) : "sent";
+        if (w !== "failed") {
+          state.wedgedTold[url] = pr.headRefOid;
+          save();
+          log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
+        }
+      }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
       if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
