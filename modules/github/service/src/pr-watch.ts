@@ -72,6 +72,8 @@ const WEDGED_GRACE_MS = 3 * 60_000;
  * reached is resumed from on the next pass. */
 const WEDGED_READS_PER_PASS = 20, WEDGED_ASKS_PER_PASS = 3;
 const WEDGED_READS_PER_PR = 3, WEDGED_ASKS_PER_PR = 1;
+/** A job found still queued or running is not read again for this long, so the pass reaches the checks behind a matrix. */
+const WEDGED_RELOOK_MS = 2 * 60_000;
 /** How long after a re-run was asked a check run still not completed is reported to its task: the merge gate waits on it, so a
  * still-stuck head is reported rather than waited on silently. */
 const WEDGED_REPORT_MS = 20 * 60_000;
@@ -156,7 +158,8 @@ export function startPrWatch(o: PrWatchOptions) {
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<pr url>:<head>:<job id>` -> the same for a wedged check run
-    state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check name>` -> { at, done: [{ check, attempt, accepted }] }: the re-runs GitHub took
+    state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check name>` -> { done: [{ check, attempt, at, accepted }] }: the re-runs GitHub took, each with when it was asked
+    state.jobChecked ??= {}; // `<pr url>:<head>:<job id>` -> when its job was read and found unfinished: not read again for a while
     state.wedgedTold ??= {}; // `<pr url>:<head>` -> when the task was told its check run is still wedged after a re-run
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
@@ -285,9 +288,9 @@ export function startPrWatch(o: PrWatchOptions) {
       for (const c of [...live.slice(start), ...live.slice(0, start)]) {
         if (wedgedReads >= WEDGED_READS_PER_PASS || wedgedAsks >= WEDGED_ASKS_PER_PASS || wedgedReads - readsAt >= WEDGED_READS_PER_PR || wedgedAsks - asksAt >= WEDGED_ASKS_PER_PR) { wedgedAt.set(cursor, start + 1); break; }
         const ledgerKey = `${url}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
-        const seen: { at: string; done: { check: number; attempt: number; accepted: boolean }[] } | undefined = state.wedged[ledgerKey];
+        const seen: { done: { check: number; attempt: number; at: string; accepted: boolean }[] } | undefined = state.wedged[ledgerKey];
         const myself = seen?.done.find((d) => d.check === Number(c.id));
-        const wedged = () => { if (seen) out.push({ at: Date.parse(seen.at), accepted: seen.done.some((d) => d.accepted) }); };
+        const wedged = () => { if (myself) out.push({ at: Date.parse(myself.at), accepted: myself.accepted }); };
         // A check run this head re-ran already is reported from its ledger, not asked again, and needs no further read.
         if (myself) { wedged(); continue; }
         const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
@@ -295,7 +298,11 @@ export function startPrWatch(o: PrWatchOptions) {
         const key = `${url}:${head}:${jobId}`;
         const prior: string | undefined = state.reran[key];
         // A refusal still backing off: nothing is asked this tick, but the check is already one the head asked about.
-        if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) { wedged(); continue; }
+        if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) { continue; }
+        // A job found still running last time is not read again for this while: a queued matrix would otherwise spend the whole
+        // pass's budget on itself and never reach the checks behind it.
+        const lookedAt = state.jobChecked[key];
+        if (lookedAt && Date.now() - Date.parse(lookedAt) < WEDGED_RELOOK_MS) continue;
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         wedgedReads++;
         let job: { status: number; body: any };
@@ -308,18 +315,28 @@ export function startPrWatch(o: PrWatchOptions) {
         }
         // Only a job that itself finished, on this head, for this very check run can leave it wedged: one still queued or
         // running is not stuck, and a details URL never points another head's or check's job here.
+        if (job.body?.status !== "completed") { state.jobChecked[key] = new Date().toISOString(); save(); }
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== head || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
+        delete state.jobChecked[key];
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt) || Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a fresh job's check run can lag
         // The re-run's replacement is a later attempt of the same workflow (its job says which attempt it is); a sibling job
-        // that merely shares the display name is still on the attempt it started with, so it is a check of its own.
+        // that merely shares the display name is still on the attempt it started with, so it is a check of its own. The report
+        // counts from the ask that started that replacement, never from an older one for another job of the same name.
         const attempt = Number(job.body?.run_attempt ?? 1);
-        if (seen?.done.some((d) => d.accepted && attempt > d.attempt)) { wedged(); continue; }
+        const lineage = seen?.done.find((d) => d.accepted && attempt > d.attempt);
+        // A job this check already asked about, or the replacement of an ask it took, is reported and never asked again.
+        if (myself || lineage) {
+          const ask = (lineage ?? myself)!;
+          out.push({ at: Date.parse(ask.at), accepted: ask.accepted });
+          continue;
+        }
         // Bounded: two jobs may share a display name at one head and each is re-run once; beyond that it is reported.
         if ((seen?.done.filter((d) => d.accepted).length ?? 0) >= 2) { wedged(); continue; }
         // Recorded before the request, so one that never answers is still reported after the interval rather than lost.
-        state.wedged[ledgerKey] ??= { at: new Date().toISOString(), done: [] };
-        state.wedged[ledgerKey].done.push({ check: Number(c.id), attempt, accepted: false });
+        state.wedged[ledgerKey] ??= { done: [] };
+        const askedAt = new Date().toISOString();
+        state.wedged[ledgerKey].done.push({ check: Number(c.id), attempt, at: askedAt, accepted: false });
         wedgedAsks++;
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
@@ -329,7 +346,7 @@ export function startPrWatch(o: PrWatchOptions) {
           state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
           // Still wedged, and the ask just failed: reported now if the interval is past, not only on a tick between asks.
-          if (Date.now() - Date.parse(state.wedged[ledgerKey].at) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(state.wedged[ledgerKey].at), accepted: false });
+          if (Date.now() - Date.parse(askedAt) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(askedAt), accepted: false });
           continue;
         }
         log(r.status < 300 ? "wedged check run's job re-run" : "wedged check run's re-run refused", { pr: pr.url, head, job: jobId, status: r.status });
@@ -338,7 +355,7 @@ export function startPrWatch(o: PrWatchOptions) {
         state.reran[key] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
         save();
         // A refusal keeps the first ask's time, so a check GitHub keeps refusing is reported once the interval has passed.
-        if (r.status >= 300 && Date.now() - Date.parse(state.wedged[ledgerKey].at) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(state.wedged[ledgerKey].at), accepted: false });
+        if (r.status >= 300 && Date.now() - Date.parse(askedAt) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(askedAt), accepted: false });
         wedgedAt.set(cursor, start + 1);
       }
       return out;
@@ -603,7 +620,10 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
-      if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
+      if (state.headAt[url]?.head !== pr.headRefOid) {
+        state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
+        for (const k of wedgedAt.keys()) if (k.startsWith(`${url}:`)) wedgedAt.delete(k); // a new head starts its own scan
+      }
       // A cancelled task's PR is closed with its branch, once. A done task's unmerged PR is too, unless a merge of it may be in flight
       // (an open github.merge record on the task) or its head is under half an hour old (a just-finished merge isn't raced).
       if (!state.abandoned[url]) {
