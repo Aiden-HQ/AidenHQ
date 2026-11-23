@@ -146,9 +146,14 @@ export function createConnectionState(o: {
     const list = (o.orgs?.() ?? []).map((x) => x.toLowerCase());
     return list.length ? new Set(list) : undefined;
   };
-  /** An sso/restricted row is stale once its org has left the configured list: nothing syncs it, so its clear never comes. */
-  const staleOrg = (r: Pick<Row, "key" | "module" | "cause">, live = configuredOrgs()): boolean =>
-    (r.cause === "sso" || r.cause === "restricted") && !!live && !live.has(orgOf(r));
+  /** An sso/restricted row is stale once its org has left the configured list: nothing syncs it, so its clear never comes.
+   * A row with no org (GitHub gave neither a `/orgs/<x>/sso` url nor an owner) names an org that can never be configured,
+   * so it is never stale: it stays until a real ok(), exactly as before this check. */
+  const staleOrg = (r: Pick<Row, "key" | "module" | "cause">, live = configuredOrgs()): boolean => {
+    if (r.cause !== "sso" && r.cause !== "restricted") return false;
+    const org = orgOf(r);
+    return !!org && !!live && !live.has(org);
+  };
 
   /** Drops one org's sso and restricted rows and their waits, waking each waiter with CONNECTED_CAUSE as ok() does. */
   const clearOrg = (connection: string, org: string): number => {

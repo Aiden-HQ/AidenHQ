@@ -150,6 +150,19 @@ test("an sso/restricted row for an org no longer configured is not listed and ti
   assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get() as { n: number }).n, 0);
 });
 
+// A need whose org GitHub could not name (no `/orgs/<x>/sso` url and no owner in the path) is stored with an empty org:
+// it names no org that could leave the config, so it is a live need, not a retired one. It stays listed and no tick clears it.
+test("an sso/restricted row with no org is never stale, even with orgs configured", async () => {
+  const roots = { a: { id: "a", identifier: "WOR-24", title: "Read a repo", assigneeAgentId: "cos", createdByUserId: "u1" } };
+  const w = world(roots, { a: [OWNER_COMMENT] }, undefined, ["acme"]);
+  await w.s.hit(w.who("a"), "github", { cause: "sso", org: "", detail: "" });
+  w.tick(LASTED);
+  assert.deepEqual(w.s.needs(), ["Github isn't connected (an organization needs SSO authorization): http://board.example/connect/github"]);
+  w.s.tick();
+  assert.deepEqual(w.db.prepare("SELECT key FROM connection_state").all().map((r) => r.key), ["github:sso:"]);
+  assert.deepEqual(w.db.prepare("SELECT task FROM connection_waits").all().map((r) => r.task), ["a"]);
+});
+
 test("needs() lists only confirmed needs: old enough, until a success clears them", async () => {
   const w = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } });
   await w.s.hit(w.who("r1"), "github", { cause: "not_connected", detail: "" });
