@@ -637,6 +637,8 @@ scan_wave() { # <first plan index>
       capacity=$(( room_cap + remaining ))
       for k in "${rest[@]}"; do [ "${size_of[$k]}" -gt "$largest" ] && largest="${size_of[$k]}"; done
       for k in "${rest[@]}"; do
+        # A deletion freed its bytes, so read the room again before deciding the next one.
+        avail_now="$(free_gb)"
         if [ "$avail_now" -lt "$min_free_gb" ] || [ $(( 2 * size_of[$k] )) -gt "$capacity" ]; then
           i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${size_of[$k]}"
           fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_cap" $(( 2 * size_gb - capacity )))"
@@ -649,7 +651,9 @@ scan_wave() { # <first plan index>
           if [ -z "$drop" ] || [ "${size_of[$kk]}" -lt "$drop_size" ]; then drop="$kk"; drop_size="${size_of[$kk]}"; fi
         done
         i="$drop"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="$drop_size"
-        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_cap" $(( 2 * size_gb - capacity )))"
+        # It can scan alone; the others still held are what block it, so the shortfall is against the room that was left.
+        room_now=$(( $(free_gb) - min_free_gb ))
+        fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_now" $(( size_gb - room_now )))"
         rm -f "$archive"; remaining=$(( remaining - size_gb ))
         local -a dropped=()
         for k in "${rest[@]}"; do [ "$k" = "$drop" ] || dropped+=("$k"); done
