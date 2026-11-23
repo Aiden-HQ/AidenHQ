@@ -69,3 +69,13 @@ test("the Engineer's handbook carries the shared reply rule and no other shared 
   const shared = parts.map(([id]) => id).filter((id) => ["chief-of-staff.how-we-work", "chief-of-staff.progress", "chief-of-staff.privacy"].includes(id));
   assert.deepEqual(shared, [], "no other chief-of-staff section reaches an Engineer");
 });
+
+test("the reply rule leaves a run that hands its task back with one comment, its handoff", () => {
+  // task_handoff on the owner's own task clears assigneeAgentId (tools.ts), and the run's final reply posts with scope
+  // `own` (kernel/src/outcomes.ts), so a handoff run's final message is refused: its handoff comment is its one comment.
+  const text = engineerParts().map(([, t]) => t).join("");
+  const start = text.indexOf("On a task, that is one comment per turn");
+  const rule = text.slice(start, text.indexOf("A run note is a few lines", start));
+  assert.match(rule, /the run's final message is that comment/, "the final message is the one comment");
+  assert.match(rule, /A run that hands its task back with `task_handoff` has used its one comment there: its final message is exactly NO_REPLY/, "a handoff run's final message is NO_REPLY");
+});
