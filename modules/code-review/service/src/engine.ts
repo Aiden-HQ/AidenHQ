@@ -483,8 +483,10 @@ export function createEngine(d: EngineDeps) {
       ...(text ? { why: (f.why ?? "").slice(0, text), evidence: (f.evidence ?? "").slice(0, text) } : {}) });
     let out: object[] = [];
     for (const text of [400, 150, 0]) if (size((out = [...gating.map((f) => entry(f, text)), ...claimed, ...other.map((f) => entry(f, 0))])) <= PREVIOUS_BUDGET) break;
-    // Over budget, each run starts the list at another place (its id), so repeated rechecks reach the findings an earlier one left out.
-    if (size(out) > PREVIOUS_BUDGET && out.length > 1) { const k = parseInt(createHash("sha256").update(seed).digest("hex").slice(0, 8), 16) % out.length; out = [...out.slice(k), ...out.slice(0, k)]; }
+    // Over budget, each run starts the rest of the list at another place (its id), so repeated rechecks reach the findings an earlier one
+    // left out; the pending `fixed` claims on gating findings stay first (their one automatic recheck).
+    const lead = gating.filter((f) => f.pending).length, rest = out.slice(lead);
+    if (size(out) > PREVIOUS_BUDGET && rest.length > 1) { const k = parseInt(createHash("sha256").update(seed).digest("hex").slice(0, 8), 16) % rest.length; out = [...out.slice(0, lead), ...rest.slice(k), ...rest.slice(0, k)]; }
     return out;
   }
   const comboOf = (r: { engine: string; model: string; effort: string }) => ({ engine: r.engine, model: r.model, effort: r.effort });
