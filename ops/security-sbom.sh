@@ -753,15 +753,16 @@ scan_wave() { # <first plan index>
       local largest_gb=0
       for k in "${rest[@]}"; do [ "${bytes_of[$k]}" -gt "$largest_bytes" ] && largest_bytes="${bytes_of[$k]}"; done
       largest_gb="$(ceil_gb "$largest_bytes")"
-      # First drop every archive no round can scan (the workspace its scan unpacks exceeds the room the whole pool can
-      # ever provide): giving it room would only crowd out an image that can. The workspace is the image's own size, not
+      # First drop every archive no round can scan (its own bytes held plus the workspace its scan unpacks exceed the
+      # room the whole pool can ever provide, which is the best a solo wave could offer): giving it room would only
+      # crowd out an image that can. The workspace is the image's own size, not
       # the archive's, since compressed layers expand. This runs before any viable archive is considered, so a wave that
       # starts below the floor still keeps its scannable images.
       for k in "${rest[@]}"; do
-        if [ "${space_of[$k]}" -gt "$capacity" ]; then
+        if [ $(( bytes_of[$k] + space_of[$k] )) -gt "$capacity" ]; then
           i="$k"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${gb_of[$k]}"
           room_now=$(( $(free_bytes) - floor_bytes )); [ "$room_now" -lt 0 ] && room_now=0
-          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - bytes_of[$i] )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (space_of[$i] - capacity + 1073741823) / 1073741824 )))"
+          fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need "$(ceil_gb $(( remaining_bytes - bytes_of[$i] )))" "$size_gb" "$largest_gb" "$(ceil_gb "$room_now")" $(( (bytes_of[$i] + space_of[$i] - capacity + 1073741823) / 1073741824 )))"
           rm -f "$archive"; remaining_bytes=$(( remaining_bytes - bytes_of[$i] )); continue
         fi
         keep+=("$k")
