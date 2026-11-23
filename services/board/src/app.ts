@@ -143,7 +143,8 @@ const approvalView = (approval: Approval) => {
 const newer = (a: Approval, b: Approval) => {
   const ta = Date.parse(a.updatedAt), tb = Date.parse(b.updatedAt);
   if (Number.isNaN(ta)) return false;
-  if (!Number.isNaN(tb) && ta === tb) return a.live === true && b.live !== true; // a tie: the live snapshot is the current one
+  // A tie: a record only moves forward, and an ended one never returns to live, so the terminal snapshot is the current one.
+  if (!Number.isNaN(tb) && ta === tb) return a.live !== true && b.live === true;
   return Number.isNaN(tb) || ta > tb;
 };
 /** The registered merge kinds: the two code hosts' (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
@@ -1167,13 +1168,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // between the two reads is never reported as still waiting on a decision. A record only moves forward through these
         // states, so the rank orders the two snapshots without trusting either read's timing.
         const byId = new Map<string, Approval>();
-        for (const a of [...recent, ...history, ...live.filter(mine)]) {
+        const order = new Map<string, number>();
+        for (const [i, a] of [...recent, ...history, ...live.filter(mine)].entries()) {
+          order.set(a.id, Math.min(order.get(a.id) ?? i, i));
           const seen = byId.get(a.id);
           if (!seen || newer(a, seen)) byId.set(a.id, a);
         }
-        // Newest first. Two attempts filed in the same millisecond have no order the kernel gives us here, so a live card comes
-        // before an ended one: the current attempt is the one that can still land, never an older rejection read as final.
-        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? Number(b.live === true) - Number(a.live === true) : a.createdAt < b.createdAt ? 1 : -1));
+        // Newest first. Two different attempts filed in the same millisecond keep the order their read gave them (the kernel
+        // answers newest first), never an invented one: the earlier a card came back, the newer it is.
+        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? order.get(a.id)! - order.get(b.id)! : a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(mergeView) };
       },
     },
