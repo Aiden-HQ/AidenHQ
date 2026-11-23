@@ -799,6 +799,27 @@ test("a failed read of a finished chat's comments is retried on the next poll, p
   assert.equal(w.db.prepare("SELECT count(*) n FROM chat_reopen").get().n, 0, "the retry list is cleared once it landed");
 });
 
+test("a reopen retry whose chat no longer holds an owner reply is cleared, not re-scanned forever", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  const closed = "2026-11-18T10:00:02.500Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.poll();
+  w.wakes.claim("dispatch");
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  w.fail.moves = 1;
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.db.prepare("SELECT count(*) n FROM chat_reopen").get().n, 1, "the failed reopen waits");
+  // The owner deletes their own message before the next poll: nothing is left to reopen.
+  w.comments.chat[0].deletedAt = iso(Date.now());
+  await w.wakes.poll();
+  assert.equal(w.issues.chat.status, "done");
+  assert.equal(w.db.prepare("SELECT count(*) n FROM chat_reopen").get().n, 0, "no row left to re-scan");
+});
+
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
   const w = world();
   w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });

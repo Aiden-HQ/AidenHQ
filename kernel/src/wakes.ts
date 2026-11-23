@@ -321,7 +321,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     let reopenedHere = false;
     // What a finished chat's pending reopen (chat_reopen) needs: a word still there to act on.
     const chatWord = String(issue.status ?? "") === "done" && isChat(issue) && all.some((c) => !c.deletedAt && ms(c.createdAt) > finishedAt && ownerWord(c));
-    if (!chatWord && String(issue.status ?? "") !== "done") q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+    // A finished chat with no owner word left to act on (the read found none, or the owner reopened or cancelled it himself) has
+    // nothing to retry, so its row goes rather than being re-scanned every poll.
+    if (!chatWord) q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
     if (chatWord) {
       // Said before the move: the comment read is a snapshot, and the owner may have cancelled the chat since. Only a task still
       // `done` is reopened (a cancelled chat stays closed), and a read that fails writes nothing.
@@ -663,6 +665,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       // A finished chat's comment can be missed with its event (a kernel restart, a lost delivery): every poll re-reads the chats
       // whose activity is newer than the company's durable cursor, so the scan can reopen and wake them.
       const polledAt = now();
+      // A company whose finished-chat listing failed on any of its agents keeps its cursor: the chats that agent never got to
+      // list must stay inside the next poll's window.
+      const failedCompanies = new Set<string>();
       for (const agent of polled().keys()) {
         try {
           if (!companies.has(agent)) {
@@ -684,26 +689,30 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           }
           const company = companies.get(agent)!;
           // Paged: after an outage a busy agent can have more finished tasks than one page, and a chat past its end would be lost.
-          let failed = false;
+          // Every page is collected first: a scan can reopen a chat and shrink the `status=done` set under a moving offset.
+          const finished: Issue[] = [];
           for (let offset = 0; offset < 5000; offset += 200) {
             const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=done&limit=200&offset=${offset}&assigneeAgentId=${encodeURIComponent(agent)}&updatedSince=${encodeURIComponent(iso(chatSince(company)))}`);
             if (d.status !== 200 || !Array.isArray(d.json)) throw new Error(`control plane GET done issues → ${d.status}`);
-            for (const issue of d.json as Issue[]) {
-              if (listed.has(issue.id) || !isChat(issue)) continue;
-              listed.add(issue.id);
-              // A chat whose scan failed keeps itself for the retry list, so the cursor may pass it.
-              await scan(issue, { source: "poll" }).catch((e: Error) => {
-                failed = true;
-                q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
-                log("wake scan failed", { task: issue.id, err: e.message });
-              });
-            }
+            finished.push(...(d.json as Issue[]));
             if (d.json.length < 200) break;
+          }
+          for (const issue of finished) {
+            if (listed.has(issue.id) || !isChat(issue)) continue;
+            listed.add(issue.id);
+            // A chat whose scan failed keeps itself for the retry list, so the cursor may pass it.
+            await scan(issue, { source: "poll" }).catch((e: Error) => {
+              failedCompanies.add(company);
+              q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+              log("wake scan failed", { task: issue.id, err: e.message });
+            });
           }
           // The cursor moves only once every polled agent of the company took its turn cleanly: a later agent failing, or one
           // chat's read failing, must not hide that window from the next poll.
-          if (!failed && agent === [...polled().keys()].filter((a) => companies.get(a) === company).at(-1)) setChatSince(company, polledAt);
+          if (!failedCompanies.has(company) && agent === [...polled().keys()].filter((a) => companies.get(a) === company).at(-1)) setChatSince(company, polledAt);
         } catch (e) {
+          const company = companies.get(agent);
+          if (company) failedCompanies.add(company);
           log("wake poll failed", { agent, err: (e as Error).message });
         }
       }
