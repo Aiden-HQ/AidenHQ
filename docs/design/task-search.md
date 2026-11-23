@@ -222,7 +222,7 @@ construction where the relevant set is in the hundreds (an area word): those are
 The baseline here is below the encoder table's (0.725 against 0.763 R@10): it runs on the live index with summaries, and
 tasks created since the queries were labelled count as not relevant. Relevance is a predicate over task text, so precision
 on area and half-typed queries leans lexical. Per side 30 scored 0.727 / 0.707 with at most 60 matches, 20 lost recall
-(0.722); 50 keeps every quality metric level or up. SQL: about 130–150 ms on the host.
+(0.722); 50 keeps every quality metric within 0.01 or better. SQL: about 130–150 ms on the host.
 
 Latency (typing to rendered results): 250 ms debounce, the query embedding above, the SQL (exact cosine over 11k 3072-d rows,
 the worst case where every row matches: 115 / 331 ms p50 / p95 on a laptop's Docker), the board, kernel and service hops and the
