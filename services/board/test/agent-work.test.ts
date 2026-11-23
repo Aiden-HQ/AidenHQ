@@ -36,7 +36,7 @@ const pc = new Proxy(
 // 8 closed before it (an old task edited later: never Done again).
 const states = fakeStates([
   row("1", { kind: "waiting", reason: "job_queued", lane: "blocked", blocker: "task:3" }),
-  row("2", { kind: "waiting", reason: "owner_wait", lane: "needs_you", question: "Stripe or Adyen?", attention: [{ who: "owner", why: "owner_wait", ref: "wait:2" }] }),
+  row("2", { kind: "waiting", reason: "owner_wait", lane: "needs_you", question: "Stripe or Adyen?", attention: [{ who: "owner", why: "owner_wait", ref: "wait:2", since: "2026-11-01T00:00:00Z" }] }),
   row("9", { kind: "done", reason: "cancelled", lane: "done", since: new Date().toISOString() }),
   row("8", { kind: "done", reason: "closed", lane: "done", since: "2026-01-01T00:00:00.000Z" }),
 ]);
