@@ -19,6 +19,7 @@ interface GEvent {
   htmlLink?: string;
   organizer?: { email?: string; self?: boolean };
   attendeesOmitted?: boolean;
+  etag?: string;
 }
 
 /** Event shape matching ops-mcp's meeting_match input. */
@@ -193,17 +194,20 @@ export class Workspace {
   /** Moves, renames or re-describes an event; attendees are added to and removed from the list Google holds. */
   async updateEvent(id: string, e: EventInput & { add_attendees?: string[]; remove_attendees?: string[] }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
     const body: Record<string, unknown> = eventFields(e);
+    // The guest list is replaced whole, so the PATCH applies only to the version it was merged from (If-Match; Google answers 412 otherwise).
+    let etag: string | undefined;
     if (e.add_attendees?.length || e.remove_attendees?.length) {
       const gone = new Set((e.remove_attendees ?? []).map((a) => a.toLowerCase()));
       const held = await this.rawEvent(id);
       // Google left some attendees out of the event it returned (a large event): a PATCH of the list would drop them.
+      etag = held.etag;
       if (held.attendeesOmitted) throw new Error("Google didn't return this event's full guest list, so attendees can't be changed safely here");
       const kept = (held.attendees ?? []).filter((a) => !gone.has(String(a.email).toLowerCase()));
       const have = new Set(kept.map((a) => String(a.email).toLowerCase()));
       body.attendees = [...kept, ...(e.add_attendees ?? []).filter((a) => !have.has(a.toLowerCase())).map((email) => ({ email }))];
     }
     if (!Object.keys(body).length) throw new Error("nothing to change: pass a new title, time, description, location or attendees");
-    return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), { sendUpdates }, body));
+    return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), { sendUpdates }, body, etag));
   }
 
   /** Deletes the event from the calendar; one the owner organises is cancelled for every attendee. */
@@ -411,22 +415,37 @@ const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 /** A message an agent writes: plain text, to named addresses; `thread_id` makes it a reply there. */
 export interface MailInput { to: string[]; cc?: string[]; bcc?: string[]; subject?: string; body: string; thread_id?: string }
 
-/** One header value: refused if it could end the header (CR or LF), non-ASCII as an RFC 2047 encoded word. */
-function headerValue(name: string, v: string): string {
+const FOLD = "\r\n ";
+/** Refused if it could end the header (CR or LF). */
+function oneLine(name: string, v: string): string {
   if (/[\r\n]/.test(v)) throw new Error(`${name} can't contain a line break`);
-  return /^[\x20-\x7e]*$/.test(v) ? v : `=?UTF-8?B?${Buffer.from(v, "utf8").toString("base64")}?=`;
+  return v;
+}
+/** Text as RFC 2047 encoded words when not ASCII: whole characters, at most 45 bytes each (under the 75-character word limit), folded. */
+function encoded(v: string): string {
+  if (/^[\x20-\x7e]*$/.test(v)) return v;
+  const words: string[] = [];
+  let cur = "";
+  for (const ch of v) {
+    if (Buffer.byteLength(cur + ch) > 45) (words.push(cur), (cur = ""));
+    cur += ch;
+  }
+  words.push(cur);
+  return words.map((w) => `=?UTF-8?B?${Buffer.from(w, "utf8").toString("base64")}?=`).join(FOLD);
 }
 
 /** The RFC 2822 message Gmail's API takes (`raw`, base64url): plain text, UTF-8. Gmail sets From to the signed-in account. */
 export function mimeMessage(m: { to: string[]; cc?: string[]; bcc?: string[]; subject: string; body: string; inReplyTo?: string; references?: string }): string {
+  // Long headers are folded (a line break then a space) so no line passes the 998-character limit.
+  const list = (name: string, xs: string[]) => xs.map((x) => oneLine(name, x)).join(`,${FOLD}`);
   const lines = [
-    ["To", m.to.join(", ")],
-    ...(m.cc?.length ? [["Cc", m.cc.join(", ")]] : []),
-    ...(m.bcc?.length ? [["Bcc", m.bcc.join(", ")]] : []),
-    ["Subject", m.subject],
-    ...(m.inReplyTo ? [["In-Reply-To", m.inReplyTo]] : []),
-    ...(m.references ? [["References", m.references]] : []),
-  ].map(([k, v]) => `${k}: ${headerValue(k!, v!)}`);
+    `To: ${list("To", m.to)}`,
+    ...(m.cc?.length ? [`Cc: ${list("Cc", m.cc)}`] : []),
+    ...(m.bcc?.length ? [`Bcc: ${list("Bcc", m.bcc)}`] : []),
+    `Subject: ${encoded(oneLine("Subject", m.subject))}`,
+    ...(m.inReplyTo ? [`In-Reply-To: ${oneLine("In-Reply-To", m.inReplyTo)}`] : []),
+    ...(m.references ? [`References: ${oneLine("References", m.references).split(/\s+/).join(FOLD)}`] : []),
+  ];
   const body = Buffer.from(m.body, "utf8").toString("base64").replace(/.{76}/g, "$&\r\n");
   const text = [...lines, "MIME-Version: 1.0", "Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", body].join("\r\n");
   return Buffer.from(text, "utf8").toString("base64url");

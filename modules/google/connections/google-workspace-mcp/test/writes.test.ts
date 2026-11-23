@@ -15,7 +15,7 @@ function creds() {
   return p;
 }
 
-type Call = { method: string; url: URL; body?: Record<string, unknown> };
+type Call = { method: string; url: URL; body?: Record<string, unknown>; ifMatch?: string };
 /** Google, answering `routes` by "METHOD path"; records every API call (the token refresh aside). */
 function google(routes: Record<string, unknown>) {
   const calls: Call[] = [];
@@ -23,7 +23,8 @@ function google(routes: Record<string, unknown>) {
     const url = new URL(String(input));
     if (url.hostname === "oauth2.googleapis.com") return Response.json({ access_token: "at", expires_in: 3600 });
     const method = init?.method ?? "GET";
-    calls.push({ method, url, ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}) });
+    const ifMatch = (init?.headers as Record<string, string> | undefined)?.["if-match"];
+    calls.push({ method, url, ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}), ...(ifMatch ? { ifMatch } : {}) });
     const key = `${method} ${url.pathname}`;
     if (!(key in routes)) return new Response(`no route ${key}`, { status: 404 });
     return routes[key] === null ? new Response(null, { status: 204 }) : Response.json(routes[key]);
@@ -49,7 +50,7 @@ describe("module.yaml: the write tools are reviewed records", () => {
 
 describe("calendar writes", () => {
   it("creates, moves with a guest change merged into Google's list, answers an invite and cancels, on the named account", async () => {
-    const held = { id: "ev1", summary: "Sync", start: { dateTime: "2026-11-24T10:00:00Z" }, end: { dateTime: "2026-11-24T10:30:00Z" }, attendees: [{ email: "me@work.com", self: true, responseStatus: "needsAction" }, { email: "dana@example.com", responseStatus: "accepted", optional: true }, { email: "lee@example.com" }] };
+    const held = { id: "ev1", etag: '"e1"', summary: "Sync", start: { dateTime: "2026-11-24T10:00:00Z" }, end: { dateTime: "2026-11-24T10:30:00Z" }, attendees: [{ email: "me@work.com", self: true, responseStatus: "needsAction" }, { email: "dana@example.com", responseStatus: "accepted", optional: true }, { email: "lee@example.com" }] };
     const g = google({ [`POST ${EV}`]: { ...held, id: "new" }, [`GET ${EV}/ev1`]: held, [`PATCH ${EV}/ev1`]: held, [`DELETE ${EV}/ev1`]: null });
     const ws = new MultiWorkspace(creds(), "primary", g.impl);
 
@@ -64,6 +65,7 @@ describe("calendar writes", () => {
     await ws.updateEvent("ev1", { start: "2026-11-24T12:00:00Z", end: "2026-11-24T12:30:00Z", add_attendees: ["kim@example.com", "DANA@example.com"], remove_attendees: ["Lee@example.com"] }, "none");
     const patch = g.calls.find((c) => c.method === "PATCH")!;
     expect(patch.url.searchParams.get("sendUpdates")).toBe("none");
+    expect(patch.ifMatch).toBe('"e1"');
     // Untouched guests keep their answers and fields; the removed one goes; the new one is added once.
     expect(patch.body!.attendees).toEqual([held.attendees[0], held.attendees[1], { email: "kim@example.com" }]);
     expect(patch.body!.start).toEqual({ dateTime: "2026-11-24T12:00:00Z" });
@@ -100,11 +102,17 @@ describe("Gmail writes", () => {
     const text = mime(String(sent.raw));
     expect(text).toContain("To: dana@example.com\r\n");
     expect(text).toContain("Subject: Re: Agenda\r\n");
-    expect(text).toContain("In-Reply-To: <b@x>\r\nReferences: <a@x> <b@x>\r\n");
+    expect(text).toContain("In-Reply-To: <b@x>\r\nReferences: <a@x>\r\n <b@x>\r\n");
     expect(Buffer.from(text.split("\r\n\r\n")[1]!, "base64").toString("utf8")).toBe("Yes, Thursday works. Café at 3?");
 
-    expect(await ws.gmailDraft({ to: ["lee@example.com"], subject: "Ünïcode", body: "Hi" })).toMatchObject({ draft_id: "d1", thread_id: "t9" });
-    expect(mime(String((g.calls.at(-1)!.body!.message as { raw: string }).raw))).toContain(`Subject: =?UTF-8?B?${Buffer.from("Ünïcode").toString("base64")}?=`);
+    const long = "Ünïcode ".repeat(20);
+    expect(await ws.gmailDraft({ to: ["lee@example.com", "kim@example.com"], subject: long, body: "Hi" })).toMatchObject({ draft_id: "d1", thread_id: "t9" });
+    const draft = mime(String((g.calls.at(-1)!.body!.message as { raw: string }).raw));
+    expect(draft).toContain("To: lee@example.com,\r\n kim@example.com\r\n");
+    // A long non-ASCII subject: folded encoded words of whole characters, each under 75 characters, decoding to the subject.
+    const words = /Subject: ((?:=\?UTF-8\?B\?[^?]+\?=(?:\r\n )?)+)\r\n/.exec(draft)![1]!.split("\r\n ");
+    expect(words.every((w) => w.length <= 75)).toBe(true);
+    expect(words.map((w) => Buffer.from(w.slice(10, -2), "base64").toString("utf8")).join("")).toBe(long);
 
     const before = g.calls.length;
     await expect(ws.gmailSend({ to: ["dana@example.com"], subject: "Hi\r\nBcc: spy@example.com", body: "x" })).rejects.toThrow(/line break/);

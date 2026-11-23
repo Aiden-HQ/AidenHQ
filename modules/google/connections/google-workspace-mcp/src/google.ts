@@ -99,13 +99,13 @@ export class GoogleClient {
     return this.request<T>("GET", url, params);
   }
 
-  /** One JSON call; `body` is sent as JSON. A 204 (a delete) answers undefined. */
-  async request<T>(method: "GET" | "POST" | "PATCH" | "DELETE", url: string, params: Record<string, string | number | boolean | undefined> = {}, body?: unknown): Promise<T> {
+  /** One JSON call; `body` is sent as JSON, `ifMatch` an ETag the change applies to. A 204 (a delete) answers undefined. */
+  async request<T>(method: "GET" | "POST" | "PATCH" | "DELETE", url: string, params: Record<string, string | number | boolean | undefined> = {}, body?: unknown, ifMatch?: string): Promise<T> {
     const u = new URL(url);
     for (const [k, v] of Object.entries(params)) if (v !== undefined) u.searchParams.set(k, String(v));
     const res = await this.fetchImpl(u, {
       method,
-      headers: { authorization: `Bearer ${await this.token()}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      headers: { authorization: `Bearer ${await this.token()}`, ...(body !== undefined ? { "content-type": "application/json" } : {}), ...(ifMatch ? { "if-match": ifMatch } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(30_000),
     });
