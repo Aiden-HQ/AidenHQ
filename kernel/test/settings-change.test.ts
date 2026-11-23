@@ -143,5 +143,7 @@ test("a standing decision lands in the profile as it is now: added under its hea
   const two = withDecision(one, "Steward owns operations (2026-11-23, WOR-2)");
   assert.match(two, /- No shadow mode[^]*\n- Steward owns operations/);
   assert.equal(withDecision(two, "Shadow mode for a week (2026-11-24, WOR-3)", "No shadow mode (2026-11-23, WOR-1)").includes("No shadow mode"), false);
-  assert.throws(() => withDecision(two, "x", "a line that isn't there"), /isn't in the profile now/);
+  assert.throws(() => withDecision(two, "x", "a line that isn't there"), /isn't under "Owner decisions"/);
+  assert.throws(() => withDecision(two, "x", "Short answers."), /isn't under "Owner decisions"/, "the same words outside the section are other guidance");
+  assert.throws(() => withDecision(`${two}${"- filler line of owner style\n".repeat(200)}`, "One more"), /over 4096 bytes/);
 });

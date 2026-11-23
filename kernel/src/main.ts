@@ -546,8 +546,13 @@ const fleetOps = createFleetOps({
   note: (j, body) => outcomes.post(j, { kind: "notice", body }),
   generations: () => { const g = work.generations(); return "error" in g ? [] : g.generations; },
   launch: (unit, args) => applyHost.launch(unit, args),
-  // The apply lock is free when a non-blocking flock gets it (ops/apply-config.sh holds it for a whole apply, queued ones wait on it).
-  applying: () => new Promise((ok) => execFile("flock", ["-n", path.join(env("AIDENHQ_DIR", repo), "data", "apply.lock"), "true"], (err) => ok(Boolean(err)))),
+  // An apply runs or waits: the host's apply lock is taken (a non-blocking flock fails), or an apply unit is queued
+  // (ops/aidenhq-apply's transient units, before they reach the lock).
+  applying: async () => {
+    const locked = await new Promise<boolean>((ok) => execFile("flock", ["-n", path.join(env("AIDENHQ_DIR", repo), "data", "apply.lock"), "true"], (err) => ok(Boolean(err))));
+    if (locked) return true;
+    return new Promise<boolean>((ok) => execFile("systemctl", ["--user", "list-units", "--type=service", "--state=activating,active", "--no-legend", "aidenhq-apply-*"], (err, out) => ok(Boolean(err) || String(out).trim() !== "")));
+  },
   recreate: (services) => composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") })(services),
 });
 const work = createWork({ db: records.db, records, pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });

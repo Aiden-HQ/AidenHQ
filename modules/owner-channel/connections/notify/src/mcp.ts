@@ -50,7 +50,11 @@ export function buildServer(d: Deps, caller?: Caller): McpServer {
       const since = Date.now() - (days ?? 3) * 86_400_000, until = before ? Date.parse(before) : Infinity;
       const rows = [...d.store.recentTold(days ?? 3, 5000).map((r) => ({ ...r, state: "delivered" })), ...waitingDigest(d.store).filter((r) => r.at >= since).map((r) => ({ ...r, state: "queued" }))]
         .filter((r) => r.at < until && (!state || r.state === state))
-        .sort((x, y) => y.at - x.at).slice(0, limit ?? 20);
+        .sort((x, y) => y.at - x.at);
+      // A page never splits one instant (a digest writes many rows at once): `before` the last row's `at` misses none.
+      let n = Math.min(limit ?? 20, rows.length);
+      while (n < rows.length && rows[n]!.at === rows[n - 1]!.at) n++;
+      rows.length = n;
       return json(rows.map((r) => ({ source: r.source, task: r.task, kind: r.kind, state: r.state, at: new Date(r.at).toISOString(), text: fence(r.text) })));
     },
   );

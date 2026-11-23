@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import YAML from "yaml";
 import { urlSettingProblem } from "../../services/shared/url-setting.ts";
-import { compile } from "../../scripts/modules.ts";
+import { MEMORY_MAX, compile } from "../../scripts/modules.ts";
 import { loadInputs } from "../../scripts/compiler/inputs.ts";
 import type { Write } from "./apply.ts";
 import type { Requester } from "./records.ts";
@@ -67,21 +67,28 @@ const has = (o: unknown, k: string) => isMap(o) && Object.hasOwn(o, k);
 export function withDecision(profile: string, decision: string, replaces?: string): string {
   const lines = profile.replace(/\n+$/, "").split("\n");
   const entry = `- ${decision.trim().replace(/^-\s+/, "")}`;
-  if (replaces !== undefined) {
-    const old = replaces.trim().replace(/^-\s+/, "");
-    const at = lines.findIndex((l) => l.trim().replace(/^-\s+/, "") === old);
-    if (at < 0) refuse("profile: the decision `replaces` names isn't in the profile now: read it again");
-    lines[at] = entry;
-    return `${lines.join("\n")}\n`;
-  }
+  const done = () => {
+    const out = `${lines.join("\n")}\n`;
+    // Compile cuts the profile at MEMORY_MAX bytes: a decision past it would be recorded where no agent reads it.
+    if (Buffer.byteLength(out) > MEMORY_MAX) refuse(`profile: with this decision the profile is over ${MEMORY_MAX} bytes, past what agents read: shorten it first (the whole \`text\`)`);
+    return out;
+  };
   let head = lines.findIndex((l) => /^#{1,6}\s+Owner decisions\s*$/i.test(l));
+  const sectionEnd = () => { const e = lines.findIndex((l, i) => i > head && /^#{1,6}\s/.test(l)); return e < 0 ? lines.length : e; };
+  if (replaces !== undefined) {
+    // Only a decision line in the "Owner decisions" section: the same words elsewhere are other guidance.
+    const old = replaces.trim().replace(/^-\s+/, "");
+    const at = head < 0 ? -1 : lines.findIndex((l, i) => i > head && i < sectionEnd() && /^-\s/.test(l.trim()) && l.trim().replace(/^-\s+/, "") === old);
+    if (at < 0) refuse("profile: the decision `replaces` names isn't under \"Owner decisions\" now: read it again");
+    lines[at] = entry;
+    return done();
+  }
   if (head < 0) { if (lines.length && lines.at(-1)!.trim()) lines.push(""); lines.push("## Owner decisions"); head = lines.length - 1; }
-  let end = lines.findIndex((l, i) => i > head && /^#{1,6}\s/.test(l));
-  if (end < 0) end = lines.length;
+  let end = sectionEnd();
   while (end > head + 1 && !lines[end - 1]!.trim()) end--;
   // An empty section gets a blank line under its heading first.
   lines.splice(end, 0, ...(end === head + 1 ? ["", entry] : [entry]));
-  return `${lines.join("\n")}\n`;
+  return done();
 }
 const only = (ch: Dict, keys: string[]) => Object.keys(ch).every((k) => keys.includes(k)) || refuse(`${ch.kind}: unknown fields (${Object.keys(ch).filter((k) => !keys.includes(k)).join(", ")})`);
 /** Handbook texts: Markdown, no NUL or other control characters but tab and newlines. */
