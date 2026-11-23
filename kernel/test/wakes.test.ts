@@ -27,6 +27,7 @@ function world() {
       return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) && (!since || Date.parse(i.updatedAt) >= Date.parse(since))).map((i) => ({ ...i, blockedBy: i.omitBlocked ? undefined : i.blockedBy })) };
     }
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
+      if (fail.comments?.[m[1]]) return { status: fail.comments[m[1]], json: {} };
       let list = [...(comments[m[1]] ?? [])];
       const after = u.searchParams.get("after");
       if (after) list = list.slice(list.findIndex((c) => c.id === after) + 1);
@@ -775,6 +776,27 @@ test("a comment missed on a finished chat while the kernel was down is found aft
   await w.wakes.poll();
   assert.equal(w.issues.chat.status, "todo", "the durable cursor still covers the outage");
   assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+});
+
+test("a failed read of a finished chat's comments is retried on the next poll, past the cursor", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  const closed = "2026-11-18T10:00:02.500Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.poll();
+  w.wakes.claim("dispatch");
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  w.fail.comments = { chat: 503 };
+  await w.wakes.poll(); // its comments can't be read: the chat goes on the retry list
+  delete w.fail.comments.chat;
+  w.tick(60 * 60_000);
+  await w.wakes.poll();
+  assert.equal(w.issues.chat.status, "todo");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+  assert.equal(w.db.prepare("SELECT count(*) n FROM chat_reopen").get().n, 0, "the retry list is cleared once it landed");
 });
 
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {

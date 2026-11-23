@@ -680,16 +680,26 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
           }
           const company = companies.get(agent)!;
-          const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=done&limit=200&assigneeAgentId=${encodeURIComponent(agent)}&updatedSince=${encodeURIComponent(iso(chatSince(company)))}`);
-          if (d.status !== 200 || !Array.isArray(d.json)) throw new Error(`control plane GET done issues → ${d.status}`);
-          for (const issue of d.json as Issue[]) {
-            if (listed.has(issue.id) || !isChat(issue)) continue;
-            listed.add(issue.id);
-            await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
+          // Paged: after an outage a busy agent can have more finished tasks than one page, and a chat past its end would be lost.
+          let failed = false;
+          for (let offset = 0; offset < 5000; offset += 200) {
+            const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=done&limit=200&offset=${offset}&assigneeAgentId=${encodeURIComponent(agent)}&updatedSince=${encodeURIComponent(iso(chatSince(company)))}`);
+            if (d.status !== 200 || !Array.isArray(d.json)) throw new Error(`control plane GET done issues → ${d.status}`);
+            for (const issue of d.json as Issue[]) {
+              if (listed.has(issue.id) || !isChat(issue)) continue;
+              listed.add(issue.id);
+              // A chat whose scan failed keeps itself for the retry list, so the cursor may pass it.
+              await scan(issue, { source: "poll" }).catch((e: Error) => {
+                failed = true;
+                q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+                log("wake scan failed", { task: issue.id, err: e.message });
+              });
+            }
+            if (d.json.length < 200) break;
           }
-          // The cursor moves only once every polled agent of the company took its turn: a later agent failing must not hide the
-          // earlier window from the next poll.
-          if (agent === [...polled().keys()].filter((a) => companies.get(a) === company).at(-1)) setChatSince(company, polledAt);
+          // The cursor moves only once every polled agent of the company took its turn cleanly: a later agent failing, or one
+          // chat's read failing, must not hide that window from the next poll.
+          if (!failed && agent === [...polled().keys()].filter((a) => companies.get(a) === company).at(-1)) setChatSince(company, polledAt);
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
         }
@@ -699,7 +709,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       for (const { task } of q("SELECT task FROM chat_reopen ORDER BY at").all() as { task: string }[]) {
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
-          if (r.status === 404) q("DELETE FROM chat_reopen WHERE task = ?").run(task);
+          // Gone, or no longer a done chat (the owner cancelled or reopened it himself): there is nothing left to retry.
+          if (r.status === 404 || (r.status === 200 && (String(r.json?.status) !== "done" || !isChat(r.json as Issue)))) q("DELETE FROM chat_reopen WHERE task = ?").run(task);
           else if (r.status === 200) await scan(r.json as Issue, { source: "poll" });
         } catch (e) { log("wake scan failed", { task, err: (e as Error).message }); }
       }
