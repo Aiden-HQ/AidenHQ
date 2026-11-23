@@ -232,8 +232,12 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
     // The same answer in an all-channels scan: the DM is a kind the sign-in has no search scope for, so it is dropped.
     expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
-    // With the im scope granted it could be shown, but Slack never said what it is: the set is unknown, never guessed in.
-    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: false });
+    // With the im scope granted it could be shown, but Slack never said what it is: C1 is verified so it is returned with
+    // a continuation, and the resume (which skips C1 and hits the same unresolved D1) reports the set as unknown — the
+    // DM is never guessed in.
+    const unresolved = await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope });
+    expect(unresolved).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
+    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]), cursor: (unresolved as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: false });
     // A transient failure (not a scope answer) leaves the set unknown instead of silently short.
     const flaky = (async (url: string | URL) => {
       const u = new URL(String(url));
@@ -399,6 +403,21 @@ describe("scanMyReactions", () => {
     }) as unknown as typeof fetch;
     const scan = await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]), limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
     expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
+  });
+
+  it("keeps a verified match on page one when an unbounded scan's channel lookup fails", async () => {
+    // No limit and no caller cursor: C1 is verified, then C2's lookup fails. C1 is real, so it is returned with an
+    // identity continuation (no Slack cursor needed — the resume replays from the start and skips it).
+    const fetchImpl = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) {
+        if (u.searchParams.get("channel") === "C2") return new Response("down", { status: 503 });
+        return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
+      }
+      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
+    }) as unknown as typeof fetch;
+    const scan = await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.stringMatching(/^aidenhq:pos:/) });
   });
 
   it("stops at the answer's size budget and hands back a continuation, rather than one oversized answer", async () => {
@@ -643,6 +662,10 @@ describe("interception through the proxy", () => {
     // An unsupported MCP protocol version: the transport answers 400, so this route must not answer it either.
     const badVersion = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { "mcp-protocol-version": "1999-01-01" });
     expect(badVersion.status).toBe(400);
+    expect(slackCalls).toBe(0);
+    // A `+json` suffix is not `application/json`: the transport answers 415, so no Slack read happens here either.
+    const badType = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { "content-type": "application/mcp+json" });
+    expect(badType.status).toBe(415);
     expect(slackCalls).toBe(0);
     // Without an Accept that allows both types, the transport answers 406 and no Slack read happens.
     const noAccept = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { accept: "application/json" });

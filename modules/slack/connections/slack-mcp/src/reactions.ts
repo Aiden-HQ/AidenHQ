@@ -387,8 +387,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
         const show = await visible(message.channel);
         if (typeof show !== "boolean") {
           // A lookup that fails after matches were verified must not discard them: hand them back with a continuation,
-          // which re-checks this channel when the caller resumes. (No cursor to advance is still the failure itself.)
-          if (messages.length && (full || cursor)) return { ok: true, messages, nextCursor: continuation() };
+          // which replays the feed by identity and re-checks this channel when the caller resumes. The failure is the
+          // answer only when nothing was verified.
+          if (messages.length) return { ok: true, messages, nextCursor: continuation() };
           return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}) };
         }
         if (!show) continue;
@@ -614,7 +615,10 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   if (typeof version === "string" && version && !SUPPORTED_PROTOCOL_VERSIONS.includes(version)) return false;
   const accept = String(req.headers.accept ?? "");
   if (!accept.includes("application/json") || !accept.includes("text/event-stream")) return false;
-  if (!/^application\/(?:[\w.+-]+\+)?json\b/i.test(String(req.headers["content-type"] ?? ""))) return false;
+  // The media type's essence, as the transport compares it: the part before any parameter, lowercased. A `+json` suffix
+  // (`application/mcp+json`) is not `application/json`, and the transport answers it 415.
+  const essence = String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+  if (essence !== "application/json") return false;
   const name = nameOf(message);
   const plan = planReactionSearch(name, argsOf(message));
   if (plan.kind === "pass") return false;
