@@ -76,7 +76,7 @@ const BREAKER_ROUNDS = 3;
 const FINDINGS_WAKES_PER_TICK = 3;
 /** The kernel's POST /v1/wakes keeps this many characters of a wake's text (backplane.ts). */
 const WAKE_TEXT = 2000;
-const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
+const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { id databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
 const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
   repository(owner: $owner, name: $repo) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
@@ -255,11 +255,13 @@ export function startPrWatch(o: PrWatchOptions) {
       catch (e) { log("wedged check runs' read failed", { pr: pr.url, head: pr.headRefOid, err: String((e as Error).message).slice(0, 200) }); return []; }
       if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) return [];
       const runs: Json[] = listed.body.check_runs;
-      // The REST entry of each stuck check run: GitHub Actions, the same suite and the same start (the rollup and REST carry
-      // it). A name shared by several live entries is ambiguous and is left alone.
+      // The REST entry of each stuck check run: the same check run, by the global node id both APIs carry (the numeric ids
+      // differ in kind between them, and a name alone would confuse a superseded attempt with the current one).
       const current = stuck.map((n: Json) => {
-        const same = runs.filter((c: Json) => c.app?.slug === "github-actions" && String(c.name ?? "") === String(n.name ?? "") && c.check_suite?.id === n.checkSuite?.workflowRun?.databaseId && (n.startedAt ? c.started_at === n.startedAt : true));
+        const same = runs.filter((c: Json) => c.app?.slug === "github-actions" && n.id && c.node_id === n.id);
         if (same.length > 1) log("wedged check run could not be told apart", { pr: pr.url, head: pr.headRefOid, check: String(n.name ?? "").slice(0, 100) });
+        // No Actions job to re-run (another app's, or the GitHub App's own check): only a stuck Actions check is ours to fix.
+        if (!same.length) log("wedged check run has no Actions job", { pr: pr.url, head: pr.headRefOid, check: String(n.name ?? "").slice(0, 100) });
         return same.length === 1 ? same[0] : undefined;
       }).filter(Boolean) as Json[];
       const out: { at: number; accepted: boolean }[] = [];
@@ -274,10 +276,10 @@ export function startPrWatch(o: PrWatchOptions) {
         let job: { status: number; body: any };
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
         catch (e) {
+          // Not read, so nothing is known about the replacement: the report waits for a later read rather than guess.
           log("wedged check run's job read failed", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
           state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
-          if (seen) out.push({ at: Date.parse(seen.at), accepted: false });
           continue;
         }
         // Only a job that itself finished, on this head, for this very check run can leave it wedged: a replacement still
@@ -287,7 +289,11 @@ export function startPrWatch(o: PrWatchOptions) {
         if (!Number.isFinite(completedAt)) continue;
         // A re-run GitHub took for this check: a replacement that wedges again is not re-run a second time. Neither is the
         // first ask moved, so the report still goes out once the interval since it has passed.
-        if (seen?.accepted) { out.push({ at: Date.parse(seen.at), accepted: true }); continue; }
+        // A re-run still within the grace period is a fresh job, not a stuck one.
+        if (seen?.accepted) {
+          if (Date.now() - completedAt >= WEDGED_GRACE_MS) out.push({ at: Date.parse(seen.at), accepted: true });
+          continue;
+        }
         // A refusal still backing off: nothing is asked this tick, but its first ask still counts towards the report.
         if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) {
           if (seen) out.push({ at: Date.parse(seen.at), accepted: false });
