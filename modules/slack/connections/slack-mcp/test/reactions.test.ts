@@ -178,7 +178,7 @@ describe("scanMyReactions", () => {
     const scan = await scanMyReactions({ emoji: "pushpin", limit: 25 }, { authorization: "Bearer xoxp-user", userId: ME }, { fetchImpl });
     expect(scan).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C1", ts: "1.1" }), expect.objectContaining({ channel: "C2", ts: "2.2" }), expect.objectContaining({ channel: "C4", ts: "4.4" })], nextCursor: null });
     // A small result limit never shrinks the upstream page: the fetch size stays at the default floor.
-    expect(calls[0]).toContain("limit=200");
+    expect(calls[0]).toContain("count=200");
   });
 
   it("keeps thread_ts for a reacted thread reply, so the scan can attach it to the conversation's task", async () => {
@@ -330,6 +330,17 @@ describe("scanMyReactions", () => {
     expect(calls.filter((c) => c.includes("reactions.list")).length).toBeGreaterThan(3);
   });
 
+  it("stops at the answer's size budget and hands back a continuation, rather than one oversized answer", async () => {
+    // Each text is 4 KB, so a 10 KB budget fits two messages and the third opens a continuation.
+    const big = "x".repeat(4096);
+    const one = page([item("C1", "1.1", "pushpin", [ME], { text: big }), item("C2", "2.2", "pushpin", [ME], { text: big }), item("C3", "3.3", "pushpin", [ME], { text: big })]);
+    const fetchImpl = (async () => Response.json(one)) as unknown as typeof fetch;
+    const first = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl, budget: 10 * 1024 });
+    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }, { channel: "C2" }], nextCursor: expect.any(String) });
+    const second = await scanMyReactions({ emoji: "pushpin", cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl, budget: 10 * 1024 });
+    expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C3" })], nextCursor: null });
+  });
+
   it("a limit reached part-way through a page resumes at the exact item, so no match is skipped or repeated", async () => {
     // One page of four reactions: a limit of 1 must return the first and resume at the second. The continuation re-reads
     // that same page (the fake answers it every time), so each call resumes exactly where the last one stopped.
@@ -385,7 +396,7 @@ describe("scanMyReactions", () => {
     expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
     await scanMyReactions({ emoji: "pushpin", limit: 10, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
     // The continuation's upstream page size stays the first call's, even though the second asked for 10 results.
-    const sizes = calls.filter((c) => c.includes("reactions.list")).map((c) => new URL(c).searchParams.get("limit"));
+    const sizes = calls.filter((c) => c.includes("reactions.list")).map((c) => new URL(c).searchParams.get("count"));
     expect(new Set(sizes).size).toBe(1);
     expect(sizes[0]).toBe("200");
   });

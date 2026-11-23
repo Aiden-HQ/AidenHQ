@@ -18,6 +18,11 @@ export const SEARCH_TOOLS = new Set(["slack_search_public", "slack_search_public
 /** Slack's own maximum for a page of `reactions.list`; the page size when the caller gives none. */
 const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 200;
+/**
+ * The answer's own size budget. The kernel rejects an answer over 16 MiB (MAX_ANSWER), so the scan stops well short of it
+ * and hands back a continuation instead of accumulating message texts until the whole call fails.
+ */
+const ANSWER_BUDGET = 4 * 1024 * 1024;
 /** A runaway guard: past this many pages the answer says which cursor continues, rather than looping forever. */
 const MAX_PAGES = 200;
 /** A scan that runs longer than this answers "unknown" rather than outliving the kernel's call timeout. */
@@ -192,6 +197,8 @@ export interface ScanOptions {
   maxPages?: number;
   deadlineMs?: number;
   now?: () => number;
+  /** The answer's own size budget, in bytes of the messages array; smaller only in tests. */
+  budget?: number;
 }
 
 /** The scan's outcome: the whole set (`nextCursor: null`), or what stopped it from computing one. */
@@ -259,7 +266,10 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const now = o.now ?? Date.now;
   const deadline = now() + (o.deadlineMs ?? DEFAULT_DEADLINE_MS);
   const maxPages = o.maxPages ?? MAX_PAGES;
+  const budget = o.budget ?? ANSWER_BUDGET;
   const messages: ReactionMessage[] = [];
+  // The messages array as it will be serialized, so the answer stops short of the kernel's own size limit.
+  let bytes = 2;
   const seen = new Set<string>();
   const cursors = new Set<string>();
   const visibility = new Map<string, boolean>();
@@ -344,7 +354,8 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   let full = false;
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
-    const r = await get("reactions.list", { full: "true", limit: String(pageSize), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
+    // `count` is Slack's per-page size; `limit` there means a maximum for the whole call, which would truncate the walk.
+    const r = await get("reactions.list", { full: "true", count: String(pageSize), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
     if (!r.ok) return r;
     const { json } = r;
     // A page without an item list isn't an empty page: it is an answer this scan can't read, so the set is unknown.
@@ -366,8 +377,15 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
         // The limit was reached on an earlier page and this is the first match after it: there is more to return.
         return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
       }
+      // The answer's own budget: one message always goes in, so a single oversized message can't loop forever, but the
+      // rest is handed back as a continuation rather than growing an answer the kernel would reject outright.
+      const size = Buffer.byteLength(JSON.stringify(message), "utf8") + 1;
+      if (messages.length && bytes + size > budget) {
+        return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
+      }
       seen.add(key);
       messages.push(message);
+      bytes += size;
       if (reachedLimit()) full = true;
     }
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
