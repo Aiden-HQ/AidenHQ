@@ -18,7 +18,7 @@
 // already reported (a finding that restates one is dropped, never reported twice) and rechecked: `fixed` lists the ids a recheck
 // that read the head found gone. A gating one (an important finding a mandatory review made) is always rechecked, full reviews
 // and force-pushes included; any other only where the change since the last reviewed head touched its lines (or removed its
-// file). Never one merely absent from this run, one found again, or anything when the change holds text addressed to a reviewer. Everything the repo wrote (code, guidance, the focus a commenter typed) is data, fenced,
+// file). Never one merely absent from this run, one found again, or, on a full review, anything when the change holds text addressed to a reviewer (a claim recheck always asks). Everything the repo wrote (code, guidance, the focus a commenter typed) is data, fenced,
 // never instructions; guidance grants no authority. Partial coverage is said (`coverage.incomplete`), never shown as clean.
 // Tree target (spec.target "tree", the one-off whole-repo review): the merge base is the empty tree, so the "change" is every
 // file at the head, in one pass, with no previous findings and no guidance (there is no trusted base to read it from). The files
@@ -332,7 +332,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     // A gating finding is always rechecked; any other only where the change since the last reviewed head touched it.
     const near = (t: ReturnType<typeof touched>, line: number) => t === "all" || (Array.isArray(t) && t.some(([a, b]) => line >= a - 3 && line <= b + 3));
     // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
-    const ask = addressed ? [] : previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
+    const ask = previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
     const unsafe: Unsafe[] = [];
     if (ask.length) {
       // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
@@ -372,6 +372,12 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       } else {
         gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
       }
+    }
+    // On a full review, text addressed to a reviewer can't clear anything (a claim recheck judges only the claimed findings, never withheld by it).
+    if (addressed && !combo.recheck_only && (fixed.length || result.cleared?.length)) {
+      fixed.length = 0;
+      result.cleared = [];
+      gaps.push("the change holds text addressed to a reviewer, so no earlier finding is marked fixed or cleared");
     }
     result.fixed = fixed;
     result.unsafe = unsafe;
