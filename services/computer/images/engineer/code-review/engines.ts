@@ -250,11 +250,11 @@ export const skillRun = (cwd: string, target?: "tree" | "pr") => `You run an ins
  */
 export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>(), cut?: number): EngineResult {
   const said = answer(r.message)?.skills as { ran?: unknown; partial?: unknown; why?: unknown }[] | undefined;
-  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean" || (s.partial !== undefined && typeof s.partial !== "boolean"))) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
-  // A turn that called no tool read no code, whatever the restate says of it; one stopped at the time limit that did reviewed part.
+  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean" || (s.ran && typeof s.partial !== "boolean"))) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
+  // A turn that called no tool read no code, whatever the restate says of it; what one stopped at the time limit reviewed is part.
   const late = (i: number) => cut !== undefined && i > cut;
-  const why = (i: number) => `${names[i]}: ${late(i) ? "not started: the skills' time ran out" : idle.has(i) ? "it called no tool" : i === cut ? "stopped at the skills' time limit" : String(said[i]!.why || "no reason given").slice(0, 300)}`;
-  const reviewed = (i: number) => !late(i) && !idle.has(i) && (said[i]!.ran === true || i === cut);
+  const why = (i: number) => `${names[i]}: ${late(i) ? "not started: the skills' time ran out" : i === cut ? "stopped at the skills' time limit" : idle.has(i) ? "it called no tool" : String(said[i]!.why || "no reason given").slice(0, 300)}`;
+  const reviewed = (i: number) => !late(i) && !idle.has(i) && said[i]!.ran === true;
   const not = names.flatMap((_, i) => (reviewed(i) ? [] : [why(i)]));
   const part = names.flatMap((_, i) => (reviewed(i) && (said[i]!.partial === true || i === cut) ? [why(i)] : []));
   if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
@@ -352,8 +352,8 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
     for (const [n, inv] of sk.invocations.entries()) {
       stage(sk, n, base);
       const t = await turn(inv, session, Math.max((until - Date.now()) / 60_000, 0.1));
-      // Stopped at the time limit after it started work: what it found so far is restated (skillOutcome: partial).
-      if (t.r.timedOut && t.acted && (t.thread ?? session)) { sk.cut = n; session ??= t.thread; break; }
+      // Stopped at the time limit: what the run found so far is restated (skillOutcome: this skill partial or not run, the rest not run).
+      if (t.r.timedOut && (t.thread ?? session)) { sk.cut = n; if (!t.acted) sk.idle?.add(n); session ??= t.thread; break; }
       if (!t.done || !(t.thread ?? session)) return { message: "", read: false, calls, cause: t.done ? "codex gave no thread to continue" : stopped(t.r, t.said) };
       // A skill that ran no command or tool read no code: it counts as not run (skillOutcome).
       if (!t.acted) sk.idle?.add(n);
@@ -454,8 +454,8 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     for (const [n, task] of (sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]).entries()) {
       if (sk) stage(sk, n, base);
       const t = await turn(task, session, sk ? Math.max((until - Date.now()) / 60_000, 0.1) : minutes);
-      // Stopped at the time limit after it started work: what it found so far is restated (skillOutcome: partial).
-      if (sk && t.r.timedOut && t.acted && (t.id ?? session)) { sk.cut = n; session = t.id ?? session; break; }
+      // Stopped at the time limit: what the run found so far is restated (skillOutcome: this skill partial or not run, the rest not run).
+      if (sk && t.r.timedOut && (t.id ?? session)) { sk.cut = n; if (!t.acted) sk.idle?.add(n); session = t.id ?? session; break; }
       if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
       // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. One that called no
       // tool read nothing: it counts as not run (skillOutcome), and the next skill still runs.
