@@ -7,7 +7,7 @@ export function instanceDetailsIn(text: string, versions = new Set<string>()): s
   const found = [
     // An IPv6 address, by shape: eight groups (never a MAC address, six groups, or a clock time), or a compressed form that holds a
     // digit (`2001:db8::1`, `fd12::34`; never a scoped name like `DB::Feed`); loopback (`::1`) is not.
-    ...[...text.matchAll(/(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?!\w|:[\w:])/gi)].filter((m) => !/^(?:0{1,4}:){1,7}0{0,3}1$/.test(m[0]) && (!m[0].includes("::") || /\d/.test(m[0]))),
+    ...[...text.matchAll(/(?<![\w:])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}(?::[0-9a-f]{1,4}){1,7}|(?:[0-9a-f]{1,4}:){1,7}:|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})(?!\w|:[\w:])/gi)].filter((m) => !/^(?:0{0,4}:){1,7}0{0,3}1$/.test(m[0]) && (!m[0].includes("::") || /\d/.test(m[0]))),
     ...text.matchAll(/\b[\w-]+(?:\.[\w-]+)*\.ts\.net\b/gi),
     ...text.matchAll(/(?<![\w.~])\/(?:home|Users|root)(?![\w-])(?:\/[\w.-]+(?:\/\S*)?)?/g),
     ...[...text.matchAll(/(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?!\w|\.\d)/g)]
