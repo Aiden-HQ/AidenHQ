@@ -359,7 +359,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     if (next) {
       // A cursor already visited can't advance: the set is incomplete, and handing the same cursor back would loop.
       if (cursors.has(next)) return { ok: false, detail: "reactions.list returned a cursor this scan had already followed" };
-      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ c: next, n: pageSize, seen: [...seen] }) };
+      // The limit was reached exactly at a page boundary: the continuation re-reads this same page and skips what was
+      // returned, so a reaction removed since then (which shifts items into this page) can't make it miss one.
+      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ ...(cursor ? { c: cursor } : { f: true as const }), n: pageSize, seen: [...seen] }) };
       cursor = next;
       numbered = undefined;
       continue;
@@ -367,16 +369,18 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // No cursor: Slack's other shape is numbered pages. More of them is not the end of the set.
     const pages = Number(json.paging?.pages), current = Number(json.paging?.page);
     if (Number.isFinite(pages) && pages > current) {
+      // At a page boundary the same rule applies: re-read this page and filter by identity, never jump past an unread one.
+      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ p: Number.isFinite(current) ? current : numbered ?? 1, n: pageSize, seen: [...seen] }) };
       if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
       else numbered++;
-      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ p: numbered, n: pageSize, seen: [...seen] }) };
       continue;
     }
     return { ok: true, messages, nextCursor: null };
   }
   // The cap: a cursor continues the set, but numbered paging has none to hand back, so the set is unknown.
   if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
-  return { ok: true, messages, nextCursor: cursor };
+  // A cursor continuation carries the same fixed page size and identities, so resuming can't repeat a message.
+  return { ok: true, messages, nextCursor: cursor ? encodePosition({ c: cursor, n: pageSize, seen: [...seen] }) : null };
 }
 
 /** The search tool's result shape, with the end-of-set marker the scan reads: `next_cursor: null` only when complete. */

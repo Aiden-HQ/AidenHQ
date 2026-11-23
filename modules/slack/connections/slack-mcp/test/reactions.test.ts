@@ -271,10 +271,15 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("already followed") });
   });
 
-  it("stops at the page guard with the cursor that continues the set", async () => {
-    const pages = Array.from({ length: 3 }, (_, i) => page([item("C1", `${i}.0`)], `c${i + 1}`));
+  it("stops at the page guard with a continuation that resumes the set without repeating a message", async () => {
+    // Four cursor pages, but only three are read: the fourth item is still reachable from the continuation.
+    const pages = Array.from({ length: 4 }, (_, i) => page([item("C1", `${i}.0`)], `c${i + 1}`));
     const { fetchImpl } = fakeSlack(pages);
-    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 })).toMatchObject({ ok: true, nextCursor: "c3" });
+    const first = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 });
+    expect(first).toMatchObject({ ok: true, messages: [{ ts: "0.0" }, { ts: "1.0" }, { ts: "2.0" }], nextCursor: expect.any(String) });
+    const tail = page([item("C1", "3.0")]);
+    const rest = await scanMyReactions({ ...plan, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl: (async () => Response.json(tail)) as unknown as typeof fetch });
+    expect(rest).toEqual({ ok: true, messages: [expect.objectContaining({ ts: "3.0" })], nextCursor: null });
   });
 
   it("stops at the caller's limit and hands back the cursor for the next unread page, so nothing is skipped", async () => {
