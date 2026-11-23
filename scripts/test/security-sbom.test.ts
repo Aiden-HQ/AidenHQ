@@ -38,6 +38,7 @@ async function run(env = {}, {
   saveErrors = {},
   saveGrow = {},
   takeAfterSave = {},
+  freeTaken = 0,
   sizeErrors = [],
   sizeJunk = {},
   seed,
@@ -81,7 +82,13 @@ exec /usr/bin/tar "$@"
 used="$(find "\${AIDENHQ_DATA_DIR:-.}/modules/security/sbom/.archives" -type f -printf '%s\\n' 2>/dev/null | awk '{ s += $1 } END { printf "%d", s / 1024 }')"
 # FAKE_FREE_TAKEN_KB: bytes another writer on the filesystem took, so a test can model room vanishing between a save and
 # its scan.
-taken="$(awk '{ s += $1 } END { printf "%d", s / 1024 }' "\${FAKE_FREE_TAKEN:-/dev/null}" 2>/dev/null)"
+taken="$(awk '{ s += $1 } END { printf "%d", s / 1024 }' "\${FAKE_FREE_TAKEN:-$FREE_TAKEN}" 2>/dev/null)"
+# FAKE_TAKE_AFTER_DF <n> <bytes>: another writer's bytes appear only after <n> free-space reads, so a test can put the
+# pressure after the survey's own read and before every save.
+n=""; [ -f "$DIR/df-count" ] && read -r n < "$DIR/df-count"; n=$(( \${n:-0} + 1 )); printf '%s\n' "$n" > "$DIR/df-count"
+if [ -n "\${FAKE_TAKE_AFTER_DF:-}" ] && [ "$n" -gt "\${FAKE_TAKE_AFTER_DF}" ] && [ -n "\${FAKE_TAKE_BYTES:-}" ]; then
+  taken=$(( taken + FAKE_TAKE_BYTES / 1024 ))
+fi
 kb=$(( \${FAKE_FREE_KB:-400000000} - \${used:-0} - \${taken:-0} ))
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/md2 481000000 1 %s 1%% /\\n' "$kb"
 `);
@@ -132,6 +139,9 @@ case "$1" in
     if [[ "$*" == *APIVersion* ]]; then printf '%s\\n' "\${FAKE_API:-1.48}"; exit 0; fi
     printf 'linux/amd64\\n' ;;
   ps)
+    # FAKE_TAKE_ON_PS: another writer takes room once the survey has listed the containers, so the survey's room is whole
+    # but every save sees less. This models pressure that begins between the survey and the saves.
+    [ -n "\${FAKE_TAKE_ON_PS:-}" ] && printf '%s\n' "$FAKE_TAKE_ON_PS" >> "$FREE_TAKEN"
     nps=0; [ -f "$DIR/ps-count" ] && read -r nps < "$DIR/ps-count"; nps=$((nps + 1)); printf '%s\\n' "$nps" > "$DIR/ps-count"
     if [ "$PS_FAILS" = 1 ] || { [ -n "\${PS_FAILS_NTH:-}" ] && [ "$nps" -ge "$PS_FAILS_NTH" ]; }; then
       echo "Error response from daemon: cannot list containers" >&2; exit 1
@@ -334,6 +344,7 @@ exit 0
   writeFileSync(saveErrorsFile, Object.entries(saveErrors).map(([id, err]) => `${id}\t${err}`).join("\n") + "\n");
   writeFileSync(growFile, Object.entries(saveGrow).map(([id, bytes]) => `${id}\t${bytes}`).join("\n") + "\n");
   writeFileSync(takeFile, Object.entries(takeAfterSave).map(([id, bytes]) => `${id}\t${bytes}`).join("\n") + "\n");
+  if (freeTaken) writeFileSync(freeTakenFile, `${freeTaken}\n`);
   writeFileSync(sizesFile, Object.entries(sizes).map(([ref, bytes]) => `${ref}\t${bytes}`).join("\n") + "\n");
   writeFileSync(sizeErrorsFile, sizeErrors.join("\n") + "\n");
   writeFileSync(sizeJunkFile, Object.entries(sizeJunk).map(([ref, out]) => `${ref}\t${out}`).join("\n") + "\n");
@@ -1037,6 +1048,24 @@ test("security-sbom: a save stopped at its cap is retried in a solo wave, not sk
   assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
   assert.notEqual(row[1], "-", `the capped save must be retried in a solo wave: ${row[2]}`);
   assert.match(out, /image:big:local deferred to wave/);
+});
+
+test("security-sbom: a first save blocked by temporary pressure is deferred, then a line if it persists", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 5 GB image needs 10 GB, so the survey admits it. Once the survey has read
+  // the disk, another writer takes 6 GB, so the image's first save sees only 4 GB and is blocked with nothing of its own
+  // written. That may be temporary: it is deferred to a wave of its own, not skipped on first sight. The retry meets the
+  // same pressure, so the second block is a line with the numbers.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(40 * 1024 * 1024), FAKE_TAKE_AFTER_DF: "1", FAKE_TAKE_BYTES: String(6 * 1024 ** 3) }, {
+    containers: [{ id: "c1", image: "sha256:b1", config: "big:local", label: "sha256:b1" }],
+    tags: { "big:local": "sha256:b1" },
+    held: ["sha256:b1"],
+    sizes: { "sha256:b1": 5 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.match(out, /image:big:local deferred to wave/);
+  assert.equal(row[1], "-", `the second block is a line: ${row[2]}`);
 });
 
 test("security-sbom: a save that no longer fits beside its wave's archives is deferred, then scanned", { skip: NOT_LINUX }, async () => {

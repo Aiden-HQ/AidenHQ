@@ -321,6 +321,7 @@ plain_archive_single() { # <tar> <pin>
 # variant. Returns 1 with export_err.
 export_err=""
 export_space=0
+export_floor=0
 # A Docker call whose own writes may not exceed <bytes> (`ulimit -f`, in 512-byte blocks). The daemon's size estimate is
 # not a bound, so an export is capped at the room it was admitted with: the kernel stops the write at the limit instead of
 # letting it take the disk's floor, and the caller sees an ordinary failed save to record. `docker save -o` writes the
@@ -337,18 +338,33 @@ save_hit_cap() { # <rc> <dest> <err> <cap>
   return 1
 }
 save_call() { # <cap bytes, empty for none> <secs> <docker args...>
-  local cap="$1" secs="$2" rc; shift 2
+  local cap="$1" secs="$2" rc floor_bytes pid; shift 2
   if [ -z "$cap" ]; then docker_call "$secs" "$@"; return; fi
   secs="$(deadline_secs "$secs")" || return 124
+  floor_bytes=$(( min_free_gb * 1073741824 ))
+  # The file ceiling bounds the CLI's output, not what the daemon stages in its own temp dir while producing it (the
+  # classic image store copies the layers first). Both count against the same filesystem, so the export is watched too:
+  # if free space falls to the floor while it runs, it is stopped. That protects the reserve even when the estimate and
+  # the ceiling did not see the daemon's copy.
   ( ulimit -f "$(( (cap + 1023) / 1024 ))" 2>/dev/null || exit 1
-    exec timeout "$secs" docker "$@" )
-  rc=$?
+    exec timeout "$secs" docker "$@" ) &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    if [ "$(free_bytes)" -lt "$floor_bytes" ]; then
+      kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
+      export_floor=1
+      wait "$pid" 2>/dev/null
+      return 137
+    fi
+  done
+  wait "$pid"; rc=$?
   [ "$rc" -eq 153 ] || [ "$rc" -eq 152 ] && return 153
   return "$rc"
 }
 export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
   local pin="$1" ref="$2" dest="$3" plat="${4:-$platform}" cap="${5:-}"
-  export_err=""; export_space=0
+  export_err=""; export_space=0; export_floor=0
   # Re-read the reference on the container's platform before writing: a tag another pull moved, or an index whose
   # platform manifest changed, must not put a different image under this target. A bare platform manifest inside an index
   # is not an image record, so a reference the daemon does not hold plainly is the resolver's pin and the save decides.
@@ -368,6 +384,7 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
     export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$stage/archive.tar" "$ref" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
       save_hit_cap "$rc" "$stage/archive.tar" "$export_err" "$cap" && export_space=1
+      [ "$export_floor" = 1 ] && export_space=1
       rm -rf "$stage"; return 1
     fi
     mv -f "$stage/archive.tar" "$dest" || { rm -rf "$stage"; export_err="could not move the archive into place"; return 1; }
@@ -379,6 +396,7 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
     export_err="$(save_call "$cap" 900 image save -o "$stage/archive.tar" "$ref" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
       save_hit_cap "$rc" "$stage/archive.tar" "$export_err" "$cap" && export_space=1
+      [ "$export_floor" = 1 ] && export_space=1
       rm -rf "$stage"; return 1
     fi
     if ! plain_archive_single "$stage/archive.tar" "$pin"; then
@@ -597,7 +615,8 @@ snapshot() {
     [ -n "$idx" ] || continue
     sz="$(ceil_gb "$szb")"
     # An image held only for its own scan still needs its own size again to unpack it, so twice its size must fit above
-    # the floor or no wave can ever take it. It is a line now, with the numbers, and no bytes are written for it.
+    # the floor or no wave can ever take it. It is a line now, with the numbers, and no bytes are written for it: a write
+    # spent on an image the pre-write estimate says cannot be scanned would itself take the reserve the pass protects.
     if [ $(( 2 * szb )) -gt "$room_bytes" ]; then
       # The shortfall comes from the bytes, not the rounded figures: 5 GiB against 9.5 GiB of room is short by 0.5 GiB,
       # and subtracting the two rounded numbers would print "short by 0 GB".
@@ -623,9 +642,14 @@ defer_to_next_wave() { # <survey idx> <why>
   local idx="$1" why="$2"
   if [ "$wave_count" -ge "$wave_limit" ]; then return 1; fi
   wave_of[$idx]=$((wave_count + 1)); wave_count=$((wave_count + 1))
+  defer_seen[$idx]=$(( ${defer_seen[$idx]:-0} + 1 ))
   echo "security-sbom: image:${p_key[$idx]} deferred to wave ${wave_of[$idx]}: $why" >&2
   return 0
 }
+# Whether an image was already deferred for space once: a shortfall seen with nothing of its own wave written may be
+# another writer's temporary pressure, so it is retried once, not skipped on the first sight of it.
+deferred_before() { [ "${defer_seen[$1]:-0}" -gt 0 ]; }
+declare -A defer_seen=()
 # Save one wave's archives, smallest first, with the apply lock held. Exports run smallest first because the snapshot
 # deadline is spent on them: a save that runs out the budget must not be the one that takes every smaller archive down
 # with it. Every archive is written from the reference the survey resolved, re-checked at save time; each failure is a
@@ -645,15 +669,17 @@ save_wave() { # <wave>
     # free image save while the disk is already under the floor.
     avail_now=$(( $(free_bytes) - floor_bytes ))
     top=$(( szb > written_big ? szb : written_big )); top_gb="$(ceil_gb "$top")"
+
     # Bytes throughout, and only the line's numbers rounded: rounding a size up here could refuse a save that fits, and
     # the request's sizes come from the daemon in bytes anyway.
     if [ $(( szb + top )) -gt "$avail_now" ]; then
       why="$(space_need "$(ceil_gb "$written")" "$sz" "$top_gb" "$(ceil_gb "$avail_now")" $(( (szb + top - avail_now + 1073741823) / 1073741824 )))"
       # This wave's own archives are held in `free` already, so a save that no longer fits may only be waiting on them.
       # Once this wave is scanned those bytes come back: give the image a wave of its own after this one instead of
-      # recording a skip that would repeat on every pass. With nothing written yet the disk itself lacks the room (or
-      # another writer took it), and the same check would fail again, so that one is a line.
-      if [ "$written" -gt 0 ] && defer_to_next_wave "$idx" "$why"; then
+      # recording a skip that would repeat on every pass. With nothing written yet it may be another writer's temporary
+      # pressure, so that one is retried once too; only a second shortfall with nothing written is the disk's own state,
+      # and it is a line.
+      if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then
         continue
       fi
       fail "image:$key" "skipped: ${sz} GB image does not fit: $why"
