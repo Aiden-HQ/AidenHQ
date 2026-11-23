@@ -11,6 +11,7 @@ log() {
   printf '%s backup: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
 }
 
+test -f /run/secrets/POSTGRES_PASSWORD && test -s /run/secrets/POSTGRES_PASSWORD || { log "the secret POSTGRES_PASSWORD is missing or empty"; exit 1; }
 export PGPASSWORD="$(cat /run/secrets/POSTGRES_PASSWORD)"
 
 wait_for_postgres() {
