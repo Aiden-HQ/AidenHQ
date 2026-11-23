@@ -129,16 +129,27 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           const now = await pc.issue(task);
           // An empty recorded version (no deliverable then) is stale once one appears. `gather()` can't tell a deliverable whose
           // evidence isn't capturable (a deployed app whose live page is down) from no deliverable, so the presence check decides.
-          // A close decided at the day bound (`dayBound`, queued with it) is the day's own: the signals that could not settle
-          // it — a stuck `busy`, a read that keeps throwing, an unanswerable presence check, the same deliverable it reported — are
-          // no news on its replay, so it lands instead of starting another day's wait. What a replay *does* read is still
-          // compared, so a version or a presence finding that differs from the close's is work it never saw and makes it stale.
-          const pastDay = Boolean(s.dayBound);
+          // The day this close may wait (`closeDeadline`, carried on it): the row's own day, `updatedAt + GRADE_WAIT_MS`. Past it
+          // the close has spent its day and lands instead of starting another: a stuck `busy`, a `gather()` that keeps throwing,
+          // an unanswerable presence check and work it already waited on are all no news (the guarantee "a day after the close at
+          // most, whatever else it waits on"). What the replay does read is still compared: a new version, or a deliverable the
+          // close found absent that is there now, sends it back to grading.
+          // A close queued before closes carried their deadline: give it one now, counted from the wait it already spent
+          // (`unreadSince`, when it had one) so an upgrade cannot stretch a 23-hour wait to 47. The same single bound applies.
+          if (typeof s.closeDeadline !== "string") {
+            const since = typeof s.unreadSince === "string" ? Date.parse(s.unreadSince) : Date.now();
+            s.closeDeadline = new Date(since + GRADE_WAIT_MS).toISOString();
+            steps[0] = s;
+            state.set(`owed:${task}`, JSON.stringify(steps));
+          }
+          const pastDay = Date.now() >= Date.parse(s.closeDeadline);
           const deps = now.status === "done" || now.status !== s.status ? undefined : gradeDeps(now);
           let seen: Json;
           if (deps) {
             try {
-              seen = await gather(s.deliverable, deps, s.rubric);
+              // A stuck `busy` must not hide evidence that is there now: past the day the replay reads past it, and a deliverable
+              // it finds makes the close stale below.
+              seen = await gather(s.deliverable, pastDay ? { ...deps, busy: () => "" } : deps, s.rubric);
             } catch (err: Json) {
               // Before the day a read that throws holds the close for another pass, as before. Past it, the read is the same
               // signal the close outlived: re-raising would hold the close, and the task in review, for as long as it keeps
@@ -149,57 +160,52 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
             }
           }
           const found = seen?.version ?? "";
-          // A versionless close also waits out work that has started since: an open sub-task or a card on the task. Real movement
-          // is not the `busy` a day-bound close outlived, so it still holds that close; only the stuck signal does not.
-          const active = !s.version && now.status !== "done" && ((!pastDay && Boolean(seen?.busy)) || (await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some(openCard));
+          // A versionless close also waits out work that has started since: an open sub-task or a card on the task. Past the day
+          // that wait is over, so it is not re-parked on work it already waited on.
+          const active = !pastDay && !s.version && now.status !== "done" && (Boolean(seen?.busy) || (await pc.children(now.id)).some((c: Json) => !["done", "cancelled"].includes(c.status)) || (await recordsOn(now).catch(() => [])).some(openCard));
           // A deliverable whose evidence can't be captured has no version either: the presence check (escalationFor's) tells it
-          // from no deliverable at all, so a deployed-but-down app's close is stale instead of done/ungraded. A presence check
-          // that could not answer (GitHub or the apps registry unreachable) is not "absent": it waits for the next pass, but
-          // only so long. After the day a grade waits, an answer that never comes closes the task ungraded, saying the
-          // deliverable could not be read, rather than letting the close replay forever.
+          // from no deliverable at all, so a deployed-but-down app's close is stale instead of done/ungraded. A presence lookup
+          // that could not answer (GitHub or the apps registry unreachable) is not "absent": it waits for the next pass, but only
+          // within the close's own day. A lookup that throws is the same as one that cannot answer.
           // A gathered version is itself proof the close is stale, and it is the answer already in hand: the presence check is
           // only for a deliverable whose evidence could not be captured (no version), so it never runs — and never waits on an
           // outage — over a deliverable `gather()` has already read.
-          // A presence lookup that throws is no answer, not "absent": before the day it holds the close for another look, and past
-          // it the close lands on what it recorded (the same `unknown` path, without another day's wait).
           const presence = !active && Boolean(deps) && !s.version && !found ? await presentNow(s.deliverable, deps).catch(() => ({ present: false, unknown: true, facts: [] })) : undefined;
           // Confirmed presence first: one recorded PR merged is proof the close is stale even when another PR's lookup failed
           // (`present` and `unknown` are both true then), so the row goes back to grading instead of waiting on the uncertain one.
-          // A deliverable the close already reported as there, with the same facts, is not one that appeared since: the close said
-          // its evidence never settled, and the same answer on the next pass must not reopen it for another day. A different
-          // finding (a later deploy) is work the close never saw, and one the close reported absent is stale when it is there now.
-          const sameFinding = Array.isArray(s.sawPresentFacts) && Boolean(presence?.present) && JSON.stringify(presence!.facts) === JSON.stringify(s.sawPresentFacts);
-          const present = Boolean(presence?.present) && !sameFinding;
-          const { unreadSince, ...plain } = s; // carried only while the wait is unread
+          // A deliverable the close already found there is not one that appeared since: compare the confirmed finding, never the
+          // lookup's words, so a reworded or partly unreadable answer cannot reopen it for another day.
+          const present = Boolean(presence?.present) && !s.sawPresent;
+          // A version the replay read and that differs is a new deliverable; a deliverable it confirms is gone is not the one graded
+          // either. Before the day any answer over a versioned close is compared as before (an unread one holds the close); past it
+          // only a read that proves a change reopens, or an unavailable lookup would keep the close owed past its bound.
+          const versionMoved = s.version ? (pastDay ? (Boolean(found) && found !== s.version) || Boolean(seen?.missing) : found !== s.version) : Boolean(found);
+          // One bound, the close's own day: within it an unanswerable lookup gets its next pass, and once it is spent the close
+          // lands ungraded saying the deliverable could not be read, rather than replaying forever.
           let gaveUp = false;
           if (presence?.unknown && !present) {
-            const since = typeof unreadSince === "string" ? unreadSince : new Date().toISOString();
-            // Past the day the close already spent, an unanswerable lookup closes it on what was recorded rather than restarting
-            // another day's wait. Before it, and before this close's own day, the lookup gets its next pass as before.
-            if (!pastDay && Date.now() - Date.parse(since) < GRADE_WAIT_MS) {
-              steps[0] = { ...plain, unreadSince: since };
-              state.set(`owed:${task}`, JSON.stringify(steps));
-              throw new Error(`${s.deliverable?.kind ?? "the deliverable"} could not be read just now: waiting for the next pass`);
-            }
+            if (!pastDay) throw new Error(`${s.deliverable?.kind ?? "the deliverable"} could not be read just now: waiting for the next pass`);
             gaveUp = true;
-            steps[0] = plain;
           }
-          if (now.status !== "done" && (now.status !== s.status || active || present || (s.version ? found !== s.version : Boolean(found)))) {
+          if (now.status !== "done" && (now.status !== s.status || active || present || versionMoved)) {
             log("a satisfied verdict is stale: not closed", { issue: task });
             // The reset names the row's filing as it was just read: a legacy step carries none, and a reset without one is
             // dropped by the store, which would leave the row satisfied and never picked up again.
-            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(filed.filing ? { rubric: filed.filing } : {}) });
+            // It names the round it checked too, so a resubmission that kept the filing's hash is not parked as this close's wait.
+            await api.post(`/internal/grades/${encodeURIComponent(task)}/verdict`, { version: "", outcome: "awaiting_evidence", ...(filed.filing ? { rubric: filed.filing } : {}), ...(typeof s.round === "number" ? { round: s.round } : {}) });
             steps.length = 1;
           } else if (now.status !== "done") {
             // The note keeps the grader's marker that gradeNote puts on every note: evidence collection filters grader comments by
             // it, so an unmarked close would come back as the task's own evidence if the task were reopened and graded again.
             const unreadable = `its deliverable could not be read just now (${s.deliverable?.kind ?? "the deliverable"})`;
-            const why = gaveUp ? `${unreadable}: closed ungraded\n\n${graderMarker}` : s.note;
+            // A close that recorded a gather failure keeps it: that throw is still what kept the evidence from being read, and a
+            // later unreadable lookup must not replace it. A close that recorded no such reason says the lookup was unreadable.
+            const why = gaveUp && !s.gatherError ? `${unreadable}: closed ungraded\n\n${graderMarker}` : s.note;
             // The parent's notice was queued with the close's first wording. An unreadable deliverable is not a missing one, so
             // the notice says ungraded too. It is saved before the close: if the PATCH lands and its answer is lost, the next pass
             // sees the task already done and sends this row, which must already carry the ungraded notice rather than the queued
             // "graded against its rubric" one.
-            if (gaveUp) {
+            if (gaveUp && !s.gatherError) {
               for (const x of steps) if (x.do === "tell") x.ungraded = unreadable;
               state.set(`owed:${task}`, JSON.stringify(steps));
             }
@@ -379,7 +385,9 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     let gatherError = "";
     let ev: Json;
     try {
-      ev = await gather(g.deliverable, deps, rubric);
+      // Past the day a stuck `busy` (a `running` job row with no process behind it) is stale: the evidence that is there now is
+      // read and graded, rather than closing the task ungraded over a PR the grader never looked at.
+      ev = await gather(g.deliverable, pastDeadline ? { ...deps, busy: () => "" } : deps, rubric);
     } catch (err: Json) {
       if (!pastDeadline) throw err;
       gatherError = String(err?.message ?? err).slice(0, 200);
@@ -392,13 +400,13 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
     const agent = issue.assigneeAgentId ? await pc.agent(issue.assigneeAgentId) : undefined;
     const attempt = (g.attempts ?? 0) + 1; // the pass this grade is on (a revision is the next attempt)
     let asked = false, v;
-    // Whether the day decided this close over a signal that could never settle it: a stuck `busy`, or a `gather()` that threw.
-    // Carried into its replay (settle()), where that same signal is no news, so it cannot hold the satisfied row — which is no
-    // longer graded — forever. A version that appeared since still sends it back to grading.
-    let dayBound = false;
-    // What the close found there (escalationFor's answer): its replay says so, so the same finding does not read as a deliverable
-    // that appeared since, while a different one still does.
-    let sawPresentFacts: string[] | undefined;
+    // The day this close may wait: the row's own day, carried onto the close. Its replay (settle()) lands it once that day is
+    // spent, whatever it was waiting on, so no signal can hold the satisfied row -- which is no longer graded -- for longer. Every
+    // close carries it, so a close from before this field names none and keeps the old replay.
+    const closeDeadline = new Date(Date.parse(g.updatedAt) + GRADE_WAIT_MS).toISOString();
+    // Whether the close found its deliverable there (escalationFor's answer): its replay compares that, not the lookup's words,
+    // so the same deliverable does not read as one that appeared since, while a deliverable absent at the close still does.
+    let sawPresent = false;
     if (ev.awaiting) {
       // Evidence that never comes (a PR nobody merges, a deploy that never lands) closes the task done, ungraded, after a day, saying why;
       // a deliverable that doesn't exist at all (finished with no PR, no apply, nothing posted) after MISSING_WAIT_MS, since
@@ -426,8 +434,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       // The wait is over: the task closes done, ungraded, on today's facts (escalationFor says why; a deliverable that is there
       // after all is named as there). Fail open: nobody is asked to decide.
       const esc = await escalationFor(ev, g.deliverable, deps);
-      dayBound = pastDeadline && Boolean(gatherError || ev.busy);
-      sawPresentFacts = esc.present ? esc.facts ?? [] : undefined;
+      sawPresent = Boolean(esc.present);
       state.set(`evidence-woken:${issue.id}`, ""); // a later round of work gets its own wake
       // A deliverable that is there keeps its version, so the close isn't read as stale once that version is found again. One
       // that could not be read keeps nothing: nothing was found to vouch for the version. A gather that threw read nothing at
@@ -465,7 +472,7 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
       const notice = { who: `${issue.identifier} (${agent?.name ?? "its agent"})`, title: String(issue.title ?? ""), identifier: String(issue.identifier ?? issue.id), ...(ungraded ? { ungraded } : {}) };
       // The notice names the same filing and round as the close it reports: a deferred notice is revalidated against them
       // before it speaks, so a row restarted or amended after the close cannot be described by the grade it replaced.
-      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), ...(dayBound ? { dayBound: true } : {}), ...(sawPresentFacts ? { sawPresentFacts } : {}), version: ev.version, status: issue.status, round: row.round, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, round: row.round, deliverable: g.deliverable, rubric, filing, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
+      await owe(issue.id, [{ do: "done", note, ungraded: Boolean(ungraded), closeDeadline, ...(sawPresent ? { sawPresent: true } : {}), ...(gatherError ? { gatherError } : {}), version: ev.version, status: issue.status, round: row.round, deliverable: g.deliverable, rubric, filing }, { do: "tell", issue: { id: issue.id, parentId: issue.parentId }, kind: "done", ...notice, round: row.round, deliverable: g.deliverable, rubric, filing, text: `${notice.who} is done, ${ungraded ? `ungraded: ${ungraded}` : "graded against its rubric"}: ${issue.title}. Its result is on ${issue.identifier}.` }]);
     } else if (row.state === "needs_revision") {
       await owe(issue.id, [{ do: "reopen", note }]);
       fact("work.waiting", `task:${issue.id}`, attempt, issue.id, { reason: "grade_retry" });

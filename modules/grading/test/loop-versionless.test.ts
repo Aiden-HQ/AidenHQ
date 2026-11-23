@@ -27,7 +27,7 @@ function setup(row, over = {}) {
       comment: async () => calls.push(["comment"]), block: async () => {}, children: async () => over.children ?? [],
     },
     log: () => {}, state,
-    gather: async () => (over.gather ? over.gather() : { facts: [], version: over.version ?? "v1", ...(over.awaiting ? { awaiting: over.awaiting } : {}), ...(over.missing ? { missing: true } : {}) }), grade: async () => ({ outcome: over.outcome ?? row, model: "m", criteria: [] }),
+    gather: async (...a) => (over.gather ? over.gather(...a) : { facts: [], version: over.version ?? "v1", ...(over.awaiting ? { awaiting: over.awaiting } : {}), ...(over.missing ? { missing: true } : {}) }), grade: async () => ({ outcome: over.outcome ?? row, model: "m", criteria: [] }),
     escalationFor: over.escalationFor ?? (async () => over.esc ?? {}), presentNow: over.presentNow ?? presentNow, gradeNote: (_g, _r, outcome, o) => (outcome === "ungraded" ? `ungraded: ${o?.reason}` : "note"), template: () => [], gradeDeps: over.gradeDeps ?? (() => ({})),
     tellParent: async (_i, kind, text) => { if (failing.tell-- > 0) throw err(); calls.push(["tell", kind]); tells.push(text); return true; },
     recordsOn: async () => [], graderAsk: () => undefined, stripHidden: (x) => x, graderSpeaks: () => false, rubricHash: () => "rubric", graderMarker: "<!-- aidenhq:grader -->",
@@ -55,11 +55,11 @@ it("a versionless close is stale once the deliverable is present, even when its 
 
 it("a presence check that can't answer leaves a versionless close waiting, never counts as absent", async () => {
     // The real presentNow: the apps registry read fails (app: undefined), which is "unknown", never "no deliverable". The close
-    // stays owed and is retried; once the registry answers with no such app it lands ungraded as before.
+    // stays owed and is retried; once the registry answers with no such app it lands ungraded as before. The row is fresh: a
+    // versionless close is queued now, and its own day bounds the wait for the presence answer.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, calls, failing } = setup("satisfied", over);
@@ -76,17 +76,16 @@ it("an unreadable presence check is waited out for a day and then closes ungrade
     // absent either: after the day a grade waits, the close lands ungraded with the reason naming the unreadable lookup.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, calls, notes, failing, state } = setup("satisfied", over);
     failing.done = 0;
     await loop.runGrades();
     assert.deepEqual(calls, [], "the first pass waits");
-    // The wait started a day and a bit ago: the same unreadable answer now ends it.
+    // The close's own day is spent: the same unreadable answer now ends it.
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades();
     assert.deepEqual(calls, [["setStatus", "done"], ["tell", "done"]], "an answer that never comes does not hold the close forever");
@@ -101,8 +100,7 @@ it("an unreadable-deliverable close rewrites the queued parent notice to say ung
     // must not be told as the same thing.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, tells, notes, failing, state } = setup("satisfied", over);
@@ -110,7 +108,7 @@ it("an unreadable-deliverable close rewrites the queued parent notice to say ung
     await loop.runGrades();
     assert.equal(tells.length, 0, "the wait tells nobody");
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades();
     assert.match(String(notes.at(-1)), /could not be read just now/, "the close says it was unreadable");
@@ -123,16 +121,15 @@ it("a title that contains 'Its result is on' never moves the parent's pointer", 
     // the very phrase a parser would split on, which would send the parent to the wrong task.
     let down = true;
     const over = {
-      id: "t-app", title: "Verify the deployment. Its result is on TASK-99", identifier: "TASK-42",
+      id: "t-app", title: "Verify the deployment. Its result is on TASK-99", identifier: "TASK-42", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true,
       outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, tells, failing, state } = setup("satisfied", over);
     failing.done = 0;
     await loop.runGrades();
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades();
     // The title itself carries that phrase, so it shows up in the notice as the title does; the pointer at the end must be the
@@ -145,15 +142,14 @@ it("the revised parent notice is saved before the close, so a lost answer still 
     // must read the ungraded notice from the owed row already, not the "graded against its rubric" one queued with the close.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, tells, failing, state } = setup("satisfied", over);
     failing.done = 1; // the close lands on the server, but the answer is lost
     await loop.runGrades();
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades(); // the close is filed; its answer is lost, so the row stays owed
     assert.equal(tells.length, 0, "the close did not report success");
@@ -325,6 +321,58 @@ it("a deliverable the day-bound close already reported present does not reopen i
   assert.match(String(notes.at(-1)), /^ungraded: its deliverable is there/, "the note says what the close found");
 });
 
+it("a stuck busy signal at the day does not hide evidence that is there: the pass reads past it", async () => {
+  // A job row stuck `running` makes busy() true forever, and gather() returns on it before reading the PR. Past the day the loop
+  // asks gather through a deps whose busy() is empty, so the evidence that is there is read rather than the task closed over a
+  // PR the grader never looked at.
+  const asked = [];
+  const { loop } = setup("satisfied", {
+    updatedAt: long(25), outcome: "satisfied", deliverable: { kind: "pr", ref: "acme/app#7" },
+    gather: (deliverable, deps) => { asked.push(deps.busy()); return { facts: [], version: "acme/app#7@abc" }; },
+    gradeDeps: () => ({ busy: () => "the agent is still working on it" }),
+  });
+  await loop.runGrades();
+  assert.ok(asked.length > 0 && asked.every((b) => b === ""), "past the day every read (pass and close replay) is past the stuck signal");
+});
+
+it("a fresh row keeps the busy signal in the read, so it still waits", async () => {
+  const asked = [];
+  const { loop } = setup("satisfied", {
+    updatedAt: long(1), outcome: "satisfied", deliverable: { kind: "pr", ref: "acme/app#7" },
+    gather: (deliverable, deps) => { asked.push(deps.busy()); return { awaiting: "the agent is still working on it", busy: true }; },
+    gradeDeps: () => ({ busy: () => "the agent is still working on it" }),
+  });
+  await loop.runGrades();
+  assert.deepEqual(asked, ["the agent is still working on it"], "before the day the signal is still what gather sees");
+});
+
+it("a day-bound close keeps its recorded gather failure when the presence lookup is unreadable", async () => {
+  // The close says its evidence could not be gathered (the throw). Its replay meets an unreadable presence lookup: it must land on
+  // the recorded reason, not replace it with a vaguer "could not be read".
+  const { loop, calls, notes, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+    escalationFor: async () => ({ hold: true, present: false, facts: [] }),
+    presentNow: async () => ({ present: false, unknown: true, facts: [] }),
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay lands");
+  assert.match(String(notes.at(-1)), /gathering its evidence failed a day after it was finished: the PR read threw/, "the recorded throw, not a lookup's words");
+});
+
+it("a close queued before closes carried a deadline gets one, so its replay is still bounded", async () => {
+  // Seed a close as an older release queued it (no closeDeadline), with an unreadable presence lookup behind it.
+  const { loop, calls, failing, state } = setup("satisfied", { id: "t-legacy", deliverable: { kind: "app", ref: "roadmap-keeper" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: false, unknown: true, facts: [] }) });
+  failing.done = 0;
+  state.set("owed:t-legacy", JSON.stringify([{ do: "done", note: "note", ungraded: true, version: "", status: "in_review", round: 1, deliverable: { kind: "app", ref: "roadmap-keeper" }, rubric: [], filing: "rubric" }]));
+  await loop.runGrades();
+  const owed = JSON.parse(state.get("owed:t-legacy") || "[]");
+  assert.equal(typeof owed[0]?.closeDeadline, "string", "a legacy close is stamped with a deadline");
+  assert.deepEqual(calls, [], "a fresh stamp does not let the unreadable close land at once");
+  assert.equal(JSON.parse(state.get("owed:t-legacy"))[0].closeDeadline, owed[0].closeDeadline, "the stamp is saved, not recomputed each pass");
+});
 it("a busy signal on a fresh row still waits, as before", async () => {
   const { loop, calls, notes, posts } = setup("satisfied", {
     updatedAt: long(1), outcome: "cannot_judge", version: "",
