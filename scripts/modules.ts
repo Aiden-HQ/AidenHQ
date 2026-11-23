@@ -935,9 +935,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       // "Repeats: …" names the board's own recurring tasks (services/board recurring.ts): setup never takes one for a module's.
       if (String(r.title).startsWith("Repeats: ")) fail(`routine ${key}: a title starting "Repeats: " is the board's, for the owner's recurring tasks`);
       routineTitles.add(r.title);
-      // `when: { forks: true }`: only while instance.yaml runs a fork (spec §6.9b); no routine, and no run, otherwise.
-      if (when != null && JSON.stringify(when) !== '{"forks":true}') fail(`routine ${key}: when must be { forks: true }`);
-      if (when && !forksOf(instance).length) continue;
+      // `when: { forks: true }`: only while instance.yaml runs a fork (spec §6.9b); `when: { module: <name> }`: only while that module is
+      // enabled (an agent's routine for a source module it consumes); no routine, and no run, otherwise.
+      if (when != null && JSON.stringify(when) !== '{"forks":true}' && !(typeof when.module === "string" && Object.keys(when).length === 1)) fail(`routine ${key}: when must be { forks: true } or { module: <name> }`);
+      if (when?.forks && !forksOf(instance).length) continue;
+      if (when?.module && !enabled.some((n) => n === when.module)) continue;
       put(paperclip.routines, key, { ...r, tier }, "routine");
     }
     for (const app of def.apps ?? []) {

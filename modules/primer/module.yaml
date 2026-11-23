@@ -2,7 +2,6 @@ name: primer
 description: "Primer: read, and publish documents when asked."
 requires:
   - board # its sign-in
-  - open-loops # Intake sends the digest and files asks of the owner
 # Its sign-in on the board (the board's point, modules/board/schemas/signins.json).
 contributes:
   board.signins:
@@ -72,18 +71,6 @@ connections:
         primer_propose_pick, primer_fork_document, primer_promote_conversation, primer_widget_draft, primer_widget_publish,
         primer_write_records, primer_revert_record_change ]
       destructive: [ primer_add_collaborator, primer_purge_personal_records ]
-# The owner's Primer digest (skills/primer-digest): one notify a day of what others did on their documents. Quiet by
-# default: a scheduled module routine, so quiet start pauses it until the owner resumes it (the board's fleet controls).
-routines:
-  primer-digest:
-    title: Primer digest
-    agent: inbox-agent
-    description: |
-      Today is {{date}}. Follow your primer-digest skill: read Primer's digest of the last day and, when there is
-      something in it, send the owner one notify (kind digest). Then close this task with one line.
-    concurrency: skip_if_active
-    schedules:
-      - { cron: "0 8 * * *", timezone: "${settings.timezone}", label: "every morning" }
 # Runner jobs read Primer through the model gateway with their own token (scripts/modules.ts jobcapEntries); read_url and
 # read_secret are today's loopback read endpoint and its token, which only the gateway holds.
 jobcaps:

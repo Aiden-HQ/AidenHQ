@@ -50,7 +50,7 @@ interface MeetingRow {
   end_at: string;
   timezone: string | null;
   attendees_json: string;
-  canonical_note_path: string;
+  canonical_note_path: string | null;
   extraction_json: string | null;
   html_link: string | null;
 }
@@ -67,7 +67,8 @@ function withKey(a: unknown) {
   return { ...(a as object), key: shortHash(`${(owner ?? "").toLowerCase()}|${(action ?? "").toLowerCase().replace(/\s+/g, " ").trim()}`) };
 }
 
-function row(m: MeetingRow, note: string | null) {
+// `note` undefined: the note isn't written yet (the vault was down at publish); its actions are still the meeting's.
+function row(m: MeetingRow, note: string | null | undefined) {
   const attendees = (JSON.parse(m.attendees_json || "[]") as { name?: string; email?: string }[]).filter((a) => a.email || a.name);
   const x = m.extraction_json ? (JSON.parse(m.extraction_json) as { summary?: string; actions?: unknown[] }) : {};
   const meta = {
@@ -75,6 +76,7 @@ function row(m: MeetingRow, note: string | null) {
     attendee_emails: attendees.map((a) => a.email?.toLowerCase()).filter(Boolean), attendee_names: attendees.map((a) => a.name || a.email),
     summary: x.summary ?? null, actions: (x.actions ?? []).map(withKey), note_path: m.canonical_note_path, calendar_link: m.html_link,
   };
+  if (note === undefined) return { ...meta, deleted: false };
   // Gone from the vault: a tombstone that keeps the last stored text.
   if (note == null) return { ...meta, deleted: true };
   const capped = capText(note, NOTE_CAP);
@@ -91,14 +93,14 @@ export async function syncMeetings(store: SourceStore, src: MeetingsSource, sent
   const meetings = src.db
     .prepare(
       `SELECT id, calendar_event_id, title, start_at, end_at, timezone, attendees_json, canonical_note_path, extraction_json, html_link
-       FROM meetings WHERE canonical_note_path IS NOT NULL ORDER BY start_at`,
+       FROM meetings WHERE canonical_note_path IS NOT NULL OR extraction_json IS NOT NULL ORDER BY start_at`,
     )
     .all() as unknown as MeetingRow[];
   let written = 0;
   for (const m of meetings) {
-    let note: string | null;
+    let note: string | null | undefined;
     try {
-      note = src.vault.exists(m.canonical_note_path) ? src.vault.read(m.canonical_note_path).content : null;
+      note = m.canonical_note_path ? (src.vault.exists(m.canonical_note_path) ? src.vault.read(m.canonical_note_path).content : null) : undefined;
     } catch {
       continue; // unreadable (outside the read roots, too large): left as last stored, not a tombstone
     }

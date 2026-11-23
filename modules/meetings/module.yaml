@@ -6,7 +6,6 @@ roles:
 requires:
   - google
   - warehouse
-  - open-loops # Intake files the owner's action items
 # Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
 contributes:
   warehouse.sources:
@@ -29,15 +28,6 @@ routines:
     schedules:
       # Backstop for missed file events, review decisions and Drive documents.
       - { cron: "*/15 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
-  meeting-actions:
-    title: Meeting action items
-    agent: inbox-agent
-    description: |
-      Today is {{date}}. The owner is ${settings.owner_name}. Follow your meeting-actions skill: file the owner's action items from newly published
-      meetings, then close this task with a count summary.
-    concurrency: skip_if_active
-    schedules:
-      - { cron: "*/30 8-20 * * *", timezone: "${settings.timezone}", label: "every day" }
 connections:
   ops_mcp:
     setup: "A host step for whoever installs this server: the transcripts, vault and reference-document folders are set on the host (`ops/setup.sh`, or TRANSCRIPTS_DIR, VAULT_DIR, VAULT_FOLDERS and KNOWLEDGE_BASES in the host's .env), never from the board. Check with `scripts/healthcheck.sh`."

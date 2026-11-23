@@ -70,6 +70,27 @@ routines:
       Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an alert (notify, kind alert); you never post
       to Slack. Then close this task with one line saying what you did.
     event: { connection: slack, resource: "*", filter: { kind: [message, app_mention, reaction_added, reaction_removed], bot: false } } # the kernel's event router fires it once a minute at most
+  # Intake's routines for the source modules it consumes: each exists only while its module is enabled.
+  primer-digest:
+    title: Primer digest
+    agent: inbox-agent
+    description: |
+      Today is {{date}}. Follow your primer-digest skill: read Primer's digest of the last day and, when there is
+      something in it, send the owner one notify (kind digest). Then close this task with one line.
+    concurrency: skip_if_active
+    when: { module: primer }
+    schedules:
+      - { cron: "0 8 * * *", timezone: "${settings.timezone}", label: "every morning" }
+  meeting-actions:
+    title: Meeting action items
+    agent: inbox-agent
+    description: |
+      Today is {{date}}. The owner is ${settings.owner_name}. Follow your meeting-actions skill: file the owner's action items from newly published
+      meetings, then close this task with a count summary.
+    concurrency: skip_if_active
+    when: { module: meetings }
+    schedules:
+      - { cron: "*/30 8-20 * * *", timezone: "${settings.timezone}", label: "every day" }
 labels:
   - { name: waiting-on, color: "#7c3aed" }
   - { name: email, color: "#ea580c" }
