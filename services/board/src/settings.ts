@@ -90,6 +90,8 @@ export interface Grants {
 }
 
 export interface Sources {
+  /** Each routine's live Paperclip row by its compiled key (setup's ids): pause and resume are Paperclip's, shown as they are. */
+  live?: Record<string, { id: string; paused: boolean }>;
   /** config/paperclip.yaml, parsed; null when the board can't read it (not mounted yet). */
   compiled: Compiled | null;
   catalog: CatalogEntry[];
@@ -190,7 +192,7 @@ export function settingsView(s: Sources) {
     const g = grantsByKey.get(key);
     const routines = Object.entries(c.routines ?? {})
       .filter(([, r]) => r.agent === key)
-      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.webhook ? { webhook: true } : {}), defaults: defaultsOf("routines", rk, ["schedules", "model"]) }));
+      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.webhook ? { webhook: true } : {}), ...(s.live?.[rk] ?? {}), defaults: defaultsOf("routines", rk, ["schedules", "model"]) }));
     return {
       key,
       name: a.name ?? key,

@@ -18,6 +18,9 @@ export function toSourceEvent(body: unknown): SourceEvent | null {
   if (!ev || !kind || !KINDS.has(kind) || !channel || !ts || !text) return null;
   const subtype = str(ev.subtype);
   if (subtype && SYSTEM_SUBTYPES.has(subtype)) return null;
+  // Direct messages to the bot are the bot's conversation, never a feed a routine reads: only channels go.
+  const kindOf = str(ev.channel_type);
+  if (kindOf === "im" || kindOf === "mpim" || channel.startsWith("D")) return null;
   const author = str(ev.user) ?? str(ev.bot_id);
   // A reply carries its thread's root ts: whom it addresses and which task it belongs to are the thread's.
   const thread = str(ev.thread_ts);

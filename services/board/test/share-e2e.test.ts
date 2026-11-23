@@ -129,7 +129,7 @@ describe("sharing a local module (V4)", () => {
       try {
         if (req.url === "/v1/modules/share/preview") return send(200, await sharing.preview(b));
         if (req.url === "/v1/modules/share") return send(200, await sharing.share(b));
-      } catch (e) { return send((e as { status?: number }).status ?? 502, { message: (e as Error).message }); }
+      } catch (e) { return send((e as { status?: number }).status ?? 502, { error: { code: "refused", type: "refused", message: (e as Error).message } }); }
       send(404, {});
     });
     servers.push(kernel.s);

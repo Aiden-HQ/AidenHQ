@@ -138,7 +138,7 @@ connections:
       github: { tool: github_whoami }
     # Routines' events (kernel events.ts), polled from each subscribed repo's events feed on the code host's churn pass
     # (best-effort: GitHub can delay its feed): a routine subscribes to a repo its agent's github_issue_read reaches.
-    events: { resource: "owner/repo", kinds: [ issues.opened, issue_comment.created, pull_request.opened, push ], filter: [ kind, author, contains ], reads: [ github_issue_read ] }
+    events: { resource: "owner/repo", kinds: [ issues.opened, issue_comment.created, pull_request.opened ], filter: [ kind, author, contains ], reads: [ github_issue_read ] }
   # GitHub's own MCP server (its default toolsets), passed through as the signed-in owner (src/vendor/proxy.ts), read-only
   # (spec §4): every tool not tagged `read` here is refused in github-mcp (official.ts denyExcept, from GITHUB_OFFICIAL_READ).
   # Mutations go only through AidenHQ's typed tools, which sign them and file their write records.

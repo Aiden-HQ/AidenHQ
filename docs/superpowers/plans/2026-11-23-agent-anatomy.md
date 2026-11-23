@@ -522,8 +522,6 @@ export function createMemory(o: { dir: string; now?: () => number }): {
 - Create: `kernel/src/events.ts`.
 - Modify: `kernel/src/backplane.ts`, `kernel/src/main.ts` (wiring; `setInterval(drain, 15_000)` plus one drain at
   start), `kernel/src/kinds.ts` (`kernel.events`).
-- Modify: `kernel/src/main.ts` ~111 `cpApi`. Merge the caller's `init.headers` into its own instead of replacing them,
-  so `Idempotency-Key` reaches Paperclip. This fix ships with a one-line assertion in the router test.
 - Test: `kernel/test/events.test.ts` (CI), V3 (manual).
 
 **Interfaces:**
@@ -573,7 +571,7 @@ export function createEvents(o: {
     - paused or deleted → `dropped`;
     - a lookup timeout → stays `sealed`, retried next drain;
     - over 12 per routine or 120 in total in the past hour (by `dispatched_at`) → `dropped: cap`, counted.
-  - Then set `state = firing` and call `run` with `Idempotency-Key = batch id`. On a 2xx, in one transaction, store
+  - Then set `state = firing` and call `run` with the batch id as the JSON body's `idempotencyKey`. On a 2xx, in one transaction, store
     `task = issue`, `state = fired` and `dispatched_at`.
   - A transport error, 429 or 5xx keeps `firing`, retried with the same key until 10 minutes after sealing, then
     `dropped`. Same key, same issue (probed), so a lost response recovers the binding.
@@ -600,7 +598,6 @@ export function createEvents(o: {
   - a lookup timeout and a 500 retry with the same key;
   - a read during `firing` is `pending`, and after binding returns the events;
   - another task's read is 403;
-  - `cpApi` forwards `Idempotency-Key`.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run the suites.** The kernel suite and typecheck in CI. V3 is run by hand.
 - [ ] **Step 5: Commit.** `feat(kernel): event router runs routines through Paperclip's idempotent run`.
@@ -918,7 +915,7 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
   - V1, V2, V4. Also V3, run by hand once with its output in the PR body.
 - [ ] Compile a scratch clone of the instance after Task 18's reshape, offline. Expected:
   - the same agent count;
-  - `aria`, `roadmap-keeper` and `roadmap-feedback` at `tier: local`;
+  - the instance's local agents (the instance repo's list) at `tier: local`;
   - the same routine keys;
   - `--sizes` equal except the memory section;
   - Task 12's snapshots equal.
@@ -931,9 +928,7 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
   - code refusals on `fileTool`.
 
   Fix each finding with a test in V1-V4 or the unit test of that file.
-- [ ] **Local Codex review**:
-  `codex exec review --base origin/main -m gpt-6.2-sol -c model_reasoning_effort=medium -o <scratchpad>/review.md < /dev/null`
-  in the background. Fix every important finding. Re-runs use `--base <last reviewed sha>` at `low`.
+- [ ] **Local Codex review** before the push; fix every important finding.
 - [ ] **Open the PR.** CI runs `reviewer-eval` because the base's `REVIEWER_CODE` matches; read its result. The body
   lists each dropped behaviour for the owner's OK:
   1. trial: its write limits, own-chats-only, the refused Slack channel and thread, the notify decision exception,
@@ -958,7 +953,7 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
 - [ ] **Instance commit 1** (pin bump included: the old product ignores `modules/` and the new one refuses
   `agent.yaml`). A throwaway reshape script using the yaml Document API:
   - `agents/<k>/agent.yaml` → `modules/<k>/module.yaml` as
-    `{name, description, agents: {<k>: def minus routines, trial, trial_writes}, routines: {<k>-<rk>: r minus autonomy, with agent: <k>}}`;
+    `{name, description, agents: {<k>: def minus routines, trial, trial_writes}, routines: {<k>-<rk>: r minus autonomy and status, with agent: <k>}}`;
   - `agents/<k>/AGENTS.md` → `modules/<k>/agents/<k>/AGENTS.md`, with frontmatter stripped after checking that it
     matches the YAML identity;
   - each local agent's `skills:` from Task 12's instance snapshot;
@@ -979,7 +974,7 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
   - triage triggers disabled.
 - [ ] **Live checks:**
   - the board lists the three agents under "Your agents", with Memory blocks;
-  - Aria answers in chat;
+  - a local agent answers in chat;
   - "remember X" in chat lands in memory through the handoff;
   - a TEST task where Aiden adds a library skill through `self_change` shows a Tier 1 card naming its enablers;
   - one Slack message produces one triage run.

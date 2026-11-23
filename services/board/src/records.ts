@@ -190,7 +190,9 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     // Only the kernel's own 4xx says nothing was written; a refused connection never reached it, but a lost response, a timeout or a 5xx may follow a write.
     const res = await fetch(`${k.url}/v1/settings/change`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify({ task, changes, ...(credential ? { credential } : {}) }), signal: AbortSignal.timeout(180_000) }).catch((e: Error & { cause?: Cause }) => { throw Object.assign(e, { refused: neverConnected(e.cause) }); });
     const j = (await res.json().catch(() => ({}))) as { record?: string; tier?: number; state?: string; message?: string; error?: string };
-    if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
+    // The backplane's refusal is { error: { code, type, message } }.
+    const err = j.error as { message?: unknown } | string | undefined;
+    if (!res.ok) throw Object.assign(new Error(String((typeof err === "object" ? err?.message : err) ?? j.message ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
     return { record: String(j.record), tier: Number(j.tier), state: String(j.state) };
   };
   /** POST to the kernel: its answer, or its reason thrown (`refused`: the kernel's own 4xx or never reached, so nothing was filed). */
@@ -198,7 +200,9 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     if (!k) throw Object.assign(new Error("the board has no kernel to ask"), { refused: true });
     const res = await fetch(`${k.url}${path}`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) }).catch((e: Error & { cause?: Cause }) => { throw Object.assign(e, { refused: neverConnected(e.cause) }); });
     const j = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) throw Object.assign(new Error(String(j.message ?? j.error ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
+    // The backplane's refusal is { error: { code, type, message } }.
+    const err = j.error as { message?: unknown } | string | undefined;
+    if (!res.ok) throw Object.assign(new Error(String((typeof err === "object" ? err?.message : err) ?? j.message ?? `the kernel answered ${res.status}`)), { refused: res.status < 500 });
     return j;
   };
   const sharePreview: Records["sharePreview"] = (b) => post("/v1/modules/share/preview", b, 120_000);

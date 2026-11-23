@@ -51,11 +51,10 @@ export function sourceEvent(repo: string, e: Json): Json | undefined {
   const p = e.payload ?? {}, issue = p.issue ?? p.pull_request ?? {};
   const kind = e.type === "IssuesEvent" && p.action === "opened" ? "issues.opened"
     : e.type === "IssueCommentEvent" && p.action === "created" ? "issue_comment.created"
-    : e.type === "PullRequestEvent" && p.action === "opened" ? "pull_request.opened"
-    : e.type === "PushEvent" ? "push" : undefined;
+    : e.type === "PullRequestEvent" && p.action === "opened" ? "pull_request.opened" : undefined;
   if (!kind) return undefined;
-  const text = kind === "push" ? (p.commits ?? []).map((c: Json) => String(c.message ?? "")).join("\n") : kind === "issue_comment.created" ? String(p.comment?.body ?? "") : `${issue.title ?? ""}\n\n${issue.body ?? ""}`;
-  const url = kind === "push" ? `https://github.com/${repo}/commits/${p.head ?? ""}` : String((kind === "issue_comment.created" ? p.comment?.html_url : issue.html_url) ?? "");
+  const text = kind === "issue_comment.created" ? String(p.comment?.body ?? "") : `${issue.title ?? ""}\n\n${issue.body ?? ""}`;
+  const url = String((kind === "issue_comment.created" ? p.comment?.html_url : issue.html_url) ?? "");
   const labels = (issue.labels ?? []).map((l: Json) => String(l.name ?? l)).filter(Boolean).slice(0, 10);
   return { connection: "github", resource: repo, id: String(e.id), kind, author: String(e.actor?.login ?? "ghost"), text: text.slice(0, 2000), ...(labels.length ? { labels } : {}), ...(url.startsWith("https://") ? { url: url.slice(0, 500) } : {}) };
 }

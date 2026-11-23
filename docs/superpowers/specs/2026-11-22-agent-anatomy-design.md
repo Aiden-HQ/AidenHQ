@@ -180,7 +180,7 @@ Engineering calls made with these (simplest to maintain):
   - A routine may subscribe to any resource its agent's existing read grant on that connection reaches: the same reach
     its read tools have, with the same credential. `*` is allowed only in product routines. There is no owner step.
     The grant and the routine's status are checked again at fire and at batch read.
-  - Duplicates: Paperclip's `Idempotency-Key` (the batch id) makes a retried fire one run, and the bounded event queue
+  - Duplicates: Paperclip's run idempotency key, sent as the JSON body's `idempotencyKey` (the batch id; the pinned image ignores the `Idempotency-Key` header) makes a retried fire one run, and the bounded event queue
     drops a repeated source event id. Filters (event kind, author, label, text match) run in code before
     any model call. A burst within the wake window is one run carrying all its events.
   - A batch is sealed when the 60 s window ends; there is no leading-edge fire.

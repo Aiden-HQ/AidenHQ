@@ -48,13 +48,27 @@ export function numstat(text: string | null | undefined) {
   });
 }
 
+/** A path as git quotes it (C escapes, octal bytes), read back. */
+function unquote(p: string): string {
+  const bytes: number[] = [];
+  const esc: Record<string, number> = { n: 10, t: 9, r: 13, b: 8, f: 12, a: 7, v: 11, "\\": 92, '"': 34 };
+  for (let i = 0; i < p.length; i++) {
+    if (p[i] !== "\\") { bytes.push(...Buffer.from(p[i]!)); continue; }
+    const oct = /^[0-7]{3}/.exec(p.slice(i + 1));
+    if (oct) { bytes.push(parseInt(oct[0], 8)); i += 3; } else { bytes.push(esc[p[i + 1]!] ?? p.charCodeAt(i + 1)); i += 1; }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
 /** The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. */
 export function diffFiles(diff: string | null | undefined) {
   const out: { path: string; add: number; del: number }[] = [];
   let hunk = false;
   for (const l of String(diff ?? "").split("\n")) {
-    // No renames, so both sides name the same path (which may hold spaces).
-    const m = /^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l);
+    // No renames, so both sides name the same path (which may hold spaces). Git quotes a path with special characters
+    // ("a/caf\303\251.txt"): read back to the path itself.
+    const q = /^diff --git "a\/((?:[^"\\]|\\.)*)" "b\/(?:[^"\\]|\\.)*"$/.exec(l);
+    const m = q ? [l, unquote(q[1]!)] : /^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l);
     if (m) {
       out.push({ path: m[1]!, add: 0, del: 0 });
       hunk = false;

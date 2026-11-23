@@ -41,29 +41,29 @@ test("a poll starts a new repo at its head, sends the ETag on page one, pages to
   calls.length = 0;
   await flow.eventsPass();
   assert.deepEqual(calls, [{ path: "/repos/acme/app/events?per_page=100&page=1", etag: '"e1"' }]);
-  // New events go oldest first; a push and an opened issue go, a starred repo doesn't.
-  feed = [{ id: "3", type: "WatchEvent", payload: {} }, { id: "2", type: "PushEvent", actor: { login: "octo" }, payload: { head: "abc", commits: [{ message: "fix" }] } }, ...feed];
+  // New events go oldest first; an opened PR goes, a starred repo and a push don't.
+  feed = [{ id: "4", type: "PullRequestEvent", actor: { login: "octo" }, payload: { action: "opened", pull_request: { title: "fix", html_url: "https://github.com/acme/widgets/pull/4" } } }, { id: "3", type: "WatchEvent", payload: {} }, { id: "2", type: "PushEvent", actor: { login: "octo" }, payload: { head: "abc" } }, ...feed];
   await flow.eventsPass();
-  assert.deepEqual(posted, [{ id: "2", kind: "push" }]);
+  assert.deepEqual(posted, [{ id: "4", kind: "pull_request.opened" }]);
   assert.ok(!logs.includes("events: a gap in the feed; read its newest page only"));
 
   // 150 new events: page two is read back to the cursor; the kernel's skip of 7 still moves the cursor.
   posted.length = 0; logs.length = 0;
-  feed = [...Array.from({ length: 150 }, (_, i) => issue(153 - i)), ...feed];
+  feed = [...Array.from({ length: 150 }, (_, i) => issue(154 - i)), ...feed];
   await flow.eventsPass();
   assert.equal(posted.length, 150);
-  assert.deepEqual([posted[0]!.id, posted.at(-1)!.id], ["4", "153"]);
+  assert.deepEqual([posted[0]!.id, posted.at(-1)!.id], ["5", "154"]);
   assert.ok(!logs.includes("events: a gap in the feed; read its newest page only"));
 
   // A 503 stops there (the cursor stays before it, the ETag isn't kept); the next pass sends it and what follows.
   posted.length = 0;
-  feed = [issue(155), issue(154), ...feed];
-  refuse = "154";
+  feed = [issue(156), issue(155), ...feed];
+  refuse = "155";
   await flow.eventsPass();
   assert.deepEqual(posted, []);
   refuse = "";
   await flow.eventsPass();
-  assert.deepEqual(posted.map((p) => p.id), ["154", "155"]);
+  assert.deepEqual(posted.map((p) => p.id), ["155", "156"]);
 
   // A cursor the feed no longer reaches: page one only, with a gap.
   posted.length = 0; logs.length = 0;

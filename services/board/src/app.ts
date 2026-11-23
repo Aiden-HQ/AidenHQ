@@ -1168,19 +1168,16 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   async function settingsData() {
     const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);
-    const view = settingsView({
+    // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
+    const rows = new Map(live.filter((x) => x.status !== "archived").map((x) => [x.id, x]));
+    const byKey = Object.fromEntries(Object.entries(routineKeys()).flatMap(([id, k]) => (rows.has(id) ? [[k, { id, paused: rows.get(id)!.status === "paused" }]] : [])));
+    return settingsView({
       ...readSources(settingsFiles()),
+      live: byKey,
       boardTimezone: opts.timezone,
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
     });
-    // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
-    const idOf = new Map(Object.entries(routineKeys()).map(([id, k]) => [k, id]));
-    for (const a of view.agents) for (const r of a.routines as { key: string; id?: string; paused?: boolean }[]) {
-      const row = live.find((x) => x.id === idOf.get(r.key) && x.status !== "archived");
-      if (row) Object.assign(r, { id: row.id, paused: row.status === "paused" });
-    }
-    return view;
   }
 
   // Each HTTP connection's /healthz, asked at most every 20 s (the page polls); when it last answered ok, since the board started.

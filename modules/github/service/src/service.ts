@@ -904,9 +904,11 @@ export function createService(o: Options) {
     const sha = await commitOnHead(s.slug, "the owner's share", `feat: publish the ${a.module} module\n\nThe owner's previewed share of instance commit ${a.source.slice(0, 12)}.`, async (dir, head) => {
       if (head !== a.base) throw fail(409, `${s.slug} \`${a.ref}\` moved since the preview: preview again`);
       const had = (await git(dir, ["ls-tree", "-r", "-z", "--name-only", head, "--", a.module])).split("\0").filter(Boolean);
+      if (had.some((p) => /[\n\r]/.test(p))) throw fail(422, `${s.slug} has a file under ${a.module}/ whose name holds a line break: rename it there first`);
       return { ...Object.fromEntries(had.filter((p) => !Object.hasOwn(files, p)).map((p) => [p, null])), ...files, "marketplace.json": upsertMarketplace(await fileAt(dir, head, "marketplace.json"), a.module) };
     }, a.ref);
-    await push(await cache(s, "ws"), ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${a.ref}`]);
+    // Only onto the tip the owner previewed: the push fails if the branch moved, was reset or was deleted since.
+    await push(await cache(s, "ws"), ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${a.ref}:${a.base}`, remote(s.slug), `${sha}:refs/heads/${a.ref}`]);
     log("module published", { repo: s.slug, ref: a.ref, module: a.module, sha });
     return { ok: true, text: `Published the ${a.module} module to ${s.slug} \`${a.ref}\` at ${sha.slice(0, 12)}.`, objects: [`github:${s.slug.toLowerCase()}@${sha}`] };
   }
