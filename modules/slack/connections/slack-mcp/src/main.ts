@@ -55,8 +55,17 @@ const servedTool = async (readOnly: boolean, name: string): Promise<{ served: bo
   if (!Array.isArray(list?.result?.tools)) return { served: false, confirmed: false };
   const tools = list.result.tools as { name?: unknown; annotations?: unknown }[];
   const live = (t: { annotations?: unknown }) => Boolean(t.annotations && typeof t.annotations === "object");
-  // The proxy lists nothing on /mcp/read when it can't reach the upstream, and cached stand-ins (never annotated) on /mcp
-  // when it can't either: an unannotated list is an outage, not a catalog that excludes the tool.
+  // Cached stand-ins (never annotated) mean the proxy can't reach the upstream: an outage, not a catalog that excludes
+  // the tool. An *empty* read list is ambiguous — the upstream may be unreachable, or Slack may simply offer no tool
+  // whose annotations mark it a read — so the full catalog decides: reachable there means this empty list is a real
+  // answer, and the tool is genuinely not served on the read endpoint.
+  if (!tools.length && readOnly) {
+    const serviceKey = readToken(process.env.MCP_TOKEN_FILE);
+    const full = serviceKey ? await post("/mcp", serviceKey, { jsonrpc: "2.0", id: 1, method: "tools/list" }) : undefined;
+    const all = Array.isArray(full?.result?.tools) ? (full.result.tools as { annotations?: unknown }[]) : [];
+    if (!all.some(live)) return { served: false, confirmed: false };
+    return { served: false, confirmed: true };
+  }
   if (!tools.length || !tools.some(live)) return { served: false, confirmed: false };
   // A live catalog answered: either it carries the tool or it genuinely doesn't, and both are confirmed.
   return { served: tools.some((t) => String(t?.name ?? "") === name && live(t)), confirmed: true };
