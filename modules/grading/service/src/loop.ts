@@ -175,12 +175,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           const presence = !active && Boolean(deps) && !s.version && !found ? await presentNow(s.deliverable, deps).catch(() => ({ present: false, unknown: true, facts: [] })) : undefined;
           // Confirmed presence first: one recorded PR merged is proof the close is stale even when another PR's lookup failed
           // (`present` and `unknown` are both true then), so the row goes back to grading instead of waiting on the uncertain one.
-          // A deliverable the close already found there is not one that appeared since: compare the confirmed finding, never the
-          // lookup's words, so a reworded or partly unreadable answer cannot reopen it for another day. A close queued before it
-          // carried `sawPresent` recorded the same confirmation as `sawPresentFacts`: the same facts are not a new finding, while
-          // one that differs (a later deploy) is work the close never saw.
-          const legacySame = Array.isArray(s.sawPresentFacts) && Boolean(presence?.present) && JSON.stringify(presence?.facts) === JSON.stringify(s.sawPresentFacts);
-          const present = Boolean(presence?.present) && !s.sawPresent && !legacySame;
+          // A deliverable the close already found there is not one that appeared since: any confirmation recorded on the close
+          // (the boolean, or the facts an earlier release kept instead) counts, and the lookup's words are never compared, so a
+          // reworded or partly unreadable answer cannot reopen it for another day.
+          const sawPresent = s.sawPresent === true || Array.isArray(s.sawPresentFacts);
+          const present = Boolean(presence?.present) && !sawPresent;
           // A version the replay read and that differs is a new deliverable; a deliverable it confirms is gone is not the one graded
           // either. Before the day any answer over a versioned close is compared as before (an unread one holds the close); past it
           // only a read that proves a change reopens, or an unavailable lookup would keep the close owed past its bound.

@@ -390,26 +390,16 @@ it("a legacy close already decided at the day bound is stamped expired, never gi
   assert.match(String(notes.at(-1)), /ungraded/, "still ungraded");
 });
 
-it("a legacy close that already confirmed its deliverable is not reopened on the same finding", async () => {
-  // Before closes carried `sawPresent`, the confirmed finding was kept as `sawPresentFacts`. The same facts on the replay are
-  // the deliverable the close already reported, not one that appeared since; a different finding is work it never saw.
-  const facts = ["pr acme/app#7 merged"];
-  const { loop, calls, posts, failing, state } = setup("satisfied", { id: "t-saw", deliverable: { kind: "pr", ref: "acme/app#7" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: true, facts }) });
+it("a legacy close that already confirmed its deliverable is not reopened by the replay", async () => {
+  // Before closes carried `sawPresent`, the confirmed finding was kept as `sawPresentFacts`. A close that recorded the
+  // deliverable was there has already compared it: the replay must not read it as one that appeared since and park the row
+  // awaiting evidence again, restarting the day.
+  const { loop, calls, posts, failing, state } = setup("satisfied", { id: "t-saw", deliverable: { kind: "pr", ref: "acme/app#7" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: true, facts: ["pr acme/app#7 is merged"] }) });
   failing.done = 0;
-  const queued = () => JSON.stringify([{ do: "done", note: "the queued note", ungraded: true, sawPresentFacts: facts, closeDeadline: new Date(Date.now() - 60_000).toISOString(), version: "", status: "in_review", round: 1, deliverable: { kind: "pr", ref: "acme/app#7" }, rubric: [], filing: "rubric" }]);
-  state.set("owed:t-saw", queued());
+  state.set("owed:t-saw", JSON.stringify([{ do: "done", note: "ungraded: its deliverable is there but its evidence never settled", ungraded: true, sawPresentFacts: ["pr acme/app#7 is merged"], closeDeadline: new Date(Date.now() - 60_000).toISOString(), version: "", status: "in_review", round: 1, deliverable: { kind: "pr", ref: "acme/app#7" }, rubric: [], filing: "rubric" }]));
   await loop.runGrades();
-  assert.deepEqual(calls, [["setStatus", "done"]], "the same confirmed finding does not reopen the close");
-
-  state.set("owed:t-saw", queued());
-  calls.length = 0;
-  posts.length = 0;
-  const seen = setup("satisfied", { id: "t-saw2", deliverable: { kind: "pr", ref: "acme/app#7" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: true, facts: ["pr acme/app#7 merged", "pr acme/app#8 merged"] }) });
-  seen.failing.done = 0;
-  seen.state.set("owed:t-saw2", JSON.stringify([{ do: "done", note: "the queued note", ungraded: true, sawPresentFacts: facts, closeDeadline: new Date(Date.now() - 60_000).toISOString(), version: "", status: "in_review", round: 1, deliverable: { kind: "pr", ref: "acme/app#7" }, rubric: [], filing: "rubric" }]));
-  await seen.loop.runGrades();
-  assert.deepEqual(seen.calls, [], "a different confirmed finding is a deliverable the close never saw");
-  assert.equal(seen.posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "it goes back to grading");
+  assert.deepEqual(calls, [["setStatus", "done"]], "the recorded presence does not reopen the close");
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 0, "the row is not parked awaiting evidence again");
 });
 
 it("a busy signal on a fresh row still waits, as before", async () => {
