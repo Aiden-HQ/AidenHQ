@@ -422,6 +422,29 @@ describe("interception through the proxy", () => {
     broken.close();
   });
 
+  it("names the missing permission when the sign-in has no channel search scope at all, never an empty complete set", async () => {
+    const bare = mkdtempSync(join(tmpdir(), "slack-reactions-"));
+    writeFileSync(join(bare, "token.json"), JSON.stringify({ access_token: "xoxp-user", user_id: ME, scope: "reactions:read" }));
+    const unscoped = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      serviceKey: "svc",
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: bare,
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(bare, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", serviceKey: "svc", caller: async () => ({}), fetchImpl: (async () => Response.json(page([]))) as unknown as typeof fetch }),
+    });
+    const unscopedBase = await listen(unscoped);
+    const res = await fetch(`${unscopedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public_and_private", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(body.result.isError).toBe(true);
+    expect(payload(body)).toMatchObject({ error: "scope", set: "unknown" });
+    expect(payload(body).detail).toContain("search scope");
+    unscoped.close();
+  });
+
   it("answers needs_owner, not a plain error, when Slack refuses the sign-in or it is missing", async () => {
     const refused = createVendorProxy({
       name: "Slack",
