@@ -32,7 +32,7 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
 
 test("each task the reply run holds has its own close path", () => {
   const bullet = block(read("modules/chief-of-staff/skills/task-replies/SKILL.md"), /\*\*Done or not needed:\*\*/);
-  assert.match(bullet, /A task assigned to this agent finishes with `task_finish`; its part of the owner's task goes back with `task_handoff`; a child of one of its tasks takes `task_comment` and stays open/, "an assigned task is finished, an owner part handed off, a child commented (task-scope.ts scopeOf)");
+  assert.match(bullet, /A task assigned to this agent finishes with `task_finish` — except its part of the owner's task, which goes back with `task_handoff`; a child of one of its tasks takes `task_comment` and stays open/, "an assigned task is finished, an owner part handed off, a child commented (task-scope.ts scopeOf)");
   assert.match(bullet, /Finishing the run task itself is step 4's, after every reply/, "the run task is finished once, after every reply");
 });
 
@@ -42,6 +42,7 @@ test("the daily brief's \"Still open\" close path does not `task_finish` an owne
   assert.doesNotMatch(line, /task_finish/, "the close path names no `task_finish`");
   assert.match(line, /"close" is `task_comment` with their reply as the evidence line, telling them the task stays for them to close on the board — say so, and if the comment is refused tell them in the reply/, "close comments, says the task is theirs to close, and a refused comment is said in the reply");
   assert.match(line, /"drop it" is `task_cancel` with `issue` on a task this agent filed/, "cancel is reserved for a drop, on a task this agent filed");
+  assert.match(line, /"snooze 7d \/ close on the board \/ delegate" \(closing is the owner's own act\)/, "the offered options say closing is the owner's own act");
   assert.match(line, /"snooze" is `fleet_followup_snooze`/, "snooze is unchanged");
   assert.match(line, /"delegate to X" is `task_delegate`/, "delegate is unchanged");
 });
