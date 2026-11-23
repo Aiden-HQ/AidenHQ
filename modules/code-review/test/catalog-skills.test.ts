@@ -20,8 +20,8 @@ const plugins = new Set([...dockerfile.matchAll(/for p in ([\w -]+); do cp/g)].f
 const NEEDS: Record<string, { tools?: string[]; args: RegExp; also?: string[] }> = {
   "/compound-engineering:ce-code-review": { args: /^mode:agent base:\{base\}$/ }, // a branch or base:<sha>, never a range
   "/pr-review-toolkit:review-pr": { args: /^(comments|errors tests)$/ }, // the command's review aspects
-  "/differential-review:diff-review": { args: /^HEAD --baseline \{base\}$/ }, // <commit> [--baseline <ref>]
-  "/insecure-defaults:audit": { tools: ["Workflow"], args: /^\.$/ }, // its command runs a Workflow over a path
+  "/differential-review:diff-review": { args: /^HEAD --baseline \{base\}/ }, // <commit> [--baseline <ref>]
+  "/insecure-defaults:audit": { tools: ["Workflow"], args: /^\{root\}$/ }, // its command runs a Workflow over a path: the checkout
   "pashov/skills:solidity-auditor": { args: /^--loop 1$/ }, // else it asks how many passes and waits
   "mattpocock/skills:improve-codebase-architecture": { tools: ["Skill"], args: /^$/, also: ["mattpocock/skills:codebase-design"] }, // loads codebase-design through the Skill tool
 };
@@ -68,26 +68,27 @@ test("a multi-skill option yields every skill with its own arguments, in order",
   assert.equal(tob.run.skills!.length, 5);
   const root = mkdtempSync(join(tmpdir(), "cr-skills-"));
   for (const s of tob.run.skills!) mkdirSync(join(root, "plugins", parseSkill(s.skill).plugin!), { recursive: true });
-  const sk = resolveSkills(tob.run.skills!, "claude-code", "abc123", root);
+  const sk = resolveSkills(tob.run.skills!, "claude-code", { base: "abc123", root: "/ws" }, root);
   assert.equal(sk.invocations.length, 5);
   assert.equal(sk.pluginDirs.length, 5);
   assert.deepEqual(sk.invocations.map((v) => v.split(" ")[0]), ["/audit-context-building:audit-context-building", "/insecure-defaults:audit", "/sharp-edges:sharp-edges", "/fp-check:fp-check", "/differential-review:diff-review"]);
-  assert.equal(sk.invocations[4], "/differential-review:diff-review HEAD --baseline abc123");
+  assert.equal(sk.invocations[1], "/insecure-defaults:audit /ws");
+  assert.match(sk.invocations[4]!, /^\/differential-review:diff-review HEAD --baseline abc123/);
 });
 
 test("a repo skill is its folder, invoked by name; its companions are linked, not invoked", () => {
   const root = mkdtempSync(join(tmpdir(), "cr-skills-"));
   for (const n of ["a", "b"]) { const f = join(root, "skills", "o__r", "x", n, "SKILL.md"); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, "---\nname: x\n---\n"); }
-  const sk = resolveSkills([{ skill: "o/r:a", args: "{base}..HEAD", also: ["o/r:b"] }], "claude-code", "abc", root);
+  const sk = resolveSkills([{ skill: "o/r:a", args: "{base}..HEAD", also: ["o/r:b"] }], "claude-code", { base: "abc", root: "/ws" }, root);
   assert.deepEqual(sk.invocations, ["/a abc..HEAD"]);
   assert.deepEqual(sk.skillDirs, [join(root, "skills", "o__r", "x", "a"), join(root, "skills", "o__r", "x", "b")]);
-  assert.deepEqual(resolveSkills([{ skill: "o/r:a", args: "" }], "codex", "abc", root).invocations, ["$a"]);
-  assert.throws(() => resolveSkills([{ skill: "o/r:none", args: "" }], "claude-code", "abc", root), /isn't installed from o\/r/);
+  assert.deepEqual(resolveSkills([{ skill: "o/r:a", args: "" }], "codex", { base: "abc", root: "/ws" }, root).invocations, ["$a"]);
+  assert.throws(() => resolveSkills([{ skill: "o/r:none", args: "" }], "claude-code", { base: "abc", root: "/ws" }, root), /isn't installed from o\/r/);
 });
 
 test("a plugin skill is a plugin folder, invoked by its spec", () => {
   const root = mkdtempSync(join(tmpdir(), "cr-skills-"));
   mkdirSync(join(root, "plugins", "compound-engineering"), { recursive: true });
-  assert.deepEqual(resolveSkills([{ skill: "/compound-engineering:ce-code-review", args: "mode:agent base:{base}" }], "claude-code", "abc", root),
+  assert.deepEqual(resolveSkills([{ skill: "/compound-engineering:ce-code-review", args: "mode:agent base:{base}" }], "claude-code", { base: "abc", root: "/ws" }, root),
     { invocations: ["/compound-engineering:ce-code-review mode:agent base:abc"], skillDirs: [], pluginDirs: [join(root, "plugins", "compound-engineering")] });
 });

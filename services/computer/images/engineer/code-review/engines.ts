@@ -152,7 +152,7 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
 }
 
 /** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
-/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit), and `also`, skills it loads itself (linked, never invoked). */
+/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). */
 export interface SkillRef { skill: string; args: string; also?: string[] }
 export interface Skill { invocations: string[]; skillDirs: string[]; pluginDirs: string[] }
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
@@ -172,7 +172,7 @@ export function parseSkill(skill: string) {
  * `/code-review`); and `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>`
  * (`$<name>` in codex). Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
  */
-export function resolveSkills(skills: SkillRef[], harness: string, base: string, root = SKILLS_ROOT): Skill {
+export function resolveSkills(skills: SkillRef[], harness: string, at: { base: string; root: string }, root = SKILLS_ROOT): Skill {
   const all: Skill = { invocations: [], skillDirs: [], pluginDirs: [] };
   const sigil = harness === "codex" ? "$" : "/";
   // One spec installed: its invocation (a plugin's is its own spec) and the folders it needs.
@@ -181,18 +181,18 @@ export function resolveSkills(skills: SkillRef[], harness: string, base: string,
     if (p.plugin) {
       const dir = join(root, "plugins", p.plugin);
       if (harness !== "claude-code" || !existsSync(dir)) throw new Error(`plugin ${p.plugin} isn't installed for ${harness}`);
-      all.pluginDirs.push(dir);
+      if (!all.pluginDirs.includes(dir)) all.pluginDirs.push(dir);
       return skill;
     }
     const from = p.owner ? join(root, "skills", `${p.owner}__${p.repo}`) : join(root, "skills");
     let found: string[] = [];
     try { found = readdirSync(from, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === p.name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(from, dirname(f))); } catch {}
     if (!found.length && p.owner) throw new Error(`skill ${p.name} isn't installed from ${p.owner}/${p.repo}`);
-    all.skillDirs.push(...found.slice(0, 1));
+    for (const d of found.slice(0, 1)) if (!all.skillDirs.includes(d)) all.skillDirs.push(d);
     return `${sigil}${p.name}`;
   };
   for (const { skill, args, also = [] } of skills) {
-    all.invocations.push(`${install(skill)} ${args.replaceAll("{base}", base)}`.trim());
+    all.invocations.push(`${install(skill)} ${args.replaceAll("{base}", at.base).replaceAll("{root}", at.root)}`.trim());
     for (const a of also) install(a);
   }
   return all;
@@ -206,7 +206,7 @@ function linkSkills(sk: Skill | undefined, dir: string) {
 }
 
 async function skillEngine(i: EngineInput): Promise<EngineResult> {
-  const sk = resolveSkills(i.skills ?? [], String(i.harness), i.base, i.skillsRoot);
+  const sk = resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: i.root }, i.skillsRoot);
   if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
   const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
   // It ran its own way: a finished run counts as read, and says its coverage isn't tracked.
