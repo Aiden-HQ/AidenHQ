@@ -106,6 +106,8 @@ const SPEND_DEFAULTS = (() => {
 })();
 // The fewest output tokens a call is cut to near a limit (below it a call always goes ahead).
 const MIN_OUTPUT = 1024;
+// The most ledger rows one /usage answer carries; a full one names the next page (`next`).
+const USAGE_PAGE = 20_000;
 // CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day.
 const CI_TTL_MS = 2 * 3600_000;
 const CI_TOKENS_PER_DAY = 200;
@@ -404,17 +406,18 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
     // A month's days, on the day index (`day` is YYYY-MM-DD; the ledger keeps 40 days).
     spentMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ?"),
-    // The same without calls in flight (`reserved`): what is spent for good. And one call's hold.
-    settledTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL AND status != 'reserved'"),
-    settledAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'reserved'"),
-    settledMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ? AND status != 'reserved'"),
+    // The same without holds that may still shrink: calls in flight (`reserved`) and cut-off ones a true-up may still settle
+    // (`unsettled` with a generation id, inside TRUE_UP_MS of their close): what is spent for good. And one call's hold.
+    settledTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
+    settledAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
+    settledMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ? AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
     holdOf: db.prepare("SELECT cost_usd AS s FROM calls WHERE key = ? AND status = 'reserved'"),
     rehold: db.prepare("UPDATE calls SET cost_usd = ? WHERE key = ? AND status = 'reserved'"),
     spenders: db.prepare("SELECT DISTINCT agent_id FROM calls WHERE day = ? AND agent_id IS NOT NULL"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
     unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
     // A row changes after its call ends only by a true-up (`changed`), which keeps the call's own time (`at`).
-    since: db.prepare("SELECT * FROM calls WHERE COALESCE(changed, at) >= ? AND status != 'reserved' ORDER BY COALESCE(changed, at) LIMIT 20000"),
+    since: db.prepare(`SELECT * FROM calls WHERE COALESCE(changed, at) >= ? AND status != 'reserved' ORDER BY COALESCE(changed, at) LIMIT ${USAGE_PAGE}`),
     settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
     inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
     gen: db.prepare("UPDATE calls SET gen = ? WHERE key = ? AND status = 'reserved'"),
@@ -550,10 +553,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    *  in flight): the task's (an agent's call on a task), the install's day and month. */
   function limits(who: { agentId: string | null; issueId: string | null; perpetual: boolean }, t: number): (Limit & { settled: number })[] {
     const set = limitsSet(), d = day(t), m = month(t), task = who.agentId ? taskSubject(who, t) : null;
+    const open = new Date(now() - TRUE_UP_MS).toISOString();
     return [
-      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(task) as Sum).s, settled: (q.settledTask.get(task) as Sum).s }] : []),
-      ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, spent: (q.spentAll.get(d) as Sum).s, settled: (q.settledAll.get(d) as Sum).s }] : []),
-      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, spent: (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s, settled: (q.settledMonth.get(`${m}-01`, `${m}-31`) as Sum).s }] : []),
+      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(task) as Sum).s, settled: (q.settledTask.get(task, open) as Sum).s }] : []),
+      ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, spent: (q.spentAll.get(d) as Sum).s, settled: (q.settledAll.get(d, open) as Sum).s }] : []),
+      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, spent: (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s, settled: (q.settledMonth.get(`${m}-01`, `${m}-31`, open) as Sum).s }] : []),
     ];
   }
 
@@ -960,8 +964,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       if (req.method === "POST" && path === "/usage") {
         boardKeyed(req);
         const { since } = JSON.parse((await readBody(req)) || "{}") as { since?: unknown };
-        const records = (q.since.all(String(since ?? "")) as CallRow[]).map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
-        return send(res, 200, { records });
+        const rows = q.since.all(String(since ?? "")) as (CallRow & { changed: string | null })[];
+        // A full page names where the next one starts (its last row's time: the boundary's rows come again, deduped by key).
+        const last = rows.length === USAGE_PAGE ? rows.at(-1)! : undefined;
+        const records = rows.map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
+        return send(res, 200, { records, ...(last ? { next: last.changed ?? last.at } : {}) });
       }
       if (req.method === "GET" && path === "/v1/spend/summary") {
         // The install's spend (settled and in flight) against its limits, and each agent's today (every granted agent, and any

@@ -98,6 +98,10 @@ test("concurrent calls share the room: each holds its granted output, so two in 
     for (const f of waiting.splice(0)) f();
   }
   assert.equal((await first).status, 200);
+  // A cut-off call's hold a true-up may still shrink (unsettled, with a generation id) fills the limit the same way: held, not spent.
+  b.gw.db.prepare("INSERT INTO calls (key, at, day, run_key, kind, component, model, cost_usd, status, gen) VALUES ('gw:cut', '2026-11-16T09:59:00Z', '2026-11-16', 'r', 'agent', 'agent', 'flat', 0.01, 'unsettled', 'gen-cut')").run();
+  const cut = await b.call({ model: "flat", messages: [] });
+  assert.deepEqual([cut.status, cut.json.error.type], [503, "spend_held"]);
 });
 
 test("the day limit keeps its value: at it refused, a reservation past it refused, bounded output, true cost settled", async (t) => {

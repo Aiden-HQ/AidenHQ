@@ -115,13 +115,19 @@ export function pullUsage(gateway: { url: string; token: string } | undefined, s
       const last = store.meta(metaKey);
       const since = last ? new Date(Date.parse(last) - 10 * 60_000).toISOString() : "";
       const now = new Date().toISOString();
-      const res = await fetch(`${gateway.url}/usage`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json" }, body: JSON.stringify({ since }), signal: AbortSignal.timeout(15_000) });
-      if (!res.ok) throw new Error(`the gateway answered ${res.status}`);
-      const body = await res.json();
-      const records = pulledRecords(body);
-      for (const r of records) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
-      const skipped = (body as { records: unknown[] }).records.length - records.length;
-      if (skipped) log.warn({ skipped }, "usage records the board could not read: their dollars are not counted");
+      // Page by page (a full answer names the next one), the cursor moved only once every page is in.
+      for (let from = since; ; ) {
+        const res = await fetch(`${gateway.url}/usage`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}`, "content-type": "application/json" }, body: JSON.stringify({ since: from }), signal: AbortSignal.timeout(15_000) });
+        if (!res.ok) throw new Error(`the gateway answered ${res.status}`);
+        const body = await res.json();
+        const records = pulledRecords(body);
+        for (const r of records) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
+        const skipped = (body as { records: unknown[] }).records.length - records.length;
+        if (skipped) log.warn({ skipped }, "usage records the board could not read: their dollars are not counted");
+        const next = (body as { next?: unknown }).next;
+        if (typeof next !== "string" || next <= from) break;
+        from = next;
+      }
       store.setMeta(metaKey, now);
       // Kept 62 days, so the Costs tab can set the last 30 days against the 30 before.
       store.pruneUsage(new Date(Date.now() - 62 * DAY).toISOString());
