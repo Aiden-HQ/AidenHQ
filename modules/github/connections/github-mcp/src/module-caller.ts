@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { GitHubNeed } from "./client.js";
+import { noteOrgOk, orgRefusedSince } from "./org-observations.js";
 
 // Whether a bearer is the named module's own token, asked of the kernel (GET /v1/whoami): the issue read for the Maintainer's
 // watcher is opened to that module alone, so no secret is shared with it. undefined: the kernel couldn't answer now (a restart,
@@ -59,9 +60,12 @@ export async function reportNeed(kernelUrl: string, key: string, err: unknown, l
  * A call by the owner to `org` succeeded, so the org's sso/restricted need is the owner's fix already made: told to the kernel as
  * POST /v1/connections/ok. Never throws into the GitHub call, and a transient failure (a kernel restart, a timeout, a 5xx) is
  * retried a few times in the background: the row must not wait for the org's next call, which may be 15 minutes away (the sync's
- * interval) or never. A report that still fails is logged; the next successful call reports it again.
+ * interval) or never. A retry is dropped when a need for the org was met after this success. A report that still fails is logged;
+ * the next successful call reports it again.
  */
 export function reportOrgOk(kernelUrl: string, key: string, connection: "github", org: string, log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000, retryMs = ORG_OK_RETRY_MS): void {
+  // Where this success sits in the org's answers: a refusal after it means the org is still blocked, and is not overwritten.
+  const at = noteOrgOk(org);
   // Each answer: taken (200), refused (4xx: the request is wrong, never retried), retry (network, timeout, 5xx).
   const post = async (): Promise<"taken" | "refused" | "retry"> => {
     try {
@@ -80,6 +84,7 @@ export function reportOrgOk(kernelUrl: string, key: string, connection: "github"
       if ((await post()) !== "retry") return;
       if (attempt + 1 >= ORG_OK_ATTEMPTS) { log.warn({ org, attempts: attempt + 1 }, "a connection success report was given up; the org's next successful call reports it again"); return; }
       await new Promise((r) => setTimeout(r, retryMs * 2 ** attempt));
+      if (orgRefusedSince(org, at)) { log.warn({ org }, "a connection success report was dropped: a need for the org was met after it"); return; }
     }
   })();
 }

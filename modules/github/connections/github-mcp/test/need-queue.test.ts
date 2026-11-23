@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitHubNeed } from "../src/client.js";
 import { needQueue, reportNeed, reportOrgOk } from "../src/module-caller.js";
+import { noteOrgNeed } from "../src/org-observations.js";
 
 // The kernel at /v1/connections/need as a fake: each answer is one queued reply, and the last one repeats.
 const replies = (list: (Response | "hang" | Error)[]) => {
@@ -248,6 +249,30 @@ describe("a successful owner call to an org", () => {
     await new Promise((r) => setTimeout(r, 60));
     expect(seen, "three tries: the network error and the 5xx were not a final answer").toHaveLength(3);
     expect(said.at(-1)).toBe("the kernel could not take a connection success report; it is retried");
+  });
+
+  // A retry that would land after the org was refused again must not clear the newer need.
+  it("drops a retried success when a need for the org was met after it", async () => {
+    let n = 0;
+    const fetcher = (async () => {
+      n++;
+      if (n === 1) throw new Error("ECONNREFUSED");
+      return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const said: string[] = [];
+    reportOrgOk("http://kernel", "k", "github", "contended", { warn: (_o: object, m: string) => void said.push(m) }, fetcher, 5_000, 5);
+    // The org refuses a call before the retry runs.
+    noteOrgNeed("Contended");
+    await new Promise((r) => setTimeout(r, 40));
+    expect(n, "the second attempt never went: the refusal is newer").toBe(1);
+    expect(said.at(-1)).toBe("a connection success report was dropped: a need for the org was met after it");
+    // A refusal for another org does not stop it, and neither does one before the success.
+    let m = 0;
+    const okFetcher = (async () => { m++; if (m === 1) throw new Error("ECONNREFUSED"); return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
+    noteOrgNeed("elsewhere");
+    reportOrgOk("http://kernel", "k", "github", "fresh", { warn: () => {} }, okFetcher, 5_000, 5);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(m).toBe(2);
   });
 
   it("gives up after its attempts, logged, without throwing", async () => {
