@@ -275,6 +275,20 @@ describe("scanMyReactions", () => {
     expect(counts).toEqual(["500", "500"]);
   });
 
+  it("continues numbered pages at the size Slack reports having used, larger or smaller", async () => {
+    const big: string[] = [];
+    const wide = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      big.push(u.searchParams.get("count") ?? "");
+      const n = Number(u.searchParams.get("page") ?? "1");
+      // Page 1 returned 500 items although we asked for 200: page 2 must ask for 500, or it re-reads 201-500.
+      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 500, total: 1000, page: n, pages: 2 } });
+    }) as unknown as typeof fetch;
+    const wideScan = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl: wide });
+    expect(wideScan).toMatchObject({ ok: true, nextCursor: null });
+    expect(big).toEqual(["200", "500"]);
+  });
+
   it("continues numbered pages at a smaller size Slack reports having used, never a larger one", async () => {
     const counts: string[] = [];
     const numbered = (async (url: string | URL) => {

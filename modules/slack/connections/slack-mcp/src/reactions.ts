@@ -430,10 +430,11 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     const pages = Number(json.paging?.pages), current = Number(json.paging?.page);
     if (Number.isFinite(pages) && pages > current) {
       if (numbered === undefined) {
-        // Continue at the size Slack says it used when that is smaller than the one we asked for: never larger, since a
-        // bigger jump could skip items, while a smaller one only re-reads some (deduplicated by channel + ts).
+        // Page 2 starts right after the items page 1 actually held, so it continues at the size Slack reports using
+        // (`paging.count`, else `per_page`). A size larger than the one we asked for would skip the gap; a smaller one
+        // would re-read items already returned. Clamped to Slack's own maximum.
         const used = Number(json.paging?.count ?? json.paging?.per_page);
-        numberedSize = Number.isFinite(used) && used > 0 ? Math.min(pageSize, Math.floor(used)) : pageSize;
+        numberedSize = Number.isFinite(used) && used > 0 ? Math.min(MAX_LIMIT, Math.floor(used)) : pageSize;
         numbered = Number.isFinite(current) ? current + 1 : 2;
       } else numbered++;
       continue;
