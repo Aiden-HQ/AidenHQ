@@ -1,5 +1,5 @@
 name: google
-description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads)."
+description: "Google Workspace: Gmail, Calendar, Drive and Docs (reads), plus calendar changes and Gmail drafts, sends and labels as you, each reviewed first."
 requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its guided setup
@@ -17,14 +17,14 @@ contributes:
     - order: 40
       wizard: false
       title: Google
-      why: "Aiden reads your calendar, Drive and Gmail (read-only) to brief you and follow up."
+      why: "Aiden reads your calendar, Drive and Gmail to brief you and follow up, and agents can change your calendar and send email as you, each change reviewed first."
       effort: "about 5 minutes, in the Google Cloud console"
       secrets: [google_client_id, google_client_secret]
       connect_url: /google/connect
       console_scopes:
-        - https://www.googleapis.com/auth/calendar.events.readonly
+        - https://www.googleapis.com/auth/calendar.events
         - https://www.googleapis.com/auth/drive.readonly
-        - https://www.googleapis.com/auth/gmail.readonly
+        - https://www.googleapis.com/auth/gmail.modify
       steps: |
         AidenHQ needs **one Google app per Workspace**: the app is what Google shows when you approve access. Pick the way that fits you; only its steps show.
       ways:
@@ -78,12 +78,18 @@ contributes:
 connections:
   google_workspace:
     setup: "Follow the steps at #/setup/google on the board (one Desktop-app client per Workspace), then press Connect Google (from the board's loopback address, http://127.0.0.1:3121, or paste the redirected address back). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
-    guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads. Glean finds Drive documents faster; read them here when you need the exact current text."
+    guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads; and, when granted, calendar changes and Gmail drafts, sends and labels as the owner. Glean finds Drive documents faster; read them here when you need the exact current text."
     url: http://google-workspace-mcp:8081/mcp
     auth: google_service_key
     tools:
       read: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
       write: []
+      # Writes act as the owner on one account (`account`, default the primary): destructive, so only a grant naming one reaches
+      # it and every call is a record the AI reviewer decides first (floor 1), except gmail_label: upkeep of the owner's own
+      # labels (never system ones, never a new one; checked in code), which runs at once (Tier 0) like GitHub issue labels.
+      # Rules for agents: skills calendar-changes and gmail-writes.
+      destructive: [ calendar_create_event, calendar_update_event, calendar_delete_event, calendar_respond, gmail_draft, gmail_send, gmail_label ]
+      unreviewed: [ gmail_label ]
     # The host's health probes (kernel/src/health.ts): one read each, as the narrowest agent granted the tool.
     health_probes:
       gmail: { tool: gmail_search, args: { query: "in:inbox", max_results: 1 } }

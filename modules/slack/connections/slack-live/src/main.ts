@@ -147,7 +147,7 @@ const pair = (body: unknown) =>
 const sources = SourceStore.fromEnv("slack");
 const tee = sources ? slackTee(sources, log) : undefined;
 const userToken = env("SLACK_USER_TOKEN");
-if (sources && userToken) startGapSync(sources, userToken, log);
+if (sources && userToken) startGapSync(sources, userToken, log, channelToken ? (e) => forward(e) : undefined);
 else log.warn(sources ? "SLACK_USER_TOKEN not set; src_slack gets live events only (no gap sync)" : "warehouse not configured; src_slack is off");
 
 // Channel binding: the owner's /aiden commands (a kernel record each) and @mentions in bound channels (a task each).

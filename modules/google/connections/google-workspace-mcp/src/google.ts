@@ -1,11 +1,16 @@
 import { explainGoogle } from "./google-errors.js";
 
-/** Read-only scopes requested at consent time. Nothing here can modify Google data. */
+/**
+ * The scopes requested at consent time: calendar events and Gmail read and write (each write a reviewed tool), Drive read.
+ * `gmail.modify` covers reading, drafts, sending and labels. src/auth.ts keeps a copy (a test checks they match).
+ */
 export const SCOPES = [
-  "https://www.googleapis.com/auth/calendar.events.readonly",
+  "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive.readonly",
-  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.modify",
 ];
+/** The scope each write needs, by its short name (the needs_owner `scope`). */
+export const WRITE_SCOPE = { calendar: "calendar.events", gmail: "gmail.modify" } as const;
 
 export interface StoredCredentials {
   client_id: string;
@@ -40,7 +45,7 @@ export interface AuthStatus {
 /** Token endpoint errors that mean the refresh token itself is dead. */
 const DEAD_GRANT = new Set(["invalid_grant", "unauthorized_client", "invalid_client"]);
 
-/** Minimal Google REST client with refresh-token auth. GET requests only. */
+/** Minimal Google REST client with refresh-token auth. */
 export class GoogleClient {
   private accessToken?: { value: string; expiresAt: number };
   private auth: AuthStatus = { state: "unknown", since: new Date().toISOString() };
@@ -90,15 +95,26 @@ export class GoogleClient {
     return this.authStatus();
   }
 
-  async get<T>(url: string, params: Record<string, string | number | boolean | undefined> = {}): Promise<T> {
+  get<T>(url: string, params: Record<string, string | number | boolean | undefined> = {}): Promise<T> {
+    return this.request<T>("GET", url, params);
+  }
+
+  /** One JSON call; `body` is sent as JSON, `ifMatch` an ETag the change applies to. A 204 (a delete) answers undefined. */
+  async request<T>(method: "GET" | "POST" | "PATCH" | "DELETE", url: string, params: Record<string, string | number | boolean | undefined> = {}, body?: unknown, ifMatch?: string): Promise<T> {
     const u = new URL(url);
     for (const [k, v] of Object.entries(params)) if (v !== undefined) u.searchParams.set(k, String(v));
-    const res = await this.fetchImpl(u, { headers: { authorization: `Bearer ${await this.token()}` }, signal: AbortSignal.timeout(30_000) });
+    const res = await this.fetchImpl(u, {
+      method,
+      headers: { authorization: `Bearer ${await this.token()}`, ...(body !== undefined ? { "content-type": "application/json" } : {}), ...(ifMatch ? { "if-match": ifMatch } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(30_000),
+    });
     if (res.status === 401 || res.status === 403) {
       const text = await res.text();
       throw new GoogleAuthError(`Google API ${res.status}: ${text.slice(0, 300)}`, res.status === 401);
     }
     if (!res.ok) throw new Error(`Google API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
 

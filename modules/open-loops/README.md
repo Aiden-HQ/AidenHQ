@@ -12,11 +12,11 @@ id is learned from the paired Slack channel (`owner_slack_user_id` is only a man
 
 ## What agents get
 
-- `inbox-agent`: reads Slack, Gmail (`gmail_search`, `gmail_read_thread`) and the live Slack events, creates tasks and
+- `inbox-agent`: reads Slack, Gmail (`gmail_search`, `gmail_read_thread`; `gmail_label` clears `Aiden` from a thread whose task is closed) and the live Slack events, creates tasks and
   notifies you. It has no web access, since it reads untrusted text.
 - `open-loops`: reads the warehouse and Google (Docs, Drive, Calendar, Gmail), writes to Slack, and notifies you.
-- Routines: `slack-scan` (every 30 minutes, weekdays 08:00 to 20:00), `open-loops-sweep` (every 2 hours, weekdays 09:00
-  to 19:00), `inbox-scan` (every 30 minutes, weekdays 08:00 to 19:00) and `slack-triage` (a webhook per live event).
+- Routines: `open-loops-sweep` (every 2 hours, weekdays 09:00
+  to 19:00), `inbox-scan` (every 30 minutes, weekdays 08:00 to 19:00) and `slack-triage` (a batch of live Slack events, including your 📌 reactions).
 
 ## New installs
 

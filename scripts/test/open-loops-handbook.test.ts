@@ -11,7 +11,6 @@ const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const FILES = [
   "agents/inbox-agent/AGENTS.md",
   "agents/open-loops/AGENTS.md",
-  "skills/scan-slack/SKILL.md",
   "skills/triage-email/SKILL.md",
   "skills/triage-slack/SKILL.md",
 ];
@@ -38,8 +37,8 @@ test("the tracker's own description and rules no longer say it closes delivered 
   assert.match(handbook, /marked delivered for the owner to close/, "the owner closes a delivered loop");
 });
 
-test("scan-slack marks an answered task and leaves it open", () => {
-  const skill = text("skills/scan-slack/SKILL.md");
+test("triage-slack marks an answered task and leaves it open", () => {
+  const skill = text("skills/triage-slack/SKILL.md");
   assert.match(skill, /task_comment/, "the answered task gets a comment");
   assert.match(skill, /Answered in Slack/, "the comment says it was answered in Slack");
   assert.match(skill, /left open for the owner/, "the task stays open for the owner");

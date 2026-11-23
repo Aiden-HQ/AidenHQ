@@ -93,18 +93,12 @@ const PaperclipSchema = z.object({
   api_key_file: z.string().optional(),
   labels: z
     .object({
-      meeting_action: z.string().default("meeting-action"),
       needs_review: z.string().default("needs-review"),
     })
     .prefault({}),
-  // Agent that review/action tasks are assigned to (optional). Review tasks are
+  // Agent that review tasks are assigned to (optional). Review tasks are
   // left unassigned by default so they land in the human's board view.
   action_assignee_agent_id: z.string().optional(),
-  // Which meeting action items become Paperclip tasks:
-  //   mine: only actions owned by you (self.names), including shared ones
-  //   mine_and_unclear: also actions with no clear owner
-  //   all: also other people's actions, as "waiting-on" tasks
-  meeting_action_tasks: z.enum(["mine", "mine_and_unclear", "all"]).default("mine"),
   // Routine started after applying review replies, so the agent closes those tasks promptly.
   meeting_scan_routine: z.string().default("Meeting scan"),
 });

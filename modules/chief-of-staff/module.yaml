@@ -45,7 +45,7 @@ agents:
     # product-issues: product bugs upstream as the owner (github-mcp).
     roles: [ fleet-admin, product-issues ]
   assistant:
-    skills: [ chief-of-staff.recurring-reports, chief-of-staff.research-tasks, chief-of-staff.research-tools, chief-of-staff.task-replies, meetings.meeting-notes, primer.primer-digest, primer.primer-docs, tasks.delegate-work ]
+    skills: [ chief-of-staff.recurring-reports, chief-of-staff.research-tasks, chief-of-staff.research-tools, chief-of-staff.task-replies, google.calendar-changes, google.gmail-writes, meetings.meeting-notes, primer.primer-docs, tasks.delegate-work ]
     department: leadership
     max_parallel: 3 # research asks are independent; the 15-minute meeting scan takes a slot of its own
     model: ~deepseek/deepseek-flash-latest
@@ -70,8 +70,11 @@ agents:
       # Writes only when the user asks; each is a write record the AI reviewer decides.
       # (Not commit_status_set: that is the CI gate's.)
       github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed ]
-      google_workspace?: [ docs_read, drive_search_files, drive_read_file, drive_list_recent_files, drive_list_meeting_documents, calendar_list_events, calendar_search_events, calendar_get_event, gmail_search, gmail_read_thread ]
-      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events, primer_get_digest, primer_get_doc, primer_list_collaborators, primer_list_decisions, primer_list_runs, primer_list_suggestions, primer_list_tasks, primer_lookup_user, primer_read_records, primer_record_changes, primer_widget_get, primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread, primer_send_events, primer_apply_ops, primer_create_thread, primer_reanchor_thread, primer_update_run, primer_withdraw_suggestion, primer_propose_pick, primer_fork_document, primer_promote_conversation, primer_widget_draft, primer_widget_publish, primer_write_records, primer_revert_record_change, primer_add_collaborator ]
+      # Reads, plus the owner's asked-for calendar changes and email (skills google.calendar-changes, google.gmail-writes):
+      # each a write record the AI reviewer decides first.
+      google_workspace?: [ docs_read, drive_search_files, drive_read_file, drive_list_recent_files, drive_list_meeting_documents, calendar_list_events, calendar_search_events, calendar_get_event, gmail_search, gmail_read_thread,
+                           calendar_create_event, calendar_update_event, calendar_delete_event, calendar_respond, gmail_draft, gmail_send ]
+      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events, primer_get_doc, primer_list_collaborators, primer_list_decisions, primer_list_runs, primer_list_suggestions, primer_list_tasks, primer_lookup_user, primer_read_records, primer_record_changes, primer_widget_get, primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread, primer_send_events, primer_apply_ops, primer_create_thread, primer_reanchor_thread, primer_update_run, primer_withdraw_suggestion, primer_propose_pick, primer_fork_document, primer_promote_conversation, primer_widget_draft, primer_widget_publish, primer_write_records, primer_revert_record_change, primer_add_collaborator ]
       # task_team, task_delegate: code work goes to an Engineer the way everyone hands it on (skill tasks.delegate-work).
       # task_schedule, task_recurring: board moves on a date and recurring tasks. task_merge: merging tasks.
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_team, task_delegate, task_amend_rubric, fleet_catalog, task_schedule, task_recurring, task_pass_on, task_merge, task_finish, fanout_map ]

@@ -167,8 +167,10 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
   for (const [k, a] of intake) {
     assert.equal(a.web_search, "disabled", k);
     assert.ok(!a.enabled_tools.apps?.includes("web_view"), k);
-    // Reads only, plus the owner's page and its own tasks: no tool a connection tags write that reaches anyone else.
-    const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && t !== "notify" && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
+    // Reads only, plus the owner's page, its own tasks, its own source cursor and the owner's own Gmail labels (gmail_label: no
+    // system label, no new one, nobody else sees it): no tool a connection tags write that reaches anyone else.
+    const own = ["notify", "source_ack", "gmail_label"];
+    const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && !own.includes(t) && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
   // An Engineer has what it grants itself (attaching its own task's file, reading its own approval cards, finishing it,

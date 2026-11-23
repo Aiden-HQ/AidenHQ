@@ -241,6 +241,9 @@ main() {
     rm -f "$prev_config"
     echo "generation $n is good: the last known good"
     retireUnits
+    # The image prunes skip the computer images (aidenhq.keep=true); the ones this generation no longer names go now that it is
+    # good, under the apply lock, so the sweep never races an image build or a rollback that needs them.
+    timeout -k 30s 5m bash ops/prune-computer-images.sh || true
     echo "apply timing: total $(apply_secs "$apply_t0")s"
     return 0
   else why="$HEALTH_WHY"; fi
@@ -987,7 +990,7 @@ switchOver() {
   # later guarantees each step ends, so the steps after it and the applied-product marker are still reached.
   timeout -k 30s 15m docker builder prune -f --max-used-space 20GB >/dev/null 2>&1 || true
   timeout -k 30s 15m docker builder prune -f --keep-storage 20GB >/dev/null 2>&1 || true
-  timeout -k 30s 10m docker image prune -af --filter until=48h >/dev/null 2>&1 || true
+  timeout -k 30s 10m docker image prune -af --filter until=48h --filter label!=aidenhq.keep=true >/dev/null 2>&1 || true
   timeout -k 30s 5m bash ops/prune-docker-containers.sh || true
   lap prune
   echo "$product" > "$applied"

@@ -58,7 +58,7 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
         return;
       }
       // Routines' events (bot posts too, flagged): a kernel that didn't take it leaves the envelope unacked, so Slack redelivers.
-      const source = msg.type === "events_api" ? toSourceEvent(msg.body) : null;
+      const source = msg.type === "events_api" ? toSourceEvent(msg.body, owner?.user) : null;
       if (source && forward) await forward(source);
     } catch (err) {
       log.error({ err: String(err) }, "event forward failed; not acking so Slack redelivers");

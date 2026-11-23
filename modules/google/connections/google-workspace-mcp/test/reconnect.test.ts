@@ -33,7 +33,7 @@ const stateOf = (url: string) => new URL(url).searchParams.get("state")!;
 describe("reconnect from the board", () => {
   const redirect = "http://127.0.0.1:3120/google/callback";
 
-  it("asks Google for the read-only scopes, for that account, with PKCE", () => {
+  it("asks Google for SCOPES, for that account, with PKCE", () => {
     const { url } = new Reconnect(credsFile()).start("me@work.com", redirect);
     const q = new URL(url).searchParams;
     expect(q.get("client_id")).toBe("cid");
@@ -66,14 +66,31 @@ describe("reconnect from the board", () => {
     expect(exchange.get("redirect_uri")).toBe(redirect);
   });
 
-  it("changes nothing when someone else signs in, or more than read-only scopes come back", async () => {
+  it("changes nothing when someone else signs in", async () => {
     const path = credsFile();
     const before = readFileSync(path, "utf8");
     const other = new Reconnect(path, google("me@side.io").impl);
     await expect(other.finish(stateOf(other.start("me@work.com", redirect).url), "c")).rejects.toThrow(/signed in as me@side.io, not me@work.com/);
-    const wide = new Reconnect(path, google("me@work.com", `${SCOPES.join(" ")} https://www.googleapis.com/auth/gmail.send`).impl);
-    await expect(wide.finish(stateOf(wide.start("me@work.com", redirect).url), "c")).rejects.toThrow(/unexpected scopes/);
     expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  it("saves the scopes Google granted, the client's older readonly ones included (a reconnect for Google writes)", async () => {
+    const path = credsFile();
+    const scope = `${SCOPES.join(" ")} https://www.googleapis.com/auth/gmail.readonly`;
+    const r = new Reconnect(path, google("me@work.com", scope).impl);
+    await r.finish(stateOf(r.start("me@work.com", redirect).url), "c");
+    expect(JSON.parse(readFileSync(path, "utf8")).accounts["me@work.com"].scopes).toEqual(scope.split(" "));
+  });
+
+  it("the host fallback (src/auth.ts) asks for the same scopes", () => {
+    const copy = /const SCOPES = \[([^\]]*)\]/.exec(readFileSync(join(import.meta.dirname, "../src/auth.ts"), "utf8"))![1]!;
+    expect([...copy.matchAll(/"([^"]+)"/g)].map((m) => m[1])).toEqual(SCOPES);
+  });
+
+  it("the setup page's console_scopes (module.yaml) list the same scopes", () => {
+    const yaml = readFileSync(join(import.meta.dirname, "../../../module.yaml"), "utf8");
+    const listed = /console_scopes:\n((?:\s+- \S+\n)+)/.exec(yaml)![1]!;
+    expect([...listed.matchAll(/- (\S+)/g)].map((m) => m[1])).toEqual(SCOPES);
   });
 
   it("spends each state once, and expires it", async () => {

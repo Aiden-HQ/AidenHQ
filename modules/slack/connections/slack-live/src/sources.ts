@@ -3,6 +3,7 @@
 // the revision), deletes become tombstones, thread replies kept. A gap sync with the owner's user token fills disconnects:
 // conversations.history per channel the owner is in, plus conversations.replies for recently active threads; once a week it
 // re-reads the last week in full and tombstones what Slack no longer returns (Events have no replay). No LLM.
+import { toSourceEvent, type SourceEvent } from "./map.js";
 import type { Logger } from "pino";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 import { permalink } from "./map.js";
@@ -107,11 +108,11 @@ export function eventWrite(body: unknown): { table: Table; row: Row } | null {
  * Writes one message row; a tombstone also blanks the message's earlier revisions in the change log, so deleted content
  * stays readable nowhere.
  */
-export async function writeMessage(store: SourceStore, t: Table, row: Row, baseline: boolean): Promise<boolean> {
+export async function writeMessage(store: SourceStore, t: Table, row: Row, baseline: boolean): Promise<"new" | "changed" | "same"> {
   const r = await store.upsert(t, row, { baseline });
   if (row.deleted)
     await store.pool.query(`UPDATE src_slack.change SET old_value = NULL, new_value = NULL WHERE entity = 'message' AND entity_id = $1 AND field = 'text' AND (old_value IS NOT NULL OR new_value IS NOT NULL)`, [`${row.channel_id}/${row.ts}`]);
-  return r !== "same";
+  return r;
 }
 
 /**
@@ -192,7 +193,7 @@ const GONE_THREAD = /thread_not_found/;
  * recorded done only when every conversation was covered since the cycle began. People (users.list) are refreshed
  * daily. Returns rows written with a difference.
  */
-export async function gapSync(store: SourceStore, api: Api, now = Date.now(), log?: Pick<Logger, "warn" | "info">, budgetMs = PASS_BUDGET_MS): Promise<number> {
+export async function gapSync(store: SourceStore, api: Api, now = Date.now(), log?: Pick<Logger, "warn" | "info">, budgetMs = PASS_BUDGET_MS, forward?: (e: SourceEvent) => Promise<void>): Promise<number> {
   await store.migrate(DDL);
   const started = Date.now();
   let written = 0;
@@ -245,12 +246,22 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
   const todo = convs.filter((c) => cycleStart === null || at(c.id) < cycleStart).sort((a, b) => at(a.id) - at(b.id));
   let handled = 0;
 
+  // A message this pass newly inserted (not the baseline, not a reconcile's re-read of older ones) goes to the event router like a live one, only late;
+  // the event id is the message's, so the router drops one that also arrived live. Best effort: a failure is logged, never fails the pass.
+  const replay = async (id: string, type: string | undefined, m: Record<string, any>, r: string, baseline: boolean, fresh: boolean) => {
+    if (!forward || baseline || !fresh || r !== "new" || m.subtype === "tombstone") return;
+    const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] });
+    if (e) await forward(e).catch((err: unknown) => log?.warn({ err: String(err) }, "gap replay failed"));
+  };
+
   const readThread = async (id: string, type: string | undefined, ts: string, oldest: string | undefined, baseline: boolean, seen: Set<string>) => {
     for await (const m of pages(api, "conversations.replies", { channel: id, ts, ...(oldest ? { oldest } : {}) }, "messages")) {
       seen.add(m.ts);
       if (oldest && m.ts === ts && Number(ts) <= Number(oldest)) continue; // the parent comes back with every page
       const w = messageWrite(id, m, type);
-      if (await writeMessage(store, w.table, w.row, baseline)) written++;
+      const r = await writeMessage(store, w.table, w.row, baseline);
+      if (r !== "same") written++;
+      await replay(id, type, m, r, baseline, !reconcile);
     }
   };
 
@@ -294,7 +305,9 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     for await (const m of pages(api, "conversations.history", { channel: id, oldest }, "messages")) {
       seen.add(m.ts);
       const w = messageWrite(id, m, type);
-      if (await writeMessage(store, w.table, w.row, baseline)) written++;
+      const r = await writeMessage(store, w.table, w.row, baseline);
+      if (r !== "same") written++;
+      await replay(id, type, m, r, baseline, !reconcile || Number(m.ts) > Number(st.cursor ?? 0));
       if (Number(m.ts) > Number(newest)) newest = m.ts;
       if (m.reply_count && Number(m.latest_reply) > Number(oldest)) threads.add(m.ts);
     }
@@ -321,7 +334,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     if (reconcile) {
       // Messages of the last week that Slack no longer returns were deleted while we weren't listening.
       const ours = await store.pool.query(`SELECT ts FROM src_slack.message WHERE channel_id = $1 AND NOT deleted AND ts > $2 AND (thread_ts IS NULL OR thread_ts = ts OR thread_ts = ANY($3))`, [id, weekAgo, [...threads].filter((t) => !gone.has(t))]);
-      for (const r of ours.rows) if (!seen.has(r.ts) && (await writeMessage(store, TOMBSTONE, tombstone(id, r.ts, type), false))) written++;
+      for (const r of ours.rows) if (!seen.has(r.ts) && (await writeMessage(store, TOMBSTONE, tombstone(id, r.ts, type), false)) !== "same") written++;
     }
     await store.saveScope(scope, newest, true);
     } catch (err) {
@@ -342,11 +355,11 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
 }
 
 /** Runs the gap sync every `everyMs` (15 minutes), one pass at a time, each recorded in src_meta.ingest_run. */
-export function startGapSync(store: SourceStore, token: string, log: Logger, everyMs = 15 * 60_000): void {
+export function startGapSync(store: SourceStore, token: string, log: Logger, forward?: (e: SourceEvent) => Promise<void>, everyMs = 15 * 60_000): void {
   const api = slackApi(token);
   const tick = async () => {
     try {
-      const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log));
+      const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log, PASS_BUDGET_MS, forward));
       log.info({ rows }, "src_slack gap sync done");
     } catch (err) {
       log.warn({ err: String(err).slice(0, 300) }, "src_slack gap sync failed");

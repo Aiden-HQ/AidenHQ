@@ -31,7 +31,7 @@ ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh build-cache
 # The image prune goes through ops/prune-docker-step.sh, which records its status for the last step: the failure must not
 # skip the steps below, but it must still fail the unit, and running the same 48 h prune a second time in the verification
 # would double the work on a large host.
-ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h --filter label!=aidenhq.keep=true
 # A one-off that dies without --rm keeps its whole writable layer forever, and nothing else prunes stopped containers. Only
 # containers that are stopped AND over a day old go; container prune never removes a volume, so no data is touched. The
 # script (ops/prune-docker-containers.sh) checks `State.FinishedAt` — `docker container prune --filter until=` filters on

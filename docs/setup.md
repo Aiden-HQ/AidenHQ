@@ -42,8 +42,8 @@ other connections, board account recovery and shared access for colleagues.
 (it needs no redirect address, so it works on any board address). In the Google Cloud console, create a project, enable the
 Google Calendar, Google Drive and Gmail APIs, set up the consent screen (*Internal* on a Workspace organization skips
 Google's app review; a personal Gmail needs *External*, then **Publish app** so sign-in does not expire every 7 days),
-then Clients, *Create client*, *Desktop app*. AidenHQ only asks for read-only scopes (`calendar.events.readonly`,
-`drive.readonly`, `gmail.readonly`). Colleagues then reuse that client by entering its Client ID and Client secret on the
+then Clients, *Create client*, *Desktop app*. AidenHQ asks for `calendar.events`, `drive.readonly` and `gmail.modify` (agents'
+calendar changes and email sends are each reviewed first). Colleagues then reuse that client by entering its Client ID and Client secret on the
 board. The board's `#/setup/google` shows these steps with the exact links.
 
 **Zero data retention:** OpenRouter privacy settings are per account, and a key made with the management key belongs
