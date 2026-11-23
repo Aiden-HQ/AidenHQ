@@ -50,7 +50,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
 
 4. **When the owner replies in your part** (you are woken by their comment):
    - "send": check the source first; when it shows delivery, say so on your part, mark it delivered as in step 2 and drop the draft instead. When the read is incomplete or fails, file no draft and report it. Otherwise resolve the person's DM with the Slack read tools and call `slack_send_message_draft` with the draft text, then comment that it's in their Slack drafts. They press send themselves.
-   - An edit or rejection: follow their edit exactly, or drop the chase if they say so. Never argue.
+   - An edit or rejection: check the source first as for "send" and drop the chase when it shows delivery (report it), otherwise follow their edit exactly, or drop the chase if they say so. Never argue.
    - If the thread shows the item was delivered, say so on your part and mark it delivered as in step 2.
    - Finish with `task_handoff` on your part.
 
