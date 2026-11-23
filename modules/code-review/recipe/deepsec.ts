@@ -126,7 +126,11 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
   const gaps: string[] = [];
   const step = async (bin: string, args: string[], cwd: string, ok = [0]) => {
     const r = await run(bin, args, { cwd, env, minutes: left() });
-    if (!ok.includes(r.code ?? -1)) { const s = said(r); return { r, cause: `deepsec ${args[0]}: ${stopped(r, s)}${s ? `; it said «${s.slice(0, 200)}»` : ""}` }; }
+    if (!ok.includes(r.code ?? -1)) {
+      // Classed from the error itself, never a batch's counters (`Batch 402/500 failed: … (0 in flight, 3/500 done)`).
+      const s = said(r), error = s.replace(/Batch \d+\/\d+ failed: /g, "").replace(/\(\d+ in flight, \d+\/\d+ done\)/g, "");
+      return { r, cause: `deepsec ${args[0]}: ${stopped(r, error)}${s ? `; it said «${s.slice(0, 200)}»` : ""}` };
+    }
     return { r, cause: undefined };
   };
 
