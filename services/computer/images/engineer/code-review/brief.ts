@@ -93,3 +93,8 @@ export function downgrade<T extends { severity: Severity; why?: unknown; failure
 
 /** A finding at a real place, with its stable id. */
 export type Placed = Cleaned & { id: string; option?: string; lens?: string };
+
+/** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
+export function answer(message: unknown) {
+  try { const j = JSON.parse(String(message ?? "").trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); return j && typeof j === "object" && !Array.isArray(j) ? j : undefined; } catch { return undefined; }
+}

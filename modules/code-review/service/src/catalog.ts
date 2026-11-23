@@ -7,7 +7,7 @@ export type Mode = "one_off" | "continuous";
 /** `name` and `description`: the board's words for the option (a proper name, and what it finds). `needs`: the stack it applies to,
  * said as "Needs <needs>" when the repo lacks it (required with `when`). `unavailable`: why it can't run at all, in the owner's words. */
 /** One skill of a skill option: its spec, its arguments (`{base}` is the review's base commit) and the skills it loads itself. */
-export type SkillRef = { skill: string; args: string; also?: string[] };
+export type SkillRef = { skill: string; args: string; also?: string[]; uncommitted?: boolean };
 export type Option = {
   id: string; name: string; description: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
   source: { repo: string; version: string; licence: string };

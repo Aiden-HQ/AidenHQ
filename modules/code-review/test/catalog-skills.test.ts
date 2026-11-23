@@ -3,11 +3,12 @@
 // every skill option died on a bare name).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCatalog } from "../recipe/catalog.ts";
-import { comboProblem, parseSkill, resolveSkills } from "../recipe/engines.ts";
+import { comboProblem, parseSkill, resolveSkills, runEngine, skillOutcome } from "../recipe/engines.ts";
 
 const catalog = loadCatalog(readFileSync(new URL("../service/src/catalog.json", import.meta.url), "utf8"));
 const skillOptions = catalog.filter((o) => o.kind === "skill");
@@ -17,10 +18,13 @@ const plugins = new Set([...dockerfile.matchAll(/for p in ([\w -]+); do cp/g)].f
 
 // What each skill's pinned SKILL.md or command file needs, read at the catalog's pin (2026-11-23): the arguments it takes and the
 // Claude Code tools beyond Agent and Bash. A skill listed here can't be configured without them.
-const NEEDS: Record<string, { tools?: string[]; args: RegExp; also?: string[] }> = {
-  "/compound-engineering:ce-code-review": { args: /^mode:agent base:\{base\}$/ }, // a branch or base:<sha>, never a range
-  "/pr-review-toolkit:review-pr": { args: /^(comments|errors tests)$/ }, // the command's review aspects
-  "/differential-review:diff-review": { args: /^HEAD --baseline \{base\}/ }, // <commit> [--baseline <ref>]
+// Every skill runs in a checkout of the head as its cwd (skillEngine), which is where these find the repo, its history and their
+// report folders (solidity-auditor's `find .` and .solidity-auditor/runs/, ce-code-review's git rev-parse --show-toplevel).
+const NEEDS: Record<string, { tools?: string[]; args: RegExp; also?: string[]; uncommitted?: boolean }> = {
+  "/compound-engineering:ce-code-review": { args: /^mode:agent base:\{base\}$/ }, // base:<sha> on the current checkout, never a range
+  // Its only arguments are review aspects; it finds the change with git status and git diff --name-only (uncommitted changes).
+  "/pr-review-toolkit:review-pr": { args: /^(comments|errors tests)$/, uncommitted: true },
+  "/differential-review:diff-review": { args: /^HEAD --baseline \{base\}$/ }, // <commit> [--baseline <ref>]
   "/insecure-defaults:audit": { tools: ["Workflow"], args: /^\{root\}$/ }, // its command runs a Workflow over a path: the checkout
   "pashov/skills:solidity-auditor": { args: /^--loop 1$/ }, // else it asks how many passes and waits
   "mattpocock/skills:improve-codebase-architecture": { tools: ["Skill"], args: /^$/, also: ["mattpocock/skills:codebase-design"] }, // loads codebase-design through the Skill tool
@@ -48,6 +52,7 @@ test("a skill is configured with the arguments and tools its pinned file needs",
     if (need) {
       seen.add(s.skill);
       assert.match(s.args, need.args, `${o.id}: ${s.skill} arguments`);
+      assert.equal(s.uncommitted === true, need.uncommitted === true, `${o.id}: ${s.skill} reads the change as uncommitted changes`);
       for (const t of need.tools ?? []) assert.ok(o.run.tools?.includes(t), `${o.id}: ${s.skill} needs the ${t} tool`);
       for (const a of need.also ?? []) assert.ok(s.also?.includes(a), `${o.id}: ${s.skill} loads ${a}`);
     }
@@ -56,6 +61,11 @@ test("a skill is configured with the arguments and tools its pinned file needs",
     if (!need && !o.unavailable) assert.ok(s.args.length > 20, `${o.id}: ${s.skill} is told what to review`);
   }
   assert.deepEqual([...seen].sort(), Object.keys(NEEDS).sort(), "every contract above is used by a catalog option");
+});
+
+test("variant analysis isn't offered: it hunts variants of a bug already found, and a review has none to give it", () => {
+  // Its pinned SKILL.md: "Not for initial discovery with no bug in hand."
+  assert.match(String(catalog.find((o) => o.id === "cor.variant-analysis")!.unavailable), /bug already found/);
 });
 
 test("the old bare names are refused by the catalog's parser", () => {
@@ -90,20 +100,86 @@ test("a plugin skill is a plugin folder, invoked by its spec", () => {
   const root = mkdtempSync(join(tmpdir(), "cr-skills-"));
   mkdirSync(join(root, "plugins", "compound-engineering"), { recursive: true });
   assert.deepEqual(resolveSkills([{ skill: "/compound-engineering:ce-code-review", args: "mode:agent base:{base}" }], "claude-code", { base: "abc", root: "/ws" }, root),
-    { invocations: ["/compound-engineering:ce-code-review mode:agent base:abc"], skillDirs: [], pluginDirs: [join(root, "plugins", "compound-engineering")] });
+    { invocations: ["/compound-engineering:ce-code-review mode:agent base:abc"], uncommitted: [false], skillDirs: [], pluginDirs: [join(root, "plugins", "compound-engineering")] });
 });
 
-test("a skill Claude Code doesn't list is no review, whatever it answers", async () => {
-  const { chmodSync } = await import("node:fs");
-  const { runEngine } = await import("../recipe/engines.ts");
-  const bin = mkdtempSync(join(tmpdir(), "cr-claude-")), scratch = mkdtempSync(join(tmpdir(), "cr-scratch-")), root = mkdtempSync(join(tmpdir(), "cr-skills-"));
+// A repo with a base commit and a head commit that changes a.txt, and a fake `claude` on PATH. Each turn the fake appends one line
+// to its log: the task, its cwd, the checkout's HEAD and its uncommitted files; it prints `init` (its slash commands), `tool` (a
+// tool call, when set) and answers the restate turn with `restate`.
+function fakeRun(o: { commands?: string[] | null; tool?: boolean; restate: string }) {
+  const root = mkdtempSync(join(tmpdir(), "cr-repo-")), bin = mkdtempSync(join(tmpdir(), "cr-claude-")), scratch = mkdtempSync(join(tmpdir(), "cr-scratch-"));
+  const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: root, encoding: "utf8" }).trim();
+  git("init", "-q");
+  writeFileSync(join(root, "a.txt"), "one\n");
+  git("add", "."); git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD");
+  writeFileSync(join(root, "a.txt"), "two\n");
+  git("commit", "-qam", "head");
+  const head = git("rev-parse", "HEAD");
   mkdirSync(join(root, "plugins", "p"), { recursive: true });
-  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho '{"type":"system","subtype":"init","session_id":"s","slash_commands":["other"]}'\necho '{"type":"result","subtype":"success","session_id":"s","result":"Unknown command"}'\n`);
+  const log = join(bin, "log");
+  const init = o.commands === null ? "" : `echo '${JSON.stringify({ type: "system", subtype: "init", session_id: "s", slash_commands: o.commands ?? ["p:one", "p:two"] })}'`;
+  const tool = o.tool === false ? "" : `echo '${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } })}'`;
+  const result = (r: string) => JSON.stringify({ type: "result", subtype: "success", session_id: "s", result: r }).replace(/'/g, "'\\''");
+  writeFileSync(join(bin, "claude"), `#!/bin/sh
+printf '%s|%s|%s|%s\\n' "$(echo "$2" | head -1 | cut -c1-20)" "$PWD" "$(git rev-parse HEAD)" "$(git diff --name-only | tr '\\n' ' ')" >> '${log}'
+${init}
+case "$2" in
+  "Now restate"*) echo '${result(o.restate)}' ;;
+  *) ${tool}
+     echo '${result("done")}' ;;
+esac
+`);
   chmodSync(join(bin, "claude"), 0o755);
-  const path = process.env.PATH;
-  process.env.PATH = `${bin}:${path}`;
-  try {
-    const r = await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base: "abc", minutes: 1, scratch, own: true, harness: "claude-code", skills: [{ skill: "/p:cmd", args: "" }], skillsRoot: root });
-    assert.match(String(r.cause), /has no skill p:cmd/);
-  } finally { process.env.PATH = path; }
+  const run = async (skills: { skill: string; args: string; uncommitted?: boolean }[]) => {
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try { return await runEngine("skill:x", { prompt: "", instructions: "x", model: "m/m", effort: "low", root, base, minutes: 1, scratch, own: true, harness: "claude-code", skills, skillsRoot: root }); } finally { process.env.PATH = path; }
+  };
+  const turns = () => readFileSync(log, "utf8").trim().split("\n").map((l) => { const [task, cwd, at, dirty] = l.split("|"); return { task, cwd, at, dirty: dirty!.trim() }; });
+  return { root, base, head, run, turns };
+}
+const ran = (...r: boolean[]) => JSON.stringify({ findings: [], stale_guidance: [], skills: r.map((x, i) => ({ skill: `/p:${["one", "two"][i]}`, ran: x, why: x ? "" : "it found no change to review" })) });
+
+test("a skill runs in a checkout of the head; one that reads uncommitted changes sees the change as them, for its turn only", async () => {
+  const f = fakeRun({ restate: ran(true, true) });
+  const r = await f.run([{ skill: "/p:one", args: "base:{base} at {root}", uncommitted: true }, { skill: "/p:two", args: "" }]);
+  assert.equal(r.cause, undefined);
+  assert.equal(r.read, true);
+  assert.equal(r.incomplete, undefined);
+  const [one, two, restate] = f.turns();
+  assert.notEqual(one!.cwd, f.root, "never the review's own checkout");
+  assert.ok(one!.cwd!.endsWith("/repo"));
+  assert.equal(readFileSync(join(one!.cwd!, "a.txt"), "utf8"), "two\n", "the head's files");
+  assert.match(one!.task!, /^\/p:one base:[0-9a-f]{7}/);
+  assert.deepEqual([one!.at, one!.dirty], [f.base, "a.txt"], "uncommitted: HEAD at the base, the change uncommitted");
+  assert.deepEqual([two!.at, two!.dirty, two!.cwd], [f.head, "", one!.cwd], "the next skill: the head, clean, same checkout");
+  assert.deepEqual([restate!.at, restate!.dirty], [f.head, ""]);
+});
+
+test("a skill that didn't review the code is never a clean review", async () => {
+  // It answered, but said it couldn't find its scope: the restate says so.
+  const skipped = await fakeRun({ restate: ran(false, false) }).run([{ skill: "/p:one", args: "" }, { skill: "/p:two", args: "" }]);
+  assert.match(String(skipped.cause), /no skill reviewed the code \(\/p:one: it found no change/);
+  assert.equal(skipped.read, false);
+  // One of two skipped: a review, incomplete.
+  const half = await fakeRun({ restate: ran(true, false) }).run([{ skill: "/p:one", args: "" }, { skill: "/p:two", args: "" }]);
+  assert.equal(half.read, true);
+  assert.match(String(half.incomplete), /\/p:two: it found no change/);
+  // A restate with empty findings and no word on the skills, or the skill's own failed status, is no review.
+  for (const restate of [JSON.stringify({ findings: [], stale_guidance: [] }), JSON.stringify({ status: "failed", reason: "no base" })]) {
+    const r = await fakeRun({ restate }).run([{ skill: "/p:one", args: "" }]);
+    assert.match(String(r.cause), /didn't say whether each skill reviewed the code/);
+    assert.equal(r.read, false);
+  }
+  // A skill that called no tool read nothing; one Claude Code doesn't list, or a run that lists none, didn't run.
+  assert.match(String((await fakeRun({ tool: false, restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /p:one called no tool/);
+  assert.match(String((await fakeRun({ commands: ["other"], restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /has no skill p:one/);
+  assert.match(String((await fakeRun({ commands: null, restate: ran(true) }).run([{ skill: "/p:one", args: "" }])).cause), /has no skill p:one/);
+});
+
+test("the restated skill list is read in order and must cover every skill", () => {
+  const r = { message: "", read: true };
+  assert.match(String(skillOutcome({ ...r, message: ran(true) }, ["/p:one", "/p:two"]).cause), /didn't say/);
+  assert.equal(skillOutcome({ ...r, message: "```json\n" + ran(true, true) + "\n```" }, ["/p:one", "/p:two"]).read, true);
 });

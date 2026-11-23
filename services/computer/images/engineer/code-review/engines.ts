@@ -28,9 +28,11 @@
 //   still incomplete). Recheck goes to codex.
 // skill:<option id>: an installed upstream skill or plugin (the engineer image's /opt/review, pinned) run by its own harness
 //   (claude-code or codex, the catalog's `run.harness`) over the change or, in tree mode, the whole tree (the empty tree as base):
-//   the skill's own slash command with the range as its argument, then, in the same session, our "restate the findings as JSON"
-//   step. Same sandbox and token rules as the harness's own engine; only that skill (never the repo's) is loaded. It reads the tree
-//   its own way, so which files it read isn't tracked (said as a note, never partial coverage).
+//   each skill's own slash command with the arguments its pinned file takes, then, in the same session, our "restate the findings
+//   as JSON" step, which also says whether each skill reviewed the code (one that didn't is never a clean review). It runs in a
+//   throwaway checkout of the head (snapshot) as its cwd, the one place it may write: skills find the repo, its git history and
+//   their report folders from their cwd. Same sandbox and token rules as the harness's own engine; only that skill (never the
+//   repo's) is loaded. It reads the tree its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -39,7 +41,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deepsec } from "./deepsec.ts";
 import { run, stopped } from "./proc.ts";
-import { clean, downgrade } from "./brief.ts";
+import { answer, clean, downgrade } from "./brief.ts";
 import type { Severity } from "./brief.ts";
 import { place } from "./scope.ts";
 
@@ -119,7 +121,7 @@ export const callOf = (tool: string, a: Record<string, unknown> | undefined): Ca
 export function comboProblem(c: Combo | null | undefined) {
   if (!c || typeof c !== "object") return "a combo is an object";
   const skill = typeof c.engine === "string" && c.engine.startsWith("skill:");
-  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x?.skill !== "string" || typeof x.args !== "string" || (x.also !== undefined && !Array.isArray(x.also))))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
+  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x?.skill !== "string" || typeof x.args !== "string" || (x.also !== undefined && !Array.isArray(x.also)) || (x.uncommitted !== undefined && typeof x.uncommitted !== "boolean")))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
   if (c.tools !== undefined && (!Array.isArray(c.tools) || c.tools.some((t) => !["Skill", "Workflow"].includes(t)))) return "tools are Skill and/or Workflow";
   const e = skill ? ENGINES[c.harness!] : ENGINES[c.engine];
   if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}, skill:<option>`;
@@ -152,9 +154,10 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
 }
 
 /** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
-/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). */
-export interface SkillRef { skill: string; args: string; also?: string[] }
-export interface Skill { invocations: string[]; skillDirs: string[]; pluginDirs: string[] }
+/** One skill of a catalog option: its spec (parseSkill), the arguments it is invoked with (`{base}` is the review's base commit, `{root}` the checkout), and `also`, skills it loads itself (linked, never invoked). `uncommitted`: it finds the change as the checkout's uncommitted changes (`git status`, `git diff`), so for its turn the checkout's HEAD and index are the base, its files still the head's. */
+export interface SkillRef { skill: string; args: string; also?: string[]; uncommitted?: boolean }
+/** `cwd`: the run's throwaway checkout of `head` (skillEngine), where it runs. */
+export interface Skill { invocations: string[]; uncommitted: boolean[]; skillDirs: string[]; pluginDirs: string[]; cwd?: string; head?: string }
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
 const SKILLS_ROOT = "/opt/review";
 
@@ -173,7 +176,7 @@ export function parseSkill(skill: string) {
  * (`$<name>` in codex). Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
  */
 export function resolveSkills(skills: SkillRef[], harness: string, at: { base: string; root: string }, root = SKILLS_ROOT): Skill {
-  const all: Skill = { invocations: [], skillDirs: [], pluginDirs: [] };
+  const all: Skill = { invocations: [], uncommitted: [], skillDirs: [], pluginDirs: [] };
   const sigil = harness === "codex" ? "$" : "/";
   // One spec installed: its invocation (a plugin's is its own spec) and the folders it needs.
   const install = (skill: string) => {
@@ -191,8 +194,9 @@ export function resolveSkills(skills: SkillRef[], harness: string, at: { base: s
     for (const d of found.slice(0, 1)) if (!all.skillDirs.includes(d)) all.skillDirs.push(d);
     return `${sigil}${p.name}`;
   };
-  for (const { skill, args, also = [] } of skills) {
+  for (const { skill, args, also = [], uncommitted } of skills) {
     all.invocations.push(`${install(skill)} ${args.replaceAll("{base}", at.base).replaceAll("{root}", at.root)}`.trim());
+    all.uncommitted.push(uncommitted === true);
     for (const a of also) install(a);
   }
   return all;
@@ -206,11 +210,36 @@ function linkSkills(sk: Skill | undefined, dir: string) {
 }
 
 async function skillEngine(i: EngineInput): Promise<EngineResult> {
-  const sk = resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: i.root }, i.skillsRoot);
   if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
+  const cwd = join(mkdtempSync(join(i.scratch, "skill-")), "repo"), head = gitSafe(i.root, ["rev-parse", "--verify", `${i.head ?? "HEAD"}^{commit}`]).trim();
+  snapshot(i.root, head, cwd);
+  const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd }, i.skillsRoot), cwd, head };
   const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
-  // It ran its own way: a finished run counts as read, and says its coverage isn't tracked.
-  return r.cause ? r : { ...r, read: true, untracked: `${sk.invocations.map((v) => v.split(" ")[0]).join(" ")} reads the code its own way, so which files it read isn't tracked` };
+  return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!));
+}
+
+/**
+ * A finished skill run as the review takes it: the restated answer says, per skill in order, whether it reviewed the code. One
+ * that didn't (it stopped, failed, asked, found nothing to review) leaves the review incomplete; none that did, or an answer that
+ * doesn't say, is no review at all. A run that reviewed counts as read and says its coverage isn't tracked.
+ */
+export function skillOutcome(r: EngineResult, names: string[]): EngineResult {
+  const said = answer(r.message)?.skills as { ran?: unknown; why?: unknown }[] | undefined;
+  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean")) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
+  const why = (i: number) => `${names[i]}: ${String(said[i].why ?? "no reason given").slice(0, 150)}`;
+  const not = names.flatMap((_, i) => (said[i].ran ? [] : [why(i)]));
+  if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
+  return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(not.length ? { incomplete: `a skill didn't review the code (${not.join("; ")})` } : {}) };
+}
+
+/** Our restate step after a skill run (or Claude Code's own review): its findings in our shape and, after skills, whether each ran. */
+const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk ? `
+Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "why": ""} when it reviewed the code and finished, or "ran": false with a one-line "why" when it didn't: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed, skipped or partial status.` : ""}
+${prompt}`;
+
+/** Before a skill's turn: the checkout's HEAD and index at the base for a skill that reads uncommitted changes, else at the head. */
+function stage(sk: Skill, n: number, base: string) {
+  if (sk.cwd && sk.head) gitSafe(sk.cwd, ["reset", "--quiet", "--mixed", sk.uncommitted[n] ? base : sk.head]);
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
@@ -227,9 +256,10 @@ const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$
 
 async function codex({ prompt, instructions, model, effort, root, base, minutes, scratch, own }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "codex-"));
-  const home = join(tmp, "home"), cwd = join(tmp, "cwd"); // cwd: empty, not a repository, so codex loads nothing of the repo
+  // cwd: empty, not a repository, so codex loads nothing of the repo; a skill's is its checkout (codex reads no project doc)
+  const home = join(tmp, "home"), cwd = sk?.cwd ?? join(tmp, "cwd");
   mkdirSync(home);
-  mkdirSync(cwd);
+  mkdirSync(cwd, { recursive: true });
   linkSkills(sk, join(home, "skills"));
   writeFileSync(join(home, "config.toml"), codexConfig({ model: String(model).replace(/^openrouter\//, ""), effort, url: gateway(), instructions, repo: { root, base } }));
   const out = join(tmp, "answer.txt");
@@ -241,17 +271,22 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
       .flatMap((e) => callOf(e.item!.tool!, e.item!.arguments) ?? []));
     const done = r.code === 0 && events.some((e) => e?.type === "turn.completed");
     const said = events.filter((e) => e?.type === "error" || e?.type === "turn.failed").map((e) => e.message ?? e.error?.message ?? "").join(" ");
-    return { r, done, said, thread: events.find((e) => e?.type === "thread.started")?.thread_id };
+    const acted = events.some((e) => e?.type === "item.completed" && !["agent_message", "reasoning"].includes(String(e.item?.type)));
+    return { r, done, said, acted, thread: events.find((e) => e?.type === "thread.started")?.thread_id };
   };
   let session: string | undefined;
   if (sk && own) {
     // The skill's own run over the range, its findings then restated as our JSON in the same thread.
-    for (const inv of sk.invocations) {
+    for (const [n, inv] of sk.invocations.entries()) {
+      stage(sk, n, base);
       const t = await turn(inv, session);
       if (!t.done || !(t.thread ?? session)) return { message: "", read: false, calls, cause: t.done ? "codex gave no thread to continue" : stopped(t.r, t.said) };
+      // A skill that ran no command or tool read no code: no review, whatever it answered.
+      if (!t.acted) return { message: "", read: false, calls, cause: `${inv.split(" ")[0]} ran no command or tool, so it reviewed nothing` };
       session ??= t.thread;
     }
-    prompt = `Now restate every finding of that run in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+    stage(sk, -1, base);
+    prompt = restate(prompt, sk);
   }
   const last = await turn(prompt, session);
   let message = "";
@@ -273,10 +308,11 @@ type ClaudeEvent = { type?: string; subtype?: string; slash_commands?: string[];
 
 async function claudeCode({ prompt, instructions, model, effort, root, base, minutes, scratch, own, tools }: EngineInput, sk?: Skill): Promise<EngineResult> {
   const tmp = mkdtempSync(join(scratch, "claude-"));
-  const home = join(tmp, "home"), cwd = join(tmp, "cwd");
+  // cwd: empty, or a skill's checkout (only user settings load: nothing of the repo's .claude, .mcp.json or CLAUDE.md)
+  const home = join(tmp, "home"), cwd = sk?.cwd ?? join(tmp, "cwd");
   mkdirSync(home);
-  mkdirSync(cwd);
-  // Claude Code's sandbox for its Bash (the access policy above): read-only everywhere but its empty cwd, no network restriction
+  mkdirSync(cwd, { recursive: true });
+  // Claude Code's sandbox for its Bash (the access policy above): read-only everywhere but its cwd, no network restriction
   // (none set, so no network namespace), never run outside it.
   mkdirSync(join(home, ".claude"));
   linkSkills(sk, join(home, ".claude", "skills"));
@@ -314,22 +350,27 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
       if (reads && !c.is_error && !cutShort(c.content)) calls.push(...reads);
     }
     const end = events.findLast((e) => e.type === "result");
-    return { r, end, ok: r.code === 0 && end?.subtype === "success" && !end.is_error, commands: events.find((e) => e.type === "system" && e.subtype === "init")?.slash_commands };
+    const acted = events.some((e) => e.type === "assistant" && (e.message?.content ?? []).some((c) => c.type === "tool_use"));
+    return { r, end, acted, ok: r.code === 0 && end?.subtype === "success" && !end.is_error, commands: events.find((e) => e.type === "system" && e.subtype === "init")?.slash_commands };
   };
   let session: string | undefined;
   if (own) {
     // Claude Code's own review of the change (base..HEAD in the box's history), or the skill's command over that range, its
     // findings then restated as our JSON.
-    for (const task of sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]) {
+    for (const [n, task] of (sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]).entries()) {
+      if (sk) stage(sk, n, base);
       const t = await turn(task, session);
       if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
-      // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well.
+      // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. So is one that read
+      // nothing (no tool call): it stopped before the code.
       const name = sk ? task.slice(1).split(" ")[0]! : "";
-      if (name && t.commands && !t.commands.includes(name)) return { message: "", read: false, calls, cause: `Claude Code has no skill ${name} (it lists ${t.commands.length} commands)` };
+      if (name && !t.commands?.includes(name)) return { message: "", read: false, calls, cause: `Claude Code has no skill ${name} (it lists ${t.commands?.length ?? 0} commands)` };
+      if (name && !t.acted) return { message: "", read: false, calls, cause: `${name} called no tool, so it reviewed nothing` };
       if (!t.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
       session = t.end.session_id;
     }
-    prompt = `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
+    if (sk) stage(sk, -1, base);
+    prompt = restate(prompt, sk);
   }
   const last = await turn(prompt, session);
   if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: stopped(last.r, last.end?.result ?? "") };
