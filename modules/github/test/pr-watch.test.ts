@@ -369,6 +369,17 @@ test("a re-run GitHub kept refusing is reported after the interval, and an unans
   assert.match(String(rows().reran?.["https://github.com/acme/app/pull/48:h48:77"]), /^retry:/, "an unanswered call backs off and is asked again later, not lost");
 });
 
+test("a refused re-run's report clock starts at its first ask and is not restarted by each retry", async (t) => {
+  const c = await rig(t, { jobRerun: () => 502 });
+  c.set([c.agentPr(54, stuckPr(54))]);
+  const first = new Date(Date.now() - 21 * 60_000).toISOString();
+  // This head's first ask was 21 minutes ago; the retry past its backoff is refused again, and that must still report.
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedgedFirst: { "https://github.com/acme/app/pull/54:h54:500:image-changes:77": first } } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a refusal is reported from the first ask, not from the retry's own time");
+  assert.match(c.woke[0].text, /the request to re-run the job was refused/);
+});
+
 test("a wedged check's re-run that never answers is reported after the interval, not lost", async (t) => {
   const c = await rig(t, { jobRerun: () => { throw new Error("The operation was aborted due to timeout"); } });
   const key = "https://github.com/acme/app/pull/50:h50:500:image-changes";

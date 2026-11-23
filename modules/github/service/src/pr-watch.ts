@@ -129,6 +129,7 @@ export function startPrWatch(o: PrWatchOptions) {
   let wedgedReads = 0;   // their Actions jobs read, across every PR of every repo
   let wedgedAsks = 0;    // the re-runs asked
   const wedgedAt = new Map<string, number>(); // `<pr url>:<head>` -> where its next visit starts, so the limit starves none
+  let prAt = 0; // where this pass starts among the repo's PRs, so a budget spent by the oldest does not starve the rest
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => ({}));
@@ -160,6 +161,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<pr url>:<head>:<job id>` -> the same for a wedged check run
     state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check name>` -> { done: [{ check, attempt, at, accepted }] }: the re-runs GitHub took, each with when it was asked
     state.jobChecked ??= {}; // `<pr url>:<head>:<job id>` -> when its job was read and found unfinished: not read again for a while
+    state.wedgedFirst ??= {}; // `<pr url>:<head>:<suite>:<check name>:<check id>` -> when its re-run was first asked, kept across refusals
     state.wedgedTold ??= {}; // `<pr url>:<head>` -> when the task was told its check run is still wedged after a re-run
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
@@ -335,7 +337,9 @@ export function startPrWatch(o: PrWatchOptions) {
         if ((seen?.done.filter((d) => d.accepted).length ?? 0) >= 2) { wedged(); continue; }
         // Recorded before the request, so one that never answers is still reported after the interval rather than lost.
         state.wedged[ledgerKey] ??= { done: [] };
-        const askedAt = new Date().toISOString();
+        const firstKey = `${ledgerKey}:${c.id}`;
+        state.wedgedFirst[firstKey] ??= new Date().toISOString();
+        const askedAt = state.wedgedFirst[firstKey]; // the first ask: a refusal does not restart the report's clock
         state.wedged[ledgerKey].done.push({ check: Number(c.id), attempt, at: askedAt, accepted: false });
         wedgedAsks++;
         let r: { status: number };
@@ -574,7 +578,10 @@ export function startPrWatch(o: PrWatchOptions) {
 
     if (!main.oid) return open.length;
     const opened = readJson(prTasksFile(o.cacheDir), {});
-    for (const pr of [...open].reverse()) { // oldest first
+    const oldestFirst = [...open].reverse(); // oldest first
+    // A pass that spent its recovery budget starts where the last one stopped: no PR waits behind the same older ones forever.
+    const from = oldestFirst.length ? prAt % oldestFirst.length : 0;
+    for (const pr of [...oldestFirst.slice(from), ...oldestFirst.slice(0, from)]) {
       const url = pr.url.toLowerCase();
       const opener = opened[url];
       // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
@@ -610,7 +617,8 @@ export function startPrWatch(o: PrWatchOptions) {
         const how = wedged.every((w) => w.accepted)
           ? "after its Actions job completed and the job had been re-run"
           : "after its Actions job completed, and the request to re-run the job was refused";
-        const text = `${pr.url}'s check run is still \`in_progress\` at \`${pr.headRefOid}\` ${how}, and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${pr.url}\` names it.`;
+        const held = named.some((c) => c.pending);
+        const text = `${pr.url}'s check run is still \`in_progress\` at \`${pr.headRefOid}\` ${how}${held ? ", and the merge gate is held by it: this head cannot merge" : ""}. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${pr.url}\` names it.`;
         const w = opener && opener.branch === pr.headRefName ? await wake(pr, opener.task, text) : "sent";
         if (w !== "failed") {
           state.wedgedTold[url] = pr.headRefOid;
@@ -723,6 +731,7 @@ export function startPrWatch(o: PrWatchOptions) {
         if (w === "sent") log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
       }
     }
+    prAt = oldestFirst.length ? prAt + 1 : 0;
     return open.length;
   }
 
