@@ -1096,10 +1096,17 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const issue = url.searchParams.get("issue");
         if (!issue) throw new HttpError(400, "issue=<task>");
         await requireAgentTool(req, "task_approvals");
-        const task = await pc.issue(issue).then((i) => i.id, () => undefined);
+        // A lookup that failed is not a task with no cards: the run's check for a merge card must be able to tell them apart.
+        const task = await pc.issue(issue).then((i) => i.id, (e: Error) => {
+          throw new HttpError(502, `couldn't read ${issue}: ${String(e?.message ?? e).slice(0, 200)}`);
+        });
         // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
-        // wakes it must see it, so the read a rule depends on never filters the card out.
-        return { approvals: task ? (await cardsOf("recent", { task, limit: 50, tier0: true })).map(approvalView) : [] };
+        // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". The limit is the kernel's
+        // cap, and a merge card older than the newest cards is kept: a routine Tier 0 run never crowds it out.
+        const recent = await cardsOf("recent", { task, limit: 1000, tier0: true, strict: true });
+        const merges = recent.filter((a) => /(^|\.)merge$/.test(a.action));
+        const shown = [...new Map([...recent.slice(0, 50), ...merges].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        return { approvals: shown.map(approvalView) };
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.

@@ -71,10 +71,22 @@ describe("internal listener", () => {
   it("a task's approval read includes the Tier 0 merge card the publish rule waits on", async () => {
     // A merge the fleet files for a green PR in the agents org is Tier 0: a read that drops it would tell the run no merge
     // card exists, and nothing would wake the task.
-    const records = fakeRecords([
-      card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "used", outcome: "applied", outcomeText: "merged-prs: []" }),
+    // The merge card is older than 60 newer routine cards on the same task: the read still returns it.
+    const inner = fakeRecords([
+      card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "used", outcome: "applied", outcomeText: "merged-prs: []", createdAt: "2026-11-10T10:00:00.000Z" }),
       card({ id: "k-0000000000000002", issueId: "another-task", identifier: "PEN-9", action: "merge", tier: 0, state: "pending" }),
+      ...Array.from({ length: 60 }, (_, i) => card({ id: `k-00000000000002${String(i).padStart(2, "0")}`, issueId: issue.id, identifier: issue.identifier, action: "conn.tool", tier: 0, state: "used", outcome: "applied", createdAt: `2026-11-2${i % 4}T10:00:00.000Z` })),
     ]);
+    // The kernel's read is newest first and capped: 60 newer routine cards sit ahead of this task's merge card.
+    const seen: { tier0?: boolean; strict?: boolean }[] = [];
+    const records: typeof inner = {
+      ...inner,
+      list: async (state, o = {}) => {
+        seen.push(o);
+        const all = await inner.list(state, { ...o, limit: 1000 });
+        return all.slice().sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, o.limit ?? 100);
+      },
+    };
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
     await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
     const port2 = (board.address() as AddressInfo).port;
@@ -93,13 +105,42 @@ describe("internal listener", () => {
     (pc as any).issue = async (ref: string) => (ref === other9.identifier || ref === other9.id ? other9 : issue);
     try {
       const mine = (await (await get(issue.identifier)).json()) as { approvals: { id: string }[] };
-      expect(mine.approvals.map((a) => a.id)).toEqual(["k-0000000000000001"]);
+      expect(mine.approvals.map((a) => a.id)).toContain("k-0000000000000001");
+      expect(seen.at(-1)).toMatchObject({ tier0: true, strict: true });
       // Another task's card is never in this task's read, whatever its tier.
       const other = (await (await get("PEN-9")).json()) as { approvals: { id: string }[] };
       expect(other.approvals.map((a) => a.id)).toEqual(["k-0000000000000002"]);
     } finally {
       (pc as any).issue = resolve;
       board.close();
+    }
+  });
+
+  it("a failed task or records lookup is an error, never an empty card list", async () => {
+    const failing = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records: { ...fakeRecords([]), list: async () => { throw new Error("the kernel answered 503"); } } });
+    await new Promise<void>((r) => failing.listen(0, "127.0.0.1", r));
+    const port3 = (failing.address() as AddressInfo).port;
+    const get = (path: string) =>
+      new Promise<{ status: number; json: () => Promise<unknown> }>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port: port3, method: "GET", path, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode!, json: async () => JSON.parse(text) }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    const resolve = (pc as any).issue;
+    try {
+      // The kernel's records endpoint is down: not a task with no cards.
+      (pc as any).issue = async () => issue;
+      expect((await get(`/internal/approvals?issue=${issue.identifier}`)).status).toBeGreaterThanOrEqual(500);
+      // The task lookup itself failed: the same, rather than an empty list.
+      (pc as any).issue = async () => { throw new Error("the control plane answered 502"); };
+      expect((await get("/internal/approvals?issue=PEN-1")).status).toBeGreaterThanOrEqual(500);
+    } finally {
+      (pc as any).issue = resolve;
+      failing.close();
     }
   });
 
