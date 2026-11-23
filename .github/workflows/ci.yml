@@ -82,6 +82,7 @@ jobs:
         # token-free. That token cannot write a check or read another repository.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
+          TESTED_SHA: ${{ github.sha }}
         run: |
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
@@ -95,17 +96,23 @@ jobs:
           grep -qxE 'scripts|kernel|kernel/sdk' <<< "$dirs" && { (cd kernel && npm ci --silent) & pids+=($!); }
           grep -qxE 'kernel/sdk|fixtures/twin' <<< "$dirs" && { (cd kernel/sdk && npm ci --silent) & pids+=($!); }
           for p in "${pids[@]}"; do wait "$p" || exit 1; done
+          # run-suites.sh reports a plan entry whose directory is missing as `gone:` and exits 0, so a shard can be green with a
+          # suite that never ran. A directory the tested commit (`TESTED_SHA`, the immutable commit the checkout came from) still
+          # has as a tree but the workspace does not is exactly that: fail the shard. `HEAD` would not do — the suites make
+          # commits, so PR code can commit a deletion and move `HEAD` off the tested tree. Checked before the run too, so a
+          # lifecycle script that deletes one fails here rather than passing as `gone:`, and after it, so a deletion during the
+          # run is caught.
+          vanished() {
+            while IFS=$'\t' read -r name dir _; do
+              if [ -n "$dir" ] && [ "$(git cat-file -t "$TESTED_SHA:$dir" 2>/dev/null)" = tree ] && [ ! -d "$dir" ]; then
+                echo "::error::$name: $dir is in the tested commit but not on disk ($1)"
+                return 1
+              fi
+            done < "$list"
+          }
+          vanished before || exit 1
           bash .github/ci/run-suites.sh "$list"
-          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has as a tree
-          # but the workspace no longer does was removed at runtime (an install's lifecycle script can do it, before launch or
-          # while another suite runs), which is a suite that vanished, not one that did not run: fail the shard. Checked after
-          # the run so a deletion during it is caught too.
-          while IFS=$'\t' read -r name dir _; do
-            if [ -n "$dir" ] && [ ! -d "$dir" ] && [ "$(git cat-file -t "HEAD:$dir" 2>/dev/null)" = tree ]; then
-              echo "::error::$name: $dir is in the tested commit but gone at runtime"
-              exit 1
-            fi
-          done < "$list"
+          vanished after
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
   # whose paths a change touches, e.g. the kernel for the modules that import it), in the shards checks' `shards` step plans.
@@ -138,6 +145,7 @@ jobs:
         # token-free. That token cannot write a check or read another repository.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
+          TESTED_SHA: ${{ github.sha }}
         run: |
           (cd kernel && npm ci --silent) & k=$!
           (cd scripts && npm ci --silent) & c=$!
@@ -145,17 +153,23 @@ jobs:
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
           echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
+          # run-suites.sh reports a plan entry whose directory is missing as `gone:` and exits 0, so a shard can be green with a
+          # suite that never ran. A directory the tested commit (`TESTED_SHA`, the immutable commit the checkout came from) still
+          # has as a tree but the workspace does not is exactly that: fail the shard. `HEAD` would not do — the suites make
+          # commits, so PR code can commit a deletion and move `HEAD` off the tested tree. Checked before the run too, so a
+          # lifecycle script that deletes one fails here rather than passing as `gone:`, and after it, so a deletion during the
+          # run is caught.
+          vanished() {
+            while IFS=$'\t' read -r name dir _; do
+              if [ -n "$dir" ] && [ "$(git cat-file -t "$TESTED_SHA:$dir" 2>/dev/null)" = tree ] && [ ! -d "$dir" ]; then
+                echo "::error::$name: $dir is in the tested commit but not on disk ($1)"
+                return 1
+              fi
+            done < "$list"
+          }
+          vanished before || exit 1
           bash .github/ci/run-suites.sh "$list"
-          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has as a tree
-          # but the workspace no longer does was removed at runtime (an install's lifecycle script can do it, before launch or
-          # while another suite runs), which is a suite that vanished, not one that did not run: fail the shard. Checked after
-          # the run so a deletion during it is caught too.
-          while IFS=$'\t' read -r name dir _; do
-            if [ -n "$dir" ] && [ ! -d "$dir" ] && [ "$(git cat-file -t "HEAD:$dir" 2>/dev/null)" = tree ]; then
-              echo "::error::$name: $dir is in the tested commit but gone at runtime"
-              exit 1
-            fi
-          done < "$list"
+          vanished after
 
   # One GitHub check per suite a shard's plan ran, on the PR head: the `checks` job's plan says which suites (its map comes
   # from the tested tree, `.github/ci/select.ts`), and the shard's own Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
@@ -623,8 +637,9 @@ jobs:
           done <<< "$files"
           git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | while IFS= read -r c; do git show "$src:$c" > "$c"; done
           echo "existing cases from the base: $(git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | wc -l)"
-      # Cache scope is the branch, not the job: a test step in this PR holds the same runtime token and can save under this
-      # key on this branch, so the receipt below is not proof the eval ran (pre-existing, unchanged by this PR).
+      # Cache scope is the branch, not the job: a test step in this PR holds the same runtime token and can save a receipt under
+      # this key on this branch, which a receipt-reusing eval would read as "already covered" and skip. So the eval below never
+      # reuses one (`--force`): it always runs here, whatever the cache holds. The cache is kept as the record of the last run.
       - id: receipt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -635,7 +650,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.GRADUATE_OPENROUTER_KEY }}
           XDG_STATE_HOME: ${{ github.workspace }}/.eval-state
-        run: node --disable-warning=ExperimentalWarning scripts/reviewer-eval.ts
+        run: node --disable-warning=ExperimentalWarning scripts/reviewer-eval.ts --force
       # Only a script that records receipts leaves one (an older base's doesn't).
       - if: steps.receipt.outputs.cache-hit != 'true' && hashFiles('.eval-state/**') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
