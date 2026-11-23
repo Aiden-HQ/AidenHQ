@@ -311,10 +311,12 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
     let body = "";
     for await (const x of req) body += x;
     if (req.url === "/v1/wakes") return res.writeHead(200).end("{}");
+    if (req.url === "/v1/merges") { merges.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ filed: { id: "r1", tier: 0, state: "claimed" } })); }
     res.writeHead(200).end(JSON.stringify({ status: "in_progress", records: [] }));
   });
   t.after(() => kernel.s.close());
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const merges = [];
   const gh = async (method, path) => {
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     const head = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/)?.[1];
@@ -326,7 +328,6 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
     if (path.startsWith("/repos/acme/app/actions/jobs/")) throw new Error("The operation was aborted due to timeout");
     return { status: 200, body: {} };
   };
-  const merges = [];
   const real = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
   t.after(() => real.stop());
   notePrTask(cacheDir, "https://github.com/acme/app/pull/47", { task: "ACME-47", branch: "b47" });
@@ -334,6 +335,7 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
   await real.tick();
   const rows = JSON.parse(readFileSync(join(cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
   assert.match(String(rows.reran?.["acme/app:h48:77"]), /^retry:/, "the unanswered read backs off instead of being lost");
+  assert.deepEqual(merges.map((m) => m.number), [47], "the PR after it still reached its merge");
 });
 
 
