@@ -78,6 +78,8 @@ const RANK: Record<Severity, number> = { important: 0, nit: 1, pre_existing: 2 }
 const MAX_PRE = 5;
 /** Findings per recheck call (few enough that one answer covers them all) and calls in flight at once. */
 const RECHECK_CHUNK = 15, RECHECK_PARALLEL = 3;
+/** The check's own limit (module.yaml check_jobs.code-review.timeout_min): no recheck wave starts that could outlast it. */
+export const CHECK_MINUTES = 180;
 const LENSES = [
   "correctness: logic errors, wrong results, edge cases and inputs the code mishandles",
   "security and data: injection, authorisation, secrets, unsafe handling of untrusted input, data loss",
@@ -275,6 +277,7 @@ function setupFilesOf(text: string) {
 
 /** The whole review from the spec, the head checkout `ws` and the out folder; `run` is the engine (tests fake it). */
 export async function review({ spec, ws, out, run: engine = runEngine }: { spec: Spec; ws: string; out: string; run?: typeof runEngine }) {
+  const started = Date.now();
   const run: typeof runEngine = async (name, i) => scrub(await engine(name, i));
   const combo = JSON.parse(spec.combo) as Combo;
   const problem = comboProblem(combo);
@@ -382,7 +385,16 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     }
     // Every asked finding is checked, in chunks small enough to be answered whole; a few at a time.
     const chunks = Array.from({ length: Math.ceil(ask.length / RECHECK_CHUNK) }, (_, i) => ask.slice(i * RECHECK_CHUNK, (i + 1) * RECHECK_CHUNK));
-    for (let i = 0; i < chunks.length; i += RECHECK_PARALLEL) await Promise.all(chunks.slice(i, i + RECHECK_PARALLEL).map(ask1));
+    for (let i = 0; i < chunks.length; i += RECHECK_PARALLEL) {
+      // A wave that could outlast the check (a skill run takes up to 6 turn allowances) isn't started: the rest stay as they were.
+      if (Date.now() - started + (minutes + 5) * 60_000 > CHECK_MINUTES * 60_000) {
+        const rest = chunks.slice(i).flat().map((f) => f.id);
+        failed.push(...rest);
+        gaps.push(`the check's time ran out before ${rest.length} earlier finding${rest.length > 1 ? "s were" : " was"} rechecked, so ${rest.length > 1 ? "they stay" : "it stays"} as ${rest.length > 1 ? "they were" : "it was"}`);
+        break;
+      }
+      await Promise.all(chunks.slice(i, i + RECHECK_PARALLEL).map(ask1));
+    }
     if (omitted.length) gaps.push(`the recheck left ${omitted.length} earlier finding${omitted.length > 1 ? "s" : ""} unanswered, so ${omitted.length > 1 ? "they stay" : "it stays"} as ${omitted.length > 1 ? "they were" : "it was"}`);
     if (unread.length) gaps.push(`the recheck gave a verdict on ${unread.length} earlier finding${unread.length > 1 ? "s" : ""} without opening ${unread.length > 1 ? "their files" : "its file"}, so ${unread.length > 1 ? "they stay" : "it stays"} as ${unread.length > 1 ? "they were" : "it was"}`);
     // A post resolves at most 100 threads (review-post.ts RESOLVE_MAX): the rest stay open for the next recheck, and it says so.

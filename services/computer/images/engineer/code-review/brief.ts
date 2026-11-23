@@ -94,7 +94,13 @@ export function downgrade<T extends { severity: Severity; why?: unknown; failure
 /** A finding at a real place, with its stable id. */
 export type Placed = Cleaned & { id: string; option?: string; lens?: string };
 
-/** An engine's answer as JSON (a ```json fence around it allowed), or undefined. */
+/**
+ * An engine's answer as JSON (a ```json fence around it allowed), or undefined. A line or two of prose before it is allowed too:
+ * the JSON object that starts a line and runs to the end of the message (a restate after a 13-minute skill run opened with "Here
+ * is the restated set." and lost the whole run, 2026-11-23).
+ */
 export function answer(message: unknown) {
-  try { const j = JSON.parse(String(message ?? "").trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); return j && typeof j === "object" && !Array.isArray(j) ? j : undefined; } catch { return undefined; }
+  const object = (t: string) => { try { const j = JSON.parse(t.trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1")); return j && typeof j === "object" && !Array.isArray(j) ? j : undefined; } catch { return undefined; } };
+  const text = String(message ?? "").trim();
+  return object(text) ?? [...text.matchAll(/^(?:```(?:json)?\s*\n)?\{/gm)].reduce<Record<string, unknown> | undefined>((j, m) => j ?? object(text.slice(m.index)), undefined);
 }
