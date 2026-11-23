@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { GitHubRefused } from "./github.js";
 
 // The owner-data scrub (spec §6.9a): an upstream issue is public, so nothing naming the instance's owner, its hosts or its
 // accounts leaves. Two layers: the instance's own literals (compile's owner_terms: the owner's names, email and orgs, and
@@ -90,4 +91,16 @@ export function scrubText(raw: string, terms: string[]): string {
 export function ownerTerms(list: string, upstream: string): string[] {
   const org = upstream.split("/")[0]!.toLowerCase();
   return [...new Set(list.split(",").map((t) => t.trim()).filter((t) => t.length >= 3 && ![org, "github.com", "www.github.com"].includes(t.toLowerCase())))];
+}
+
+/**
+ * The one gate for text posted in public as the owner (a comment, a thread reply): owner data rewritten out (scrubText), then
+ * checked raw and as GitHub renders it (scrubProblems); anything left refuses the post. The refusal names only the kinds found,
+ * never the values, so the logs that carry it hold no owner data.
+ */
+export function publicText(body: string, terms: string[], what: string): string {
+  const text = scrubText(body, terms);
+  const left = scrubProblems(text, terms);
+  if (left.length) throw new GitHubRefused(`owner data can't go into a public ${what}; take out ${[...new Set(left.map((p) => p.split(":")[0]))].join(", ")} and try again`);
+  return text;
 }

@@ -5,7 +5,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { GitHubRefused } from "./github.js";
 import { GitHubNeed, writeBudgetDeadline, writeBudgetSpent } from "./client.js";
-import { scrubProblems, scrubText } from "./scrub.js";
+import { publicText } from "./scrub.js";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
 import { BUILD_LABEL, FEATURE_LABEL, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.js";
@@ -462,10 +462,7 @@ export class Maintainer {
   }
 
   private scrubWith(terms: string[], body: string): string {
-    const text = scrubText(body, terms);
-    const left = scrubProblems(text, terms);
-    if (left.length) throw new GitHubRefused(`owner data can't go into a public comment; redact these and try again: ${left.join("; ")}`);
-    return text;
+    return publicText(body, terms, "comment");
   }
 
   /**

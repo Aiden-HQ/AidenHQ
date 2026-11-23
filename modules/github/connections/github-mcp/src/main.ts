@@ -7,7 +7,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Projects, issueLink, parseProductRepo, productTarget, upstreamReport } from "./projects.js";
-import { originIds, ownerTerms, scrubProblems, scrubText } from "./scrub.js";
+import { originIds, ownerTerms, publicText } from "./scrub.js";
 import { SourceStore } from "./source-store.js";
 import { startSync } from "./sources.js";
 import { createServer, type IncomingMessage } from "node:http";
@@ -41,13 +41,6 @@ const PRODUCT_REPO = (process.env.GITHUB_PRODUCT_REPO ?? "").trim();
 // The origin ids' own key (github_origin_key, generated, mounted only here), read at each report.
 const originKey = () => { const f = process.env.GITHUB_ORIGIN_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
 const OWNER_TERMS = ownerTerms(process.env.GITHUB_OWNER_TERMS ?? "", PRODUCT_REPO);
-/** Text a Tier 0 write posts in public: owner data rewritten out, then checked raw and as GitHub renders it; anything left is refused. */
-function publicText(raw: string): string {
-  const text = scrubText(raw, OWNER_TERMS);
-  const hits = scrubProblems(text, OWNER_TERMS);
-  if (hits.length) throw new GitHubRefused(`owner data can't go into a public reply; redact these and try again: ${hits.join("; ")}`);
-  return text;
-}
 // Who is calling: the kernel's signed assertion (the kernel enforces grants).
 const jwks = kernelJwks();
 async function authorize(req: IncomingMessage, body: unknown): Promise<{ ok: true; caller?: Caller } | { ok: false; body: unknown }> {
@@ -514,7 +507,7 @@ function buildServer(caller?: Caller): McpServer {
     },
     run(
       "github_pr_thread_reply",
-      logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string }) => github.reply(parseRef(a), a.comment, publicText(a.body), agent)),
+      logged("github_pr_thread_reply", at, async (a: { url?: string; repo?: string; number?: number; comment: number; body: string }) => github.reply(parseRef(a), a.comment, publicText(a.body, OWNER_TERMS, "reply"), agent)),
     ),
   );
   server.registerTool(
