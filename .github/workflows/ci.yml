@@ -77,7 +77,9 @@ jobs:
           (cd scripts && npm ci --ignore-scripts)
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
-        # Runs PR code (`npm ci` and the suites): no token or secret is exposed to it, and this job cannot write a check.
+        # Runs PR code (`npm ci` and the suites). This job holds no `checks: write` and none of the repository's secrets; its
+        # steps still carry GitHub's own per-run Actions runtime token, which is what the cache service uses, so it is not
+        # token-free. That token cannot write a check or read another repository.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
         run: |
@@ -93,6 +95,15 @@ jobs:
           grep -qxE 'scripts|kernel|kernel/sdk' <<< "$dirs" && { (cd kernel && npm ci --silent) & pids+=($!); }
           grep -qxE 'kernel/sdk|fixtures/twin' <<< "$dirs" && { (cd kernel/sdk && npm ci --silent) & pids+=($!); }
           for p in "${pids[@]}"; do wait "$p" || exit 1; done
+          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has but the
+          # runner no longer does was removed at runtime (an install's lifecycle script can do it), which is a suite that
+          # vanished, not one that did not run: fail the shard rather than let it pass.
+          while IFS=$'\t' read -r name dir _; do
+            if [ -n "$dir" ] && [ ! -d "$dir" ] && git cat-file -e "HEAD:$dir" 2>/dev/null; then
+              echo "::error::$name: $dir is in the tested commit but gone at runtime"
+              exit 1
+            fi
+          done < "$list"
           bash .github/ci/run-suites.sh "$list"
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
@@ -121,7 +132,9 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        # Runs PR code (`npm ci` and the suites): no token or secret is exposed to it, and this job cannot write a check.
+        # Runs PR code (`npm ci` and the suites). This job holds no `checks: write` and none of the repository's secrets; its
+        # steps still carry GitHub's own per-run Actions runtime token, which is what the cache service uses, so it is not
+        # token-free. That token cannot write a check or read another repository.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
         run: |
@@ -131,10 +144,19 @@ jobs:
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
           echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
+          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has but the
+          # runner no longer does was removed at runtime (an install's lifecycle script can do it), which is a suite that
+          # vanished, not one that did not run: fail the shard rather than let it pass.
+          while IFS=$'\t' read -r name dir _; do
+            if [ -n "$dir" ] && [ ! -d "$dir" ] && git cat-file -e "HEAD:$dir" 2>/dev/null; then
+              echo "::error::$name: $dir is in the tested commit but gone at runtime"
+              exit 1
+            fi
+          done < "$list"
           bash .github/ci/run-suites.sh "$list"
 
-  # One GitHub check per suite a shard's plan ran, on the PR head: the base-map plan says which suites, and the shard's own
-  # Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
+  # One GitHub check per suite a shard's plan ran, on the PR head: the `checks` job's plan says which suites (its map comes
+  # from the tested tree, `.github/ci/select.ts`), and the shard's own Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
   # (PR lifecycle scripts) and print their results into the log, so log text is not evidence. This job runs only the posting
   # script and checks out no PR code. A fork PR or a push posts nothing. A posting failure (logged, `continue-on-error`) leaves the suites without a check
   # (fail closed) and stays out of `ci-required`'s gate, so it cannot make `ci-required` red.
@@ -256,7 +278,8 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        # Runs PR code (the board suite): no token or secret is exposed to it, and this job cannot write a check.
+        # Runs PR code (the board suite). This job holds no `checks: write` and none of the repository's secrets; its steps
+        # still carry GitHub's own per-run Actions runtime token (the cache service's), which cannot write a check.
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
@@ -598,6 +621,8 @@ jobs:
           done <<< "$files"
           git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | while IFS= read -r c; do git show "$src:$c" > "$c"; done
           echo "existing cases from the base: $(git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | wc -l)"
+      # Cache scope is the branch, not the job: a test step in this PR holds the same runtime token and can save under this
+      # key on this branch, so the receipt below is not proof the eval ran (pre-existing, unchanged by this PR).
       - id: receipt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
