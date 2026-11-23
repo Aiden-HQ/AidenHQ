@@ -319,7 +319,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const lastStatus = lastFacts(issue.id).get("task.status_changed");
     const finishedAt = String(issue.status ?? "") === "done" ? Math.max(ms(issue.completedAt ?? undefined), lastStatus?.data.to === "done" ? ms(lastStatus.at) : 0) : 0;
     let reopenedHere = false;
-    if (String(issue.status ?? "") === "done" && isChat(issue) && all.some((c) => !c.deletedAt && ms(c.createdAt) > finishedAt && ownerWord(c))) {
+    // What a finished chat's pending reopen (chat_reopen) needs: a word still there to act on.
+    const chatWord = String(issue.status ?? "") === "done" && isChat(issue) && all.some((c) => !c.deletedAt && ms(c.createdAt) > finishedAt && ownerWord(c));
+    if (!chatWord && String(issue.status ?? "") !== "done") q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+    if (chatWord) {
       // Said before the move: the comment read is a snapshot, and the owner may have cancelled the chat since. Only a task still
       // `done` is reopened (a cancelled chat stays closed), and a read that fails writes nothing.
       const fresh = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
@@ -704,8 +707,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           log("wake poll failed", { agent, err: (e as Error).message });
         }
       }
-      // A reopen the control plane refused waits here until it succeeds, whatever the rolling finished-chat window below says:
-      // the scan reads its comment again and retries the move (no wake was filed for it).
+      // A reopen the control plane refused, or a finished chat's comment read that failed, waits here until it succeeds, whatever
+      // the rolling window above says: the scan reads its comment again and retries (no wake was filed for it).
       for (const { task } of q("SELECT task FROM chat_reopen ORDER BY at").all() as { task: string }[]) {
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
