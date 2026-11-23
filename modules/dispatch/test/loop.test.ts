@@ -261,6 +261,12 @@ test("a task-closed refusal on a wake is never dropped silently: the owner is to
   assert.equal(asked, 1, "admission was asked");
   assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "wait:t1:1:0", "comment:a1"], "an agent's word on a closed task is stale");
   assert.equal(told, 0, "the owner hears nothing of it");
+  // A kernel notice posted with the owner's key is not his word either.
+  comments.push({ id: "n1", authorType: "user", body: "Approved.\n<!-- aidenhq-kernel-notice:k-1 -->", createdAt: "2026-11-18T10:03:00Z" });
+  k.inbox.push(wake("comment:n1", "comment"));
+  await k.dispatch.tick();
+  assert.equal(asked, 2, "admission was asked");
+  assert.equal(told, 0, "the owner hears nothing of a kernel notice");
 });
 
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {

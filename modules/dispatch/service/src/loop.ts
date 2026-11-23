@@ -335,7 +335,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
 
   /**
    * Whether a wake is the owner's own comment, as the thread reads speakers (thread.ts `speaker`: a Board correction is the
-   * owner's; an agent's or a kernel notice is not). A comment the read doesn't find counts as the owner's, so the refusal is
+   * owner's; an agent's is not) less anything the kernel or a module posted with his key. A comment the read doesn't find counts as the owner's, so the refusal is
    * said rather than lost.
    */
   async function ownersComment(w: Wake): Promise<boolean> {
@@ -343,7 +343,10 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     const id = w.key.slice("comment:".length);
     const [task, all, dir] = await Promise.all([kernel.task(w.task), kernel.comments(w.task), kernel.directory()]).catch(() => [undefined, [], {}] as const);
     const c = all.find((x) => x.id === id);
-    return !task || !c || speaker(c, task, dir) === "owner";
+    if (!task || !c) return true;
+    // Posted with the owner's key but not said by him: a kernel notice, a grader's verdict (any `<!-- aidenhq` tag but a correction).
+    const body = String(c.body ?? "");
+    return speaker(c, task, dir) === "owner" && (!body.includes("<!-- aidenhq") || body.includes("<!-- aidenhq-correction"));
   }
 
   /** The owner's fallback for a wake nobody else hears (false when it didn't land: the wake must stay for its lease). */
