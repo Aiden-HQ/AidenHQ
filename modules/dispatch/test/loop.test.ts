@@ -229,7 +229,7 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
 
 test("a task-closed refusal on a wake is never dropped silently: the owner is told, once, and the wake goes", async () => {
   const comments = [{ id: "c1", authorType: "user", body: "One more thing.", createdAt: "2026-11-18T10:00:00Z" }];
-  const k = fake({ task: { id: "t1", identifier: "WOR-5", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  const k = fake({ task: { id: "t1", identifier: "WOR-5", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments, directory: { cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } });
   k.kernel.start = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
   k.inbox.push(wake("comment:c1", "comment"));
   await k.dispatch.tick();
@@ -251,6 +251,22 @@ test("a task-closed refusal on a wake is never dropped silently: the owner is to
   await k.dispatch.tick();
   assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "wait:t1:1:0"], "a closed task's wait is stale");
   assert.equal(k.notified.length, 1, "the owner hears nothing of it");
+  // An overseer's comment that came in before the close reaches admission, is refused, and is stale: not the owner's to hear.
+  comments.push({ id: "a1", authorType: "agent", authorAgentId: "cos", body: "A correction.", createdAt: "2026-11-18T10:02:00Z" });
+  k.inbox.push(wake("comment:a1", "comment"));
+  let asked = 0, told = 0;
+  k.kernel.start = async () => { asked++; throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
+  k.kernel.notify = async () => { told++; };
+  await k.dispatch.tick();
+  assert.equal(asked, 1, "admission was asked");
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1", "wait:t1:1:0", "comment:a1"], "an agent's word on a closed task is stale");
+  assert.equal(told, 0, "the owner hears nothing of it");
+  // A kernel notice posted with the owner's key is not his word either.
+  comments.push({ id: "n1", authorType: "user", body: "Approved.\n<!-- aidenhq-kernel-notice:k-1 -->", createdAt: "2026-11-18T10:03:00Z" });
+  k.inbox.push(wake("comment:n1", "comment"));
+  await k.dispatch.tick();
+  assert.equal(asked, 2, "admission was asked");
+  assert.equal(told, 0, "the owner hears nothing of a kernel notice");
 });
 
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
