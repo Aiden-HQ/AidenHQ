@@ -31,9 +31,10 @@ security fix (step 4).
    the registry reports it for that digest (a ghcr image: the Packages API); when it cannot be read — a token with no access
    to another org's package, say — do not approximate it from the release or the tag. Such an image is adopted through an
    `owner: approved` entry for that exact digest in `.github/supply-chain-exceptions.yaml`, with `expires` at most 14 days
-   out; that approval is what stands in for the age check CI cannot run. The entry records the owner's decision, not the
-   age: CI reads exceptions only after it has a date and lets an undatable pin through with a warning, so never read a green
-   check as proof of the image's age, and never record the approval yourself.
+   out and a release of code already running elsewhere that waiting would block; that approval is what stands in for the
+   age check CI cannot run. The entry records the owner's decision, not the age: CI reads exceptions only after it has a
+   date and lets an undatable pin through with a warning, so never read a green check as proof of the image's age, and
+   never record the approval yourself.
 4. A newer version is allowed only for a security fix: the script returns it with the advisory (the lowest fixing
    release). List it in `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in
    the same PR as the pin. An app repo's CI runs the checker from its base commit, so until its default branch carries the
