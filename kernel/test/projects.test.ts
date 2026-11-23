@@ -158,3 +158,26 @@ test("a task the control plane refuses to move is skipped; the others move and t
   assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-2", "p-2"]);
   assert.equal(projects.length, 2);
 });
+
+test("a refused move, then the map changes again, then the refusal clears: every task ends in the final target", async () => {
+  const { owner, issues, projects } = fake();
+  let refuse = true;
+  const map = { products: {} as Record<string, string[]> };
+  const flaky = async (m, path, body) => (refuse && m === "PATCH" && path === "/api/issues/t1" ? { status: 500, json: {} } : owner(m, path, body));
+  const p = createProjects({ db: new DatabaseSync(":memory:"), owner: flaky, products: () => map.products, now: () => NOW });
+  for (const t of ["t1", "t2"]) await p.touch(t, "acme/distro");
+  await p.sync();
+  map.products = { Platform: ["acme/distro"] };
+  await p.sync();
+  map.products = { Tools: ["acme/distro"] };
+  await p.sync();
+  refuse = false;
+  await p.sync();
+  const tools = projects.find((x) => x.name === "Tools").id;
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], [tools, tools]);
+  // Retagged by an agent since: it stays.
+  issues.t2.projectId = "p-set";
+  map.products = {};
+  await p.sync();
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-1", "p-set"]);
+});

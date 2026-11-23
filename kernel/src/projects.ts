@@ -37,9 +37,12 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
 }) {
   // `product`: the row came from the products map (1), else it is the repo's own project (0).
   db.exec(`CREATE TABLE IF NOT EXISTS project_repos (company TEXT NOT NULL, repo TEXT NOT NULL, project TEXT NOT NULL, product INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (company, repo));
-    CREATE TABLE IF NOT EXISTS project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL, placed TEXT);
     CREATE TABLE IF NOT EXISTS project_pending (task TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY (task, repo));
     CREATE TABLE IF NOT EXISTS project_backfilled (done INTEGER)`);
+  // `placed`: the project this kernel put the task in (a fill, a move), null for a task it only remembers. A task whose project
+  // is no longer its `placed` was retagged by someone (an agent's name): the sync leaves it where it is.
+  if (!(db.prepare("PRAGMA table_info(project_tasks)").all() as { name: string }[]).some((c) => c.name === "placed")) db.exec("ALTER TABLE project_tasks ADD COLUMN placed TEXT");
   // The tasks PRs touched before this table existed: from the fact log's pr.opened, once (a repo's own facts name it lower-case).
   // Only the facts the live path takes (backplane's /v1/facts): a code host's own, recorded live, first one per task. Every
   // remembered task is then queued for a fill (one with a project is left alone), so existing work joins its repo's project
@@ -116,9 +119,13 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
     const issue = ok(await owner("GET", `/api/issues/${enc(task)}`), "reading the task") as Issue;
     // The repo a task's project came from: the first PR's while another set it, the filling one's once it fills.
     db.prepare("INSERT OR IGNORE INTO project_tasks (task, repo) VALUES (?, ?)").run(issue.id, key);
-    if (issue.projectId) return;
+    if (issue.projectId) {
+      // Already in the repo's own project (filled before this was remembered): the sync may move it with the repo.
+      db.prepare("UPDATE project_tasks SET placed = ? WHERE task = ? AND placed IS NULL AND EXISTS (SELECT 1 FROM project_repos WHERE company = ? AND repo = project_tasks.repo AND project = ?)").run(issue.projectId, issue.id, issue.companyId, issue.projectId);
+      return;
+    }
     const project = await forRepo(issue.companyId, key);
-    db.prepare("INSERT OR REPLACE INTO project_tasks (task, repo) VALUES (?, ?)").run(issue.id, key);
+    db.prepare("INSERT OR REPLACE INTO project_tasks (task, repo, placed) VALUES (?, ?, ?)").run(issue.id, key, project);
     ok(await owner("PATCH", `/api/issues/${enc(issue.id)}`, { projectId: project }), "setting the task's project");
     log("task joined its repo's project", { task: issue.id, repo: key, project });
   });
@@ -177,7 +184,9 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
           const product = productOf(r.repo) ? 1 : 0;
           // A repo's own project stays as it is while no product lists it, unless a product now has its name: then the repo
           // moves to a project named in full, and the name is the product's.
-          if (!r.product && !product) {
+          // (Unless a task of it is still elsewhere: a move the control plane refused, to be finished.)
+          const stray = db.prepare("SELECT 1 FROM project_tasks WHERE repo = ? AND placed IS NOT NULL AND placed != ?").get(r.repo, r.project);
+          if (!r.product && !product && !stray) {
             try {
               if (!named.has(r.company)) named.set(r.company, new Map((await serial(() => catalog(r.company))).map((p) => [p.id, p.name.trim().toLowerCase()])));
             } catch (e) {
@@ -190,18 +199,21 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
           try {
             const to = await serial(() => projectFor(r.company, r.repo));
             let moved = 0, skipped = 0;
-            if (to !== r.project) for (const { task } of db.prepare("SELECT task FROM project_tasks WHERE repo = ?").all(r.repo) as { task: string }[]) {
-              // A task the control plane refuses is skipped and logged; the others still move. The repo's row moves last, only when
-              // none was skipped, so the next run tries the skipped ones again (those moved already no longer match, and are left).
+            // By target, not source: every task this kernel placed for the repo that isn't in the repo's project now moves there,
+            // so repeated map changes converge with no state beyond the task's `placed`. The repo's row moves last, once all did.
+            for (const { task, placed } of db.prepare("SELECT task, placed FROM project_tasks WHERE repo = ? AND placed IS NOT NULL AND placed != ?").all(r.repo, to) as { task: string; placed: string }[]) {
+              // A task the control plane refuses is skipped and logged; the others still move; the next run tries it again.
               try {
                 moved += await serial(async () => {
                   const r2 = await owner("GET", `/api/issues/${enc(task)}`);
                   if (r2.status === 404) return 0;
                   const i = ok(r2, "reading a task") as Issue;
-                  // Closed in the board's Done window, by when it closed (an old task edited since stays where it is).
+                  // Closed in the board's Done window, by when it closed (an old task edited since stays where it is), and still
+                  // where this kernel put it (one retagged since stays too).
                   const recent = !["done", "cancelled"].includes(String(i.status)) || now() - Date.parse(String(i.completedAt ?? i.cancelledAt ?? i.updatedAt)) < RECENT_MS;
-                  if (i.companyId !== r.company || i.projectId !== r.project || !recent) return 0;
+                  if (i.companyId !== r.company || i.projectId !== placed || !recent) return 0;
                   ok(await owner("PATCH", `/api/issues/${enc(i.id)}`, { projectId: to }), "moving a task");
+                  db.prepare("UPDATE project_tasks SET placed = ? WHERE task = ?").run(to, task);
                   return 1;
                 });
               } catch (e) {
