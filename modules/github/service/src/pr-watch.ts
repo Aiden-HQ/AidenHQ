@@ -148,7 +148,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<repo>:<head>:<job id>` -> the same for a wedged check run's job (the job is the repository's)
     state.wedged ??= {};      // `<pr url>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's first re-run ask, and whether GitHub took it
-    state.wedgedTold ??= {}; // `<pr url>:<head>` -> when the task was told its check run is still wedged after a re-run
+    state.wedgedTold ??= {}; // `<pr url>:merge` and `<pr url>:optional` -> the head whose wedged check the task was told about
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
@@ -285,6 +285,12 @@ export function startPrWatch(o: PrWatchOptions) {
         }
         // Only a job that itself finished, on this head, for this very check run can leave it wedged: one still queued or
         // running is not stuck, and a details URL never points another head's or check's job here.
+        // A rate limit or an outage on the read backs off like an unanswered one: GitHub is not asked again on every tick.
+        if (job.status === 429 || job.status >= 500) {
+          state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+          save();
+          continue;
+        }
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== head || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt) || Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a fresh job's check run can lag
@@ -570,7 +576,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS);
       const held = due.filter((w) => named.some((c) => c.pending && c.name === w.name));
       const optional = due.filter((w) => !held.includes(w));
-      if (held.length && state.wedgedTold[url] !== `${pr.headRefOid}:merge`) {
+      if (held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
           ? "after its Actions job completed and the job had been re-run"
           : "after its Actions job completed, and the request to re-run the job was refused";
@@ -578,12 +584,12 @@ export function startPrWatch(o: PrWatchOptions) {
         const w = opener && opener.branch === pr.headRefName ? await wake(pr, opener.task, text) : "sent";
         // Told once at this head, whether or not GitHub took the re-run: the ask's clock ran, so the next tick must not repeat it.
         if (w !== "failed") {
-          state.wedgedTold[url] = `${pr.headRefOid}:merge`;
+          state.wedgedTold[`${url}:merge`] = pr.headRefOid;
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && state.wedgedTold[url] !== `${pr.headRefOid}:optional`) {
-        state.wedgedTold[url] = `${pr.headRefOid}:optional`;
+      } else if (optional.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
+        state.wedgedTold[`${url}:optional`] = pr.headRefOid;
         save();
         log("wedged check run holds no required check", { pr: pr.url, head: pr.headRefOid, why: "still in_progress after its job completed and a re-run" });
       }
