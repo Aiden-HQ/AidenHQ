@@ -83,9 +83,10 @@ One GitHub issue per defect, filed by the Maintainer (when in `fleet_catalog` an
    description that opens with the ask below, then what happened, expected, `module` (a lowercase hyphen slug matching
    `^[a-z][a-z0-9-]{0,63}$` — `apply-config`, `routine-dispatch`, `task-wake`; the finer component goes in the title and
    body), `version` (the sha the failing run ran under, from `fleet_generation_status`), the pin at filing, `reproduction`,
-   one log line. `github_product_issue` refuses any other `module` with `Invalid string ... at evidence.module`: that is the
-   tool's own input validation, which files no issue and is not the card reviewer's handback below, so a path, a capitalised
-   name, or two words joined by `/` or a space files nothing until the brief's `module` is a slug.
+   one log line. `github_product_issue` refuses any other `module` with `Invalid string ... at evidence.module`: the call's
+   arguments fail the tool's schema, so no issue is opened and the value stays wrong until it is a slug — a path, a
+   capitalised name, or two words joined by `/` or a space never files. That is validation of the call's arguments, separate
+   from the card's reviewer reading the brief's text below: a slug passes both.
    The issue is public: a name, email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`), in
    the brief's body, title and evidence too (name things by role, leave task ids out): the `github_product_issue`
    card's reviewer holds the post to the brief's text, so a literal value there loops the filing.
