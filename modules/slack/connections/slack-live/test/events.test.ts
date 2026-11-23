@@ -42,4 +42,17 @@ it("a kept Slack event is forwarded once, after owner routing, with its bot flag
   failing = true;
   const unacked = await send({ type: "message", user: "U2", channel: "C1", ts: "1.6", text: "again" }, "Ev6");
   expect(unacked).not.toHaveBeenCalled();
+
+  // The owner's task emoji is an event (added or removed); anyone else's reaction or another emoji is not.
+  failing = false;
+  forwarded.length = 0;
+  const react = (type: string, user: string, reaction: string, at: string) => send({ type, user, reaction, item: { type: "message", channel: "C1", ts: "1.7" }, event_ts: at } as never, `Ev${at}`);
+  await react("reaction_added", "UOWNER", "pushpin", "2.1");
+  await react("reaction_removed", "UOWNER", "pushpin", "2.2");
+  await react("reaction_added", "U2", "pushpin", "2.3");
+  await react("reaction_added", "UOWNER", "eyes", "2.4");
+  expect(forwarded.map((e) => [(e as { kind: string }).kind, (e as { id: string }).id, (e as { url: string }).url])).toEqual([
+    ["reaction_added", "C1:1.7:reaction_added:2.1", "https://slack.com/archives/C1/p17"],
+    ["reaction_removed", "C1:1.7:reaction_removed:2.2", "https://slack.com/archives/C1/p17"],
+  ]);
 });

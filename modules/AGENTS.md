@@ -61,6 +61,28 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
   ([minimal-core-install.md](../docs/design/minimal-core-install.md)).
 - **Apps a module owns** start from the app starter and the design system (`modules/apps-platform/`).
 
+## Agent anatomy
+
+Read this and [the spec](../docs/superpowers/specs/2026-11-22-agent-anatomy-design.md) before changing an agent, skill,
+routine or memory.
+
+- **Parts.** `module.yaml` declares the agents, routines, connections and grants. `agents/<key>/AGENTS.md` is the mission
+  only; `skills/<name>/SKILL.md` is the how-to. An agent grants a connection as `connection: read|write|[tools]`.
+- **Skills.** Each agent lists every skill it uses in `skills:`; the effective list is
+  `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`.
+- **Moving work between agents** changes both agents' `skills:` lists and grants. The skill text stays where it is.
+- **Routines** run on a schedule or on events: `event: { connection, resource, filter }`. The run reads its batch with
+  `routine_events(batch)` (the kernel's `events.ts` queues and fires it). A connection adds an event kind by listing it in
+  its `events: { kinds: [...] }` (modules/slack/module.yaml) and mapping the vendor event to a router event in its service
+  (slack-live `map.ts` `toSourceEvent`, which sends the owner's `reaction_added` and `reaction_removed` for the task
+  emoji); a routine's `filter.kind` then names it.
+- **Memory** is the kernel's, one file per agent at `data/kernel/memory/agents/<key>.json`; the repo and the instance hold
+  no memory files. An agent uses `memory_note`, `memory_forget`, `memory_read` and `memory_rewrite`.
+- **Self-change.** An agent edits its own handbook, skill list, `library` skills and `library` routines with `self_change`;
+  each change is a Tier 1 card.
+- **Sharing.** The owner publishes a local module (`github.publish_module`): its `module.yaml`, agents' `AGENTS.md` and
+  skills go out, memory never.
+
 ## Local modules
 
 The owner's and the agents' own modules live in the instance repo, `modules/<name>/` (tier `local`), and the same compiler

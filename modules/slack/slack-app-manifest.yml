@@ -13,7 +13,7 @@
 #     slack_channel_context), and the channel membership events channel binding uses (channels:read, groups:read: Slack
 #     requires them for member_joined_channel and channel_left; mpim:read too, which Slack marks required by the event
 #     subscriptions).
-#   - advanced, events: the bot's mentions, DMs and channel membership; the person's own messages, live, for src_slack and triage.
+#   - advanced, events: the bot's mentions, DMs and channel membership; the person's own messages, live, for src_slack and triage, and their reactions (reaction_added, reaction_removed: the task emoji, for triage).
 # Sign-in is PKCE with the board's loopback redirect (http://localhost:3121/slack/callback, the board's sign-in address:
 # Slack accepts a localhost redirect when PKCE is on). The code exchanges with the client id and the code_verifier alone, so
 # the app has no client secret to paste or protect; refresh needs none either.
@@ -106,3 +106,5 @@ advanced:
         - message.groups
         - message.im
         - message.mpim
+        - reaction_added
+        - reaction_removed
