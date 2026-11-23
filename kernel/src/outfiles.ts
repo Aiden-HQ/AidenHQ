@@ -30,22 +30,26 @@ function readRegular(path: string): Buffer | undefined {
 
 /** The files to attach: [{ name, type, data }], at most 20, none that `have` lists (name:size). */
 export function outFiles(workspace: string, have: Set<string> = new Set()): { name: string; type: string; data: Buffer }[] {
-  const real = realpathSync(workspace);
-  let dir = real;
-  for (const part of OUT_DIR.split("/")) {
-    dir = join(dir, part);
-    const st = lstatSync(dir, { throwIfNoEntry: false });
-    if (!st) return [];
-    if (!st.isDirectory()) return []; // a link (or a file) where a folder should be: nothing is read
+  const fds: number[] = [];
+  try {
+    let dir = workspace; // the host's own path: opened as given, then each agent-writable component without following a link
+    for (const part of ["", ...OUT_DIR.split("/")]) {
+      const fd = openSync(part ? join(dir, part) : dir, constants.O_RDONLY | constants.O_DIRECTORY | (part ? constants.O_NOFOLLOW : 0));
+      fds.push(fd);
+      dir = `/proc/self/fd/${fd}`;
+    }
+    const out: { name: string; type: string; data: Buffer }[] = [];
+    for (const name of readdirSync(dir).sort()) {
+      if (out.length >= MAX_FILES) break;
+      if (name.startsWith(".") || /[\u0000-\u001f\u007f<>"`|*?:\\/]/.test(name) || name.length > 200) continue;
+      const data = readRegular(join(dir, name));
+      if (!data || have.has(`${name}:${data.length}`)) continue;
+      out.push({ name, type: TYPES[extname(name).slice(1).toLowerCase()] ?? "application/octet-stream", data });
+    }
+    return out;
+  } catch {
+    return []; // a link (or a file) where a folder should be, or no folder: nothing is read
+  } finally {
+    for (const fd of fds) closeSync(fd);
   }
-  if (realpathSync(dir) !== join(real, OUT_DIR)) return [];
-  const out: { name: string; type: string; data: Buffer }[] = [];
-  for (const name of readdirSync(dir).sort()) {
-    if (out.length >= MAX_FILES) break;
-    if (name.startsWith(".") || /[\u0000-\u001f\u007f<>"`|*?:\\/]/.test(name) || name.length > 200) continue;
-    const data = readRegular(join(dir, name));
-    if (!data || have.has(`${name}:${data.length}`)) continue;
-    out.push({ name, type: TYPES[extname(name).slice(1).toLowerCase()] ?? "application/octet-stream", data });
-  }
-  return out;
 }

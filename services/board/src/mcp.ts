@@ -206,24 +206,21 @@ export function createMcp(d: McpDeps) {
       "write",
       async (a) => {
         const lane = (id: string) => (id.startsWith("lane:") ? id.slice(5) : null);
-        // A lane's reply is an agent message after the owner's newest (ours, once posted); a task chat's is a reply after the newest message seen before posting.
-        const read = async (id: string, after?: string): Promise<{ last?: string; replies: string[] }> => {
+        // A reply is an agent message after the owner's newest message (ours, once posted): owner messages keep their ids and
+        // kind however the conversation folds the agents' notes around them.
+        const read = async (id: string): Promise<string[]> => {
           const key = lane(id);
           const { messages } = (key ? await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`) : await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: any[] };
-          const last = messages.at(-1)?.id as string | undefined;
-          if (key) return { last, replies: messages.slice(messages.map((m) => m.role).lastIndexOf("owner") + 1).filter((m) => m.role === "agent").map((m) => m.text) };
-          return { last, replies: messages.slice(after ? messages.findIndex((m) => m.id === after) + 1 : 0).filter((m) => m.kind === "reply").map((m) => m.text) };
+          const from = messages.findLastIndex((m) => (key ? m.role === "owner" : m.kind === "owner")) + 1;
+          return messages.slice(from).filter((m) => (key ? m.role === "agent" : m.kind === "reply")).map((m) => m.text);
         };
         let id = a.chat as string | undefined;
-        let after: string | undefined;
-        if (id) {
-          after = (await read(id)).last;
-          if (lane(id)) await call("POST", `/api/lane/${encodeURIComponent(lane(id)!)}/messages`, { text: a.text });
-          else await call("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body: a.text, brief: true });
-        } else id = (await call("POST", "/api/chats", { text: a.text, ...(a.agent ? { agent: (await agentRef(a.agent)).id } : {}) })).identifier as string;
+        if (id && lane(id)) await call("POST", `/api/lane/${encodeURIComponent(lane(id)!)}/messages`, { text: a.text });
+        else if (id) id = ((await call("POST", `/api/issues/${encodeURIComponent(id)}/comments`, { body: a.text, brief: true })) as { movedTo?: string }).movedTo ?? id;
+        else id = (await call("POST", "/api/chats", { text: a.text, ...(a.agent ? { agent: (await agentRef(a.agent)).id } : {}) })).identifier as string;
         const until = Date.now() + a.wait_seconds * 1000;
         for (;;) {
-          const { replies } = await read(id, after);
+          const replies = await read(id);
           if (replies.length) return out(`Reply in ${id}.`, { chat: id, replied: true, reply: replies.join("\n\n") });
           const left = until - Date.now();
           if (left <= 0) return out(`${id}: still working. Call get_task with this id to read the reply.`, { chat: id, replied: false, reply: null });
