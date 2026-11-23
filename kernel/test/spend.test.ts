@@ -80,6 +80,22 @@ test("concurrent calls share the room: each holds its granted output, so two in 
   assert.deepEqual((await both).map((x) => x.status), [200, 200]);
   // Settled at what OpenRouter billed.
   assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.001], ["ok", 0.001]]);
+
+  // A limit only held, not spent ($0.01, all of it held by one call in flight): a retryable 503; no cap refusal is recorded,
+  // nothing is sent, nobody is told.
+  const waiting = [];
+  const b = await rig(t, { dayUsd: 0.01, answer: (body, res, n) => waiting.push(() => usage(0.001)(body, res, n)) });
+  const first = b.call({ model: "flat", messages: [] });
+  try {
+    for (let i = 0; i < 200 && b.seen.length < 1; i++) await sleep(5);
+    const busy = await b.call({ model: "flat", messages: [] });
+    assert.deepEqual([busy.status, busy.json.error.type], [503, "spend_held"]);
+    assert.deepEqual(b.rows().map((x) => x.status), ["reserved"]);
+    assert.equal(b.seen.length, 1);
+  } finally {
+    for (const f of waiting.splice(0)) f();
+  }
+  assert.equal((await first).status, 200);
 });
 
 test("the day limit keeps its value: at it refused, a reservation past it refused, bounded output, true cost settled", async (t) => {

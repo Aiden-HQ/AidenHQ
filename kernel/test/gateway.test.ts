@@ -337,8 +337,8 @@ const completed = sse([...opened("gen-ok"), { type: "response.output_text.delta"
 async function streamRig(t, settings = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   writeFileSync(join(dir, "gateway.json"), JSON.stringify(settings));
-  const rig = { answers: [], posts: 0, logged: [] };
-  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => { rig.posts++; rig.answers.shift()(res); }); });
+  const rig = { answers: [], posts: 0, logged: [], bodies: [] };
+  const upstream = await serve((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { rig.posts++; if (b) rig.bodies.push(JSON.parse(b)); rig.answers.shift()(res); }); });
   const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, retryDelaysMs: [0, 0], streamIdleMs: 300, log: (m, f) => rig.logged.push([m, f]) });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.closeAllConnections?.(); upstream.s.close(); front.s.close(); gw.close(); });
@@ -468,6 +468,13 @@ test("gateway: an answer that failed before any output is re-run once when its e
   assert.match((await capped.call()).text, /response\.failed/);
   assert.equal(capped.posts, 1);
   assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error", "ok"]); // the call, then the other spend
+  // The re-run is sized again: the discarded attempt's input estimate ($0.01) leaves it less output than the first attempt got.
+  const tight = await streamRig(t, { install_day_usd: 0.022 });
+  tight.answers = [streamed(sse(opened("gen-t"))), streamed(completed)];
+  assert.match((await tight.call()).text, /response\.completed/);
+  assert.equal(tight.posts, 2);
+  assert.equal(tight.bodies[0].max_output_tokens, 4096);
+  assert.ok(tight.bodies[1].max_output_tokens > 1900 && tight.bodies[1].max_output_tokens < 2000, String(tight.bodies[1].max_output_tokens));
   // An attempt that ended before any output may be billed: its own input estimate ($0.01) past the limit refuses the re-run.
   capped.fresh();
   capped.answers = [streamed(sse(opened("gen-q"))), streamed(completed)];
@@ -499,6 +506,11 @@ test("usage tap: an echoed finish_reason is no finish, and completed usage outli
   echoed.done();
   assert.match(echoed.failure()?.reason ?? "", /no usage or finish/);
   assert.equal(echoed.failure()?.inBand, false);
+  // A finish without its final usage (Anthropic's message_stop with no usage-bearing message_delta): not complete either.
+  const unbilled = usageTap(true);
+  unbilled.feed(sseOf({ type: "message_start", message: { id: "msg_1", model: "m", usage: { input_tokens: 100, output_tokens: 1 } } }, { type: "message_stop" }));
+  unbilled.done();
+  assert.deepEqual(unbilled.failure(), { reason: "a finish without final usage; last event: message_stop", inBand: false });
   const completed = usageTap(true);
   completed.feed(sseOf({ id: "gen-2", model: "m", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.02 } }, { id: "gen-2", error: { code: 500 }, usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 } }));
   assert.deepEqual([completed.done()?.output, completed.done()?.costUsd, completed.failure()], [5, 0.02, undefined]);
