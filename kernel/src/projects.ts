@@ -13,7 +13,8 @@
 //   else a new one. Two projects of one name is an error the agent sees.
 // Every write here runs on one chain (`serial`), every task an agent creates or tags in cp.ts too, so two first sights of one repo
 // make one project and a repo's fill never lands over an agent's tag; each create carries Paperclip's idempotency key too. A fill
-// that fails (Paperclip restarting) is tried again a minute later, three times at most; a kernel restart meanwhile drops it.
+// is queued in kernel.db (`project_pending`) before it is tried: one that fails (Paperclip restarting) is tried again each minute,
+// across kernel restarts.
 import type { DatabaseSync } from "node:sqlite";
 import { repoKey } from "./kinds.ts";
 
@@ -25,8 +26,6 @@ export type OwnerCall = (method: string, path: string, body?: unknown) => Promis
 export type Products = Record<string, string[]>;
 
 export class ProjectError extends Error { status = 400; }
-/** How long a failed fill waits before it is tried again. */
-const RETRY_MS = 60_000;
 /** A closed task this recent moves with its repo (the board's Done window). */
 const RECENT_MS = 48 * 3600_000;
 
@@ -38,7 +37,8 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
 }) {
   // `product`: the row came from the products map (1), else it is the repo's own project (0).
   db.exec(`CREATE TABLE IF NOT EXISTS project_repos (company TEXT NOT NULL, repo TEXT NOT NULL, project TEXT NOT NULL, product INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (company, repo));
-    CREATE TABLE IF NOT EXISTS project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL)`);
+    CREATE TABLE IF NOT EXISTS project_tasks (task TEXT PRIMARY KEY, repo TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS project_pending (task TEXT NOT NULL, repo TEXT NOT NULL, PRIMARY KEY (task, repo))`);
   // The tasks PRs touched before this table existed: from the fact log's pr.opened, once (a repo's own facts name it lower-case).
   // Only the facts the live path takes (backplane's /v1/facts): a code host's own, recorded live, first one per task.
   try { db.exec("INSERT OR IGNORE INTO project_tasks (task, repo) SELECT task, lower(json_extract(data, '$.repo')) FROM facts WHERE type = 'pr.opened' AND source = 'live' AND (version LIKE 'github/%' OR version LIKE 'codehost-local/%') AND task IS NOT NULL AND json_extract(data, '$.repo') IS NOT NULL ORDER BY seq"); } catch { /* no fact log here */ }
@@ -75,70 +75,104 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
   async function projectFor(company: string, repo: string): Promise<string> {
     const product = productOf(repo);
     if (product) return (await byName(company, product, true))!;
+    // Named in full when its short name is a product's, or another org's repo of that name has it already.
     const short = repo.split("/")[1]!;
-    const taken = await byName(company, short, false);
-    const clash = taken && db.prepare("SELECT 1 FROM project_repos WHERE company = ? AND project = ? AND repo != ?").get(company, taken, repo);
+    const isProduct = Object.keys(products()).some((n) => n.trim().toLowerCase() === short.toLowerCase());
+    const taken = !isProduct && (await byName(company, short, false));
+    const clash = isProduct || (taken && db.prepare("SELECT 1 FROM project_repos WHERE company = ? AND project = ? AND repo != ?").get(company, taken, repo));
     return (await byName(company, clash ? repo : short, true))!;
   }
 
   /** The repo's project, made on first sight. */
   async function forRepo(company: string, repo: string): Promise<string> {
     const row = db.prepare("SELECT project FROM project_repos WHERE company = ? AND repo = ?").get(company, repo) as { project: string } | undefined;
-    if (row) return row.project;
+    // A project archived or deleted in Paperclip since is no home: the repo's project is found again.
+    if (row && (await catalog(company)).some((p) => p.id === row.project)) return row.project;
     const project = await projectFor(company, repo);
-    db.prepare("INSERT OR IGNORE INTO project_repos (company, repo, project, product) VALUES (?, ?, ?, ?)").run(company, repo, project, productOf(repo) ? 1 : 0);
+    db.prepare("INSERT OR REPLACE INTO project_repos (company, repo, project, product) VALUES (?, ?, ?, ?)").run(company, repo, project, productOf(repo) ? 1 : 0);
     return project;
   }
 
+  /** One fill: the task joins the repo's project unless it has one. Throws when it can't be done now. */
+  const fill = (task: string, key: string) => serial(async () => {
+    const issue = ok(await owner("GET", `/api/issues/${enc(task)}`), "reading the task") as Issue;
+    db.prepare("INSERT OR IGNORE INTO project_tasks (task, repo) VALUES (?, ?)").run(issue.id, key);
+    if (issue.projectId) return;
+    const project = await forRepo(issue.companyId, key);
+    ok(await owner("PATCH", `/api/issues/${enc(issue.id)}`, { projectId: project }), "setting the task's project");
+    log("task joined its repo's project", { task: issue.id, repo: key, project });
+  });
+  /** Each pending fill, again: done or impossible (the task gone, a name refused) leaves the queue; a transient failure stays. */
+  async function retryPending() {
+    for (const { task, repo } of db.prepare("SELECT task, repo FROM project_pending").all() as { task: string; repo: string }[]) {
+      try { await fill(task, repo); } catch (e) {
+        const err = e as Error & { status?: number };
+        if (err.status !== 404 && !(err instanceof ProjectError)) { log("project fill failed; trying again in a minute", { task, repo, err: err.message }); continue; }
+        log("project fill dropped", { task, repo, err: err.message });
+      }
+      db.prepare("DELETE FROM project_pending WHERE task = ? AND repo = ?").run(task, repo);
+    }
+  }
+
   let synced = "";
+  let syncing = false;
   const api = {
     serial,
-    /** A PR for `task` on `repo`: the task joins the repo's project unless it has one (retried as above). */
-    touch: (task: string, repo: string, tries = 3): Promise<void> => serial(async () => {
+    /** A PR for `task` on `repo`: queued (kernel.db, so a restart keeps it) and filled now, or by the next minute's retry. */
+    touch: async (task: string, repo: string): Promise<void> => {
       const key = repoKey(repo);
       if (!key) return;
-      const issue = ok(await owner("GET", `/api/issues/${enc(task)}`), "reading the task") as Issue;
-      db.prepare("INSERT OR IGNORE INTO project_tasks (task, repo) VALUES (?, ?)").run(issue.id, key);
-      if (issue.projectId) return;
-      const project = await forRepo(issue.companyId, key);
-      ok(await owner("PATCH", `/api/issues/${enc(issue.id)}`, { projectId: project }), "setting the task's project");
-      log("task joined its repo's project", { task: issue.id, repo: key, project });
-    }).catch((e: Error & { status?: number }) => {
-      if (tries <= 1 || e.status === 404 || e instanceof ProjectError) throw e;
-      log("project fill failed; trying again in a minute", { task, repo, err: e.message });
-      return new Promise<void>((done, fail) => setTimeout(() => void api.touch(task, repo, tries - 1).then(done, fail), RETRY_MS).unref());
-    }),
+      db.prepare("INSERT OR IGNORE INTO project_pending (task, repo) VALUES (?, ?)").run(task, key);
+      await retryPending();
+    },
     /** An agent's tag: the project of that name, made when there is none. Call it inside `serial` with the write it is for. */
     named: (company: string, name: string) => byName(company, name, true) as Promise<string>,
     /**
-     * Moves each repo whose project differs from the map's (into its product, or back to its own when it was taken off one) with
-     * its open and recent tasks, once per change of the map. The repo's row moves last: a sync cut short runs again in full.
+     * Each minute: the pending fills, then, when the map changed, each repo whose project differs from the map's (into its product,
+     * or back to its own when it was taken off one) moves with its open and recent tasks. Each task moves on the chain on its own,
+     * so creates never wait behind a whole move; a repo that fails is left for the next run and the others go on; its row moves
+     * last, so a run cut short is done again in full.
      */
-    sync: () => serial(async () => {
-      const map = JSON.stringify(products());
-      if (map === synced) return;
-      const rows = db.prepare("SELECT company, repo, project, product FROM project_repos").all() as { company: string; repo: string; project: string; product: number }[];
-      for (const r of rows) {
-        // A repo's own project stays as it is while no product lists it.
-        if (!r.product && !productOf(r.repo)) continue;
-        const to = await projectFor(r.company, r.repo);
-        if (to === r.project) continue;
-        let moved = 0;
-        for (const { task } of db.prepare("SELECT task FROM project_tasks WHERE repo = ?").all(r.repo) as { task: string }[]) {
-          const r2 = await owner("GET", `/api/issues/${enc(task)}`);
-          if (r2.status === 404) continue;
-          const i = ok(r2, "reading a task") as Issue;
-          // Closed in the board's Done window, by when it closed (an old task edited since stays where it is).
-          const recent = !["done", "cancelled"].includes(String(i.status)) || now() - Date.parse(String(i.completedAt ?? i.cancelledAt ?? i.updatedAt)) < RECENT_MS;
-          if (i.companyId !== r.company || i.projectId !== r.project || !recent) continue;
-          ok(await owner("PATCH", `/api/issues/${enc(i.id)}`, { projectId: to }), "moving a task");
-          moved++;
+    sync: async () => {
+      if (syncing) return;
+      syncing = true;
+      try {
+        await retryPending();
+        const map = JSON.stringify(products());
+        if (map === synced) return;
+        let failed = false;
+        const rows = db.prepare("SELECT company, repo, project, product FROM project_repos").all() as { company: string; repo: string; project: string; product: number }[];
+        for (const r of rows) {
+          const product = productOf(r.repo) ? 1 : 0;
+          // A repo's own project stays as it is while no product lists it.
+          if (!r.product && !product) continue;
+          try {
+            const to = await serial(() => projectFor(r.company, r.repo));
+            let moved = 0;
+            if (to !== r.project) for (const { task } of db.prepare("SELECT task FROM project_tasks WHERE repo = ?").all(r.repo) as { task: string }[]) {
+              moved += await serial(async () => {
+                const r2 = await owner("GET", `/api/issues/${enc(task)}`);
+                if (r2.status === 404) return 0;
+                const i = ok(r2, "reading a task") as Issue;
+                // Closed in the board's Done window, by when it closed (an old task edited since stays where it is).
+                const recent = !["done", "cancelled"].includes(String(i.status)) || now() - Date.parse(String(i.completedAt ?? i.cancelledAt ?? i.updatedAt)) < RECENT_MS;
+                if (i.companyId !== r.company || i.projectId !== r.project || !recent) return 0;
+                ok(await owner("PATCH", `/api/issues/${enc(i.id)}`, { projectId: to }), "moving a task");
+                return 1;
+              });
+            }
+            db.prepare("UPDATE project_repos SET project = ?, product = ? WHERE company = ? AND repo = ?").run(to, product, r.company, r.repo);
+            if (to !== r.project) log("repo moved to the project the map gives it", { company: r.company, repo: r.repo, from: r.project, to, moved });
+          } catch (e) {
+            failed = true;
+            log("repo move failed; trying again in a minute", { company: r.company, repo: r.repo, err: (e as Error).message });
+          }
         }
-        db.prepare("UPDATE project_repos SET project = ?, product = ? WHERE company = ? AND repo = ?").run(to, productOf(r.repo) ? 1 : 0, r.company, r.repo);
-        log("repo moved to the project the map gives it", { company: r.company, repo: r.repo, from: r.project, to, moved });
+        if (!failed) synced = map;
+      } finally {
+        syncing = false;
       }
-      synced = map;
-    }),
+    },
   };
   return api;
 }

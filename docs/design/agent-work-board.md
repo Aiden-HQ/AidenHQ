@@ -242,11 +242,11 @@ plugin can only read projects).
   takes github.com only, so `local/<name>` repos would not fit. Paperclip keeps the project and the task's `projectId`.
 - **Automatic from repos**: a code host's `pr.opened` fact for a task (backplane's `/v1/facts`, github and codehost-local) calls
   `projects.touch(task, repo)`: the repo's project, made on first sight, set on the task only while it has none (a PR is the signal
-  that a task's work touches a repo; a clone isn't: admission clones every repo a task merely mentions). A failed fill is tried
-  again a minute later, three times.
+  that a task's work touches a repo; a clone isn't: admission clones every repo a task merely mentions). A fill is queued in
+  kernel.db first, so one that fails (Paperclip restarting) is tried again each minute, across kernel restarts.
 - **Products are instance data**: `instance.yaml` `projects:` (a product's name → its repos; compile checks it, setup writes it
   into the grants table). A listed repo belongs to its product's project; any other repo gets a project of its own named after
-  it (in full, `partner/api`, beside another org's `api`). This instance lists AidenHQ, aidenhq-distro and aidenhq-instance under
+  it (in full, `partner/api`, beside another org's `api` or when its short name is a product's). This instance lists AidenHQ, aidenhq-distro and aidenhq-instance under
   "AidenHQ"; nothing in the product names them. Moving a repo into a product later is editing the map: the kernel (`sync`, each
   minute when the map changed) moves the repo and its open tasks and those closed in the last two days (`project_tasks`
   remembers which tasks a repo's PRs touched); older tasks stay, nothing is archived.
