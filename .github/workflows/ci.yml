@@ -77,9 +77,9 @@ jobs:
           (cd scripts && npm ci --ignore-scripts)
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
-        # Runs PR code (`npm ci` and the suites). This job holds no `checks: write` and none of the repository's secrets; its
-        # steps still carry GitHub's own per-run Actions runtime token, which is what the cache service uses, so it is not
-        # token-free. That token cannot write a check or read another repository.
+        # Runs PR code (`npm ci` and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
+        # no `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check; the
+        # read-only token the fetch step above uses is passed to that step alone, and it ends before any PR code runs.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
           TESTED_SHA: ${{ github.sha }}
@@ -140,9 +140,8 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        # Runs PR code (`npm ci` and the suites). This job holds no `checks: write` and none of the repository's secrets; its
-        # steps still carry GitHub's own per-run Actions runtime token, which is what the cache service uses, so it is not
-        # token-free. That token cannot write a check or read another repository.
+        # Runs PR code (`npm ci` and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
+        # no `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
           TESTED_SHA: ${{ github.sha }}
@@ -198,11 +197,30 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TESTED_SHA: ${{ github.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PACKAGES: ${{ needs.checks.outputs.packages }}
           MODULES: ${{ needs.checks.outputs.modules }}
         run: |
           node --input-type=module <<'EOF'
-          const { REPO, RUN_ID, HEAD_SHA, TESTED_SHA, PACKAGES, MODULES } = process.env;
+          const { REPO, RUN_ID, HEAD_SHA, TESTED_SHA, HEAD_REPO, PACKAGES, MODULES } = process.env;
+          // Same-repository pull requests only: a fork PR's head repo differs, and a push has no pull_request head at all, so
+          // this exits before posting anything. The job's `if:` says the same; this is the script's own guard, not a comment.
+          if (!HEAD_SHA || HEAD_REPO !== REPO) { console.log(`not a same-repo pull request (head ${HEAD_REPO ?? "<none>"}): posting no checks`); process.exit(0); }
+          // The plan is the `checks` job's own output and nothing else: the shards' `matrix.entries` are that output, never a
+          // log, the Test step's output or a job summary. Empty means no packages/modules shard ran at all, so nothing posts.
+          // Each prefix parses on its own, so a malformed one is reported without discarding the other's valid checks.
+          const plan = [];
+          for (const [prefix, raw] of [["packages", PACKAGES], ["modules", MODULES]]) {
+            let shards;
+            try { shards = JSON.parse(raw || "[]"); } catch (err) { console.log(`::warning::needs.checks.outputs.${prefix} is not JSON (${err.message}): no ${prefix} checks`); continue; }
+            if (!Array.isArray(shards)) { console.log(`::warning::needs.checks.outputs.${prefix} is not a JSON array: no ${prefix} checks`); continue; }
+            // The shard and its entries are validated here too: `[null]` or an entry without a `dir` would otherwise throw in the
+            // shared posting loop and take the other prefix's checks with it. A bad shard is skipped on its own, never fatal.
+            const ok = shards.filter((s) => s && Number.isInteger(s.shard) && Array.isArray(s.entries)
+              && s.entries.every((e) => e && typeof e.name === "string" && typeof e.dir === "string"));
+            if (ok.length !== shards.length) console.log(`::warning::needs.checks.outputs.${prefix}: ${shards.length - ok.length} malformed shard(s) skipped`);
+            if (ok.length) plan.push([prefix, ok]);
+          }
           const base = "https://api.github.com";
           const headers = { authorization: `Bearer ${process.env.GH_TOKEN}`, accept: "application/vnd.github+json", "content-type": "application/json" };
           const get = async (path) => {
@@ -247,8 +265,8 @@ jobs:
           }
           let posted = 0;
           try {
-          for (const [prefix, plan] of [["packages", PACKAGES], ["modules", MODULES]]) {
-            for (const shard of JSON.parse(plan || "[]")) {
+          for (const [prefix, shards] of plan) {
+            for (const shard of shards) {
               const name = `${prefix} (${shard.shard})`;
               const matches = jobs.filter((j) => j.name === name);
               if (matches.length !== 1) { console.log(`no single ${name} job instance in this run: posting nothing for this shard`); continue; }
@@ -294,8 +312,8 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        # Runs PR code (the board suite). This job holds no `checks: write` and none of the repository's secrets; its steps
-        # still carry GitHub's own per-run Actions runtime token (the cache service's), which cannot write a check.
+        # Runs PR code (the board suite). This workflow passes no token or secret to this step: no `${{ secrets.* }}`, no
+        # `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check.
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
