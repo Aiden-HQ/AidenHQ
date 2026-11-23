@@ -80,8 +80,11 @@ One GitHub issue per defect, filed by the Maintainer (when in `fleet_catalog` an
 
 1. Fingerprint `product-bug:<slug>` (reuse your log's slug).
 2. `task_create` `assignee: maintainer`, marker `product-bug:<slug>`, `dedupe_closed: true`, title `<component>: <symptom>`, a
-   description that opens with the ask below, then what happened, expected, `module`, `version` (the sha the failing run
-   ran under, from `fleet_generation_status`), the pin at filing, `reproduction`, one log line. The issue is public: a name,
+   description that opens with the ask below, then what happened, expected, `module` (a lowercase hyphen slug matching
+   `^[a-z][a-z0-9-]{0,63}$` — `apply-config`, `routine-dispatch`, `task-wake`; the finer component goes in the title and
+   body), `version` (the sha the failing run ran under, from `fleet_generation_status`), the pin at filing, `reproduction`,
+   one log line. `github_product_issue` refuses any other `module` with `Invalid string ... at evidence.module`, so a path,
+   a capitalised name, or two words joined by `/` or a space sends the filing back to be refiled. The issue is public: a name,
    email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`), in the brief's body, title and evidence too
    (name things by role, leave task ids out): the `github_product_issue` card's reviewer holds the post to the brief's text,
    so a literal value there loops the filing.
