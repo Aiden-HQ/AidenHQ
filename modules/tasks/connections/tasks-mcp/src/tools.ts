@@ -1986,7 +1986,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_cancel: {
-    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: any agent's stale or superseded task). Only a task you filed or one assigned to you can be cancelled (a fleet settler: any agent's stale or superseded task): a task the owner created and holds themselves is not yours. Your part of the owner's task stays open for their replies: finish it with task_handoff.",
+    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: any agent's stale or superseded task). Only a task you filed, one assigned to you, or (a fleet settler) any agent's stale or superseded task can be cancelled: a task the owner created and holds themselves is not yours. Your part of the owner's task stays open for their replies: finish it with task_handoff.",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you or one you delegated; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {

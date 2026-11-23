@@ -61,6 +61,6 @@ test("the task_cancel description says the owner's own task is not the agent's t
   const at = tools.indexOf("task_cancel: {");
   assert.notEqual(at, -1, "the tools list has task_cancel");
   const description = /description: "([^"]*)"/.exec(tools.slice(at))?.[1] ?? "";
-  assert.match(description, /Only a task you filed or one assigned to you can be cancelled \(a fleet settler: any agent's stale or superseded task\)/, "cancel is for a task the agent filed or holds, with the settler's exception");
+  assert.match(description, /Only a task you filed, one assigned to you, or \(a fleet settler\) any agent's stale or superseded task can be cancelled/, "cancel is for a task the agent filed or holds, with the settler's exception");
   assert.match(description, /a task the owner created and holds themselves is not yours/, "the owner's own task is theirs");
 });
