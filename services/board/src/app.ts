@@ -1097,7 +1097,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         if (!issue) throw new HttpError(400, "issue=<task>");
         await requireAgentTool(req, "task_approvals");
         const task = await pc.issue(issue).then((i) => i.id, () => undefined);
-        return { approvals: task ? (await cardsOf("recent", { task, limit: 50 })).map(approvalView) : [] };
+        // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
+        // wakes it must see it, so the read a rule depends on never filters the card out.
+        return { approvals: task ? (await cardsOf("recent", { task, limit: 50, tier0: true })).map(approvalView) : [] };
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.

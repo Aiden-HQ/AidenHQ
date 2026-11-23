@@ -7,12 +7,13 @@ import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { asAgent } from "./caller.js";
+import { card, fakeRecords } from "./fake-records.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
 // The grants table setup writes: the Researcher may change the board; the Scout holds the tool but not the role.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, beta: { key: "beta", roles: [], tools: { paperclip_tasks: ["task_file_upload"] } } } }));
+writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, engy: { key: "engineer", roles: [], tools: { paperclip_tasks: ["task_approvals"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, beta: { key: "beta", roles: [], tools: { paperclip_tasks: ["task_file_upload"] } } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 describe("internal listener", () => {
@@ -21,7 +22,7 @@ describe("internal listener", () => {
   const issue = { id: "11111111-1111-1111-1111-111111111111", identifier: "PEN-1", title: "T", description: "", status: "todo", priority: "medium", assigneeUserId: "me-1", assigneeAgentId: null, assigneeAdapterOverrides: null, createdAt: "", updatedAt: "" };
   const pc = {
     me: async () => "me-1",
-    agents: async () => ["ra", "scout", "beta"].map((id) => ({ id, name: id })),
+    agents: async () => ["ra", "scout", "beta", "engy"].map((id) => ({ id, name: id })),
     labels: async () => [],
     company: async () => ({ issuePrefix: "PEN" }),
     issue: async () => issue,
@@ -65,6 +66,41 @@ describe("internal listener", () => {
     expect((await refused("/internal/issues/PEN-1/recurring", { action: "stop" }, {})).error).toMatch(/^only an agent granted task_recurring/); // not granted
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { aud: "ops" }))).error).toMatch(/^refused: the caller assertion is for ops/);
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { exp: 1 }))).error).toMatch(/expired/);
+  });
+
+  it("a task's approval read includes the Tier 0 merge card the publish rule waits on", async () => {
+    // A merge the fleet files for a green PR in the agents org is Tier 0: a read that drops it would tell the run no merge
+    // card exists, and nothing would wake the task.
+    const records = fakeRecords([
+      card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "used", outcome: "applied", outcomeText: "merged-prs: []" }),
+      card({ id: "k-0000000000000002", issueId: "another-task", identifier: "PEN-9", action: "merge", tier: 0, state: "pending" }),
+    ]);
+    const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
+    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
+    const port2 = (board.address() as AddressInfo).port;
+    const get = (issueParam: string) =>
+      new Promise<{ status: number; json: () => Promise<unknown> }>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port: port2, method: "GET", path: `/internal/approvals?issue=${issueParam}`, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve({ status: res.statusCode!, json: async () => JSON.parse(text) }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    const other9 = { ...issue, id: "another-task", identifier: "PEN-9", title: "Other" };
+    const resolve = (pc as any).issue;
+    (pc as any).issue = async (ref: string) => (ref === other9.identifier || ref === other9.id ? other9 : issue);
+    try {
+      const mine = (await (await get(issue.identifier)).json()) as { approvals: { id: string }[] };
+      expect(mine.approvals.map((a) => a.id)).toEqual(["k-0000000000000001"]);
+      // Another task's card is never in this task's read, whatever its tier.
+      const other = (await (await get("PEN-9")).json()) as { approvals: { id: string }[] };
+      expect(other.approvals.map((a) => a.id)).toEqual(["k-0000000000000002"]);
+    } finally {
+      (pc as any).issue = resolve;
+      board.close();
+    }
   });
 
   it("serves only /internal/ routes: not the user's API or the page", async () => {

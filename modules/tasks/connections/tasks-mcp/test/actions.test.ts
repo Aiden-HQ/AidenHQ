@@ -136,3 +136,29 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   parse(await priv.call("task_approvals", { issue: "WOR-4" }));
   assert.deepEqual(asked, ["WOR-4"], "private reads: any task it names");
 });
+
+test("task_approvals with no directory entry for the caller reads only the run's own task", async () => {
+  const asked = [];
+  const approvalBoard = (req, res) => {
+    req.resume();
+    req.on("end", () => {
+      asked.push(new URL(req.url ?? "/", "http://x").searchParams.get("issue"));
+      res.setHeader("content-type", "application/json").end(JSON.stringify({ approvals: [] }));
+    });
+  };
+  const handler = (req, res) => {
+    req.resume();
+    req.on("end", () => {
+      const send = (x) => (res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
+      if ((req.url ?? "") === "/api/agents/me") return send({ id: "me", name: "Kai" });
+      if ((req.url ?? "").startsWith("/api/companies/")) return send({ defaultResponsibleUserId: "owner" });
+      send({});
+    });
+  };
+  // The caller's grant is missing from the directory (a fresh table, a stale cache): its scope can't be established.
+  const unknown = bridge({ handler, board: approvalBoard, agents: {}, task: "cur" });
+  assert.match(parse(await unknown.call("task_approvals", { issue: "WOR-4" })).error, /no entry for this caller/);
+  assert.deepEqual(asked, [], "refused before the board is asked");
+  parse(await unknown.call("task_approvals", {}));
+  assert.deepEqual(asked, ["cur"], "no issue: still the run's own task");
+});

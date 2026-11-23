@@ -1298,8 +1298,10 @@ const TOOLS: Record<string, Tool> = {
       const target = issue ?? CURRENT();
       if (!target) throw new Error("no current task");
       // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task.
+      // A caller the directory doesn't hold has no entry to establish its scope, so a named task is refused, never read.
       const me = dirAgents()[cx().caller.agent];
-      if (issue && me?.profile === "engineer" && me.private_reads !== true) throw new Error("Refused: without private reads you read only the task this run is working on: leave out `issue`.");
+      if (issue && me == null) throw new Error("Refused: the agent directory has no entry for this caller, so only the task this run is working on is readable: leave out `issue`.");
+      if (issue && me.profile === "engineer" && me.private_reads !== true) throw new Error("Refused: without private reads you read only the task this run is working on: leave out `issue`.");
       const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(target)}`);
       return {
         approvals: approvals.map((a: Json) => ({ id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, ...(a.outcomeText ? { outcomeText: String(a.outcomeText).slice(0, 300) } : {}), createdAt: a.createdAt })),
