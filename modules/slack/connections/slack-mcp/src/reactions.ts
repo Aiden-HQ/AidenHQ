@@ -342,6 +342,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // Cursor pagination is the modern shape (and the only one without Slack's 100-page ceiling): ask for it first, with
   // `limit` as the page size, and fall back to `count`+`page` only when Slack answers numbered pages instead.
   let numbered: number | undefined;
+  // The size numbered pages continue at. It starts as the size we asked for, and drops to a smaller size Slack reports
+  // having used: a smaller page only re-reads items (deduplicated by identity), while a larger one could skip the gap.
+  let numberedSize = 0;
   // The upstream page size is the caller's `limit` when that is larger than the default (so a big ask reads fewer pages),
   // and never smaller than the default: a small result limit must not turn one scan into hundreds of one-item requests.
   // It is fixed for the whole walk and carried in every continuation, so page boundaries don't move.
@@ -361,7 +364,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // The page-size parameter follows the shape: `limit` with a cursor, `count` with a numbered page (Slack's two
     // paginations take different names for it). `count` rides along on the first request too, so a numbered answer
     // starts at the size we chose and every later page keeps the same boundaries rather than Slack's default.
-    const paging: Record<string, string> = numbered !== undefined ? { count: String(pageSize), page: String(numbered) } : { limit: String(pageSize), count: String(pageSize), ...(cursor ? { cursor } : {}) };
+    const paging: Record<string, string> = numbered !== undefined ? { count: String(numberedSize || pageSize), page: String(numbered) } : { limit: String(pageSize), count: String(pageSize), ...(cursor ? { cursor } : {}) };
     const r = await get("reactions.list", { full: "true", ...paging });
     // A later page failing after the caller's limit was already met must not throw away matches this answer holds: the
     // set read so far is real, and the continuation says it isn't complete. With nothing new to hand back, though, the
@@ -414,8 +417,13 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // No cursor: Slack's other shape is numbered pages. More of them is not the end of the set.
     const pages = Number(json.paging?.pages), current = Number(json.paging?.page);
     if (Number.isFinite(pages) && pages > current) {
-      if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
-      else numbered++;
+      if (numbered === undefined) {
+        // Continue at the size Slack says it used when that is smaller than the one we asked for: never larger, since a
+        // bigger jump could skip items, while a smaller one only re-reads some (deduplicated by channel + ts).
+        const used = Number(json.paging?.count ?? json.paging?.per_page);
+        numberedSize = Number.isFinite(used) && used > 0 ? Math.min(pageSize, Math.floor(used)) : pageSize;
+        numbered = Number.isFinite(current) ? current + 1 : 2;
+      } else numbered++;
       continue;
     }
     return { ok: true, messages, nextCursor: null };
