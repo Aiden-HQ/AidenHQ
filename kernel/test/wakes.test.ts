@@ -929,6 +929,46 @@ test("a done window whose later page fails leaves the cursor so the next poll re
   assert.deepEqual(w.rows("chat-209"), ["comment:c1 open"]);
 });
 
+test("a truncated window resumes past its last page instead of rereading it, and still finds a later reply", async () => {
+  const w = world();
+  w.issue("seed", { status: "todo" });
+  await w.wakes.poll();
+  w.tick(60_000);
+  for (let i = 0; i < 210; i++) w.issue(`chat-${String(i).padStart(3, "0")}`, { status: "done", labels: [{ name: "chat" }], statusVersion: 2, updatedAt: "2026-11-18T10:01:00.000Z", completedAt: "2026-11-18T10:01:00.000Z" });
+  w.db.prepare("DELETE FROM wakes").run();
+  w.tick(5000);
+  w.fail.donePages = 1;
+  await w.wakes.poll();
+  delete w.fail.donePages;
+  const cursor = w.db.prepare("SELECT at, after FROM chat_cursor").get();
+  assert.equal(cursor.after, "chat-199", "the last id read is kept, so the next pass resumes past it");
+  w.comment("chat-209", "c1", { authorUserId: "u1" });
+  await w.wakes.poll();
+  assert.equal(w.issues["chat-209"].status, "todo", "the resumed pass reached the reply");
+  assert.equal(w.db.prepare("SELECT after FROM chat_cursor").get().after, null, "a complete pass clears the resume point");
+});
+
+test("a reply older than a newer close does not reopen the chat again", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  // The first close answers c1: the scan's read shows done with c1 after it.
+  const first = "2026-11-18T10:00:06.000Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: first, completedAt: first });
+  // Before the scan's pre-write read, the chat was reopened and finished again by that very reply: c1 now predates the close.
+  const second = "2026-11-18T10:05:00.000Z";
+  w.fail.beforeRead = { chat: true };
+  w.tick(60_000);
+  const seen = { ...w.issues.chat };
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 3, updatedAt: second, completedAt: second });
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  await w.wakes.scan(seen, { source: "poll" });
+  assert.equal(w.issues.chat.status, "done", "the newer turn answered c1: nothing to reopen");
+  assert.deepEqual(w.rows("chat"), [], "and no wake on the closed chat");
+});
+
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
   const w = world();
   w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });

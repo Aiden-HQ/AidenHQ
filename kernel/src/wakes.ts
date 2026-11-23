@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NO
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
   state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
 CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS chat_cursor (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);`;
+CREATE TABLE IF NOT EXISTS chat_cursor (agent TEXT PRIMARY KEY, at INTEGER NOT NULL, after TEXT);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
@@ -350,6 +350,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         return;
       }
       if (String(fresh.json?.status) !== "done") { issue = { ...issue, ...(fresh.json as Issue) }; q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id); }
+      else if (!ownerWordAfter(Math.max(finishedAt, ms((fresh.json as Issue).completedAt ?? undefined)))) {
+        // The chat closed again after this word: the read is from before that, and the word it carries was already answered by
+        // the newer turn. Reopening on it would put the chat in todo with nothing to run, so it stays closed.
+        issue = { ...issue, ...(fresh.json as Issue) };
+        q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+        log("wake chat reopen skipped: a newer close than the reply", { task: issue.id });
+      }
       else {
         const p = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo" });
         // A failed reopen leaves this scan's cursor where it was and the task on the poll's retry list, so the next scan reads
@@ -660,10 +667,11 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
    * turn failed (its company unknown, a list or a chat read broken) holds only its own window, never a colleague's.
    */
   const chatSince = (agent: string) => {
-    const row = q("SELECT at FROM chat_cursor WHERE agent = ?").get(agent) as { at: number } | undefined;
-    return row ? row.at : now() - 10 * 60_000;
+    const row = q("SELECT at, after FROM chat_cursor WHERE agent = ?").get(agent) as { at: number; after: string | null } | undefined;
+    return row ?? { at: now() - 10 * 60_000, after: null };
   };
-  const setChatSince = (agent: string, at: number) => q("INSERT INTO chat_cursor (agent, at) VALUES (?, ?) ON CONFLICT(agent) DO UPDATE SET at = excluded.at").run(agent, at);
+  /** Where the agent's pass over its window stands: the window's start, and the last id read when an earlier poll was cut short. */
+  const setChatSince = (agent: string, at: number, after: string | null) => q("INSERT INTO chat_cursor (agent, at, after) VALUES (?, ?, ?) ON CONFLICT(agent) DO UPDATE SET at = excluded.at, after = excluded.after").run(agent, at, after);
   /** The wait-park reconcile, once idle.ts has it (it is made after this inbox): a task's own event re-parks a restored wait at
    *  once, so the recovery sweep's tick never gets to see a settled wait in a status it scans. */
   let settleOn: ((issue: Issue) => Promise<unknown>) | undefined;
@@ -701,6 +709,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         // The cursor is this agent's own, so a failure below holds only its window: every other agent still advances, and the
         // chats this one never listed stay inside its next `updatedSince`.
         let company = companies.get(agent);
+        // The pass over the agent's window: where it started, whether it reached the end, and the last id it fully read. A pass
+        // cut short keeps its start (nothing past it is skipped) and resumes past the ids it did read.
+        const window = chatSince(agent);
+        let complete = false, readTo: string | null = null;
         try {
           if (!company) {
             const a = await owner("GET", `/api/agents/${encodeURIComponent(agent)}`);
@@ -724,31 +736,39 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           // reopen shifting offset pages would skip the row that slid into the gap. The id cursor is stable under exactly that;
           // every page is collected before any scan, so this poll's own writes cannot move it either.
           const finished: Issue[] = [];
-          let afterId: string | undefined, complete = false;
+          let afterId: string | undefined = window.after ?? undefined;
           for (let page = 0; page < 25; page++) {
-            const query = new URLSearchParams({ status: "done", limit: "200", assigneeAgentId: agent, updatedSince: iso(chatSince(agent)), sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) });
+            const query = new URLSearchParams({ status: "done", limit: "200", assigneeAgentId: agent, updatedSince: iso(window.at), sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) });
             const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
             if (d.status !== 200 || !Array.isArray(d.json)) throw new Error(`control plane GET done issues → ${d.status}`);
             const rows = d.json as Issue[];
             finished.push(...rows);
+            readTo = rows.at(-1)?.id ?? readTo;
             if (rows.length < 200) { complete = true; break; }
             afterId = rows.at(-1)?.id;
             if (!afterId) break;
           }
-          // A traversal cut short at its page budget, or a chat whose scan failed, is not the whole window: the cursor stays
-          // where it was, so the next poll reads the same window again rather than passing the comments it did not reach.
-          if (!complete) log("wake chat window truncated", { agent, company });
+          // A traversal cut short at its page budget, or a chat whose scan failed, is not the whole window. Its start stays, and
+          // the last id read is kept so the next poll resumes past it: the page budget never strands the chats beyond it, and a
+          // reply that lands during the pass is in the next window (its `updatedAt` is at or after this window's start).
+          let scanned = true;
           for (const issue of finished) {
             if (listed.has(issue.id) || !isChat(issue)) continue;
             listed.add(issue.id);
             await scan(issue, { source: "poll" }).catch((e: Error) => {
-              complete = false;
+              scanned = false;
+              readTo = null; // this chat's comment may be anywhere in the window: reread it whole
               q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
               log("wake scan failed", { task: issue.id, err: e.message });
             });
           }
-          if (complete) setChatSince(agent, polledAt);
+          if (!complete) log("wake chat window truncated", { agent, company, reads_to: readTo });
+          if (complete && scanned) setChatSince(agent, polledAt, null);
+          else setChatSince(agent, window.at, readTo);
         } catch (e) {
+          // Whatever was read before the failure is not skipped: the window keeps its start, and a resume point only past ids
+          // this pass did read (a failed page leaves none beyond it).
+          setChatSince(agent, window.at, readTo);
           log("wake poll failed", { agent, err: (e as Error).message });
         }
       }
