@@ -13,7 +13,7 @@ function load(): Promise<CatalogModel[]> {
   if (kept) return Promise.resolve(kept);
   if (Date.now() - failedAt < 60_000) return Promise.resolve([]);
   return (loading ??= api.modelCatalog().then(
-    (r) => (kept = r.models),
+    (r) => (r.models.length ? (kept = r.models) : ((failedAt = Date.now()), [])), // an empty list is a gateway still loading: asked again
     () => ((failedAt = Date.now()), []),
   ).finally(() => (loading = undefined)));
 }

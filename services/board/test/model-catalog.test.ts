@@ -1,6 +1,6 @@
 // The model picker's list rules (src/model-catalog.ts): older versions collapse, engines filter, search finds the old one.
 import { describe, expect, it } from "vitest";
-import { family, listing, type CatalogModel } from "../src/model-catalog";
+import { family, listing, type CatalogModel } from "../src/model-catalog.js";
 
 const m = (id: string, created: number, o: Partial<CatalogModel> = {}): CatalogModel => ({ id, name: id, provider: id.replace(/^~/, "").split("/")[0]!, created, context: 200000, in: 1, out: 2, tools: true, reasoning: false, ...o });
 const catalog = [

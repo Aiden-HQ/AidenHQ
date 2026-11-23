@@ -202,7 +202,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
               ))}
               <div className="ui-field">
                 <span className="ui-field-label">Model</span>
-                <ModelPicker label={`${r.title}: model`} value={model} catalog={catalog} recommended={models} accepts={TOOL_MODELS} none="The agent's model" onChange={(m) => (setModel(m), setReview(false))} />
+                <ModelPicker label={`${r.title}: model`} value={model} catalog={catalog} recommended={models} accepts={TOOL_MODELS} placeholder="The agent's model" onChange={(m) => (setModel(m), setReview(false))} />
               </div>
               {review && items.length ? (
                 <ChangePreview items={items} was={was} onCancel={() => setReview(false)} onDone={() => setReview(false)} />
