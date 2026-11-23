@@ -1868,7 +1868,7 @@ test("push_rounds 1: a push superseded mid-review isn't a round; after the one p
   w.finish(2, { findings: [{ id: "f2", severity: "important", path: "b.ts", line: 1, title: "t2", why: "w", evidence: "e", fix_brief: "b" }] }); await w.tick();
   w.pr(2, sha("5")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.equal(w.started.length, 3, "the cap is reached: 5 gets no push review");
-  assert.ok(w.acks.some((a) => a.state === "skipped" && /^push review cap reached/.test(a.why)));
+  assert.equal(reasonOf(w.acks.find((a) => a.state === "skipped").why), "push_cap", "the notice carries its fixed reason");
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("5"))), ["findings"], "the open findings hold the merge; nothing waits on a review of 5");
   for (const id of ["f1", "f2"]) w.engine.resolve({ repo: REPO, number: 2, id, word: "fixed", reason: "fixed in 5", by: "agent:engineer" });
   await w.tick();

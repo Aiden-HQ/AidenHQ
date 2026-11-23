@@ -118,11 +118,12 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
 }
 
 /** A reason as the notice's fixed words name it (seams' `why` starts with its key): a skip's, or a refused post's. */
-export function reasonOf(why: string | undefined): "post_refused" | "draft" | "fork" | "superseded" | "stopped" | undefined {
+export function reasonOf(why: string | undefined): "post_refused" | "draft" | "fork" | "superseded" | "stopped" | "push_cap" | undefined {
   const w = String(why ?? "");
   // A post the kernel refused after its review ran (refused, stale, rejected): the run row keeps the reason, the PR's notice
   // says in fixed words that this head's review was not posted. Checked first: its words are never read as a skip's.
   if (/^not posted:/.test(w)) return "post_refused";
+  if (/^push review cap reached:/.test(w)) return "push_cap";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? (key as "draft" | "fork" | "superseded" | "stopped") : undefined;
 }

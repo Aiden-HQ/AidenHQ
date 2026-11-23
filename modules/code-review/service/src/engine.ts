@@ -338,9 +338,9 @@ export function createEngine(d: EngineDeps) {
     const due = o.due ?? now();
     mirrorDue = true;
     if (kind === "auto") {
-      // The push they were for is superseded; a retry (it already ran once, and may have spent) stays as a skipped run, so its
-      // head's batch never reads as finished (pushRounds).
-      for (const q of all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued' AND (billed_prior > 0 OR attempts > 0)", p.repo, p.number)) skipQueued(q.id, "superseded: a newer push");
+      // The push they were for is superseded; a run of a batch that already started (a retry, or the sibling of a run that ran)
+      // stays as a skipped run, so its head's batch never reads as finished (pushRounds).
+      for (const q of all<RunRow>("SELECT * FROM runs q WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued' AND (billed_prior > 0 OR attempts > 0 OR EXISTS (SELECT 1 FROM runs b WHERE b.repo = q.repo AND b.number = q.number AND b.batch = q.batch AND b.status != 'queued'))", p.repo, p.number)) skipQueued(q.id, "superseded: a newer push");
       run("DELETE FROM runs WHERE repo = ? AND number = ? AND kind = 'auto' AND status = 'queued'", p.repo, p.number);
     }
     const batch = `b-${randomBytes(6).toString("hex")}`;
