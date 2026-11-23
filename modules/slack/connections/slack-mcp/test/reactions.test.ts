@@ -176,9 +176,17 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true }, { authorization: "Bearer x", userId: ME }, { fetchImpl: unclassified })).toMatchObject({ ok: false });
   });
 
-  it("is not complete when Slack answers numbered paging with pages left and no cursor", async () => {
-    const numbered = (async () => Response.json({ ok: true, items: [item("C1", "1.1")], paging: { count: 100, total: 250, page: 1, pages: 3 } })) as unknown as typeof fetch;
-    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered })).toMatchObject({ ok: false });
+  it("follows numbered pages when Slack answers them instead of a cursor, and only then calls the set complete", async () => {
+    const asked: string[] = [];
+    const numbered = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      asked.push(u.searchParams.get("page") ?? "");
+      const n = Number(u.searchParams.get("page") ?? "1");
+      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 1, total: 2, page: n, pages: 2 } });
+    }) as unknown as typeof fetch;
+    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered });
+    expect(scan).toMatchObject({ ok: true, nextCursor: null, messages: [{ ts: "1.0" }, { ts: "2.0" }] });
+    expect(asked).toEqual(["1", "2"]);
   });
 
   it("stops at its deadline with what it has, so it never outlives the caller", async () => {
@@ -324,6 +332,7 @@ describe("interception through the proxy", () => {
       auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
       log,
       readKey: "rd",
+      reads: ["slack_search_public", "slack_search_public_and_private"],
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
@@ -334,6 +343,9 @@ describe("interception through the proxy", () => {
     const body = (await res.json()) as any;
     expect(body.result).toMatchObject({ isError: true });
     expect(payload(body)).toMatchObject({ error: "refused" });
+    // A tools/list on the read endpoint is not a tool call: it reaches the proxy and lists the reads it serves.
+    const list = await fetch(`${strictBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+    expect(((await list.json()) as any).result.tools.map((t: any) => t.name)).toEqual(["slack_search_public", "slack_search_public_and_private"]);
     strict.close();
   });
 
@@ -401,6 +413,13 @@ describe("interception through the proxy", () => {
     expect(body.result.isError).toBe(true);
     expect(body.result.structuredContent).toMatchObject({ error: "needs_owner" });
     none.close();
+  });
+
+  it("consults the proxy's own read admission: a read-tagged, read-only tool is served; a read-tagged write is refused", async () => {
+    // The shared proxy advertises both search tools read-only and read-tagged, so the probe must find them.
+    const res = await fetch(`${base}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+    const listed = (await res.json()) as any;
+    expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["slack_search_public", "slack_search_public_and_private"]);
   });
 
   it("passes ordinary searches through exactly, and the proxy still applies the argument hook", async () => {
