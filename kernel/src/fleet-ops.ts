@@ -115,7 +115,7 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
   async function resumable(key: string, paused: boolean, name: string): Promise<{ satisfied?: string }> {
     const mine = row(key);
     if (!paused) {
-      if (mine) db.prepare("DELETE FROM fleet_pauses WHERE target = ?").run(key);
+      if (mine) db.prepare("DELETE FROM fleet_pauses WHERE target = ? AND record = ?").run(key, mine.record);
       return { satisfied: `${name} isn't paused (someone resumed it)` };
     }
     if (!mine) throw refuse(`${name} wasn't paused by the Steward: resuming it is the owner's (or the chief of staff's)`, 403);
@@ -198,10 +198,11 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
      */
     async pauses() {
       const out: { target: string; kind: string; name: string; at: string }[] = [];
-      for (const p of db.prepare("SELECT target, kind, name, at FROM fleet_pauses ORDER BY at").all() as Row[]) {
+      for (const p of db.prepare("SELECT target, kind, name, at, record FROM fleet_pauses ORDER BY at").all() as Row[]) {
         const [kind, id] = [p.target.slice(0, p.target.indexOf(":")), p.target.slice(p.target.indexOf(":") + 1)];
         const paused = await (kind === "routine" ? routine(id).then((r) => pausedNow(r.status)) : agent(id).then(agentHeld)).catch((e: { status?: number }) => (e.status === 422 ? false : true));
-        if (!paused) { db.prepare("DELETE FROM fleet_pauses WHERE target = ?").run(p.target); continue; }
+        // Only the row that was read: a pause the Steward made again meanwhile has its own record and stays.
+        if (!paused) { db.prepare("DELETE FROM fleet_pauses WHERE target = ? AND record = ?").run(p.target, p.record); continue; }
         out.push({ target: p.target, kind: p.kind, name: p.name, at: p.at });
       }
       return out;

@@ -5,7 +5,7 @@ const REPO = "acme/distro";
 const RUN = "https://github.com/acme/distro/actions/runs/900";
 
 /** GitHub as the graduation check reads it: a latest release, a pending candidate, its tag run and the last graduation run. */
-function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusion: string }[]; gradConclusion?: string; tagConclusion?: string; older?: boolean; olderRejectedBy?: boolean; moved?: boolean; noIssue?: boolean } = {}) {
+function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusion: string }[]; gradConclusion?: string; tagConclusion?: string; older?: boolean; olderRejectedBy?: boolean; moved?: boolean; noIssue?: boolean; oldIssue?: boolean } = {}) {
   const patched: unknown[] = [];
   const releases = [
     { id: 1, tag_name: "2026.11.20", prerelease: false, draft: false, body: "" },
@@ -20,7 +20,7 @@ function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusi
     [`/repos/${REPO}/actions/runs/500`]: { path: ".github/workflows/release.yml", head_branch: "2026.11.22", head_sha: "a".repeat(40), status: "completed", conclusion: o.tagConclusion ?? "success" },
     [`/repos/${REPO}/git/ref/tags/2026.11.22`]: { object: { type: "tag", sha: "t".repeat(40) } },
     [`/repos/${REPO}/git/tags/${"t".repeat(40)}`]: { object: { type: "commit", sha: o.moved ? "b".repeat(40) : "a".repeat(40) } },
-    [`/repos/${REPO}/issues?state=all&creator=github-actions%5Bbot%5D&per_page=100`]: o.noIssue ? [] : [{ title: "Graduation of 2026.11.22 didn't finish" }],
+    [`/repos/${REPO}/issues?state=all&creator=github-actions%5Bbot%5D&per_page=100`]: o.noIssue ? [] : [{ title: "Graduation of 2026.11.22 didn't finish", body: `2026.11.22 wasn't graduated or rejected.\n\nRun: ${o.oldIssue ? "https://github.com/acme/distro/actions/runs/800" : RUN}` }],
     [`/repos/${REPO}/actions/runs/500/jobs?per_page=100`]: { jobs: [{ name: "publish", conclusion: "success" }] },
     [`/repos/${REPO}`]: { default_branch: "main" },
     [`/repos/${REPO}/actions/workflows/graduate.yml/runs?branch=main&status=completed&per_page=1`]: { workflow_runs: [{ id: 900, html_url: RUN, conclusion: o.gradConclusion ?? "failure", created_at: "2026-11-23T00:00:00Z" }] },
@@ -56,6 +56,7 @@ it("refuses when the candidate's own checks failed, it never finished, its relea
     github({ olderRejectedBy: true }),
     github({ moved: true }),
     github({ noIssue: true }),
+    github({ oldIssue: true }),
   ];
   for (const g of cases) await expect(graduate(g.rest, REPO, "2026.11.22")).rejects.toThrow();
   expect(cases.every((g) => g.patched.length === 0)).toBe(true);

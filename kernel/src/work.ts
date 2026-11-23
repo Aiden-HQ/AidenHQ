@@ -15,7 +15,7 @@
 //                            five costliest components and subjects; the Fleet Steward's scorecards and spend check; each record says
 //                            whether it is a `judged` rejection: the AI reviewer's, not code's)
 //   GET /v1/work?generations=1  the host's apply generations: the current product pin and the last 20 applies (generations.ts)
-//   GET /v1/work?owner_cards=1[&after=<record id>][&limit=<n>]  the cards that reached the owner, newest activity first, a page at
+//   GET /v1/work?owner_cards=1[&after=<record id>][&limit=<n>]  the cards that reached the owner, newest first (by when they did), a page at
 //                            a time (default 20, at most 100; `next` is the id to pass as `after`): what interrupted the owner, for
 //                            the Fleet Steward's daily interruption pass. The card's sentence and who filed it, never its args.
 //   GET /v1/work?pauses=1    the Fleet Steward's open pauses (fleet-ops.ts): the detector keeps each one an incident
@@ -23,7 +23,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
 import { MALICE } from "./tier.ts";
-import { OWNER_SQL, type Records } from "./records.ts";
+import type { Records } from "./records.ts";
 
 /** Job duration buckets, seconds: a quick reply to a two-hour build. */
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
@@ -117,17 +117,18 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
     generations: () => fleetGenerations(generationsFile),
     pauses: async () => ({ pauses: await pauses() }),
     /**
-     * The cards that reached the owner: filed at Tier 2, waiting on them now, or decided by them (a card the reviewer put to
-     * them later included), newest activity first, `limit` a page from after record `after`.
+     * The cards that reached the owner (Tier 2: filed at the owner, or put to them by the reviewer), by when they reached
+     * them (the reviewer's escalation fact, else the filing), newest first, `limit` a page from after record `after`.
      */
     ownerCards(after: string | undefined, limit: number) {
-      const theirs = `(tier = 2 OR state = 'owner' OR (${OWNER_SQL}))`;
-      const keyset = after ? " AND (updated_at, rowid) < (SELECT updated_at, rowid FROM records WHERE id = ?)" : "";
-      const got = rows(`SELECT id, kind, state, task, identifier, requester, card, decided_by, created_at, decided_at, updated_at FROM records WHERE ${theirs}${keyset} ORDER BY updated_at DESC, rowid DESC LIMIT ?`, ...(after ? [after] : []), limit + 1);
+      const reached = "COALESCE((SELECT f.at FROM facts f WHERE f.subject = 'record:' || r.id AND f.type = 'record.decided' AND f.version = 'reviewer:owner' ORDER BY f.seq LIMIT 1), r.created_at)";
+      const cte = `WITH c AS (SELECT r.id, r.kind, r.state, r.task, r.identifier, r.requester, r.card, r.decided_by, r.created_at, r.decided_at, ${reached} AS reached FROM records r WHERE r.tier = 2)`;
+      const keyset = after ? " WHERE (reached, id) < ((SELECT reached FROM c WHERE id = ?), ?)" : "";
+      const got = rows(`${cte} SELECT * FROM c${keyset} ORDER BY reached DESC, id DESC LIMIT ?`, ...(after ? [after, after] : []), limit + 1);
       const cards = got.slice(0, limit).map((r) => {
         const who = JSON.parse(r.requester || "{}") as { key?: string; module?: string; name?: string };
         const card = JSON.parse(r.card || "{}") as { sentence?: string; reason?: string };
-        return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, requester: who.key || who.module || who.name || null, sentence: card.sentence ?? null, reason: card.reason ?? null, decided_by: r.decided_by ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null, updated_at: r.updated_at };
+        return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, requester: who.key || who.module || who.name || null, sentence: card.sentence ?? null, reason: card.reason ?? null, decided_by: r.decided_by ?? null, reached_owner_at: r.reached, created_at: r.created_at, decided_at: r.decided_at ?? null };
       });
       return { cards, next: got.length > limit ? cards.at(-1)!.id : null };
     },

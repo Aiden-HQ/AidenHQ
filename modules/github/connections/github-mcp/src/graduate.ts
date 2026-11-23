@@ -10,7 +10,8 @@
 //   3. the latest completed graduation run (graduate.yml, on the default branch, started after the candidate was published)
 //      failed before the candidate stage, and it was this candidate's run: no other release's notes name that run (a run that
 //      judged an older cut marks that one), and either its `select` job failed (a baseline that can't prepare the
-//      candidate), or its `reject` job ran to success, opened its "Graduation of <tag> didn't finish" issue for this tag, and
+//      candidate), or its `reject` job ran to success, opened its "Graduation of <tag> didn't finish" issue for this tag naming
+//      that run (`Run: <url>`), and
 //      marked the candidate neither `graduation: failed` (its own checks failed) nor `graduation: incomplete <that run>` (it
 //      reached the candidate and never finished). That is graduate.mjs onFailure's own verdict that the failure wasn't the
 //      candidate's.
@@ -71,8 +72,8 @@ export async function graduationCheck(rest: Rest, repo: string, tag: string): Pr
   const bootstrap = job("select")?.conclusion === "failure";
   const issues: any[] = bootstrap ? [] : await get(rest, `/repos/${repo}/issues?state=all&creator=${encodeURIComponent("github-actions[bot]")}&per_page=100`);
   const judged = job("reject")?.conclusion === "success" && !String(rel.body ?? "").split("\n").includes(`graduation: incomplete ${run.html_url}`)
-    && issues.some((i) => !i.pull_request && i.title === `Graduation of ${tag} didn't finish`);
-  if (!bootstrap && !judged) throw new GitHubRefused(`graduation run ${run.id} didn't fail before the candidate stage (or its verdict wasn't recorded): ${tag} stays a pre-release`);
+    && issues.some((i) => !i.pull_request && i.title === `Graduation of ${tag} didn't finish` && String(i.body ?? "").includes(`Run: ${run.html_url}`));
+  if (!bootstrap && !judged) throw new GitHubRefused(`graduation run ${run.id} isn't shown to have failed ${tag} before its candidate stage (its reject job's "Graduation of ${tag} didn't finish" issue names another run, or none): ${tag} stays a pre-release. When an older open issue for ${tag} names an earlier run, close it: the next graduation run opens a new one naming itself.`);
   return { release: { id: rel.id, body: String(rel.body ?? "") }, run: run.html_url };
 }
 
