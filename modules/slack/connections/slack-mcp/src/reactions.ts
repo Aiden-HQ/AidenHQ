@@ -201,9 +201,11 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     return pub;
   };
 
+  // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives.
+  let numbered = plan.cursor ? undefined : 1;
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
-    const r = await get("reactions.list", { full: "true", limit: String(plan.limit ?? DEFAULT_LIMIT), ...(cursor ? { cursor } : {}) });
+    const r = await get("reactions.list", { full: "true", limit: String(plan.limit ?? DEFAULT_LIMIT), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
     if (!r.ok) return r;
     const { json } = r;
     for (const item of Array.isArray(json.items) ? json.items : []) {
@@ -220,14 +222,20 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       messages.push(message);
     }
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
-    // Numbered paging is the other shape Slack answers with: more pages there is not the end of the set either.
-    const numbered = json.paging && Number(json.paging.pages) > Number(json.paging.page);
-    if (!next) {
-      if (numbered) return { ok: false, detail: "Slack reported more numbered pages than the cursor continues" };
-      return { ok: true, messages, nextCursor: null };
+    if (next) {
+      if (cursors.has(next)) return { ok: true, messages, nextCursor: next }; // a repeated cursor: not the end of the set
+      cursor = next;
+      numbered = undefined;
+      continue;
     }
-    if (cursors.has(next)) return { ok: true, messages, nextCursor: next }; // a repeated cursor: not the end of the set
-    cursor = next;
+    // No cursor: Slack's other shape is numbered pages. More of them is not the end of the set.
+    const pages = Number(json.paging?.pages), current = Number(json.paging?.page);
+    if (Number.isFinite(pages) && pages > current) {
+      if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
+      else numbered++;
+      continue;
+    }
+    return { ok: true, messages, nextCursor: null };
   }
   return { ok: true, messages, nextCursor: cursor };
 }
