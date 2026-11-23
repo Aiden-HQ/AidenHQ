@@ -31,6 +31,9 @@ const BODY_LIMIT = 8 * 1024 * 1024;
 // Slack's errors that mean the sign-in itself is refused, not the read. `missing_scope` is not one of them: the sign-in
 // works, it just lacks one permission, and the kernel records that as a partial cause, never a Slack outage.
 const AUTH_ERROR = /invalid_auth|not_authed|token_expired|token_revoked|account_inactive/;
+// A permission refusal can't be fixed by following a cursor, so it is never turned into a continuation: it stays a failure
+// that names the cause, with any verified matches riding along, rather than an answer that only looks short by chance.
+const PERMISSION_ERROR = /^(missing_scope|not_allowed_token_type|invalid_auth|not_authed|token_expired|token_revoked|account_inactive)$/;
 // A conversation that is gone or that this sign-in can't reach: not shown, rather than failing the whole scan.
 const UNREACHABLE = /channel_not_found|not_in_channel|is_archived|access_denied/;
 
@@ -380,7 +383,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // resumes past this page, rather than discarding them for an error the next run would repeat from the start.
     // Any page after the first is an advance, whether Slack pages by cursor or by number, so verified matches are kept.
     if (!r.ok) {
-      if (messages.length && (full || cursor || numbered !== undefined)) return { ok: true, messages, nextCursor: continuation() };
+      if (messages.length && !PERMISSION_ERROR.test(r.error ?? "") && (full || cursor || numbered !== undefined)) return { ok: true, messages, nextCursor: continuation() };
       return messages.length ? { ...r, messages } : r;
     }
     const { json } = r;
@@ -402,9 +405,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
         const show = await visible(message.channel);
         if (typeof show !== "boolean") {
           const detail = `couldn't tell what ${message.channel} is (${show.detail})`;
-          // A missing permission can't be fixed by following a cursor: it must reach the owner even when matches were
+          // A permission refusal can't be fixed by following a cursor: it must reach the owner even when matches were
           // already verified, so it stays a failure (with those matches riding along) rather than a successful page.
-          if (show.error === "missing_scope") return { ok: false, detail, error: show.error, needed: show.needed, method: show.method ?? "conversations.info", ...(messages.length ? { messages } : {}) };
+          if (PERMISSION_ERROR.test(show.error ?? "")) return { ok: false, detail, error: show.error, needed: show.needed, method: show.method ?? "conversations.info", ...(messages.length ? { messages } : {}) };
           // Any other lookup failure after matches were verified keeps them: a continuation replays the feed by identity
           // and re-checks this channel when the caller resumes. The failure is the answer only when nothing was verified.
           if (messages.length) return { ok: true, messages, nextCursor: continuation() };
