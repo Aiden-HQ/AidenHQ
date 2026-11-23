@@ -64,7 +64,12 @@ const servedTool = async (readOnly: boolean, name: string): Promise<{ served: bo
     const full = serviceKey ? await post("/mcp", serviceKey, { jsonrpc: "2.0", id: 1, method: "tools/list" }) : undefined;
     const all = Array.isArray(full?.result?.tools) ? (full.result.tools as { annotations?: unknown }[]) : [];
     if (!all.some(live)) return { served: false, confirmed: false };
-    return { served: false, confirmed: true };
+    // The full catalog is live, so the upstream is reachable: ask the read endpoint once more. A first empty list can
+    // have been its own transient failure, and only a second empty one is a real answer that the tool isn't a read.
+    const again = await post("/mcp/read", key, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const reads = Array.isArray(again?.result?.tools) ? (again.result.tools as { name?: unknown; annotations?: unknown }[]) : undefined;
+    if (!reads) return { served: false, confirmed: false };
+    return { served: reads.some((t) => String(t?.name ?? "") === name && live(t)), confirmed: true };
   }
   if (!tools.length || !tools.some(live)) return { served: false, confirmed: false };
   // A live catalog answered: either it carries the tool or it genuinely doesn't, and both are confirmed.
