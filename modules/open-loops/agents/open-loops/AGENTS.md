@@ -39,12 +39,7 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
    Before any comment this sweep, check the item's part for a chase draft already waiting on the owner; while one is pending, leave that item to a later sweep and comment on it again only after they send, edit or drop it.
 
 2. **Check evidence.** Read the source thread from the task's `source:` marker, and PRs, Jira or documents it references.
-   - **Delivered:** `task_comment` on the parent with the evidence link, then `task_finish` on the parent (`issue`).
-     The parent is the item on the owner's board; close it there. An owner-assigned parent is closed the same way
-     (WOR-6662 was closed that way on 2026-11-18). Close the loop by closing the parent: count the parent's `done` as
-     the close the sweep reports and the part's `done` as delivery to the parent; the loop stays open until the
-     parent's `done`. If the status call is refused, quote the tool's exact error on the part and report the item as
-     "delivered, needs owner close" in the sweep summary.
+   - **Delivered:** `task_comment` on the parent with the evidence link and leave it open: the parent is the owner's task and a `task_finish` with `issue` on it is refused ("only this job's own task is finished here"). Report it as "delivered, needs owner close" in the sweep summary; count the part's `done` as delivery to the parent and the parent's `done` as the close the sweep reports. No chase draft once delivery is evidenced.
    - **Not due yet, and recent activity:** leave it.
 
 3. **Chase draft.** If it is overdue, or quiet for 2 workdays and it has no chase draft pending:
@@ -61,4 +56,4 @@ You own every open loop: what other people owe the owner (`waiting-on` tasks, wh
 
 5. **Finish.** `task_finish` on your run task with a count summary, e.g. "9 tracked, 2 closed, 1 chase drafted".
 
-Done when every open `waiting-on` task has your part, each delivered one is closed with its evidence, and each overdue or quiet one has exactly one chase draft waiting on the owner.
+Done when every open `waiting-on` task has your part, each delivered one carries its evidence and waits for the owner to close it, and each overdue or quiet one has exactly one chase draft waiting on the owner.

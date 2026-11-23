@@ -23,7 +23,7 @@ agents:
       slack_live?: [ slack_owner ]
       google_workspace: [ gmail_search, gmail_read_thread ]
       owner_channel: [ notify ]
-      paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_block, task_cancel, task_finish ]
+      paperclip_tasks: [ task_current, task_get, task_search, task_list, task_comments, task_create, task_update, task_comment, task_block, task_cancel, task_finish ]
   open-loops:
     skills: [ tasks.delegate-work ]
     department: outreach
@@ -46,8 +46,8 @@ routines:
     description: |
       Today is {{date}}, now {{timestamp}}. Your Slack user ID is what slack_owner returns. Your task emoji is :pushpin:. Follow your
       scan-slack skill: find Slack messages that need the user and the messages they pinned with
-      their task emoji, create or update tasks (deduplicated), close tasks the user has
-      answered or unpinned, then close this task with a count summary.
+      their task emoji, create or update tasks (deduplicated), mark tasks the user has
+      answered or unpinned as answered (a comment, left open for them), then finish this task with a count summary.
     concurrency: skip_if_active
     schedules:
       - { cron: "*/30 8-20 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
@@ -56,7 +56,7 @@ routines:
     agent: open-loops
     description: |
       Today is {{date}}, now {{timestamp}}. Follow your instructions: join every open waiting-on
-      task, close those with evidence of delivery, draft chases for overdue or quiet ones, then close
+      task, mark those with evidence of delivery as delivered for the owner to close, draft chases for overdue or quiet ones, then close
       this task with a count summary.
     concurrency: skip_if_active
     schedules:
@@ -66,8 +66,8 @@ routines:
     agent: inbox-agent
     description: |
       Today is {{date}}. Your user's email address is ${settings.owner_email}. Follow your triage-email skill:
-      one task per thread labelled Aiden in Gmail (deduplicated), close tasks whose
-      label was removed, then close this task with a count summary.
+      one task per thread labelled Aiden in Gmail (deduplicated), mark tasks whose
+      label was removed as answered (a comment, left open for them), then finish this task with a count summary.
     concurrency: skip_if_active
     schedules:
       - { cron: "*/30 8-19 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }
