@@ -34,15 +34,17 @@ other connections, board account recovery and shared access for colleagues.
 | Optional, tailnet only: a Tailscale auth key for the server (`TS_AUTHKEY`); you can run `sudo tailscale up` by hand instead | [org admin] Tailscale | step 3 |
 | Optional, tailnet only: a Tailscale auth key for the apps node (`TS_APPS_AUTHKEY`): reusable, pre-approved, tagged (for example `tag:aidenhq-apps` under `tagOwners`). Without it the node signs in once through a link on the board's Apps page when the first app is served | [org admin] Tailscale | step 3 |
 | An OpenRouter **management (provisioning) key**, or a normal OpenRouter API key you made yourself | OpenRouter account admin | step 3 |
-| Optional: a Google OAuth client of type *Web application*, with the Calendar, Drive and Gmail APIs enabled. Without it, the board's Google setup (`#/setup/google`, about 10 minutes) walks you through making one and takes the id and secret from a paste box | [org admin] Google Workspace | step 3, step 7 |
+| Optional: a Google OAuth client of type *Desktop app* (one per Workspace), with the Calendar, Drive and Gmail APIs enabled. Without it, the board's Google setup (`#/setup/google`, about 5 minutes) offers your organisation's, a colleague's, or makes one with you, and takes the id and secret from a paste box | [org admin] Google Workspace | step 3, step 7 |
 | Read access to the AidenHQ product repo on GitHub (to clone it or fork it) | the repo owner | step 2 |
 | Optional, later: Cloudflare Access, a tunnel and DNS records, to share apps with people outside your tailnet | [org admin] Cloudflare | [the reference below](#shared-access-apps-for-people-beyond-the-tailnet) |
 
-**Google OAuth client** [org admin]: in the Google Cloud console, create a project, enable the Google Calendar,
-Google Drive and Gmail APIs, set up the OAuth consent screen (*Internal* on a Workspace organization skips Google's
-app review), then Credentials, *Create OAuth client ID*, *Web application*. AidenHQ only asks for read-only scopes
-(`calendar.events.readonly`, `drive.readonly`, `gmail.readonly`). You add the redirect URI after step 3, once you know
-the board's address.
+**Google OAuth client** [org admin]: AidenHQ needs **one Google app per Workspace**, an OAuth client of type *Desktop app*
+(it needs no redirect address, so it works on any board address). In the Google Cloud console, create a project, enable the
+Google Calendar, Google Drive and Gmail APIs, set up the consent screen (*Internal* on a Workspace organization skips
+Google's app review; a personal Gmail needs *External*, then **Publish app** so sign-in does not expire every 7 days),
+then Clients, *Create client*, *Desktop app*. AidenHQ only asks for read-only scopes (`calendar.events.readonly`,
+`drive.readonly`, `gmail.readonly`). Colleagues then reuse that client by entering its Client ID and Client secret on the
+board. The board's `#/setup/google` shows these steps with the exact links.
 
 **Zero data retention:** OpenRouter privacy settings are per account, and a key made with the management key belongs
 to that account. If your data policy needs zero-data-retention routing, turn it on in the OpenRouter account first.
@@ -268,9 +270,10 @@ read -rs V && printf '%s' "$V" > ~/.config/aidenhq/<name> && chmod 600 ~/.config
 
 ### Google (Calendar, Drive, Gmail)
 
-1. Without `GOOGLE_CLIENT_ID` in `person.env`, open the board's `#/setup/google` and follow it. With it, [org admin] add the redirect URI setup printed to that client:
-   `https://<board-host>/google/callback`.
-2. On the board, open Connections and press **Connect Google**. Sign in and approve the read-only scopes [human].
+1. Without `GOOGLE_CLIENT_ID` in `person.env`, open the board's `#/setup/google` and pick one of: your organisation's app,
+   a colleague's Client ID and secret, or create one (a personal Gmail has its own steps). With it, setup has already saved the Desktop client.
+2. On the board, open Connections and press **Connect Google**. Sign in and approve the read-only scopes [human]. When
+   the browser is not on the server, Google ends on a page that does not load: copy its address and paste it into the board's Connect dialog.
    Repeat for each Google account you want connected.
 
 **Check:** `cd ~/aidenhq && scripts/healthcheck.sh | grep -i google` shows `ok` for `gmail read`,

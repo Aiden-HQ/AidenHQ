@@ -30,7 +30,7 @@ export interface Config {
    * The board's listener (3121): its https address behind the front door, and phones on the home network, under these host
    * names; signed-in admins only. `url`: the board's https address (BOARD_LAN_URL).
    */
-  lan: { port: number; hosts: string[]; url: string; googleConnect?: boolean };
+  lan: { port: number; hosts: string[]; url: string };
   /**
    * The listener for the tasks bridge and the runner, with a bearer token: off unless the
    * token file exists.
@@ -128,5 +128,5 @@ function internalConfig(env: NodeJS.ProcessEnv): Config["internal"] {
 
 export function lanConfig(env: NodeJS.ProcessEnv): Config["lan"] {
   const hosts = hostList(env.BOARD_LAN_HOSTS ?? "aidenhq.local");
-  return { port: Number(env.BOARD_LAN_PORT ?? 3121), hosts, url: (env.BOARD_LAN_URL || `http://${hosts[0]}`).replace(/\/+$/, ""), googleConnect: env.BOARD_GOOGLE_CONNECT === "1" };
+  return { port: Number(env.BOARD_LAN_PORT ?? 3121), hosts, url: (env.BOARD_LAN_URL || `http://${hosts[0]}`).replace(/\/+$/, "") };
 }

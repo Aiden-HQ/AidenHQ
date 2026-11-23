@@ -126,6 +126,18 @@ export interface WelcomeState {
   wizard: string[];
 }
 
+/** One way to get a flow's paste values (board.setup_flows `ways`). */
+export interface SetupWay {
+  id: string;
+  title: string;
+  detail: string;
+  effort?: string;
+  steps?: string;
+  organisation?: boolean;
+  paste?: boolean;
+  domains?: string[];
+}
+
 export interface SetupFlowView {
   module: string;
   order: number;
@@ -134,6 +146,8 @@ export interface SetupFlowView {
   effort: string;
   wizard?: boolean;
   steps: string;
+  console_scopes?: string[];
+  ways?: SetupWay[];
   secrets?: string[];
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
   signin?: string;
@@ -172,8 +186,6 @@ export interface SetupChoice {
 export interface Session {
   mode: "lan";
   account?: { id: string; email: string; name: string; role: "admin" | "user"; owner: boolean } | null;
-  /** Google's Connect works from this address (the board's https address). */
-  googleConnect?: boolean;
   /** The modules' sign-ins (board.signins) work from this address: the board's https address, or loopback. */
   signInConnect?: boolean;
   /** The kernel's admin listener: sign-in and your password. */

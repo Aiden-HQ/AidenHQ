@@ -1,14 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { type CredentialsFile, pastedClient, readCredentials } from "./accounts.js";
+import { type CredentialsFile, readCredentials } from "./accounts.js";
 import { SCOPES } from "./google.js";
 import { explainApi, explainGoogle } from "./google-errors.js";
 
 /**
  * Connect a Google account, or reconnect one whose sign-in expired, started from the board. The same
  * flow as src/auth.ts (PKCE, read-only scopes, the client on file), except the board receives Google's redirect
- * and hands the code back here: at its loopback address (a Desktop-app client), or at the board's own https
- * address (`boardRedirects`, a Web-app client with that redirect registered). Only this service sees the
+ * at its loopback address (the client is a Desktop app) and hands the code back here. Only this service sees the
  * refresh token.
  */
 export class Reconnect {
@@ -18,22 +17,10 @@ export class Reconnect {
     private readonly credsPath: string,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly ttlMs = 10 * 60_000,
-    /** Exact non-loopback redirects allowed: the board's https address + /google/callback (BOARD_URL). */
-    private readonly boardRedirects: string[] = [],
   ) {}
 
   private creds(): CredentialsFile {
     return readCredentials(this.credsPath);
-  }
-
-  /**
-   * Where Google can send this client back: a Desktop app (new setups) only to a loopback address, so the board uses its
-   * loopback address and the person pastes the redirected address back when the board is elsewhere; a Web app (an instance
-   * set up with the company's Web client, which has `client_type: "web"` in its credentials file, or only that file's client)
-   * to the board's own https address.
-   */
-  clientType(): "desktop" | "web" {
-    return this.creds().client_type ?? (pastedClient() ? "desktop" : readCredentials(this.credsPath, true).client_id ? "web" : "desktop");
   }
 
   /** Google's consent URL: for `account`, which must already be connected, or (none given) for a new account. */
@@ -41,7 +28,7 @@ export class Reconnect {
     const creds = this.creds();
     if (!creds.client_id) throw new ReconnectError("no Google client yet (paste one at #/setup/google on the board, or run scripts/google-auth.sh once)");
     if (account && !creds.accounts?.[account]) throw new ReconnectError(`${account} isn't a connected account`);
-    if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/[\w/-]*$/.test(redirectUri) && !this.boardRedirects.includes(redirectUri)) throw new ReconnectError("redirect must be a loopback address or the board's own address");
+    if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/[\w/-]*$/.test(redirectUri)) throw new ReconnectError("redirect must be a loopback address");
     const now = Date.now();
     for (const [k, p] of this.pending) if (p.expires < now) this.pending.delete(k);
     const verifier = randomBytes(48).toString("base64url");

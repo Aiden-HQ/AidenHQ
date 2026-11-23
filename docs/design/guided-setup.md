@@ -291,18 +291,21 @@ for secrets. This is a new privileged kernel action, so:
 
 ### Part 3b: guided Google setup (later, not in the wizard)
 
-The `google` module's setup flow (instructions, the client id and secret as a structured secret, then Connect;
-`wizard: false`), opened at `/setup/google` by Aiden ("set up Google") or the marketplace. It works like this:
-1. If the board has no name (bare IP), it explains why Google needs one and offers Tailscale or a domain; it stops there.
-2. Otherwise it gives numbered steps with screenshots and copy buttons:
-   - create a Google Cloud project;
-   - enable the Calendar, Drive and Gmail APIs (deep links);
-   - set the consent screen (Internal on Workspace);
-   - create a Web client with the redirect URI shown ready to copy;
-   - paste the client id and secret.
-3. Saving writes `google_oauth.json` through the secret-write endpoint (the endpoint takes a module-declared structured
-   secret).
-4. Then one **Connect Google** button runs the existing `/google/connect` flow.
+The `google` module's setup flow (the client id and secret as a structured secret, then Connect; `wizard: false`), opened at
+`/setup/google` by Aiden ("set up Google") or the marketplace. AidenHQ needs **one Google app per Workspace**: an OAuth client
+of type *Desktop app*, the only kind it supports (it takes a loopback redirect, so the board's address, a bare IP included,
+never matters). The page offers `ways` (modules/board/schemas/setup_flows.json); only the picked one's steps show:
+1. **Use your organisation's app:** a dropdown of the catalog's organisations (modules/marketplace.json), suggested by
+   email domain; its client id and secret fill the fields.
+2. **A colleague already made one:** ask them for the Client ID and Client secret, and paste them.
+3. **Create one** (Google Workspace): numbered steps with deep links to the exact console pages: project, the three APIs,
+   the consent screen (*Internal*), the scopes (listed once, in `console_scopes`), a Desktop client, then paste.
+4. **Personal Gmail** (suggested for gmail.com): the same with *External*, then **Publish app** so the token does not expire
+   every 7 days, and what the one-time "Google hasn't verified this app" warning looks like (Advanced, Go to app).
+
+Saving writes `google_oauth.json` through the secret-write endpoint (the endpoint takes a module-declared structured
+secret). Then one **Connect Google** button runs the `/google/connect` flow: on the board's own host it completes at once;
+from another browser Google ends on a page that does not load, and the person pastes its address into the dialog.
 
 **Honest effort.** Each flow says up front how long it takes and what it needs: "about 2 minutes, needs the Telegram
 app" or "about 5 minutes, a Slack workspace admin may need to approve". Neither channel is presented as a quick

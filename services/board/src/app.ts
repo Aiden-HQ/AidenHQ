@@ -88,8 +88,7 @@ export interface AppOptions {
   fetch?: typeof fetch;
   /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in. */
   adminUrl?: string;
-  /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
-  lan?: { url: string; googleConnect?: boolean };
+  lan?: { url: string };
   internalToken?: string;
   /** The fast chat lane: its agents and their chat tasks, from the grants table; without it the lane routes answer empty. */
   lane?: LaneOptions;
@@ -1223,9 +1222,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   // Where OAuth sign-ins start on a board without an https address: the loopback board, through an SSH tunnel (docs/setup.md).
   const TUNNEL = "http://localhost:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
-  const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
-  /** Where the board's sign-ins return for a request to `host`: its https address when Connect runs there, else the request's own. */
-  const signInOrigin = (host: string) => (googleViaBoard ? opts.lan!.url : `http://${host}`);
   /**
    * Where a module sign-in (board.signins) started at `host` returns: the loopback address it came from (a tunnel), or the
    * board's https address (BOARD_LAN_URL) when the request reached the board by that name. Undefined anywhere else: plain
@@ -2291,7 +2287,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
     signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",
     connected: connectionSignedIn,
-    boardUrl: signInOrigin,
+    boardUrl: (host) => httpsBoard?.origin ?? `http://${host}`,
     redirectUrl: (signin, host) => {
       const s = (opts.signIns ?? []).find((x) => x.id === signin);
       return s && `${redirectOrigin(s, host) ?? httpsBoard?.origin ?? SIGNIN_LOOPBACK}${s.callback}`;
@@ -2367,7 +2363,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
@@ -2441,23 +2437,20 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   /**
    * Connect a Google account, or reconnect an expired one: /google/connect sends the browser to Google's
-   * consent screen, Google sends it back to /google/callback, and google-workspace-mcp stores the token. On the
-   * laptop's loopback address (a Desktop-app client), or at the board's https address (BOARD_LAN_URL, registered as a
-   * redirect on a Web-app client: the company OAuth app, ops/setup.sh). The callback needs no session (a cookie isn't sent
-   * on Google's cross-site redirect): its single-use state, minted for the owner's session, is the proof.
+   * consent screen, Google sends it back to the loopback address (the client is a Desktop app) at /google/callback, and
+   * google-workspace-mcp stores the token. A browser that isn't on the board's host pastes the address it ends on into the
+   * Connect dialog. The callback needs no session (a cookie isn't sent on Google's cross-site redirect): its single-use
+   * state, minted for the owner's session, is the proof.
    */
   async function handleGoogle(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board (no google_auth_token)");
-    // A Desktop client returns only to loopback: the sign-in ends on the board's loopback address, pasted back on its Connect
-    // dialog unless a tunnel brings it here. A Web client returns to the board's https address (or the loopback board).
-    const desktop = (await opts.google.status())?.client_type === "desktop";
-    if (!desktop && !googleViaBoard && !loopbackPort(req.headers.host)) throw new HttpError(403, `connect Google from ${TUNNEL}`);
-    const callback = desktop ? `${SIGNIN_LOOPBACK}/google/callback` : `${signInOrigin(String(req.headers.host).toLowerCase())}/google/callback`;
+    // The sign-in ends on the board's loopback address, pasted back on the Connect dialog unless a tunnel brings it here.
+    const callback = `${SIGNIN_LOOPBACK}/google/callback`;
     try {
       if (url.pathname === "/google/connect") {
         const account = url.searchParams.get("account") || undefined;
         // From a link (a banner, an old page): the Connect dialog, which opens this again (`go`) and takes the pasted address.
-        if (desktop && !url.searchParams.has("go") && !loopbackPort(req.headers.host)) {
+        if (!url.searchParams.has("go") && loopbackPort(req.headers.host) !== Number(new URL(SIGNIN_LOOPBACK).port)) {
           res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connect=google_workspace${account ? `&account=${encodeURIComponent(account)}` : ""}`, "cache-control": "no-store" }).end();
           return;
         }

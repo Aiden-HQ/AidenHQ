@@ -8,7 +8,7 @@ const HINTS: Record<string, string> = {
   org_internal: "This client is Internal to another Google Workspace organisation, so only its members can sign in. Sign in with an account of that organisation, or make your own client.",
   invalid_client: "Google doesn't know this client ID and secret (or the client was deleted). Paste them again from Credentials in the Cloud console; the client must be a Desktop app.",
   unauthorized_client: "Google doesn't allow this client to sign in this way. Make a new OAuth client of type Desktop app and paste its ID and secret.",
-  redirect_uri_mismatch: "This client is a Web application, which only takes redirects it lists. Make a client of type Desktop app instead: it needs no redirect.",
+  redirect_uri_mismatch: "This client is not a Desktop app, so Google refuses the sign-in address. Make a new OAuth client of type Desktop app and paste its ID and secret.",
   invalid_grant:
     "Google ended this sign-in. A consent screen in Testing ends sign-ins after 7 days: set Audience to Internal (Workspace) or press Publish app (In production), then connect again. The code or token may also be used already, or the access revoked.",
   admin_policy_enforced: "A Google Workspace admin restricts this app. Ask them to allow it (Admin console, Security, API controls), then connect again.",

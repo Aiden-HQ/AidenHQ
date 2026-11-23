@@ -30,7 +30,7 @@
 #   ops/setup.sh --config person.env --dry-run         print what it would do; changes nothing
 # person.env (KEY=value, read here, never printed): OWNER_NAME, OWNER_EMAIL, TIMEZONE (required); AIDENHQ_USER (default
 # the sudo user), COMPANY_NAME (work), MODULES (google), OPENROUTER_MANAGEMENT_KEY + OPENROUTER_LIMIT_USD (100) or
-# OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (optional: an OAuth app you already have; otherwise the board's Google setup asks), TS_AUTHKEY (tailnet join key),
+# OPENROUTER_KEY, GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (optional: a Desktop-app OAuth client you already have; otherwise the board's Google setup asks), TS_AUTHKEY (tailnet join key),
 # TS_APPS_AUTHKEY (the apps' own tailnet node: a reusable, tagged, pre-authorized key; docs/setup.md),
 # BOARD_HOST (default: this VM's tailnet name), PAPERCLIP_PASSWORD
 # (with --restore: the old VM's paperclip_owner_password; otherwise one is generated), TIMEOUT_MINUTES
@@ -418,8 +418,6 @@ if [ -n "$BOARD_HOST" ]; then
 else set_env APPS_TS_HOSTNAME ""; set_env APPS_URL_BASE ""; fi
 # The mode, for compile: settings.exposure must match it, so an instance edit alone can't move the board's door.
 set_env AIDENHQ_EXPOSURE "$EXPOSURE"
-# Connect Google from the board (the company's Web-app client); Google refuses a bare IP as a redirect, so not in public.
-set_env BOARD_GOOGLE_CONNECT "$( [ "$PUBLIC" = 1 ] || echo 1)"
 grep -q '^WORK_COMPANY_ID=.' "$ENVF" 2>/dev/null || set_env WORK_COMPANY_ID pending   # known after Paperclip's setup
 # The product repo (owner/name, from this checkout's origin) and the instance repo applies land on.
 grep -q '^AIDENHQ_PRODUCT_REPO=.' "$ENVF" 2>/dev/null || set_env AIDENHQ_PRODUCT_REPO "$(ugit -C "$REPO" remote get-url origin | sed -E 's#^.*github\.com[/:]##; s#\.git/*$##')"
@@ -532,7 +530,7 @@ if [ "$DRY" = 1 ]; then echo "  + check the OpenRouter key against openrouter.ai
 elif [ -z "$(read_secret openrouter_key)" ]; then :   # no key yet: the board asks for the model on first sign-in
 else as_user AIDENHQ_SECRETS_DIR="$SECRETS" node "$REPO/scripts/openrouter-key.ts" check || die "the OpenRouter key was rejected (see above)"; fi
 if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && ! grep -q '"client_id"' "$SECRETS/modules/google/google_oauth.json" 2>/dev/null; then
-  say "Google: the company OAuth app behind Connect"
+  say "Google: the Desktop OAuth client behind Connect"
   [ "$DRY" = 1 ] || as_user mkdir -p -m 700 "$SECRETS/modules/google"
   printf '{\n  "client_id": %s,\n  "client_secret": %s,\n  "accounts": {}\n}' "$(json "$(cfg GOOGLE_CLIENT_ID)")" "$(json "$(cfg GOOGLE_CLIENT_SECRET)")" \
     | write_user_file "$SECRETS/modules/google/google_oauth.json" 600
@@ -645,7 +643,6 @@ if [ "$PUBLIC" = 1 ] && [ "$DRY" = 0 ]; then
     set_env BOARD_LAN_URL "$BOARD_URL"
     set_env AIDENHQ_ADMIN_URL "$ADMIN_URL"
     set_env AIDENHQ_LINK_TTL_HOURS ""
-    set_env BOARD_GOOGLE_CONNECT 1
     as_user PAPERCLIP_EMAIL="$OWNER_EMAIL" PAPERCLIP_PASSWORD="$PW" PAPERCLIP_NAME="$OWNER_NAME" bash "$REPO/ops/apply-config.sh" --force
     as_user systemctl --user restart aidenhq-kernel
   else say "Public: $BOARD_URL answers with a trusted certificate"; fi
@@ -658,12 +655,7 @@ if [ -n "$RESTORE" ]; then as_user touch "$marker"   # a restored AidenHQ has ha
 fi
 
 echo
-if [ -n "$(cfg GOOGLE_CLIENT_ID)" ] && [ "$PUBLIC" = 0 ]; then
-  echo "Once, in the company's Google OAuth app (Web application), add the redirect URI:"
-  echo "  $BOARD_URL/google/callback"
-else
-  echo "Google: when you want it, ask Aiden to set it up, or open $BOARD_URL/#/setup/google (steps and a place to paste the client)."
-fi
+[ -n "$(cfg GOOGLE_CLIENT_ID)" ] || echo "Google: when you want it, ask Aiden to set it up, or open $BOARD_URL/#/setup/google (steps and a place to paste the client)."
 [ -z "$CONFIG" ] || echo "Delete $CONFIG: it holds secrets (the OpenRouter key)."
 if [ "$UNATTENDED" = 0 ] && [ -e /root/aidenhq-vault-recovery.txt ]; then echo "Vault recovery key: /root/aidenhq-vault-recovery.txt. Store it, then: sudo shred -u /root/aidenhq-vault-recovery.txt"; fi
 if [ -z "$BOARD_HOST" ] && [ "$PUBLIC" = 0 ]; then

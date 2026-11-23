@@ -10,7 +10,7 @@ import { SetupButton } from "./SetupButton";
 import { SignInLines, linesNeeding } from "./SignInLines";
 import { Banner, Button, Dialog, LinkButton, Section, StatusDot, Tile, TileGrid, type StatusTone } from "./ui";
 
-type Can = { signIn: boolean; google: boolean };
+type Can = { signIn: boolean };
 const TONE: Record<Status, StatusTone> = { connected: "ok", not_connected: "idle", signed_out: "needs", error: "failed", not_configured: "idle", unknown: "idle", builtin: "info" };
 const NEEDS: Status[] = ["error", "signed_out", "not_configured", "unknown"];
 const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
@@ -132,7 +132,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
           {r.google?.accounts.some((a) => a.state === "ok") && <TestSignIn id={r.name} google />}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
-          {r.google && <GoogleAccounts g={r.google} can={can.google || r.google.client_type === "desktop"} />}
+          {r.google && <GoogleAccounts g={r.google} />}
         </div>
       </Dialog>
     </>
@@ -211,7 +211,7 @@ function Facts({ r }: { r: ConnectionRow }) {
   );
 }
 
-function GoogleAccounts({ g, can }: { g: NonNullable<ConnectionRow["google"]>; can: boolean }) {
+function GoogleAccounts({ g }: { g: NonNullable<ConnectionRow["google"]> }) {
   return (
     <ul className="st-accounts">
       {g.accounts.map((a) => (
@@ -221,20 +221,18 @@ function GoogleAccounts({ g, can }: { g: NonNullable<ConnectionRow["google"]>; c
             {a.email}
             {a.primary && <span className="muted"> (calendar and meeting notes)</span>}
           </span>
-          {can && a.state !== "ok" && (
+          {a.state !== "ok" && (
             <a className="link-btn" href={`/google/connect?account=${encodeURIComponent(a.email)}`}>
               Reconnect
             </a>
           )}
         </li>
       ))}
-      {can && (
-        <li>
-          <a className="link-btn" href="/google/connect">
-            Add a Google account
-          </a>
-        </li>
-      )}
+      <li>
+        <a className="link-btn" href="/google/connect">
+          Add a Google account
+        </a>
+      </li>
     </ul>
   );
 }

@@ -4,7 +4,6 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { createPortal } from "react-dom";
 import { AgentAvatar } from "./AgentAvatar";
 import { ConnectButton } from "./Connect";
-import { GOOGLE_WEB_HINT } from "./connections";
 import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
 import { TaskState } from "./ui/TaskState";
@@ -455,10 +454,10 @@ export const GearIcon = () => (
 
 /**
  * Google accounts whose sign-in Google refused: what's paused, and a way back (Google not connected at all is no alert: it is
- * an optional connection, offered in Settings > Connections like the others). A Desktop client reconnects from any address
- * (the address is pasted back); a Web client only from the board's https address.
+ * an optional connection, offered in Settings > Connections like the others). Reconnect works from any address
+ * (the address is pasted back).
  */
-export function GoogleBanner({ google, canReconnect }: { google: Board["google"]; canReconnect: boolean }) {
+export function GoogleBanner({ google }: { google: Board["google"] }) {
   if (!google) return null;
   const expired = google.accounts.filter((a) => a.state === "expired");
   if (!expired.length) return null;
@@ -471,15 +470,9 @@ export function GoogleBanner({ google, canReconnect }: { google: Board["google"]
             {new Date(a.since).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}.{" "}
             {a.primary ? "Meeting notes, calendar, email and Drive from it are paused." : "Email and Drive from it are paused."}
           </span>
-          {canReconnect || google.client_type === "desktop" ? (
-            <a className="btn" href={`/google/connect?account=${encodeURIComponent(a.email)}`}>
-              Reconnect
-            </a>
-          ) : (
-            <span className="alert-hint">
-              {GOOGLE_WEB_HINT} <a href="#/settings/connections">Open Connections</a>
-            </span>
-          )}
+          <a className="btn" href={`/google/connect?account=${encodeURIComponent(a.email)}`}>
+            Reconnect
+          </a>
         </div>
       ))}
     </div>

@@ -12,7 +12,25 @@
     "mode": { "enum": ["basic", "advanced"], "description": "basic (the default): the module's own setup, usually a sign-in; done once it is connected (and paired, if it pairs). advanced: the optional second flow, 'your own app' for more, shown under the basic one; done once its secrets exist (and it is paired, if it pairs); its services start once their secrets exist" },
     "capabilities": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 160 }, "description": "advanced only: what the person's own app unlocks, one short phrase each (a bot people can DM, live events)" },
     "admin": { "type": "string", "minLength": 1, "maxLength": 120, "description": "who else may need to approve, plainly (your Slack admin may need to approve the app)" },
-    "steps": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "markdown; {board_url} becomes the board's own address (where its sign-ins return), {redirect_url} the exact redirect the flow's sign-in sends (what a hand-made client must list), and inline code gets a copy button" },
+    "steps": { "type": "string", "minLength": 1, "maxLength": 4000, "description": "markdown; {board_url} becomes the board's own address (where its sign-ins return), {redirect_url} the exact redirect the flow's sign-in sends (what a hand-made client must list), {scopes} the console_scopes (one per line), and inline code gets a copy button. With `ways`, these are the intro shown above the choices" },
+    "console_scopes": { "type": "array", "minItems": 1, "maxItems": 12, "items": { "type": "string", "pattern": "^https://[^\\s]{1,200}$" }, "description": "the scopes the steps tell the owner to add on the vendor's consent screen: the one place to change them; `{scopes}` in the steps (or a way's steps) becomes this list" },
+    "ways": {
+      "type": "array", "minItems": 2, "maxItems": 5,
+      "description": "alternative ways to get what the paste fields ask for (an OAuth client): the owner picks one and only that way's steps show",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "title", "detail"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,30}$" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "detail": { "type": "string", "minLength": 1, "maxLength": 200, "description": "one plain line under the title" },
+          "effort": { "type": "string", "minLength": 1, "maxLength": 80, "description": "shown beside the page title while this way is picked" },
+          "steps": { "type": "string", "maxLength": 3500, "description": "markdown, as the flow's steps" },
+          "organisation": { "type": "boolean", "description": "this way is picking the organisation (modules/marketplace.json organisations) whose app fills the paste fields; offered only when the catalog lists one for this module, and suggested when the owner's email matches it" },
+          "paste": { "type": "boolean", "description": "this way ends in the paste fields" },
+          "domains": { "type": "array", "minItems": 1, "maxItems": 4, "items": { "type": "string", "pattern": "^[a-z0-9.-]{3,60}$" }, "description": "suggested (and preselected) when the owner's email is at one of these domains" }
+        }
+      }
+    },
     "secrets": { "type": "array", "maxItems": 8, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$" }, "description": "names of this module's secrets with `setup:`, shown as paste fields in this order" },
     "choose": {
       "type": "object", "additionalProperties": false, "required": ["setting", "options"],

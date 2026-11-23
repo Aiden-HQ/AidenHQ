@@ -38,7 +38,7 @@ interface Props {
   session: Session | null;
   go: (hash: string) => void;
   onSignIn: () => void;
-  can: { signIn: boolean; google: boolean };
+  can: { signIn: boolean };
 }
 
 export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props) {

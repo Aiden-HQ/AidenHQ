@@ -18,6 +18,10 @@ export interface SetupFlowPoint {
   effort: string;
   wizard?: boolean;
   steps: string;
+  /** The scopes `{scopes}` in the steps stands for. */
+  console_scopes?: string[];
+  /** Alternative ways to get the paste fields' values: the page shows the picked one's steps (modules/board/schemas/setup_flows.json). */
+  ways?: { id: string; title: string; detail: string; effort?: string; steps?: string; organisation?: boolean; paste?: boolean; domains?: string[] }[];
   secrets?: string[];
   /** Each secret's paste field (compile fills it from the secret's `setup:`): the board shows the label and help and checks the pattern. */
   fields?: { secret: string; label: string; pattern: string; help?: string }[];

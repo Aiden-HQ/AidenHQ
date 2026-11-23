@@ -14,8 +14,6 @@ export interface CredentialsFile {
   client_secret?: string;
   refresh_token?: string;
   primary?: string;
-  /** "web": the client in this file is a Web application (the company client, ops/setup.sh); otherwise see Reconnect.clientType. */
-  client_type?: "desktop" | "web";
   accounts?: Record<string, Partial<StoredCredentials>>;
 }
 
@@ -43,9 +41,6 @@ export function readCredentials(path: string, forWrite = false): CredentialsFile
   if (forWrite || !id) return raw;
   return { ...raw, client_id: id, client_secret: fileText(process.env.GOOGLE_CLIENT_SECRET_FILE) || undefined };
 }
-
-/** Whether the owner pasted a client on the board (the guided flow, which makes a Desktop client). */
-export const pastedClient = (): boolean => Boolean(fileText(process.env.GOOGLE_CLIENT_ID_FILE));
 
 /** No account connected yet: Google isn't set up, which differs from a credentials file that won't load. */
 export class NoGoogleAccounts extends GoogleAuthError {}
