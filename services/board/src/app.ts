@@ -1032,7 +1032,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
-      // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's task. The agent picks the
+      // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's or the Researcher's task. The agent picks the
       // comment and the task, never the words; it lands as the owner's own comment with the delivered-from marker, so the runner acts on it.
       method: "POST",
       path: /^\/internal\/relay$/,
@@ -1041,10 +1041,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const { comment_id, target } = parse(RelaySchema, body);
           const ctx = await context();
           const chats = (await pc.openIssues()).filter((i) => i.assigneeAgentId === cos.id && (i.labels ?? []).some((l) => l.name === "chat"));
-          let source: { chat: Issue; comment: Comment } | undefined;
+          let source: { chat: Issue; comment: Comment; all: Comment[] } | undefined;
           for (const chat of chats) {
-            const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
-            if (comment) source = { chat, comment };
+            const all = await pc.comments(chat.id);
+            const comment = all.find((c) => c.id === comment_id);
+            if (comment) source = { chat, comment, all };
           }
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
@@ -1065,14 +1066,18 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
             if (!askedAt) throw new Refused("refused: the kernel has no open question on that task; answer on the task");
             if (source.comment.createdAt <= askedAt) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
           }
-          if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's task, or a task handed out from this chat whose agent is asking the owner");
+          if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's or the Researcher's task, or a task handed out from this chat whose agent is asking the owner");
           // One set of tasks that could take the owner's words: whenever more than one could, the words must name the target.
           // Engineer tasks that could take the owner's words: those with their review or checks under way (the kernel's state).
           const engineers = (await pc.openIssues()).filter((i) => ctx.assignees.some((a) => a.key === i.assigneeAgentId && a.kind === "engineer"));
           const engineerStates = await stateRows(engineers.map((i) => i.id));
           const inReview = engineers.filter((i) => ["card_review", "card_owner", "module_wait"].includes(engineerStates.get(i.id)?.reason ?? "")).map((i) => i.identifier);
           const waiting = [...new Set([...inReview, ...asking.filter((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)?.kind !== "engineer").map((k) => k.identifier)])];
-          assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
+          // The owner's ask itself, for the Researcher: a task the chat's agent handed out under this chat, whose newest owner
+          // message before it was created is this one (an email or calendar change he asked Aiden for). Its words bind to it.
+          const owners = source.all.filter((c) => c.authorType === "user" && c.authorUserId === ctx.me && !c.deletedAt && c.createdAt <= dest.createdAt);
+          const asked = agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me) && owners.reduce<Comment | undefined>((a, c) => (!a || c.createdAt > a.createdAt ? c : a), undefined)?.id === source.comment.id;
+          assertMeantTask(words, dest.identifier, asked ? [dest.identifier] : waiting, ctx.prefix);
           // Once per message, whatever the target: reserved before posting, released if the post fails.
           const key = `relayed:${comment_id}`;
           if (store.meta(key)) throw new Refused("refused: that message was already relayed");

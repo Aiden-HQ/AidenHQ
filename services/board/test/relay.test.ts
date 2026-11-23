@@ -21,7 +21,7 @@ const agents: Agent[] = [
   { id: "00000000-0000-0000-0000-0000000000d3", name: "Impostor", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:chief-of-staff" } },
   { id: "00000000-0000-0000-0000-0000000000d4", name: "Fleet Ops", status: "idle", companyId: "co", metadata: { engine: "codex", setupKey: "aidenhq:fleet-ops" } },
 ];
-const [COS, FLEET, , SCOUT, IMPOSTOR, FLEET_OPS] = agents.map((a) => a.id) as [string, string, string, string, string, string];
+const [COS, FLEET, RESEARCHER, SCOUT, IMPOSTOR, FLEET_OPS] = agents.map((a) => a.id) as [string, string, string, string, string, string];
 // The grants table setup writes: only the Chief of Staff holds fleet-admin.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
 writeFileSync(grantsFile, JSON.stringify({ agents: { [COS]: { key: "chief-of-staff", roles: ["fleet-admin"] }, [SCOUT]: { key: "scout", roles: [] }, [IMPOSTOR]: { key: "impostor", roles: [] }, [FLEET_OPS]: { key: "fleet-ops", roles: ["fleet-read"] } } }));
@@ -125,6 +125,26 @@ describe("/internal/relay", () => {
     expect((await relay({ comment_id: d.id, target: child.identifier })).status).toBe(403);
     const e = say(chat, `[telegram] apply ${child.identifier.toLowerCase()} not gpt-5`);
     expect((await relay({ comment_id: e.id, target: child.identifier })).status).toBe(200);
+  });
+
+  it("passes the owner's ask to the Researcher task Aiden handed out for it, and only that ask", async () => {
+    const older = say(chat, "[telegram] send Dana the notes", { createdAt: new Date(Date.now() - 60_000).toISOString() });
+    const ask = say(chat, "[telegram] move my 3pm with Dana to 4");
+    // An engineer task in review elsewhere doesn't make the ask ambiguous: the Researcher task was made for this message.
+    const task = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: new Date(Date.now() + 1000).toISOString() });
+    issues.push(task);
+    expect((await relay({ comment_id: older.id, target: task.identifier })).status).toBe(403); // not the newest ask before it
+    const res = await relay({ comment_id: ask.id, target: task.identifier });
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ relayed: true, to: "Researcher" });
+    // Handed out by another agent, or before the owner wrote: no.
+    const planted = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: SCOUT, createdAt: new Date(Date.now() + 1000).toISOString() });
+    issues.push(planted);
+    const again = say(chat, "[telegram] and cancel Friday's review");
+    expect((await relay({ comment_id: again.id, target: planted.identifier })).status).toBe(403);
+    const early = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: "2026-11-02T10:00:00Z" });
+    issues.push(early);
+    expect((await relay({ comment_id: again.id, target: early.identifier })).status).toBe(403);
   });
 
   it("refuses a caller that is not the Chief of Staff", async () => {
