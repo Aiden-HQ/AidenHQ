@@ -83,11 +83,12 @@ One GitHub issue per defect, filed by the Maintainer (when in `fleet_catalog` an
    description that opens with the ask below, then what happened, expected, `module` (a lowercase hyphen slug matching
    `^[a-z][a-z0-9-]{0,63}$` — `apply-config`, `routine-dispatch`, `task-wake`; the finer component goes in the title and
    body), `version` (the sha the failing run ran under, from `fleet_generation_status`), the pin at filing, `reproduction`,
-   one log line. `github_product_issue` refuses any other `module` with `Invalid string ... at evidence.module`, so a path,
-   a capitalised name, or two words joined by `/` or a space sends the filing back to be refiled. The issue is public: a name,
-   email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`), in the brief's body, title and evidence too
-   (name things by role, leave task ids out): the `github_product_issue` card's reviewer holds the post to the brief's text,
-   so a literal value there loops the filing.
+   one log line. `github_product_issue` refuses any other `module` with `Invalid string ... at evidence.module`: that is the
+   tool's input validation at the call, refused before any issue or card exists, not the card reviewer's handback below, so
+   a path, a capitalised name, or two words joined by `/` or a space fails validation until the brief's `module` is a slug.
+   The issue is public: a name, email, host, IP, uuid, account or chat id becomes a neutral word (`<host>`), in
+   the brief's body, title and evidence too (name things by role, leave task ids out): the `github_product_issue`
+   card's reviewer holds the post to the brief's text, so a literal value there loops the filing.
 3. Log `log · <time> · product-bug · <slug> · <task id>`. No Maintainer, or GitHub signed out (the tool still works): `github_issue_link` with fingerprint,
    title, body and `evidence`, send the owner the link, log `link sent` (never resent; digest lists it as waiting). Only without the `github_issue_link` tool: log the report on Fleet issues with the same fields, as the internal record.
 
