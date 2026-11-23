@@ -77,5 +77,5 @@ test("the reply rule leaves a run that hands its task back with one comment, its
   const start = text.indexOf("On a task, that is one comment per turn");
   const rule = text.slice(start, text.indexOf("A run note is a few lines", start));
   assert.match(rule, /the run's final message is that comment/, "the final message is the one comment");
-  assert.match(rule, /A run that hands its task back with `task_handoff` has used its one comment there: its final message is exactly NO_REPLY/, "a handoff run's final message is NO_REPLY");
+  assert.match(rule, /A run that hands its task back with `task_handoff` has used its one comment there: put the whole update in that comment, a deliverable included, post no `task_comment` before it, and end with exactly NO_REPLY/, "a handoff run puts everything in the handoff and ends NO_REPLY");
 });
