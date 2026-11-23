@@ -87,6 +87,10 @@ it("a retirement marker never counts as a source's or a scope's last good pass, 
   // Every scope retired: the source is not reported at all (its sync is off).
   await run("org:live", 0.05, { status: "retired" });
   expect(await sourceHealth(deps)).toEqual([]);
+
+  // Re-added and already failing: the success from before its retirement is not its last good pass, so the alert is not held.
+  await run("org:live", 0.01, { error: "boom" });
+  expect(await sourceHealth(deps)).toEqual([{ source: "github", last_ok: null, failing: true }]);
 });
 
 it("a retired row is only the newest one that counts: an older retirement does not hide a later failure", async () => {

@@ -136,13 +136,16 @@ export async function scopeIssues(d: Pick<WarehouseDeps, "pool">): Promise<{ fai
  * Each source's last good pass and whether its latest pass failed (`/internal/sources`' `sources`), for the Fleet Steward's
  * source check. Retired scopes are left out: their marker is not a pass, so it may neither pose as a fresh good pass (masking
  * a failed org) nor keep a source whose every scope was retired looking alive. A source with no scope still syncing drops out.
+ * A re-added scope's last good pass is counted from its re-add (the retirement cut its history), so a success from before it
+ * left the config never delays the alert on its new failures.
  */
 export async function sourceHealth(d: Pick<WarehouseDeps, "pool">): Promise<Record<string, unknown>[]> {
   const r = await d.pool.query(
-    `WITH latest AS (SELECT DISTINCT ON (source, scope) source, scope, status FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC)
-     SELECT i.source, max(i.finished_at) FILTER (WHERE i.error IS NULL AND i.status IS DISTINCT FROM 'retired') AS last_ok,
+    `WITH latest AS (SELECT DISTINCT ON (source, scope) source, scope, status FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC),
+          since AS (SELECT source, scope, max(finished_at) AS at FROM src_meta.ingest_run WHERE status = 'retired' GROUP BY source, scope)
+     SELECT i.source, max(i.finished_at) FILTER (WHERE i.error IS NULL AND i.status IS DISTINCT FROM 'retired' AND i.finished_at > COALESCE(s.at, '-infinity')) AS last_ok,
             (array_agg(i.error IS NOT NULL ORDER BY i.finished_at DESC))[1] AS failing
-     FROM src_meta.ingest_run i JOIN latest l USING (source, scope)
+     FROM src_meta.ingest_run i JOIN latest l USING (source, scope) LEFT JOIN since s USING (source, scope)
      WHERE l.status IS DISTINCT FROM 'retired'
      GROUP BY i.source
      ORDER BY i.source`,

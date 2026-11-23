@@ -73,10 +73,13 @@ export function createConnectionState(o: {
   /** The board's origin; every link is `<board>/connect/<module>` (the board words what each exposure mode can do). */
   boardUrl: () => string;
   /**
-   * The code-host orgs the instance still uses (the code host's configured list, `modulesFile().repos.orgs` plus the agents
-   * orgs), lowercased. An sso/restricted need names one of them; a row naming any other org is stale (the org left the
-   * config) and is cleared. Undefined or empty (an unreadable config) keeps every org row, as an empty connections registry
-   * keeps its rows.
+   * The code-host orgs the instance still reaches (every code-host org: the sync's configured list, the agents orgs and the
+   * owners of the product, instance and maintained repos). An sso/restricted need names one of them; a row naming any other
+   * org is stale (the org left the config) and is cleared. Undefined or empty (an unreadable config) keeps every org row, as
+   * an empty connections registry keeps its rows.
+   * A need recorded for an org the config never names is therefore cleared too, on tick: the fix for an org that is not
+   * synced or maintained is to configure it, and then its need records again. The alternative (keeping every unconfigured
+   * org's need) is what left the removed org's owner line in the digest for good.
    */
   orgs?: () => string[] | undefined;
   now?: () => number;
