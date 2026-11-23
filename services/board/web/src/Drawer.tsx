@@ -80,7 +80,7 @@ export function Drawer({ refId, focus, board, onClose, onChanged, onMove, onSnoo
   async function setStatus(status: "todo" | "in_progress" | "done" | "cancelled") {
     if (!issue) return;
     const before = issue.status;
-    await update({ status });
+    if (!(await update({ status }))) return;
     if (status === "done" || status === "cancelled") {
       toast(`${issue.identifier} ${status === "done" ? "done" : "cancelled"}`, { label: "Undo", run: () => void api.update(issue.id, { status: before === "in_progress" ? "in_progress" : "todo" }).then(onChanged, (e) => toast(`Couldn't undo: ${(e as Error).message}`)) });
       onClose();
@@ -346,7 +346,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
 }
 
 /** The task itself: what it's about, its files, who's on it, and the team chat (kept on the task until an agent is named). */
-function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<unknown>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
+function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<boolean>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
   const mine = issue.assignee === "me";
   const closed = issue.status === "done" || issue.status === "cancelled";
   const assistant = board.assignees.find((a) => a.kind === "assistant");
@@ -838,7 +838,8 @@ function Labels({ all, selected, disabled, save }: { all: Label[]; selected: str
   );
 }
 
-function Description({ issue, prefix, editable, save }: { issue: IssueView; prefix: string; editable: boolean; save: (d: string) => Promise<unknown> }) {
+/** The task's description. A failed save keeps the editor open with the draft, for another try. */
+function Description({ issue, prefix, editable, save }: { issue: IssueView; prefix: string; editable: boolean; save: (d: string) => Promise<boolean> }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(issue.description);
   useEffect(() => {
@@ -853,7 +854,7 @@ function Description({ issue, prefix, editable, save }: { issue: IssueView; pref
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(value).then(() => setEditing(false));
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(value).then((ok) => ok && setEditing(false));
             if (e.key === "Escape") e.stopPropagation(), setEditing(false);
           }}
         />
@@ -862,7 +863,7 @@ function Description({ issue, prefix, editable, save }: { issue: IssueView; pref
           <button className="btn" onClick={() => setEditing(false)}>
             Cancel
           </button>
-          <button className="btn primary" onClick={() => void save(value).then(() => setEditing(false))}>
+          <button className="btn primary" onClick={() => void save(value).then((ok) => ok && setEditing(false))}>
             Save
           </button>
         </div>
