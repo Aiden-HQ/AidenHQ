@@ -817,6 +817,9 @@ function mergedEvidence(said: string): string | undefined {
   const ok = Array.isArray(v) && v.every((p) => p && typeof p.repo === "string" && Number.isInteger(p.number) && typeof p.head === "string");
   return ok ? said : undefined;
 }
+/** Text inside a fence, with no `<` or `>`: a one-pass tag strip can rebuild a closing tag from a nested one, so every angle
+ * bracket goes, and the content can never end the fence it is in. */
+const inert = (t: string) => t.replace(/[<>]/g, " ");
 /** The actions whose outcome is merge evidence: the board's short `merge` and the two registered code-host merge kinds. A module's
  * own kind, whatever its name or text, is never merge evidence. */
 const MERGE_KINDS = ["merge", "github.merge", "codehost-local.merge"];
@@ -1333,13 +1336,13 @@ const TOOLS: Record<string, Tool> = {
           // Only a complete, well-formed list is evidence: a truncated line (the kernel's own outcome cap) or a producer's odd
           // payload stays a module's words in the fence, where nothing reads it as a landing.
           const evidence = merge && (first ?? "").startsWith("merged-prs: ") ? mergedEvidence((first ?? "").slice("merged-prs: ".length)) : undefined;
-          const prose = (evidence !== undefined ? rest.join("\n") : text).replace(/<\/?untrusted-outcome[^>]*>/gi, "").trim().slice(0, 300);
+          const prose = inert(evidence !== undefined ? rest.join("\n") : text).trim().slice(0, 300);
           const outcomeText = prose ? `<untrusted-outcome source="${a.action} card ${a.id}, ${a.state}">\n${prose}\n</untrusted-outcome>` : "";
           // A rejection's reason is the reviewer's or the owner's words, which may quote the diff: fenced and labelled, so a run
           // that finds the card on a later check knows what to change without reading them as an instruction.
           // An owner's own rejection reason comes first: it is what the run must change, where a review's note may only explain.
           const said = a.ownerReason ? `the owner: ${a.ownerReason}` : String(a.review ?? a.reason ?? "");
-          const why = a.state === "rejected" ? `<untrusted-card-reason source="${a.action} card ${a.id}, ${a.state}">\n${said.replace(/<\/?untrusted-card-reason[^>]*>/gi, "").slice(0, 300)}\n</untrusted-card-reason>` : "";
+          const why = a.state === "rejected" ? `<untrusted-card-reason source="${a.action} card ${a.id}, ${a.state}">\n${inert(said).slice(0, 300)}\n</untrusted-card-reason>` : "";
           return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(evidence !== undefined ? { mergedPrs: evidence } : {}), ...(why ? { reason: why } : {}), createdAt: a.createdAt };
         }),
       };
