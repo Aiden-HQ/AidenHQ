@@ -135,12 +135,12 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    on it, or a `not_planned` or duplicate close carries the closer's `Not fixing:` or `Duplicate of` comment), the trust
    gate refusing the comment is not a reason to wait on the owner, ask for a relabel, or reopen the waiting: record the
    line on the task and finish. An issue closed any other way (another PR, a commit, someone's close) keeps its state and
-   reason: record that line on the task and finish, never closing it again, once its state shows that close as above. Only
-   an issue still open after its PR merged means the PR lacked the `Fixes` line: close it `completed` with a `note`
-   carrying that line. A closed issue without that evidence takes the same comment first, so the close carries its
-   citation. When the write is refused and the issue's state does **not** show the resolution, block on the
-   upstream task that fixes the trust gate (the product bug filed for it), never on a manual relabel by the owner: a
-   relabel by an agent records the owner as vouching for an issue he never saw.
+   reason and is never closed again: only once its state shows that close as above does the run record that line on the
+   task and finish; until then it is unresolved, below. Only an issue still open after its PR merged means the PR lacked
+   the `Fixes` line: close it `completed` with a `note` carrying that line. A closed issue without that evidence takes the
+   same comment first, so the close carries its citation. When the write is refused and the issue's state does **not**
+   show the resolution, block on the upstream task that fixes the trust gate (the product bug filed for it), never on a
+   manual relabel by the owner: a relabel by an agent records the owner as vouching for an issue he never saw.
 7. `not-real` closes `not_planned` with a `note` carrying `Not fixing: <the log line or path that disproves it>`. `already-fixed` closes
    `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
    `out-of-scope` closes `not_planned` with a `note` carrying `Not fixing: <where the defect lives (the upstream project or owner), with the evidence>`; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
