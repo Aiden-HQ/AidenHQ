@@ -15,6 +15,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Requester, Rec } from "./records.ts";
 import type { Kind, Schema } from "./writes.ts";
+import { agentPaused } from "../sdk/src/agent-paused.ts";
 
 export const FLEET_OP = "kernel.fleet_op";
 /** The role that files it (cp.ts SETTLE). */
@@ -72,25 +73,27 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
     const r = await owner("GET", `/api/agents/${encodeURIComponent(id)}`);
     if (r.status === 404) throw refuse(`no agent ${id}`);
     if (r.status !== 200) throw refuse(`the control plane answered ${r.status} reading agent ${id}`, 502);
-    return r.json as { id: string; name?: string; status?: string };
+    return r.json as { id: string; name?: string; status: string; lifecycleHolds?: string[] };
   }
   const pausedNow = (status?: string) => status === "paused";
+  /** An agent is paused by its lifecycle holds (sdk agent-paused.ts, the one rule), never its runtime status. */
+  const agentHeld = (a: { status: string; lifecycleHolds?: string[] }) => agentPaused(a);
 
   /** What the op does now, checked against the live state: its card's words, or `satisfied` when nothing is left to do. */
-  async function check(op: Op, target: string): Promise<{ sentence: string; name: string; satisfied?: string }> {
+  async function check(op: Op, target: string): Promise<{ sentence: string; name: string; satisfied?: string; generation?: number }> {
     switch (op) {
       case "pause_routine": case "resume_routine": {
         const r = await routine(target), name = String(r.title ?? target).slice(0, 100);
         if (op === "pause_routine") return pausedNow(r.status) ? { sentence: "", name, satisfied: `routine ${name} is already paused` } : { sentence: `Pause routine ${name}.`, name };
-        return { ...(await resumable(`routine:${target}`, r, name)), sentence: `Resume routine ${name}.`, name };
+        return { ...(await resumable(`routine:${target}`, pausedNow(r.status), name)), sentence: `Resume routine ${name}.`, name };
       }
       case "pause_agent": case "resume_agent": {
         const a = await agent(target), name = String(a.name ?? target).slice(0, 100);
         if (op === "pause_agent") {
           if (roles(target).some((x) => UNPAUSABLE.includes(x))) throw refuse(`${name} is the chief of staff or the Steward: it is never paused this way`, 403);
-          return pausedNow(a.status) ? { sentence: "", name, satisfied: `agent ${name} is already paused` } : { sentence: `Pause agent ${name}.`, name };
+          return agentHeld(a) ? { sentence: "", name, satisfied: `agent ${name} is already paused` } : { sentence: `Pause agent ${name}.`, name };
         }
-        return { ...(await resumable(`agent:${target}`, a, name)), sentence: `Resume agent ${name}.`, name };
+        return { ...(await resumable(`agent:${target}`, agentHeld(a), name)), sentence: `Resume agent ${name}.`, name };
       }
       case "stop_run":
         return running(target) ? { sentence: `Stop the running jobs of task ${target}, leaving it open.`, name: target } : { sentence: "", name: target, satisfied: `no job runs on task ${target}` };
@@ -100,7 +103,7 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
       case "rollback": {
         if (target !== "last_good") throw refuse("a rollback's target is last_good: the kernel picks the generation");
         const to = lastGood();
-        return { sentence: `Roll this host back to apply generation ${to.n} (product ${String(to.product).slice(0, 12)}), its last good one.`, name: `generation ${to.n}` };
+        return { sentence: `Roll this host back to apply generation ${to.n} (product ${String(to.product).slice(0, 12)}), its last good one.`, name: `generation ${to.n}`, generation: to.n! };
       }
     }
   }
@@ -109,9 +112,9 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
    * A resume only of the Steward's own pause: else refused (the owner's or the chief of staff's pause stays theirs). A target
    * found running again drops the Steward's row (someone resumed it, so the pause is no longer the Steward's).
    */
-  async function resumable(key: string, live: { status?: string }, name: string): Promise<{ satisfied?: string }> {
+  async function resumable(key: string, paused: boolean, name: string): Promise<{ satisfied?: string }> {
     const mine = row(key);
-    if (!pausedNow(live.status)) {
+    if (!paused) {
       if (mine) db.prepare("DELETE FROM fleet_pauses WHERE target = ?").run(key);
       return { satisfied: `${name} isn't paused (someone resumed it)` };
     }
@@ -139,7 +142,8 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
       const a = args as { op: Op; target: string; reason: string };
       const c = await check(a.op, a.target);
       const card = { target: `${a.op} ${a.target}`, sentence: c.sentence || `${a.op} ${a.target}: nothing to do.`, changes: `${c.sentence} Why (the Steward's words): ${a.reason}`, reads: "Nothing new.", cost: "No model cost.", details: `op: ${a.op}\ntarget: ${a.target} (${c.name})\nreason: ${a.reason}` };
-      return { args: a, targets: { target: { op: a.op, id: a.target } }, card, ...(c.satisfied ? { satisfied: { evidence: c.satisfied } } : {}) };
+      // A rollback's generation is bound to the record: the one on the card is the one that runs, or none.
+      return { args: a, targets: { target: { op: a.op, id: a.target, ...(c.generation !== undefined ? { generation: c.generation } : {}) } }, card, ...(c.satisfied ? { satisfied: { evidence: c.satisfied } } : {}) };
     },
     /** The kind's executor (writes.ts native): checks again, then acts. */
     async execute(r: Rec): Promise<{ ok: boolean; text: string }> {
@@ -177,6 +181,8 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
           break;
         case "rollback": {
           const to = lastGood();
+          const approved = (r.targets as { target?: { generation?: unknown } } | undefined)?.target?.generation;
+          if (to.n !== approved) return { ok: false, text: `Not rolled back: the last good generation is now ${to.n}, not the ${String(approved)} this record was approved for (an apply ran since). File the rollback again.` };
           const unit = `aidenhq-apply-rollback-${r.id.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40)}`;
           await launch(unit, ["--generation", String(to.n)]);
           log("fleet op", { op, target, generation: to.n, unit, record: r.id });
@@ -186,8 +192,20 @@ export function createFleetOps({ db, owner, roles, services, running, stop, note
       log("fleet op", { op, target, record: r.id });
       return { ok: true, text: `${c.sentence.replace(/\.$/, "")}: done.` };
     },
-    /** The Steward's open pauses (GET /v1/work?pauses=1): the detector keeps each one an incident until it is resumed. */
-    pauses: () => (db.prepare("SELECT target, kind, name, at FROM fleet_pauses ORDER BY at").all() as Row[]).map(({ target, kind, name, at }) => ({ target, kind, name, at })),
+    /**
+     * The Steward's open pauses (GET /v1/work?pauses=1): the detector keeps each one an incident until it is resumed. Each is
+     * read live first: a target someone else resumed is no longer the Steward's pause, and its row goes.
+     */
+    async pauses() {
+      const out: { target: string; kind: string; name: string; at: string }[] = [];
+      for (const p of db.prepare("SELECT target, kind, name, at FROM fleet_pauses ORDER BY at").all() as Row[]) {
+        const [kind, id] = [p.target.slice(0, p.target.indexOf(":")), p.target.slice(p.target.indexOf(":") + 1)];
+        const paused = await (kind === "routine" ? routine(id).then((r) => pausedNow(r.status)) : agent(id).then(agentHeld)).catch((e: { status?: number }) => (e.status === 422 ? false : true));
+        if (!paused) { db.prepare("DELETE FROM fleet_pauses WHERE target = ?").run(p.target); continue; }
+        out.push({ target: p.target, kind: p.kind, name: p.name, at: p.at });
+      }
+      return out;
+    },
   };
 
   function remember(paused: boolean, target: string, kind: string, name: string, record: string) {

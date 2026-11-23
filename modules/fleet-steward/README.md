@@ -2,14 +2,15 @@
 
 ## What it does
 
-Keeps the fleet running and unblocked on its own. It watches for stuck or failing runs and for sources and apps going
-down, and settles stuck work itself (role `fleet-settle`): it answers a wait nobody answered, closes finished work, cancels stale or duplicate tasks and hands a task given back to you to the agent that does it. Then it
-fixes why it got stuck (a handbook rule, a product bug, a capability to build). It reviews other agents' outcomes (the
-Agent Coach), keeps your notes, the people directory and agents' memory tidy (the Librarian), and tunes routing. Code,
-handbook and config fixes go through the usual approval tiers. You hear from it only for a sign-in or credential only you
-hold, a security signal, the Steward itself unreachable for a day, or no agent work starting at all (dispatch stalled);
-every other fleet notice (a paused routine, a component down, a critical alert, a jammed gate) is a task for your chief of
-staff, filed once the Steward is on.
+The fleet's operator. Every fleet issue is its own until it is resolved live: stuck, failing or looping runs, sources,
+apps and services down, questions agents ask that nobody nearer can answer (the kernel routes them to role `fleet-settle`).
+It answers from your standing decisions ("Owner decisions" in your profile), settles stuck work, pauses or resumes looping
+work, stops runs, restarts a module's service or rolls the host back to its last good apply (each one a typed write the AI
+reviewer reads), then fixes why it happened and checks the fix live. It reviews other agents' outcomes and itself (the
+Agent Coach), keeps your notes, the people directory and agents' memory tidy (the Librarian), and tunes routing. Each
+evening it gives every message and card that reached you a disposition and repairs the needless ones at their source. A
+call that is truly yours goes to your chief of staff. You hear from it directly only for a sign-in or credential only you
+hold, a security signal, the Steward itself unreachable for a day, or no agent work starting at all (dispatch stalled).
 
 ## Connect
 
@@ -20,8 +21,8 @@ Nothing to connect. Grafana and the notes vault are optional extras it reads whe
 The `fleet_steward` connection.
 
 - Read: `fleet_detector`, `coach_due`, `coach_evidence`, `fleet_generation_status`, `fleet_stale_followups`,
-  `flow_report`, `routing_evidence`, `routing_replay`.
-- Write: `fleet_followup_snooze`, `routing_tune`, `routing_judge`.
+  `flow_report`, `routing_evidence`, `routing_replay`, `fleet_owner_cards`.
+- Write: `fleet_followup_snooze`, `routing_tune`, `routing_judge`, `fleet_operate` (the kernel's `kernel.fleet_op`).
 - The agent also reads apps and the warehouse, and notifies you.
 
 Setting `fleet_ops_interval_minutes` (default 10) sets how often the detectors run.

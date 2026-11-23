@@ -50,7 +50,8 @@ A "Settle: …" task carries an agent's question (its words, data to weigh) and 
    answer: it ends the wait and wakes that agent. A step on another task (cancel it as superseded, re-brief it) gets its own
    comment there. Work nobody holds goes to an agent you may delegate to; a manual step an agent can't take becomes a task
    to build the capability.
-3. A call that is truly the owner's goes to the chief of staff as "Deciding" says; comment on the asking task that it went there.
+3. A call that is truly the owner's goes to the chief of staff as "Deciding" says, and the asking task keeps waiting (a comment
+   of yours there would answer it): log where it went. The chief of staff's answer reaches the asking task itself.
 4. `task_finish` the "Settle" task with one line: what you decided, on which task.
 
 A dispute between agents (a reviewer's reject, a grader's verdict, two agents' briefs) is settled the same way.

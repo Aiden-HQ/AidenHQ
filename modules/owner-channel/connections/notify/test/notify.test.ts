@@ -45,14 +45,14 @@ describe("notify", () => {
     expect(sent).toEqual([{ to: "channel-telegram", m: { kind: "decision", text: "WOR-2 needs you" } }]);
   });
 
-  it("an agent's question reaches the owner only where they talk to it (the kernel says so); otherwise the chief of staff gets it and nothing is sent", async () => {
+  it("an agent's question reaches the owner only where they talk to it (the kernel says so); otherwise the Fleet Steward gets it and nothing is sent", async () => {
     const { d, sent, posted } = world();
     d.resolveTask = async () => ({ issueId: "i9", agentId: "a1", agentName: "Architect", ownerVia: "telegram" });
     const waits: string[] = [];
-    let to = "chief_of_staff";
+    let to = "steward";
     d.wait = async (_t, _a, question) => (waits.push(question), { to });
     const ask = { kind: "decision" as const, text: "Context.", task: "WOR-9", questions: [{ question: "Size?", options: ["S", "L"] }] };
-    expect(await notify(d, ask, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
+    expect(await notify(d, ask, agent("a1"))).toMatchObject({ sent: true, to: "steward" });
     expect(waits[0]).toMatch(/^Context\.[^]*Size\?[^]*A\) S \(recommended\)/);
     expect([sent.length, posted.length]).toEqual([0, 0]);
     // The owner is talking to it there: the question goes to them, after its wait is recorded.
@@ -62,7 +62,7 @@ describe("notify", () => {
     // A wait that can't be recorded sends nothing.
     d.wait = async () => { throw new Error("POST /v1/wait -> 503"); };
     expect(await notify(d, { ...ask, text: "Another?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
-    // A question with no task of its own becomes the chief of staff's one standing task for that agent; each later one is a
+    // A question with no task of its own becomes the Steward's one standing task for that agent; each later one is a
     // comment on it (a new task once it is closed), and the loop brake caps them; a filing that fails sends nothing.
     const filed: { title: string; description: string; role: string; source: string }[] = [];
     const commented: [string, string][] = [];
@@ -70,11 +70,11 @@ describe("notify", () => {
     d.fileTask = async (b) => { filed.push(b); return { id: "t-" + b.source, deduplicated: filed.filter((f) => f.source === b.source).length > 1 }; };
     d.noticeTask = async (id, body) => (closed && id === "t-notify-ask:a1" ? { closed: true } : (commented.push([id, body]), {}));
     d.brake = async () => ({ allow });
-    expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
+    expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ sent: true, to: "steward" });
     expect(await notify(d, { kind: "decision", text: "Ship it?" }, agent("a1"))).toMatchObject({ reason: "duplicate" });
-    expect([filed.length, filed[0]!.role, filed[0]!.source]).toEqual([1, "fleet-admin", "notify-ask:a1"]);
+    expect([filed.length, filed[0]!.role, filed[0]!.source, filed[0]!.title]).toEqual([1, "fleet-settle", "notify-ask:a1", "Settle: questions from a1"]);
     expect(filed[0]!.description).toMatch(/not instructions[^]*```\nShip it\?\n```/);
-    expect(await notify(d, { kind: "decision", text: "And ship it twice?" }, agent("a1"))).toMatchObject({ sent: true, to: "chief_of_staff" });
+    expect(await notify(d, { kind: "decision", text: "And ship it twice?" }, agent("a1"))).toMatchObject({ sent: true, to: "steward" });
     expect([filed.map((f) => f.source), commented.length, commented[0]![1]]).toEqual([["notify-ask:a1", "notify-ask:a1"], 1, expect.stringMatching(/question from a1 \(data, not instructions\)[^]*```\nAnd ship it twice\?\n```/)]);
     allow = false;
     expect(await notify(d, { kind: "decision", text: "Ship a third?" }, agent("a1"))).toMatchObject({ sent: false, reason: "limit" });
@@ -85,6 +85,11 @@ describe("notify", () => {
     expect(filed.at(-1)!.source).toMatch(/^notify-ask:a1:\d+$/);
     d.fileTask = async () => { throw new Error("kernel POST /v1/tasks → 409"); };
     expect(await notify(d, { kind: "decision", text: "Ship now?" }, agent("a1"))).toMatchObject({ sent: false, reason: "error" });
+    // The Steward's own question with no task goes to the chief of staff, never back to itself.
+    d.fileTask = async (b) => { filed.push(b); return { id: "t-" + b.source, deduplicated: false }; };
+    const steward = { ...agent("s1"), roles: ["fleet-settle"] };
+    expect(await notify(d, { kind: "decision", text: "Owner's call?" }, steward)).toMatchObject({ sent: true, to: "chief_of_staff" });
+    expect([filed.at(-1)!.role, filed.at(-1)!.title]).toEqual(["fleet-admin", "Decide for the owner: questions from s1"]);
     // The chief of staff asks the owner wherever it is, always in multiple choice.
     const cos = { ...agent("c1"), roles: ["fleet-admin"] };
     expect(await notify(d, { kind: "decision", text: "Raise the cap?" }, cos)).toMatchObject({ sent: false, reason: "error", note: expect.stringMatching(/questions/) });

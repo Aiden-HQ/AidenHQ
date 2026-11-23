@@ -6,12 +6,14 @@
 //   1. the tag is a published pre-release, not marked rejected, and the one graduation would test next: the oldest pending
 //      pre-release newer than the latest release (so latest only ever moves forward, in order);
 //   2. the candidate's release run passed: the tag run its notes name (`Tested: {"ci_run": …}`) is this repo's release.yml run
-//      on this tag, concluded success, its `publish` job a success;
+//      on this tag at the tag's current commit, concluded success, its `publish` job a success;
 //   3. the latest completed graduation run (graduate.yml, on the default branch, started after the candidate was published)
-//      failed before the candidate stage: its `select` job failed (a baseline that can't prepare the candidate), or its
-//      `reject` job ran to success and marked the candidate neither `graduation: failed` (its own checks failed) nor
-//      `graduation: incomplete <that run>` (it reached the candidate and never finished). That is graduate.mjs onFailure's
-//      own verdict that the failure wasn't the candidate's.
+//      failed before the candidate stage, and it was this candidate's run: no other release's notes name that run (a run that
+//      judged an older cut marks that one), and either its `select` job failed (a baseline that can't prepare the
+//      candidate), or its `reject` job ran to success, opened its "Graduation of <tag> didn't finish" issue for this tag, and
+//      marked the candidate neither `graduation: failed` (its own checks failed) nor `graduation: incomplete <that run>` (it
+//      reached the candidate and never finished). That is graduate.mjs onFailure's own verdict that the failure wasn't the
+//      candidate's.
 // Then the release is made a full release and latest, with one line in its notes naming the failed run. The checks run again
 // at execution: the tool runs only once its write record is approved.
 import { GitHubRefused } from "./github.js";
@@ -51,6 +53,10 @@ export async function graduationCheck(rest: Rest, repo: string, tag: string): Pr
   if (!ci || ci[1]!.toLowerCase() !== repo.toLowerCase()) throw new GitHubRefused(`${tag}'s notes name no release run of ${repo}`);
   const tagRun = await get(rest, `/repos/${repo}/actions/runs/${ci[2]}`);
   if (tagRun.path !== ".github/workflows/release.yml" || tagRun.head_branch !== tag || tagRun.status !== "completed" || tagRun.conclusion !== "success") throw new GitHubRefused(`${tag}'s release run ${ci[2]} isn't a passed release.yml run on the tag`);
+  // The tag as it is now (an annotated tag followed to its commit) is what that run tested.
+  let obj = (await get(rest, `/repos/${repo}/git/ref/tags/${tag}`)).object;
+  for (let i = 0; obj?.type === "tag" && i < 5; i++) obj = (await get(rest, `/repos/${repo}/git/tags/${obj.sha}`)).object;
+  if (obj?.type !== "commit" || obj.sha !== tagRun.head_sha) throw new GitHubRefused(`${tag} no longer points at the commit its release run tested`);
   const tagJobs: any[] = (await get(rest, `/repos/${repo}/actions/runs/${ci[2]}/jobs?per_page=100`)).jobs ?? [];
   if (tagJobs.find((j) => j.name === "publish")?.conclusion !== "success") throw new GitHubRefused(`${tag}'s release run didn't publish`);
   // 3. The latest completed graduation run, on the default branch, after the candidate was published.
@@ -61,8 +67,11 @@ export async function graduationCheck(rest: Rest, repo: string, tag: string): Pr
   if (Date.parse(run.created_at) < Date.parse(rel.published_at ?? rel.created_at)) throw new GitHubRefused(`the latest graduation run started before ${tag} was published: it never tested it`);
   const jobs: any[] = (await get(rest, `/repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`)).jobs ?? [];
   const job = (n: string) => jobs.find((j) => j.name === n);
+  if (releases.some((r) => r.id !== rel.id && String(r.body ?? "").includes(run.html_url))) throw new GitHubRefused(`graduation run ${run.id} judged another release, not ${tag}`);
   const bootstrap = job("select")?.conclusion === "failure";
-  const judged = job("reject")?.conclusion === "success" && !String(rel.body ?? "").split("\n").includes(`graduation: incomplete ${run.html_url}`);
+  const issues: any[] = bootstrap ? [] : await get(rest, `/repos/${repo}/issues?state=all&creator=${encodeURIComponent("github-actions[bot]")}&per_page=100`);
+  const judged = job("reject")?.conclusion === "success" && !String(rel.body ?? "").split("\n").includes(`graduation: incomplete ${run.html_url}`)
+    && issues.some((i) => !i.pull_request && i.title === `Graduation of ${tag} didn't finish`);
   if (!bootstrap && !judged) throw new GitHubRefused(`graduation run ${run.id} didn't fail before the candidate stage (or its verdict wasn't recorded): ${tag} stays a pre-release`);
   return { release: { id: rel.id, body: String(rel.body ?? "") }, run: run.html_url };
 }

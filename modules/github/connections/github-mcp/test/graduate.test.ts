@@ -5,17 +5,22 @@ const REPO = "acme/distro";
 const RUN = "https://github.com/acme/distro/actions/runs/900";
 
 /** GitHub as the graduation check reads it: a latest release, a pending candidate, its tag run and the last graduation run. */
-function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusion: string }[]; gradConclusion?: string; tagConclusion?: string; older?: boolean } = {}) {
+function github(o: { candidateBody?: string; gradJobs?: { name: string; conclusion: string }[]; gradConclusion?: string; tagConclusion?: string; older?: boolean; olderRejectedBy?: boolean; moved?: boolean; noIssue?: boolean } = {}) {
   const patched: unknown[] = [];
   const releases = [
     { id: 1, tag_name: "2026.11.20", prerelease: false, draft: false, body: "" },
     ...(o.older ? [{ id: 3, tag_name: "2026.11.21", prerelease: true, draft: false, body: "", published_at: "2026-11-21T00:00:00Z" }] : []),
+    // An older cut the same run rejected: the run was its, not the candidate's.
+    ...(o.olderRejectedBy ? [{ id: 4, tag_name: "2026.11.21", prerelease: true, draft: false, body: `graduation: failed ${RUN}\n`, published_at: "2026-11-21T00:00:00Z" }] : []),
     { id: 2, tag_name: "2026.11.22", prerelease: true, draft: false, published_at: "2026-11-22T00:00:00Z", body: o.candidateBody ?? `Tested: {"ci_run":"https://github.com/acme/distro/actions/runs/500","suites":["product-ci"]}` },
   ];
   const routes: Record<string, unknown> = {
     [`/repos/${REPO}/releases?per_page=100&page=1`]: releases,
     [`/repos/${REPO}/releases/latest`]: releases[0],
-    [`/repos/${REPO}/actions/runs/500`]: { path: ".github/workflows/release.yml", head_branch: "2026.11.22", status: "completed", conclusion: o.tagConclusion ?? "success" },
+    [`/repos/${REPO}/actions/runs/500`]: { path: ".github/workflows/release.yml", head_branch: "2026.11.22", head_sha: "a".repeat(40), status: "completed", conclusion: o.tagConclusion ?? "success" },
+    [`/repos/${REPO}/git/ref/tags/2026.11.22`]: { object: { type: "tag", sha: "t".repeat(40) } },
+    [`/repos/${REPO}/git/tags/${"t".repeat(40)}`]: { object: { type: "commit", sha: o.moved ? "b".repeat(40) : "a".repeat(40) } },
+    [`/repos/${REPO}/issues?state=all&creator=github-actions%5Bbot%5D&per_page=100`]: o.noIssue ? [] : [{ title: "Graduation of 2026.11.22 didn't finish" }],
     [`/repos/${REPO}/actions/runs/500/jobs?per_page=100`]: { jobs: [{ name: "publish", conclusion: "success" }] },
     [`/repos/${REPO}`]: { default_branch: "main" },
     [`/repos/${REPO}/actions/workflows/graduate.yml/runs?branch=main&status=completed&per_page=1`]: { workflow_runs: [{ id: 900, html_url: RUN, conclusion: o.gradConclusion ?? "failure", created_at: "2026-11-23T00:00:00Z" }] },
@@ -48,6 +53,9 @@ it("refuses when the candidate's own checks failed, it never finished, its relea
     github({ gradJobs: [{ name: "select", conclusion: "success" }, { name: "test", conclusion: "failure" }, { name: "reject", conclusion: "failure" }] }),
     github({ older: true }),
     github({ candidateBody: "no tested line" }),
+    github({ olderRejectedBy: true }),
+    github({ moved: true }),
+    github({ noIssue: true }),
   ];
   for (const g of cases) await expect(graduate(g.rest, REPO, "2026.11.22")).rejects.toThrow();
   expect(cases.every((g) => g.patched.length === 0)).toBe(true);

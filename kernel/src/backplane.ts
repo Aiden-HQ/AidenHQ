@@ -922,7 +922,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
       }
       if (hit?.path === "/v1/work" && isBoard(req)) {
         if (!work) throw fail(503, "unavailable", "work reads are off");
-        return send(res, 200, workRead(work, new URLSearchParams(q ?? "")));
+        return send(res, 200, await workRead(work, new URLSearchParams(q ?? "")));
       }
       if (hit && hit.path.startsWith("/v1/work")) {
         const w = await moduleOf(req);
@@ -942,7 +942,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           return send(res, 200, { token: graderToken(b.task.slice(0, 100), issue.json.assigneeAgentId) });
         }
         if (hit.path === "/v1/work/metrics") return void res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(work.metrics());
-        return send(res, 200, workRead(work, new URLSearchParams(q ?? "")));
+        return send(res, 200, await workRead(work, new URLSearchParams(q ?? "")));
       }
       if (hit?.path === "/v1/objects") {
         const w = await moduleOf(req);
