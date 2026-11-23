@@ -32,9 +32,9 @@ const withAI = (a: Approval) => a.state === "pending" && !forOwner(a);
 /**
  * A pending Tier 2 card's Approve and Reject (a reason is optional with a reject: the agent is told). The board forwards the
  * signed-in admin's session; the kernel checks it and decides against the digest this card shows, so a card that changed
- * meanwhile fails alone and says so.
+ * meanwhile fails alone and says so. A decision sent stays sent: the buttons come back only if it failed.
  */
-function Decide({ a }: { a: Approval }) {
+function Decide({ a, hold }: { a: Approval; hold?: boolean }) {
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -46,22 +46,22 @@ function Decide({ a }: { a: Approval }) {
       await api.decide(a.id, a.digest, d, d === "reject" ? reason.trim() || undefined : undefined);
     } catch (e) {
       setError((e as Error).message);
-    } finally {
       setBusy(null);
     }
   };
+  const off = busy !== null || Boolean(hold);
   return (
-    <div className="approval-decide">
+    <div className="approval-decide" title={hold ? "Refreshing this card: it can be decided once the fresh copy lands" : undefined}>
       {rejecting ? (
         <form className="approval-actions" onSubmit={(e) => (e.preventDefault(), void decide("reject"))}>
           <Input className="decide-reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} placeholder="Why not? (optional, the agent is told)" aria-label="Reason for rejecting" autoFocus />
-          <Button type="submit" variant="danger" disabled={busy !== null}>{busy === "reject" ? "Rejecting…" : "Reject"}</Button>
+          <Button type="submit" variant="danger" disabled={off}>{busy === "reject" ? "Rejecting…" : "Reject"}</Button>
           <Button variant="quiet" onClick={() => setRejecting(false)} disabled={busy !== null}>Cancel</Button>
         </form>
       ) : (
         <div className="approval-actions">
-          <Button variant="primary" className="approve" onClick={() => void decide("approve")} disabled={busy !== null}>{busy === "approve" ? "Approving…" : "Approve"}</Button>
-          <Button onClick={() => setRejecting(true)} disabled={busy !== null}>Reject…</Button>
+          <Button variant="primary" className="approve" onClick={() => void decide("approve")} disabled={off}>{busy === "approve" ? "Approving…" : "Approve"}</Button>
+          <Button onClick={() => setRejecting(true)} disabled={off}>Reject…</Button>
         </div>
       )}
       {error && <p className="decide-error" role="alert">{error}</p>}
@@ -73,10 +73,11 @@ function Decide({ a }: { a: Approval }) {
  * The batch bar for the cards picked on the Approvals list: Approve n, or Reject n with one reason. Each card is decided on its
  * own against the digest it showed (as a single card is), so one that changed meanwhile fails alone and is named here.
  */
-function BatchBar({ cards, done, busy, setBusy }: { cards: Approval[]; /** The cards not decided (each with why), once the batch has run. */ done: (failed: string[]) => void; /** The running batch's decision: the list holds it, so hiding the bar never unlocks a batch still running. */ busy: "approve" | "reject" | null; setBusy: (b: "approve" | "reject" | null) => void }) {
+function BatchBar({ cards, done, busy, setBusy, hold }: { cards: Approval[]; /** The cards not decided (each with why), once the batch has run. */ done: (failed: string[]) => void; /** The running batch's decision: the list holds it, so hiding the bar never unlocks a batch still running. */ busy: "approve" | "reject" | null; setBusy: (b: "approve" | "reject" | null) => void; /** The cards are an earlier visit's copy: nothing is decided until the fresh one lands. */ hold: boolean }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const n = cards.length;
+  const off = busy !== null || hold;
   const decide = async (d: "approve" | "reject") => {
     setBusy(d);
     const bad: string[] = [];
@@ -99,13 +100,13 @@ function BatchBar({ cards, done, busy, setBusy }: { cards: Approval[]; /** The c
       {rejecting ? (
         <form className="batch-actions" onSubmit={(e) => (e.preventDefault(), void decide("reject"))}>
           <Input className="decide-reason" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} placeholder="Why not? (optional, each agent is told)" aria-label="Reason for rejecting" autoFocus />
-          <Button type="submit" variant="danger" disabled={busy !== null}>{busy === "reject" ? "Rejecting…" : `Reject ${n}`}</Button>
+          <Button type="submit" variant="danger" disabled={off}>{busy === "reject" ? "Rejecting…" : `Reject ${n}`}</Button>
           <Button variant="quiet" onClick={() => setRejecting(false)} disabled={busy !== null}>Cancel</Button>
         </form>
       ) : (
         <div className="batch-actions">
-          <Button onClick={() => setRejecting(true)} disabled={busy !== null}>Reject {n}…</Button>
-          <Button variant="primary" onClick={() => void decide("approve")} disabled={busy !== null}>{busy === "approve" ? "Approving…" : `Approve ${n}`}</Button>
+          <Button onClick={() => setRejecting(true)} disabled={off}>Reject {n}…</Button>
+          <Button variant="primary" onClick={() => void decide("approve")} disabled={off}>{busy === "approve" ? "Approving…" : `Approve ${n}`}</Button>
         </div>
       )}
     </div>
@@ -117,7 +118,7 @@ function BatchBar({ cards, done, busy, setBusy }: { cards: Approval[]; /** The c
  * is decided here (Decide); its id opens it alone (#/approvals/<id>).
  * An expired card (timed out or replaced by a newer request) folds to one muted line; a tap shows it whole.
  */
-export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick }: { a: Approval; open: (identifier: string) => void; inline?: boolean; prefix?: string; unfold?: boolean; /** On the Approvals list: the card's box in a batch decision. */ pick?: { on: boolean; toggle: () => void } }) {
+export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick, hold }: { a: Approval; open: (identifier: string) => void; inline?: boolean; prefix?: string; unfold?: boolean; /** On the Approvals list: the card's box in a batch decision. */ pick?: { on: boolean; toggle: () => void }; /** The card is an earlier visit's cached copy: it can't be decided until the fresh one lands. */ hold?: boolean }) {
   const [unfolded, setUnfolded] = useState(Boolean(unfold));
   // In a conversation a decided card is one line; one decided while on screen stays open.
   const [seenPending] = useState(a.state === "pending");
@@ -153,7 +154,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick }: { a
       </li>
     );
   }
-  const buttons = forOwner(a) && <Decide a={a} />;
+  const buttons = forOwner(a) && <Decide a={a} hold={hold} />;
   const label = a.outcome === "applied" ? "Applied." : a.outcome === "failed" ? "Failed:" : OUTCOME[a.state];
   const text = a.outcome === "applied" ? (a.outcomeText ?? "") : a.outcome === "failed" ? (a.outcomeText ?? "no reason given") : a.state === "running" ? (a.wait ?? "") : "";
   return (
@@ -161,7 +162,7 @@ export function ApprovalCard({ a, open, inline, prefix = "", unfold, pick }: { a
       <div className="approval-head">
         {pick && (
           <label className="approval-pick" title="Select for a batch decision">
-            <input type="checkbox" checked={pick.on} onChange={pick.toggle} aria-label={`Select ${a.identifier}: ${a.sentence}`} />
+            <input type="checkbox" checked={pick.on} onChange={pick.toggle} disabled={hold} aria-label={`Select ${a.identifier}: ${a.sentence}`} />
           </label>
         )}
         <button className="chat-open" onClick={() => open(a.identifier)}>
@@ -363,7 +364,7 @@ function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; 
           {(f === "pending" || f === "all") && pending.length > 1 && (
             <div className="batch-select">
               <label className="approval-pick">
-                <input type="checkbox" checked={chosen.length === pending.length} ref={(el) => void (el && (el.indeterminate = chosen.length > 0 && chosen.length < pending.length))} onChange={() => setPicked(chosen.length === pending.length ? [] : pending.map((a) => a.id))} />
+                <input type="checkbox" disabled={hold} checked={chosen.length === pending.length} ref={(el) => void (el && (el.indeterminate = chosen.length > 0 && chosen.length < pending.length))} onChange={() => setPicked(chosen.length === pending.length ? [] : pending.map((a) => a.id))} />
                 <span>{chosen.length ? `${chosen.length} of ${pending.length} selected` : `Select all ${pending.length}`}</span>
               </label>
               {chosen.length > 0 && <button className="link-btn small" onClick={() => setPicked([])}>Clear</button>}
@@ -372,11 +373,11 @@ function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; 
           {(f === "pending" || f === "all") && pending.length > 0 && (
             <ul className="approval-list pending-grid">
               {pending.map((a) => (
-                <ApprovalCard key={a.id} a={a} open={open} pick={{ on: picked.includes(a.id), toggle: () => setPicked((p) => (p.includes(a.id) ? p.filter((x) => x !== a.id) : [...p, a.id])) }} />
+                <ApprovalCard key={a.id} a={a} open={open} hold={hold} pick={{ on: picked.includes(a.id), toggle: () => setPicked((p) => (p.includes(a.id) ? p.filter((x) => x !== a.id) : [...p, a.id])) }} />
               ))}
             </ul>
           )}
-          {(f === "pending" || f === "all") && chosen.length > 0 && <BatchBar cards={chosen} busy={batching} setBusy={setBatching} done={(failed) => (setUnbatched(failed), setPicked([]), void load())} />}
+          {(f === "pending" || f === "all") && chosen.length > 0 && <BatchBar cards={chosen} busy={batching} setBusy={setBatching} hold={hold} done={(failed) => (setUnbatched(failed), setPicked([]), void load())} />}
           {(f === "pending" || f === "all") && others.length > 0 && (
             <section>
               <header className="section-head">

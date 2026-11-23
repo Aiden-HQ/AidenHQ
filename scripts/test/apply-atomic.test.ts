@@ -11,7 +11,7 @@ import { describe, it as test } from "node:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,7 +105,8 @@ echo "compose: recreated what moved"
   "ops/ci-runner-units.sh": "#!/usr/bin/env bash\n",
 };
 const BINS = {
-  docker: `#!/usr/bin/env bash\nprintf 'docker %s\\n' "$*" >> "$CALLS"\n[ "$1" = run ] && exec node "$(dirname "$0")/docker-run.mjs" "\${@:2}"\ncase "$*" in *"config -q"*) grep -q badcompose compose.modules.next.yaml && exit 1 ;; "compose build") [ -f "$CTRL/badbuild" ] && exit 1 ;; *"config --format json"*) printf '{"services":{"svc":{"image":"svc:local","build":{"context":"%s/svc","dockerfile":"Dockerfile"}}}}\\n' "$PWD" ;; esac\nexit 0\n`,
+  // With ctrl/badrestore a module data restore (genRestore's container) fails.
+  docker: `#!/usr/bin/env bash\nprintf 'docker %s\\n' "$*" >> "$CALLS"\ncase "$*" in run*.restore-*) [ -f "$CTRL/badrestore" ] && exit 1 ;; esac\n[ "$1" = run ] && exec node "$(dirname "$0")/docker-run.mjs" "\${@:2}"\ncase "$*" in *"config -q"*) grep -q badcompose compose.modules.next.yaml && exit 1 ;; "compose build") [ -f "$CTRL/badbuild" ] && exit 1 ;; *"config --format json"*) printf '{"services":{"svc":{"image":"svc:local","build":{"context":"%s/svc","dockerfile":"Dockerfile"}}}}\\n' "$PWD" ;; esac\nexit 0\n`,
   // docker run [--rm] [-i] [--network x] [-v host:ctr[:ro]]... [-e K=V]... image cmd...: cmd on the host, container paths mapped.
   "docker-run.mjs": `import { spawnSync } from "node:child_process";
 const a = process.argv.slice(2), vols = [], env = {};
@@ -905,6 +906,38 @@ test("A14: a post-apply health failure reverts to the LKG's product, keeps what 
   assert.deepEqual(w.gens().at(-1), { ...w.gens().at(-1), product: p2, instance: i2, health: "good" });
   assert.equal(w.head("prod"), p2);
   assert.equal(git(w.d("inst"), "symbolic-ref", "--short", "HEAD"), "main");
+});
+
+test("an auto-revert whose data restore fails stops there, and the rollback its alert names puts the data back", async () => {
+  const w = world();
+  // Module acme's data at data_version 0, then a product that migrates it to 1 and fails its health check.
+  mkdirSync(w.d("prod/data/modules/acme/state"), { recursive: true });
+  writeFileSync(w.d("prod/data/modules/acme/state/db.txt"), "v0\n");
+  assert.equal((await w.run()).status, 0);
+  writeFileSync(w.d("ctrl/break"), "");
+  writeFileSync(w.d("ctrl/badrestore"), "");
+  const p2 = w.commitProduct("2", { BAD_HEALTH: "", DATA_VERSION: "1" });
+  w.commitInstance(p2);
+  const r = await w.run();
+  assert.equal(r.status, 1, r.out);
+  const g = w.gens();
+  assert.deepEqual(g.map((x) => [x.n, x.health]), [[1, "good"], [2, "good"], [3, "failed"]], "no revert generation, nothing marked good");
+  assert.ok(g[2].snapshot, "the failed generation took a snapshot");
+  assert.equal(w.head("prod"), p2, "the last known good's product was not re-applied");
+  assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), p2);
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /apply alert: generation 3 failed .* putting acme's data back from .* failed, so generation 2 was not re-applied/);
+  assert.doesNotMatch(readFileSync(w.d("state/apply-3.log"), "utf8"), /was reverted to generation 2/);
+  assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /run ops\/rollback\.sh 2 from the owner's shell/);
+  // What the alert says to do, once the cause is fixed: the rollback puts acme's data back from generation 3's snapshot, even
+  // from a restore cut off between its renames (only .replaced-acme left).
+  renameSync(w.d("prod/data/modules/acme"), w.d("prod/data/modules/.replaced-acme"));
+  rmSync(w.d("ctrl/badrestore"));
+  rmSync(w.d("ctrl/break"));
+  const back = await w.sh("ops/rollback.sh", "2");
+  assert.equal(back.status, 0, back.out);
+  assert.equal(w.gens().at(-1).health, "good");
+  assert.equal(w.head("prod"), w.p1);
+  assert.equal(readFileSync(w.d("prod/data/modules/acme/state/db.txt"), "utf8"), "v0\n", "acme's data is back to before the migration");
 });
 
 // A /healthz timeout names what blocked the kernel: the curl exit (7 = nothing listening, 28 = request timed out) and the

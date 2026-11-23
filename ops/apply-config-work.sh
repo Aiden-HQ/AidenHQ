@@ -369,7 +369,8 @@ runnerTemplateMatches() {
 
 # Generation n failed (marked so already): its whole snapshot put back, then the last known good's product re-applied by a
 # child in --generation mode (it never reverts), on the instance revertInstance makes. Data first, so the older code never
-# starts on data it doesn't know. Returns 1.
+# starts on data it doesn't know: a module whose data can't be put back stops the revert there, as a rollback refuses
+# (applyGeneration), and the owner's ops/rollback.sh retries it. Returns 1.
 revertTo() {
   local n="$1" why="$2" log="$3" lkg snap t base rrc=0 target what
   lkg="$(genLkg)"
@@ -384,16 +385,14 @@ revertTo() {
   snap="$(genGet "$n" snapshot)"
   for t in ${snap:+"$snap"/*.tar}; do
     [ -f "$t" ] || continue
-    if genRestore "$(basename "$t" .tar)" "$t"; then echo "auto-revert: $(basename "$t" .tar)'s data is back to $(genGet "$n" snapshot_at)"
-    else echo "apply alert: putting $(basename "$t" .tar)'s data back from $t failed; log $log"; fi
+    if ! genRestore "$(basename "$t" .tar)" "$t"; then
+      echo "apply alert: generation $n failed ($why) and putting $(basename "$t" .tar)'s data back from $t failed, so generation $lkg was not re-applied (its code never starts on data it doesn't know): this host stays on generation $n with that module stopped and the instance checkout at ${target:0:12}; run ops/rollback.sh $lkg from the owner's shell; log $log"
+      return 1
+    fi
+    echo "auto-revert: $(basename "$t" .tar)'s data is back to $(genGet "$n" snapshot_at)"
   done
   echo "auto-revert: re-applying generation $lkg (product $(genGet "$lkg" product | cut -c1-12)) on instance ${target:0:12}: $what"
   base="$GEN_DIR/apply-$n.baseline"; [ -f "$base" ] || base=""
-  # Put the generation being brought back's template in place here, before the child runs. The child is that generation's
-  # own tree, and a product that predates the helper can't gate the template at all (its gate reads list-unit-files, never
-  # true on a live host), so it would leave the failed generation's template on the units it is bringing back. A tree that
-  # has the helper installs the same file again in its own switch (cmp makes that a no-op). A restore that fails is a failed
-  # revert: systemd would keep the failed generation's template while this reports the revert as good.
   # The generation being brought back's own template, before the child runs: the child is that generation's tree, and a
   # product that predates the helper cannot gate or install the template at all, so it would leave the failed generation's
   # template on the units it is about to start. A tree that has the helper installs the same file again in its own switch

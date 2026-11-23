@@ -155,7 +155,7 @@ Tool conventions, which also go into the module guidelines:
 ### Writes, approvals and stamps
 
 - **Acting as the account:** every write runs as the signed-in account (`account:<id>`), exactly as a board tap does, and
-  is labelled `via: mcp` in the activity log and on the card outcome ("approved by Mudit via Claude"). The board's request
+  is labelled `via: mcp` in the activity log and on the card outcome ("approved by <owner> via Claude"). The board's request
   context carries `via`; paths that don't record it yet show only the account, which is fine.
 - **Deciding cards:** a new kernel route, `POST /v1/owner/decide`, takes the MCP bearer, derives `account:<id>` from the
   verified grant (never from the request body) and calls the existing

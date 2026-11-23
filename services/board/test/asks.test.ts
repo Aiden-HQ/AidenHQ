@@ -46,7 +46,7 @@ const ask = (question: string, options: string[]) =>
 
 // The kernel's state: the architect's task waits for the owner's answer from its question until a comment of his after it.
 const states = fakeStates();
-const waiting = (question: string, since: string) => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "owner_wait", since, wait_since: since, question, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}` }] })]);
+const waiting = (question: string, since: string) => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "waiting", reason: "owner_wait", since, wait_since: since, question, attention: [{ who: "owner", why: "owner_wait", ref: `wait:${child.id}`, since }] })]);
 const answered = () => (states.rows = [row(chat.id, { identifier: chat.identifier, kind: "waiting", reason: "chat_turn" }), row(child.id, { identifier: child.identifier, kind: "working", reason: "job_running" })]);
 
 const pc = {

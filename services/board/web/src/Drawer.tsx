@@ -60,15 +60,18 @@ export function Drawer({ refId, focus, board, onClose, onChanged, onMove, onSnoo
     };
   }, [load]);
 
-  async function update(u: Update, note?: string) {
-    if (!issue) return;
+  /** Saves a change to the task; false when it failed (the toast says why). */
+  async function update(u: Update, note?: string): Promise<boolean> {
+    if (!issue) return false;
     setBusy(true);
     try {
       setIssue(await api.update(issue.id, u));
       onChanged();
       if (note) toast(note);
+      return true;
     } catch (e) {
       toast(`Couldn't save: ${(e as Error).message}`);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -77,7 +80,7 @@ export function Drawer({ refId, focus, board, onClose, onChanged, onMove, onSnoo
   async function setStatus(status: "todo" | "in_progress" | "done" | "cancelled") {
     if (!issue) return;
     const before = issue.status;
-    await update({ status });
+    if (!(await update({ status }))) return;
     if (status === "done" || status === "cancelled") {
       toast(`${issue.identifier} ${status === "done" ? "done" : "cancelled"}`, { label: "Undo", run: () => void api.update(issue.id, { status: before === "in_progress" ? "in_progress" : "todo" }).then(onChanged, (e) => toast(`Couldn't undo: ${(e as Error).message}`)) });
       onClose();
@@ -102,7 +105,7 @@ interface BodyProps {
   focus?: string;
   board: Board;
   busy: boolean;
-  update: (u: Update, note?: string) => Promise<void>;
+  update: (u: Update, note?: string) => Promise<boolean>;
   setStatus: (s: "todo" | "in_progress" | "done" | "cancelled") => Promise<void>;
   onClose: () => void;
   onMove: (id: string, bucket: Bucket) => Promise<void>;
@@ -343,7 +346,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
 }
 
 /** The task itself: what it's about, its files, who's on it, and the team chat (kept on the task until an agent is named). */
-function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<void>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
+function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, moved }: { issue: IssueView; board: Board; editable: boolean; update: (u: Update) => Promise<boolean>; reload: () => Promise<void>; toast: Props["toast"]; pick: (t: string) => void; onAdd: () => void; moved: (identifier: string) => void }) {
   const mine = issue.assignee === "me";
   const closed = issue.status === "done" || issue.status === "cancelled";
   const assistant = board.assignees.find((a) => a.kind === "assistant");
@@ -724,21 +727,27 @@ function DetailSection({ title, hint, children }: { title: string; hint?: string
   );
 }
 
-function Title({ issue, editable, save }: { issue: IssueView; editable: boolean; save: (t: string) => Promise<void> }) {
-  const [value, setValue] = useState(issue.title);
-  useEffect(() => setValue(issue.title), [issue.title]);
+/** The task's title, edited in place. An edit in progress is the owner's: a refresh that changes the title meanwhile never replaces it. */
+export function Title({ issue, editable, save }: { issue: IssueView; editable: boolean; save: (t: string) => Promise<boolean> }) {
+  // null: not edited, so the task's own title shows (and follows refreshes).
+  const [draft, setDraft] = useState<string | null>(null);
+  // Escape blurs too: the blur that follows must drop the draft, not save it (its handler still sees this render's draft).
+  const cancelled = useRef(false);
   const commit = () => {
-    const t = value.trim();
-    if (t && t !== issue.title) void save(t);
-    else setValue(issue.title);
+    const t = cancelled.current ? undefined : draft?.trim();
+    cancelled.current = false;
+    // Once saved, the draft gives way to the task's title, unless the owner has typed on since (a newer draft stays). A failed
+    // save keeps it, for another try.
+    if (t && t !== issue.title) void save(t).then((ok) => ok && setDraft((d) => (d === draft ? null : d)));
+    else setDraft(null);
   };
   return (
     <textarea
       className="title-input"
       rows={1}
-      value={value}
+      value={draft ?? issue.title}
       readOnly={!editable}
-      onChange={(e) => setValue(e.target.value.replace(/\n/g, " "))}
+      onChange={(e) => setDraft(e.target.value.replace(/\n/g, " "))}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
@@ -746,7 +755,7 @@ function Title({ issue, editable, save }: { issue: IssueView; editable: boolean;
           (e.target as HTMLTextAreaElement).blur();
         }
         if (e.key === "Escape") {
-          setValue(issue.title);
+          cancelled.current = true;
           e.stopPropagation();
           (e.target as HTMLTextAreaElement).blur();
         }
@@ -758,7 +767,7 @@ function Title({ issue, editable, save }: { issue: IssueView; editable: boolean;
   );
 }
 
-function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Assignee; update: (u: Update) => Promise<void> }) {
+function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Assignee; update: (u: Update) => Promise<unknown> }) {
   const [models, setModels] = useState<Models | null>(null);
   const [catalog, refreshCatalog] = useModelCatalog();
   useEffect(() => {
@@ -808,7 +817,7 @@ function Executor({ issue, assignee, update }: { issue: IssueView; assignee: Ass
 // Machine labels, and waiting-on (no longer used: only your own actions become tasks).
 const HIDDEN_LABELS = new Set(["daily-brief", "system-error", "waiting-on"]);
 
-function Labels({ all, selected, disabled, save }: { all: Label[]; selected: string[]; disabled: boolean; save: (ids: string[]) => Promise<void> }) {
+function Labels({ all, selected, disabled, save }: { all: Label[]; selected: string[]; disabled: boolean; save: (ids: string[]) => Promise<unknown> }) {
   const set = new Set(selected);
   return (
     <div className="label-picker">
@@ -829,7 +838,8 @@ function Labels({ all, selected, disabled, save }: { all: Label[]; selected: str
   );
 }
 
-function Description({ issue, prefix, editable, save }: { issue: IssueView; prefix: string; editable: boolean; save: (d: string) => Promise<void> }) {
+/** The task's description. A failed save keeps the editor open with the draft, for another try. */
+function Description({ issue, prefix, editable, save }: { issue: IssueView; prefix: string; editable: boolean; save: (d: string) => Promise<boolean> }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(issue.description);
   useEffect(() => {
@@ -844,7 +854,7 @@ function Description({ issue, prefix, editable, save }: { issue: IssueView; pref
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(value).then(() => setEditing(false));
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void save(value).then((ok) => ok && setEditing(false));
             if (e.key === "Escape") e.stopPropagation(), setEditing(false);
           }}
         />
@@ -853,7 +863,7 @@ function Description({ issue, prefix, editable, save }: { issue: IssueView; pref
           <button className="btn" onClick={() => setEditing(false)}>
             Cancel
           </button>
-          <button className="btn primary" onClick={() => void save(value).then(() => setEditing(false))}>
+          <button className="btn primary" onClick={() => void save(value).then((ok) => ok && setEditing(false))}>
             Save
           </button>
         </div>

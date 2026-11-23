@@ -1,5 +1,6 @@
 // A stand-in for the kernel's GET /v1/tasks/state: the rows a test sets, served by id or as the open list.
-import type { StateQuery, StateRead, StateRow, TaskStates } from "../src/task-state.js";
+import type { StateQuery, TaskStates } from "../src/task-state.js";
+import type { StateRead, StateRow } from "../src/aidenhq-sdk/task-state-types.js";
 
 export const row = (task: string, o: Partial<StateRow> = {}): StateRow => ({
   task, identifier: o.identifier ?? null, kind: "idle", reason: "orphaned", since: "2026-11-20T10:00:00.000Z", holder: null, attention: [], lane: "idle", idle_wakes: 0, ...o,

@@ -25,7 +25,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { neutral } from "./channels.ts";
 import type { Notice } from "./notify.ts";
-import type { StateRow } from "./task-state-read.ts";
+import type { StateRow } from "../sdk/src/task-state-types.ts";
 import { MARKER, fenced } from "./writes.ts";
 
 type Issue = { id: string; identifier?: string; status?: string; parentId?: string | null; assigneeAgentId?: string | null; createdByAgentId?: string | null };

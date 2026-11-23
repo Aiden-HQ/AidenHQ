@@ -34,9 +34,16 @@ const READ_START = /^(select|with|show|describe|desc|explain|exists)\b/i;
 
 export class QueryRefused extends Error {}
 
+/** What ClickHouse's lexer skips as whitespace (ASCII, and the Unicode spaces of skipWhitespacesUTF8), so none hides `url (`. */
+const SPACE = /[\t\n\v\f\r \u0085\u00a0\u180e\u2000-\u200d\u2028\u2029\u202f\u205f\u2060\u3000\ufeff]/;
+const WORD = /[A-Za-z0-9_]/;
+
 /**
- * The query as ClickHouse reads it, without comments, with string literals emptied (so their text
- * can't hide or fake a keyword) and quoted identifiers unquoted (so `url`(…) is still url(…)).
+ * The query as ClickHouse reads it (src/Parsers/Lexer.cpp), without comments, with string literals emptied (so their text
+ * can't hide or fake a keyword) and quoted identifiers unquoted (so `url`(…) is still url(…)). It mirrors the lexer's
+ * tokens that can hide text: `--`, `//`, `# ` and `#!` comments, nested block comments, '…' strings (and x'…', b'…'),
+ * "…" and `…` identifiers, ‘…’ strings and “…” identifiers, and $$…$$ or $tag$…$tag$ heredoc strings. A `$` anywhere
+ * else, and the two spots where the lexer's number rules decide what follows, are refused rather than guessed.
  */
 export function normalize(sql: string): string {
   let out = "";
@@ -44,10 +51,12 @@ export function normalize(sql: string): string {
   while (i < sql.length) {
     const c = sql[i]!;
     const two = sql.slice(i, i + 2);
-    if (two === "--" || c === "#") {
+    if (two === "--" || two === "//" || two === "# " || two === "#!") {
       const end = sql.indexOf("\n", i);
       i = end < 0 ? sql.length : end;
       out += " ";
+    } else if (c === "#") {
+      throw new QueryRefused("# starts a comment only when a space or ! follows it");
     } else if (two === "/*") {
       // ClickHouse nests block comments.
       let depth = 0;
@@ -64,6 +73,8 @@ export function normalize(sql: string): string {
       let j = i + 1;
       let text = "";
       for (; j < sql.length; j++) {
+        // ClickHouse decodes a name's escapes (\x75rl is url) before it looks the name up: only strings may hold one.
+        if (sql[j] === "\\" && c !== "'") throw new QueryRefused("a quoted name can't hold a backslash escape");
         if (sql[j] === "\\") (text += sql[j + 1] ?? ""), j++;
         else if (sql[j] === c && sql[j + 1] === c) (text += c), j++;
         else if (sql[j] === c) break;
@@ -72,8 +83,36 @@ export function normalize(sql: string): string {
       if (j >= sql.length) throw new QueryRefused("unterminated quote");
       out += c === "'" ? "''" : text;
       i = j + 1;
+    } else if (c === "\u2018" || c === "\u201c") {
+      // ‘string’ and “identifier”: no escapes, each ends at its own closing mark.
+      const end = sql.indexOf(c === "\u2018" ? "\u2019" : "\u201d", i + 1);
+      if (end < 0) throw new QueryRefused("unterminated quote");
+      out += c === "\u2018" ? "''" : sql.slice(i + 1, end);
+      i = end + 1;
+    } else if (c === "$") {
+      // A heredoc opens only where a token starts: a name's own `$` is consumed with the name below, and a number's is refused.
+      const tag = /^\$[A-Za-z0-9_]*\$/.exec(sql.slice(i))?.[0];
+      const end = tag ? sql.indexOf(tag, i + tag.length) : -1;
+      if (!tag || end < 0) throw new QueryRefused("$ is allowed only in a $$…$$ or $tag$…$tag$ string");
+      out += "''";
+      i = end + tag.length;
+    } else if (/[A-Za-z_]/.test(c)) {
+      // A name: ClickHouse reads its `$` as part of it.
+      let j = i + 1;
+      while (j < sql.length && (WORD.test(sql[j]!) || sql[j] === "$")) j++;
+      out += sql.slice(i, j);
+      i = j;
+    } else if (/[0-9]/.test(c)) {
+      // A number (with any name glued to it). Where it ends decides whether a `$` after it opens a heredoc, and whether an
+      // exponent's sign is the first `-` of a `--` comment: neither is read here, so both are refused.
+      let j = i + 1;
+      while (j < sql.length && (WORD.test(sql[j]!) || sql[j] === ".")) j++;
+      if (sql[j] === "$") throw new QueryRefused("$ is allowed only in a $$…$$ or $tag$…$tag$ string");
+      if (/[eEpP]$/.test(sql.slice(i, j)) && sql.startsWith("--", j)) throw new QueryRefused("put a space between a number and a -- comment");
+      out += sql.slice(i, j);
+      i = j;
     } else {
-      out += c;
+      out += SPACE.test(c) ? " " : c;
       i++;
     }
   }

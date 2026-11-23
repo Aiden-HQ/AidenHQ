@@ -3,12 +3,10 @@
 import { DatabaseSync } from "node:sqlite";
 import type { FactRow } from "./facts.ts";
 import type { Stage } from "./flow-stages.ts";
-import { taskState, type TaskState } from "./task-state.ts";
+import { taskState } from "./task-state.ts";
+import type { StateRead, StateRow } from "../sdk/src/task-state-types.ts";
 
 export type Agent = { name: string; terminated: boolean };
-/** `holder_name` and `holder_gone` name a holder Paperclip reports terminated (a holder no grant maps stays its raw id). */
-export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; holder_name?: string; holder_gone?: true };
-export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
 
 const DAY = 864e5;
 const CLOSED = new Set(["done", "cancelled"]);
