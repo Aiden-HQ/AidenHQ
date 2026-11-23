@@ -39,6 +39,10 @@ jobs:
     if: needs.checks.outputs.packages != '[]'
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 6
+    # This job runs the suites, so it runs PR code (`npm ci` and its lifecycle scripts included): read-only, no secret, and
+    # no `checks: write`. `post-checks` below is the only job that may write a check.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -54,19 +58,31 @@ jobs:
         run: git config --global user.name ci && git config --global user.email ci@example.com
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.ts): a stable entry is never
       # removed or reshaped. The scripts suite checks the lock against the code on every run.
-      - name: Contract lock
+      # The base checkout and the checker are separate steps: only the fetch holds the token, and its step has ended before
+      # any PR code (the checker, which reads `contract-lock.ts` from this checkout) runs. `env -u` would not be enough: a
+      # child can still read its parent's environment through `/proc`.
+      - name: Fetch the PR's base for the contract lock
         if: github.event_name == 'pull_request' && matrix.shard == 1
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          (cd scripts && npm ci --ignore-scripts)
           # The checkout keeps no credentials: pass the read-only token for this one fetch.
           git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$PR_BASE"
+      - name: Contract lock
+        if: github.event_name == 'pull_request' && matrix.shard == 1
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          (cd scripts && npm ci --ignore-scripts)
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
+        # Runs PR code (`npm ci` and the suites). This job holds no `checks: write` and none of the repository's secrets; its
+        # steps still carry GitHub's own per-run Actions runtime token, which is what the cache service uses, so it is not
+        # token-free. That token cannot write a check or read another repository.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
+          TESTED_SHA: ${{ github.sha }}
         run: |
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
@@ -80,7 +96,23 @@ jobs:
           grep -qxE 'scripts|kernel|kernel/sdk' <<< "$dirs" && { (cd kernel && npm ci --silent) & pids+=($!); }
           grep -qxE 'kernel/sdk|fixtures/twin' <<< "$dirs" && { (cd kernel/sdk && npm ci --silent) & pids+=($!); }
           for p in "${pids[@]}"; do wait "$p" || exit 1; done
+          # run-suites.sh reports a plan entry whose directory is missing as `gone:` and exits 0, so a shard can be green with a
+          # suite that never ran. A directory the tested commit (`TESTED_SHA`, the immutable commit the checkout came from) still
+          # has as a tree but the workspace does not is exactly that: fail the shard. `HEAD` would not do — the suites make
+          # commits, so PR code can commit a deletion and move `HEAD` off the tested tree. Checked before the run too, so a
+          # lifecycle script that deletes one fails here rather than passing as `gone:`, and after it, so a deletion during the
+          # run is caught.
+          vanished() {
+            while IFS=$'\t' read -r name dir _; do
+              if [ -n "$dir" ] && [ "$(git cat-file -t "$TESTED_SHA:$dir" 2>/dev/null)" = tree ] && [ ! -d "$dir" ]; then
+                echo "::error::$name: $dir is in the tested commit but not on disk ($1)"
+                return 1
+              fi
+            done < "$list"
+          }
+          vanished before || exit 1
           bash .github/ci/run-suites.sh "$list"
+          vanished after
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
   # whose paths a change touches, e.g. the kernel for the modules that import it), in the shards checks' `shards` step plans.
@@ -91,6 +123,9 @@ jobs:
     if: needs.checks.outputs.modules != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    # Suites only, so PR code runs here: read-only, no secret, no `checks: write`.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -105,8 +140,12 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
+        # Runs PR code (`npm ci` and the suites). This job holds no `checks: write` and none of the repository's secrets; its
+        # steps still carry GitHub's own per-run Actions runtime token, which is what the cache service uses, so it is not
+        # token-free. That token cannot write a check or read another repository.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
+          TESTED_SHA: ${{ github.sha }}
         run: |
           (cd kernel && npm ci --silent) & k=$!
           (cd scripts && npm ci --silent) & c=$!
@@ -114,10 +153,26 @@ jobs:
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
           echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
+          # run-suites.sh reports a plan entry whose directory is missing as `gone:` and exits 0, so a shard can be green with a
+          # suite that never ran. A directory the tested commit (`TESTED_SHA`, the immutable commit the checkout came from) still
+          # has as a tree but the workspace does not is exactly that: fail the shard. `HEAD` would not do — the suites make
+          # commits, so PR code can commit a deletion and move `HEAD` off the tested tree. Checked before the run too, so a
+          # lifecycle script that deletes one fails here rather than passing as `gone:`, and after it, so a deletion during the
+          # run is caught.
+          vanished() {
+            while IFS=$'\t' read -r name dir _; do
+              if [ -n "$dir" ] && [ "$(git cat-file -t "$TESTED_SHA:$dir" 2>/dev/null)" = tree ] && [ ! -d "$dir" ]; then
+                echo "::error::$name: $dir is in the tested commit but not on disk ($1)"
+                return 1
+              fi
+            done < "$list"
+          }
+          vanished before || exit 1
           bash .github/ci/run-suites.sh "$list"
+          vanished after
 
-  # One GitHub check per suite a shard's plan ran, on the PR head: the base-map plan says which suites, and the shard's own
-  # Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
+  # One GitHub check per suite a shard's plan ran, on the PR head: the `checks` job's plan says which suites (its map comes
+  # from the tested tree, `.github/ci/select.ts`), and the shard's own Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
   # (PR lifecycle scripts) and print their results into the log, so log text is not evidence. This job runs only the posting
   # script and checks out no PR code. A fork PR or a push posts nothing. A posting failure (logged, `continue-on-error`) leaves the suites without a check
   # (fail closed) and stays out of `ci-required`'s gate, so it cannot make `ci-required` red.
@@ -163,18 +218,22 @@ jobs:
             jobs.push(...(data.jobs ?? []));
             if (jobs.length >= (data.total_count ?? 0) || (data.jobs ?? []).length === 0) break;
           }
-          // A suite's directory exists in the tree the shards tested (their checkout is `github.sha`, the PR merge commit): the contents API answers 404 for a missing one (run-suites.sh writes
-          // `gone: <dir>` and exits 0 for it, so it did not run).
+          // A suite's directory must be a directory at the PR head, where the check is posted, and in the tree the shards tested
+          // (`github.sha`, the PR's merge commit): the contents API answers 404 for a missing one, and lists a file as an object
+          // (run-suites.sh tests -d, writes `gone: <dir>` and exits 0, so it did not run). Both must hold, so neither a directory
+          // only the merge brought in nor one only the head carries earns a check for a suite that did not run.
           const dirs = new Map();
-          const exists = async (dir) => {
-            if (dirs.has(dir)) return dirs.get(dir);
+          const isDir = async (dir, ref) => {
+            const key = `${dir}\t${ref}`;
+            if (dirs.has(key)) return dirs.get(key);
             const path = dir.split("/").map(encodeURIComponent).join("/");
-            const res = await fetch(`${base}/repos/${REPO}/contents/${path}?ref=${encodeURIComponent(TESTED_SHA)}`, { headers });
-            if (res.status === 404) dirs.set(dir, false);
+            const res = await fetch(`${base}/repos/${REPO}/contents/${path}?ref=${encodeURIComponent(ref)}`, { headers });
+            if (res.status === 404) dirs.set(key, false);
             else if (!res.ok) throw new Error(`GET contents/${dir} failed: ${res.status}`);
-            else dirs.set(dir, Array.isArray(await res.json())); // a directory lists as an array, a file as an object (run-suites.sh tests -d)
-            return dirs.get(dir);
+            else dirs.set(key, Array.isArray(await res.json())); // a directory lists as an array, a file as an object
+            return dirs.get(key);
           };
+          const exists = async (dir) => (await isDir(dir, HEAD_SHA)) && (await isDir(dir, TESTED_SHA));
           const post = async (body) => {
             const res = await fetch(`${base}/repos/${REPO}/check-runs`, { method: "POST", headers, body: JSON.stringify(body) });
             if (!res.ok) throw new Error(`POST check-runs failed: ${res.status} ${await res.text()}`);
@@ -197,7 +256,7 @@ jobs:
               if (job.conclusion !== "success" || job.head_sha !== HEAD_SHA) { console.log(`${name} did not conclude success on the head: posting nothing for this shard`); continue; }
               for (const entry of shard.entries) {
                 if (have.has(`${entry.name}\t${RUN_ID}/${job.id}/${shard.shard}`)) continue;
-                if (!(await exists(entry.dir))) { console.log(`${entry.name}: ${entry.dir} is gone in the tested tree: posting no check`); continue; }
+                if (!(await exists(entry.dir))) { console.log(`${entry.name}: ${entry.dir} is not a directory at the head or in the tested tree: posting no check`); continue; }
                 await post({
                   name: entry.name,
                   head_sha: HEAD_SHA,
@@ -222,6 +281,9 @@ jobs:
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/board')
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 3
+    # The board suite is PR code: read-only, no secret, no `checks: write` (only `post-checks` has it).
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,6 +294,8 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
+        # Runs PR code (the board suite). This job holds no `checks: write` and none of the repository's secrets; its steps
+        # still carry GitHub's own per-run Actions runtime token (the cache service's), which cannot write a check.
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
@@ -573,6 +637,9 @@ jobs:
           done <<< "$files"
           git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | while IFS= read -r c; do git show "$src:$c" > "$c"; done
           echo "existing cases from the base: $(git ls-tree --name-only "$src" -- "$m/test/reviewer-cases/" | wc -l)"
+      # Cache scope is the branch, not the job: a test step in this PR holds the same runtime token and can save a receipt under
+      # this key on this branch, which a receipt-reusing eval would read as "already covered" and skip. So the eval below never
+      # reuses one (`--force`): it always runs here, whatever the cache holds. The cache is kept as the record of the last run.
       - id: receipt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -583,7 +650,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.GRADUATE_OPENROUTER_KEY }}
           XDG_STATE_HOME: ${{ github.workspace }}/.eval-state
-        run: node --disable-warning=ExperimentalWarning scripts/reviewer-eval.ts
+        run: node --disable-warning=ExperimentalWarning scripts/reviewer-eval.ts --force
       # Only a script that records receipts leaves one (an older base's doesn't).
       - if: steps.receipt.outputs.cache-hit != 'true' && hashFiles('.eval-state/**') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
