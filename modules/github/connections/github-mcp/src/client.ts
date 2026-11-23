@@ -13,7 +13,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { needsOwner } from "./vendor/needs.js";
 import type { Auth } from "./vendor/oauth.js";
-import { noteOrgNeed } from "./org-observations.js";
 
 const API = "https://api.github.com";
 
@@ -229,8 +228,6 @@ export function createAccess(o: {
   function fail(n: Need, refusedAt?: number): never {
     if (n.cause === "sso" || n.cause === "restricted") {
       problems.set(n.org.toLowerCase(), { org: n.org, cause: n.cause, url: n.url, ...(n.message ? { message: n.message } : {}), ...(refusedAt ? { at: refusedAt } : {}) });
-      // The refusal is the org's newest answer: a success's delayed report of it must not clear it.
-      noteOrgNeed(n.org);
     }
     throw new GitHubNeed(n, (n.cause === "sso" || n.cause === "restricted") && n.message ? `${needText(n)}. GitHub said: ${n.message}` : undefined);
   }

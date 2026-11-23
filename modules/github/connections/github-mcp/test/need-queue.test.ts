@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitHubNeed } from "../src/client.js";
 import { needQueue, reportNeed, reportOrgOk } from "../src/module-caller.js";
-import { noteOrgNeed } from "../src/org-observations.js";
 
 // The kernel at /v1/connections/need as a fake: each answer is one queued reply, and the last one repeats.
 const replies = (list: (Response | "hang" | Error)[]) => {
@@ -238,18 +237,35 @@ describe("a successful owner call to an org", () => {
     expect(said).toEqual(["the kernel refused a connection success report", "a connection success report failed; the org's next query reports it again"]);
   });
 
-  // A success a refusal for the org already overtook is not sent: it would clear the newer need.
-  it("drops a success a need for the org was met after", async () => {
-    const seen: unknown[] = [];
-    const fetcher = (async (_u: RequestInfo | URL, init?: RequestInit) => { seen.push(init?.body); return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
-    noteOrgNeed("contended");
-    reportOrgOk("http://kernel", "k", "github", "Contended", log, fetcher, 5_000);
+  // A need and a clear for one org reach the kernel in the order this process saw them, so neither can undo the other.
+  it("sends one org's need and clear in the order they were observed", async () => {
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const fetcher = (async (input: RequestInfo | URL) => {
+      const what = String(input).split("/v1/connections/")[1]!;
+      order.push(`${what}:sent`);
+      if (what === "need") await gate;
+      order.push(`${what}:done`);
+      return new Response(JSON.stringify({ ok: true, woken: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    // A refusal's need is still in flight when the org answers: the clear waits for it, so it cannot land before it.
+    const need = reportNeed("http://kernel", "k", new GitHubNeed({ cause: "restricted", org: "Acme", url: "https://github.com/settings/connections/applications/cid" }), log, fetcher);
+    reportOrgOk("http://kernel", "k", "github", "acme", log, fetcher);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order, "the clear waits for the need already sent for the org").toEqual(["need:sent"]);
+    release();
+    expect(await need).toBe("taken");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order).toEqual(["need:sent", "need:done", "ok:sent", "ok:done"]);
+
+    // A refusal observed after a success is sent after it, and a success after a refusal still clears it: the newer answer wins.
+    order.length = 0;
+    reportOrgOk("http://kernel", "k", "github", "acme", log, fetcher);
+    await reportNeed("http://kernel", "k", new GitHubNeed({ cause: "sso", org: "Acme", url: "https://github.com/orgs/acme/sso" }), log, fetcher);
+    reportOrgOk("http://kernel", "k", "github", "ACME", log, fetcher);
     await new Promise((r) => setTimeout(r, 20));
-    expect(seen).toHaveLength(0);
-    // A refusal for another org does not stop it.
-    reportOrgOk("http://kernel", "k", "github", "fresh", log, fetcher, 5_000);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(seen).toHaveLength(1);
+    expect(order).toEqual(["ok:sent", "ok:done", "need:sent", "need:done", "ok:sent", "ok:done"]);
   });
 
   it("a kept sso/restricted report for an org the call just reached is dropped, not replayed", async () => {

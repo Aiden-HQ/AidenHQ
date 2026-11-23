@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { GitHubNeed } from "./client.js";
-import { claimOrgOk } from "./org-observations.js";
+import { inOrgOrder } from "./org-observations.js";
 
 // Whether a bearer is the named module's own token, asked of the kernel (GET /v1/whoami): the issue read for the Maintainer's
 // watcher is opened to that module alone, so no secret is shared with it. undefined: the kernel couldn't answer now (a restart,
@@ -32,8 +32,17 @@ function bodyOf(err: GitHubNeed): NeedBody {
   return { connection: "github", need: { cause: n.cause, detail: err.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) } };
 }
 
+/** Whether a need is one org's sso/restricted row: it shares that org's order with the clear for it (see `inOrgOrder`). */
+const orgScoped = (n: NeedBody["need"]) => (n.cause === "sso" || n.cause === "restricted") && typeof n.org === "string" && n.org !== "";
+
 /** One POST of a need, classified: a 4xx is the request's own fault and is never retried; a 5xx, a timeout or a network error is. */
 async function postNeed(kernelUrl: string, key: string, body: NeedBody, log: WarnLog, fetcher: typeof fetch, timeoutMs: number): Promise<NeedReport> {
+  // An org's refusal takes its place behind the reports already queued for it, so a clear of that org cannot be overtaken by it.
+  if (orgScoped(body.need)) return inOrgOrder(body.need.org!, () => sendNeed(kernelUrl, key, body, log, fetcher, timeoutMs));
+  return sendNeed(kernelUrl, key, body, log, fetcher, timeoutMs);
+}
+
+async function sendNeed(kernelUrl: string, key: string, body: NeedBody, log: WarnLog, fetcher: typeof fetch, timeoutMs: number): Promise<NeedReport> {
   try {
     const r = await fetcher(new URL("/v1/connections/need", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
     if (r.ok) return "taken";
@@ -60,14 +69,13 @@ export async function reportNeed(kernelUrl: string, key: string, err: unknown, l
  * A call by the owner to `org` succeeded, so the org's sso/restricted need is the owner's fix already made: told to the kernel as
  * POST /v1/connections/ok. Fire-and-forget, one POST: a lost report is harmless (the next successful GraphQL org query reports
  * again, and the src_github pass runs one for every configured org every 15 minutes), and a retry would be a success landing after
- * a newer refusal. A success a refusal for the org has already overtaken is not sent at all. Never throws into the GitHub call.
+ * a newer refusal. It takes that org's place in this process's order, so it lands after an earlier refusal's need and before a
+ * later one's. Never throws into the GitHub call.
  */
 export function reportOrgOk(kernelUrl: string, key: string, connection: "github", org: string, log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000): void {
-  // A refusal of the org since the last success is the newer answer: the org is still blocked, so this is not reported.
-  if (!claimOrgOk(org)) { log.warn({ org }, "a connection success report was dropped: a need for the org was met after it"); return; }
-  void fetcher(new URL("/v1/connections/ok", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection, org }), signal: AbortSignal.timeout(timeoutMs) })
+  void inOrgOrder(org, () => fetcher(new URL("/v1/connections/ok", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection, org }), signal: AbortSignal.timeout(timeoutMs) })
     .then((r) => { if (!r.ok) log.warn({ status: r.status, org }, "the kernel refused a connection success report"); })
-    .catch((e: Error) => log.warn({ err: e.message, org }, "a connection success report failed; the org's next query reports it again"));
+    .catch((e: Error) => log.warn({ err: e.message, org }, "a connection success report failed; the org's next query reports it again")));
 }
 
 /** How long a reply waits for the kernel to take a need: the route answers within its 1 s even when the kernel is slow. */
