@@ -234,6 +234,9 @@ test("the shell guard: a known dead shell, or the first commands failing with on
   // Commands that ran and failed quietly (grep with no match) or differently are a skill's business.
   const quiet = shellGuard();
   for (let i = 0; i < 9; i++) assert.equal(quiet(false, i % 2 ? "Exit code 1" : `Exit code 2\nrg: f${i}: not found`), undefined);
+  // Only the first commands count: a first failure unlike the next ones is a shell that runs.
+  const later = shellGuard();
+  for (const o of ["Exit code 1\nno such file", "Exit code 128\nfatal: bad revision", "Exit code 128\nfatal: bad revision", "Exit code 128\nfatal: bad revision"]) assert.equal(later(false, o), undefined);
   const same = shellGuard();
   assert.equal(same(false, "Exit code 126\nsh: permission denied"), undefined);
   assert.equal(same(false, "Exit code 126\nsh: permission denied"), undefined);

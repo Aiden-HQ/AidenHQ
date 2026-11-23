@@ -272,23 +272,24 @@ const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$
 
 /** What a shell says when it can't run any command: its sandbox failed to start (bubblewrap's own errors, or a harness's word for it). */
 const DEAD_SHELL = /\bbwrap: |Failed RTM_NEWADDR|sandbox (?:failed|is unavailable|could not start|is required)/i;
-/** How many of the first commands failing with the same output end the run: a shell that answers everything with one error. */
+/** The first commands, all failing with the same output, that end the run: a shell that answers everything with one error. */
 const SAME_FAILS = 3;
 /**
  * One run's shell watch, fed each shell command's outcome (in order, across the run's turns): the reason to end the run now, or
- * undefined. It ends a run whose shell can't start a command: its sandbox's own error, or the first commands all failing with one
- * same, non-empty output. Failures that differ are commands that ran (a grep with no match exits 1, quietly); a command that
- * worked disarms it.
+ * undefined. It ends a run whose shell can't start a command: its sandbox's own error before any command worked, or the first
+ * SAME_FAILS commands all failing with one same, non-empty output. A command that worked, or a failure unlike the first (a command
+ * that ran: a grep with no match exits 1, quietly), disarms it.
  */
 export function shellGuard() {
-  let worked = false, same = 0, last = "";
+  let off = false, n = 0, first = "";
   return (ok: boolean, output: string): string | undefined => {
-    if (worked || (ok && (worked = true))) return undefined;
+    if (off) return undefined;
     const text = output.replace(/^\s*Exit code \d+\s*/, "").trim(); // Claude Code's prefix to a failed command's output
+    if (ok) return void (off = true);
     if (DEAD_SHELL.test(text)) return `the shell can't run commands (${text.slice(0, 200)})`;
-    same = text && text === last ? same + 1 : 1;
-    last = text;
-    if (text && same >= SAME_FAILS) return `the shell's first ${SAME_FAILS} commands all failed with the same error (${text.slice(0, 200)})`;
+    if (!text || (n && text !== first)) return void (off = true);
+    first = text;
+    if (++n >= SAME_FAILS) return `the shell's first ${SAME_FAILS} commands all failed with the same error (${text.slice(0, 200)})`;
     return undefined;
   };
 }
@@ -349,6 +350,9 @@ export const CLAUDE_SETTINGS = { sandbox: { enabled: false } };
  */
 export const claudeJail = (writable: string[]) => ["--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp",
   ...writable.flatMap((d) => ["--bind", d, d]), "--"];
+
+/** A claude run that never started because its jail couldn't (bwrap's own error on stderr), said as that. */
+const jailFailed = (r: { stdout: string; stderr: string }) => (!r.stdout.trim() && /^bwrap: /m.test(r.stderr) ? `the jail claude runs in couldn't start (${r.stderr.match(/^bwrap: .*$/m)![0].slice(0, 200)})` : undefined);
 
 /** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
  * result (never a word inside the diff itself). */
@@ -431,7 +435,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     for (const [n, task] of (sk ? sk.invocations : [`/code-review ${effort} ${base}..HEAD --max-findings all`]).entries()) {
       if (sk) stage(sk, n, base);
       const t = await turn(task, session);
-      if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
+      if (!t.ok) return { message: "", read: false, calls, cause: jailFailed(t.r) ?? stopped(t.r, t.end?.result ?? "") };
       // A skill Claude Code doesn't list is no review: it would answer "unknown command" and still end well. One that called no
       // tool read nothing: it counts as not run (skillOutcome), and the next skill still runs.
       const name = sk ? task.slice(1).split(" ")[0]! : "";
@@ -444,7 +448,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     prompt = restate(prompt, sk);
   }
   const last = await turn(prompt, session);
-  if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: stopped(last.r, last.end?.result ?? "") };
+  if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: jailFailed(last.r) ?? stopped(last.r, last.end?.result ?? "") };
   return { message: String(last.end?.result ?? ""), read: calls.some((c) => c.tool === "diff"), calls };
 }
 
