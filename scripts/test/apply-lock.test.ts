@@ -18,6 +18,7 @@ const entry = join(here, "../../ops/apply-config.sh");
 const work = join(here, "../../ops/apply-config-work.sh");
 const lockLib = join(here, "../../ops/lib/apply-lock.sh");
 const genLib = join(here, "../../ops/lib/generations.sh");
+const dataLib = join(here, "../../ops/lib/data-dir.sh");
 
 const dirs = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -32,6 +33,7 @@ function checkout() {
   copyFileSync(work, join(dir, "ops/apply-config-work.sh"));
   copyFileSync(lockLib, join(dir, "ops/lib/apply-lock.sh"));
   copyFileSync(genLib, join(dir, "ops/lib/generations.sh"));
+  copyFileSync(dataLib, join(dir, "ops/lib/data-dir.sh"));
   copyFileSync(join(here, "../../ops/lib/progress.sh"), join(dir, "ops/lib/progress.sh"));
   copyFileSync(join(here, "../../ops/lib/ci-runner-enabled.sh"), join(dir, "ops/lib/ci-runner-enabled.sh"));
   for (const f of ["ops/apply-config.sh", "ops/apply-config-work.sh"]) chmodSync(join(dir, f), 0o755);

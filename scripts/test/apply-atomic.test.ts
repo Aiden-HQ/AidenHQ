@@ -20,7 +20,7 @@ import YAML from "yaml";
 const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/ci-runner-enabled.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/ci-runner-enabled.sh", "ops/lib/data-dir.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 /** A product tree from before this change also has no restoreRunnerTemplate: drop the function and both calls, as the real

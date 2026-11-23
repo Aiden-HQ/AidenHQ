@@ -33,6 +33,7 @@ main() {
   . ops/lib/generations.sh
   . ops/lib/progress.sh
   . ops/lib/ci-runner-enabled.sh
+  . ops/lib/data-dir.sh
   local want="" force=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -847,10 +848,9 @@ switchOver() {
   local u
   local prune_env="$HOME/.config/aidenhq-prune-docker.env"
   # The state dir the step wrapper records under: the same one the exporter reads. A relative value is the product's, as
-  # ops/lib/data-dir.sh resolves it; the unit's scripts would otherwise fall back to ~/.local/state/aidenhq and the
-  # exporter would read a different directory.
-  local prune_state_dir="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
-  case "$prune_state_dir" in /*) ;; *) prune_state_dir="$product_dir/$prune_state_dir" ;; esac
+  # ops/lib/data-dir.sh resolves it, and a leading `~` is the home dir: the unit's scripts would otherwise fall back to
+  # ~/.local/state/aidenhq and the exporter would read a different directory.
+  local prune_state_dir; prune_state_dir="$(aidenhq_env_dir AIDENHQ_STATE_DIR "$HOME/.local/state/aidenhq")"
   printf 'AIDENHQ_DIR=%s\nAIDENHQ_STATE_DIR=%s\n' "$(realpath "$product_dir")" "$prune_state_dir" > "$prune_env.tmp" && mv -f "$prune_env.tmp" "$prune_env"
   for u in prune-docker; do
     if ! cmp -s "ops/units/$u.service" "$HOME/.config/systemd/user/$u.service" || ! cmp -s "ops/units/$u.timer" "$HOME/.config/systemd/user/$u.timer"; then
@@ -899,10 +899,9 @@ switchOver() {
     # settings file of its own (ops/lib/data-dir.sh takes the environment only). Both absolute, so the unit never resolves a
     # relative path: the data dir is the same path the CI runner's marker uses, so aidenhq_unit_backoff reads the file the
     # unit wrote.
-    local data_dir="${AIDENHQ_DATA_DIR:-$product_dir/data}"
-    case "$data_dir" in /*) ;; *) data_dir="$product_dir/$data_dir" ;; esac
-    local state_dir="${AIDENHQ_STATE_DIR:-$HOME/.local/state/aidenhq}"
-    case "$state_dir" in /*) ;; *) state_dir="$product_dir/$state_dir" ;; esac
+    local data_dir state_dir
+    data_dir="$(aidenhq_env_dir AIDENHQ_DATA_DIR "$product_dir/data")"
+    state_dir="$(aidenhq_env_dir AIDENHQ_STATE_DIR "$HOME/.local/state/aidenhq")"
     printf 'AIDENHQ_DIR=%s\nAIDENHQ_DATA_DIR=%s\nAIDENHQ_STATE_DIR=%s\n' "$(realpath "$product_dir")" "$data_dir" "$state_dir" > "$host_metrics_env.tmp" && mv -f "$host_metrics_env.tmp" "$host_metrics_env"
     if ! cmp -s ops/units/aidenhq-host-metrics.service "$units/aidenhq-host-metrics.service" || ! cmp -s ops/units/aidenhq-host-metrics.timer "$units/aidenhq-host-metrics.timer"; then
       cp ops/units/aidenhq-host-metrics.service ops/units/aidenhq-host-metrics.timer "$units/" && systemctl --user daemon-reload && echo "host metrics timer installed/updated"
