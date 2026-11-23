@@ -145,7 +145,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
    `out-of-scope` closes `not_planned` with a `note` carrying `Not fixing: <where the defect lives (the upstream project or owner), with the evidence>`; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
    `duplicate` closes `not_planned` with a `note` carrying `Duplicate of <owner>/<repo>#<n>`. `uncertain` stays open with what is missing.
-   `owner-decision` (the fix is a choice only the owner makes, such as hand-graduating a release or a product trade-off) stays open: comment the options with your recommendation, then `task_create` for Aiden (`assignee: chief-of-staff`) naming the issue, the decision and the options, so Aiden asks the owner. The issue closes once the owner's answer is carried out.
+   `owner-decision` (the fix is a choice only the owner makes, such as hand-graduating a release or a product trade-off) stays open: comment the options with your recommendation on the issue, then ask on your task with `task_wait` `for: owner` and the `question` (the options, your recommendation first). The answer wakes you; carry it out and close the issue `completed` with a `note` naming what was done (the release tag, the setting, the merged PR).
 
 ## One run sees its issue through
 
