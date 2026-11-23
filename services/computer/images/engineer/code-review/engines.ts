@@ -31,9 +31,10 @@
 // skill:<option id>: an installed upstream skill or plugin (the engineer image's /opt/review, pinned) run by its own harness
 //   (claude-code or codex, the catalog's `run.harness`) over the change or, in tree mode, the whole tree (the empty tree as base):
 //   each skill's own slash command with the arguments its pinned file takes, then, in the same session, our "restate the findings
-//   as JSON" step, which also says whether each skill reviewed the code (one that didn't is never a clean review). It runs in a
-//   throwaway checkout of the head (snapshot) as its cwd, the one place it may write: skills find the repo, its git history and
-//   their report folders from their cwd. Same sandbox and token rules as the harness's own engine; only that skill (never the
+//   as JSON" step, which also says whether each skill reviewed the code, and all of it (one that didn't is never a clean review;
+//   one that reviewed part keeps its findings and leaves the review incomplete). The run is told to run the skill's whole
+//   workflow, its sub-agents included (skillRun). It runs in a throwaway checkout of the head (snapshot) as its cwd, where it
+//   may write: skills find the repo, its git history and their report folders from their cwd. Same sandbox and token rules as the harness's own engine; only that skill (never the
 //   repo's) is loaded. It reads the tree its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
 import { execFileSync } from "node:child_process";
@@ -220,28 +221,42 @@ async function skillEngine(i: EngineInput): Promise<EngineResult> {
   const cwd = join(mkdtempSync(join(i.scratch, "skill-")), "repo"), head = gitSafe(i.root, ["rev-parse", "--verify", `${i.head ?? "HEAD"}^{commit}`]).trim();
   snapshot(i.root, head, cwd);
   const sk = { ...resolveSkills(i.skills ?? [], String(i.harness), { base: i.base, root: cwd, target: i.target }, i.skillsRoot), cwd, head, idle: new Set<number>() };
-  const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
+  const run = { ...i, instructions: `${i.instructions}\n\n${skillRun(cwd, i.target)}` };
+  const r = await (i.harness === "codex" ? codex(run, sk) : claudeCode(run, sk));
   return r.cause ? r : skillOutcome(r, sk.invocations.map((v) => v.split(" ")[0]!), sk.idle);
 }
 
 /**
- * A finished skill run as the review takes it: the restated answer says, per skill in order, whether it reviewed the code. One
- * that didn't (it stopped, failed, asked, found nothing to review) leaves the review incomplete; none that did, or an answer that
- * doesn't say, is no review at all. A run that reviewed counts as read and says its coverage isn't tracked.
+ * What a skill's run is told on top of the brief. Left to itself on a large change (a whole repository), a model ran a sampled
+ * pass of its own instead of the skill's workflow ("a full multi-agent pass is not practical here") and never dispatched the
+ * skill's sub-agents; it also tried to read the skill's files with the repo tools, which read only the repository, and took the
+ * brief's read-only shell as a ban on the skill's own run files (2026-11-23, ce-code-review and Cloudflare's security audit).
+ */
+export const skillRun = (cwd: string, target?: "tree" | "pr") => `You run an installed review skill, and its own workflow is this review. Run it in full as its files say, whatever the size of ${target === "tree" ? "the repository (the whole repository is the intended scope)" : "the change"}: every stage and step, the sub-agents it dispatches (your agent tool; where it names an agent type you don't have, use the general-purpose one), its verifiers and its run files. The run has the time and budget for the whole workflow, so a sampled or lead-only pass in its place is not this review. The skill's files are outside the repository: read them with the shell. Your working directory (${cwd}, a throwaway checkout of the head) and /tmp are yours to write in, for the skill's run files; leave the review's own checkout as it is.`;
+
+/**
+ * A finished skill run as the review takes it: the restated answer says, per skill in order, whether it reviewed the code and
+ * whether it covered all of it. One that reviewed only part (a sampled pass, steps of its own workflow left out) keeps its findings
+ * and leaves the review incomplete; so does one that didn't review at all (it stopped, failed, asked, found nothing to review). None
+ * that reviewed anything, or an answer that doesn't say, is no review at all. A run that reviewed counts as read and says its
+ * coverage isn't tracked.
  */
 export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>()): EngineResult {
-  const said = answer(r.message)?.skills as { ran?: unknown; why?: unknown }[] | undefined;
-  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean")) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
+  const said = answer(r.message)?.skills as { ran?: unknown; partial?: unknown; why?: unknown }[] | undefined;
+  if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean" || (s.partial !== undefined && typeof s.partial !== "boolean"))) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
   // A turn that called no tool read no code, whatever the restate says of it.
-  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i]!.why ?? "no reason given").slice(0, 150)}`;
-  const not = names.flatMap((_, i) => (said[i]!.ran && !idle.has(i) ? [] : [why(i)]));
+  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i]!.why || "no reason given").slice(0, 300)}`;
+  const reviewed = (i: number) => said[i]!.ran === true && !idle.has(i);
+  const not = names.flatMap((_, i) => (reviewed(i) ? [] : [why(i)]));
+  const part = names.flatMap((_, i) => (reviewed(i) && said[i]!.partial === true ? [why(i)] : []));
   if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
-  return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(not.length ? { incomplete: `a skill didn't review the code (${not.join("; ")})` } : {}) };
+  const gaps = [not.length ? `a skill didn't review the code (${not.join("; ")})` : "", part.length ? `a skill reviewed only part of the code (${part.join("; ")})` : ""].filter(Boolean);
+  return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(gaps.length ? { incomplete: gaps.join("; ") } : {}) };
 }
 
 /** Our restate step after a skill run (or Claude Code's own review): its findings in our shape and, after skills, whether each ran. */
 const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk ? `
-Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "why": ""} when it reviewed the code and finished, or "ran": false with a one-line "why" when it didn't: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed, skipped or partial status.` : ""}
+Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "partial": false, "why": ""} when it reviewed all the code it was given and finished; "ran": true, "partial": true with a one-line "why" naming what it left out when it reviewed only part of the code it was given or cut its own workflow short (a sampled pass, steps or verifiers not run); or "ran": false with a one-line "why" when it reviewed no code: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed or skipped status.` : ""}
 ${prompt}`;
 
 /**

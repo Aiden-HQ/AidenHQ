@@ -31,9 +31,10 @@
 // skill:<option id>: an installed upstream skill or plugin (the engineer image's /opt/review, pinned) run by its own harness
 //   (claude-code or codex, the catalog's `run.harness`) over the change or, in tree mode, the whole tree (the empty tree as base):
 //   each skill's own slash command with the arguments its pinned file takes, then, in the same session, our "restate the findings
-//   as JSON" step, which also says whether each skill reviewed the code (one that didn't is never a clean review). It runs in a
-//   throwaway checkout of the head (snapshot) as its cwd, the one place it may write: skills find the repo, its git history and
-//   their report folders from their cwd. Same sandbox and token rules as the harness's own engine; only that skill (never the
+//   as JSON" step, which also says whether each skill reviewed the code, and all of it (one that didn't is never a clean review;
+//   one that reviewed part keeps its findings and leaves the review incomplete). The run is told to run the skill's whole
+//   workflow, its sub-agents included (skillRun). It runs in a throwaway checkout of the head (snapshot) as its cwd, where it
+//   may write: skills find the repo, its git history and their report folders from their cwd. Same sandbox and token rules as the harness's own engine; only that skill (never the
 //   repo's) is loaded. It reads the tree its own way, so which files it read isn't tracked (said as a note, never partial coverage).
 // deepsec: Vercel's scanner (deepsec.ts) on its pi backend through the gateway: scan, process and revalidate (or `process --diff`).
 import { execFileSync } from "node:child_process";
