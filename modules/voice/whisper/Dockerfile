@@ -12,9 +12,17 @@ FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194
 LABEL org.opencontainers.image.source="https://github.com/ahmetoner/whisper-asr-webservice"
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Debian trixie glibc 2.41-12+deb13u5 (uploaded 2026-10-10) fixes two highs the base image still carries at +deb13u4:
+# CVE-2026-19499 (strfmon right-justified padding) and CVE-2026-5435 (ns_sprintrrf TSIG records). Naming an installed
+# package is what upgrades it, and trixie publishes +deb13u5; libc-bin depends on libc6, so both are named and both are
+# asserted, so a stale mirror fails the build instead of shipping the old glibc.
 RUN apt-get update \
  && apt-get -y upgrade \
- && apt-get install -y --no-install-recommends imagemagick libpq5 libpq-dev \
+ && apt-get install -y --no-install-recommends imagemagick libpq5 libpq-dev libc6 libc-bin \
+ && for p in libc6 libc-bin; do \
+      v="$(dpkg-query -W -f='${Version}' "$p")" && dpkg --compare-versions "${v:-0}" ge 2.41-12+deb13u5 \
+        || { echo "glibc: $p is ${v:-not installed}, need >= 2.41-12+deb13u5" >&2; exit 1; }; \
+    done \
  && rm -rf /var/lib/apt/lists/*
 
 ENV POETRY_VENV=/app/.venv
