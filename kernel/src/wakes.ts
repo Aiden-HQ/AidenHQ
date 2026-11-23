@@ -324,13 +324,19 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // A chat can close between the read this scan started from and the comment read: the poll listed it open, its job finished it,
     // then the owner replied. A comment at or after that snapshot's own `updatedAt` may not be reflected in its status, so the
     // task is read again before anything is filed from it: consuming the reply on the old open status would file a wake admission
-    // then refuses for a done task. A failed re-read says nothing either way and the scan goes on with what it has (dispatch
-    // tells the owner if admission then refuses the wake).
+    // then refuses for a done task. A re-read that fails proves nothing either way, so the reply is not consumed on the snapshot:
+    // the task goes on the durable retry list and this scan files nothing, leaving the reply for the next read (a poll's window or
+    // the retry row below) to judge against a status it actually saw. Filing it on the snapshot's open status is exactly the
+    // wake admission then refuses `task-closed`.
     const snapshotAt = ms(issue.updatedAt);
     if (chat && !closed(issue.status) && all.some((c) => !c.deletedAt && ownerWord(c) && ms(c.createdAt) >= snapshotAt)) {
       const r2 = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
       if (r2.status === 200 && r2.json && typeof r2.json === "object") issue = { ...issue, ...(r2.json as Issue) };
-      else log("wake chat status re-read failed", { task: issue.id, status: r2.status });
+      else {
+        q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+        log("wake chat status re-read failed", { task: issue.id, status: r2.status });
+        return;
+      }
     }
     // A comment written after the task's last status change, as the facts saw it: a done status fact the fresh read still
     // reports was recorded when that close was seen, so a reply said after it is newer than the close, whatever clock wrote it.

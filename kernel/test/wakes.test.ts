@@ -72,6 +72,8 @@ function world() {
       if (method === "GET" && fail.cancelOnRead?.[m[1]]) { Object.assign(issues[m[1]], { status: "cancelled", cancelledAt: iso(clock) }); delete fail.cancelOnRead[m[1]]; }
       if (method === "GET") reads[m[1]] = (reads[m[1]] ?? 0) + 1;
       const i = issues[m[1]];
+      // The nth read of one task fails (`fail.getAt`): a status re-read that answers a transient 503.
+      if (fail.getAt?.[m[1]] === reads[m[1]]) { delete fail.getAt[m[1]]; return { status: 503, json: {} }; }
       if (fail.get[m[1]]) return { status: fail.get[m[1]], json: {} };
       if (stale[m[1]]) return { status: 200, json: { ...(stale[m[1]] as object) } };
       return i ? { status: 200, json: i.omitSingle ? { ...i, blockedBy: undefined } : i } : { status: 404, json: {} };
@@ -864,6 +866,29 @@ test("a reply that lands while the read still shows the chat open is judged agai
   await w.wakes.scan({ ...w.issues.chat, status: "todo", updatedAt: "2026-11-18T10:00:02.000Z" }, { source: "poll" });
   assert.equal(w.issues.chat.status, "todo", "the fresh read saw the close and reopened it");
   assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+});
+
+test("a status re-read that fails does not consume the reply on the open snapshot", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  const closed = "2026-11-18T10:00:02.500Z";
+  w.tick(5000);
+  // The chat finished and the owner replied after the snapshot this scan starts from, whose status still reads open.
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  // The re-read that would tell the scan the chat closed answers a transient 503: the reply must not be judged on the snapshot,
+  // which would file a wake admission refuses `task-closed`. Nothing is filed and the task waits for a read that answers.
+  w.fail.getAt = { chat: (w.reads.chat ?? 0) + 1 }; // the scan's own status re-read
+  await w.wakes.scan({ ...w.issues.chat, status: "todo", updatedAt: "2026-11-18T10:00:02.000Z", completedAt: null }, { source: "poll" });
+  assert.deepEqual(w.rows("chat"), [], "no wake filed on a status the scan could not confirm");
+  assert.equal(w.db.prepare("SELECT count(*) n FROM chat_reopen WHERE task = 'chat'").get().n, 1, "the chat waits for a re-read");
+  // The next poll reads the closed chat and reopens it, and the reply's wake is filed exactly once.
+  delete w.fail.getAt;
+  await w.wakes.poll();
+  assert.equal(w.issues.chat.status, "todo", "the answering re-read saw the close and reopened it");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "the owner's reply starts one run");
 });
 
 test("a chat closed again by the time the reopen is written is not reopened and files nothing", async () => {
