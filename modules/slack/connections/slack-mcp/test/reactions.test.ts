@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { servedTool } from "../src/admission.js";
 import { interceptReactionSearch, planReactionSearch, readUserId, scanMyReactions } from "../src/reactions.js";
 import { upstreamArgs } from "../src/slack.js";
 import { servedSignedIn } from "../src/vendor/needs.js";
@@ -562,6 +563,32 @@ describe("scanMyReactions", () => {
   });
 });
 
+describe("servedTool", () => {
+  const live = (names: string[]) => ({ result: { tools: names.map((name) => ({ name, annotations: { readOnlyHint: true } })) } });
+  const ask = (answers: Record<string, unknown>) => async (path: string) => answers[path] as Record<string, any> | undefined;
+
+  it("refuses when the live full catalog shows the read endpoint excluded every tool", async () => {
+    // Slack is reachable (the full catalog is live) and /mcp/read answers an empty list twice: the proxy's read rule
+    // genuinely excluded everything, so this is a confirmed refusal, not an outage to retry.
+    const probe = ask({ "/mcp/read": live([]), "/mcp": live(["slack_search_public"]) });
+    expect(await servedTool(true, "slack_search_public", probe, () => "k")).toEqual({ served: false, confirmed: true });
+  });
+
+  it("is unconfirmed when the read endpoint answers with unannotated stand-ins, or with nothing at all", async () => {
+    // The proxy's outage fallback: stand-ins carry no annotations, so admission can't be decided and a retry is right.
+    const standIns = { result: { tools: [{ name: "slack_search_public", description: "connect" }] } };
+    expect(await servedTool(true, "slack_search_public", ask({ "/mcp/read": standIns, "/mcp": live(["slack_search_public"]) }), () => "k")).toEqual({ served: false, confirmed: false });
+    expect(await servedTool(true, "slack_search_public", ask({ "/mcp/read": undefined, "/mcp": live(["slack_search_public"]) }), () => "k")).toEqual({ served: false, confirmed: false });
+    // The full catalog itself unreachable: unconfirmed, never a refusal.
+    expect(await servedTool(true, "slack_search_public", ask({ "/mcp/read": live([]), "/mcp": standIns }), () => "k")).toEqual({ served: false, confirmed: false });
+  });
+
+  it("serves a read that both the live catalog and the read rule admit", async () => {
+    const probe = ask({ "/mcp/read": live(["slack_search_public"]), "/mcp": live(["slack_search_public"]) });
+    expect(await servedTool(true, "slack_search_public", probe, () => "k")).toEqual({ served: true, confirmed: true });
+  });
+});
+
 describe("readUserId", () => {
   it("reads the user id, and is undefined when it is missing", () => {
     expect(readUserId(join(stateDir(), "token.json"))).toBe(ME);
@@ -852,6 +879,20 @@ describe("interception through the proxy", () => {
     // The owner reconnects as someone else: the same `seen` keys would suppress a message that account reacted to.
     const other = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer y", userId: "U0OTHER02" }, { fetchImpl });
     expect(other).toMatchObject({ ok: false, detail: expect.stringContaining("Slack account") });
+  });
+
+  it("refuses a continuation issued under a different set of granted scopes", async () => {
+    // The same account, but a reconnect granted another search scope: a channel that was invisible before may now be
+    // visible, so the old `seen` keys can't be trusted to skip it.
+    const fetchImpl = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: u.searchParams.get("channel"), is_channel: true } });
+      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
+    }) as unknown as typeof fetch;
+    const first = await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]), limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
+    const wider = await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.private"]), limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(wider).toMatchObject({ ok: false, detail: expect.stringContaining("granted scopes") });
   });
 
   it("refuses a continuation reused for a different emoji, instead of skipping that search's messages", async () => {

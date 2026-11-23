@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { servedTool, type Ask } from "./admission.js";
 import { interceptReactionSearch } from "./reactions.js";
 import { READ_SCOPES, slackAnswer, upstreamArgs, WRITE_SCOPES } from "./slack.js";
 import { oauth } from "./vendor/oauth.js";
@@ -32,13 +33,10 @@ const auth = oauth({
   tokenAnswer: slackAnswer,
 });
 
-// Whether the proxy serves a tool, asked of the endpoint the call came to so the same rule applies: `/mcp/read` lists
-// only reads (manifest tag and upstream read-only hint), and `/mcp` lists the upstream catalog. Both are asked of the
-// proxy itself on every reaction search rather than cached. A name is admission only when the entry is from the live
-// upstream list: the proxy's stand-ins (what it lists while the upstream is unreachable) carry no annotations, while
-// every live entry gets the read/write hints, so a cached stand-in is never taken for live membership.
+// The loopback address of this connection, for the admission probe below.
 const port = Number(process.env.PORT ?? 8082);
-const post = async (path: string, key: string, body: unknown): Promise<Record<string, any> | undefined> => {
+/** One JSON-RPC call to this connection's own port, for the admission probe. */
+const post: Ask = async (path, key, body) => {
   const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
@@ -46,36 +44,6 @@ const post = async (path: string, key: string, body: unknown): Promise<Record<st
     signal: AbortSignal.timeout(15_000),
   }).catch(() => undefined);
   return res?.ok ? ((await res.json().catch(() => undefined)) as Record<string, any> | undefined) : undefined;
-};
-const servedTool = async (readOnly: boolean, name: string): Promise<{ served: boolean; confirmed: boolean }> => {
-  const key = readToken(readOnly ? process.env.MCP_READ_TOKEN_FILE : process.env.MCP_TOKEN_FILE);
-  if (!key) return { served: false, confirmed: false };
-  const list = await post(readOnly ? "/mcp/read" : "/mcp", key, { jsonrpc: "2.0", id: 1, method: "tools/list" });
-  // No list at all (a 5xx, a timeout, an unreadable answer): admission is unconfirmed, not refused.
-  if (!Array.isArray(list?.result?.tools)) return { served: false, confirmed: false };
-  const tools = list.result.tools as { name?: unknown; annotations?: unknown }[];
-  const live = (t: { annotations?: unknown }) => Boolean(t.annotations && typeof t.annotations === "object");
-  // Cached stand-ins (never annotated) mean the proxy can't reach the upstream: an outage, not a catalog that excludes
-  // the tool. An *empty* read list is ambiguous — the upstream may be unreachable, or Slack may simply offer no tool
-  // whose annotations mark it a read — so the full catalog decides: reachable there means this empty list is a real
-  // answer, and the tool is genuinely not served on the read endpoint.
-  if (!tools.length && readOnly) {
-    const serviceKey = readToken(process.env.MCP_TOKEN_FILE);
-    const full = serviceKey ? await post("/mcp", serviceKey, { jsonrpc: "2.0", id: 1, method: "tools/list" }) : undefined;
-    const all = Array.isArray(full?.result?.tools) ? (full.result.tools as { annotations?: unknown }[]) : [];
-    if (!all.some(live)) return { served: false, confirmed: false };
-    // The full catalog is live, so the upstream is reachable: ask the read endpoint once more. A first empty list can
-    // have been its own transient failure, and only a second empty one is a real answer that the tool isn't a read.
-    const again = await post("/mcp/read", key, { jsonrpc: "2.0", id: 1, method: "tools/list" });
-    const reads = Array.isArray(again?.result?.tools) ? (again.result.tools as { name?: unknown; annotations?: unknown }[]) : undefined;
-    // An empty list again is still ambiguous (it can be this probe's own outage), so it stays unconfirmed: a retry is
-    // safe, while claiming "not a read" for a tool the read endpoint may serve is not.
-    if (!reads?.length || !reads.some(live)) return { served: false, confirmed: false };
-    return { served: reads.some((t) => String(t?.name ?? "") === name && live(t)), confirmed: true };
-  }
-  if (!tools.length || !tools.some(live)) return { served: false, confirmed: false };
-  // A live catalog answered: either it carries the tool or it genuinely doesn't, and both are confirmed.
-  return { served: tools.some((t) => String(t?.name ?? "") === name && live(t)), confirmed: true };
 };
 
 const http = createVendorProxy({
@@ -98,7 +66,7 @@ const http = createVendorProxy({
       tokenFile,
       headers: () => auth.headers(),
       authState: () => auth.status().state,
-      served: servedTool,
+      served: (readOnly, name) => servedTool(readOnly, name, post, (r) => readToken(r ? process.env.MCP_READ_TOKEN_FILE : process.env.MCP_TOKEN_FILE)),
       serviceKey: readToken(process.env.MCP_TOKEN_FILE),
       readKey: readToken(process.env.MCP_READ_TOKEN_FILE),
       caller,

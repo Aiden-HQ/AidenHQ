@@ -212,7 +212,7 @@ export type ScanResult =
 // page, and resuming from a saved page could skip a match that moved earlier. Identity is the only stable key. A walk
 // that itself began at a caller-supplied Slack cursor keeps it (`from`): its earlier results are unknown, so restarting
 // at the head could repeat them.
-type Position = { n: number; seen: string[]; from?: string; e: string; pub: boolean; u: string };
+type Position = { n: number; seen: string[]; from?: string; e: string; pub: boolean; u: string; s: string };
 const POSITION = "aidenhq:pos:";
 const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
 function decodePosition(value: string): Position | undefined {
@@ -227,8 +227,9 @@ function decodePosition(value: string): Position | undefined {
     const e = typeof v.e === "string" ? v.e : undefined;
     const pub = v.pub === true;
     const u = typeof v.u === "string" ? v.u : undefined;
-    if (e === undefined || u === undefined) return undefined;
-    return { n, seen, ...(from ? { from } : {}), e, pub, u };
+    const s = typeof v.s === "string" ? v.s : undefined;
+    if (e === undefined || u === undefined || s === undefined) return undefined;
+    return { n, seen, ...(from ? { from } : {}), e, pub, u, s };
   } catch {
     return undefined;
   }
@@ -276,14 +277,14 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const visibility = new Map<string, boolean>();
   const start = plan.cursor ?? "";
   const position = decodePosition(start);
-  // A continuation names the search that issued it: reused against a different emoji or scope it would skip that other
-  // search's messages (the identities are channel + ts, not emoji), so it is refused rather than answered short.
-  // A continuation names the search that issued it — the emoji, the channel scope and the Slack account — since the
-  // `seen` keys identify messages, not one account's reaction to them. Reused after a different sign-in it would skip a
-  // message the new account reacted to, so it is refused rather than answered short.
-  const scopeKey = { e: plan.emoji, pub: Boolean(plan.publicOnly), u: signIn.userId };
-  if (position && (position.e !== scopeKey.e || position.pub !== scopeKey.pub || position.u !== scopeKey.u)) {
-    return { ok: false, detail: "the cursor belongs to a different reaction search (another emoji, channel scope or Slack account); start it without a cursor" };
+  // A continuation names the search that issued it — the emoji, the channel scope, the Slack account and the granted
+  // search scopes. The `seen` keys identify messages, not one account's or one scope set's view of them, so reused
+  // against any of those changing it could skip a message that is visible now, and it is refused rather than answered
+  // short. The scope set is sorted, so its order in token.json can't change the identity.
+  const granted = [...(plan.scopes ?? [])].sort().join(",");
+  const scopeKey = { e: plan.emoji, pub: Boolean(plan.publicOnly), u: signIn.userId, s: granted };
+  if (position && (position.e !== scopeKey.e || position.pub !== scopeKey.pub || position.u !== scopeKey.u || position.s !== scopeKey.s)) {
+    return { ok: false, detail: "the cursor belongs to a different reaction search (another emoji, channel scope, Slack account or set of granted scopes); start it without a cursor" };
   }
   // A continuation token walks from the start; any other cursor value is Slack's own, resumed where it names.
   let cursor = position ? position.from ?? "" : start;
