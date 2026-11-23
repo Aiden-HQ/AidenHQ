@@ -121,6 +121,7 @@ test("a failed deepsec says why in the run's reason: its own error, from its jso
   assert.equal(said({ stdout: "", stderr: "a\nboom\n" }), "a boom");
   assert.equal(said({ stdout: "Batch 1/2 failed: timeout (0 in flight, 1/2 done)\n", stderr: "Error: 402 cap_reached\n" }), "Error: 402 cap_reached | Batch 1/2 failed: timeout (0 in flight, 1/2 done)");
   assert.equal(said({ stdout: "Batch 1/2 failed: 402 cap_reached\n", stderr: "(node) Warning: x\n" }), "(node) Warning: x | Batch 1/2 failed: 402 cap_reached");
+  assert.match(said({ stdout: "Batch 1/2 failed: socket hang up\n", stderr: `${"w".repeat(400)}\n` }).slice(0, 200), /^w{95} \| Batch 1\/2 failed: socket hang up$/);
   assert.equal(said({ stdout: "Error: no project\n", stderr: "" }), "Error: no project");
 });
 
