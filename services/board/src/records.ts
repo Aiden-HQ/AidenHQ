@@ -48,6 +48,9 @@ export interface Approval {
   /** Whether its outcome is posted to the task: a decided record, or one a module filed for its agent. A Tier 0 record an
    * agent filed itself answers that call inline and wakes nobody (kernel/src/writes.ts). */
   wakes: boolean;
+  /** Still able to act: waiting on the reviewer or owner, approved, or claimed. A Tier 0 record shows `auto` both while it is
+   * queued and once it ended, so its state alone can't say; this can. */
+  live: boolean;
 }
 
 /** What GET /v1/writes returns: the kernel's record, its state already as a person sees it. */
@@ -90,7 +93,7 @@ export function recordApproval(r: KernelRecord): Approval {
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: r.tier > 0 || r.requester.filed_by !== undefined,
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: r.tier > 0 || r.requester.filed_by !== undefined, live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
   };
 }
 
@@ -108,6 +111,9 @@ export type Records = {
    * read so far: a caller must not mistake a timeout for "no more live records".
    */
   live(): Promise<Approval[]>;
+  /** Every page of one state it can still become (`approved`, `pending`), optionally one kind: a live merge card is never
+   * behind the page cap, however many records follow it. */
+  allOf(state: "approved" | "pending", kinds?: string[]): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -150,6 +156,21 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
   const PAGE = 1000;
   /** Hard bound on pages walked in one read: 1,000 pages is a million live records, past any real queue. */
   const PAGES_MAX = 1000;
+  /** Every page of one state, walked with `after`: a bounded read that must not lose a record behind the page cap. */
+  const allOf = async (state: "approved" | "pending", kinds?: string[]): Promise<Approval[]> => {
+    const out: Approval[] = [];
+    const seen = new Set<string>();
+    let after = "";
+    for (let i = 0; i < PAGES_MAX; i++) {
+      const page = await list(state, { limit: PAGE, tier0: true, strict: true, ...(kinds?.length ? { kinds } : {}), ...(after ? { after } : {}) });
+      const fresh = page.filter((a) => !seen.has(a.id));
+      for (const a of fresh) seen.add(a.id);
+      out.push(...fresh);
+      if (page.length < PAGE || !fresh.length) break;
+      after = page[page.length - 1]!.id;
+    }
+    return out;
+  };
   const live: Records["live"] = async () => {
     const all: Approval[] = [];
     const seen = new Set<string>();
@@ -208,5 +229,5 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
     return explain((await rec.json()) as RecordWhole, asked);
   };
-  return { list, live, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
+  return { list, live, allOf, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, validate };
 }

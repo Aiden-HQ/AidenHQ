@@ -135,6 +135,13 @@ const approvalView = (approval: Approval) => {
   const { args: _args, ...a } = approval;
   return { ...a, ...(a.wait !== null ? { wait: shownWait(a.wait) } : {}) };
 };
+/** A merge card's view: the PRs and heads it is bound to (never the args whole), so a run can match the head it published. */
+const mergeView = (a: Approval) => {
+  const prs = ((a.args as { prs?: { repo?: unknown; number?: unknown; head?: unknown }[] } | null)?.prs ?? [])
+    .filter((p) => typeof p?.repo === "string" && Number.isInteger(p?.number) && typeof p?.head === "string")
+    .map((p) => ({ repo: String(p.repo), number: Number(p.number), head: String(p.head) }));
+  return { ...approvalView(a), ...(prs.length ? { prs } : {}) };
+};
 
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;

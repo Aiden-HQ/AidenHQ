@@ -1309,8 +1309,8 @@ const TOOLS: Record<string, Tool> = {
         approvals: approvals.map((a: Json) => {
           const text = a.outcomeText ? String(a.outcomeText) : "";
           const [first, ...rest] = text.split("\n");
-          const outcomeText = first.startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
-          return { id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), createdAt: a.createdAt };
+          const outcomeText = (first ?? "").startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
+          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), createdAt: a.createdAt };
         }),
       };
     },
