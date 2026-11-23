@@ -104,6 +104,9 @@ test("task_finish takes `issue` only from an agent that reads private data or is
   assert.equal(priv.writes.at(-1)[1], "kid");
 });
 
+/** The prose inside a fenced untrusted block (the fence's own length is not part of a card's cap). */
+const inner = (text: string) => text.replace(/^<untrusted-outcome[^>]*>\n/, "").replace(/\n<\/untrusted-outcome>$/, "");
+
 test("task_approvals reads the run's own cards for an Engineer without private data, and any task for one with it", async () => {
   const asked = [];
   const approvalBoard = (req, res) => {
@@ -154,10 +157,11 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   assert.deepEqual(byId("k-1").prs, [{ repo: "a/b", number: 1, head: "a".repeat(40) }], "the card says which PR and head it is bound to");
   assert.equal(byId("k-1").live, true, "a live card says so, whatever its state word");
   assert.equal(byId("k-3").live, undefined, "an ended card carries no live flag");
-  assert.equal(byId("k-3").outcomeText.length, 300, "an outcome without merge evidence keeps its cap");
-  const merged = byId("k-2").outcomeText;
-  assert.ok(merged.startsWith("merged-prs: ") && merged.includes("a".repeat(40)) && merged.includes("b".repeat(40)), "the merge evidence line is never cut");
-  assert.ok(merged.length < 500, "the rest of a long outcome is capped");
+  assert.equal(inner(byId("k-3").outcomeText).length, 300, "an outcome without merge evidence keeps its cap on its prose");
+  assert.match(byId("k-3").outcomeText, /^<untrusted-outcome source="apply card k-3, used">\n/, "an executor's prose is fenced as untrusted");
+  const merged = byId("k-2").mergedPrs;
+  assert.ok(merged.startsWith("[") && merged.includes("a".repeat(40)) && merged.includes("b".repeat(40)), "the merge evidence line is returned whole");
+  assert.ok(inner(byId("k-2").outcomeText).length <= 300, "the rest of a long outcome is capped");
   asked.length = 0;
   const priv = await world({ profile: "engineer", private_reads: true });
   parse(await priv.call("task_approvals", { issue: "WOR-4" }));

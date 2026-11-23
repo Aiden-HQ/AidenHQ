@@ -1311,20 +1311,23 @@ const TOOLS: Record<string, Tool> = {
       const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(target)}`);
       return {
         // `wakes`: whether the outcome is posted to the task (a decided record, or one a module filed for its agent). A merge's
-        // evidence is its `merged-prs` line, so that line is never cut; every other outcome keeps the summary's own cap.
+        // evidence is its `merged-prs` line, returned whole as `mergedPrs`; any card's prose is untrusted text, fenced and capped.
         approvals: approvals.map((a: Json) => {
           const text = a.outcomeText ? String(a.outcomeText) : "";
           const [first, ...rest] = text.split("\n");
           // `merged-prs:` is evidence only on a merge kind's own outcome: any other card's text is a module's own words, whatever
-          // it begins with, and must not pass for a merge that landed the PR.
+          // it begins with, and must not pass for a merge that landed the PR. The evidence line is structured and returned whole
+          // as `mergedPrs`; the executor's prose is untrusted text, fenced and labelled (300 characters at most), as its notice is.
           const merge = a.action === "merge" || a.action.endsWith(".merge");
-          const outcomeText = merge && (first ?? "").startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
+          const evidence = merge && (first ?? "").startsWith("merged-prs: ") ? (first ?? "").slice("merged-prs: ".length) : undefined;
+          const prose = (evidence !== undefined ? rest.join("\n") : text).replace(/<\/?untrusted-outcome[^>]*>/gi, "").trim().slice(0, 300);
+          const outcomeText = prose ? `<untrusted-outcome source="${a.action} card ${a.id}, ${a.state}">\n${prose}\n</untrusted-outcome>` : "";
           // A rejection's reason is the reviewer's or the owner's words, which may quote the diff: fenced and labelled, so a run
           // that finds the card on a later check knows what to change without reading them as an instruction.
           // An owner's own rejection reason comes first: it is what the run must change, where a review's note may only explain.
           const said = a.ownerReason ? `the owner: ${a.ownerReason}` : String(a.review ?? a.reason ?? "");
           const why = a.state === "rejected" ? `<untrusted-card-reason source="${a.action} card ${a.id}, ${a.state}">\n${said.replace(/<\/?untrusted-card-reason[^>]*>/gi, "").slice(0, 300)}\n</untrusted-card-reason>` : "";
-          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(why ? { reason: why } : {}), createdAt: a.createdAt };
+          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(evidence !== undefined ? { mergedPrs: evidence } : {}), ...(why ? { reason: why } : {}), createdAt: a.createdAt };
         }),
       };
     },
