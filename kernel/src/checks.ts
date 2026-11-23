@@ -395,8 +395,18 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
     const takers = finishing().filter(([, c]) => c.rubric);
     if (!takers.length) throw fail(409, "conflict", "no check takes a rubric, so this task can't be graded");
     for (const [id, c] of takers) {
-      const v = await ask(id, c, { task, module, ...b }, c.rubric);
-      if (v.verdict !== "ok" && c.mode !== "observe") throw fail(409, "refused", `the finish check ${id} refused the rubric${v.reason ? `: ${v.reason}` : ""}`);
+      if (c.mode !== "observe") {
+        const v = await ask(id, c, { task, module, ...b }, c.rubric);
+        if (v.verdict !== "ok") throw fail(409, "refused", `the finish check ${id} refused the rubric${v.reason ? `: ${v.reason}` : ""}`);
+        continue;
+      }
+      // An observing check never changes the outcome (file header): a refusal or an outage is a would-block note.
+      let v: Verdict;
+      try { v = await ask(id, c, { task, module, ...b }, c.rubric); } catch (e) { v = { verdict: "deny", reason: String((e as Error).message) }; }
+      if (v.verdict === "ok") continue;
+      const entry = { gate: id, task: task.identifier ?? task.id, verdict: v.verdict, reason: String(v.reason ?? "").slice(0, 500), via: "rubric" };
+      noteFact(facts, { type: "gate.would_block", subject: `task:${entry.task}`, version: `e-${randomBytes(8).toString("hex")}`, task: task.id, at: new Date().toISOString(), actor: "kernel", data: entry });
+      log("gate would block", entry);
     }
   }
   /**
