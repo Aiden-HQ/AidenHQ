@@ -25,6 +25,8 @@ const DEFAULT_DEADLINE_MS = 120_000;
 const BODY_LIMIT = 8 * 1024 * 1024;
 // Slack's errors that mean the sign-in itself is refused, not the read.
 const AUTH_ERROR = /invalid_auth|not_authed|token_expired|token_revoked|account_inactive|missing_scope/;
+// A conversation Slack won't describe to this sign-in: not shown, rather than failing the whole scan.
+const UNCLASSIFIED = /missing_scope|channel_not_found|not_in_channel|is_archived|access_denied/;
 
 // `hasmy::emoji:` (the signed-in user's reaction) or `has::emoji:` (anyone's), as one whitespace-delimited token.
 const REACTION_FILTER = /^has(my)?::([^:\s]+):$/;
@@ -226,12 +228,13 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     const known = visibility.get(channel);
     if (known !== undefined) return known;
     const r = await get("conversations.info", { channel });
-    // A channel Slack won't describe (no metadata scope for its kind) is simply not shown: it never fails a search
-    // whose own scope is satisfied by other channels.
-    if (!r.ok) return (visibility.set(channel, false), false);
+    // A channel Slack refuses to describe (no metadata scope for its kind, or it is gone) is simply not shown: it
+    // never fails a search whose own scope other channels satisfy. A transient failure is not a scope answer, so the
+    // set stays unknown rather than silently short.
+    if (!r.ok) return UNCLASSIFIED.test(r.detail) ? (visibility.set(channel, false), false) : r.detail;
     const kind = channelKind(r.json.channel ?? {});
-    if (!kind) return (visibility.set(channel, false), false);
-    const ok = plan.scopes === undefined ? kind === "public" : plan.scopes.has(SEARCH_SCOPE[kind]);
+    if (!kind) return `Slack didn't say what kind of conversation ${channel} is`;
+    const ok = (plan.publicOnly ? kind === "public" : true) && (plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]));
     visibility.set(channel, ok);
     return ok;
   };

@@ -169,6 +169,8 @@ describe("scanMyReactions", () => {
       return Response.json(page([item("C1", "1.1"), item("D1", "2.2"), item("G1", "3.3")]));
     }) as unknown as typeof fetch;
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
+    // The public-only tool shows only public channels even when private scopes are granted too.
+    expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public", "search:read.private", "search:read.im", "search:read.mpim"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
     // No im/mpim search scope granted: the all-channels scan drops the DM and the private channel too.
     expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
     expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.private", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }, { channel: "D1", ts: "2.2" }, { channel: "G1", ts: "3.3" }] });
@@ -179,6 +181,13 @@ describe("scanMyReactions", () => {
     }) as unknown as typeof fetch;
     // A channel Slack won't describe is simply not shown, never a failed public search.
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: unclassified })).toMatchObject({ ok: true, messages: [] });
+    // A transient failure (not a scope answer) leaves the set unknown instead of silently short.
+    const flaky = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) return new Response("down", { status: 503 });
+      return Response.json(page([item("C1", "1.1")]));
+    }) as unknown as typeof fetch;
+    expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: flaky })).toMatchObject({ ok: false });
   });
 
   it("follows numbered pages when Slack answers them instead of a cursor, and only then calls the set complete", async () => {
