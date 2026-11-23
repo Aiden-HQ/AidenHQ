@@ -8,4 +8,4 @@ agents:
 routines:
   sweep: { title: Sweep, agent: w, description: "Then close this task with one line." }
   hook: { title: Hook, agent: w, description: "Then close this task with one line.", webhook: true }
-  hookfull: { title: Hook full, agent: w, description: "Then close this task with one line.", webhook: true, autonomy: full }
+  hookfull: { title: Hook full, agent: w, description: "Then close this task with one line.", webhook: true }

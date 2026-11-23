@@ -1,7 +1,6 @@
 ---
 name: review-digest
 description: "Files one owner task with the questions only the owner can answer and the week's agent reviews. Use on the \"Agent Coach: weekly digest\" run (Monday)."
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Review digest

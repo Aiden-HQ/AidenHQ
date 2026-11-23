@@ -30,7 +30,7 @@ const PARAMS = ["sig", "ts", "tag", "again", "scope", "issueId", "body", "status
 const SCOPES = ["own", "child", "created", "part", "admin", "listed", "settle"];
 const PATCH_KEYS = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "labelIds", "projectId"];
 const CHILD_KEYS = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "projectId"];
-/** The origin kind of every task this action makes (Paperclip allows a plugin only its own, `plugin:<id>`): the kernel's provenance keys on it. */
+/** The origin kind of every task this action makes (Paperclip allows a plugin only its own, `plugin:<id>`): a retry finds its task by it. */
 export const ORIGIN = "plugin:aidenhq.events";
 const PRIORITIES = ["critical", "high", "medium", "low"];
 const TAG = /^<!-- aidenhq:(?:job=[A-Za-z0-9_-]{1,64} kind=[a-z_]{1,32}|op=[A-Za-z0-9_-]{1,64}) -->$/;

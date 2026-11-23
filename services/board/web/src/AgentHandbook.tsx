@@ -1,5 +1,5 @@
 // An agent's Handbook tab (#/agents/<key>/handbook): Your rules, the main handbook (read-only until the owner opts into
-// their own copy), what the agent really reads, and the history. Reads: services/board/src/agent-handbook.ts; every edit
+// their own copy), what the agent really reads, its memory (read-only: the agent keeps it), and the history. Reads: services/board/src/agent-handbook.ts; every edit
 // is a typed change (rules, handbook, unfork) that goes through the usual review and apply flow.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
@@ -10,8 +10,8 @@ import { ago } from "./util";
 import { Segmented } from "./ui";
 
 export interface HandbookData {
-  kind: "module" | "instance";
-  main: { text: string; source: "module" | "fork" | "instance"; module?: string; revision?: string };
+  kind: "module" | "local";
+  main: { text: string; source: "module" | "fork" | "local"; module?: string; revision?: string };
   rules: string | null;
   compiled: string | null;
   fork: { base: string; moduleMovedOn: boolean; moduleText?: string } | null;
@@ -20,6 +20,8 @@ export interface HandbookHistory {
   rows: { sha: string; at: string; subject: string; files: string[]; source: "instance" | "module"; kind?: "rules" | "handbook"; after?: string | null; before?: string | null }[];
   note?: string;
 }
+/** An agent's memory (GET /api/agents/by-key/:key/memory): each fact with its date and source. */
+export interface MemoryData { facts: { date: string; src: string; fact: string }[]; updated: string | null }
 type HandbookChange = Extract<SettingChange, { kind: "rules" | "handbook" | "unfork" }>;
 const kindOf = (c: SettingChange) => c.kind;
 const agentOf = (c: SettingChange) => ("agent" in c ? c.agent : undefined);
@@ -95,7 +97,7 @@ function Dialog({ open, onClose, children }: { open: boolean; onClose: () => voi
 }
 
 function Edit({ agentKey, data }: { agentKey: string; data: HandbookData }) {
-  const instance = data.kind === "instance";
+  const local = data.kind === "local";
   const savedRules = data.rules ?? "";
   const [rules, setRules] = useState(savedRules);
   const [review, setReview] = useState<HandbookChange | null>(null);
@@ -112,8 +114,8 @@ function Edit({ agentKey, data }: { agentKey: string; data: HandbookData }) {
   return (
     <div className="hb">
       <section>
-        <div className="hb-head"><h4>{instance ? "Handbook" : "Your rules"}</h4></div>
-        <p className="muted">{instance ? "Your agent's whole handbook." : "Kept across module updates. Put lasting preferences here."}</p>
+        <div className="hb-head"><h4>{local ? "Handbook" : "Your rules"}</h4></div>
+        <p className="muted">{local ? "Your agent's whole handbook." : "Kept across module updates. Put lasting preferences here."}</p>
         <textarea className="hb-box" aria-label="Your rules" value={rules} onChange={(e) => (setRules(e.target.value), setReview(null))} disabled={busy(inFlight)} />
         {review?.kind === "rules" ? (
           <Preview change={review} was={savedRules} onDone={() => setReview(null)} onCancel={() => setReview(null)} />
@@ -124,7 +126,7 @@ function Edit({ agentKey, data }: { agentKey: string; data: HandbookData }) {
         )}
         {inFlight && <ChangeProgress f={inFlight} />}
       </section>
-      {!instance && (
+      {!local && (
         <section>
           <div className="hb-head">
             <h4>Main handbook</h4>
@@ -172,7 +174,7 @@ function labelled(text: string, kind: HandbookData["kind"]): { label: string; bo
   const parts = text.split(/\n(?=## )/);
   return parts.map((p, i) => {
     const heading = /^## (.+)/.exec(p)?.[1]?.trim();
-    const label = i === 0 ? (kind === "instance" ? "Your handbook" : "Main handbook") : heading === "Instance rules" ? "Your rules" : `Added for every agent: ${heading ?? "section"}`;
+    const label = i === 0 ? (kind === "local" ? "Your handbook" : "Main handbook") : heading === "Instance rules" ? "Your rules" : `Added for every agent: ${heading ?? "section"}`;
     return { label, body: p };
   });
 }
@@ -223,10 +225,31 @@ function History({ agentKey, data, onSignIn }: { agentKey: string; data: Handboo
     </div>
   );
 }
-/** An instance agent's whole handbook is its rules; a fork's text is a handbook change. */
-const instanceKind = (data: HandbookData, kind: "rules" | "handbook") => (data.kind === "instance" ? "rules" : kind);
+/** The agent's memory, read-only: each fact with its date and its source (a link when it is one). */
+function Memory({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
+  const [m, setM] = useState<MemoryData | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => void api.memory(agentKey).then(setM, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), [agentKey, onSignIn]);
+  if (error) return <p className="fleet-empty">Couldn't load the memory: {error}</p>;
+  if (!m) return <SkeletonLines lines={3} />;
+  if (!m.facts.length) return <p className="fleet-empty">Nothing yet. The agent saves what its work teaches it here; ask it to remember or forget something.</p>;
+  return (
+    <div className="hb">
+      <p className="muted">What {agentKey} has learned, in every run's handbook.{m.updated ? ` Updated ${ago(m.updated)}.` : ""} Ask it to remember or forget something to change it.</p>
+      {m.facts.map((f, i) => (
+        <div key={i} className="hb-row">
+          <span>{f.fact}</span>
+          <span className="muted">{f.date} · {/^https:\/\//.test(f.src) ? <a href={f.src} target="_blank" rel="noreferrer noopener">{f.src}</a> : f.src}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-const SUBS = [["edit", "Edit"], ["reads", "What it reads"], ["history", "History"]] as const;
+/** A local agent's whole handbook is its rules; a fork's text is a handbook change. */
+const instanceKind = (data: HandbookData, kind: "rules" | "handbook") => (data.kind === "local" ? "rules" : kind);
+
+const SUBS = [["edit", "Edit"], ["reads", "What it reads"], ["memory", "Memory"], ["history", "History"]] as const;
 
 export function AgentHandbook({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void }) {
   const [data, setData] = useState<HandbookData | null>(null);
@@ -244,6 +267,7 @@ export function AgentHandbook({ agentKey, onSignIn }: { agentKey: string; onSign
       </div>
       {sub === "edit" && <Edit agentKey={agentKey} data={data} />}
       {sub === "reads" && <Reads data={data} />}
+      {sub === "memory" && <Memory agentKey={agentKey} onSignIn={onSignIn} />}
       {sub === "history" && <History agentKey={agentKey} data={data} onSignIn={onSignIn} />}
     </ChangesScope>
   );

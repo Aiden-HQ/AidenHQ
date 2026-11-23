@@ -168,7 +168,6 @@ export interface AgentProfile {
   title: string | null;
   state: AgentState;
   stateNote?: string;
-  trial: boolean;
   model: string | null;
   effort: string | null;
   reportsTo: string | null;
@@ -204,7 +203,6 @@ export interface RosterAgent {
   running: number;
   queued: number;
   workingSince: string | null;
-  trial: boolean;
   schedules: { title: string; paused: boolean; nextRunAt: string | null }[];
   lastRunAt: string | null;
   lastRunStatus: string | null;
@@ -422,7 +420,7 @@ export interface ModuleDetail {
   agents: AgentProfile[];
   ongoing: TaskRow[];
   /** Its routines as compiled: on or off, and the agent whose Settings tab changes them. */
-  routines?: { key: string; title: string; agent: string; on: boolean; scheduled: boolean }[];
+  routines?: { key: string; id?: string; title: string; agent: string; on: boolean; scheduled: boolean }[];
   authority: { connections: string[]; writes: { kind: string; tier?: number }[]; secrets: string[]; prompts: { id: string; file: string }[]; readme: string | null };
   neededBy: string[];
   requires: string[];
@@ -717,14 +715,25 @@ export type SettingChange =
   | { kind: "agent"; agent: string; field: "model" | "reasoning_effort" | "heartbeat" | "max_parallel"; value: string | number | boolean }
   | { kind: "module"; name: string; on: boolean }
   | { kind: "routine"; routine: string; field: "schedules"; value: { cron: string; timezone?: string; label?: string }[] }
-  | { kind: "routine"; routine: string; field: "status"; value: "active" | "paused" }
   | { kind: "routine"; routine: string; field: "model"; value: string }
   | { kind: "rules"; agent: string; text: string }
   | { kind: "handbook"; agent: string; text: string }
   | { kind: "unfork"; agent: string }
   | { kind: "pin"; name: string; sha: string | null }
   | { kind: "marketplace"; op: "add" | "update" | "remove"; name: string; source?: { source: "github"; repo: string }; sha?: string }
-  | { kind: "grants"; agent: string; connection: string; tools: string[] | null };
+  | { kind: "grants"; agent: string; connection: string; tools: string[] | null }
+  | { kind: "share"; module: string; repo: string; ref: string; source: string; base: string; digest: string };
+/** POST /api/modules/share/preview (kernel/src/module-share.ts): exactly what a share would send, where, and what blocks it. */
+export interface SharePreview {
+  module: string; repo: string; ref: string; source: string; base: string; digest: string; private: boolean; conflict?: string;
+  /** Each file whole (`text`) only when nothing blocks the share. */
+  files: { path: string; bytes: number; text?: string }[];
+  /** Files in the destination's folder now that the publish deletes (the folder becomes exactly `files`). */
+  removes: string[];
+  notShared: { path: string; why: string }[];
+  findings: { file: string; rule: string; detail: string }[];
+  isolation: "trusted" | "untrusted"; scripts: string[]; grants: Record<string, string[]>;
+}
 export type ChangeStage = "working" | "waiting" | "applying" | "applied" | "failed" | "rejected" | "closed";
 export interface FiledChange {
   identifier: string;
@@ -775,8 +784,7 @@ export interface AgentSettings {
   team?: string;
   /** A team member: its team record's key. */
   memberOf?: string;
-  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; status?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown> }[];
-  trial: boolean;
+  routines: { key: string; title: string; schedules: { cron: string; timezone: string; label: string }[]; model?: string; webhook?: boolean; /** The module's own value where the instance overrides it. */ defaults?: Record<string, unknown>; /** Its live Paperclip row and whether it is paused (absent before setup made it). */ id?: string; paused?: boolean }[];
   graded: boolean;
   roles: string[];
   /** The module's own model, reasoning_effort and heartbeat where the instance overrides them. */

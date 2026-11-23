@@ -169,3 +169,18 @@ test("an agent's timeline: each job's wake and who caused it, why it ended, its 
   assert.deepEqual(await (await get(`/v1/writes/${rec.id}/chain`)).json(), { chain: "Fix the login\n\nIt 500s." });
   assert.equal((await get(`/v1/writes/${rec.id}/chain`, "wrong")).status, 401);
 });
+
+test("an agent's history leaves quiet routine runs out before its limit of 50", async () => {
+  const { records, work } = setup();
+  const { openFacts } = await import("../src/facts.ts");
+  const facts = openFacts(records.db);
+  const ins = records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended) VALUES (?, 'dispatch', 'a9', ?, 'codex', 1, '', '', ?, '[]', 0, 0, ?, ?)");
+  ins.run("j-fail", "t9", 3_000_000, "failed", 3_000_100);
+  for (let i = 0; i < 60; i++) {
+    ins.run(`j-q${i}`, `tq${i}`, 4_000_000 + i, "done", 4_000_100 + i);
+    facts.record({ type: "job.ended", subject: `job:j-q${i}`, version: "ended", task: `tq${i}`, at: new Date(4_000_100 + i).toISOString(), actor: "kernel", source: "live", data: { quiet: true } });
+  }
+  assert.deepEqual(work.agent("a9", { shown: true }).jobs.map((j) => j.id), ["j-fail"]);
+  // A detector's read keeps them: a quiet success after failures is a success.
+  assert.equal(work.agent("a9").jobs.length, 50);
+});

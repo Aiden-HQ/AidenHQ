@@ -1,19 +1,20 @@
 // K1 whoami: who a bearer is, from the credential alone. A kernel job's token (`ahqj_`, gateway_job_secret, kind job: its row's
 // frozen authority) or a module's token (its connection's service key, or its own `<module>_token`, which alone carries the
-// module's roles when it has one). Nothing else is a caller.
+// module's roles when it has one). Nothing else is a caller; the fast chat lane's tool calls are its module token speaking for
+// one of its agents (laneCaller).
 // What an agent may do comes from the kernel's records and the grants table setup writes (config/grants/grants.json), never
 // from control-plane metadata, which agents can edit.
 import { timingSafeEqual } from "node:crypto";
 import { verifyToken } from "./gateway/token.ts";
 
-export type Grant = { key?: string; roles?: string[]; tools?: Record<string, string[]>; trial?: boolean; jobcaps?: string[]; [k: string]: unknown };
-export type Connection = { url: string; auth_secret: string; module: string; returns: "trusted" | "untrusted"; tools: { read: string[]; write: string[]; destructive: string[]; named?: string[] }; tool_timeout_s?: number;
+export type Grant = { key?: string; roles?: string[]; tools?: Record<string, string[]>; jobcaps?: string[]; [k: string]: unknown };
+export type Connection = { url: string; auth_secret: string; module: string; returns: "trusted" | "untrusted"; tools: { read: string[]; write: string[]; destructive: string[]; named?: string[]; unreviewed?: string[] }; tool_timeout_s?: number;
   /** The module may make model calls billed to the caller of a tool call in flight (its manifest says so; off by default). */
   model_as_caller?: boolean;
   /** The module's health probes (module.yaml `health_probes`): name -> one read tool with fixed arguments (health.ts). */
   health_probes?: Record<string, { tool: string; args?: Record<string, unknown> }> };
-/** A read a job may hold on a connection (config/jobcaps.json): its tools, and whether it is private data. */
-export type Jobcap = { connection: string; tools: string[]; private?: boolean };
+/** A read a job may hold on a connection (config/jobcaps.json): its tools. */
+export type Jobcap = { connection: string; tools: string[] };
 export type Identity = {
   kind: "run" | "module";
   agent?: string; key?: string; name?: string; roles: string[];
@@ -45,8 +46,6 @@ const same = (a: string, b: string) => {
   const x = Buffer.from(a), y = Buffer.from(b);
   return Boolean(a && b) && x.length === y.length && timingSafeEqual(x, y);
 };
-/** The roles an assertion carries: the agent's own, plus kernel.trial for an agent in trial. */
-export const rolesOf = (g: Grant) => [...(g.roles ?? []), ...(g.trial === true ? ["kernel.trial"] : [])];
 /** An agent's roles as it holds them: its own, and a team member's team record's too (the record alone carries them for filing). */
 export function heldRoles(agents: Record<string, Grant | undefined> | undefined, id: string): string[] {
   const g = agents?.[id];
@@ -54,8 +53,25 @@ export function heldRoles(agents: Record<string, Grant | undefined> | undefined,
   return [...new Set([...(g?.roles ?? []), ...(record?.roles ?? [])])];
 }
 
+/**
+ * The fast chat lane (a module holding kernel.lane) calling a tool for one of its agents, named by id: that agent's lane tools
+ * (`chat_tools`, within its grants), roles and chat task from the grants table, never the request's say-so. An agent without a chat task has no lane. It carries
+ * no job, so nothing only a job may do (memory, settings, waits, model calls billed to a run) is open to it.
+ */
+export function laneCaller(mod: Identity, agent: string, agents: Record<string, Grant>): Identity {
+  if (mod.kind !== "module" || !mod.roles.includes("kernel.lane")) throw new Unknown("only the fast chat lane (role kernel.lane) calls as one of its agents");
+  const g = Object.hasOwn(agents, agent) ? agents[agent] : undefined;
+  if (!g?.key || typeof g.chat_task !== "string" || !g.chat_task) throw new NoGrants(`agent ${agent.slice(0, 60)} has no fast chat lane`);
+  const tools: Record<string, string[]> = {};
+  for (const ct of Array.isArray(g.chat_tools) ? g.chat_tools : []) {
+    const [c = "", t = ""] = String(ct).split(".");
+    if (g.tools?.[c]?.includes(t)) tools[c] = [...(tools[c] ?? []), t];
+  }
+  return { kind: "run", agent, key: g.key, name: g.key, roles: [...(g.roles ?? [])], tools, task: g.chat_task, credential: "" };
+}
+
 /** A kernel-admitted job as its row says (admission.ts): who, on what, and the authority frozen when it was admitted. */
-export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; reads?: boolean; model?: string } };
+export type AdmittedJob = { agent: string; task: string; state: string; identifier: string; authority: { tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[]; model?: string } };
 
 export function createIdentity({ grants, connections, jobcaps, modules = () => ({}), secret, job = () => undefined, now = Date.now }: {
   grants: () => Record<string, Grant>; connections: () => Record<string, Connection>; jobcaps: () => Record<string, Jobcap>;
@@ -80,8 +96,8 @@ export function createIdentity({ grants, connections, jobcaps, modules = () => (
         const j = job(String(p.id));
         if (!j || j.agent !== p.a || j.task !== p.i || !["admitted", "running"].includes(j.state)) throw new Unknown("this job has ended");
         const tools: Record<string, string[]> = Object.fromEntries(Object.entries(j.authority.tools).map(([c, t]) => [c, [...t]]));
-        // A private jobcap only for a job that reads private data (web search off): private data never meets the web.
-        for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c && (!c.private || j.authority.reads === true)) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
+        // Every jobcap it was granted adds its reads.
+        for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c) tools[c.connection] = [...new Set([...(tools[c.connection] ?? []), ...c.tools])]; }
         const g = grants()[j.agent];
         return { kind: "run", agent: j.agent, key: String(g?.key ?? ""), name: String(g?.key ?? ""), roles: [...j.authority.roles], tools, writes: [...j.authority.writes], task: j.task, job: String(p.id), workspace: j.identifier, ...(j.authority.model ? { model: j.authority.model } : {}), credential: "" };
       }

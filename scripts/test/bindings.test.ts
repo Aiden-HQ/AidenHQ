@@ -26,7 +26,7 @@ test("A13: replacing A with B leaves a binding unprovided → refused, naming wh
   assert.deepEqual(danglingBindings({ "acme-x": { agents: { a: { connections: { "gone?": "read" }, jobcaps: ["gone?"], roles: ["kernel.audit"] } } } }, {}), []);
   assert.deepEqual(danglingBindings({ "acme-x": { agents: { a: { roles: ["fleet-read"] } } } }, {}), [{ binding: "agent roles", owner: "agent a", missing: "role fleet-read" }]);
   // The instance's own bindings: its reviewer and its write floor raises.
-  const inst = danglingBindings(ok, { reviewer: { primary: "acme-crm" }, writes: { "acme-crm.publish": { floor: 2 } }, agents: { mine: { engine: "omega" } } });
-  assert.deepEqual(inst.map((d) => d.binding), ["agent engine", "instance reviewer", "instance writes"]);
+  const inst = danglingBindings(ok, { reviewer: { primary: "acme-crm" }, writes: { "acme-crm.publish": { floor: 2 } } });
+  assert.deepEqual(inst.map((d) => d.binding), ["instance reviewer", "instance writes"]);
   assert.deepEqual(danglingBindings({ ...ok, "acme-crm": { ...crm, writes: { publish: { floor: 1 } }, providers: { reviewer: { url: "http://r:1/" } } } }, { reviewer: { primary: "acme-crm" }, writes: { "acme-crm.publish": { floor: 2 } } }), []);
 });

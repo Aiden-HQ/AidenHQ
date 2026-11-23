@@ -8,9 +8,11 @@ import { Store } from "../src/store.js";
 
 const calls: string[] = [];
 const pc = {
-  agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "instance" } }],
+  agents: async () => [{ id: "keeper", name: "Roadmap Keeper", status: "idle", metadata: { engine: "codex", setupKey: "aidenhq:roadmap-keeper", module: "roadmap-keeper", tier: "local" } }],
   pauseAgent: async (id: string) => void calls.push(`pause ${id}`),
   resumeAgent: async (id: string) => void calls.push(`resume ${id}`),
+  routine: async (id: string) => (id === "11111111-1111-4111-8111-111111111111" ? { id, title: "Prepare daily brief", status: "paused", triggers: [{ id: "t1", kind: "schedule", enabled: true, cronExpression: "30 8 * * 1-5", timezone: "UTC" }] } : Promise.reject(new Error("404"))),
+  request: async (method: string, path: string, body: unknown) => void calls.push(`${method} ${path} ${JSON.stringify(body)}`),
 } as unknown as Paperclip;
 
 describe("POST /api/agents/by-key/:key/pause", () => {
@@ -55,5 +57,17 @@ describe("POST /api/agents/by-key/:key/pause", () => {
     role = "member";
     expect((await post("/api/agents/by-key/roadmap-keeper/pause", { paused: true })).status).toBe(403);
     expect(calls).toEqual([]);
+  });
+
+  it("a routine's live pause and resume: resuming re-saves its schedule first, so it starts at its next tick", async () => {
+    role = "admin";
+    calls.length = 0;
+    const id = "11111111-1111-4111-8111-111111111111";
+    expect((await post(`/api/routines/${id}/pause`, { paused: false })).body).toEqual({ status: "active" });
+    expect(calls).toEqual(['PATCH /api/routine-triggers/t1 {"cronExpression":"30 8 * * 1-5","timezone":"UTC","enabled":true}', `PATCH /api/routines/${id} {"status":"active"}`]);
+    calls.length = 0;
+    expect((await post(`/api/routines/${id}/pause`, { paused: true })).body).toEqual({ status: "paused" });
+    expect(calls).toEqual([`PATCH /api/routines/${id} {"status":"paused"}`]);
+    expect((await post("/api/routines/22222222-2222-4222-8222-222222222222/pause", { paused: true })).status).toBe(404);
   });
 });

@@ -13,6 +13,7 @@
 //   kernel/sdk/src/attribution.ts    the AidenHQ commit trailer and text footer, in github-mcp and the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/box-bundle.ts     a job's branch from its box's bundle, never its .git, in the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
+//   kernel/sdk/src/instance-paths.ts what an apply may land, in the code host (src/aidenhq-sdk/; the kernel and codehost-local import it)
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer, grading and code-review services
 //   services/shared/review-files.ts  the changed files as the reviewer reads them, in the reviewer module's service
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
@@ -95,6 +96,8 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/box-bundle.ts": ["modules/github/service/src/aidenhq-sdk/box-bundle.ts"],
   // Who moves the product pin: the kernel's updater and the code host's release train ask this one function.
   "kernel/sdk/src/pin-owner.ts": ["modules/github/service/src/aidenhq-sdk/pin-owner.ts"],
+  // What an apply may land and a settings write may touch: the kernel's apply and both code hosts (codehost-local imports the original).
+  "kernel/sdk/src/instance-paths.ts": ["modules/github/service/src/aidenhq-sdk/instance-paths.ts"],
   // The changed files' shaping: the code host's plan shapes them for the reviewer, which (and its eval) reads this copy.
   "services/shared/review-files.ts": ["modules/ai-reviewer/service/src/review-files.ts", "modules/github/service/src/review-files.ts"],
   // The reliability checklist's matcher: the CI template's (MIT), used by its code review and by the AI reviewer.

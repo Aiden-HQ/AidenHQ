@@ -1,4 +1,4 @@
-// An agent's Handbook tab reads (web/src/AgentHandbook.tsx): its main handbook (the module's, the instance's own or the
+// An agent's Handbook tab reads (web/src/AgentHandbook.tsx): its main handbook (the module's, a local module's or the
 // owner's fork), the owner's rules, the compiled text the agent really gets, and the git history of the instance's files.
 // Where the board reads from: the board container mounts neither the module sources nor the instance repo by default, so
 // BOARD_MODULES_DIR (product modules/) and BOARD_INSTANCE_DIR (the instance checkout) are read-only mounts the compose file
@@ -15,8 +15,8 @@ const run = promisify(execFile);
 const RULES_HEADING = "\n\n## Instance rules\n\n";
 
 export interface Handbook {
-  kind: "module" | "instance";
-  main: { text: string; source: "module" | "fork" | "instance"; module?: string; revision?: string };
+  kind: "module" | "local";
+  main: { text: string; source: "module" | "fork" | "local"; module?: string; revision?: string };
   rules: string | null;
   compiled: string | null;
   /** `moduleText`: the module's current handbook, set when it moved on (what Update would restore). */
@@ -36,8 +36,9 @@ export interface HistoryRow {
 export interface HandbookDirs { modules?: string; instance?: string }
 export interface HandbookInput {
   key: string;
-  /** The agent's module (metadata.module); "instance" for the owner's own agents. */
+  /** The agent's module (metadata.module), and whether it is a local one (metadata.tier: the instance's modules/<module>/). */
   module: string;
+  local: boolean;
   revision?: string | null;
   compiled: string | null;
   dirs: HandbookDirs;
@@ -59,12 +60,12 @@ function forkBase(instance: string, key: string): string | null {
   return typeof v === "string" && v ? v : null;
 }
 
-export function handbook({ key, module, revision, compiled, dirs }: HandbookInput): Handbook {
+export function handbook({ key, module, local, revision, compiled, dirs }: HandbookInput): Handbook {
   const { modules, instance } = dirs;
-  if (module === "instance") {
-    const own = instance ? read(join(instance, "agents", key, "AGENTS.md")) : null;
+  if (local) {
+    const own = instance ? read(join(instance, localHandbook(module, key))) : null;
     const text = own ?? (compiled ?? "");
-    return { kind: "instance", main: { text, source: "instance" }, rules: text, compiled, fork: null };
+    return { kind: "local", main: { text, source: "local", module }, rules: text, compiled, fork: null };
   }
   const rules = instance ? read(join(instance, "agents", `${key}.md`)) : null;
   const moduleFile = modules ? join(modules, module, "agents", key, "AGENTS.md") : "";
@@ -83,10 +84,16 @@ export function handbook({ key, module, revision, compiled, dirs }: HandbookInpu
   };
 }
 
-/** Commits touching the agent's handbook files in the instance repo, newest first; empty when git or the checkout isn't there. */
-export async function history(key: string, instance: string | undefined): Promise<{ rows: HistoryRow[]; note?: string }> {
+/** A local agent's handbook in the instance repo. */
+const localHandbook = (module: string, key: string) => `modules/${module}/agents/${key}/AGENTS.md`;
+
+/**
+ * Commits touching the agent's handbook files in the instance repo, newest first; empty when git or the checkout isn't there.
+ * `localModule`: a local agent's module, whose one file is its handbook (its rules).
+ */
+export async function history(key: string, instance: string | undefined, localModule?: string): Promise<{ rows: HistoryRow[]; note?: string }> {
   if (!instance || !existsSync(join(instance, ".git"))) return { rows: [], note: "The instance repo isn't readable from the board, so there is no history here." };
-  const files = [`agents/${key}.md`, `agents/${key}/AGENTS.md`];
+  const files = localModule ? [localHandbook(localModule, key)] : [`agents/${key}.md`, `agents/${key}/AGENTS.md`];
   const git = (...a: string[]) => run("git", ["-c", "safe.directory=*", "-C", instance, ...a], { maxBuffer: 4_000_000 }).then((r) => r.stdout);
   try {
     const log = (await git("log", "-n", "30", "--format=%x1e%H%x1f%aI%x1f%s", "--name-only", "--", ...files)).split("\x1e").filter(Boolean);

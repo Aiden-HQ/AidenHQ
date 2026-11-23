@@ -12,11 +12,10 @@ export interface AgentProfile {
   title: string | null;
   state: AgentState;
   stateNote?: string;
-  trial: boolean;
   model: string | null;
   effort: string | null;
   reportsTo: string | null;
-  /** Null for the instance's own agents. */
+  /** Where its module comes from (a local module: the instance's own). */
   source: { module: string; marketplace: string | null; tier: string | null; revision: string | null } | null;
   schedules: RosterAgent["schedules"];
 }
@@ -85,11 +84,10 @@ export function agentProfile({ agent, agents, routines, activity, effort, catalo
     title: r.title,
     state: r.state,
     ...(r.stateNote ? { stateNote: r.stateNote } : {}),
-    trial: r.trial,
     model: r.model,
     effort: effort || null,
     reportsTo: agents.find((a) => a.id === agent.reportsTo)?.name ?? null,
-    source: module && module !== "instance" ? { module, marketplace: entry?.marketplace ?? null, tier: entry?.tier ?? null, revision: entry?.revision?.slice(0, 7) ?? null } : null,
+    source: module ? { module, marketplace: entry?.marketplace ?? null, tier: entry?.tier ?? null, revision: entry?.revision?.slice(0, 7) ?? null } : null,
     schedules: r.schedules,
   };
 }

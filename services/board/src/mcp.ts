@@ -367,7 +367,7 @@ export function createMcp(d: McpDeps) {
         if (!a.agent) {
           const r = await call("GET", "/api/agents/roster");
           const short = (t: unknown) => (typeof t === "string" && t.length > 120 ? `${t.slice(0, 119)}…` : t ?? null);
-          const compact = (r.roster as any[]).map((x) => ({ key: x.key ?? x.id, name: x.name, state: x.state, state_note: short(x.stateNote), running: x.running ?? 0, trial: Boolean(x.trial) }));
+          const compact = (r.roster as any[]).map((x) => ({ key: x.key ?? x.id, name: x.name, state: x.state, state_note: short(x.stateNote), running: x.running ?? 0 }));
           return out(`${compact.length} agents. Pass \`agent\` for one agent's title, department, model and schedules.`, { roster: compact, profile: null });
         }
         const k = encodeURIComponent((await agentRef(a.agent)).key);

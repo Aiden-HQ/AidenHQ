@@ -16,8 +16,8 @@ ships no compose file: compile generates its services from `services:`. There is
 | `requires` | Modules that must also be enabled. |
 | `settings` | Values the instance supplies: `required`, `default`, `values` (allowed choices). |
 | `agents` | Agent definitions: `adapter`, `model`, `reasoning_effort`, `timeout_sec`, `connections` (grants), `roles`, `heartbeat`, `image`, `isolation`. |
-| `routines` | Scheduled or webhook-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, and `model` (see below). |
-| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...], destructive: [...], named: [...] }` (`destructive`, optional: tools that delete; compile refuses a tool named like delete, trash, remove or purge under `read` or `write`. `named`, optional: `read` tools a grant must name, kept out of the `read` shorthand; a tool tagged `named` without `read`, or with `write` or `destructive`, is a compile error). `health_probes`, optional: `<name>: { tool, args }`, one of its `read` tools called with fixed arguments as the narrowest agent granted it; the host's health check asks by name (`POST /v1/health/probe`), and the answer is ok or the error, never the tool's output. |
+| `routines` | Scheduled, webhook- or event-triggered runs for an agent: `title`, `agent`, `description`, `concurrency`, `schedules`, `status`, `model` (see below) and `event`: `{ connection, resource, filter }`, a run for each batch of the connection's events (at most one a minute) that match `filter` (required, keys from the connection's `events.filter`); the agent must hold one of its `events.reads` tools. An event routine is `always_enqueue`, takes no `webhook`, and its task ends with `New events: batch {{batch}} ({{count}})`, which tells the job to call `routine_events(batch)`. `resource: "*"` (every resource) is for product modules. |
+| `connections` | MCP servers: `url` (or `command`/`args`), `bearer_token_env_var`, `guide` (shown to agents), `setup` (how to set it up, shown on the board's Settings, Connections), and `tools: { read: [...], write: [...], destructive: [...], named: [...] }` (`destructive`, optional: tools that delete; compile refuses a tool named like delete, trash, remove or purge under `read` or `write`. `named`, optional: `read` tools a grant must name, kept out of the `read` shorthand; a tool tagged `named` without `read`, or with `write` or `destructive`, is a compile error). `events`, optional: `{ resource, kinds, filter: [keys], reads: [read tools] }`, what its source module sends the kernel's event router; routines subscribe through `event`. `health_probes`, optional: `<name>: { tool, args }`, one of its `read` tools called with fixed arguments as the narrowest agent granted it; the host's health check asks by name (`POST /v1/health/probe`), and the answer is ok or the error, never the tool's output. |
 | `apps` | Apps for `apps-mcp`: `name`, `owner`, `port`, `stateful`, `expose`, `caps`, `secrets`, `repo`, `path`. |
 | `services` | Its containers (spec §5.11, `kernel/schemas/services.json`; any other field fails compile): `run: { <svc>: { image (by digest) or build (a folder in the module), command, entrypoint, env, secrets, port, ui_port (127.0.0.1 only), tmp, user, read_only, data, state, egress, links, join, on_demand, cpus, memory, pids } }` and `data: true`. Each becomes `<module>-<svc>` (the old name stays a network alias) with all capabilities dropped, `no-new-privileges`, a read-only root, the module's own network `aidenhq-mod-<module>` (internal) and, with `egress`, its own egress network. `data` mounts folders of `data/modules/<module>/`; `state` the module's own vault dir (`secrets.state: true`); `env` reads `${secrets.<own>}` (its file path). `join` names a module it `requires`; `links` (root services and networks) come only from the closed lists in `scripts/modules.ts`. |
 | `secrets` | `provided` (secrets the module owns but doesn't generate) and `state: true` (its vault dir `modules/<module>/`, read-write). A secret is one module's; a root secret only through the legacy list. A provided entry `{ name, setup: { label, pattern, help?, required? } }` is asked for in the board's setup flow for the module (the gateway's `openrouter_key` on the kernel's first-run model step, `/setup/model`) and written to the vault once it matches `pattern` (anchored); `required` while the vault has none. |
@@ -54,9 +54,8 @@ A private git repo (one per owner), checked out on the host and pointed to by `A
 instance.yaml                 product pin, modules, settings, overrides
 apps.yaml                     apps agents created (read and written by apps-mcp)
 agents/<key>.md               extra rules appended to that module agent's handbook
-agents/<key>/agent.yaml       an instance-defined agent
-agents/<key>/AGENTS.md        its handbook
-agents/<key>/memory.md        its curated memory (the Fleet Steward's)
+agents/<key>/AGENTS.md        a module agent's handbook fork (with overrides.agents.<key>.handbook_fork)
+modules/<name>/               a local module: the instance's own agents, skills and routines (below)
 owner/profile.md              how the owner works, in every crew handbook and chat lane
 decisions.md                  product decisions and "not building" entries the AI reviewer holds changes to
 ```
@@ -92,54 +91,42 @@ outcomes:
   model for a frequent sweep, the agent's stronger one for everything else). Compile writes it into the agent's grants
   entry (`routines`), and the kernel's admission gives a routine run's job that model. `reasoning_effort:` on a routine
   works the same way (generated heartbeats use both).
-- **Autonomy per routine:** `autonomy: off | tier0 | full` on a routine (module, instance agent, or
-  `overrides.routines.<key>.autonomy`) caps the approval cards of the tasks its runs start: the run task itself and every
-  task traced back to it, through parents and the kernel's provenance (the job that created an issue), so an unparented
-  `task_create` from a routine's run keeps the cap. The strictest of the routines found and
-  the instance's `autonomy` applies, in code (`kernel/src/tier.ts`, `computeTier`):
-  `tier0` makes Tier 1 the owner's after the AI reviewer has read it (its reject is final; Tier 0 still runs),
-  `off` makes Tier 0 the owner's too, `full` adds no cap. The default is `full` for scheduled and owner-started
-  routines (today's behaviour: the AI reviewer decides Tier 1 when the instance runs `full`) and `tier0` for a
-  `webhook: true` routine, which something outside fires, often with untrusted text (`app-incident` and `app-request`
-  also set it explicitly). Set `tier0` on any other unattended routine to have its risky writes drafted for the owner.
-  Agents-org app merges are Tier 0, so a `tier0` cap mostly holds product and fleet cards. It fails closed: setup writes
-  each routine's autonomy into the grants table before adding its triggers, and the kernel treats a routine it doesn't
-  find there, an invalid value, or a trace past 24 issues as `off`. It caps cards only (push, PR, merge, apply, deploy, app_run): direct tools such as `slack_post` and
-  `app_api` are governed by grants. Setting or changing a routine's autonomy is always a Tier 2 change.
-- **Instance agents** (`agents/<key>/`) take `name`, `description` (the routing contract), `reports_to`, `model`,
-  `reasoning_effort`, `timeout_sec`, `connections`, `routines` (schedules, `model` and `autonomy` only), `max_parallel`,
-  `image`, `trial`, `trial_writes`, `heartbeat` and `skills` (module skill ids). They cannot have roles. An agent that writes
-  or designs code lists `engineering.write-code` in `skills` (how code is written here), plus `engineering.publish` when it runs `aidenhq publish`; every agent gets "How we work".
-  `trial: true` keeps writes to reporting on the
-  agent's own tasks; `trial_writes: [connection.tool, …]` on a trial agent says which more it may use, so a definition can
-  give it the owner-channel writes before tap 2: `paperclip_tasks.task_create`, `chat_lane.wake_at`,
-  `chat_lane.chat_send`, `owner_channel.notify` (any other name, an entry it doesn't grant, or one on an agent not in
-  trial is a compile error). Every other granted write stays refused until trial ends. The Agent Architect designs these
-  and the Engineer commits them after the owner approves.
-- `private_reads: true` on an Engineer (`profile: engineer`): its jobs may hold private data (private grants: Grafana, Slack,
-  Glean, ClickHouse; other tasks) and get no web search. Without it (the Engineer), web search and
-  only the non-private jobcaps (Primer).
+- **Local modules** (`modules/<name>/` in the instance repo, tier `local`, always on: listing one in `modules:` is a
+  compile error) hold the instance's own agents, skills and routines, compiled like product modules. Their `module.yaml`
+  takes only `name` (the folder's), `description`, `agents` and `routines`; `skills/<name>/SKILL.md` is found by folder.
+  A local agent takes `name`, `description` (the routing contract), `reports_to`, `model`, `reasoning_effort`,
+  `timeout_sec`, `connections`, `max_parallel`, `image`, `heartbeat`, `web_search`, `graded`, `department`, `chat`,
+  `skills` and `profile`; it cannot have roles, and its handbook (`agents/<key>/AGENTS.md`) is plain Markdown with no
+  frontmatter. A local routine takes `title`, `description`, `concurrency`, `schedules`, `agent` (required: any agent),
+  `model` and `event`; it runs at most hourly (at most one schedule, its cron minute one number, checked after
+  `overrides.routines`) and starts active. An agent that writes or designs code lists `engineering.write-code` in `skills`
+  (how code is written here), plus `engineering.publish` when it runs `aidenhq publish`; every agent gets "How we work".
+  The Agent Architect designs local agents (templates in `modules/agent-builder/templates/`); a new one starts with its
+  designed grants, and the AI reviewer reads it at apply. The old `agents/<key>/agent.yaml` is a compile error naming
+  the move.
 - `image: engineer` on an Engineer (`profile: engineer`): every Engineer has one; its jobs run in that agent computer (a job for an
   agent without one is refused).
-- `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the non-private reads its jobs hold,
+- `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the reads its jobs hold,
   through the kernel's proxy with the box's run token; no connection URL or token enters a job. A module declares them under
-  `jobcaps:` (`id`, `connection`, `tools` or `read`, `private`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on an
+  `jobcaps:` (`id`, `connection`, `tools` or `read`, `tool_timeout_s`, `read_url`, `read_secret`). `engine:` on an
   agent names the engine its jobs run on; without one, the one enabled engine that runs in a computer (compile fails when
   there are none or several).
 - `profile:` on an agent: `crew` (the default), `engineer` or `check`: which tools, writes and computer its kernel jobs get.
 - `max_parallel` on an agent: how many of its kernel jobs run at once, each on its own task.
 - `prompts:` in a module: handbook sections it adds to every crew (`profile: crew`) agent's handbook, after the kernel's
   Approvals: `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
-  leading blank lines included); `{{memory}}` and `{{fleet_issues}}` are filled in. `when` and `unless` test `tools`
+  leading blank lines included); `{{fleet_issues}}` is filled in at compile, `{{memory}}` when a job starts (and each chat lane turn), from the agent's memory, fenced as data. `when` and `unless` test `tools`
   (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
   anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
   `lane: true` adds it to the fast chat lane's prompt too. A section that serves only some agents says so in `when`.
   A section is always in the handbook; what an agent needs only for some work is a skill (below), which its engine
   reads natively from the job's engine home.
-- `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, which is its folder's name, `description`,
-  optional `when`/`unless`), with id `<module>.<name>`, for the agents the module defines and those granted one of its
-  connections, plus any agent (module or instance, any adapter) that names it in its `skills:` list. Compile lists every
-  skill under `skills:` in `config/paperclip.yaml` and each agent's under its own `skills:`; an unknown id, two skills of
+- `skills/<name>/SKILL.md` in a module: a skill in Codex's format (`name`, which is its folder's name, and a one-line
+  `description`), with id `<module>.<name>`. An agent gets exactly the skills it lists: its effective list is
+  `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`, the one override shape for every
+  agent, local or module. Membership and grants select nothing. A listed skill of an available module that isn't enabled
+  is dropped. Compile lists every enabled skill under `skills:` in `config/paperclip.yaml` and each agent's effective list
+  under its own `skills:`; an id no available module has, `when`/`unless` on a skill, two skills of
   one name for one agent, or a skill folder outside its module fail compile. Engineer jobs get theirs in the engine
   home; at every apply, setup imports crew agents' skills into Paperclip (copied into its managed skills root under
   `<data>/paperclip/instances/default/skills/<company id>/`) and sets each crew agent's to exactly its list. Two crew
@@ -222,8 +209,9 @@ run `node scripts/sync-shared.ts`.
 
 ## The web and apps' pages
 
-- **Web search** is live for every agent's jobs unless they hold private data (the kernel's admission).
-  An agent may set `web_search: cached` or `disabled` (module or instance `agent.yaml`); computers inherit both.
+- **Web search** is live for every agent's jobs (the kernel's admission). An agent turns it off with `web_search: disabled`
+  in its module's or local module's definition (an agent reading private data it must not send out sets that); `cached`
+  keeps search but from the cache. Computers inherit both.
 - **`web_view(url, screenshot?, width?)`** and **`app_view(name, path?, screenshot?, width?)`** (apps-mcp, read tools):
   every codex agent is granted both explicitly (`apps: [web_view, app_view]`). One renderer
   (`modules/apps-platform/apps-mcp/src/view.ts`): a one-shot container of the browser image (`services/computer/images/browser`:
@@ -246,11 +234,7 @@ run `node scripts/sync-shared.ts`.
   box. The GitHub fleet org (`github_fleet_org`) only, full SHA (none: the default branch), files only; no token enters the box.
 - `design-review` (module `design`): the UI Reviewer reviews in its computer and sets the `design-review` commit
   status with github-mcp's `commit_status_set` (role `design-review`, fleet org only, as the owner's sign-in; a status needs only
-  the `repo` scope). On a Tier 0 merge of a PR that changes UI files (styles, markup, components, UI folders, server-rendered page files; `modules/github/service/src/merge-gate.ts` isUiFile) it blocks: the code host marks the head `design-review` pending and files the UI Reviewer a "Design review: <repo>#<n>" task for it once its other checks are green, waking the reviewer on that task at once with a comment (Paperclip starts no run for a task filed already assigned; a head that merged or moved on by then gets neither the status nor the wake; the role is resolved among the company's live agents, so a stale id in the grants table never files a row to the owner, and a task the board already had for that head is not woken again, its earlier run may have ended), merges only on `success`, stops on `failure` with its reason, and with no verdict 2 hours later puts the merge on the owner's card (rule `design-review-missing`). The verdict is scoped to the diff: the reviewer runs `ui-review --baseline` against the base, which lists the findings the base already had under "already on this base", and blocks a PR only for what it introduced or regressed; with no baseline run, every finding blocks. Elsewhere it stays advisory: a merge card the owner approves merges without waiting, but the code host files the same task for a UI PR without a verdict (once per head, whichever path asks first) and the card's outcome says where each UI PR's review stands (pending, passed or changes requested). A review task whose head is no longer the one to
-  review — the PR moved on, merged or closed, or its verdict is on that exact head already — closes as superseded,
-  wherever it sits (the reviewer's queue or the owner's). The status and the wake come from the same step, so
-  the wait and its run always start together; a repo may also add `modules/design/templates/design-review.yml`, which marks
-  each UI head pending as soon as it opens. Don't make it a required check in branch protection (the owner's card must be able to merge).
+  the `repo` scope). For a PR that changes UI files (styles, markup, components, UI folders, server-rendered page files; `modules/github/service/src/merge-gate.ts` isUiFile) the code host files the UI Reviewer a "Design review: <repo>#<n>" task for each head and marks it `design-review` pending. The review is advisory (owner, 2026-11-23): it never holds a merge, and its findings come back as follow-up fixes. The verdict is scoped to the diff: the reviewer runs `ui-review --baseline` against the base, which lists the findings the base already had under "already on this base". A review task whose head is no longer the one to review — the PR moved on, merged or closed, or its verdict is on that exact head already — closes as superseded.
   The reviewer's 4-hourly heartbeat is the backstop for a wake that missed.
 
 ### Quality checks
@@ -277,11 +261,10 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 | `github_fleet_org` | github | no | | The GitHub org the fleet's repositories live in: bare `create-repo` names and `@agents` grants resolve to it. Unset: they live on this server (`local`). A change is the owner's. |
 | `github_orgs` | github | no | `[]` | GitHub orgs or users, besides the fleet org, the owner allows: the apps platform builds trusted apps from their repos (private ones through the code host) and `create-repo` creates repositories there at Tier 0. |
 | `autonomy` | core | no | `off` (`ops/setup.sh` writes `full` for a new install) | Tiered approvals: `off` = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); `tier0` = Tier 0 runs at once, the AI reviewer only notes its verdict on Tier 1; `full` = the reviewer decides Tier 1. A new install starts at `full` (owner, 2026-11-18); the reviewer's exit test (`modules/ai-reviewer/scripts/reviewer-eval.ts`) gates every change to the reviewer. Changing it is itself a Tier 2 apply. |
-| `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every module routine with `schedules:` compiles paused and every module agent's heartbeat off, until `overrides.routines.<key>.status: active` or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the switch). Webhook-started routines and instance agents are untouched. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
+| `quiet_start` | core | no | | `on` (`ops/setup.sh` writes it for a new install): every product module routine with `schedules:` is created paused and every module agent's heartbeat off, until the routine is resumed (its live control: Resume on its module's page, or Aiden's `fleet_control`) or `overrides.agents.<key>.heartbeat` turns one on (Aiden offers them; the agent's Settings tab has the heartbeat switch). Webhook-started routines and local modules are untouched. A routine's status is set once, when setup creates it; turning quiet start off later resumes nothing. Unset or `off`: as the modules declare. [design/quiet-start.md](design/quiet-start.md) |
 | `spend_day_usd`, `spend_month_usd` | core | no | `50`, `1000` | The install's spend limit on every model call (agents, check jobs, the AI reviewer, grader, CI review, source writers, side chat): USD per UTC day and per UTC calendar month, enforced in the kernel's model gateway. Past either, a call gets 402 `cap_reached` and the owner is told once per limit, period and value (no card); the board's header shows today's spend against the day limit. Raising one is the owner's at every autonomy; lowering is the panel's. |
 | `task_usd` | core | no | `20` | What an agent's calls on one task may spend, install-wide (a chat or routine task: per UTC day). Past it that task's calls get 402 and the delegator is told once (a wake notice on the parent task, else the owner); admission holds new jobs on it. Raising it is the owner's. |
 | `heartbeat_hours` | core | no | `4` | Hours between each `heartbeat: true` agent's "Heartbeat: <key>" routine run (1, 2, 3, 4, 6, 8, 12 or 24; DeepSeek Flash at low effort). An agent's `heartbeat: <hours>` or `overrides.agents.<key>.heartbeat` sets its own; `false` turns it off for that agent. |
-| `agent_memory` | core | no | `on` | Agent memory: every Codex agent has `memory_note` (a fact and its source, to its own `Memory inbox: <key>` task, 10 a run); the Fleet Steward curates daily from the inboxes and the agents' recent work and proposes `agents/<key>/memory.md` (max 4 KB, cut at a line end past that) through the Engineer and an apply (Tier 1 for an agent without a role, Tier 2 for one with); compile adds it to the handbook as "What you've learned". `off` is the kill switch: no tool, no section (the files stay in git). |
 | `ci_review_model` | ci | no | `~deepseek/deepseek-flash-latest:high` | The template's code review (codex review): `<OpenRouter id>:<effort>` (minimal, low, medium, high, xhigh), handed to the job with its CI token; critical paths run one effort higher. Always allowed. |
 | `ci_review_models` | ci | no | `[~deepseek/deepseek-flash-latest]` | Models a CI token may call besides `ci_review_model`: repos still on the older template (OpenRouter ids; codegenie's `openrouter/` and `:<reasoning>` are dropped). |
 | `backup_repository` | core | no | | Off-host backup: a restic repository URL, for example a Hetzner Storage Box at `sftp://u12345@u12345.your-storagebox.de:23/aidenhq`. Set, `ops/apply-config.sh` installs `aidenhq-backup.timer` (nightly at 03:00 UTC, after the warehouse dump), which runs `ops/backup-offsite.sh`: `scripts/backup.sh --plain`, then restic with the vault ciphertext, `.env`, `compose.override.yaml`, `config/` and the notes vault; it keeps 7 daily, 4 weekly and 6 monthly snapshots. The password is the vault secret `restic_password` (keep a copy off the host); the host user's SSH key must be authorised on the target. Unset, the timer is removed. |

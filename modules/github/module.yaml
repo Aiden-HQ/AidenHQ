@@ -14,12 +14,6 @@ requires:
 # with that token alone, never with the connections' service key (kernel/src/identity.ts), so a call on the connections' key
 # holds no kernel role and can't report a write's outcome.
 privileged: [ git-credential ]
-# The merge queue, its gate rules and the reviewer's code list (evalgate.ts) are the gate's own core: the reviewer reads them
-# (the path inventory, paths.yaml; the rest of the code host part is the reviewer's too).
-paths:
-  - sensitivity: 1
-    owner_role: platform-engineer
-    patterns: [ service/src/merges.ts, service/src/merge-gate.ts, service/src/evalgate.ts ]
 # The code host role (docs/design/codehost-local.md §2): it hosts every org codehost-local doesn't own, once GitHub is connected.
 provides: [ codehost ]
 # Its sign-in and setup flow on the board (modules/board/schemas/), and its schema and the views agents read with source_new
@@ -97,17 +91,15 @@ settings:
     default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
   # The org the fleet's repositories live in: bare create_repo names and `@agents` grants resolve to it. Chosen once from the
   # orgs the owner can create repos in; unset, the fleet's repos live in `local`. It survives a disconnect (create_repo then
-  # refuses "GitHub isn't connected" rather than switching to `local`). A change is the owner's.
+  # refuses "GitHub isn't connected" rather than switching to `local`).
   github_fleet_org:
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
-    owner: [ { path: "", new: true } ]
   # GitHub orgs/users (besides the fleet org) the owner allows: the apps platform builds trusted apps from their repos, and
   # create_repo may create in them.
   github_orgs:
     default: []
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
-    # Adding an org is the owner's: it trusts the org's repos for apps and lets create_repo write there.
-    owner: [ { path: "*", new: true } ]
+    # An org added here is trusted for apps, and create_repo may write there.
 connections:
   github:
     setup: "Open its setup on the board (#/setup/github) and press Connect GitHub."
@@ -134,13 +126,19 @@ connections:
       # threads, replies included: code review's reads) is named the same way.
       named: [ github_issue_link, github_issue_list, github_label_events, github_pr_list, github_repo_tree, github_repo_file, github_pr_threads ]
       # The writes with the owner's token (a comment, an issue, its state, a review, a failed job's re-run) post as the owner:
-      # destructive, so only a grant naming one reaches it and every call is a record the AI reviewer decides first (floor 1).
+      # destructive, so only a grant naming one reaches it and every call is a record the AI reviewer decides first (floor 1),
+      # except the `unreviewed` ones (an issue's labels and state, a thread reply: owner, 2026-11-23), which run at once (Tier 0)
+      # after code's refusals (instance details).
       destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_reply, github_rerun_failed, github_product_issue, github_issue_label, github_issue_state ]
+      unreviewed: [ github_issue_label, github_issue_state, github_pr_thread_reply ]
     # Granted only while the upstream setting allows issues.
     upstream: [ github_product_issue, github_product_issue_status, github_issue_link ]
     # The host's health probe (kernel/src/health.ts): the owner's sign-in answers a read.
     health_probes:
       github: { tool: github_whoami }
+    # Routines' events (kernel events.ts), polled from each subscribed repo's events feed on the code host's churn pass
+    # (best-effort: GitHub can delay its feed): a routine subscribes to a repo its agent's github_issue_read reaches.
+    events: { resource: "owner/repo", kinds: [ issues.opened, issue_comment.created, pull_request.opened ], filter: [ kind, author, contains ], reads: [ github_issue_read ] }
   # GitHub's own MCP server (its default toolsets), passed through as the signed-in owner (src/vendor/proxy.ts), read-only
   # (spec §4): every tool not tagged `read` here is refused in github-mcp (official.ts denyExcept, from GITHUB_OFFICIAL_READ).
   # Mutations go only through AidenHQ's typed tools, which sign them and file their write records.
@@ -170,7 +168,7 @@ codehost:
 # whose process is gone. That listing reads no other source and closes no other family (kernel/src/modtasks.ts).
 # All of them go with the code host's own token (codehost_github_token), never with github-mcp's service key.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice ]
+  requests: [ kernel.tasks, kernel.wake, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice, kernel.events ]
 # Flow (docs/design/flow.md): the facts the code host emits through the kernel (service/src/flow.ts), each carrying the task that opened
 # the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside, from GitHub's author_association); pr.pushed is a head
 # change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
@@ -294,7 +292,6 @@ services:
         TASKS_DIR: /tasks
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
-        OWNER_NAME: "${settings.owner_name}"
         CHURN_EXCLUDE: "${settings.churn_exclude}" # comma-separated globs
         # The repos code review gates (a mandatory combo; compile derives it): the merge queue merges a PR there only on code
         # review's pass for its head, asked at code-review:8098 (whose service joins this module's network) with this module's
@@ -314,17 +311,19 @@ providers:
 prompts:
   - { id: product-bugs, file: prompts/product-bugs.md, when: { tools: [ github.github_issue_link ] } }
 writes:
-  # push, pr and merge are repository writes (paths: true): plan.ts returns the files each changes, read from git, and the
-  # kernel raises their tier by the path inventory (paths.yaml) and runs the platform check on them (writes.ts).
-  push: { args: schemas/push.json, floor: 0, paths: true, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
-  pr: { args: schemas/pr.json, floor: 0, paths: true, card: *card }
-  merge: { args: schemas/merge.json, floor: 0, paths: true, card: *card }
+  # push, pr and merge are repository writes: plan.ts returns the files each changes, read from git, and the kernel runs the
+  # platform check on them (writes.ts).
+  push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
+  pr: { args: schemas/pr.json, floor: 0, card: *card }
+  merge: { args: schemas/merge.json, floor: 0, card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
-  # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts). Repository write: its plan returns the files it
-  # changes, and the path inventory raises its tier like a push's.
-  setup: { args: schemas/setup.json, floor: 1, paths: true, card: *card }
+  # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).
+  setup: { args: schemas/setup.json, floor: 1, card: *card }
+  # publish_module: the owner's share of a local module (docs/design/sharing.md). Only his own board save files it, bound to
+  # the preview's digest, source, repo, ref and base; a branch that moved since fails it, and he previews again.
+  publish_module: { args: schemas/publish_module.json, floor: 2, filer: owner, stale: fail, card: *card }
 # github_service_key: the kernel's bearer for github-mcp (both connections). github_auth_token: the board's, for its sign-in.
 # codehost_github_token: the code host's own token (the kernel knows the module by it; the name it had as codehost-github).
 # src_github's warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates them when missing.

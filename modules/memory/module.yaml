@@ -1,5 +1,5 @@
 name: memory
-description: "Agent memory: lessons and facts from each agent's notes (memory_note) and recent work, curated by the Fleet Steward into the instance's agents/<key>/memory.md, compiled into its handbook and its fast chat lane."
+description: "Agent memory: each crew agent keeps its own facts and lessons (memory_note, memory_forget, memory_rewrite), stored by the kernel and read into its handbook at every job and its fast chat lane each turn."
 prompts:
-  # {{memory}}: the agent's curated memory.md (compile reads it; at most 4 KB). Its fast chat lane gets it too.
-  - { id: memory, file: prompts/memory.md, order: last, when: { fields: { memory: true } }, lane: true }
+  # {{memory}}: the agent's memory, filled by the kernel when a job starts and by the chat lane each turn (kernel memory.ts), fenced as data.
+  - { id: memory, file: prompts/learned.md, order: last, when: { fields: { profile: crew } }, lane: true }

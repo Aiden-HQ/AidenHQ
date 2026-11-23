@@ -54,7 +54,7 @@ export const modelShort = (id: string) => (id ? id.split("/").at(-1)!.replace(/^
 export function wakeText(a: AgentSettings): { text: string; full: string[] } {
   const parts: { text: string; raw: string }[] = [];
   if (a.heartbeatHours) parts.push({ text: `every ${a.heartbeatHours}h`, raw: "heartbeat" });
-  for (const r of a.routines.filter((x) => !x.key.startsWith("heartbeat-") && x.status !== "paused"))
+  for (const r of a.routines.filter((x) => !x.key.startsWith("heartbeat-")))
     for (const s of r.schedules) parts.push({ text: cronText(s.cron), raw: `${r.title}: ${s.cron}${s.timezone ? ` (${s.timezone})` : ""}` });
   if (!parts.length) return { text: a.routines.some((r) => r.webhook) ? "on an event" : "when asked", full: [] };
   const shown = [...new Set(parts.map((p) => p.text))];
@@ -82,6 +82,7 @@ export function changeLines(ch: SettingChange, was: unknown): { path: string; fr
   if (ch.kind === "pin") return { path: `modules.${ch.name}`, from: yamlValue(was), to: ch.sha ?? "(follows its marketplace)" };
   if (ch.kind === "grants") return { path: `overrides.agents.${ch.agent}.connections.${ch.connection}`, from: yamlValue(was), to: ch.tools === null ? "(the module's)" : yamlValue(ch.tools) };
   if (ch.kind === "marketplace") return { path: `marketplaces.${ch.name}`, from: yamlValue(was), to: ch.op };
+  if (ch.kind === "share") return { path: `${ch.repo} ${ch.ref}`, from: ch.base.slice(0, 12), to: `+ ${ch.module}/` };
   if (ch.kind === "unfork") return { path: `overrides.agents.${ch.agent}.handbook_fork`, from: "(own copy)", to: "(the module's handbook)" };
   return { path: ch.kind === "rules" ? `agents/${ch.agent}.md` : `agents/${ch.agent}/AGENTS.md`, from: yamlValue(was), to: ch.text.slice(0, 80) };
 }

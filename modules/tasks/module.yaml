@@ -2,8 +2,11 @@ name: tasks
 requires: [ grading ] # task_delegate files rubrics with it (its network)
 roles:
   # kernel.wake: task_wait and task_handoff record the job's own task's wait (POST /v1/wait, kernel idle.ts); kernel.flow-read:
-  # each task's one state (GET /v1/tasks/state)
-  requests: [ kernel.wake, kernel.flow-read ]
+  # each task's one state (GET /v1/tasks/state); kernel.memory: the memory tools reach the calling agent's own memory (POST
+  # /v1/memory/<op>, kernel memory.ts); kernel.events: routine_events reads the run's own batch (GET /v1/events/batch/<id>,
+  # kernel events.ts); kernel.settings: self_change files the calling agent's change to itself (POST /v1/settings/agent,
+  # kernel settings-change.ts)
+  requests: [ kernel.wake, kernel.flow-read, kernel.memory, kernel.events, kernel.settings ]
 description: "Task tools for every agent: read, create, delegate, comment on and close Paperclip tasks, as the calling agent."
 # A piece of work's journey (docs/design/flow-insights.md §2): one row per root task (an issue's, an owner's request, a routine
 # run) with its subtasks and every PR they opened, from the issue to the deploy. It is done when the root is done or cancelled
@@ -35,10 +38,14 @@ connections:
     model_as_caller: true
     tools:
       # advisor_ask, fanout_map (models.ts): model calls billed to the caller's run through the gateway; they change nothing.
-      # memory_note: a comment on the caller's own memory inbox task (a note for the Fleet Steward), so trial agents have it too.
+      # memory_note, memory_forget, memory_read, memory_rewrite: the caller's own memory document, written by the kernel at once
+      # (runtime state, never a write record); memory_read and memory_rewrite are named (a librarian's grant names them too).
+      # routine_events: an event routine run's batch, for that run's own job only (the kernel binds it).
+      # self_change: the caller's change to itself, written and filed by the kernel as a kernel.apply (that record is its only one).
       # coach_record: the fleet-audit role's (the Fleet Steward); its coach_due and coach_evidence reads are the fleet-steward module's.
-      read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note ]
-      write: [ coach_record, task_create, task_delegate, task_route, task_propose_rule, task_join, task_schedule, task_recurring, task_merge, task_update, task_amend_rubric, task_pass_on, task_handoff, task_comment, task_file_upload, task_finish, task_wait, task_block, task_cancel, task_relay_owner_words, app_request_from_owner, fleet_control ]
+      read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note, memory_forget, memory_read, memory_rewrite, routine_events, self_change ]
+      named: [ memory_read, memory_rewrite, self_change ]
+      write: [ coach_record, task_create, task_delegate, task_route, task_join, task_schedule, task_recurring, task_merge, task_update, task_amend_rubric, task_pass_on, task_handoff, task_comment, task_file_upload, task_finish, task_wait, task_block, task_cancel, task_relay_owner_words, app_request_from_owner, fleet_control ]
 services:
   data: true
   run:
@@ -61,15 +68,17 @@ services:
 generated_secrets:
   - tasks_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
-# With model-tools, every crew agent can consult the advisor; with memory, note a fact for the Fleet Steward.
+# With model-tools, every crew agent can consult the advisor; with memory, keep its own memory.
 default_grants:
   - { tools: [ paperclip_tasks.advisor_ask ], when: { fields: { profile: crew }, modules: [ model-tools ] } }
-  - { tools: [ paperclip_tasks.memory_note ], when: { fields: { profile: crew }, modules: [ memory ] } }
-  # task_wait: every crew agent records what its task waits on (kernel idle.ts; each job's prompt says how a turn ends). An
-  # agent in trial gets its paperclip_tasks writes with tap 2.
-  - { tools: [ paperclip_tasks.task_wait ], when: { fields: { profile: crew } }, unless: { fields: { trial: true } } }
-  # task_get, task_search: what the in-box `aidenhq task|tasks` call as the job. Task text is private data, so a crew agent holds
-  # them, and an Engineer (profile: engineer) only with private_reads (its jobs get no web search); never a check job, a trial
-  # agent or an agent of an untrusted module. (Compile reads an agent without `profile:` as crew.)
-  - { tools: [ paperclip_tasks.task_get, paperclip_tasks.task_search ], when: { fields: { profile: crew } }, unless: { fields: { trial: true, isolation: untrusted } } }
-  - { tools: [ paperclip_tasks.task_get, paperclip_tasks.task_search ], when: { fields: { private_reads: true } }, unless: { fields: { profile: check, trial: true, isolation: untrusted } } }
+  - { tools: [ paperclip_tasks.memory_note, paperclip_tasks.memory_forget, paperclip_tasks.memory_read, paperclip_tasks.memory_rewrite ], when: { fields: { profile: crew }, modules: [ memory ] } }
+  # routine_events: every crew agent reads the batch its event routine's run was fired with.
+  - { tools: [ paperclip_tasks.routine_events ], when: { fields: { profile: crew } } }
+  # self_change: every crew agent changes its own handbook, skills and routines (reviewed at apply).
+  - { tools: [ paperclip_tasks.self_change ], when: { fields: { profile: crew } }, unless: { fields: { isolation: untrusted } } }
+  # task_wait: every crew agent records what its task waits on (kernel idle.ts; each job's prompt says how a turn ends).
+  - { tools: [ paperclip_tasks.task_wait ], when: { fields: { profile: crew } } }
+  # task_get, task_search: what the in-box `aidenhq task|tasks` call as the job. A crew agent and an Engineer hold them; never a
+  # check job or an agent of an untrusted module. (Compile reads an agent without `profile:` as crew.)
+  - { tools: [ paperclip_tasks.task_get, paperclip_tasks.task_search ], when: { fields: { profile: crew } }, unless: { fields: { isolation: untrusted } } }
+  - { tools: [ paperclip_tasks.task_get, paperclip_tasks.task_search ], when: { fields: { profile: engineer } }, unless: { fields: { isolation: untrusted } } }

@@ -1,7 +1,7 @@
 // @slack/socket-mode is CommonJS: default import, then destructure.
 import socketMode from "@slack/socket-mode";
 import type { Logger } from "pino";
-import { makeDedupe, toEvent } from "./map.js";
+import { toSourceEvent, type SourceEvent } from "./map.js";
 import type { Store } from "./store.js";
 
 const { SocketModeClient } = socketMode;
@@ -9,7 +9,6 @@ const { SocketModeClient } = socketMode;
 interface Deps {
   appToken: string;
   store: Store;
-  onKept: () => void;
   /** The owner's own messages in their command channel (the paired DM): chat with Aiden, posted as the owner by the kernel. */
   chat?: { owner: () => { user: string; channel: string } | undefined; deliver: (text: string) => Promise<void> };
   /** A pairing DM (pair.ts): true when it was one, and then it goes no further. */
@@ -17,14 +16,15 @@ interface Deps {
   /** Channel binding (bind.ts): `/aiden …` answered to the person who typed it, and @mentions in bound channels. */
   bind?: { command: (body: any) => Promise<string>; mention: (ev: any) => Promise<boolean> };
   tee?: (body: unknown) => void; // src_slack (sources.ts): every event that is not a pairing DM; never throws or blocks
+  /** The kernel's event router (POST /v1/events): throws only when the kernel didn't take it (transport, 429, 5xx). */
+  forward?: (e: SourceEvent) => Promise<void>;
   log: Logger;
 }
 
 // Persist BEFORE ack: if the insert throws we do not ack, so Slack redelivers; a duplicate
 // event_id is a no-op. Events during a disconnect are lost (accepted; the scout scan covers it).
-export async function startSocket({ appToken, store, onKept, chat, pair, bind, tee, log }: Deps): Promise<void> {
+export async function startSocket({ appToken, store, chat, pair, bind, tee, forward, log }: Deps): Promise<void> {
   const client = new SocketModeClient({ appToken });
-  const dedupe = makeDedupe();
   client.on("slack_event", async (msg: { type: string; body: unknown; ack: () => Promise<void> }) => {
     if (msg.type === "slash_commands" && bind) {
       // Acked at once (Slack allows 3 s); the answer is private to the sender, through the command's response_url.
@@ -57,10 +57,11 @@ export async function startSocket({ appToken, store, onKept, chat, pair, bind, t
         await msg.ack().catch(() => undefined);
         return;
       }
-      const e = msg.type === "events_api" ? toEvent(msg.body) : null;
-      if (e) dedupe(e, () => { store.insertEvent(e); onKept(); }); // the wake-up follows the insert, so a redelivery after a failed one wakes (a spare poke is harmless)
+      // Routines' events (bot posts too, flagged): a kernel that didn't take it leaves the envelope unacked, so Slack redelivers.
+      const source = msg.type === "events_api" ? toSourceEvent(msg.body) : null;
+      if (source && forward) await forward(source);
     } catch (err) {
-      log.error({ err: String(err) }, "event insert failed; not acking so Slack redelivers");
+      log.error({ err: String(err) }, "event forward failed; not acking so Slack redelivers");
       return;
     }
     await msg.ack().catch((err: unknown) => log.warn({ err: String(err) }, "socket ack failed"));

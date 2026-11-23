@@ -13,7 +13,7 @@ import { Store } from "../src/store.js";
 
 // The grants table setup writes: the Researcher may change the board; the Scout holds the tool but not the role.
 const grantsFile = join(mkdtempSync(join(tmpdir(), "grants-")), "grants.json");
-writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, engy: { key: "engineer", roles: [], tools: { paperclip_tasks: ["task_approvals"] } }, engy2: { key: "engineer-2", profile: "engineer", roles: [], tools: { paperclip_tasks: ["task_approvals"] } }, engy3: { key: "engineer-3", profile: "engineer", private_reads: true, roles: [], tools: { paperclip_tasks: ["task_approvals"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, beta: { key: "beta", roles: [], tools: { paperclip_tasks: ["task_file_upload"] } } } }));
+writeFileSync(grantsFile, JSON.stringify({ agents: { ra: { key: "assistant", roles: ["board-writer", "fleet-read"], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, engy: { key: "engineer", roles: [], tools: { paperclip_tasks: ["task_approvals"] } }, engy2: { key: "engineer-2", profile: "engineer", roles: [], tools: { paperclip_tasks: ["task_approvals"] } }, scout: { key: "scout", roles: [], tools: { paperclip_tasks: ["task_schedule", "task_file_upload"] } }, beta: { key: "beta", roles: [], tools: { paperclip_tasks: ["task_file_upload"] } } } }));
 process.env.AIDENHQ_GRANTS_FILE = grantsFile;
 
 describe("internal listener", () => {
@@ -166,7 +166,7 @@ describe("internal listener", () => {
     }
   });
 
-  it("an Engineer without private reads reads only its run's own task cards, by the grants table as it is now", async () => {
+  it("an Engineer reads the cards of the task it names, as it reads any task (no private-reads split)", async () => {
     const other9 = { ...issue, id: "another-task", identifier: "PEN-9", title: "Other" };
     const records = fakeRecords([card({ id: "k-0000000000000030", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "running", live: true }), card({ id: "k-0000000000000031", issueId: other9.id, identifier: other9.identifier, action: "merge", tier: 1, state: "running", live: true })]);
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
@@ -183,14 +183,9 @@ describe("internal listener", () => {
     const resolve = (pc as any).issue;
     (pc as any).issue = async (ref: string) => (ref === other9.identifier || ref === other9.id ? other9 : issue);
     try {
-      // Another task's cards: refused, before the read, so its outcome never leaks.
-      const refused = await read(other9.identifier, { agent: "engy2" });
-      expect(refused.status).toBe(403);
-      expect((await refused.json()).error).toMatch(/only the task its run is working on/);
-      // Its own run's task: served, however the reference is spelled.
+      // Another task's cards and its own run's task alike: served.
+      expect((await read(other9.identifier, { agent: "engy2" })).status).toBe(200);
       expect((await read(other9.identifier, { agent: "engy2", task: other9.id })).status).toBe(200);
-      // Private reads: any task.
-      expect((await read(other9.identifier, { agent: "engy3" })).status).toBe(200);
     } finally {
       (pc as any).issue = resolve;
       board.close();

@@ -1,7 +1,6 @@
 ---
 name: delegate-work
 description: "Covers handing work to an Engineer, the UI/UX Designer or another graded agent (`task_delegate`, or `task_create` with an assignee): the brief, deliverable and rubric, UI work, and what counts as done. Use before delegating any work."
-unless: { fields: { module: engineering } }
 ---
 
 # Delegating work

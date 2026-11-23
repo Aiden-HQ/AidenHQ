@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Agent } from "./paperclip.js";
 
 export const PauseSchema = z.object({ paused: z.boolean(), stop: z.boolean().optional() }).strict();
+export const RoutinePauseSchema = z.object({ paused: z.boolean() }).strict();
 
 interface PauseApi {
   pauseAgent(id: string): Promise<unknown>;

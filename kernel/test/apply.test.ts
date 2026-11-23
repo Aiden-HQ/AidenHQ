@@ -6,14 +6,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createApply, readDigest, strayFiles } from "../src/apply.ts";
+import { createApply, readDigest } from "../src/apply.ts";
+import { strayFiles } from "../sdk/src/instance-paths.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 
-test("only instance config can be applied", () => {
-  assert.deepEqual(strayFiles(["instance.yaml", "apps.yaml", "agents/chief-of-staff.md", "agents/review-chaser/agent.yaml", "agents/review-chaser/AGENTS.md"]), []);
-  assert.deepEqual(strayFiles(["agents/x/run.sh", "agents/X/agent.yaml", "agents/x/y/AGENTS.md"]), ["agents/x/run.sh", "agents/X/agent.yaml", "agents/x/y/AGENTS.md"]);
-  assert.deepEqual(strayFiles(["instance.yaml", "ops/apply-config.sh", "agents/x/evil.md"]), ["ops/apply-config.sh", "agents/x/evil.md"]);
+test("only instance config can be applied: a local module, a library skill, a handbook fork; never an agent.yaml", () => {
+  assert.deepEqual(strayFiles(["instance.yaml", "apps.yaml", "owner/profile.md", "agents/chief-of-staff.md", "agents/chief-of-staff/AGENTS.md", "modules/review-chaser/module.yaml", "modules/review-chaser/agents/review-chaser/AGENTS.md", "modules/library/skills/triage-notes/SKILL.md"]), []);
+  assert.deepEqual(strayFiles(["agents/x/agent.yaml", "modules/x/run.sh", "agents/x/memory.md"]), ["agents/x/agent.yaml", "modules/x/run.sh", "agents/x/memory.md"]);
+  assert.deepEqual(strayFiles(["instance.yaml", "ops/apply-config.sh", "agents/x/evil.md", "agents/x/y/AGENTS.md", "modules/X/module.yaml", "modules/x/skills/s/run.sh"]), ["ops/apply-config.sh", "agents/x/evil.md", "agents/x/y/AGENTS.md", "modules/X/module.yaml", "modules/x/skills/s/run.sh"]);
 });
 const SHA = "d".repeat(40);
 const until = async (fn) => { for (let i = 0; i < 300 && !(await fn()); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(await fn()); };

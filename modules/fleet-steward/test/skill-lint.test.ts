@@ -4,7 +4,6 @@
 //   status write (`task_route`) on the task that pushed the branch, never a second task for the same PR.
 // - the product-bug step: the Maintainer's `github_product_issue` card reads the delegating task's text as the request, so the
 //   task must open with the filing ask and keep its title, body and evidence neutral (`<host>`, by role, no task ids).
-// - the memory proposal must name the instance repository (a job clones only the repositories its task names).
 // - the handbook's `## Monitors` rule: a monitor run ends by arming its next check with `task_wait`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -55,17 +54,6 @@ function productBugProblems(text) {
   });
 }
 
-/**
- * Every memory-proposal step that asks for a `task_propose_rule` without naming the instance repository: the Engineer job
- * clones only the repositories its task names, so the proposal closes with the memory file untouched.
- */
-function memoryProposalProblems(text) {
-  return sections(text)
-    .filter((section) => section.includes("task_propose_rule") && /memory:/.test(section))
-    .filter((section) => !(/(agents org|instance repo|instance's)/i.test(section) && /aidenhq-instance/.test(section)))
-    .map((section) => section.split("\n").find((line) => line.trim())?.replace(/^\W+\s*/, "").slice(0, 60) ?? "section");
-}
-
 test("fleet-check: `aidenhq close` states its scope and the outside-scope path", () => {
   assert.deepEqual(closeScopeProblems(fleetCheck), []);
   assert.ok(sections(fleetCheck).some((s) => s.includes("aidenhq close")), "the close section is present");
@@ -82,12 +70,6 @@ test("fleet-check: the product-bug step opens with the filing ask and keeps the 
   assert.ok(sections(fleetCheck).some((s) => /^## Reporting a product bug/.test(s)), "the product-bug section is present");
   assert.deepEqual(productBugProblems(fleetCheck), []);
   assert.equal(productBugProblems("## Reporting a product bug\n`task_create` with `assignee: maintainer` and evidence.").length, 1, "the lint bites");
-});
-
-test("knowledge-daily: the memory-proposal step names the instance repository", () => {
-  const daily = readFileSync(new URL("knowledge-daily/SKILL.md", skills), "utf8");
-  assert.deepEqual(memoryProposalProblems(daily), []);
-  assert.equal(memoryProposalProblems("- Propose with `task_propose_rule`, marker `memory:<agent>:<date>`.").length, 1, "the lint bites");
 });
 
 /** The `## Monitors` section's own body, whitespace collapsed, or "" when the handbook has none. */
@@ -143,8 +125,6 @@ const monitorMessage = (file, { missing, bans, permits }) => [
   ...bans.map((sentence) => `${file}: the monitor rule is written as a ban: "${sentence}"; a handbook rule says what to do (skill \`fleet-change\`)`),
   ...permits.map((sentence) => `${file}: the monitor rule permits the parking it exists to prevent: "${sentence}"; a monitor's run ends by arming its next check`),
 ];
-
-const memoryProposalMessage = (file, section) => `${file}: the memory-proposal step "${section}" must name the instance repository (\`<agents org>/aidenhq-instance\`): a job clones only the repositories its task names, so the proposal closes with the memory file unchanged.`;
 
 const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (task_route), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge, parse } from "./helpers.ts";
 
-function world({ trial = false, me: meExtra = {} } = {}) {
+function world({ me: meExtra = {} } = {}) {
   const writes = [];
   const tasks = {
     cur: { id: "cur", identifier: "WOR-1", title: "Current", status: "in_progress", assigneeAgentId: "me", createdByAgentId: "boss" },
@@ -40,7 +40,7 @@ function world({ trial = false, me: meExtra = {} } = {}) {
       send([]);
     });
   };
-  const { call } = bridge({ handler, agents: { me: { key: "cos", ...meExtra, ...(trial ? { trial: true } : {}) }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
+  const { call } = bridge({ handler, agents: { me: { key: "cos", ...meExtra }, eng: { key: "engineer-openrouter" } }, agent: "me", task: "cur" });
   return { call, writes };
 }
 
@@ -74,14 +74,6 @@ test("task_finish with issue closes a task the caller holds, refuses another's",
   assert.equal(writes.length, 1);
 });
 
-test("a trial agent finishes only its own task", async () => {
-  const { call, writes } = world({ trial: true });
-  assert.match(parse(await call("task_finish", { issue: "WOR-4", comment: "x" })).error, /in trial/);
-  assert.equal(writes.length, 0);
-  parse(await call("task_finish", { comment: "Done." }));
-  assert.deepEqual(writes, [["PATCH", "cur", { status: "done", comment: "Done." }]]);
-});
-
 test("task_delegate wait blocks the parent on the child", async () => {
   const { call, writes } = world();
   const brief = { agent: "Kai", title: "Ship it", description: "Build the thing.", deliverable: { kind: "none" } };
@@ -93,21 +85,10 @@ test("task_delegate wait blocks the parent on the child", async () => {
   assert.ok(!writes.some(([k]) => k === "PATCH"), "no wait unless asked");
 });
 
-test("task_finish takes `issue` only from an agent that reads private data or is no Engineer", async () => {
-  const pub = world({ me: { profile: "engineer" } });
-  assert.match(parse(await pub.call("task_finish", { issue: "WOR-4", comment: "ok" })).error, /without private reads/);
-  assert.equal(pub.writes.length, 0);
-  parse(await pub.call("task_finish", { comment: "ok" }));
-  assert.equal(pub.writes.at(-1)[1], "cur");
-  const priv = world({ me: { profile: "engineer", private_reads: true } });
-  parse(await priv.call("task_finish", { issue: "WOR-4", comment: "ok" }));
-  assert.equal(priv.writes.at(-1)[1], "kid");
-});
-
 /** The prose inside a fenced untrusted block (the fence's own length is not part of a card's cap). */
 const inner = (text: string) => text.replace(/^<untrusted-outcome[^>]*>\n/, "").replace(/\n<\/untrusted-outcome>$/, "");
 
-test("task_approvals reads the run's own cards for an Engineer without private data, and any task for one with it", async () => {
+test("task_approvals reads the run's own cards, or any task an agent names", async () => {
   const asked = [];
   const approvalBoard = (req, res) => {
     req.resume();
@@ -148,8 +129,6 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   };
   asked.length = 0;
   const pub = await world({ profile: "engineer" });
-  assert.match(parse(await pub.call("task_approvals", { issue: "WOR-4" })).error, /without private reads/);
-  assert.deepEqual(asked, [], "refused before the board is asked");
   const own = parse(await pub.call("task_approvals", {})).out;
   assert.deepEqual(asked, ["cur"], "no issue: the run's own task");
   // Naming the run's own task is still fine: only another task is refused.
@@ -181,9 +160,8 @@ test("task_approvals reads the run's own cards for an Engineer without private d
   assert.ok(merged.startsWith("[") && merged.includes("a".repeat(40)) && merged.includes("b".repeat(40)), "the merge evidence line is returned whole");
   assert.ok(inner(byId("k-2").outcomeText).length <= 300, "the rest of a long outcome is capped");
   asked.length = 0;
-  const priv = await world({ profile: "engineer", private_reads: true });
-  parse(await priv.call("task_approvals", { issue: "WOR-4" }));
-  assert.deepEqual(asked, ["WOR-4"], "private reads: any task it names");
+  parse(await pub.call("task_approvals", { issue: "WOR-4" }));
+  assert.deepEqual(asked, ["WOR-4"], "a task it names");
 });
 
 test("task_approvals with no directory entry for the caller reads only the run's own task", async () => {

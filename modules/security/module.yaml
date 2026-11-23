@@ -23,6 +23,7 @@ settings:
     type: url
 agents:
   security-watch:
+    skills: [ tasks.delegate-work ]
     department: security
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -36,6 +37,7 @@ agents:
     delegate_to: [ fleet-steward? ]
     roles: [ security-verdict ]
   red-teamer:
+    skills: [ tasks.delegate-work ]
     department: security
     # GLM: a lower refusal rate for offensive security work (owner, 2026-11-11). GLM Flash at high since 2026-11-13 (the
     # owner's pick after a blind bake-off).
@@ -63,7 +65,6 @@ routines:
     webhook: true # fired by security-scanner after a pass that wrote anything
     webhook_base: http://paperclip:3100 # the scanner calls it from inside the compose network
     secrets_prefix: security_scan_webhook # setup saves <prefix>_url / _secret for the scanner
-    autonomy: full # fired by our own scanner over advisories, not outside text: CVE fixes stay the AI reviewer's
     schedules:
       - { cron: "0 10 * * *", timezone: "${settings.timezone}", label: "daily" }
   security-weekly:

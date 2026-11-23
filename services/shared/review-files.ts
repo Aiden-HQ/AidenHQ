@@ -42,10 +42,32 @@ export function fileContext(files: ChangedFile[]): { list: FileEntry[]; leftOut:
  */
 export function numstat(text: string | null | undefined) {
   return String(text ?? "").split("\n").filter(Boolean).map((l) => {
-    const [add, del, ...path] = l.split("\t");
+    const [add, del, ...rest] = l.split("\t");
+    // Git quotes a path with special characters ("caf\303\251.txt"): read back, as diffPath does for the headers.
+    const raw = rest.join("\t"), path = /^".*"$/.test(raw) ? unquote(raw.slice(1, -1)) : raw;
     // A binary file is counted "-" "-": its path is checked, not its lines.
-    return { path: path.join("\t"), ...(add === "-" ? {} : { add: Number(add), del: Number(del) }) };
+    return { path, ...(add === "-" ? {} : { add: Number(add), del: Number(del) }) };
   });
+}
+
+/** A path as git quotes it (C escapes, octal bytes), read back. */
+function unquote(p: string): string {
+  const bytes: number[] = [];
+  const esc: Record<string, number> = { n: 10, t: 9, r: 13, b: 8, f: 12, a: 7, v: 11, "\\": 92, '"': 34 };
+  for (let i = 0; i < p.length; i++) {
+    if (p[i] !== "\\") { bytes.push(...Buffer.from(p[i]!)); continue; }
+    const oct = /^[0-7]{3}/.exec(p.slice(i + 1));
+    if (oct) { bytes.push(parseInt(oct[0], 8)); i += 3; } else { bytes.push(esc[p[i + 1]!] ?? p.charCodeAt(i + 1)); i += 1; }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/** The path a `diff --git` header line names (git's quoted form read back), or undefined for any other line. No renames, so both
+ * sides name the same path (which may hold spaces). */
+export function diffPath(l: string): string | undefined {
+  const q = /^diff --git "a\/((?:[^"\\]|\\.)*)" "b\/(?:[^"\\]|\\.)*"$/.exec(l);
+  if (q) return unquote(q[1]!);
+  return (/^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l))?.[1];
 }
 
 /** The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. */
@@ -53,10 +75,9 @@ export function diffFiles(diff: string | null | undefined) {
   const out: { path: string; add: number; del: number }[] = [];
   let hunk = false;
   for (const l of String(diff ?? "").split("\n")) {
-    // No renames, so both sides name the same path (which may hold spaces).
-    const m = /^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l);
-    if (m) {
-      out.push({ path: m[1]!, add: 0, del: 0 });
+    const path = diffPath(l);
+    if (path !== undefined) {
+      out.push({ path, add: 0, del: 0 });
       hunk = false;
     } else if (l.startsWith("@@")) hunk = true;
     else if (hunk && out.length && l.startsWith("+")) out.at(-1)!.add++;

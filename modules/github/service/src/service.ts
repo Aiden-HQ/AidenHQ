@@ -13,7 +13,7 @@
 // comes once its PRs merged at their approved heads, or it stopped.
 //
 // The instance's land for kernel.apply (the kernel's executor, with this service's executor key): POST /aidenhq/v1/apply/read
-// {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts, diff and trial edits against
+// {repo, sha, branch, workspace?} → what the kernel plans and tiers the commit on (its files, texts and diff against
 // the instance's main); /apply/land → the commit on main, never forced, once (a commit main already has is a no-op), and never
 // one that moves an `aidenhq` marketplace pin (the official modules come with the product pin); /apply/write → the owner's
 // typed settings change as a commit on main's head (kernel/src/settings-change.ts), which only a kernel.apply then lands.
@@ -44,8 +44,10 @@ import { notePrTask } from "./pr-watch.ts";
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
 import { copyBoxBundle, publishRef } from "./aidenhq-sdk/box-bundle.ts";
+import { APPLY_PATHS } from "./aidenhq-sdk/instance-paths.ts";
 import { noteKept } from "./tidy.ts";
 import * as setupWrite from "./setup.ts";
+import { digestOf, upsertMarketplace } from "./share.ts";
 
 /**
  * The requester of a planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and args: it
@@ -78,8 +80,6 @@ export type Options = {
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
-  /** The owner's name, as the design reviewer's task names who approved a merge that doesn't wait for it. */
-  selfName?: string;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
   /** The churn pass ignores these globs (the churn_exclude setting). */
@@ -93,8 +93,6 @@ type Base = { repo: string; base: string; read: (path: string) => Promise<string
 // What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
-/** The instance config files a settings write may touch (kernel/src/apply.ts APPLY_PATHS). */
-const INSTANCE_PATH = /^(instance\.yaml|apps\.yaml|agents\/[\w-][\w.-]*\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
@@ -220,7 +218,8 @@ export function createService(o: Options) {
     return { s, dir };
   }
 
-  // GitHub's checks on a commit as plan.ts reads them: { ok, pending, skipped } each (names never leave this function).
+  // GitHub's checks on a commit as plan.ts reads them: { name, ok, pending, skipped } each. The name is only matched (the gate
+  // check `ci-required`, merge-gate.ts productMergeEligible), never shown: the card counts checks.
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
   async function checksAt(s: ReturnType<typeof slugOf>, sha: string) {
     const all = async (path: string, key: string) => {
@@ -240,8 +239,8 @@ export function createService(o: Options) {
     const unread = runs.complete && status.complete ? [] : [{ pending: true, skipped: false, ok: false }];
     return [
       ...unread,
-      ...runs.items.map((r: any) => ({ pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion) })),
-      ...status.items.map((x: any) => ({ pending: x.state === "pending", skipped: false, ok: x.state === "success" })),
+      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion), success: r.status === "completed" && r.conclusion === "success" })),
+      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), pending: x.state === "pending", skipped: false, ok: x.state === "success", success: x.state === "success" })),
     ];
   }
   // The commits this code host pushed, each as "<repo, lowercase> <sha>": a head is the runner's own only in the repo it was
@@ -266,6 +265,20 @@ export function createService(o: Options) {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the
     // args); it may push to any branch, others to their own task's (plan.ts branch-namespace).
     const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, workspace: String(a.workspace ?? ""), also: [] as string[] };
+    if (kind.endsWith(".publish_module")) {
+      // The owner's preview, bound: the same files (their digest), a public repo, a folder that is this module's own, and the
+      // branch still at the tip he previewed. The record's own args are the preview's evidence; nothing else is read for it.
+      const files: Record<string, string> = Object.fromEntries((Array.isArray(a.files) ? a.files : []).map((f: { path: string; text: string }) => [f.path, f.text]));
+      if (digestOf(String(a.source), files) !== a.digest) throw fail(422, "the files aren't the ones previewed: preview again");
+      if (!access.connected()) throw fail(503, "GitHub isn't connected");
+      const d = await destination(String(a.repo), String(a.ref), String(a.module));
+      if (d.private) throw fail(422, `${d.s.slug} is private: a module is shared to a public repo`);
+      if (d.conflict) throw fail(422, d.conflict);
+      if (d.tip !== a.base) throw fail(409, `${d.s.slug} \`${a.ref}\` moved since your preview: preview again`);
+      const removed = d.existing.filter((p) => !Object.hasOwn(files, p)).map((p) => `--- ${a.module}/${p} (removed)`);
+      const shown = [...Object.keys(files).sort().map((p) => `--- ${a.module}/${p} (${Buffer.byteLength(files[p]!)} bytes)\n${files[p]}`), ...removed].join("\n");
+      return { state: { ...base, repo: d.s.slug, ref: String(a.ref), base: String(a.base) }, facts: { target: `${d.s.slug} ${a.ref}`, sentence: `Publish the ${a.module} module to ${d.s.slug} (\`${a.ref}\`), as previewed.`, diff: shown } };
+    }
     if (kind.endsWith(".create_repo")) {
       const repo = slugOf(a.repo).slug;
       // Never a quiet switch to `local`: a repo for GitHub while GitHub is signed out is refused, saying so.
@@ -307,6 +320,8 @@ export function createService(o: Options) {
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files, checks: await checksAt(s, pr.head?.sha),
+          // Code review's verdict for this head on the product repo: with ci-required green, a real pass skips the AI reviewer.
+          ...(merge && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, Number(p.number), String(pr.head?.sha)) } : {}),
           ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), dependabot: pr.user?.login === "dependabot[bot]",
         });
       }
@@ -373,9 +388,11 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
-      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier);
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier);
       // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
       if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
+      // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
+      if (rec.kind.endsWith(".publish_module")) return access.connected() ? publishModule(rec.args) : { ok: false, text: "GitHub isn't connected: preview again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -387,7 +404,7 @@ export function createService(o: Options) {
     },
   };
   /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
-  async function run1(rec: { id: string; kind: string; args: any; task?: string }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+  async function run1(rec: { id: string; kind: string; args: any; task?: string; identifier?: string; tier?: number }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     {
       const a = rec.args ?? {};
       const objects: string[] = [];
@@ -440,7 +457,7 @@ export function createService(o: Options) {
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
-      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier);
+      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier, rec.tier);
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
@@ -570,7 +587,7 @@ export function createService(o: Options) {
   }
   // The design reviewer's tasks (design-review.ts): for a fleet-org PR's UI head when it opens, and for each head the merge
   // queue waits on for its verdict.
-  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, selfName: o.selfName || "the owner", gh: (m, p, b) => gh(m, p, b, { background: true }), log });
+  const designReviews = createDesignReviews({ kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, gh: (m, p, b) => gh(m, p, b, { background: true }), log });
   // The managed repos: the fleet org's, the product repo and the instance repo.
   async function managedRepos(): Promise<string[]> {
     const out = new Set([o.productRepo, o.instanceRepo].filter(Boolean).map((r) => r!.toLowerCase()));
@@ -588,7 +605,7 @@ export function createService(o: Options) {
     kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, log, exclude: o.churnExclude, now: o.now,
     // Signed out: no repos, so the passes call nothing (and tell the owner nothing) until GitHub is connected.
     repos: async () => (access.connected() ? managedRepos() : []),
-    gh: (method, path) => gh(method, path, undefined, { background: true }),
+    gh: (method, path, opts) => gh(method, path, undefined, { background: true, ...opts }),
     self: ownerLogin,
     ours,
     fetchDefault: async (repo) => {
@@ -626,7 +643,6 @@ export function createService(o: Options) {
       return (records as { kind?: string; args?: { only?: { repo?: string; sha?: string }[] } }[]).some((x) => (x.kind === "github.pr" || x.kind === "github.push")
         && (x.args?.only ?? []).some((b) => String(b.repo ?? "").toLowerCase() === pr.repo.toLowerCase() && b.sha === pr.head));
     },
-    designReview: async (ask) => designReviews?.fileDesignReview(ask),
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected() && !o.holdMerges?.(), hold: () => o.holdMerges?.() === true, holdReason: () => o.mergeHoldReason?.(),
     fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
     report, waiting, log, now: o.now, everyMs: o.mergeEveryMs,
@@ -662,7 +678,6 @@ export function createService(o: Options) {
     if (!base) throw fail(409, `${sha.slice(0, 12)} shares no history with the instance's ${def}`);
     return { s, dir, sha, def, main, base };
   }
-  const AGENT = /^agents\/([a-z0-9][a-z0-9-]*)\/(agent\.yaml|AGENTS\.md|memory\.md)$/;
   /**
    * A file at a commit: undefined only when the path isn't there (ls-tree lists nothing); a path that isn't a regular file, is
    * over MAX_TEXT or binary is refused, and any other git failure throws. What the kernel tiers is never a silent gap.
@@ -682,17 +697,16 @@ export function createService(o: Options) {
   }
   /**
    * What the kernel plans an apply on (its apply-tier.ts): the files the commit changes against its merge base with main, the
-   * texts its rules read on both sides (each changed file, the agent.yaml of each agent it touches, instance.yaml; absent
-   * where the file isn't), the diff, and the graduation card's trial edits. Read from git here, never from the requester.
+   * texts its rules read on both sides (each changed file and instance.yaml; absent where the file isn't) and the diff. Read
+   * from git here, never from the requester.
    */
   async function applyRead(b: any) {
     const c = await instanceCommit(b);
     const files = (await git(c.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", c.base, c.sha])).split("\0").filter(Boolean);
     if (files.length > MAX_FILES) throw fail(413, `the commit changes ${files.length} files; an apply reviews at most ${MAX_FILES}`);
-    const agents = [...new Set(files.map((f) => AGENT.exec(f)?.[1]).filter(Boolean))] as string[];
     const texts: { base: Record<string, string>; head: Record<string, string> } = { base: {}, head: {} };
     let budget = MAX_TOTAL;
-    for (const p of new Set([...files, ...agents.map((k) => `agents/${k}/agent.yaml`), "instance.yaml"])) {
+    for (const p of new Set([...files, "instance.yaml"])) {
       for (const [side, rev] of [["base", c.base], ["head", c.sha]] as const) {
         const t = await fileAt(c.dir, rev, p);
         if (t === undefined) continue;
@@ -703,32 +717,7 @@ export function createService(o: Options) {
     const diff = await run("git", [...SAFE_GIT_ARGS, "-c", "core.attributesFile=/dev/null", "--git-dir", c.dir, "diff", "--no-ext-diff", "--no-textconv", "--text", "--no-renames", c.base, c.sha], { env: ENV, maxBuffer: Math.max(budget, 1) }).then((o) => o.stdout, (e: Error & { code?: string }) => {
       throw e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? fail(413, `the commit's diff is too large to review (over ${MAX_TOTAL} bytes with its files)`) : e;
     });
-    return { files, texts, diff, trial: await trialEdits(c.dir, c.base, agents, texts), base: c.base, main: c.main };
-  }
-  const isTrial = (t: string | undefined) => t !== undefined && /^trial:[ \t]*true[ \t]*(#.*)?$/m.test(t);
-  /**
-   * The graduation card's list of what changed without a tap: for each agent the change takes out of trial, the handbook-only
-   * commits on main touching its AGENTS.md since the commit that added its agent.yaml, up to the change's merge base. From git
-   * only, never agent-written text but the commit subjects (one printable line each). "" when nothing graduates.
-   */
-  async function trialEdits(dir: string, base: string, agents: string[], texts: { base: Record<string, string>; head: Record<string, string> }) {
-    const out: string[] = [];
-    for (const key of agents) {
-      const def = `agents/${key}/agent.yaml`, book = `agents/${key}/AGENTS.md`;
-      if (!isTrial(texts.base[def]) || texts.head[def] === undefined || isTrial(texts.head[def])) continue;
-      const added = (await git(dir, ["log", "--diff-filter=A", "--format=%H", base, "--", def])).split("\n").filter(Boolean).pop();
-      if (!added) continue;
-      const edits: string[] = [];
-      for (const sha of (await git(dir, ["log", "--first-parent", "--format=%H", `${added}..${base}`, "--", book])).split("\n").filter(Boolean)) {
-        const [date, short, ...subject] = (await git(dir, ["log", "-1", "--format=%as%x09%h%x09%s", sha])).split("\t");
-        const [num] = (await git(dir, ["diff", "--no-renames", "--numstat", `${sha}^1`, sha, "--", book])).split("\n").map((l) => l.split("\t"));
-        // Other paths are counted, never named: a path is the committer's text and the card is the reviewer's input.
-        const others = (await git(dir, ["diff", "--no-renames", "--name-only", "-z", `${sha}^1`, sha])).split("\0").filter((f) => f && f !== book).length;
-        edits.push(`${short}  ${date}  ${subject.join(" ").replace(/[\x00-\x1f\x7f]/g, "").slice(0, 100)}  (+${num?.[0] ?? 0} -${num?.[1] ?? 0})${others ? `  also changed: ${others} other file${others === 1 ? "" : "s"}` : ""}`);
-      }
-      out.push(`${key}: ${edits.length ? `${edits.length} handbook change${edits.length === 1 ? "" : "s"} since the trial began (those not marked "also changed" landed without a tap):\n${edits.join("\n")}` : "no handbook changes since the trial began."}`);
-    }
-    return out.length ? `Trial edits that landed without a tap:\n${out.join("\n")}` : "";
+    return { files, texts, diff, base: c.base, main: c.main };
   }
   async function applyLand(b: any) {
     const c = await instanceCommit(b);
@@ -824,9 +813,9 @@ export function createService(o: Options) {
    * new text, or null to delete) are made from that same head, and the author, committer and dates are fixed by the head, so
    * the same head and files give the same commit.
    */
-  async function commitOnHead(repo: string, agent: string, message: string, files: (dir: string, head: string, def: string) => Promise<Record<string, string | null>>) {
+  async function commitOnHead(repo: string, agent: string, message: string, files: (dir: string, head: string, def: string) => Promise<Record<string, string | null>>, branch?: string) {
     const s = slugOf(repo);
-    const def = await defaultBranch(s.slug);
+    const def = branch ?? (await defaultBranch(s.slug));
     const { dir, sha: head } = await fetchRemote(s, def, "ws");
     const edits = await files(dir, head, def);
     const date = await git(dir, ["log", "-1", "--format=%cI", head]);
@@ -883,6 +872,46 @@ export function createService(o: Options) {
       rmSync(tmp, { recursive: true, force: true });
     }
   }
+  /**
+   * Where a share lands (publish_module, docs/design/sharing.md): the repo as GitHub reports it (missing is refused), its
+   * branch's tip fetched into the ws cache, why its `<module>/` folder or marketplace.json entry isn't this module's own, and
+   * the files that folder holds now (`existing`, relative to it): a publish replaces the folder, so the preview shows what goes.
+   */
+  async function destination(repo: string, ref: string, module: string) {
+    const s = slugOf(repo);
+    if (!BRANCH.test(ref)) throw fail(400, `${ref.slice(0, 100)} is not a branch name`);
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(module)) throw fail(400, `${module.slice(0, 100)} is not a module name`);
+    const r = await gh("GET", `/repos/${s.slug}`);
+    if (r.status === 404) throw fail(404, `${s.slug} isn't on GitHub (or your account can't see it)`);
+    if (r.status >= 300) throw fail(502, `GitHub GET /repos/${s.slug}: ${r.status}`);
+    const { dir, sha: tip } = await fetchRemote(s, ref, "ws");
+    const listing = await fileAt(dir, tip, "marketplace.json");
+    let conflict: string | undefined;
+    try { upsertMarketplace(listing, module); } catch (e) { conflict = `${s.slug}: ${(e as Error).message}`; }
+    const listed = !conflict && listing !== undefined && upsertMarketplace(listing, module) === listing;
+    if (!conflict && !listed && (await git(dir, ["ls-tree", tip, "--", module]))) conflict = `${s.slug} already has a ${module}/ folder its marketplace.json doesn't list as this module`;
+    const existing = (await git(dir, ["ls-tree", "-r", "-z", "--name-only", tip, "--", module])).split("\0").filter(Boolean).map((p) => p.slice(module.length + 1));
+    return { s, tip, private: r.body?.private !== false, conflict, existing };
+  }
+  /**
+   * An approved share: the previewed files under `<module>/` (any other file there removed, so the folder is exactly the
+   * preview) and the marketplace.json entry, as one commit on the previewed tip, pushed without force: a branch that moved
+   * fails it, and the owner previews again.
+   */
+  async function publishModule(a: { repo: string; ref: string; base: string; source: string; module: string; files: { path: string; text: string }[] }) {
+    const s = slugOf(a.repo);
+    const files = Object.fromEntries(a.files.map((f) => [`${a.module}/${f.path}`, f.text]));
+    const sha = await commitOnHead(s.slug, "the owner's share", `feat: publish the ${a.module} module\n\nThe owner's previewed share of instance commit ${a.source.slice(0, 12)}.`, async (dir, head) => {
+      if (head !== a.base) throw fail(409, `${s.slug} \`${a.ref}\` moved since the preview: preview again`);
+      const had = (await git(dir, ["ls-tree", "-r", "-z", "--name-only", head, "--", a.module])).split("\0").filter(Boolean);
+      if (had.some((p) => /[\n\r]/.test(p))) throw fail(422, `${s.slug} has a file under ${a.module}/ whose name holds a line break: rename it there first`);
+      return { ...Object.fromEntries(had.filter((p) => !Object.hasOwn(files, p)).map((p) => [p, null])), ...files, "marketplace.json": upsertMarketplace(await fileAt(dir, head, "marketplace.json"), a.module) };
+    }, a.ref);
+    // Only onto the tip the owner previewed: the push fails if the branch moved, was reset or was deleted since.
+    await push(await cache(s, "ws"), ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${a.ref}:${a.base}`, remote(s.slug), `${sha}:refs/heads/${a.ref}`]);
+    log("module published", { repo: s.slug, ref: a.ref, module: a.module, sha });
+    return { ok: true, text: `Published the ${a.module} module to ${s.slug} \`${a.ref}\` at ${sha.slice(0, 12)}.`, objects: [`github:${s.slug.toLowerCase()}@${sha}`] };
+  }
   /** The release train's pin bump: one file edited as it is at the head. */
   const trainCommit = (repo: string, path: string, edit: (text: string) => string, message: string) =>
     commitOnHead(repo, "release train", message, async (dir, head, def) => {
@@ -900,7 +929,7 @@ export function createService(o: Options) {
     if (!same(s.slug, o.instanceRepo)) throw fail(403, `a settings change writes only the instance repo (${o.instanceRepo ?? "not set"}), not ${s.slug}`);
     const files: Record<string, string | null> = b.files && typeof b.files === "object" && !Array.isArray(b.files) ? b.files : {};
     const paths = Object.keys(files);
-    if (!paths.length || paths.some((p) => !INSTANCE_PATH.test(p) || (files[p] !== null && typeof files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
+    if (!paths.length || paths.some((p) => !APPLY_PATHS.test(p) || (files[p] !== null && typeof files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
     const message = String(b.message ?? "").slice(0, 2000);
     const sha = await commitOnHead(s.slug, "settings", message || "settings", async (_dir, head, def) => {
       if (head !== String(b.base ?? "")) throw fail(409, `the instance's ${def} moved on since the change was read; try again`);
@@ -947,6 +976,14 @@ export function createService(o: Options) {
       }
       if (req.url === "/aidenhq/v1/executor/status" && req.method === "POST") return await status(req, res);
       if (await exec(req, res)) return;
+      // A share's preview (the kernel's executor key): where it would land, so the owner's save binds that tip.
+      if (req.url === "/aidenhq/v1/publish/tip" && req.method === "POST") {
+        if (!keyed(req)) return send(res, 401, { error: "the kernel's executor key only" });
+        if (!access.connected()) return send(res, 503, { error: "GitHub isn't connected" });
+        const b = await body(req);
+        const d = await destination(String(b.repo ?? ""), String(b.ref ?? ""), String(b.module ?? ""));
+        return send(res, 200, { repo: d.s.slug, base: d.tip, private: d.private, existing: d.existing, ...(d.conflict ? { conflict: d.conflict } : {}) });
+      }
       const ap = /^\/aidenhq\/v1\/apply\/(read|land|write)$/.exec(String(req.url ?? ""));
       if (ap && req.method === "POST") {
         if (!keyed(req)) return send(res, 401, { error: "the kernel's executor key only" });

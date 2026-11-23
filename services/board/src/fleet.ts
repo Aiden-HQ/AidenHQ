@@ -252,6 +252,17 @@ export async function fleetControl(pc: Paperclip, caller: Agent, a: z.infer<type
   }
 }
 
+/**
+ * A routine's live pause and resume (Paperclip's status; setup never writes it after create): the owner's board control and
+ * Aiden's fleet_control. Resuming re-saves each schedule first: that moves its next run to the next tick from now, so a
+ * routine resumed after a long pause starts there instead of Paperclip catching up every tick it missed.
+ */
+export async function setRoutinePaused(pc: Pick<Paperclip, "request">, t: Routine, paused: boolean) {
+  // Only a paused routine's schedules are re-saved on resume: an active one's next tick stays where it is.
+  if (!paused && t.status === "paused") for (const tr of (t.triggers ?? []).filter((x) => x.kind === "schedule" && x.enabled && x.id && x.cronExpression)) await pc.request("PATCH", `/api/routine-triggers/${tr.id}`, { cronExpression: tr.cronExpression, ...(tr.timezone ? { timezone: tr.timezone } : {}), enabled: true });
+  await pc.request("PATCH", `/api/routines/${t.id}`, { status: paused ? "paused" : "active" });
+}
+
 async function control(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSchema>) {
   const co = `/api/companies/${pc.companyId}`;
   let done: string;
@@ -265,7 +276,7 @@ async function control(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSc
   } else {
     const t = pick((await pc.request<Routine[]>("GET", `${co}/routines`)).filter((x) => x.status !== "archived"), a.target, "routine", (x) => [x.title]);
     if (a.action === "run_routine") await pc.request("POST", `/api/routines/${t.id}/run`, { source: "manual" });
-    else await pc.request("PATCH", `/api/routines/${t.id}`, { status: a.action === "pause_routine" ? "paused" : "active" });
+    else await setRoutinePaused(pc, t, a.action === "pause_routine");
     done = a.action === "run_routine" ? `started routine ${t.title}` : `${a.action === "pause_routine" ? "paused" : "resumed"} routine ${t.title}`;
   }
   return { ok: true, done };

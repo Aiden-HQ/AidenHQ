@@ -4,10 +4,10 @@ connections:
   jconn: { url: "http://j-mcp:1/mcp", auth: jconn_service_key, tools: { read: [j_get, j_list], write: [j_set] } }
 jobcaps:
   - { id: jc-read, connection: jconn, tools: read, read_url: "http://j-mcp:81/mcp/read", read_secret: j_mcp_read_token }
-  - { id: jc-secret, connection: jsecret, tools: [s_get], private: true, tool_timeout_s: 90, read_url: "http://j-mcp:82/mcp", read_secret: s_mcp_token }
+  - { id: jc-secret, connection: jsecret, tools: [s_get], tool_timeout_s: 90, read_url: "http://j-mcp:82/mcp", read_secret: s_mcp_token }
 agents:
   eng: { profile: engineer, jobcaps: [ jc-read, nope-read? ] }
-  deep: { profile: engineer, private_reads: true, jobcaps: [ jc-secret, jc-read ] }
+  deep: { profile: engineer, jobcaps: [ jc-secret, jc-read ] }
 services:
   run:
     j-mcp: { image: "example.com/acme/j-mcp:1.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }

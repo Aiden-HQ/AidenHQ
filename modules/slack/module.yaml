@@ -55,6 +55,9 @@ contributes:
 # A channel (channel@1): what the owner writes in their command channel is posted as theirs (stamped [slack]). As a transport,
 # the kernel sends it owner-channel's messages one at a time (transport: below), with this module's own token.
 privileged: [ speaks-as-owner ]
+# kernel.events: slack-live sends each kept Slack event to the kernel's event router (POST /v1/events) with this module's own token.
+roles:
+  requests: [ kernel.events ]
 providers:
   channel:
     transport: http://slack-live:8089/transport/send
@@ -78,13 +81,16 @@ connections:
       named: [ slack_read_canvas, slack_list_channel_members, slack_read_file, slack_read_list, slack_search_emojis, slack_get_reactions ]
       write: [ slack_send_message_draft ]
       destructive: [ slack_send_message, slack_schedule_message, slack_add_reaction, slack_create_conversation, slack_create_list, slack_update_list, slack_add_list_record, slack_update_list_record, slack_create_canvas, slack_update_canvas, slack_get_file_upload_url, slack_complete_file_upload ]
+    # Routines' events (kernel events.ts), from the live listener (advanced mode): a routine subscribes to a channel its agent's
+    # slack_read_channel reaches.
+    events: { resource: "channel id", kinds: [ message, app_mention ], filter: [ kind, author, contains, bot ], reads: [ slack_read_channel ] }
   slack_live:
     setup: "Set it up on the board (#/setup/slack, Aiden in Slack with your own app): paste the two tokens, then DM the bot the pairing code. The app's manifest: slack-app-manifest.yml."
     url: http://slack-live:8089/mcp
     auth: slack_live_service_key
     tools:
       # slack_channel_context: a bound channel's history and threads, for the agent it is bound to only (bind.ts).
-      read: [ slack_pending_events, slack_owner, slack_channel_context ]
+      read: [ slack_owner, slack_channel_context ]
       # slack_post: filed as slack.post; granted per agent.
       write: [ slack_post, channel_memory ]
 # Every agent post is a kernel record the AI reviewer reads first; a channel outside slack_post_channels is the owner's too.
@@ -131,9 +137,9 @@ settings:
   slack_post_channels:
     default: []
     pattern: '^[CG][A-Z0-9]+$'
-# Runner jobs of an Engineer with private reads, through the model gateway with their own token (scripts/modules.ts jobcapEntries).
+# Runner jobs of an Engineer, through the model gateway with their own token (scripts/modules.ts jobcapEntries).
 jobcaps:
-  - { id: slack-read, connection: slack, tools: read, private: true, read_url: "http://slack-mcp:8082/mcp/read", read_secret: slack_mcp_read_token }
+  - { id: slack-read, connection: slack, tools: read, read_url: "http://slack-mcp:8082/mcp/read", read_secret: slack_mcp_read_token }
 secrets:
   state: true # its own vault dir, read-write at /state: Slack rotates refresh tokens, so the newest pair is kept
   provided:
@@ -159,8 +165,6 @@ optional_secrets:
   - slack_client_id
   - slack_live_app_token
   - slack_live_bot_token
-  - slack_live_triage_webhook_url
-  - slack_live_triage_webhook_secret
   # The owner's user token (xoxp-) of the Slack live app, for the src_slack gap sync: channels:history, groups:history,
   # im:history, mpim:history, channels:read, groups:read, im:read, mpim:read, users:read (users:read.email for emails).
   - slack_live_user_token
@@ -189,8 +193,8 @@ services:
       build: ./connections/slack-live
       tmp: 16m
       egress: true
-      # src_slack: the warehouse (the shared-sources network); paperclip: the HMAC-signed triage webhook (no key). Until 3g.
-      links: [ sources, paperclip ]
+      # src_slack: the warehouse (the shared-sources network). Until 3g.
+      links: [ sources ]
       data: ["slack-live:/data"]
       env:
         SLACK_LIVE_DB: /data/slack-live.sqlite
@@ -205,8 +209,6 @@ services:
         PAIR_TOKEN_FILE: ${secrets.slack_pair_token}
         SLACK_APP_TOKEN_FILE: ${secrets.slack_live_app_token}
         SLACK_BOT_TOKEN_FILE: ${secrets.slack_live_bot_token}
-        TRIAGE_WEBHOOK_URL_FILE: ${secrets.slack_live_triage_webhook_url}
-        TRIAGE_WEBHOOK_SECRET_FILE: ${secrets.slack_live_triage_webhook_secret}
         # Shared sources (src_slack): its warehouse login, and the owner's user token (xoxp, history scopes) for the gap sync.
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_slack_password}
         SLACK_USER_TOKEN_FILE: ${secrets.slack_live_user_token}

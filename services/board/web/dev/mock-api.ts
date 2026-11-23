@@ -45,14 +45,14 @@ const named = <T extends object>(identifier: string, state: T) => ({ ...state, i
 const dept = (id: string, name: string, order: number) => ({ id, name, order });
 const OPS = dept("ops", "Chief of staff", 0), ENG = dept("eng", "Engineering", 1), DESK = dept("desk", "Desk", 2);
 const roster = [
-  { id: "a1", key: "aiden", name: "Aiden", title: "Chief of staff", system: false, department: OPS, avatar: "chief-of-staff", model: "deepseek-flash", reportsTo: null, state: "working", running: 1, queued: 0, workingSince: ago(3), trial: false, schedules: [{ title: "Morning brief", paused: false, nextRunAt: ahead(600) }], lastRunAt: ago(3), lastRunStatus: "succeeded" },
-  { id: "a2", key: "open-loops", name: "Open Loops", title: "Follow-ups and promises", system: false, department: OPS, avatar: "open-loops", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "Sweep", paused: false, nextRunAt: ahead(25) }], lastRunAt: ago(35), lastRunStatus: "succeeded" },
-  { id: "a3", key: "engineer", name: "Engineer", title: "Builds and fixes code", system: false, department: ENG, avatar: "engineer", model: "deepseek-flash", reportsTo: "a1", state: "working", running: 3, queued: 1, workingSince: ago(12), trial: false, schedules: [], lastRunAt: ago(12), lastRunStatus: "succeeded", maxParallel: 4 },
-  { id: "a4", key: "platform-engineer", name: "Platform Engineer", title: "Keeps the fleet healthy", system: false, department: ENG, avatar: "platform-engineer", model: "deepseek-flash", reportsTo: "a1", state: "failing", stateNote: "Last 2 runs failed", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "Health check", paused: false, nextRunAt: ahead(48) }], lastRunAt: ago(50), lastRunStatus: "failed" },
-  { id: "a5", key: "ui-designer", name: "UI Designer", title: "Designs app screens", system: false, department: ENG, avatar: "ui-designer", model: "deepseek-flash", reportsTo: "a3", state: "queued", running: 0, queued: 2, workingSince: null, trial: true, schedules: [], lastRunAt: ago(240), lastRunStatus: "succeeded" },
-  { id: "a6", key: "email-triage", name: "Email Triage", title: "Sorts the inbox", system: false, department: DESK, avatar: "email-triage", model: "deepseek-flash", reportsTo: "a1", state: "paused", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "Inbox pass", paused: true, nextRunAt: null }], lastRunAt: ago(1440), lastRunStatus: "succeeded" },
-  { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
-  { id: "a8", key: "researcher", name: "Researcher", title: "Research and drafts", system: true, department: OPS, avatar: "aiden", model: "deepseek-flash", reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, trial: false, schedules: [{ title: "Process task replies", paused: true, nextRunAt: null }], lastRunAt: ago(60), lastRunStatus: "succeeded" },
+  { id: "a1", key: "aiden", name: "Aiden", title: "Chief of staff", system: false, department: OPS, avatar: "chief-of-staff", model: "deepseek-flash", reportsTo: null, state: "working", running: 1, queued: 0, workingSince: ago(3), schedules: [{ title: "Morning brief", paused: false, nextRunAt: ahead(600) }], lastRunAt: ago(3), lastRunStatus: "succeeded" },
+  { id: "a2", key: "open-loops", name: "Open Loops", title: "Follow-ups and promises", system: false, department: OPS, avatar: "open-loops", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Sweep", paused: false, nextRunAt: ahead(25) }], lastRunAt: ago(35), lastRunStatus: "succeeded" },
+  { id: "a3", key: "engineer", name: "Engineer", title: "Builds and fixes code", system: false, department: ENG, avatar: "engineer", model: "deepseek-flash", reportsTo: "a1", state: "working", running: 3, queued: 1, workingSince: ago(12), schedules: [], lastRunAt: ago(12), lastRunStatus: "succeeded", maxParallel: 4 },
+  { id: "a4", key: "platform-engineer", name: "Platform Engineer", title: "Keeps the fleet healthy", system: false, department: ENG, avatar: "platform-engineer", model: "deepseek-flash", reportsTo: "a1", state: "failing", stateNote: "Last 2 runs failed", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Health check", paused: false, nextRunAt: ahead(48) }], lastRunAt: ago(50), lastRunStatus: "failed" },
+  { id: "a5", key: "ui-designer", name: "UI Designer", title: "Designs app screens", system: false, department: ENG, avatar: "ui-designer", model: "deepseek-flash", reportsTo: "a3", state: "queued", running: 0, queued: 2, workingSince: null, schedules: [], lastRunAt: ago(240), lastRunStatus: "succeeded" },
+  { id: "a6", key: "email-triage", name: "Email Triage", title: "Sorts the inbox", system: false, department: DESK, avatar: "email-triage", model: "deepseek-flash", reportsTo: "a1", state: "paused", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Inbox pass", paused: true, nextRunAt: null }], lastRunAt: ago(1440), lastRunStatus: "succeeded" },
+  { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
+  { id: "a8", key: "researcher", name: "Researcher", title: "Research and drafts", system: true, department: OPS, avatar: "aiden", model: "deepseek-flash", reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Process task replies", paused: true, nextRunAt: null }], lastRunAt: ago(60), lastRunStatus: "succeeded" },
 ];
 
 const CARD_STATES: Record<number, ReturnType<typeof st>> = { 812: STATES.orphaned, 815: ASK, 790: WORKING_CARD, 801: STATES.queued, 802: FAILED, 770: STATES.scheduled, 700: STATES.agentWait, 705: UNKNOWN, 600: STATES.backlog };
@@ -206,7 +206,7 @@ const connections = () => ({
 
 const profile = (key: string) => {
   const a = roster.find((r) => r.key === key) ?? roster[0]!;
-  return { id: a.id, key: a.key, name: a.name, avatar: a.avatar, title: a.title, state: a.state, stateNote: a.stateNote, trial: a.trial, model: a.model, effort: "high", reportsTo: a.reportsTo, source: { module: "core", marketplace: "aidenhq", tier: "official", revision: "a1b2c3d" }, schedules: a.schedules };
+  return { id: a.id, key: a.key, name: a.name, avatar: a.avatar, title: a.title, state: a.state, stateNote: a.stateNote, model: a.model, effort: "high", reportsTo: a.reportsTo, source: { module: "core", marketplace: "aidenhq", tier: "official", revision: "a1b2c3d" }, schedules: a.schedules };
 };
 const days = Array.from({ length: 7 }, (_, i) => new Date(now - (6 - i) * 86_400_000).toISOString().slice(0, 10));
 
@@ -223,7 +223,7 @@ const explanation = (id: string) => ({
   id, sentence: "An AI reviewer approved this push.",
   decider: { kind: id === "w2" ? "pending-owner" : "reviewer", words: "The AI reviewer read it and approved.", models: ["openai/gpt-luna-latest"] },
   path: ["Engineer filed the push.", "The kernel put it at Tier 1.", "The AI reviewer approved it.", "The runner pushed the branch."],
-  tier: { tier: 1, merit: 2, rule: "reviewed-path", ruleWords: "It changes a path the AI reviewer reads first (paths.yaml).", reason: "Touches the export module.", cap: null, panel: false },
+  tier: { tier: 1, merit: 2, rule: "product-pr", ruleWords: null, reason: "Touches the export module.", cap: null, panel: false },
   review: { note: "In scope: it adds the CSV export the task asked for. No secrets, no gate changes.", code: "in_scope", codeWords: "In scope: it does what the task asked.", },
   checklist: [{ id: "tests-run", result: "holds" }, { id: "scope", result: "holds" }, { id: "rollback", result: "not reported" }],
   ownerReason: null,
@@ -326,6 +326,13 @@ function route(method: string, url: URL): [number, unknown] {
   }
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/handbook$/))) return [200, { kind: "module", main: { text: "You run the invoices app for the owner.", source: "module", module: "invoices", revision: "4e1a9c2" }, rules: "Answer in short paragraphs.", compiled: "You run the invoices app for the owner.\n\n## What you've learned\n\n(memory, filled when a run starts)", fork: null }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/handbook\/history$/))) return [200, { rows: [] }];
+  if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/memory$/))) return [200, mock.empty ? { facts: [], updated: null } : { updated: ago(95), facts: [
+    { date: "2026-11-18", src: "WOR-790", fact: "The invoices app's export runs from the reports page; the owner checks totals there first." },
+    { date: "2026-11-20", src: "https://example.com/acme/invoices/pull/42", fact: "CI on the invoices repo takes about 6 minutes; the flaky date test passes on a re-run." },
+    { date: "2026-11-22", src: "WOR-806", fact: "The owner prefers totals in the account currency, rounded to whole units." },
+  ] }];
   if ((x = m(/^\/api\/approvals\/([^/]+)\/explain$/))) return [200, { explanation: explanation(decodeURIComponent(x[1]!)) }];
   if ((x = m(/^\/api\/runs\/([^/]+)$/))) return [200, { id: x[1]!, agent: "Engineer", engine: "codex", status: "done", error: null, startedAt: ago(40), finishedAt: ago(31), durationMs: 540000, issue: null, rev: null, tokens: null, plan: [], ledger: { rows: [], usd: null }, timeline: [{ at: ago(40), kind: "step", text: "Read the task and the invoices app.", ok: true }, { at: ago(38), kind: "step", text: "Ran the export tests.", ok: true }, { at: ago(33), kind: "error", text: "The linter failed on export.ts; fixed and re-ran.", ok: false }] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)$/))) return [200, { profile: profile(x[1]!) }];

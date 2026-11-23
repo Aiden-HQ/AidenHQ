@@ -1,7 +1,6 @@
 ---
 name: triage-email
 description: "Creates one task per email thread the owner labels Aiden in Gmail (any connected account) and closes it when the label is removed. Use on the inbox scan run (Intake)."
-when: { fields: { name: Intake } }
 ---
 
 # Inbox scan

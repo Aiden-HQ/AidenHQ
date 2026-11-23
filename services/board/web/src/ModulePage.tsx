@@ -1,5 +1,5 @@
 // A module's page (#/modules/<name>/<tab>): what it is, its agents and work, what it may do, its contents, settings and changes.
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AgentAvatar } from "./AgentAvatar";
 import { SignInRequired, api } from "./api";
 import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./Connect";
@@ -10,12 +10,12 @@ import { SettingItem } from "./Settings";
 import { ChangePreview, ChangeProgress, ChangesScope, Group, useChanges } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
 import { SkeletonLines } from "./Skeleton";
-import type { Advisory, BrowseModule, ModuleDetail, ModuleRow, SettingChange, SettingRow, TaskRow } from "./types";
+import type { Advisory, BrowseModule, ModuleDetail, ModuleRow, SettingChange, SettingRow, SharePreview, TaskRow } from "./types";
 import { EmptyState } from "./ui/EmptyState";
 import { ListRow, ListRows } from "./ui/ListRow";
 import { PageHeader } from "./ui/PageHeader";
 import { Section } from "./ui/Section";
-import { Tabs, safeHref } from "./ui";
+import { Banner, Field, Input, Tabs, safeHref } from "./ui";
 import { StatusDot, type StatusTone } from "./ui/StatusDot";
 import { TaskState } from "./ui/TaskState";
 import { Monogram } from "./ui/Tile";
@@ -261,6 +261,7 @@ function Contents({ d, onSignIn, can }: { d: ModuleDetail; onSignIn: () => void;
         </Section>
         <Section title="Routines" count={m.routines.length || undefined}><Routines d={d} /></Section>
         {d.authority.readme && <Section title="README"><div className="mod-card"><pre className="mod-readme">{d.authority.readme}</pre></div></Section>}
+        {m.tier === "local" && <Section title="Share"><Share m={m} onSignIn={onSignIn} /></Section>}
       </div>
       <div className="mod-side">
         <Card title="Apps">{tags(m.apps, "No apps.")}</Card>
@@ -275,15 +276,119 @@ function Contents({ d, onSignIn, can }: { d: ModuleDetail; onSignIn: () => void;
   );
 }
 
-/** Each routine on or off; its agent's Settings tab turns it on or off (the routine editor there). */
+/**
+ * A local module shared to a public GitHub repo (docs/design/sharing.md): the preview shows exactly what leaves this instance
+ * (its files whole, what isn't shared and why, its grants and code), and Save files that exact preview. Memory, the owner
+ * profile, secrets and setting values never leave.
+ */
+function Share({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
+  const [github, setGithub] = useState<boolean | null>(null);
+  const [repo, setRepo] = useState("");
+  const [ref, setRef] = useState("main");
+  const [p, setP] = useState<SharePreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [filed, setFiled] = useState("");
+  // A preview is for one destination: editing it drops the preview (onChange below), and an answer for an older one is ignored.
+  const asked = useRef("");
+  useEffect(() => {
+    api.modules().then((r) => setGithub(r.modules.some((x) => x.name === "github" && x.state !== "off")), () => setGithub(true));
+  }, []);
+  if (github === false) return <p className="mod-none">Sharing needs GitHub connected.</p>;
+  const fail = (e: unknown) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message));
+  const dest = `${repo.trim()} ${ref.trim()}`;
+  const preview = () => {
+    setBusy(true), setError(""), setFiled(""), setP(null);
+    const want = dest;
+    asked.current = want;
+    api.sharePreview({ module: m.name, repo: repo.trim(), ref: ref.trim() }).then((x) => { if (asked.current === want) setP(x); }, fail).finally(() => setBusy(false));
+  };
+  const save = () => {
+    if (!p) return;
+    setBusy(true), setError("");
+    api.changeSettings([{ kind: "share", module: p.module, repo: p.repo, ref: p.ref, source: p.source, base: p.base, digest: p.digest }]).then((r) => (setFiled(r.identifier), setP(null)), fail).finally(() => setBusy(false));
+  };
+  const blocked = Boolean(p && (p.findings.length || p.private || p.conflict));
+  return (
+    <div className="mod-card mod-share">
+      <p>Publish {m.name} to a public GitHub repo with a marketplace.json, for other instances to install. Its agents, skills and routines go; memory, your profile, secrets and setting values never do.</p>
+      <div className="mod-share-form">
+        <Field label="Public repository">{(id, d) => <Input id={id} aria-describedby={d} value={repo} placeholder="owner/name" onChange={(e) => (setRepo(e.target.value), setP(null), (asked.current = ""))} />}</Field>
+        <Field label="Branch">{(id, d) => <Input id={id} aria-describedby={d} value={ref} onChange={(e) => (setRef(e.target.value), setP(null), (asked.current = ""))} />}</Field>
+        <button className="btn" type="button" disabled={busy || !/^[\w.-]+\/[\w.-]+$/.test(repo.trim()) || !ref.trim()} onClick={preview}>Preview</button>
+      </div>
+      {error && <span className="st-error" role="alert">{error}</span>}
+      {filed && <Banner action={<a className="btn" href={`#/c/${filed}`}>Open</a>}>Filed as {filed}: not published yet. Open it for whether it published.</Banner>}
+      {p && (
+        <>
+          {p.private && <Banner tone="danger">{p.repo} is private: a module is shared to a public repo.</Banner>}
+          {p.conflict && <Banner tone="danger">{p.conflict}</Banner>}
+          {p.findings.length > 0 && (
+            <Banner tone="danger">
+              Not shareable until these are out of the module: {p.findings.map((f) => `${f.file || m.name}: ${f.detail}`).join("; ")}.
+            </Banner>
+          )}
+          <dl className="mod-facts">
+            <dt>Goes to</dt>
+            <dd>{p.repo}, {p.ref} at {p.base.slice(0, 12)}, as {p.module}/</dd>
+            <dt>Runs as</dt>
+            <dd>{p.isolation === "trusted" ? "trusted (its agents write)" : "untrusted"}{p.scripts.length ? `; contains code: ${p.scripts.join(", ")}` : ""}</dd>
+            {Object.entries(p.grants).map(([agent, tools]) => (
+              <Fragment key={agent}>
+                <dt>{agent} may use</dt>
+                <dd>{tags(tools)}</dd>
+              </Fragment>
+            ))}
+            {p.removes.length > 0 && (
+              <>
+                <dt>Removes from {p.repo}</dt>
+                <dd><ul className="mod-share-list">{p.removes.map((r) => <li key={r}><code>{p.module}/{r}</code></li>)}</ul></dd>
+              </>
+            )}
+            <dt>Not shared</dt>
+            <dd>{p.notShared.length ? <ul className="mod-share-list">{p.notShared.map((n) => <li key={n.path}><code>{n.path}</code>: {n.why}</li>)}</ul> : <span className="mod-none">nothing left out</span>}</dd>
+          </dl>
+          {p.files.map((f) => (
+            <details key={f.path} className="mod-share-file" open={f.path === "module.yaml"}>
+              <summary><code>{p.module}/{f.path}</code> <span className="mod-none">{f.bytes} bytes</span></summary>
+              {f.text !== undefined && <pre className="mod-readme">{f.text}</pre>}
+            </details>
+          ))}
+          <div className="mod-share-actions">
+            <button className="btn primary" type="button" disabled={busy || blocked} onClick={save}>Publish exactly this</button>
+            <button className="btn" type="button" disabled={busy} onClick={() => setP(null)}>Cancel</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Each routine on or off, with its live Pause or Resume; its agent's Settings tab changes its schedule and model. */
 function Routines({ d }: { d: ModuleDetail }) {
   const rows = d.routines ?? [];
   if (!rows.length) return d.module.routines.length ? tags(d.module.routines) : <p className="mod-none">No routines.</p>;
   return (
     <div className="mod-rows">
-      {rows.map((r) => (
-        <ModRow key={r.key} href={`#/agents/${r.agent}/settings`} hint={r.on ? "Change or pause it on its agent's Settings" : "Turn it on from its agent's Settings"} title={r.title} meta={<StatusDot tone={r.on ? "working" : "done"}>{r.on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
-      ))}
+      {rows.map((r) => <RoutineRow key={r.key} r={r} />)}
+    </div>
+  );
+}
+
+function RoutineRow({ r }: { r: NonNullable<ModuleDetail["routines"]>[number] }) {
+  const [on, setOn] = useState(r.on);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const toggle = () => {
+    setBusy(true);
+    // The module's snapshot keeps the new state too, so another tab and back shows it.
+    api.pauseRoutine(r.id!, on).then((x) => (setOn((r.on = x.status !== "paused")), setError("")), (e) => setError((e as Error).message)).finally(() => setBusy(false));
+  };
+  return (
+    <div className="mod-row-with-action">
+      <ModRow href={`#/agents/${r.agent}/settings`} hint="Change its schedule or model on its agent's Settings" title={r.title} meta={<StatusDot tone={on ? "working" : "done"}>{on ? (r.scheduled ? "On" : "On, when something starts it") : "Off"}</StatusDot>} />
+      {r.id && <button className="btn" type="button" disabled={busy} onClick={toggle}>{on ? "Pause" : "Resume"}</button>}
+      {error && <span className="st-error" role="alert">{error}</span>}
     </div>
   );
 }
@@ -307,7 +412,7 @@ const changeStatus = (stage: string) => { const s = CHANGE_STATUS[stage] ?? { to
 function ModuleChanges({ m }: { m: ModuleRow }) {
   const { changes } = useChanges();
   const keys = Object.keys(m.settings);
-  const mine = changes.filter((f) => f.items.some((c) => ((c.kind === "module" || (c.kind as string) === "pin") && (c as { name: string }).name === m.name) || (c.kind === "setting" && keys.includes(c.key))));
+  const mine = changes.filter((f) => f.items.some((c) => ((c.kind === "module" || (c.kind as string) === "pin") && (c as { name: string }).name === m.name) || (c.kind === "setting" && keys.includes(c.key)) || (c.kind === "share" && c.module === m.name)));
   if (!mine.length) return <EmptyState><strong>No changes yet.</strong> Turning {m.name} on or off, or changing one of its settings, shows up here with where it stands.</EmptyState>;
   return (
     <ListRows>

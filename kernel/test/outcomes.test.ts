@@ -44,8 +44,7 @@ async function paperclip(t, { lose = 0, issues = {} } = {}) {
   return { ...h, url, direct, seen: () => sent };
 }
 
-const provenance = { carried: async () => ({ job: null, cap: { cap: "off" } }), intend: () => {}, record: () => {} };
-const kernelOf = (url, extra = {}) => createOutcomes({ db: new DatabaseSync(":memory:"), plugin: createPluginPost({ controlUrl: url, agentKey: (id) => (id === AGENT ? "agent-key" : ""), postKey: () => SECRET }), provenance, delegates: (id) => (id === AGENT ? [OTHER] : []), finish: async () => ({ pass: true }), chatTask: () => undefined, ...extra });
+const kernelOf = (url, extra = {}) => createOutcomes({ db: new DatabaseSync(":memory:"), plugin: createPluginPost({ controlUrl: url, agentKey: (id) => (id === AGENT ? "agent-key" : ""), postKey: () => SECRET }), delegates: (id) => (id === AGENT ? [OTHER] : []), finish: async () => ({ pass: true }), chatTask: () => undefined, ...extra });
 const JOB = { id: "j-0123456789abcdef", agent: AGENT, task: TASK };
 
 test("posted twice is one comment, the agent's own, tagged so it wakes nobody", async (t) => {

@@ -144,7 +144,7 @@ test("A3: the owner's words are labelled by the kernel from the calling channel,
 
 test("a colleague's Slack mention: one task per thread for the bound agent, fenced, never the owner's own request", async (t) => {
   const issues = { "i-th": { id: "i-th", identifier: "WOR-20", status: "done", assigneeAgentId: "ag-rk" } };
-  const { k } = await setup(t, { grants: { "ag-rk": { key: "roadmap-keeper" }, "ag-new": { key: "newbie", trial: true } }, onControl: async (req) => {
+  const { k } = await setup(t, { grants: { "ag-rk": { key: "roadmap-keeper" } }, onControl: async (req) => {
     if (req.method === "GET" && req.url === "/api/agents/ag-rk") return { body: { id: "ag-rk", companyId: "co" } };
     if (req.method === "GET" && req.url.startsWith("/api/issues/")) { const i = issues[req.url.split("/").pop()]; return i ? { body: i } : { status: 404, body: {} }; }
     if (req.method === "POST" && req.url === "/api/companies/co/issues") return { body: { id: "i-th", identifier: "WOR-20" } };
@@ -167,9 +167,8 @@ test("a colleague's Slack mention: one task per thread for the bound agent, fenc
   assert.deepEqual([again.json.created, again.json.task.id], [false, "i-th"]);
   assert.ok(k.control.some((c) => c.method === "PATCH" && c.url === "/api/issues/i-th" && JSON.parse(c.body).status === "todo"));
   assert.match(JSON.parse(k.control.filter((c) => c.url === "/api/issues/i-th/comments").at(-1).body).body, /and now\?[\s\S]*<!-- aidenhq-for-others -->$/);
-  // Unknown or trial agents, a malformed sender and a module that isn't a channel are refused.
+  // An unknown agent, a malformed sender and a module that isn't a channel are refused.
   assert.equal((await mention({ agent: "nobody" })).status, 404);
-  assert.equal((await mention({ agent: "newbie" })).status, 403);
   assert.equal((await mention({ from: "owner" })).status, 400);
   assert.equal((await mention({}, PLAIN)).status, 403);
 });

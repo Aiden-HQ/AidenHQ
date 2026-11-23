@@ -11,7 +11,7 @@ import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { handbook, history } from "./agent-handbook.js";
-import { PauseSchema, setAgentPaused } from "./agent-pause.js";
+import { PauseSchema, RoutinePauseSchema, setAgentPaused } from "./agent-pause.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks, tasksOf } from "./agent-page.js";
 import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
@@ -23,7 +23,7 @@ import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, h
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, requireAgentCaller, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, requireAgentCaller, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
@@ -31,7 +31,7 @@ import type { AuthorKind, Flow } from "./flow.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
-import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
+import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { CodeReviewSchema, CombosSchema, TreeRequestSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
 import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
@@ -363,8 +363,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    */
   const logTasks = (): Set<string> => {
     try {
-      const g = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")) as { agents?: Record<string, { memory_inbox?: string; review_log?: string; chat_task?: string }>; fleet_issues?: string };
-      return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.memory_inbox, a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
+      const g = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")) as { agents?: Record<string, { review_log?: string; chat_task?: string }>; fleet_issues?: string };
+      return new Set([...Object.values(g.agents ?? {}).flatMap((a) => [a.review_log, a.chat_task]), g.fleet_issues].filter((x): x is string => typeof x === "string" && x !== ""));
     } catch { return new Set(); }
   };
   /** The tasks the board shows: assigned to the user, the Researcher or an Engineer; never setup's log tasks an agent holds. */
@@ -410,25 +410,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     }
   }
 
-  /**
-   * Memory inboxes (memory_note): the grants table names each agent's inbox task, and only the tasks bridge's memory_note
-   * writes there. Every board tool an agent calls on a named task refuses one, before any other check. Read fresh.
-   */
-  async function refuseMemoryInbox(...refs: string[]) {
-    let inboxes: Set<string>;
-    try {
-      const agents = JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8"))?.agents ?? {};
-      inboxes = new Set(Object.values(agents as Record<string, { memory_inbox?: string }>).flatMap((g) => (g.memory_inbox ? [g.memory_inbox] : [])));
-    } catch {
-      return;
-    }
-    if (!inboxes.size) return;
-    // A malformed reference is left to the route's own check.
-    for (const ref of refs.filter((r) => REF.test(r))) {
-      const id = /^[0-9a-f-]{36}$/i.test(ref) ? ref : (await pc.issue(ref)).id;
-      if (inboxes.has(id)) throw new HttpError(403, "that task is a memory inbox; only memory_note writes there");
-    }
-  }
+
 
   /** A label by name, created on first use. */
   async function labelNamed(ctx: { labels: Label[] }, name: string, color: string): Promise<Label> {
@@ -460,6 +442,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       if (!board) throw new HttpError(401, "sign in");
       credential = { board };
     }
+    // A share is the owner's save on the board alone (its preview is a board page), one per task.
+    const sharing = changes.find((c) => c.kind === "share");
+    if (sharing && (changes.length > 1 || !credential || !("board" in credential))) throw new HttpError(400, "a share is saved on its own, from the module's page on the board");
     const { compiled, catalog } = readSources(settingsFiles());
     try {
       for (const ch of changes) checkChange(ch, compiled, catalog);
@@ -482,7 +467,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // The kernel checks it again, has the instance repo's code host write exactly its files and files the apply on the task.
     let filed: { record: string; tier: number; state: string };
     try {
-      filed = await records.settingsChange(issue.id, changes, credential);
+      filed = sharing ? await records.share(issue.id, sharing, credential) : await records.settingsChange(issue.id, changes, credential);
     } catch (e) {
       if (!(e as { refused?: boolean }).refused) {
         // A lost response, a timeout or a 5xx: the kernel may have filed it, so the task stays open to show whatever it did.
@@ -1060,7 +1045,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
           if (!REF.test(target)) throw new Refused("refused: target must be a task identifier");
-          await refuseMemoryInbox(target);
           const dest = await pc.issue(target).catch(() => undefined);
           const agent = dest && ctx.assignees.find((a) => a.key === dest.assigneeAgentId);
           if (!dest || !agent || dest.assigneeAgentId === cos.id) throw new Refused("refused: target must be a task assigned to an engineer");
@@ -1143,11 +1127,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // itself (kernel/src/localmerge.ts) and the task id for a tool call. Reading by both finds either; authorization above
         // is on the id alone.
         const refs = [...new Set([task, found.identifier].filter((r): r is string => Boolean(r)))];
-        // An Engineer without private reads reads only the task its run is working on: the check is against the grants table as
-        // it is now, not a bridge's cached copy, so revoking that access takes effect on the next call.
-        if (grant.profile === "engineer" && grant.private_reads !== true && task !== caller.task) {
-          throw new HttpError(403, "refused: without private reads an Engineer reads only the task its run is working on");
-        }
         // `strict`: a kernel that didn't answer must not read as "no cards". This task's merges are read by kind, over every
         // page of the states one can still be in (the reviewer's or owner's wait, and the approved or claimed run): a Tier 0
         // merge the fleet filed for a green PR reaches the read there, so the newest page stays the reviewed cards alone and a
@@ -1181,9 +1160,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), await refuseMemoryInbox(dec(m[1]!)), schedule(dec(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), await refuseMemoryInbox(dec(m[1]!)), recurringChange(dec(m[1]!), body)) },
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), await refuseMemoryInbox(dec(m[1]!), parse(MergeSchema, body).into), merge(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), schedule(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), recurringChange(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), merge(dec(m[1]!), body)) },
     {
       // An agent attaches a file to the task it is working on (a `file` deliverable): only that task, never another's.
       // The body is the browser route's ({name, type, data} base64); the reply is the new file as the board lists it.
@@ -1194,7 +1173,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const agent = await requireAgentTool(req, "task_file_upload");
         const ref = dec(m[1]!);
         if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
-        await refuseMemoryInbox(ref);
         const issue = await pc.issue(ref);
         if (issue.assigneeAgentId !== agent.id) throw new HttpError(403, "a file may be attached only to the task assigned to you");
         const { attachment } = await upload(issue, body);
@@ -1211,7 +1189,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // The Researcher through the tasks bridge.
       handle: async (m, body, _u, req) => {
         await requireAgentTool(req, "task_pass_on", "board-writer");
-        await refuseMemoryInbox(dec(m[1]!));
         const { comment, to, by } = parse(PassSchema, body);
         const { ctx, issue } = await ownIssue(dec(m[1]!));
         const task = await userTaskOf(issue, ctx);
@@ -1260,12 +1237,18 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   // ------------------------------------------------------------------ Settings (settings.ts)
 
+  /** Setup's routine ids by key (grants.json `routine_keys`: Paperclip id -> compiled key); empty before the first apply. */
+  const routineKeys = (): Record<string, string> => { try { return JSON.parse(readFileSync(process.env.AIDENHQ_GRANTS_FILE ?? "", "utf8")).routine_keys ?? {}; } catch { return {}; } };
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
   async function settingsData() {
-    const pending = await records.list("owner");
+    const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);
+    // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
+    const rows = new Map(live.filter((x) => x.status !== "archived").map((x) => [x.id, x]));
+    const byKey = Object.fromEntries(Object.entries(routineKeys()).flatMap(([id, k]) => (rows.has(id) ? [[k, { id, paused: rows.get(id)!.status === "paused" }]] : [])));
     return settingsView({
       ...readSources(settingsFiles()),
+      live: byKey,
       boardTimezone: opts.timezone,
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
@@ -1523,17 +1506,42 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const agent = agentByKey(await pc.agents(), m[1]!);
         if (!agent) throw new HttpError(404, "no such agent");
         const { compiled, catalog } = readSources(settingsFiles());
-        const module = typeof agent.metadata?.module === "string" ? agent.metadata.module : "instance";
+        const module = String(agent.metadata?.module ?? "");
         const text = await pc.request<{ content?: string }>("GET", `/api/agents/${encodeURIComponent(agent.id)}/instructions-bundle/file?path=AGENTS.md`).then((r) => String(r.content ?? ""), () => null);
-        return handbook({ key: m[1]!, module, revision: catalog.find((c) => c.name === module)?.revision?.slice(0, 7), compiled: text, dirs: { modules: process.env.BOARD_MODULES_DIR, instance: process.env.BOARD_INSTANCE_DIR } });
+        return handbook({ key: m[1]!, module, local: agent.metadata?.tier === "local", revision: catalog.find((c) => c.name === module)?.revision?.slice(0, 7), compiled: text, dirs: { modules: process.env.BOARD_MODULES_DIR, instance: process.env.BOARD_INSTANCE_DIR } });
+      },
+    },
+    // The Handbook tab's Memory block: what the agent's memory holds, read-only (the agent and its memory tools change it).
+    {
+      method: "GET",
+      path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/memory$/,
+      handle: async (m) => {
+        const memory = work.memory ? await work.memory(m[1]!) : null;
+        if (!memory) throw new HttpError(404, "no such agent");
+        return memory;
       },
     },
     {
       method: "GET",
       path: /^\/api\/agents\/by-key\/([a-z0-9-]+)\/handbook\/history$/,
       handle: async (m) => {
-        if (!agentByKey(await pc.agents(), m[1]!)) throw new HttpError(404, "no such agent");
-        return history(m[1]!, process.env.BOARD_INSTANCE_DIR);
+        const agent = agentByKey(await pc.agents(), m[1]!);
+        if (!agent) throw new HttpError(404, "no such agent");
+        return history(m[1]!, process.env.BOARD_INSTANCE_DIR, agent.metadata?.tier === "local" ? String(agent.metadata.module) : undefined);
+      },
+    },
+    // A routine's live pause and resume (the module page's routine rows): Paperclip's status, no settings change.
+    {
+      method: "POST",
+      path: /^\/api\/routines\/([0-9a-f-]{36})\/pause$/,
+      handle: async (m, body) => {
+        const ask = parse(RoutinePauseSchema, body);
+        const t = await pc.routine(m[1]!).catch(() => undefined);
+        if (!t || t.status === "archived") throw new HttpError(404, "no such routine");
+        await setRoutinePaused(pc, t, ask.paused);
+        log.info({ routine: t.title, paused: ask.paused }, ask.paused ? "routine paused" : "routine resumed");
+        store.events.emit("fleet");
+        return { status: ask.paused ? "paused" : "active" };
       },
     },
     {
@@ -1880,8 +1888,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           module,
           agents: mine.map(({ key, a }) => agentProfile({ agent: a, agents: ctx.agents, routines, activity, effort: compiled?.agents?.[key]?.reasoning_effort ?? null, catalog })),
           ongoing,
-          // Its routines as compiled: on or off (quiet start pauses a schedule until the owner turns it on), and whose.
-          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", on: r.status !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
+          // Its routines: on or off as Paperclip runs them (setup creates one with its status; pause and resume are the live
+          // controls after that), else as compiled, and whose. The live row is setup's for that key (grants.json routine_keys),
+          // never a title match: an owner's recurring task may share a title.
+          routines: module.routines.flatMap((key) => { const r = compiled?.routines?.[key]; const id = Object.entries(routineKeys()).find(([, k]) => k === key)?.[0]; const live = id ? routines.find((x) => x.id === id && x.status !== "archived") : undefined; return r ? [{ key, title: r.title ?? key, agent: r.agent ?? "", ...(live ? { id: live.id } : {}), on: (live?.status ?? r.status) !== "paused", scheduled: Boolean(r.schedules?.length) }] : []; }),
           authority: moduleAuthority(text, module.name),
           neededBy: module.neededBy,
           requires: module.requires,
@@ -1962,6 +1972,16 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       method: "POST",
       path: /^\/api\/settings\/change$/,
       handle: async (_m, body) => fileSettingsChange(parse(ChangesSchema, body).changes),
+    },
+    {
+      // A local module's share preview (docs/design/sharing.md): exactly what would leave the instance, where, and what blocks it.
+      // Saving it is a settings change of kind share (above), bound to this answer's digest, source, repo, ref and base.
+      method: "POST",
+      path: /^\/api\/modules\/share\/preview$/,
+      handle: async (_m, body) => {
+        const b = parse(SharePreviewSchema, body);
+        return records.sharePreview(b).catch((e: Error & { refused?: boolean }) => { throw new HttpError(e.refused ? 422 : 502, e.message); });
+      },
     },
     {
       // The settings changes filed in the last two weeks, and where each stands (task, then its apply card).

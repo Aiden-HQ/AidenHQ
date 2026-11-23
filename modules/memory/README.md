@@ -2,8 +2,9 @@
 
 ## What it does
 
-Agent memory. The Fleet Steward curates lessons and facts from an agent's notes (`memory_note`) and recent work into the
-instance's `agents/<key>/memory.md`, which is compiled into that agent's handbook and its fast chat lane (at most 4 KB).
+Agent memory. Each crew agent keeps one memory document of facts and lessons, each with its date and source, stored by the
+kernel (`<data>/kernel/memory/agents/<key>.json`, at most 4 KB). The kernel reads it into the agent's handbook when a job
+starts, and the fast chat lane reads it each turn; both fence it as data.
 
 ## Connect
 
@@ -11,10 +12,12 @@ Nothing to connect.
 
 ## What agents get
 
-The `memory` prompt (`prompts/memory.md`) for an agent with the `memory` field set, and for its chat lane. The tool
-`memory_note` (a note on the agent's own memory inbox task, for the Fleet Steward) comes from `tasks` and is granted to
-crew agents when this module is on.
+The `memory` prompt (`prompts/learned.md`) for every crew agent, and for its chat lane. The tools come from `tasks` and are
+granted to crew agents while this module is on: `memory_note` (save a fact at once), `memory_forget`, `memory_read` and
+`memory_rewrite` (compact your own memory). The kernel refuses instruction-shaped facts, strips secrets, refuses duplicates
+and forgotten facts, and allows 10 changes per job. The Fleet Steward's weekly lint removes duplicate, contradicting and
+stale lines from every agent's memory.
 
 ## New installs
 
-In the default bundle. No agent has memory until the Steward has learned something from its work.
+In the default bundle. Every agent starts with an empty memory ("Nothing yet.") and fills it as it works.

@@ -1,12 +1,11 @@
-// The product gate end to end: a code host's push is planned by the real git rules (plan.ts), tiered by the files it
-// changes through the real path inventory (paths.yaml), and passes the platform check as the compiler registers it
+// The product gate end to end: a code host's push is planned by the real git rules (plan.ts) and passes the platform check
+// as the compiler registers it
 // (a write.filed check, run in process: a hard gate that refuses, and fails closed when it can't run).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
-import { pathInventory } from "../../scripts/paths.ts";
 import { checkEntries } from "../../scripts/modules.ts";
 import { plan as planRules } from "../../modules/github/service/src/plan.ts";
 import { serveExecutor } from "../sdk/src/executor.ts";
@@ -21,8 +20,8 @@ async function gitHost(t, checks = platform) {
   let n = 0, branches;
   const ex = await serve(async (req, res) => { if (!(await handler(req, res))) res.writeHead(404).end(); });
   t.after(() => ex.s.close());
-  const kind = { module: "github", floor: github.push.floor, paths: github.push.paths, tools: [], executor: { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "github_key" } };
-  const k = await kernel(t, { secrets: { github_key: "github-key" }, repos: { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance", agentsOrg: "acme-agents" }, paths: pathInventory(ROOT), checks, writes: { "github.push": kind } });
+  const kind = { module: "github", floor: github.push.floor, tools: [], executor: { url: `${ex.url}/aidenhq/v1/executor`, auth_secret: "github_key" } };
+  const k = await kernel(t, { secrets: { github_key: "github-key" }, repos: { product: "acme/aidenhq", instance: "acme-agents/aidenhq-instance", agentsOrg: "acme-agents" }, checks, writes: { "github.push": kind } });
   // The code host's plan: the git rules over the state it read (here, the branch and its files), as service.ts calls them.
   const state = () => ({ productRepo: "acme/aidenhq", instanceRepo: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"], requester: { platform: true }, workspace: `TASK-${n}`, branches });
   const handler = serveExecutor({ plan: async (req) => planRules(req, state(), { target: "t", sentence: "s", diff: "" }), execute: async () => ({ ok: true, text: "pushed" }) }, { key: "github-key", kernelUrl: k.url });
@@ -35,11 +34,10 @@ async function gitHost(t, checks = platform) {
 }
 
 test("a product push is the reviewer's; app code runs at once; the owner-approval file is reviewed and goes alone", async (t) => {
-  assert.equal(github.push.paths && github.pr.paths && github.merge.paths, true, "github's git writes read their paths");
   const push = await gitHost(t);
   for (const files of [["kernel/src/tier.ts", "docs/a.md"], ["compose.yaml"], ["modules/dispatch/module.yaml"], ["docs/a.md"]]) assert.deepEqual(await push("acme/aidenhq", files), [1, "product-push-branch"], files.join());
   assert.deepEqual(await push("acme-agents/app", ["src/a.ts"]), [0, null], "an app branch runs at once");
-  assert.deepEqual(await push("acme-agents/app", [".github/supply-chain-source-exceptions.yaml"]), [1, "owner-path"], "the reviewer's, labelled the owner's path");
+  assert.deepEqual(await push("acme-agents/app", [".github/supply-chain-source-exceptions.yaml"]), [1, "github-dir"], "the reviewer's, a .github/ change");
   await assert.rejects(push("acme-agents/app", [".github/supply-chain-source-exceptions.yaml", "src/a.ts"]), (e) => e.status === 422 && /owner-approval-alone/.test(e.message));
 });
 

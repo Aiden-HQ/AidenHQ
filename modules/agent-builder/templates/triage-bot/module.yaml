@@ -1,0 +1,25 @@
+# Role template: a local module (modules/<name>/ in the instance repo) holding one agent that sorts a feed (a channel or
+# label) into act, delegate or ignore and files tasks for the ones that need action. The Agent Architect copies it, renames
+# it and fills in the feed.
+name: triage-bot
+description: Sorts a feed into act, delegate or ignore.
+agents:
+  triage-bot:
+    name: Triage Bot
+    description: Sorts a named feed (a Slack channel or label) into act, delegate or ignore and files tasks for the ones that need action; does not do the work itself.
+    reports_to: chief-of-staff
+    skills: [ tasks.delegate-work ]
+    model: ~deepseek/deepseek-flash-latest
+    connections:
+      slack?: read
+      paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_block, task_cancel, task_create, task_delegate ]
+      apps: [ web_view, app_view ]
+routines:
+  triage-bot-sweep:
+    title: Triage the feed
+    agent: triage-bot
+    description: |
+      Today is {{date}}. Follow "Each run" in your instructions for the feed named in your handbook.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 9,15 * * 1-5", timezone: "${settings.timezone}", label: "twice a weekday" }

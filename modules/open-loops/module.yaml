@@ -5,6 +5,7 @@ requires:
   - google
 agents:
   inbox-agent:
+    skills: [ open-loops.scan-slack, open-loops.triage-email, open-loops.triage-slack, tasks.delegate-work ]
     # Intake: the Slack scan, the live Slack triage and the inbox scan, one routine and one skill each (design §4.5).
     department: intake
     model: ~deepseek/deepseek-flash-latest
@@ -18,12 +19,13 @@ agents:
       apps: [ app_view ]
       # Reads only.
       slack: read
-      # The live Slack events it triages, the owner's Slack user id and the Slack DM page for an urgent one (slack, when installed).
-      slack_live?: [ slack_pending_events, slack_owner ]
+      # The owner's Slack user id, for the live events it triages (the slack-triage routine) and the Slack DM page for an urgent one (slack, when installed).
+      slack_live?: [ slack_owner ]
       google_workspace: [ gmail_search, gmail_read_thread ]
       owner_channel: [ notify ]
       paperclip_tasks: [ task_current, task_get, task_search, task_list, task_create, task_update, task_comment, task_block, task_cancel, task_finish ]
   open-loops:
+    skills: [ tasks.delegate-work ]
     department: outreach
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -73,13 +75,10 @@ routines:
     title: Slack triage
     agent: inbox-agent
     description: |
-      New Slack events arrived. Today is {{date}}. The user's Slack user ID is what slack_owner returns.
+      Today is {{date}}. The user's Slack user ID is what slack_owner returns.
       Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an alert (notify, kind alert); you never post
       to Slack. Then close this task with one line saying what you did.
-    concurrency: coalesce_if_active
-    webhook: true # fired by slack-live-mcp (TRIAGE_WEBHOOK_URL/SECRET)
-    webhook_base: http://paperclip:3100 # slack-live-mcp calls it from inside the compose network
-    secrets_prefix: slack_live_triage_webhook # setup saves <prefix>_url / _secret for slack-live-mcp
+    event: { connection: slack, resource: "*", filter: { kind: [message, app_mention], bot: false } } # the kernel's event router fires it once a minute at most
 labels:
   - { name: waiting-on, color: "#7c3aed" }
   - { name: email, color: "#ea580c" }

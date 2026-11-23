@@ -29,6 +29,8 @@ export interface ExecuteRequest {
   task?: string;
   /** The task's identifier as people read it (ACME-12), when the record kept one: what the code host's own PR rows are keyed by. */
   identifier?: string;
+  /** The record's tier as the kernel set it (0 ran unreviewed): an executor rechecks what a Tier 0 rested on. */
+  tier?: 0 | 1 | 2;
 }
 export interface Executor {
   plan(req: PlanRequest): Promise<PlanResult>;

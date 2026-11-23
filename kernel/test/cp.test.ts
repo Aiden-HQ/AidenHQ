@@ -1,11 +1,10 @@
 // /v1/cp/agent (cp.ts): a module acting for a kernel job reads with the agent's own key and writes only through the
 // paperclip-events plugin's signed `post` action (the real one, services/paperclip-events/post.js, behind a fake Paperclip),
-// on the tasks the kernel lets that job write on. A task the job creates carries its routine cap (provenance.ts).
+// on the tasks the kernel lets that job write on.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createJobs } from "../src/jobs.ts";
-import { ORIGIN } from "../src/provenance.ts";
-import { taskRoutineCap } from "../src/tier.ts";
+import { ORIGIN } from "../../services/paperclip-events/post.js";
 import { SELF_TAG } from "../src/wakes.ts";
 import { post } from "../../services/paperclip-events/post.js";
 import { kernel, moduleServer, pluginHost } from "./helpers.ts";
@@ -61,7 +60,7 @@ async function setup(t, { projects } = {}) {
     },
   });
   createJobs({ db: k.records.db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" });
-  k.records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, routine, routine_cap) VALUES ('job-1', 'dispatch', ?, ?, 'codex', 1, '', '', 0, '[]', 0, 0, 'running', 'digest', 'off')").run(ADA, OWN);
+  k.records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, routine) VALUES ('job-1', 'dispatch', ?, ?, 'codex', 1, '', '', 0, '[]', 0, 0, 'running', 'digest')").run(ADA, OWN);
   const act = async (who, method, path, body, twice = false) => JSON.parse((await (await k.call("todo", who, { method: "tools/call", params: { name: "act", arguments: { method, path, body, twice } } })).json()).result.content[0].text);
   return { k, h, act, plugin };
 }
@@ -84,7 +83,7 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
   assert.equal(plugin.length, before);
   // A child it creates, delegated (bo is in its delegate_to): created by the agent under its task, once however often the
-  // module retries the write within its call, with the job's routine cap.
+  // module retries the write within its call.
   const child = { title: "Check the numbers", description: "Please.", parentId: OWN, assigneeAgentId: BO, status: "todo", idempotencyKey: "check:1" };
   r = await act("ada", "POST", "/api/companies/co/issues", child, true);
   assert.deepEqual([r.status, r.json.deduplicated], [201, true]);
@@ -103,19 +102,13 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   // direct reports and the Engineers, and the lead is refused for an agent that isn't its own.
   const give = (who, to) => act(who, "POST", "/api/companies/co/issues", { title: "Take this", assigneeAgentId: to, status: "todo" });
   for (const to of [BO, REP, ENG]) assert.equal((await give("cos", to)).status, 201);
-  for (const to of [REP, ENG]) assert.equal((await give("lead", to)).status, 201);
+  for (const to of [REP, ENG, COS]) assert.equal((await give("lead", to)).status, 201); // the chief of staff too: what only it changes is asked of it
   r = await give("lead", BO);
   assert.equal(r.status, 409);
   assert.match(r.json.error.message, /delegates to/);
   r = await act("ada", "POST", "/api/companies/co/issues", { title: "Read this", assigneeUserId: "u-owner", labelIds: [OTHER], priority: "low" });
   assert.equal(r.status, 201);
   assert.deepEqual([h.issues[r.json.id].parentId, h.issues[r.json.id].assigneeUserId, h.issues[r.json.id].labelIds], [undefined, "u-owner", [OTHER]]);
-  assert.deepEqual({ ...k.records.db.prepare("SELECT created_by_job, routine, routine_cap FROM provenance WHERE task = ?").get(kid.id) }, { created_by_job: "job-1", routine: "digest", routine_cap: "off" });
-  // The cap follows the task's children; a plugin-made task with no row (its answer lost) is capped off too.
-  const capOf = (id) => taskRoutineCap({ issue: async (x) => h.issues[x] ?? { id: x }, provenance: k.provenance.trace }, id, { digest: "full" });
-  h.issues.GRANDKID = { id: "GRANDKID", parentId: kid.id };
-  assert.deepEqual(await capOf("GRANDKID"), { cap: "off", routine: "digest" });
-  assert.deepEqual(k.provenance.trace({ id: "LOST", originKind: ORIGIN }), { cap: "off" });
   // A follow-up on the child it delegated: written, and tagged so it wakes the child's assignee.
   r = await act("ada", "POST", `/api/issues/${kid.identifier}/comments`, { body: "Also the totals." });
   assert.equal(r.status, 201);

@@ -68,7 +68,7 @@ services:
 generated_secrets:
   - owner_channel_service_key
 data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
-# Every crew agent can reply to and ask the owner (notify, the "Asking the owner" section), except in trial or in an
-# untrusted module, where write tools stay off.
+# Every crew agent can reply to and ask the owner (notify, the "Asking the owner" section), except in an untrusted module,
+# where write tools stay off.
 default_grants:
-  - { tools: [ owner_channel.notify ], when: { fields: { profile: crew } }, unless: { fields: { trial: true, isolation: untrusted } } }
+  - { tools: [ owner_channel.notify ], when: { fields: { profile: crew } }, unless: { fields: { isolation: untrusted } } }

@@ -21,8 +21,6 @@ test("codehost-local registers push, pr, merge and close (and create_repo), owne
     assert.ok(k.args, "an args schema");
     assert.deepEqual(k.card, { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" });
   }
-  // A repository write returns its paths (the path inventory tiers it, as codehost-github's); a close and a create don't.
-  assert.deepEqual(["push", "pr", "merge", "close", "create_repo"].filter((a) => LOCAL_KINDS[`codehost-local.${a}`]!.paths), ["push", "pr", "merge"]);
   // Its args name only this server's org: a local kind can't act on a GitHub repo.
   assert.match(JSON.stringify(LOCAL_KINDS["codehost-local.merge"]!.args), /\^local\//);
 });

@@ -2,17 +2,18 @@
 // (the requester the runner looked up, the repos, branches, files, heads and checks git and GitHub report). Pure: no I/O.
 // Code refuses (`reject`) what nobody may do and the agent can fix (the instance repo, a default branch outside the agents
 // org, a head that moved); Tier 0 runs at once, Tier 1 goes to the AI reviewer.
-// What a change to particular files needs (the gate's core, compose files, the owner-approval records) is never decided here:
-// `plan` returns the files each push, PR and merge changes (`paths`), and the kernel raises the tier by the path inventory
-// (paths.yaml, kernel/src/paths.ts) and runs the platform check (modules/platform/src/check.ts) on them (writes.ts).
+// `plan` returns the files each push, PR and merge changes (`paths`), and the kernel runs the platform check
+// (modules/platform/src/check.ts) on them (writes.ts).
 //
 // `plan` is these rules in executor@1's shape (kernel/sdk/src/executor.ts) for the github kinds, with the targets the kernel
 // revalidates. codehost-local (the org `local`, repos on this server) tiers through these same rules: it only adds `local-merge`.
 
+import { productMergeEligible, type Verdict } from "./merge-gate.ts";
+
 interface Part { tier: 0 | 1 | 2; rule: string; reason: string; reject?: boolean }
-interface Check { ok?: boolean; pending?: boolean; skipped?: boolean }
+interface Check { name?: string; ok?: boolean; pending?: boolean; skipped?: boolean }
 interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string }
-interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string }
+interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string; /** Code review's verdict for the head (product merges). */ verdict?: Verdict }
 interface State {
   agentsOrgs?: string | string[];
   agentsOrg?: string;
@@ -26,6 +27,9 @@ interface State {
   prs?: Pr[];
   repo?: string;
   allowedOrgs?: string | string[];
+  /** A publish's branch and the tip the owner previewed (publish_module). */
+  ref?: string;
+  base?: string;
 }
 
 const T = (tier: 0 | 1 | 2, rule: string, reason: string): Part => ({ tier, rule, reason });
@@ -56,6 +60,7 @@ export function planParts(action: string, s: State) {
   if (action === "merge") return (s.prs ?? []).map((p) => mergeParts(p, s));
   if (action === "close") return (s.prs ?? []).map((p) => [closePart(p, s)]);
   if (action === "create_repo") return [[createRepoPart(s)]];
+  if (action === "publish_module") return [[publishModulePart(s)]];
   return [];
 }
 
@@ -127,6 +132,18 @@ function createRepoPart(s: State) {
 }
 
 /**
+ * publish_module: { repo, ref, base, … }, the owner's share of a local module (docs/design/sharing.md). Always the owner's
+ * (Tier 2, filed only by his save): never the product or instance repo, never a repo on this server, only owner/name.
+ */
+function publishModulePart(s: State) {
+  const repo = String(s.repo ?? "");
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return REJECT("publish-repo-name", `${repo.slice(0, 100)} isn't a repository's owner/name`);
+  if (same(repo, s.productRepo) || same(repo, s.instanceRepo)) return REJECT("core-repo-publish", `${repo} is the product or instance repo: a module is shared to a repo of its own`);
+  if (isLocal(repo)) return REJECT("local-publish", `${repo} is on this server: a shared module goes to a public repo`);
+  return T(2, "publish-module", `the owner's share of a local module to ${repo} \`${s.ref}\`, as he previewed it`);
+}
+
+/**
  * Friction is the agent's, never the owner's (owner, 2026-11-14): a head that moved is refused by code with the reason, so the
  * agent asks again. On GitHub checks are the queue's: it waits for none yet or still running, and ends the PR on a red one. A
  * change request on this server has no waiting queue (codehost-local decides at the merge): no named checks or a red one is refused here.
@@ -161,7 +178,7 @@ function mergeParts(p: Pr, s: State): Part[] {
   const ref = `${p.repo}#${p.number ?? "?"}`;
   // The instance repo is refused before anything reads its files: it changes only through apply, whatever it touches.
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
-  if (same(p.repo, s.productRepo)) return [productMergePart(p, ref)];
+  if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);
   if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
   // A maintained repo outside the agents org merges like an agents-org repo, under its own rule names (the reviewer sees
   // where it is). Anywhere else the code host only opens PRs: the merge queue refuses it too (merges.ts).
@@ -192,19 +209,23 @@ function mergeParts(p: Pr, s: State): Part[] {
 
 /**
  * A product PR's merge (owner, 2026-11-13; any requester since 2026-11-22: every product PR gets ci-required and the
- * mandatory code review before GitHub merges it, and agents are trusted). Still running is not red: a reviewer-approved merge
- * runs the strict queue, which merges only once every named check is green on that exact head. Never Tier 0: the product
- * reaches every instance through the pin. Its files are the platform check's.
+ * mandatory code review before GitHub merges it, and agents are trusted). Once `ci-required` is green and code review passed
+ * that exact head (productMergeEligible, checked again right before the merge), it skips the AI reviewer (owner,
+ * 2026-11-23); otherwise the reviewer reads it, and the strict queue merges only once every named check is green on that
+ * head. A foreign head and a `.github/` change stay the reviewer's. Its files are the platform check's.
  */
-function productMergePart(p: Pr, ref: string) {
-  if (!Array.isArray(p.files)) return REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`);
+function productMergeParts(p: Pr, ref: string, s: State): Part[] {
+  if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
   const friction = mergeFriction(p, ref);
-  if (friction) return friction;
+  if (friction) return [friction];
+  if (!p.ownHead) return [T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`)];
   // Plain wording, and no "skipped counts as passed": the reviewer reads this line as code's description of the gate, and a
   // sentence that reads as a weakened check made every product merge card a false reject (issue #1449).
   const gates = `On its head: ${checkCounts(p.checks)}. Code merges it only at that head and only after every named check has finished without failure`;
-  if (p.ownHead) return T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`);
-  return T(1, "product-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of the product repo (the reviewer reads that exact head)`);
+  const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });
+  const parts = [eligible ? T(0, "product-merge-reviewed", `${ref}: ci-required is green and code review passed its head`) : T(1, "product-merge", `${ref}: a product PR whose head the code host pushed. ${gates}`)];
+  if (eligible && p.files.some((f) => GITHUB.test(f))) parts.push(T(1, "github-dir", `${ref} changes ${p.files.filter((f) => GITHUB.test(f)).length} file(s) under .github/`));
+  return parts;
 }
 
 /**
@@ -227,6 +248,7 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   const targets = action === "merge" || action === "close"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
+    : action === "publish_module" ? { [`${state.repo} ${state.ref}`]: { repo: state.repo, ref: state.ref, commit: state.base } }
     // `base_branch` is the destination the plan read: a publish's open-PR lookup and its new PR's base both use it, so a
     // default-branch switch after approval makes the record stale rather than editing the PR into the new base.
     : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null, base_branch: b.defaultBranch ?? null }]));

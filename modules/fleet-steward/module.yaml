@@ -19,7 +19,7 @@ roles:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
     - { id: fleet-settle, description: "Settle stuck work on any agent-made task (kernel cp.ts SETTLE): answer a wait, close finished work, cancel stale tasks, hand a task to the agent that does it (task_route)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
-    - { id: librarian, description: "Read every handbook, decide proposed identity links, hand rule proposals to the Engineer (tasks bridge, apps-mcp)." }
+    - { id: librarian, description: "Read every handbook and decide proposed identity links (tasks bridge, apps-mcp)." }
     - { id: routing-tuner, description: "Read team routing decisions and their outcomes, and propose one change a day to members' repos or routing weights as a reviewed experiment (routing_*)." }
 settings:
   # Minutes between the detector's checks (lower while developing). The detector files a check task for the Steward only when a
@@ -29,6 +29,7 @@ settings:
     default: 10
 agents:
   fleet-steward:
+    skills: [ fleet-steward.agent-review, fleet-steward.fleet-check, fleet-steward.fleet-digest, fleet-steward.fleet-review, fleet-steward.handbook-prune, fleet-steward.knowledge-daily, fleet-steward.knowledge-lint, fleet-steward.review-digest, fleet-steward.route-security-fix, fleet-steward.routing-review, tasks.delegate-work ]
     department: platform
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -47,21 +48,22 @@ agents:
       # the report as the owner's prefilled link, for an install where GitHub isn't connected (prompt product-bugs).
       github?: [ github_product_issue_status, github_issue_link ]
       # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
-      # handbook_list/handbook_read/task_propose_rule through librarian; task_route, and task_finish/task_cancel on any agent's
+      # handbook_list/handbook_read through librarian; task_route, and task_finish/task_cancel on any agent's
       # task, through fleet-settle. task_create/task_delegate only to delegate_to below. task_handoff only on its own part of the
       # owner's task: a todo plus a recorded wait, nothing sent to the owner; any other task is settled with task_route/task_finish/task_cancel.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
                          task_create, task_comment, task_delegate, task_amend_rubric, task_route, task_handoff, task_block,
                          task_cancel, task_finish,
                          fleet_status, fleet_catalog, fanout_map,
-                         coach_record, handbook_list, handbook_read, task_propose_rule ]
+                         coach_record, handbook_list, handbook_read ]
       # The detector's open and recovered incidents (fleet-read), the Coach's reads (fleet-audit) and the apply generations.
       # routing_* through routing-tuner: the routing learning loop.
       fleet_steward: [ fleet_detector, coach_due, coach_evidence, fleet_generation_status, routing_evidence, routing_replay, routing_tune, routing_judge ]
     # It reads untrusted content broadly: the tasks module lets it assign work only to these. Fixes are theirs, under tiers:
-    # the Engineer (rules, product and instance changes), an app's owner (app-owners; the
-    # DevOps Engineer for an app with none), the Agent Architect (an agent's definition), the Maintainer (product bugs upstream).
-    delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer? ]
+    # the Engineer (product and module changes), an app's owner (app-owners; the DevOps Engineer for an app with none), the
+    # Agent Architect (an agent's definition), the Maintainer (product bugs upstream), the chief of staff (another agent's rule
+    # fix, handed to that agent, and the owner's profile).
+    delegate_to: [ engineer, app-maintainer?, app-owners, architect?, maintainer?, chief-of-staff? ]
     roles: [ fleet-read, fleet-settle, fleet-audit, librarian, routing-tuner, product-issues ]
 # Routine titles stay as they were: setup matches routines by title. The check task itself is filed by the service (kernel.tasks).
 routines:
@@ -115,7 +117,7 @@ routines:
     agent: fleet-steward
     description: |
       Today is {{date}}. Follow your knowledge-daily skill: review what is new since yesterday in the notes vault, the
-      people proposals and the agents' memory (their inboxes and recent finished work), fix what the tools allow, note the rest for the weekly report, then
+      people proposals, fix what the tools allow, note the rest for the weekly report, then
       close this task with a short count summary.
     concurrency: coalesce_if_active
     schedules:
@@ -128,16 +130,14 @@ routines:
       yesterday's team routing decisions with `routing_evidence`, and file at most one routing change. Then close this
       task with one line.
     concurrency: skip_if_active
-    # Its routing changes are AI-approved under the instance's full autonomy (owner, 2026-11-19); autonomy off still holds them.
-    autonomy: full
     schedules:
       - { cron: "15 0 * * *", timezone: "UTC", label: "after each UTC day" }
   librarian-weekly:
     title: Librarian weekly lint
     agent: fleet-steward
     description: |
-      Today is {{date}}. Follow your knowledge-lint skill: lint the whole notes vault, the people directory and the
-      agents' rules, then file the one weekly report task. Then close this task with one line saying what you did.
+      Today is {{date}}. Follow your knowledge-lint skill: lint the whole notes vault, the people directory, the
+      agents' rules and the agents' memory files, then file the one weekly report task. Then close this task with one line saying what you did.
     concurrency: coalesce_if_active
     schedules:
       - { cron: "0 7 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }
@@ -178,7 +178,7 @@ services:
         FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
         FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
         # Under quiet start the detector keeps checking but files no check task until the owner turns the Steward on
-        # (overrides.routines.fleet-ops-digest.status: active; service/src/detector.ts stewardOn).
+        # (resuming its "Fleet Ops: daily digest" routine; service/src/detector.ts stewardOn).
         FLEET_STEWARD_QUIET_START: "${settings.quiet_start}"
 generated_secrets:
   - fleet_steward_token

@@ -13,6 +13,7 @@ import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
 import { REFUSALS_DDL, busyError, refusalColumns, refusalOf, type Refusal } from "./refusals.ts";
 import type { Facts } from "./facts.ts";
+import { quietRun } from "./quiet.ts";
 import { SESSION, buildJob, ensureStateDirs, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
 
 /** What the control plane says about a task. */
@@ -139,7 +140,7 @@ const clip = (s: unknown, n: number) => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 // Steps show command lines on the board: blank the usual secret shapes first, whatever the engine sent.
-const redact = (t: string) =>
+export const redact = (t: string) =>
   t
     .replace(/(Bearer|Basic|token)\s+[^\s'"]+/gi, "$1 …")
     .replace(/:\/\/[^/\s@]+@/g, "://…@")
@@ -209,11 +210,12 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         db.exec(REFUSALS_DDL);
         refusalColumns(db);
         // A kernel-admitted job's columns, added where they are missing: what admission records (the wake, the profile, the
-        // job that started it, its frozen authority and routine cap: provenance.ts reads it), and boxes.ts's lease and release.
+        // job that started it, its frozen authority and routine), and boxes.ts's lease and release.
         const cols = new Set((db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name));
-        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["routine_cap", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
+        for (const [c, t] of [["wake", "TEXT"], ["profile", "TEXT"], ["parent_job", "TEXT"], ["routine", "TEXT"], ["authority", "TEXT"], ["renewed", "INTEGER"], ["released", "INTEGER"], ["identifier", "TEXT"], ["full_prompt", "TEXT"], ["resumed", "INTEGER"]] as const) if (!cols.has(c)) db.exec(`ALTER TABLE jobs ADD COLUMN ${c} ${t}`);
         db.exec("CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task, state)");
         db.exec("CREATE INDEX IF NOT EXISTS jobs_identifier ON jobs (identifier, state)"); // workspaces.ts: a folder's liveness
+        db.exec("CREATE INDEX IF NOT EXISTS jobs_agent_at ON jobs (agent, at DESC)"); // work.ts: an agent's newest jobs first
         // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
         if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
         db.exec("COMMIT");
@@ -258,7 +260,8 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
             || db.prepare("SELECT 1 FROM records WHERE task = ? AND created_at >= ? LIMIT 1").get(r.task, since));
         } catch { return false; }
       })();
-      extra = { ...sum, model, acted };
+      // quiet: a routine run that only closed or parked its task (quiet.ts); written here and nowhere else.
+      extra = { ...sum, model, acted, quiet: (() => { try { return quietRun(db, { id: r.id, task: r.task, at: r.at, routine: r.routine, state: String(data.state), requester: r.agent }); } catch { return false; } })() };
     }
     strictFact(facts)({ type, subject: `job:${r.id}`, version: type === "job.started" ? "started" : "ended", at: iso(at), actor: `agent:${agentKey(r.agent)}`, task: r.task, data: { ...data, ...extra } });
   };

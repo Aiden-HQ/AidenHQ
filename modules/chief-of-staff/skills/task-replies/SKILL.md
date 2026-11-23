@@ -1,7 +1,6 @@
 ---
 name: task-replies
 description: "Acts on the owner's newest comments on their own tasks: corrections, reschedules, recurring rules, merges, closes and answers. Use when the run task says \"Process replies on: <tasks>\"."
-when: { fields: { name: Researcher } }
 ---
 
 # Processing the owner's replies

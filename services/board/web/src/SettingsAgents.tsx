@@ -2,7 +2,8 @@
 // its recent changes. Each row shows the module default beside the instance value, with Reset to default where the
 // instance overrides it; an edit opens the preview, then the progress. One change per row at a time: while one is filed
 // the row shows its stage instead of the editor.
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { api } from "./api";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./types";
@@ -148,19 +149,28 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
   );
 }
 
-/** A routine: schedule (cron and timezone), status and model in one editor, filed as one `routine` change per field changed. */
+/**
+ * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed; pause and
+ * resume are its live controls here (Paperclip's status, no settings change).
+ */
 function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
-  const [status, setStatus] = useState<"active" | "paused">(r.status === "paused" ? "paused" : "active");
   const [model, setModel] = useState(r.model ?? "");
+  const [paused, setPaused] = useState(Boolean(r.paused));
+  useEffect(() => setPaused(Boolean(r.paused)), [r.paused]); // a refreshed status is the truth
+  const [pausing, setPausing] = useState(false);
+  const [pauseError, setPauseError] = useState("");
+  const togglePause = () => {
+    setPausing(true);
+    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setPauseError("")), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
+  };
   const [review, setReview] = useState(false);
   const own = r.defaults ?? {};
   const items: SettingChange[] = [];
   const was: unknown[] = [];
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (!same(sched, r.schedules)) (items.push({ kind: "routine", routine: r.key, field: "schedules", value: sched.map((s) => ({ cron: s.cron.trim(), ...(s.timezone.trim() ? { timezone: s.timezone.trim() } : {}), ...(s.label ? { label: s.label } : {}) })) }), was.push(r.schedules.map((s) => ({ cron: s.cron, timezone: s.timezone }))));
-  if (status !== (r.status === "paused" ? "paused" : "active")) (items.push({ kind: "routine", routine: r.key, field: "status", value: status }), was.push(r.status ?? "active"));
   if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() }), was.push(r.model ?? null));
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
@@ -175,8 +185,10 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
           <span>
             {when}
             {r.model && ` on ${modelShort(r.model)}`}
-            {r.status === "paused" && " (paused)"}
+            {paused && " (paused)"}
           </span>
+          {r.id && <button className="btn" type="button" disabled={pausing} onClick={togglePause}>{paused ? "Resume" : "Pause"}</button>}
+          {pauseError && <span className="st-error" role="alert">{pauseError}</span>}
           {diff.length > 0 && <span className="muted"> · module default differs for {diff.join(", ")}</span>}
         </>
       }
@@ -193,13 +205,6 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
                 </div>
               ))}
               <label className="ui-field">
-                <span className="ui-field-label">Status</span>
-                <select className="ui-select" value={status} onChange={(e) => (setStatus(e.target.value as "active" | "paused"), setReview(false))}>
-                  <option value="active">active</option>
-                  <option value="paused">paused</option>
-                </select>
-              </label>
-              <label className="ui-field">
                 <span className="ui-field-label">Model</span>
                 <input className="ui-input" list={listId} value={model} placeholder="the agent's" onChange={(e) => (setModel(e.target.value), setReview(false))} spellCheck={false} />
                 <datalist id={listId}>
@@ -213,7 +218,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
               ) : (
                 <div className="st-change-actions">
                   {diff.map((f) => (
-                    <ResetRoutine key={f} r={r} field={f as "schedules" | "status" | "model"} value={own[f]} />
+                    <ResetRoutine key={f} r={r} field={f as "schedules" | "model"} value={own[f]} />
                   ))}
                   <button className="btn primary" type="button" disabled={!items.length} onClick={() => setReview(true)}>
                     Review change
@@ -228,7 +233,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   );
 }
 
-function ResetRoutine({ r, field, value }: { r: Routine; field: "schedules" | "status" | "model"; value: unknown }) {
+function ResetRoutine({ r, field, value }: { r: Routine; field: "schedules" | "model"; value: unknown }) {
   const [on, setOn] = useState(false);
   return on ? (
     <ChangePreview items={[{ kind: "routine", routine: r.key, field, value } as SettingChange]} was={[(r as unknown as Record<string, unknown>)[field] ?? null]} onCancel={() => setOn(false)} onDone={() => setOn(false)} note={`Back to the module's ${field}: ${shown(value)}.`} />

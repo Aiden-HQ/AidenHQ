@@ -19,7 +19,7 @@ per revision; a colleague's words counted as the owner's; silence treated as app
 - Stuck watcher: new module vs extend Fleet Steward. Fleet Steward already detects stuck/failing/silent runs, held
   gradings, stale PRs and app incidents with persisted, deduped incidents and recovery
   (`modules/fleet-steward/service/src/detector.ts`), so we extend it [my call: one detector, not two].
-- Channel memory: agent memory pipeline (inbox task -> Fleet Steward curation -> instance repo) vs a note beside the
+- Channel memory: the agent's own memory (kernel `memory.ts`, written with `memory_note`) vs a note beside the
   Slack binding. The note [my call: it is channel context, not agent identity].
 
 ## 0. Prerequisite: who said it

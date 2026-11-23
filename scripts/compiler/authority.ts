@@ -7,7 +7,6 @@
 // the owner's card and in the apply log.
 import { ownSecrets } from "./services.ts";
 import { forksOf, marketplacesOf, OFFICIAL, OFFICIAL_URL } from "./sources.ts";
-import { SENSITIVITIES } from "../../kernel/src/paths.ts";
 import { heir } from "../../kernel/src/successor.ts";
 
 type Dict = Record<string, unknown>;
@@ -38,12 +37,12 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
 const PLAIN = new Set(["stages", "journeys", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "paths", "codehost", "check_jobs", "settings", "validate"]);
+const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "codehost", "check_jobs", "settings", "validate"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
  * prompts). Others are new authority. */
-const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "trial", "skills", "engines"]);
+const AGENT_PLAIN = new Set(["department", "adapter", "max_parallel", "model", "models", "reasoning_effort", "timeout_sec", "heartbeat", "persona", "graded", "brief", "engine", "dispatch", "image", "web_search", "delegate_to", "jobcaps", "builder", "description", "name", "title", "skills", "engines"]);
 /** Service fields that change what runs or how much, not what it may reach (the code diff and the panel judge those). */
 const SERVICE_PLAIN = new Set(["image", "build", "command", "entrypoint", "env", "secrets", "port", "healthcheck", "cpus", "memory", "pids", "tmp", "on_demand"]);
 /** What each kernel role a module requests opens (kinds.ts KERNEL_ROLES, backplane.ts), as its line on the card says. */
@@ -51,11 +50,13 @@ const KERNEL_ROLE_GRANTS: Record<string, string> = {
   "kernel.apply": "files instance applies",
   "kernel.checks": "runs check jobs",
   "kernel.cp-read": "reads the control plane as the owner",
+  "kernel.events": "sends the events of its connections to subscribed routines, and reads their batches for their runs",
   "kernel.facts": "records flow facts of the types it declares",
   "kernel.flow-read": "reads the fleet's flow timelines and metrics",
   "kernel.grader": "mints grader tokens",
   "kernel.jobs": "runs agents' jobs",
   "kernel.lane": "writes fast-lane turns to an agent's chat",
+  "kernel.memory": "writes the calling agent's own memory, for its memory tools",
   "kernel.notify": "takes and sends the owner's messages",
   "kernel.owner-notice": "messages the owner",
   "kernel.routines": "pauses a routine (never resumes one)",
@@ -69,9 +70,6 @@ const ISOLATION_RANK: Record<string, number> = { untrusted: 0, "code-exec": 1, t
 
 /** Each setting a module lets roles write (settings.<key>.writers), as [key, roles]. */
 const settingWriters = (def: Dict) => Object.entries(map(def.settings)).flatMap(([k, d]) => (isMap(d) && d.writers != null ? [[k, list(d.writers).map(String)] as [string, string[]]] : []));
-
-/** A module's `paths:` as `repo|pattern` → its sensitivity's rank (an unknown sensitivity ranks lowest: fails closed). */
-const pathRanks = (v: unknown) => new Map(list(v).flatMap((g) => list(map(g).patterns).map((p) => [`${map(g).repo ?? "product"}|${String(p)}`, SENSITIVITIES.indexOf(map(g).sensitivity as never)] as const)));
 
 /**
  * A grant is wider when it newly reaches tools it did not: a new connection, read → write or a list, a list with new names,
@@ -219,7 +217,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   for (const k of keys(hw)) {
     if (!(k in bw)) owner(`adds write kind ${id(k)}`);
     else if (Number(map(hw[k]).floor ?? 1) < Number(map(bw[k]).floor ?? 1)) owner(`lowers the floor of write kind ${id(k)}`);
-    else if (map(bw[k]).paths === true && map(hw[k]).paths !== true) owner(`write kind ${id(k)} stops reading its paths`);
     else if (!eq(bw[k], hw[k])) review(`changes write kind ${id(k)}`);
   }
   for (const p of added(b.privileged, head.privileged)) owner(`adds privileged ${id(p)}`);
@@ -231,12 +228,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   // lands on. Any new or changed recipe is the owner's; dropping one hands out nothing.
   if (head.check_jobs != null && !eq(b.check_jobs, head.check_jobs)) owner("changes its check job recipes (check_jobs: what a signed receipt means)");
   else if (!eq(b.check_jobs, head.check_jobs)) review("drops its check job recipes");
-  // Its path inventory (paths:, kernel/src/paths.ts): a path read less carefully than before, or no longer listed, is the
-  // owner's; a new or stricter entry the reviewer's.
-  const [bp, hp] = [pathRanks(b.paths), pathRanks(head.paths)];
-  for (const [k, r] of bp) if (!((hp.get(k) ?? -1) >= r)) owner(`lowers the sensitivity of path ${id(k)}`);
-  if (!eq(b.paths, head.paths)) review("changes its path inventory");
-  // Dropping privileged also drops its folder's floor in the path inventory (scripts/paths.ts): the owner's too.
   for (const p of added(head.privileged, b.privileged)) owner(`drops privileged ${id(p)}`);
 
   // Secrets: every name it may mount (generated, optional, provided, connection service keys, jobcap read secrets).
@@ -252,8 +243,6 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   for (const [k, w] of settingWriters(head)) {
     const more = w.filter((r) => !(was.get(k) ?? []).includes(r));
     if (more.length) owner(`lets roles ${more.map(id).join(", ")} write setting ${id(k)}`);
-    // Its owner rules (settings.<key>.owner) are what an agent's change may not do alone: any change to them is the owner's.
-    if (!eq(map(map(b.settings)[k]).owner, map(map(head.settings)[k]).owner)) owner(`changes what agents may change in setting ${id(k)} without the owner`);
   }
   // Each fact type it may record (POST /v1/facts) is a claim on the shared log Flow's views and deploy checks read: the reviewer's.
   const [bf, hf] = [map(b.facts), map(head.facts)];
@@ -269,6 +258,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     const tools = (x: Dict, ...tags: string[]) => tags.flatMap((t) => list(map(x.tools)[t]).map(String));
     for (const t of tools(now, "write", "destructive").filter((t) => !tools(was, "write", "destructive").includes(t))) owner(`connection ${id(c)}: adds write tool ${id(t)}`);
     for (const t of tools(now, "read").filter((t) => !tools(was, "read", "write", "destructive").includes(t))) review(`connection ${id(c)}: adds read tool ${id(t)}`);
+    for (const t of tools(now, "unreviewed").filter((t) => !tools(was, "unreviewed").includes(t))) owner(`connection ${id(c)}: ${id(t)} skips the AI reviewer`);
     // A retag widens every grant that names its tag: a write tool tagged read reaches `read` grants, a destructive one tagged
     // write reaches `write` grants. Any tag change of an existing tool is the owner's.
     const tagOf = (x: Dict, t: string) => ["destructive", "write", "read"].find((g) => tools(x, g).includes(t));
@@ -278,7 +268,7 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     }
     if (now.returns === "trusted" && was.returns !== "trusted") owner(`connection ${id(c)}: returns trusted (no fencing)`);
     if (now.model_as_caller === true && was.model_as_caller !== true) owner(`connection ${id(c)}: model_as_caller`);
-    if (c in bc && keys(was, now).some((f) => !["tools", "returns", "model_as_caller", "guide", "setup", "health_probes"].includes(f) && !eq(was[f], now[f]))) review(`connection ${id(c)}: changes its endpoint or settings`);
+    if (c in bc && keys(was, now).some((f) => !["tools", "returns", "model_as_caller", "guide", "setup", "health_probes", "events"].includes(f) && !eq(was[f], now[f]))) review(`connection ${id(c)}: changes its endpoint or settings`);
   }
 
   // Services: what they may reach (network, mounts, user, a published port, another module's network) is the owner's.
@@ -370,40 +360,47 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
     const eff = (a: Dict, m: Dict) => a.isolation ?? m.isolation;
     if (iso(eff(now, head)) > iso(key in ba ? eff(was, b) : base ? head.isolation : "untrusted")) owner(`${at}: isolation ${id(eff(now, head) ?? "trusted")}`);
     // Its profile decides the tools, writes and computer its jobs get (admission.ts): any but check (none of them) is the
-    // owner's. private_reads trades web search for private data: the reviewer's.
+    // owner's.
     const profile = (x: Dict) => String(x.profile ?? "crew");
     if (profile(now) !== profile(was) && profile(now) !== "check") owner(`${at}: profile ${id(profile(now))} (the tools, writes and computer its jobs get)`);
     else if (profile(now) !== profile(was)) review(`${at}: profile check (its jobs get no tools or writes)`);
-    if (now.private_reads === true && was.private_reads !== true) review(`${at}: reads private data (its jobs get no web search)`);
-    else if (now.private_reads !== true && was.private_reads === true) review(`${at}: stops reading private data`);
-    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "profile", "private_reads"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
+    for (const f of keys(was, now).filter((f) => !eq(was[f], now[f]) && !AGENT_PLAIN.has(f) && !["connections", "roles", "isolation", "profile"].includes(f))) owner(`${at}: unrecognised field ${id(f)}`);
   }
-  // Routines: a routine's autonomy (its cap on approvals) is the owner's, as everywhere.
-  const [bro, hro] = [map(b.routines), map(head.routines)];
-  for (const r of keys(hro)) if (!eq(map(bro[r]).autonomy, map(hro[r]).autonomy)) owner(`routine ${id(r)}: autonomy`);
-
   if (base) for (const k of [...PLAIN].filter((k) => !eq(b[k], head[k]) && k !== "name")) review(`changes ${id(k)}`);
   if (codeChanged) review("code changes");
   if (!changes.length) review("text only");
   return { module: name, changes, code: codeChanged, ...(official ? { official: true as const } : {}) };
 }
 
-export type Classified = { tier: 1 | 2; rule: "module-authority" | "module-config"; reason: string };
-
-/**
- * The tier of a set of module changes (the AI reviewer's either way): 2 when any change is new authority, its lines first in
- * the reason (`ownerOnly` ones first of all).
- */
-export function classifyModules(diffs: ModuleDiff[]): Classified {
-  const lines = (only: boolean) => diffs.flatMap((d) => d.changes.filter((c) => c.owner && Boolean(c.ownerOnly) === only).map((c) => `${d.module}: ${c.what}`));
-  const owners = [...lines(true), ...lines(false)];
-  const all = owners.length ? owners : diffs.map((d) => `${d.module}: ${d.changes.map((c) => c.what).join(", ")}`);
-  const reason = `${owners.length ? "new module authority" : "module changes without new authority"}: ${all.slice(0, 8).join("; ")}${all.length > 8 ? `; and ${all.length - 8} more` : ""}`;
-  return owners.length ? { tier: 2, rule: "module-authority", reason } : { tier: 1, rule: "module-config", reason };
-}
-
 /** One line per change, as the apply log and the card show it: `<module>: <change> (owner|review)`. */
 export const authorityLines = (diffs: ModuleDiff[]) => diffs.flatMap((d) => d.changes.map((c) => `${d.module}: ${c.what} (${c.owner ? "owner" : "review"})`));
+
+/**
+ * What a change does to skills, for the reviewer (a shared skill can steer every agent that lists it through tools it already
+ * holds): each changed skill (a file under `modules/<m>/skills/<name>/`) with the agents that enable it after the change and the
+ * files beside its SKILL.md (code), then each agent's effective list that gains or loses a skill. `before` and `after` are the
+ * compiled effective lists (agent key → skill ids) on either side.
+ */
+export function skillLines(a: { files: string[]; before: Record<string, string[]>; after: Record<string, string[]> }): string[] {
+  const changed = new Map<string, Set<string>>();
+  for (const f of a.files) {
+    const m = /^modules\/([a-z0-9][a-z0-9-]*)\/skills\/([a-z0-9][a-z0-9-]*)\/(.+)$/.exec(f);
+    if (m) (changed.get(`${m[1]}.${m[2]}`) ?? changed.set(`${m[1]}.${m[2]}`, new Set()).get(`${m[1]}.${m[2]}`)!).add(m[3]!);
+  }
+  const lines: string[] = [];
+  for (const [skill, files] of [...changed].sort(([x], [y]) => x.localeCompare(y))) {
+    const by = Object.keys(a.after).filter((k) => a.after[k]!.includes(skill)).sort();
+    lines.push(`skill ${skill} changed; enabled by ${by.length ? `agent ${by.join(", ")}` : "no agent"} (review)`);
+    const code = [...files].filter((f) => f !== "SKILL.md").length;
+    if (code) lines.push(`skill ${skill} has code: ${code} files besides SKILL.md (review)`);
+  }
+  for (const k of [...new Set([...Object.keys(a.before), ...Object.keys(a.after)])].sort()) {
+    const [was, is] = [a.before[k] ?? [], a.after[k] ?? []];
+    for (const s of is.filter((x) => !was.includes(x))) lines.push(`agent ${k} enables skill ${s} (review)`);
+    for (const s of was.filter((x) => !is.includes(x))) lines.push(`agent ${k} stops enabling skill ${s}`);
+  }
+  return lines;
+}
 
 /** A module entry in instance.yaml `modules:` (`name`, `name@marketplace` or `{ id }`), as a module name. */
 export const moduleName = (m: unknown) => String(isMap(m) ? m.id : m).split("@")[0]!;

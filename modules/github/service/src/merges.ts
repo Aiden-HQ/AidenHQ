@@ -8,23 +8,24 @@
 // (review-gate.ts). A review wait has no time limit: it resumes when the verdict passes, and ends only when the PR moves or
 // closes. So does every other wait (running checks, a red base, mergeability, GitHub's errors): waiting is never failing, and a PR fails only on a
 // terminal state (closed, head moved, red checks on the head, changes requested).
-// A UI head in the agents org that waits on its design review gets the UI Reviewer's task for it (design-review.ts), once per
-// head, beside its checks; with no verdict in time it is asked once more, then the design review is advisory for that head.
+// A product merge the kernel ran at Tier 0 (eligible: ci-required green and code review's pass on its head, merge-gate.ts
+// productMergeEligible) is checked again right before the merge; no longer eligible, it fails and the merge is filed again.
+// The UI Reviewer's design review is advisory: it never holds a merge.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { DESIGN_REVIEW, PR_QUERY, awaitsDesignReview, decide, mergeMethod, withGate } from "./merge-gate.ts";
+import { PR_QUERY, decide, mergeMethod, productMergeEligible, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 /** `objects`: what the queue made, for the kernel's records (each merge commit; a merged PR stays whoever's it was). */
 type Outcome = { ok: boolean; text: string; objects?: string[] };
-type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; /** Heads a design-review request was delivered to. Written by an older version before the filing was confirmed, so it proves nothing on its own: see the reconcile in `askReview`. */ reviewAsked?: string; reviewAskedAgain?: string; reviewExpired?: string; /** The second design-review ask's refusals for this head (nobody holds the role): the deadline is never moved by one, and after a few the review is advisory for the head rather than a wait nobody can end. */ reviewRefused?: { head: string; n: number }; /** The head each design-review marker was confirmed for: a marker is trusted only when its own entry names this head. Kept per marker (`once`/`again`) because a delivered second ask says nothing about a first ask an older version recorded unconfirmed; a marker from an older version (including the single number this type used to hold) has no entry and is reconciled by asking again. */ reviewMarked?: { once?: string; again?: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
-type Queue = { id: string; state: string; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** How many times the task-binding read (prBound) has failed for this queue: only for the log, as the read is retried on every poll until it answers. */ boundTries?: number; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
+type Pr = { repo: string; number: number; head: string; url: string; status: string; note?: string; sha?: string; /** The merge commit's message and the branches that decide whether it can credit the PR (`base` it merged into, the repository's `defaultBranch`), kept by the poll that found the PR already merged at its bound head: finish() does not read GitHub again, and an already-merged PR the fleet never opened has no pr-tasks.json row, so the identifier in this message is what can credit it. The facts are cached too, so finish() verifies the merge reached the default branch instead of trusting the message alone; a queue written before this shape holds no credit. */ mergeCredit?: { message: string; base: string; defaultBranch: string }; /** The task's own pr/push record named this bound head (pr-tasks.json had no row): kept once answered, so a settle credits the PR. A negative answer is never kept: a record filed after it is asked again each poll. A failed read is not kept either. */ bound?: { head: string }; wait?: { key: string; since: string }; checked?: string; /** A 4xx refusal of a retry while an earlier unanswered call may still have merged: how many polls have looked since, for the same bound head. */ refusal?: { head: string; n: number }; /** Every merge call this poll may be looking at: each call's token (what an unanswered PUT may have made), the method it was made with, and when. Kept until the PR is settled: a retry replaces the pending call but must not forget an earlier one that landed. */ mergeCalls?: { token: string; method: string; at: string }[]; /** Code review's verdict was bypassed (unreachable too long): recorded once the merge is confirmed. */ bypass?: string; fw?: { reason: string; since: string } };
+type Queue = { id: string; state: string; /** The kernel ran the record at Tier 0 (record.tier): a product merge must still be eligible at the merge. */ tier0?: boolean; prs: Pr[]; said: string[]; startedAt: string; finishedAt?: string; outcome?: Outcome; reported?: boolean; /** A queue written before taskIdentifier existed: the record's own identifier has been read (taskIdentifier set, or the record answered with none), so no further read is needed. A failed read is not this. */ recovered?: boolean; /** How many times the recovery read has failed since it last succeeded: a transient kernel failure is retried on later polls, never settled over. */ recoverTries?: number; /** The task the record that queued this merge is for (kernel record.task): what an already-merged PR must link to be evidence. */ task?: string; /** The same task's identifier as people read it (record.identifier, WOR-9889): the rows pr-tasks.json keeps are keyed by it, so the two are compared both ways. */ taskIdentifier?: string; /** How many times the task-binding read (prBound) has failed for this queue: only for the log, as the read is retried on every poll until it answers. */ boundTries?: number; /** The reason the kernel acknowledged for the record's card (POST /v1/writes/:id/wait): the whole queue's, so a PR leaving its wait never clears another PR's. `undefined`: no delivery known (never sent, a queue written by an older implementation, or a restart before the kernel answered) — reconciled on the next poll; `null`: the kernel acknowledged a clear. */ waitSent?: string | null };
 
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 const KEEP_MS = 7 * 24 * 3600_000;
@@ -62,8 +63,6 @@ export function createMerges(d: {
   reviewGate: ReviewGate;
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
   flow?: Flow;
-  /** Files the design reviewer's task for a PR head the queue waits on for its verdict (design-review.ts). */
-  designReview?: (ask: { repo: string; number: number; head: string; again?: boolean }) => Promise<{ filed?: boolean; why?: string } | unknown>;
   /** The task that opened a PR (pr-tasks.json, pr-watch.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
   taskOf?: (repo: string, n: number) => string | null;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
@@ -79,7 +78,6 @@ export function createMerges(d: {
   const log = d.log ?? (() => {});
   const now = d.now ?? (() => new Date());
   const platform = [d.productRepo].filter(Boolean) as string[];
-  const inFleetOrg = (repo: string) => same(repo.split("/")[0], d.fleetOrg) && !platform.some((p) => same(p, repo));
   mkdirSync(d.dir, { recursive: true });
   const file = join(d.dir, "merges.json");
   const s: { queues: Record<string, Queue> } = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { queues: {} };
@@ -216,7 +214,6 @@ export function createMerges(d: {
     d.flow?.reviewBypassed(p.repo, p.number, p.head, p.bypass);
   };
   async function poll(id: string, q: Queue, p: Pr, merged: Set<string>) {
-    const t = now().getTime();
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
       delete p.wait;
@@ -226,28 +223,6 @@ export function createMerges(d: {
     const wait = (key: string) => {
       if (p.wait?.key !== key) p.wait = { key, since: now().toISOString() };
     };
-    // The marker says a review was really asked for this head, so it is set only once the task was filed: a filing that threw,
-    // or answered `filed: false` (no agent holds the role, the PR changes no UI files), asked nobody and must be asked again on
-    // the next poll. Recording it up front let the advisory waiver start from a second request that never reached a reviewer.
-    // `filed: true` is a delivered request; `already: true` means the module already had it on file for this head (a retry of a
-    // request that landed before its answer was lost), which is just as delivered. `filed: false` (no agent holds the role, the
-    // PR changes no UI files) asked nobody: the marker stays unset and the next poll asks again.
-    // A delivered second ask moves the deadline itself, so the marker and the deadline are written by the same save: a restart
-    // between two writes would otherwise see the second marker with the first ask's deadline and call the review advisory at once.
-    // Nothing here saves; the caller's pass does.
-    const askReview = async (again: boolean, waitKey?: string): Promise<boolean> => {
-      let filed = false;
-      await d.designReview?.({ repo: p.repo, number: p.number, head: p.head, ...(again ? { again } : {}) })
-        .then((r) => { filed = Boolean(r && typeof r === "object" && ((r as { filed?: boolean }).filed === true || (r as { already?: boolean }).already === true)); })
-        .catch((e: Error) => log("design review task failed", { pr: p.url, err: says(e) }));
-      if (!filed) return false;
-      p.reviewMarked = { ...p.reviewMarked, [again ? "again" : "once"]: p.head };
-      if (again) {
-        p.reviewAskedAgain = p.head;
-        if (waitKey) p.wait = { key: waitKey, since: now().toISOString() };
-      } else p.reviewAsked = p.head;
-      return true;
-    };
     // Outside the fleet org, the product repo and maintainer_repos the code host is PR-only: it merges nothing there (a repo taken
     // off the list after its record was approved included).
     if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(`\`${p.repo}\` is outside the fleet org, the product repo and maintainer_repos, where the code host only opens PRs: merge it there`);
@@ -256,8 +231,7 @@ export function createMerges(d: {
     if (p.note !== undefined && !isHoldWait(p.note)) delete p.note;
     try {
       const data = await readPr(p.repo, p.number);
-      const uiReview = inFleetOrg(p.repo);
-      let v = decide(data, p.head, { uiReview, designAdvisory: p.reviewExpired === p.head });
+      const v = decide(data, p.head);
       const pull = data.repository.pullRequest;
       // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Every unanswered
       // call is kept across a wait (checks, review, mergeability) while the PR is still open at the bound head: a PUT that merged it
@@ -270,11 +244,6 @@ export function createMerges(d: {
         p.checked = p.head;
         d.flow?.checksCompleted(p.repo, p.number, p.head, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20));
       }
-      // The design reviewer is asked as soon as a UI head waits without a verdict: its review runs beside the checks. A marker
-      // set by the older version (before the filing was confirmed) proves nothing, so it is reconciled by asking once more: the
-      // module answers `already` for a head it has on file and files the missing task otherwise, both ending with the marker set.
-      const askedOnce = p.reviewAsked === p.head && p.reviewMarked?.once === p.head;
-      if (v.do === "wait" && uiReview && !askedOnce && awaitsDesignReview(data.repository.pullRequest)) await askReview(false);
       if (v.do === "done") {
         // Merged at the bound head. It is this queue's merge only when an unanswered merge call of ours is still pending and the
         // merge commit is exactly that call's (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge
@@ -295,38 +264,12 @@ export function createMerges(d: {
         if (ours) { bypassed(p); merged.add(p.repo.toLowerCase()); }
         return void q.said.push(ours ? `Merged ${p.url}.` : `${p.url} was ${v.why}.`);
       }
-      if (v.do === "wait") {
-        // No verdict within its time: the reviewer is asked once more for the same head and the wait starts over.
-        // Still none after that: a slow UI Reviewer is not a verdict, so its review is advisory for this head (a failure still fails).
-        if (v.review && p.wait?.key === v.why && t - Date.parse(p.wait.since) > DESIGN_REVIEW.minutes * 60_000) {
-          const askedAgain = p.reviewAskedAgain === p.head && p.reviewMarked?.again === p.head;
-          if (!askedAgain) {
-            // The wait starts over only for a request that was really delivered: a refused one leaves the old deadline standing,
-            // so the next poll asks again rather than the advisory waiver counting down from a request nobody received.
-            const delivered = await askReview(true, v.why);
-            if (delivered) {
-              // Delivered now, or already on file from an earlier ask whose answer was lost: a reviewer has it, so the advisory
-              // clock starts over (askReview moved it with the marker, in one write).
-              delete p.reviewRefused;
-              return;
-            }
-            // Nobody received it (no live agent holds the role, or the read failed): the deadline stands, but a wait that can never
-            // end is no wait. After a few tries at this head the review is advisory for it, as it would be had the ask been
-            // delivered and gone unanswered, and the log says which happened. They are per head, so a new head starts over.
-            const n = p.reviewRefused?.head === p.head ? p.reviewRefused.n + 1 : 1;
-            p.reviewRefused = { head: p.head, n };
-            if (n < DESIGN_REVIEW.asks) return;
-            log("design review could not be asked again: advisory for this head", { pr: p.url, head: p.head, tries: n });
-          } else delete p.reviewRefused;
-          p.reviewExpired = p.head;
-          log("design review advisory: no verdict in time", { pr: p.url });
-          v = decide(data, p.head, { uiReview, designAdvisory: true });
-        }
-      }
       if (v.do === "fail") return fail(v.why);
       if (v.do === "wait") return wait(v.why);
       if (v.do !== "merge") return;
       const review = await d.reviewGate(p.repo, p.number, p.head);
+      // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used.
+      if (q.tier0 && d.productRepo && same(p.repo, d.productRepo) && !productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");
       if (review && "bypass" in review) p.bypass = review.bypass;
       else delete p.bypass;
       if (review && "wait" in review) {
@@ -595,14 +538,14 @@ export function createMerges(d: {
 
   return {
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
-    enqueue(id: string, args: { prs: { repo: string; number: number; head: string }[] }, task?: string, identifier?: string): Promise<Outcome> {
+    enqueue(id: string, args: { prs: { repo: string; number: number; head: string }[] }, task?: string, identifier?: string, tier?: number): Promise<Outcome> {
       const had = s.queues[id];
       if (had?.outcome) return Promise.resolve(had.outcome);
       if (!had) {
         const prs = args.prs.map((p) => ({ repo: p.repo, number: p.number, head: p.head, url: `https://github.com/${p.repo}/pull/${p.number}`, status: "pending" }));
         // A record this queue just took has no wait from it yet: `waitSent: null` is that known clear. A queue read from disk
         // without the field is unknown (`undefined`) and reconciles on its first poll instead.
-        s.queues[id] = { id, state: "running", startedAt: now().toISOString(), prs, said: [], waitSent: null, ...(task ? { task } : {}), ...(identifier ? { taskIdentifier: identifier } : {}) };
+        s.queues[id] = { id, state: "running", startedAt: now().toISOString(), prs, said: [], waitSent: null, ...(tier === 0 ? { tier0: true } : {}), ...(task ? { task } : {}), ...(identifier ? { taskIdentifier: identifier } : {}) };
         save();
         log("merges queued", { record: id, prs: prs.length });
       }

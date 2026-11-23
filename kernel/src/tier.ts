@@ -1,50 +1,37 @@
-// K5, the tier formula (spec §5.1) and the generic tier rules every requester shares: every term raises, none lowers. Tier 0
-// runs at once (still a record), Tier 1 is the AI reviewer's, Tier 2 the owner's. The AI reviewer blocks only malice and fails
-// open (owner, 2026-11-22: "AI agents we use are trusted, not threat actors"): no write reaches the owner on its merits. The
-// owner decides only what he chose himself: his own veto on a task, his signed-in settings save, and autonomy off (the
-// instance's, or a routine's). The requesters' own rules (which repo, file or module change needs a review) stay with them: a
-// module's executor plan (the code host's plan.ts) and the kernel's apply planner propose a raise. Pure.
-import { createHash } from "node:crypto";
-
+// K5, the tier formula (spec §5.1): Tier 0 runs at once (still a record), Tier 1 is the AI reviewer's, Tier 2 the owner's. A
+// tier is the kind's floor, code's hard refusals, the owner's veto or save, and autonomy off; nothing else. The AI reviewer
+// blocks only malice and fails open (owner, 2026-11-22: "AI agents we use are trusted, not threat actors"): no write reaches
+// the owner on its merits. Pure.
 export type Tier = 0 | 1 | 2;
 export type Autonomy = "off" | "tier0" | "full";
-/** A requester's raise: any raise means the AI reviewer reads it (a Tier 2 raise is Tier 1 now: the reviewer decides). */
+/** A requester's raise: any raise means the AI reviewer reads it. */
 export type Raise = { tier: 1 | 2; reason?: string; rule?: string };
-/** The cap a write was tiered under, kept on its record: the instance's autonomy off, or a routine's (`routine`: its id; absent when the trace couldn't be read). */
-export type Cap = { by: "autonomy" | "routine"; value: Autonomy; routine?: string };
-/** A task's routine cap, as the kernel traces it (taskRoutineCap). */
-export type RoutineCap = { cap: Autonomy; routine?: string };
+/** The cap a write was tiered under, kept on its record: the instance's autonomy below full. */
+export type Cap = { by: "autonomy"; value: Autonomy };
 /** One part of a request's tier, as the requesters' rules build it. */
 export type Part = { tier: number; rule?: string; reason?: string; reject?: boolean; [k: string]: unknown };
 /** A model's verdict, or code's in its place. */
 export type Verdict = { decision: "approve" | "reject" | "escalate"; reason: string; model: string; code?: string };
 
 /** What a cap says, for a card's reason and the reviewer's label. */
-export const capText = (c: Cap) => (c.by === "autonomy" ? `autonomy is ${c.value}` : c.routine ? `a routine's run (${c.routine}) started this task and its autonomy is ${c.value}` : "the task's routine trace couldn't be read, so it counts as a routine set to off");
+export const capText = (c: Cap) => `autonomy is ${c.value}`;
 
 /**
- * The one tier function every write goes through (writes.ts: module kinds, conn.tool, the runner's kinds). The merit tier is
- * the highest of the floors and raises: 0 runs at once, anything higher is the AI reviewer's (Tier 1). The owner's (Tier 2)
- * only: his veto on the task (`priorVeto`), his own settings save (`ownerSave`, settings-change.ts: his Save is his approval,
- * decided as his account at filing), and an autonomy of off (the instance's, or a routine's: `routine`; an unreadable trace is
- * off; rule autonomy-off or routine-autonomy). A routine's tier0 is kept on the record as its `cap`: the review shadows the
- * reviewer's verdict for the owner then, as the instance's tier0 does.
+ * The one tier function every write goes through (writes.ts: module kinds, conn.tool, the kernel's kinds). `refusal`: code's
+ * hard refusal (rejected, never reviewed). The owner's (Tier 2) only: his veto on the task (`priorVeto`), his own settings save
+ * (`ownerSave`: his Save is his approval, decided as his account at filing), and autonomy off. Otherwise the floor or any
+ * raise above 0 is the AI reviewer's (Tier 1), and 0 runs. The release updater's filing passes `autonomy: "full"` (it acts on
+ * the owner's standing auto-update authority).
  */
-export function computeTier({ floor, instanceFloor = 0, raise, checkRaises = [], priorVeto = false, autonomy, routine, uncapped = false, ownerSave = false }: {
-  floor: Tier; instanceFloor?: Tier; raise?: Raise; checkRaises?: Raise[]; priorVeto?: boolean; autonomy?: Autonomy; routine?: RoutineCap;
-  /** The release updater's own filing (records.ts isUpdater): it acts on an owner setting's standing authority (auto_update), so the caps don't hold it. Every other requester is capped. */
-  uncapped?: boolean;
-  ownerSave?: boolean;
-}): { tier: Tier; merit: Tier; cap?: Cap; rule?: string; state: "claimed" | "review" | "owner" } {
-  if (uncapped) { autonomy = undefined; routine = undefined; }
-  const merit = Math.max(floor, instanceFloor, ...[...(raise ? [raise] : []), ...checkRaises].map((r) => r.tier)) as Tier;
+export function computeTier({ floor, raise, refusal, priorVeto = false, ownerSave = false, autonomy }: {
+  floor: Tier; raise?: Raise; refusal?: string; priorVeto?: boolean; ownerSave?: boolean; autonomy: Autonomy;
+}): { tier: Tier; merit: Tier; cap?: Cap; rule?: string; state: "claimed" | "review" | "owner" | "rejected" } {
+  const merit = Math.max(floor, raise?.tier ?? 0) as Tier;
+  if (refusal) return { tier: merit, merit, rule: refusal, state: "rejected" };
   if (ownerSave || priorVeto) return { tier: 2, merit, state: "owner" };
-  // The caps that hold, the routine's first (its label names it when both do).
-  const caps = [routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : undefined, autonomy === "off" ? { by: "autonomy", value: "off" } : undefined].filter(Boolean) as Cap[];
-  const off = caps.find((c) => c.value === "off");
-  if (off) return { tier: 2, merit, cap: off, rule: off.by === "autonomy" ? "autonomy-off" : "routine-autonomy", state: "owner" };
+  if (autonomy === "off") return { tier: 2, merit, cap: { by: "autonomy", value: "off" }, rule: "autonomy-off", state: "owner" };
   if (merit === 0) return { tier: 0, merit, state: "claimed" };
-  return { tier: 1, merit, ...(caps[0] ? { cap: caps[0] } : {}), state: "review" };
+  return { tier: 1, merit, ...(autonomy === "tier0" ? { cap: { by: "autonomy" as const, value: autonomy } } : {}), state: "review" };
 }
 
 export const T = (tier: number, rule: string, reason: string): Part => ({ tier, rule, reason });
@@ -56,59 +43,8 @@ export function highest(parts: Part[]): Part {
   return parts.find((p) => p.reject) ?? parts.reduce((a, b) => (b.tier > a.tier ? b : a));
 }
 
-/** A routine's `autonomy` values, strictest first (the instance setting's names). */
+/** The instance setting's `autonomy` values, strictest first. */
 export const AUTONOMY: Autonomy[] = ["off", "tier0", "full"];
-/**
- * The cap on a task from the routines its work came from. `origins`: the task and every issue it traces back to, as the
- * control plane returns them: its parents, and so on, up to a routine's execution task. A task a job created carries its
- * job's cap in kernel provenance (`recorded`), so an unparented task a routine's job created keeps the cap. `complete`: the trace finished; `routines`: the grants table's {<routine id>: autonomy}. The strictest routine found
- * wins (`routine`: its id). `recorded`: the caps kernel provenance holds for issues on the trace. Fails closed: a routine the table doesn't know, or an invalid value, is "off" (setup writes each
- * routine's autonomy into the table before it adds the routine's triggers), and so is a trace that didn't finish (no
- * `routine` then). None found is no cap.
- */
-export function routineCap(origins: ({ originKind?: string; originId?: string } | null | undefined)[], complete: boolean, routines: Record<string, string> | null = {}, recorded: RoutineCap[] = []): RoutineCap | undefined {
-  const of = (r: string): Autonomy => (AUTONOMY.includes((routines ?? {})[r] as Autonomy) ? ((routines ?? {})[r] as Autonomy) : "off");
-  const caps: RoutineCap[] = origins.filter((i) => i?.originKind === "routine_execution").map((run) => ({ cap: of(run!.originId!), routine: run!.originId! }));
-  // Kernel provenance (provenance.ts): the cap a creating job carried, and its routine's cap now if that is stricter.
-  for (const r of recorded) caps.push(r, ...(r.routine ? [{ cap: of(r.routine), routine: r.routine }] : []));
-  if (!complete) caps.push({ cap: "off" });
-  return caps.reduce<RoutineCap | undefined>((a, b) => (!a || AUTONOMY.indexOf(b.cap) < AUTONOMY.indexOf(a.cap) ? b : a), undefined);
-}
-
-const ORIGIN_MAX = 24;
-/**
- * Every issue a task traces back to, for its routine cap (routineCap): its parents, then theirs, with kernel provenance for
- * each (the cap the job that created it carried). So a parent the agent picked, or none, can't shed a routine's cap. Past
- * ORIGIN_MAX issues the trace is incomplete (the cap is then the strictest).
- */
-export async function origins(pc: Trace, full: any): Promise<{ issues: any[]; complete: boolean; recorded: RoutineCap[] }> {
-  const seen = new Map<string, any>();
-  const recorded: RoutineCap[] = [];
-  const queue: any[] = [full];
-  while (queue.length) {
-    const i = queue.shift();
-    if (!i || seen.has(i.id)) continue;
-    if (seen.size >= ORIGIN_MAX) return { issues: [...seen.values()], complete: false, recorded };
-    seen.set(i.id, i);
-    // Every issue on the trace, not only the task: a child of a job-created task carries that job's cap.
-    const p = pc.provenance(i);
-    if (p) recorded.push(p);
-    if (i.parentId) queue.push(await pc.issue(i.parentId));
-  }
-  return { issues: [...seen.values()], complete: true, recorded };
-}
-/** What the routine trace reads: the control plane's issues, and kernel provenance for an issue (provenance.ts trace: its row's cap, "off" for a plugin-made task with no row). */
-export type Trace = { issue(id: string): Promise<any>; provenance(issue: any): RoutineCap | undefined };
-/**
- * A task's routine cap: kernel provenance first, then the control plane. An issue on the trace that is gone (a 404) leaves it
- * incomplete: "off". A read that fails otherwise (a 5xx, a timeout, unreachable) throws (503): a blip is never a stricter cap
- * frozen or tiered on, the caller tries again.
- */
-export const taskRoutineCap = (pc: Trace, task: string, routines: Record<string, string> | null = {}): Promise<RoutineCap | undefined> =>
-  pc.issue(task).then((full) => (full?.id ? origins(pc, full) : { issues: [], complete: false, recorded: [] })).then(({ issues, complete, recorded }) => routineCap(issues, complete, routines, recorded), (e: { status?: number; message?: string }) => {
-    if (e?.status === 404) return routineCap([], false, routines);
-    throw Object.assign(new Error(`the routine trace couldn't be read now (${String(e?.message ?? e).slice(0, 200)})`), { status: 503, type: "trace_unavailable" });
-  });
 
 // ------------------------------------------------------------------ earlier decisions on a task
 
@@ -163,7 +99,7 @@ export const RETRY_MS = 60_000;
 export const RETRY_CAP_MS = 15 * 60_000;
 export const retryWait = (n: number) => Math.min(60_000 * 2 ** (n - 1), RETRY_CAP_MS);
 /**
- * The owner's own autonomy below full (the instance's tier0, or a routine's cap on the record): the reviewer only comments, so
+ * The owner's own autonomy below full (the instance's tier0): the reviewer only comments, so
  * its verdict goes to the owner as a note.
  */
 export const shadowed = (v: Verdict, mode: Autonomy): Verdict =>

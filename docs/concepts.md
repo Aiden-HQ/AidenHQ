@@ -31,8 +31,8 @@ handbooks, connection services, apps and a `compose.yaml`. `core`, `channel-tele
 connection modules) are switched on per instance.
 
 **Instance repo.** Your private repo holding everything specific to your deployment: `instance.yaml` (the pinned
-`product:` commit, enabled `modules`, `settings`, limited `overrides`), `apps.yaml` (your apps) and `agents/<key>/`
-(agents defined just for you). The product repo (this one) is shared; the instance repo is yours. Secrets are in
+`product:` commit, enabled `modules`, `settings`, limited `overrides`), `apps.yaml` (your apps) and `modules/<name>/`
+(local modules: agents, skills and routines defined just for you). The product repo (this one) is shared; the instance repo is yours. Secrets are in
 neither: they live in the vault on the server.
 
 **Connections.** Each external system (Google Workspace, Slack, GitHub, Glean, Jira, Primer, Grafana, ClickHouse) is

@@ -1,7 +1,7 @@
 // A judgement call a task can't make for itself reaches whoever can make it, once per episode (durable: escalations in
 // kernel.db). Its callers: an agent's own wait on its delegator or the owner (task_wait `for`, notify's decision, a
 // handback of an agent's task: idle.ts), and an idle in-review task (idle.ts).
-// - The delegator: the task's parent, else the task of the job that created it (provenance), heard as a kernel notice on
+// - The delegator: the task's parent, heard as a kernel notice on
 //   that task (notices.ts; a parent blocked on the asking task stays blocked and still wakes: wakes.ts scans blocked tasks). It carries the wake-notice marker, so the delegator's dispatcher reads it
 //   as a notice that wakes it, never as the owner's words, although the board key posts it.
 // - The chief of staff (the agent holding role fleet-admin) settles every other judgement: an agent's question for the owner,
@@ -53,11 +53,6 @@ export function ownerWroteAt(t: { description?: unknown; createdAt?: unknown; cr
   return Number.isFinite(n) ? n : undefined;
 }
 
-/** The task of the job that created `task` (a delegation without a Paperclip parent): the one chain rule, with `parentId`. */
-export function creatorTask(db: DatabaseSync, task: string): string | undefined {
-  try { return (db.prepare("SELECT j.task FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(task) as { task: string } | undefined)?.task; } catch { return undefined; }
-}
-
 export function createEscalate({ db, issue, state, asker, notice, owner, chief, chiefAgent = () => undefined, conversing, reachable = () => true, log = () => {}, now = Date.now }: {
   db: DatabaseSync;
   /** A task as the control plane has it now; undefined when it is gone. Throws when it can't be read now. */
@@ -86,8 +81,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   const mark = (key: string, task: string, kind: string) => db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(key, task, kind, now());
   /** The task's open delegator task whose agent takes wakes, if any (else the chief of staff hears it). */
   async function delegatorOf(t: Issue) {
-    const up = t.parentId ?? creatorTask(db, t.id);
-    const d = up ? await issue(up) : undefined;
+    const d = t.parentId ? await issue(t.parentId) : undefined;
     return d && !CLOSED.includes(String(d.status)) && d.assigneeAgentId && reachable(d.assigneeAgentId) ? d : undefined;
   }
   /** The task's agent, as the owner channel reads it; undefined when it has none or can't be read (never the chief then). */
@@ -160,15 +154,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       let n = 0;
       while (db.prepare("INSERT OR IGNORE INTO escalations (key, task, kind, at) VALUES (?, ?, ?, ?)").run(`asked:${task}:${at}${n ? `:${n}` : ""}`, task, to, at).changes === 0) n++;
     },
-    /**
-     * The agent that delegated `t`, as nothing its assignee can change records it: the agent of the job that created it (the
-     * kernel's provenance), else the agent the control plane says created it.
-     */
-    creatorAgent(t: Issue): string | undefined {
-      let job: { agent: string } | undefined;
-      try { job = db.prepare("SELECT j.agent FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(t.id) as { agent: string } | undefined; } catch { job = undefined; }
-      return job?.agent || t.createdByAgentId || undefined;
-    },
+    /** The agent that delegated `t`, as nothing its assignee can change records it: the agent the control plane says created it. */
+    creatorAgent: (t: Issue): string | undefined => t.createdByAgentId || undefined,
     /**
      * Whoever delegated `task` hears `body` once per `key`: its open parent, else the open task of the job that created it,
      * else the chief of staff (the owner, `ownerText`, when the task is the chief of staff's own). Nothing is marked until it

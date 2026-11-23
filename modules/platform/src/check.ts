@@ -1,15 +1,13 @@
 // The platform check (P5, spec §3.5) at write.filed on the code hosts' pushes, PRs and merges: the kernel runs it in process
 // on every such filing (kernel/src/writes.ts filedRaises), a hard gate (kernel/src/gates.ts): it always enforces. It raises
-// or refuses, never lowers. How carefully each changed file is read is the path inventory's (paths.yaml, kernel/src/paths.ts):
-// the gate's core and compose files the panel's, the owner-approval records the owner's. This check holds what a list of
-// paths can't: a change to the owner-approval records goes alone, so one owner tap never also approves other files.
+// or refuses, never lowers. It holds what a tier can't: a change to the owner-approval records goes alone, so one approval
+// never also approves other files.
 // Pure and dependency-free: the files come from the plan (`paths`, one { repo, files: [{ path, from? }] } per branch or PR,
 // read by the code host from git).
 
 /**
  * The owner-approved source exceptions (review-request.mjs reads them from the base). A record says `approved_by: owner`, and code
- * cannot tell an owner's word from an agent's: only the owner's own tap on a change to this file makes a record one (the
- * inventory's sensitivity 2), so a panel-approved PR can never record its own approval.
+ * cannot tell an owner's word from an agent's: a change to this file goes alone (a `.github/` change, the AI reviewer's).
  */
 export const OWNER_APPROVAL_FILE = ".github/supply-chain-source-exceptions.yaml";
 

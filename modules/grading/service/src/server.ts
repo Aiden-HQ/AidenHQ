@@ -23,7 +23,7 @@ export type Kernel = {
 };
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 /** Tools that hand a task to an agent and file its rubric: task_delegate, task_create with an assignee. */
-const FILERS = ["task_delegate", "task_propose_rule", "task_create"];
+const FILERS = ["task_delegate", "task_create"];
 /** Tools that amend a filed rubric in place (task_amend_rubric). A delegation's own filing tools may amend too: re-filing is the same write. */
 const AMENDERS = [...FILERS, "task_amend_rubric"];
 const NOTE = "The grader checks this task against its rubric.";

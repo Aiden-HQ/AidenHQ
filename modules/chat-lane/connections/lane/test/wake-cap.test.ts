@@ -8,7 +8,7 @@ import type { Lane } from "../src/lane/lane.js";
 import { openLaneStore } from "../src/lane/store.js";
 import { buildServer, MAX_WAKES } from "../src/mcp.js";
 
-const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-chat", apiKey: "pcp_aria", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
+const aria: LaneAgent = { key: "aria", id: "ag-aria", name: "Aria", chatTask: "i-chat", model: "m", reasoning: "low", deadlineS: 8, prompt: "p", tools: [] };
 
 async function server(closed: Set<string>, { slow = false }: { slow?: boolean } = {}) {
   const laneStore = openLaneStore(":memory:");
@@ -18,7 +18,7 @@ async function server(closed: Set<string>, { slow = false }: { slow?: boolean } 
     if (slow) await new Promise((r) => setTimeout(r, 5));
     return closed.has(task);
   };
-  const s = buildServer({ store: laneStore, lane, agents: () => ({ aria }), timezone: "UTC", taskIsClosed }, { id: "ag-aria", name: "Aria", key: "aria" }, false);
+  const s = buildServer({ store: laneStore, lane, agents: () => ({ aria }), timezone: "UTC", taskIsClosed }, { id: "ag-aria", name: "Aria", key: "aria" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await s.connect(a);
   const client = new Client({ name: "t", version: "0" });

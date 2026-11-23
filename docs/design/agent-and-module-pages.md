@@ -74,7 +74,7 @@ defaults. **Changes:** pending and past changes, with reviewed revert.
 ## Handbook
 
 - **Your rules:** always editable; stored as `agents/<key>.md` (compiled under "Instance rules"; survives module
-  updates). For an instance (Architect-built) agent the box is its whole `agents/<key>/AGENTS.md`, with no fork.
+  updates). For a local (Architect-built) agent the box is its whole `modules/<name>/agents/<key>/AGENTS.md`, with no fork.
 - **Main handbook:** read-only until **Edit main handbook**, which warns that it makes the instance's own copy and stops
   module handbook updates until **Update** (which replaces the edits, keeping Your rules).
 - **Fork storage:** `agents/<key>/AGENTS.md` plus `overrides.agents.<key>.handbook_fork`; `scripts/handbook.ts
@@ -98,8 +98,8 @@ account. The board shows the stage from the record. The Tier column is what a ch
 |---|---|---|
 | agent (model, reasoning_effort, heartbeat, max_parallel) | `overrides.agents.<key>` | 1 |
 | caps | `overrides.agents.<key>.caps` | 2 |
-| routine (schedules, status, model) | `overrides.routines.<key>` | 1 |
-| rules / handbook / unfork | `agents/<key>.md`, or `agents/<key>/AGENTS.md` + `handbook_fork` | 1 |
+| routine (schedules, model) | `overrides.routines.<key>` (pause and resume are the routine's live controls) | 1 |
+| rules / handbook / unfork | `agents/<key>.md`, `agents/<key>/AGENTS.md` + `handbook_fork`, or a local agent's `modules/<name>/agents/<key>/AGENTS.md` | 1 |
 | grants | `overrides.agents.<key>.connections.<id>` (merged per connection over the module's grants before grant resolution) | 1 for read; 2 when it adds write or destructive tools |
 | setting | `settings.<key>` | 2 |
 | module, pin | `modules` | per the lean-core module rules |

@@ -8,7 +8,7 @@ import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } 
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
 import { ago, elapsed } from "./util";
-import { StatusDot, Tag, type StatusTone } from "./ui";
+import { StatusDot, type StatusTone } from "./ui";
 
 const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
   succeeded: { text: "Done", tone: "ok" },
@@ -319,7 +319,6 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
           <div className="fleet-name">
             <h3>
               <span className="fleet-name-text">{a.name}</span>
-              {a.trial && <Tag tone="needs">Trial</Tag>}
             </h3>
             {team ? (
               <p>

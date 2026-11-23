@@ -370,17 +370,15 @@ New agents come from the **Agent Architect**. Open the board's Agents tab and pr
 "I need an agent that ...".
 
 1. The Architect asks you questions (multiple choice, a few at a time), plays back what it understood, then shows the
-   design in plain words: what it does, what it can read, what it may change later, its schedule. Press
-   **Build it**.
-2. The Engineer writes the change. **Tap 1** creates the agent **in trial**: it can only read and report.
-   A new install's `autonomy: full` lets the AI reviewer decide it when it is Tier 1; with `autonomy: off` it is an
-   approval card on the board's Approvals page (and in Telegram): see [docs/design/approvals.md](design/approvals.md).
-3. The Architect reviews its work during the trial and fixes its handbook. After it passes your examples and two
-   clean batches of real work, the Architect proposes graduation.
-4. **Tap 2** lets the agent act on its own: it gets its write grants and reports to Aiden. This is always your card.
+   design in plain words: what it does, what it can read, what it can change, its schedule. Press **Build it**.
+2. The Engineer writes the change: a local module in your instance repo (`modules/<name>/`). The agent starts with its
+   designed grants once the change applies. A new install's `autonomy: full` lets the AI reviewer decide it when it is
+   Tier 1; with `autonomy: off` it is an approval card on the board's Approvals page (and in Telegram): see
+   [docs/design/approvals.md](design/approvals.md).
+3. The Architect tries it on your examples, reviews its first real work and fixes its handbook until it runs on its own.
 
-**Check:** after tap 1, the board's Agents tab lists the new agent as in trial, and it appears under the Architect in
-Paperclip's org chart.
+**Check:** once it applies, the board's Agents tab lists the new agent under "Your agents", and it appears under its
+manager in Paperclip's org chart.
 
 ## 10. Health check
 

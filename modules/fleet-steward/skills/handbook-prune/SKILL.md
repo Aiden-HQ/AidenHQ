@@ -1,7 +1,6 @@
 ---
 name: handbook-prune
 description: "Files one deletion task for handbook rules uncited in 30 days, duplicated or contradicted. Use on the \"Agent Coach: weekly prune\" run (Sunday)."
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Handbook prune
@@ -12,4 +11,6 @@ when: { fields: { name: Fleet Steward } }
 3. Keep rules under "Security rules", owner decisions and standing directions, and rules with thin evidence.
 4. One `task_create` `assignee: engineer`, marker `coach-prune:<date>`, `dedupe_closed: true`, `deliverable` `pr`, `ref` the
    product repo, titled `Prune dead handbook rules — <date>`: per deletion the file, exact rule line, reason and searches
-   run; "Instance rules" deletions as a second list (an `apply`). Nothing qualifies: `task_finish` "nothing to prune".
+   run. Deletions in an agent's own handbook ("Instance rules", a local agent's `AGENTS.md`) go in one `task_create`
+   `assignee: chief-of-staff`, marker `coach-prune-own:<date>`, listed the same way: Aiden hands each agent its deletions,
+   made with `self_change`. Nothing qualifies: `task_finish` "nothing to prune".

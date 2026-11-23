@@ -13,7 +13,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
-import { current, MANIFEST_KEYS } from "./compiler/authority.ts";
+import { current, MANIFEST_KEYS, moduleName } from "./compiler/authority.ts";
 import type { Fetch } from "./compiler/sources.ts";
 import { checkout, forkBase, forksOf, hostFetch, marketplaceEntries, OFFICIAL, onFork, pinsOf, remoteModules } from "./compiler/sources.ts";
 import { effective } from "./compiler/release.ts";
@@ -27,43 +27,29 @@ import { teamProblems, weightsOf } from "../kernel/src/team-routing.ts";
 export type Obj = Record<string, any>;
 const PROFILES = ["trusted", "untrusted", "code-exec"];
 // image: the agent's computer (scripts/computers.ts); the instance turns it on or off per agent.
-// autonomy: a routine's cap on approvals (ROUTINE_AUTONOMY); changing it is always the owner's (tiers.mjs).
 // handbook_fork: a module agent's handbook is the instance's agents/<key>/AGENTS.md (the module blob it was copied from);
 // connections: the agent's grants, per connection over its module's (merged before grants resolve, below).
-const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections"], routines: ["schedules", "status", "model", "autonomy"] };
-/**
- * A routine's `autonomy`: the cap on approvals for tasks its runs start (the run task and what it delegates), the stricter of
- * it and the instance's `autonomy` (kernel/src/apply-tier.ts). The default `full` adds no cap (owner, 2026-11-13), except
- * for a webhook routine: something outside fires it, often with untrusted text, so it defaults to tier0. tier0 makes Tier 1
- * the owner's, off Tier 0 too. Direct tools (slack_post, app_api) are governed by grants, not by this.
- */
-export const ROUTINE_AUTONOMY = ["off", "tier0", "full"];
-export const routineAutonomyDefault = (r: Obj) => (r.webhook ? "tier0" : "full");
+const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_sec", "image", "graded", "heartbeat", "max_parallel", "handbook_fork", "connections", "skills"], routines: ["schedules", "model"] };
 // The kernel's own settings (kernel/settings.json) and what every instance has beside its modules (kernel/defaults.json): the
 // company's description, the department registry and the secrets the kernel and the host services generate.
 const kernelJson = (f: string): Obj => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
 const KERNEL_SETTINGS = kernelJson("settings.json");
 const KERNEL_DEFAULTS = kernelJson("defaults.json");
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
-// Agents defined in the instance repo (agents/<key>/agent.yaml + AGENTS.md): their fields, and the
-// write tools an agent in trial keeps (to report on its own tasks; everything else it may only read).
-const INSTANCE_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "routines", "max_parallel", "image", "trial", "trial_writes", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
-// An instance agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
+// Local modules (the instance repo's modules/<name>/: module.yaml, agents/<key>/AGENTS.md, skills/): the owner's and the
+// agents' own. A closed allowlist of manifest keys (no roles, services, connections, apps or privileged), the fields one of
+// their agents may set (identity included: a local AGENTS.md has no frontmatter), and the fields one of their routines may set.
+export const LOCAL_MODULE_KEYS = ["name", "description", "agents", "routines"];
+const LOCAL_AGENT_FIELDS = ["name", "description", "reports_to", "model", "reasoning_effort", "timeout_sec", "connections", "max_parallel", "image", "heartbeat", "web_search", "graded", "department", "chat", "skills", "profile"];
+// A local agent's fast chat lane (`chat:`, the chat-lane module): its chats answered in seconds by a light model
 // loop with a few of its granted tools, instead of Paperclip runs. The default model is the 2026-11-14 bake-off's pick.
 const CHAT_FIELDS = ["model", "reasoning", "tools", "deadline_s", "telegram"];
 export const CHAT_DEFAULTS = { model: "~z-ai/glm-flash-latest", reasoning: "low", deadline_s: 8, telegram: false };
-const INSTANCE_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "status", "agent", "model", "autonomy"];
-// paperclip-tasks-mcp limits these to the trial agent's own tasks (the grants table marks it in trial); source_ack moves only
-// the caller's own source cursor.
-export const TRIAL_WRITES = { paperclip_tasks: ["task_comment", "task_handoff", "task_finish", "task_block", "task_cancel"], apps: ["source_ack"] };
-// The writes a trial agent may declare in `trial_writes:`: the channel and lane ones (creating its own background task, a
-// reminder, a reply in its own chat, asking the owner), as connection.tool. Everything else it may only read, or report on
-// its own tasks (TRIAL_WRITES).
-export const TRIAL_WRITE_ALLOWED = ["paperclip_tasks.task_create", "chat_lane.wake_at", "chat_lane.chat_send", "owner_channel.notify"];
+const LOCAL_ROUTINE_FIELDS = ["title", "description", "concurrency", "schedules", "agent", "model", "event"];
 // A tool whose name says it deletes (Jira's camelCase too) must be tagged `destructive`, never plain write or read: the
 // `write` shorthand never grants a destructive tool; an agent gets one only by naming it.
 export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
-/** A connection's write tools, destructive included (trial, untrusted and handbook checks treat both as writes). */
+/** A connection's write tools, destructive included (untrusted and handbook checks treat both as writes). */
 export const writeTools = (c: Obj) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
 /** A connection's tools a read shorthand reaches: its `read` tools, less the ones it also tags `named` (a grant must name those). */
 export const readTools = (c: Obj) => (c?.tools?.read ?? []).filter((t: string) => !(c?.tools?.named ?? []).includes(t));
@@ -78,6 +64,41 @@ export const KERNEL_URL = "http://10.231.0.1:3130";
 
 const readYaml = (path: string) => YAML.parse(readFileSync(path, "utf8")) ?? {};
 const fail = (msg: string): never => { throw new Error(msg); };
+
+/**
+ * An event routine (`event: { connection, resource, filter }`): fired by the kernel's event router, so never a webhook, always
+ * `always_enqueue` (each sealed batch is its own run) and told to read its batch. Its filter is non-empty and keyed only by what
+ * the connection declares; its agent holds one of the connection's `reads` tools; `*` as the resource is a product module's.
+ */
+const EVENT_FILTER_KEYS = ["kind", "author", "label", "contains", "bot"];
+const EVENT_SUFFIX = "New events: batch {{batch}} ({{count}}). Read them with routine_events(batch), then follow the routine above.";
+function eventRoutine(key: string, r: Obj, paperclip: Obj) {
+  const e = r.event;
+  const at = `routine ${key}: event`;
+  if (!e || typeof e !== "object" || Array.isArray(e) || Object.keys(e).some((f) => !["connection", "resource", "filter"].includes(f))) fail(`${at} is { connection, resource, filter }`);
+  if (r.webhook) fail(`${at} and webhook can't both be set`);
+  if (typeof e.connection !== "string" || !e.connection) fail(`${at}.connection is a connection's name`);
+  const ev = paperclip.mcp_servers[e.connection]?.events ?? fail(`${at}: connection ${e.connection} declares no events`);
+  if (typeof e.resource !== "string" || !e.resource) fail(`${at}.resource is a string`);
+  if (e.resource === "*" && r.tier !== "official") fail(`${at}.resource: * is for product modules; name the resource`);
+  const filter = e.filter;
+  if (!filter || typeof filter !== "object" || Array.isArray(filter) || !Object.keys(filter).length) fail(`${at}.filter is required (what the routine wants from the stream)`);
+  for (const f of Object.keys(filter)) if (!ev.filter.includes(f)) fail(`${at}.filter.${f} isn't a filter key of ${e.connection} (${ev.filter.join(", ")})`);
+  // The router's matches() reads each key's value as this shape (kernel/src/events.ts Filter).
+  const words = (v: unknown) => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x.length > 0);
+  for (const [f, v] of Object.entries<unknown>(filter)) {
+    const ok = f === "bot" ? typeof v === "boolean" : f === "contains" ? words(v) : (typeof v === "string" && v.length > 0) || words(v);
+    if (!ok) fail(`${at}.filter.${f} is ${f === "bot" ? "true or false" : f === "contains" ? "a list of words" : "a value or a list of values"}`);
+  }
+  if ((r.schedules ?? []).length) fail(`${at}: an event routine runs on its events, never on a schedule (drop its schedules, an override's included)`);
+  const held = paperclip.agents[r.agent]?.enabled_tools?.[e.connection] ?? [];
+  if (!ev.reads.some((t: string) => held.includes(t))) fail(`${at}: agent ${r.agent} holds none of ${e.connection}'s ${ev.reads.join(", ")} (it can only subscribe to what it may read)`);
+  // A routine run holds platform authority (admission): one fired by outside text (Slack, GitHub) never does.
+  if ((paperclip.agents[r.agent]?.roles ?? []).includes("platform-engineer")) fail(`${at}: agent ${r.agent} holds platform-engineer; an event routine runs as an agent without it`);
+  if (!(paperclip.agents[r.agent]?.enabled_tools?.paperclip_tasks ?? []).includes("routine_events")) fail(`${at}: agent ${r.agent} doesn't hold paperclip_tasks.routine_events, the one way a run reads its batch`);
+  r.concurrency = "always_enqueue";
+  r.description = `${String(r.description ?? "").trimEnd()}\n\n${EVENT_SUFFIX}`;
+}
 
 /**
  * What each module still reaches of the root stack until its kernel route lands (scripts/compiler/services.ts `Legacy`).
@@ -106,9 +127,8 @@ export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   clickhouse: { until: "3g", to: ["board"] },
   github: { until: "3g", to: ["board", "sources"] },
   primer: { until: "3g", to: ["board"] },
-  // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network and the HMAC-signed triage webhook
-  // into Paperclip (no key), beside the sign-in's board link.
-  slack: { until: "3g", to: ["board", "sources", "paperclip"] },
+  // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network, beside the sign-in's board link.
+  slack: { until: "3g", to: ["board", "sources"] },
   security: { until: "4c", to: ["paperclip", "sources"] },
 };
 /** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
@@ -173,7 +193,7 @@ export function grantEntry(key: string, a: Obj, routines: Obj = {}) {
   return {
     name: a.name, models, graded: a.graded === true, ...(a.jobcaps?.length ? { jobcaps: a.jobcaps } : {}), ...(a.feedback_for ? { feedback_for: a.feedback_for } : {}),
     profile: a.profile ?? "crew", ...(a.reports_to ? { reports_to: a.reports_to } : {}), ...(a.engine ? { engine: a.engine } : {}), ...(a.engines ? { engines: a.engines } : {}), ...(a.model ? { model: a.model.replace(/^openrouter\//, "") } : {}), ...(a.reasoning_effort ? { effort: a.reasoning_effort } : {}),
-    max_parallel: a.max_parallel ?? 1, ...(a.private_reads === true ? { private_reads: true } : {}), ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
+    max_parallel: a.max_parallel ?? 1, ...(a.web_search ? { web_search: a.web_search } : {}), ...(own.length ? { routines: Object.fromEntries(own.map(([k, r]) => [k, { ...(r.model ? { model: r.model.replace(/^openrouter\//, "") } : {}), ...(r.reasoning_effort ? { effort: r.reasoning_effort } : {}) }])) } : {}),
     // Teams (expandTeams): the team record's members and routing weights; a member's team record key and repo preferences.
     ...(a.team ? { team: { name: a.team.name, members: a.team.members, weights: a.team.weights } } : {}),
     ...(a.member_of !== undefined ? { member_of: a.member_of, repos: a.repos ?? [] } : {}),
@@ -208,14 +228,13 @@ export function engineEntries(name: string, def: Obj, root: string, productDir: 
   return out;
 }
 
-const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret", "private"];
+const JOBCAP_FIELDS = ["id", "connection", "tools", "prompt", "tool_timeout_s", "read_url", "read_secret"];
 /**
  * A module's `jobcaps:` (spec §3.1): what a runner job may read of a connection, through the kernel's
  * /c/<connection>/mcp with its own token (kernel/src/proxy.ts). `tools`: a list, or `read` for the module's connection
  * of that name's read tools. `read_url` (one of the module's own services' MCP endpoint, http://<service>:<port>/…, which the
  * kernel resolves to the container's address) and `read_secret` (the vault file the kernel forwards
- * as the bearer) bridge to today's read endpoints. `private: true`: private data, so only an Engineer with private_reads (no
- * web search) may hold it. Returns config/jobcaps.json's entries, by id.
+ * as the bearer) bridge to today's read endpoints. Returns config/jobcaps.json's entries, by id.
  */
 export function jobcapEntries(name: string, def: Obj) {
   const out: Obj = {};
@@ -231,26 +250,9 @@ export function jobcapEntries(name: string, def: Obj) {
     if (!/^http:\/\/[a-z][a-z0-9-]*:\d{2,5}\/[\w/.-]*$/.test(j.read_url ?? "")) fail(`${where}: read_url must be an http://<its service>:<port>/ endpoint`);
     if (!/^[a-z0-9_]+_mcp(_read)?_token$/.test(j.read_secret ?? "")) fail(`${where}: read_secret must name a <service>_mcp_token or <service>_mcp_read_token`);
     if (j.tool_timeout_s != null && !(Number.isInteger(j.tool_timeout_s) && j.tool_timeout_s > 0 && j.tool_timeout_s <= 600)) fail(`${where}: tool_timeout_s is 1-600`);
-    if (j.private != null && typeof j.private !== "boolean") fail(`${where}: private is true or false`);
-    out[j.id] = { connection: j.connection, url: j.read_url, bearer_secret: j.read_secret, tools: [...tools], ...(j.tool_timeout_s ? { tool_timeout_s: j.tool_timeout_s } : {}), ...(j.prompt ? { prompt: String(j.prompt) } : {}), ...(j.private ? { private: true } : {}) };
+    out[j.id] = { connection: j.connection, url: j.read_url, bearer_secret: j.read_secret, tools: [...tools], ...(j.tool_timeout_s ? { tool_timeout_s: j.tool_timeout_s } : {}), ...(j.prompt ? { prompt: String(j.prompt) } : {}) };
   }
   return out;
-}
-
-/**
- * A trial agent's `trial_writes:` list, checked: a list of writes it may use in trial, each one of TRIAL_WRITE_ALLOWED and
- * granted by the definition, written connection.tool as its grants name it. Returns the names; errors name the agent and tool.
- */
-export function trialWrites(key: string, list: string[], tools: Obj) {
-  if (!Array.isArray(list)) fail(`agent ${key}: trial_writes must be a list of tools, written connection.tool`);
-  for (const raw of list) {
-    const parts = typeof raw === "string" ? raw.split(".") : [];
-    if (parts.length !== 2 || !parts[0] || !parts[1]) fail(`agent ${key}: trial_writes names ${JSON.stringify(raw)}, not a tool written connection.tool`);
-    const [conn, tool] = parts as [string, string];
-    if (!TRIAL_WRITE_ALLOWED.includes(raw)) fail(`agent ${key}: trial_writes names ${raw}, which it may not use in trial (only ${TRIAL_WRITE_ALLOWED.join(", ")})`);
-    if (!(tools[conn] ?? []).includes(tool)) fail(`agent ${key}: trial_writes names ${raw}, which the definition does not grant`);
-  }
-  return [...new Set(list)];
 }
 
 /** `---\nkey: value\n---\nbody` → { meta, body }. */
@@ -261,13 +263,6 @@ export function frontmatter(text: string) {
 
 /** A value's shape: list, map, or its JSON type. */
 const shapeOf = (v: unknown) => (Array.isArray(v) ? "list" : v && typeof v === "object" ? "map" : typeof v);
-
-/** settings.<key>.owner: what an agent's change to the setting may not do without the owner (kernel/src/apply-tier.ts ownerRaises). An empty `path` is the setting itself (a scalar). */
-function ownerRules(file: string, key: string, rules: Obj) {
-  const ok = (r: Obj) => r && typeof r === "object" && /^([\w*-]+(\.[\w*-]+)*)?$/.test(String(r.path)) && Object.keys(r).every((f) => ["path", "raise", "change", "to", "new", "before", "default"].includes(f)) && ["raise", "change", "to", "new"].filter((f) => f in r).length === 1 && (r.raise ?? r.change ?? r.new ?? true) === true;
-  if (!Array.isArray(rules) || !rules.every(ok)) fail(`${file}: settings.${key}.owner is a list of { path, one of raise: true, change: true, to: <value>, new: true (before: <text>), and the field's default where unset }`);
-  return rules;
-}
 
 /** The comment above each setting key in module.yaml, as one line: the help the board shows. */
 function settingDocs(file: string): Record<string, string> {
@@ -308,7 +303,7 @@ export const defaultComputersMax = (totalBytes = totalmem()) => Math.min(64, Mat
 /** A module's settings for the board: default, allowed values, required, pattern, when, and the comment above each key as its `doc`. */
 function settingDefs(file: string, def: Obj) {
   const docs = settingDocs(file);
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.owner ? { owner: ownerRules(file, k, d.owner) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**
@@ -328,10 +323,11 @@ export function readMarketplace(productDir: string) {
 }
 
 /**
- * Every module of modules/marketplace.json and every module instance.yaml installs from a third-party marketplace, as
- * { name, root, def, marketplace, tier, sha? }, in name order. Names are unique across marketplaces. module.yaml is strict.
+ * Every module of modules/marketplace.json, every module instance.yaml installs from a third-party marketplace, and every
+ * local module (the instance's modules/<name>/module.yaml, tier `local`), as { name, root, def, marketplace, tier, sha? }, in
+ * name order. Names are unique across all of them. module.yaml is strict; a local one is a closed allowlist (LOCAL_MODULE_KEYS).
  */
-function discover(productDir: string, instance: Obj, fetch: Fetch) {
+function discover(productDir: string, instance: Obj, fetch: Fetch, instanceDir: string) {
   const dir = join(productDir, "modules");
   const plugins = readMarketplace(productDir).plugins;
   const listed = new Set(plugins.map((p: Obj) => p.name));
@@ -369,6 +365,17 @@ function discover(productDir: string, instance: Obj, fetch: Fetch) {
     if (def.apps != null || Object.values(def.services?.run ?? {}).some((s: any) => s?.build != null)) fail(`${r.name}@${r.marketplace}: apps and service builds from a remote source aren't supported yet`);
     const pinned = pinsOf(instance).find((p) => p.name === r.name && p.marketplace === r.marketplace)?.sha;
     out.set(r.name, { name: r.name, root: r.root, def, marketplace: r.marketplace, tier: r.tier, sha: r.at.sha, source: { url: r.market.url, path: r.market.path }, ...(pinned ? { pinned } : {}) });
+  }
+  const local = join(instanceDir, "modules");
+  for (const name of existsSync(local) ? readdirSync(local).sort() : []) {
+    const file = join(local, name, "module.yaml");
+    if (!existsSync(file)) continue;
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) fail(`modules/${name}: a local module's folder name is lowercase letters, digits and -`);
+    if (out.has(name)) fail(`local module ${name}: a module named ${name} is already installed from ${out.get(name)!.marketplace}`);
+    const def = readYaml(file) ?? {};
+    for (const k of Object.keys(def)) if (!LOCAL_MODULE_KEYS.includes(k)) fail(`local module ${name}: ${k} isn't allowed`);
+    if (def.name !== name) fail(`modules/${name}/module.yaml: name is ${def.name}, expected ${name}`);
+    out.set(name, { name, root: join(local, name), def, marketplace: "local", tier: "local" });
   }
   for (const m of out.values()) {
     const unknown = Object.keys(m.def).filter((k) => !MANIFEST_KEYS.has(k) && k !== "compose");
@@ -656,7 +663,7 @@ export function linkPairServices(flows: Obj, compose: Obj, serviceModule: Obj, n
 /**
  * compile(productDir, instanceDir, { revision }) → { paperclip, apps, compose, catalog, warnings, edge }.
  * productDir holds modules/<name>/module.yaml; instanceDir holds instance.yaml, agents/<key>.md additions to a module
- * agent's handbook, and agents/<key>/ folders (agent.yaml + AGENTS.md): the instance's own agents.
+ * agent's handbook, agents/<key>/AGENTS.md handbook forks, and modules/<name>/ local modules: the instance's own agents.
  */
 /**
  * The host's work_dir and state_dir (config/runner.yaml, else ~/aidenhq-work and ~/.local/state/aidenhq-runner; ~ is the user's
@@ -674,7 +681,13 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const instFile = join(instanceDir, "instance.yaml");
   if (!existsSync(instFile)) fail(`no instance.yaml in ${instanceDir}: set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)`);
   const instance = readYaml(instFile);
-  const all = discover(productDir, instance, fetch);
+  // Owner-built agents were agents/<key>/agent.yaml; they are local modules now, and the old folder is refused (no second path).
+  for (const key of existsSync(join(instanceDir, "agents")) ? readdirSync(join(instanceDir, "agents")).sort() : []) {
+    if (existsSync(join(instanceDir, "agents", key, "agent.yaml"))) fail(`agents/${key}/agent.yaml: an owner-built agent is a local module now (modules/<name>/module.yaml + agents/<key>/AGENTS.md)`);
+  }
+  const all = discover(productDir, instance, fetch, instanceDir);
+  const locals = [...all.values()].filter((m) => m.tier === "local").map((m) => m.name);
+  for (const n of [...(instance.modules ?? []), ...(instance.modules_removed ?? [])].map(moduleName)) if (locals.includes(n)) fail(`${n} is a local module: enabled by its folder`);
   const problems = capabilityProblems(Object.fromEntries([...all].map(([n, m]) => [n, m.def])));
   if (problems.length) fail(problems.join("; "));
   // Members the default bundle gained since this host last compiled reach the instance here, in memory (an apply never writes
@@ -694,7 +707,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     if (missing.length) console.warn(`module ${n} is not enabled yet: set ${missing.join(", ")} first`);
     return !missing.length;
   });
-  const chosen = current([...(instance.modules ?? []), ...added], known);
+  const chosen = current([...(instance.modules ?? []), ...added, ...locals], known);
   const enabled = resolveEnabled(all, chosen);
   const enabledDefs = Object.fromEntries(enabled.map((n) => [n, all.get(n)!.def]));
   const conflicts = conflictProblems(enabledDefs);
@@ -832,6 +845,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const [k, c] of Object.entries<Obj>(def.connections ?? {})) {
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
+      // `unreviewed`: destructive tools whose calls skip the AI reviewer (Tier 0; still granted only by name, and code's refusals hold).
+      if (c.tools.unreviewed != null && (!Array.isArray(c.tools.unreviewed) || c.tools.unreviewed.some((t: string) => !(c.tools.destructive ?? []).includes(t)))) fail(`connection ${k}: tools.unreviewed lists only its destructive tools`);
       if (c.tools.named != null && (!Array.isArray(c.tools.named) || c.tools.named.some((t: string) => typeof t !== "string" || !t))) fail(`connection ${k}: tools.named must be a list of its read tools`);
       // `named` only narrows a read tool out of the read shorthand (never a fourth group): a tool tagged `named` is still a
       // read, on the read path, and only a grant that names it reaches it. Tagging a write or destructive tool named, or a
@@ -854,6 +869,14 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         if (healthProbeOwners[pn]) fail(`two connections declare health probe ${pn}: ${healthProbeOwners[pn]} and ${k}`);
         healthProbeOwners[pn] = k;
       }
+      // events: what its source module sends the kernel's event router (events.ts): `reads` are the read tools an agent must hold to subscribe a routine, `filter` the keys a routine may filter on.
+      if (c.events != null) {
+        const ev = c.events;
+        if (typeof ev !== "object" || Array.isArray(ev) || !Array.isArray(ev.reads) || !ev.reads.length || ev.reads.some((t: string) => !c.tools.read.includes(t)) || !Array.isArray(ev.filter) || ev.filter.some((f: unknown) => typeof f !== "string")) fail(`connection ${k}: events is { resource, kinds, filter: [keys], reads: [its read tools] }`);
+        // Only keys the kernel's router evaluates (kernel/src/events.ts matches()).
+        const unknown = ev.filter.filter((f: string) => !EVENT_FILTER_KEYS.includes(f));
+        if (unknown.length) fail(`connection ${k}: events.filter ${unknown.join(", ")} isn't a key the event router evaluates (${EVENT_FILTER_KEYS.join(", ")})`);
+      }
       if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t: string) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
@@ -868,24 +891,49 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const src = join(root, "connections", /^http:\/\/([a-z][a-z0-9-]*):/.exec(String(x.status_url))?.[1] ?? "-", "src");
       if (existsSync(src) && !existsSync(join(src, "vendor", "proxy.ts")) && !readdirSync(src, { recursive: true }).some((f) => /\.ts$/.test(String(f)) && readFileSync(join(src, String(f)), "utf8").includes("/auth/check"))) fail(`module ${name}: signin ${x.id}: its service must answer GET /auth/check (build it on the SDK vendor proxy, or implement the route)`);
     }
+    const { tier } = all.get(name)!;
     for (const [key, a] of Object.entries<Obj>(def.agents ?? {})) {
       const file = join(root, "agents", key, "AGENTS.md");
-      if (!existsSync(file)) fail(`agent ${key}: missing ${relative(productDir, file)}`);
+      if (!existsSync(file)) fail(`agent ${key}: missing ${tier === "local" ? `modules/${name}/agents/${key}/AGENTS.md` : relative(productDir, file)}`);
       const { meta } = frontmatter(readFileSync(file, "utf8"));
       const extra = join(instanceDir, "agents", `${key}.md`);
+      if (tier === "local") {
+        // A local agent: its identity and reporting line come from module.yaml only, so a handbook-only edit can't move anything.
+        if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(key)) fail(`local module ${name}: agent key ${key} is lowercase letters, digits and -`);
+        if (Object.keys(meta).length || /^---\n/.test(readFileSync(file, "utf8"))) fail(`${key}: a local agent's AGENTS.md has no frontmatter: identity is in module.yaml`);
+        if (existsSync(extra)) fail(`${key} is a local agent: its rules are its own AGENTS.md`);
+        if (a?.budget != null) fail(`agent ${key}: budget ${SPEND_GONE}`);
+        for (const f of Object.keys(a ?? {})) if (!LOCAL_AGENT_FIELDS.includes(f)) fail(`agent ${key}: ${f === "roles" ? "a local agent may not have roles" : `unknown field ${f} (known: ${LOCAL_AGENT_FIELDS.join(", ")})`}`);
+        for (const f of ["name", "description", "model"]) if (a?.[f] == null || a[f] === "") fail(`agent ${key}: ${f} is required`);
+        if (a.max_parallel != null && !(Number.isInteger(a.max_parallel) && a.max_parallel >= 1 && a.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
+        const description = String(a.description).trim();
+        put(paperclip.agents, key, { ...a, title: description, description, instructions: file, module: name, tier, isolation: "trusted" }, "agent");
+        continue;
+      }
       put(paperclip.agents, key, {
         name: meta.name, title: meta.title, ...(meta.description ? { description: String(meta.description).trim() } : {}), ...(meta.avatar ? { avatar: meta.avatar } : {}), ...(meta.reportsTo ? { reports_to: meta.reportsTo } : {}), instructions: file,
-        ...a, module: name, isolation: isolationOf(a.isolation ?? def.isolation, `agent ${key}`),
+        ...a, module: name, tier, isolation: isolationOf(a.isolation ?? def.isolation, `agent ${key}`),
         ...(existsSync(extra) ? { instructions_extra: extra } : {}),
       }, "agent");
     }
     for (const [key, { when, ...r }] of Object.entries<Obj>(def.routines ?? {})) {
-      if (routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
+      if (tier === "local") {
+        // A local routine: schedules (and, with the event router, an event) only; webhooks and their secrets come from product modules.
+        if (!/^[a-z0-9][a-z0-9_-]{0,80}$/.test(key)) fail(`routine ${key}: a local routine's key is lowercase letters, digits, _ and -`);
+        if (when != null) fail(`routine ${key}: when isn't allowed`);
+        for (const f of Object.keys(r)) if (!LOCAL_ROUTINE_FIELDS.includes(f)) fail(`routine ${key}: ${f} isn't allowed (known: ${LOCAL_ROUTINE_FIELDS.join(", ")})`);
+        if (typeof r.agent !== "string" || !r.agent) fail(`routine ${key}: agent is required (the agent it runs as)`);
+        // Setup's identity marker is setup's alone: a routine can't claim another's compiled key.
+        if (/aidenhq:routine:/.test(String(r.description ?? ""))) fail(`routine ${key}: its description may not carry a routine marker`);
+      }
+      if (!r.title || routineTitles.has(r.title)) fail(`duplicate routine title: ${r.title}`);
+      // "Repeats: …" names the board's own recurring tasks (services/board recurring.ts): setup never takes one for a module's.
+      if (String(r.title).startsWith("Repeats: ")) fail(`routine ${key}: a title starting "Repeats: " is the board's, for the owner's recurring tasks`);
       routineTitles.add(r.title);
       // `when: { forks: true }`: only while instance.yaml runs a fork (spec §6.9b); no routine, and no run, otherwise.
       if (when != null && JSON.stringify(when) !== '{"forks":true}') fail(`routine ${key}: when must be { forks: true }`);
       if (when && !forksOf(instance).length) continue;
-      put(paperclip.routines, key, r, "routine");
+      put(paperclip.routines, key, { ...r, tier }, "routine");
     }
     for (const app of def.apps ?? []) {
       const { isolation: iso, ...rest } = app;
@@ -970,7 +1018,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // One host port, one owner: the product's compose, the modules', the gate, the kernel's sign-in listener and the apps.
   checkPorts([base, compose], [[GATE_PORT, "gate"], [AUTH_PORT, "the kernel's sign-in listener"], ...[...instanceAppDefs, ...apps].filter((a) => Number.isInteger(a.port)).map((a): [number, string] => [a.port, `app ${a.name}`])]);
 
-  instanceAgents(instanceDir, settings, paperclip, routineTitles);
   expandTeams(instance, paperclip);
 
   // Departments: where the board's Agents page lists each agent. One registry, the kernel's (kernel/defaults.json) then the instance's
@@ -1012,11 +1059,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // Grants: `connection: read | write | [tools]` resolve to tool lists (Codex scoping and the grants table setup writes).
   // A grant to a connection that isn't enabled fails, unless marked optional as `name?`.
   // The instance's grants override (overrides.agents.<key>.connections): per connection over the module's grants, before they
-  // resolve (a key replaces the module's optional `key?` too). An instance agent's grants are its agent.yaml's.
+  // resolve (a key replaces the module's optional `key?` too). A local agent's grants are its module.yaml's.
   for (const [key, o] of Object.entries<Obj>(instance.overrides?.agents ?? {})) {
     if (o?.connections == null) continue;
     const a = paperclip.agents[key] ?? fail(`unknown agent: ${key}`);
-    if (a.module === "instance") fail(`override overrides.agents.${key}.connections: an instance agent's grants are in agents/${key}/agent.yaml`);
+    if (a.tier === "local") fail(`override overrides.agents.${key}.connections: a local agent's grants are in modules/${a.module}/module.yaml`);
     if (typeof o.connections !== "object" || Array.isArray(o.connections)) fail(`override overrides.agents.${key}.connections: a map of connection: read | write | [tools]`);
     const conns: Obj = { ...(a.connections ?? {}) };
     for (const [c, g] of Object.entries(o.connections)) {
@@ -1048,15 +1095,13 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!tools[name].length) delete tools[name];
     }
     // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. owner_channel.notify
-    // for every crew agent out of trial and untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
+    // for every crew agent outside untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
     // An agent without `profile:` is crew (as its grant entry says). They honour `upstream` too: this loop runs after the one above,
     // and a default grant naming an upstream tool would otherwise put back what `upstream: off` stripped.
     for (const g of defaultGrants) if (promptApplies(g, { ...a, profile: a.profile ?? "crew", enabled_tools: tools }, enabled)) for (const t of g.tools) {
       const [c, tool] = t.split(".");
       if (!tools[c]?.includes(tool) && upstreamGranted(paperclip.mcp_servers[c], tool, settings.upstream)) tools[c] = [...(tools[c] ?? []), tool];
     }
-    const memory = memoryOf(instanceDir, key, warnings);
-    if (memory) a.memory = memory;
     delete a.connections;
     // jobcaps: [<id>] (`<id>?`: only when its module is on): the agent's runner jobs read through the gateway with their token.
     if (a.jobcaps != null) {
@@ -1066,7 +1111,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         const id = String(raw).replace(/\?$/, "");
         const j = jobcaps[id];
         if (!j) { if (String(raw).endsWith("?")) continue; fail(`${key}: unknown jobcap ${id} (enable its module, or write "${id}?" to make it optional)`); }
-        if (j.private && a.private_reads !== true) fail(`${key}: jobcap ${id} reads private data: set private_reads: true (its jobs then get no web search), or drop it`);
         ids.push(id);
       }
       a.jobcaps = [...new Set(ids)].sort();
@@ -1078,36 +1122,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!roleOwner[r]) fail(`${key}: unknown role ${r} (declared: ${Object.keys(roleOwner).join(", ")})`);
       if (roleOwner[r] !== a.module && !rolesOf(a.module).requests.includes(r)) fail(`${key}: module ${a.module} may not grant ${r} (declare it, or list it under roles.requests)`);
     }
-    // In trial (tap 1): read-only but for reporting on its own tasks, and reporting to the Agent Architect, which reviews its
-    // work. A definition may also declare `trial_writes:`, the channel and lane writes it keeps before tap 2. The agent then gets
-    // exactly those writes and the trial ones; every other write it grants is withheld (trial_withheld) and refused by name
-    // until tap 2 (the tool isn't offered, and the grants table lacks it). Without a list, today's rule: no write tools
-    // beyond TRIAL_WRITES, or the build fails.
-    if (a.trial) {
-      if (a.reports_to !== "architect") fail(`${key}: an agent in trial reports to architect (got ${a.reports_to ?? "nobody"})`);
-      const declared = a.trial_writes == null ? [] : trialWrites(key, a.trial_writes, tools);
-      if (!declared.length) {
-        for (const [name, list] of Object.entries<Obj>(tools)) {
-          const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name as keyof typeof TRIAL_WRITES] ?? []).includes(t));
-          if (writes.length) fail(`${key}: an agent in trial may not have ${name} write tools (${writes.join(", ")}); they come with tap 2`);
-        }
-      } else {
-        const withheld: string[] = [];
-        for (const [name, list] of Object.entries<Obj>(tools)) {
-          const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t) && !(TRIAL_WRITES[name as keyof typeof TRIAL_WRITES] ?? []).includes(t));
-          for (const t of writes) if (!declared.includes(`${name}.${t}`)) withheld.push(`${name}.${t}`);
-          tools[name] = list.filter((t: string) => !writes.includes(t) || declared.includes(`${name}.${t}`));
-          if (!tools[name].length) delete tools[name];
-        }
-        a.enabled_tools = tools;
-        a.mcp_servers = Object.keys(tools);
-        // What it granted but keeps out of trial: the handbook check doesn't warn about these (it intends them for tap 2).
-        if (withheld.length) a.trial_withheld = withheld; else delete a.trial_withheld;
-      }
-    } else if (a.trial_writes != null) fail(`${key}: trial_writes is for an agent in trial (add trial: true, or grant the tools plainly)`);
     // The module's own isolation counts too: an agent can't opt itself out of an untrusted module.
     if (a.isolation === "untrusted" || all.get(a.module)?.def.isolation === "untrusted") {
       if (a.roles.length) fail(`${key}: an untrusted module's agent may not have roles`);
+      // It changes nothing about itself (its handbook, a shared skill): self_change is a write, however it was granted.
+      if ((tools.paperclip_tasks ?? []).includes("self_change")) fail(`${key}: an untrusted module's agent may not have paperclip_tasks.self_change`);
       for (const [name, list] of Object.entries<Obj>(tools)) {
         const writes = list.filter((t: string) => writeTools(paperclip.mcp_servers[name]).includes(t));
         if (writes.length) fail(`${key}: an untrusted module's agent may not have ${name} write tools (${writes.join(", ")})`);
@@ -1122,9 +1141,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const k of a.delegate_to) if (k !== "app-owners" && !k.endsWith("?") && !paperclip.agents[k]) fail(`${key}: delegate_to names ${k}, which is not an enabled agent (write "${k}?" if optional)`);
     a.delegate_to = a.delegate_to.map((k: string) => k.replace(/\?$/, "")).filter((k: string) => k === "app-owners" || paperclip.agents[k]);
   }
-  // Quiet start (docs/design/quiet-start.md): a module's scheduled routines start paused until an override turns one on
-  // (before the heartbeats, which quiet start leaves off unless the instance turned one on).
-  if (settings.quiet_start === "on") for (const r of Object.values<Obj>(paperclip.routines)) if (r.schedules?.length && paperclip.agents[r.agent]?.module !== "instance") r.status = "paused";
   heartbeatRoutines(paperclip, settings, instance.overrides?.agents ?? {}, routineTitles); // before the overrides, which may change their schedules
   appFeedbackRoutines(paperclip, instanceAppDefs, routineTitles, new Set(defaultGrants.flatMap((g) => g.tools)));
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) if (!paperclip.agents[r.agent]) fail(`routine ${key}: agent ${r.agent} is not enabled`);
@@ -1135,10 +1151,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const [key, fields] of Object.entries(entries ?? {})) {
       const target = paperclip[kind][key] ?? fail(`unknown ${kind.slice(0, -1)}: ${key}`);
       for (const [f, v] of Object.entries<any>(fields ?? {})) {
+        if (kind === "routines" && f === "status") fail(`override not allowed: routines.${key}.status: a routine's pause and resume are live (its module's page, or Aiden's fleet_control), never a file; delete it`);
         if (!OVERRIDABLE[kind as keyof typeof OVERRIDABLE].includes(f)) fail(`override not allowed: ${kind}.${key}.${f}`);
-        if (kind === "agents" && f === "connections") continue; // merged before grants resolved, above
+        if (kind === "agents" && (f === "connections" || f === "skills")) continue; // connections: merged before grants resolved, above; skills: effectiveSkills, below
         if (kind === "agents" && f === "handbook_fork") {
-          if (target.module === "instance") fail(`override agents.${key}.handbook_fork: an instance agent's handbook is already the instance's`);
+          if (target.tier === "local") fail(`${key} is a local agent: its rules are its own AGENTS.md`);
           if (!/^[0-9a-f]{40}$/.test(String(v))) fail(`override agents.${key}.handbook_fork must be the module blob sha it was copied from`);
           const fork = join(instanceDir, "agents", key, "AGENTS.md");
           if (!existsSync(fork)) fail(`override agents.${key}.handbook_fork: missing agents/${key}/AGENTS.md`);
@@ -1150,10 +1167,30 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       }
     }
   }
+  const localRoutines = new Map<string, number>();
   for (const [key, r] of Object.entries<Obj>(paperclip.routines)) {
-    r.autonomy ??= routineAutonomyDefault(r);
-    if (!ROUTINE_AUTONOMY.includes(r.autonomy)) fail(`routine ${key}: autonomy is ${ROUTINE_AUTONOMY.join(", ")}`);
-    for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone; // else Paperclip runs it in UTC
+    for (const sc of r.schedules ?? []) sc.timezone ??= settings.timezone;
+    if (r.event != null) eventRoutine(key, r, paperclip); // else Paperclip runs it in UTC
+    // Its status when setup creates it (docs/design/quiet-start.md); after that, Paperclip owns pause and resume. A local
+    // module's routines are the owner's and the agents' own, whichever agent they run as: active. An imported (declared)
+    // module's start paused. An official module's scheduled ones start paused under quiet start (a heartbeat the instance
+    // turned on, or an app's feedback routine, is generated with no tier: active).
+    r.status = r.tier === "declared" || (r.tier === "official" && settings.quiet_start === "on" && r.schedules?.length) ? "paused" : "active";
+    // A local routine (the owner's or an agent's own), checked as it ends up after the overrides: at most hourly, as one
+    // schedule whose cron minute is a single literal number (no cron parser; events cover anything faster).
+    if (r.tier === "local") {
+      if (!Array.isArray(r.schedules ?? []) || (r.schedules ?? []).length > 1) fail(`routine ${key}: a local routine has at most one schedule`);
+      localRoutines.set(r.agent, (localRoutines.get(r.agent) ?? 0) + 1);
+      if (localRoutines.get(r.agent)! > 20) fail(`routine ${key}: an agent has at most 20 local routines`);
+      // Five fields, each numbers, ranges, lists, steps or * (and month or weekday names): what Paperclip's schedule takes.
+      const fields = String(r.schedules?.[0]?.cron ?? "").trim().split(/\s+/);
+      // Each number inside its field's range (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7; a step any positive number).
+      const RANGES = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]] as const;
+      const inRange = (f: string, i: number) => f.split(",").every((part) => { const [span, step] = part.split("/"); return (step === undefined || (/^\d+$/.test(step) && Number(step) > 0)) && (span === "*" || ((span ?? "").split("-").length <= 2 && (span ?? "").split("-").every((n) => /^[A-Za-z]{3}$/.test(n) ? i >= 3 : /^\d+$/.test(n) && Number(n) >= RANGES[i]![0] && Number(n) <= RANGES[i]![1]))); });
+      if (r.schedules?.length && (fields.length !== 5 || !fields.every((f, i) => (i >= 3 ? /^[\d*,/A-Za-z-]+$/ : /^[\d*,/-]+$/).test(f) && inRange(f, i)))) fail(`routine ${key}: its schedule needs a cron of five fields (minute hour day month weekday), each in range`);
+      const minute = String(r.schedules?.[0]?.cron ?? "0").trim().split(/\s+/)[0]!;
+      if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
+    }
   }
   // The gateway's and grader's grants fields (grantEntry), checked after the overrides that may set them.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
@@ -1190,9 +1227,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // The kernel's connection table (config/kernel/connections.json): where each connection is and with which key.
   const connections = Object.fromEntries(Object.entries<Obj>(paperclip.mcp_servers).map(([k, c]) => [k, {
     url: c.url, auth_secret: c.auth, module: c.module, returns: c.returns ?? "untrusted",
-    tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
+    tools: { read: [...c.tools.read], write: [...c.tools.write], destructive: [...(c.tools.destructive ?? [])], ...(c.tools.named?.length ? { named: [...c.tools.named] } : {}), ...(c.tools.unreviewed?.length ? { unreviewed: [...c.tools.unreviewed] } : {}) }, ...(c.tool_timeout_sec ? { tool_timeout_s: c.tool_timeout_sec } : {}),
     ...(c.model_as_caller === true ? { model_as_caller: true } : {}),
     ...(c.health_probes ? { health_probes: c.health_probes } : {}),
+    ...(c.events ? { events: c.events } : {}),
   }]));
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
@@ -1200,18 +1238,16 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // overrides (an override may set heartbeat or image).
   const prompts = enabled.flatMap((n) => promptEntries(n, all.get(n)!.def, all.get(n)!.root)).sort(promptOrder);
   if (new Set(prompts.map((p) => p.id)).size !== prompts.length) fail("two prompts share an id");
-  const sections = prompts.filter((p) => !p.skill);
-  paperclip.prompts = Object.fromEntries(sections.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
-  for (const a of Object.values<Obj>(paperclip.agents)) if (a.profile === "crew" && sections.some((p) => promptApplies(p, a, enabled))) a.prompts = sections.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
-  // Skills (modules/<m>/skills/<name>/SKILL.md), for every agent whatever its profile: the ones promptApplies picks (its own
-  // module's, or a module's whose connection it holds a grant on) plus those it names in `skills:`. Jobs get exactly these.
-  const skills = prompts.filter((p) => p.skill);
-  if (skills.length) paperclip.skills = Object.fromEntries(skills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
+  paperclip.prompts = Object.fromEntries(prompts.map((p) => [p.id, { file: p.file, ...(p.lane ? { lane: true } : {}) }]));
+  for (const a of Object.values<Obj>(paperclip.agents)) if (a.profile === "crew" && prompts.some((p) => promptApplies(p, a, enabled))) a.prompts = prompts.filter((p) => promptApplies(p, a, enabled)).map((p) => p.id);
+  // Skills (modules/<m>/skills/<name>/SKILL.md): each agent gets exactly its effective list (effectiveSkills), of every
+  // available module's skills; jobs get exactly these.
+  const skills = [...all.values()].flatMap((m) => skillEntries(m.name, m.root, enabled.includes(m.name)).map((s) => ({ ...s, enabled: enabled.includes(m.name) })));
+  const enabledSkills = skills.filter((s) => s.enabled);
+  if (enabledSkills.length) paperclip.skills = Object.fromEntries(enabledSkills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
+  const skillCatalog = Object.fromEntries(skills.map((s) => [s.id, s.enabled]));
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
-    const named = a.skills ?? [];
-    if (!Array.isArray(named) || named.some((id) => typeof id !== "string")) fail(`agent ${key}: skills is a list of skill ids (<module>.<name>)`);
-    for (const id of named) if (!paperclip.skills?.[id]) fail(`unknown skill ${id} for agent ${key}`);
-    const ids = [...new Set([...skills.filter((s) => promptApplies(s, a, enabled)).map((s) => s.id), ...named])].sort();
+    const ids = effectiveSkills(key, a, instance.overrides?.agents?.[key]?.skills, skillCatalog);
     const from: Obj = {};
     for (const id of ids) {
       const [module, name] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
@@ -1252,7 +1288,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const optionalSecrets = enabled.flatMap((name) => all.get(name)!.def.optional_secrets ?? []);
   // Host-only tokens a module needs: created random when missing (compile.ts).
   const generatedSecrets = [...KERNEL_DEFAULTS.generated_secrets, ...enabled.flatMap((name) => all.get(name)!.def.generated_secrets ?? [])];
-  validateImages(paperclip.agents); // image: an agent computer (module, instance override or instance agent)
+  validateImages(paperclip.agents); // image: an agent computer (module, local module or instance override)
   // Every agent's jobs run on an engine (after the overrides that may set it): its own `engine:`, else the one enabled engine
   // that runs in a computer.
   const boxEngines = Object.keys(engines).filter((k) => engines[k].box === true).sort();
@@ -1268,7 +1304,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
-  const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes, agents: Object.fromEntries(Object.entries<Obj>(paperclip.agents).filter(([, a]) => a.module === "instance")) });
+  const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes });
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
   const setup = setupSecrets(enabledDefs, generatedSecrets);
@@ -1629,11 +1665,12 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
   for (const [k, w] of entries) {
     const id = `${name}.${k}`;
     if (!/^[a-z][a-z0-9_]{0,40}$/.test(k)) fail(`write kind ${id}: the name is lowercase letters, digits and _`);
-    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "paths", "binds", "card", "tools", "filed_by"].includes(f));
+    const extra = Object.keys(w ?? {}).filter((f) => !["args", "floor", "panel", "binds", "card", "tools", "filed_by", "filer", "stale"].includes(f));
     if (extra.length) fail(`write kind ${id}: unknown field ${extra.join(", ")} (kernel/schemas/writes.json)`);
     if (![0, 1, 2].includes(w.floor)) fail(`write kind ${id}: floor is 0, 1 or 2`);
     if (w.panel != null && typeof w.panel !== "boolean") fail(`write kind ${id}: panel is true or false`);
-    if (w.paths != null && w.paths !== true) fail(`write kind ${id}: paths is true (a repository write: its plan returns the files it changes)`);
+    if (w.filer != null && w.filer !== "owner") fail(`write kind ${id}: filer is owner (only the owner's own save files it) or absent`);
+    if (w.stale != null && w.stale !== "fail") fail(`write kind ${id}: stale is fail (a moved target fails the record) or absent`);
     // The owner of the kind consents to other modules filing it; a module file only a kind it names, never a kernel kind.
     if (w.filed_by != null && (!Array.isArray(w.filed_by) || !w.filed_by.length || w.filed_by.some((m: unknown) => typeof m !== "string" || m === name || m === "kernel" || !modules.includes(m)))) fail(`write kind ${id}: filed_by lists other modules by name (${modules.filter((m) => m !== name).slice(0, 4).join(", ")}…), never kernel or itself`);
     const binds = Array.isArray(w.binds) ? [...new Set(w.binds)] as string[] : undefined;
@@ -1655,41 +1692,9 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
       args = JSON.parse(readFileSync(file, "utf8"));
     }
     const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
-    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(w.paths ? { paths: true } : {}), ...(binds ? { binds } : {}), ...(w.filed_by ? { filed_by: w.filed_by } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(binds ? { binds } : {}), ...(w.filed_by ? { filed_by: w.filed_by } : {}), ...(w.filer ? { filer: w.filer } : {}), ...(w.stale ? { stale: w.stale } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
   }
   return out;
-}
-
-/**
- * The instance's own agents: each folder agents/<key>/ with agent.yaml and AGENTS.md. Module "instance", which the roles
- * registry allows nothing. Name and reporting line come from agent.yaml only (the handbook's frontmatter is ignored), so
- * a handbook-only edit can't move anything. A key a module already uses fails (an instance can't redefine `architect`).
- */
-function instanceAgents(instanceDir: string, settings: Obj, paperclip: Obj, routineTitles: Set<string>) {
-  const dir = join(instanceDir, "agents");
-  for (const key of existsSync(dir) ? readdirSync(dir).sort() : []) {
-    const file = join(dir, key, "agent.yaml");
-    if (!existsSync(file)) continue;
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(key)) fail(`agents/${key}: the folder name is the agent's key (lowercase letters, digits and -)`);
-    const handbook = join(dir, key, "AGENTS.md");
-    if (!existsSync(handbook)) fail(`agent ${key}: missing agents/${key}/AGENTS.md`);
-    const def = substitute(readYaml(file), settings);
-    if (def.budget != null) fail(`agent ${key}: budget ${SPEND_GONE}`);
-    for (const f of Object.keys(def)) if (!INSTANCE_AGENT_FIELDS.includes(f)) fail(`agent ${key}: ${f === "roles" ? "an instance agent may not have roles" : `unknown field ${f} (known: ${INSTANCE_AGENT_FIELDS.join(", ")})`}`);
-    for (const f of ["name", "description", "model"]) if (def[f] == null || def[f] === "") fail(`agent ${key}: ${f} is required`);
-    if (def.max_parallel != null && !(Number.isInteger(def.max_parallel) && def.max_parallel >= 1 && def.max_parallel <= 10)) fail(`agent ${key}: max_parallel must be 1 to 10`);
-    if (def.trial != null && def.trial !== true) fail(`agent ${key}: trial is true or absent`);
-    const { description, routines, ...rest } = def;
-    put(paperclip.agents, key, { ...rest, title: String(description).trim(), description: String(description).trim(), instructions: handbook, module: "instance", isolation: "trusted" }, "agent");
-    for (const [rk, r] of Object.entries<Obj>(routines ?? {})) {
-      // Schedules only: webhooks and their secrets (webhook, webhook_base, secrets_prefix) come from modules.
-      for (const f of Object.keys(r ?? {})) if (!INSTANCE_ROUTINE_FIELDS.includes(f)) fail(`agent ${key}: routine ${rk}: ${f} isn't allowed (known: ${INSTANCE_ROUTINE_FIELDS.join(", ")})`);
-      if (r.agent && r.agent !== key) fail(`agent ${key}: routine ${rk} must run as ${key}`);
-      if (!r.title || routineTitles.has(r.title)) fail(`agent ${key}: routine ${rk} needs a title no other routine has`);
-      routineTitles.add(r.title);
-      put(paperclip.routines, `${key}-${rk}`, { ...r, agent: key }, "routine");
-    }
-  }
 }
 
 /**
@@ -1739,7 +1744,7 @@ function heartbeatRoutines(paperclip: Obj, settings: Obj, agentOverrides: Obj, r
   if (!HEARTBEAT_HOURS.includes(every)) fail(`settings.heartbeat_hours: one of ${HEARTBEAT_HOURS.join(", ")}`);
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     // Quiet start: a module agent's heartbeat counts only once the instance turns it on (overrides.agents.<key>.heartbeat).
-    if (settings.quiet_start === "on" && a.module !== "instance" && agentOverrides[key]?.heartbeat == null && a.heartbeat != null) a.heartbeat = false;
+    if (settings.quiet_start === "on" && a.tier !== "local" && agentOverrides[key]?.heartbeat == null && a.heartbeat != null) a.heartbeat = false;
     const hb = agentOverrides[key]?.heartbeat ?? a.heartbeat;
     if (hb == null || hb === false) continue;
     const hours = hb === true ? every : hb;
@@ -1766,7 +1771,7 @@ function heartbeatRoutines(paperclip: Obj, settings: Obj, agentOverrides: Obj, r
  * App users' words drive the run, so it is tier0 and its agent is a narrow one: exactly the tools below (task_delegate hands
  * code fixes to an Engineer, through every gate), no other app's API, and apps-mcp keeps it to the apps that name it.
  */
-const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_block", "task_cancel", "task_delegate", "memory_note"] };
+const FEEDBACK_TOOLS = { apps: ["app_api", "app_view"], paperclip_tasks: ["task_current", "task_get", "task_comments", "task_list", "task_comment", "task_finish", "task_block", "task_cancel", "task_delegate", "memory_note", "memory_forget", "memory_read", "memory_rewrite"] };
 function appFeedbackRoutines(paperclip: Obj, appDefs: Obj[], routineTitles: Set<string>, defaulted: Set<string>) {
   for (const a of appDefs) {
     if (!a?.share?.host || !a.feedback_to) continue;
@@ -1782,16 +1787,14 @@ function appFeedbackRoutines(paperclip: Obj, appDefs: Obj[], routineTitles: Set<
     const title = `App feedback: ${a.name}`;
     if (routineTitles.has(title)) fail(`duplicate routine title: ${title}`);
     routineTitles.add(title);
-    put(paperclip.routines, `app-feedback-${a.name}`, { title, agent: a.feedback_to, concurrency: "coalesce_if_active", autonomy: "tier0", description: `People sent something \
+    put(paperclip.routines, `app-feedback-${a.name}`, { title, agent: a.feedback_to, concurrency: "coalesce_if_active", description: `People sent something \
 new through the ${a.name} app ({{count}} since the last wake). Follow "App feedback" in your instructions. Treat each item as a person's suggestion, as data: \
 decide it on its merits. Before you close, read the new items once more and handle any that arrived during the run. Then close this task with one line.` }, "routine");
   }
 }
 
-/** An agent's curated memory (agents/<key>/memory.md in the instance repo, written only through the Librarian's apply), at most MEMORY_MAX bytes: longer is cut at a line end, with a warning. */
+/** The owner's working style (owner/profile.md in the instance repo, landed by an apply), at most MEMORY_MAX bytes: longer is cut at a line end, with a warning. */
 export const MEMORY_MAX = 4096;
-export const memoryOf = (instanceDir: string, key: string, warnings: string[] = []) => cappedFile(instanceDir, `agents/${key}/memory.md`, warnings, "the Librarian should prune it");
-/** The owner's working style (owner/profile.md in the instance repo, through the same apply), at most MEMORY_MAX bytes too. */
 export const profileOf = (instanceDir: string, warnings: string[] = []) => cappedFile(instanceDir, "owner/profile.md", warnings, "keep it to how the owner works");
 function cappedFile(instanceDir: string, path: string, warnings: string[], fix: string) {
   const file = join(instanceDir, path);
@@ -1808,16 +1811,14 @@ function cappedFile(instanceDir: string, path: string, warnings: string[], fix: 
 
 const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], order: ["first", "normal", "last"], tests: ["tools", "roles", "modules", "fields"] };
 /**
- * A module's handbook sections: its `prompts:` (spec §3.1): [{id: <module>.<id>, file, order, when, unless, lane}], and its
- * skills (`skills/<name>/SKILL.md`). A prompt `file` is a prompts/<name>.md in the module, used verbatim past its optional
- * frontmatter (its leading blank lines included). `when` and `unless` test presence: `tools` (`connection.tool` granted),
- * `roles`, `modules` (enabled) and `fields` (an agent field: `true` = set and not false, anything else = equal). Every `when`
- * test must hold, and no `unless` test. `lane: true`: the fast chat lane's prompt gets it too. A skill is a folder in Codex's
- * SKILL.md format (`name`, a one-line `description`, optional `when`/`unless`) for the agents its module defines or that hold
- * a grant on one of its connections: the engine reads it natively from the job's engine home, never from the handbook.
+ * A module's handbook sections, its `prompts:` (spec §3.1): [{id: <module>.<id>, file, order, when, unless, lane}]. A prompt
+ * `file` is a prompts/<name>.md in the module, used verbatim past its optional frontmatter (its leading blank lines included).
+ * `when` and `unless` test presence: `tools` (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent
+ * field: `true` = set and not false, anything else = equal). Every `when` test must hold, and no `unless` test. `lane: true`:
+ * the fast chat lane's prompt gets it too.
  */
 export function promptEntries(name: string, def: Obj, root: string): Obj[] {
-  const prompts = [def.prompts ?? []].flat().map((p) => {
+  return [def.prompts ?? []].flat().map((p) => {
     const bad = Object.keys(p ?? {}).find((f) => !PROMPT.fields.includes(f)) ?? ["when", "unless"].flatMap((k) => Object.keys(p[k] ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
     if (bad || !/^[a-z0-9][a-z0-9-]*$/.test(p.id ?? "") || !PROMPT.order.includes(p.order ?? "normal") || !/^prompts\/[a-z0-9-]+\.md$/.test(p.file ?? "") || !existsSync(join(root, p.file))) fail(`module ${name}: prompt ${p?.id}: ${bad ? `unknown ${bad} (fields: ${PROMPT.fields.join(", ")}; tests: ${PROMPT.tests.join(", ")})` : "needs an id (a-z, 0-9, -), a prompts/<name>.md file that exists and an order of first, normal or last"}`);
     const { meta } = frontmatter(readFileSync(join(root, p.file), "utf8"));
@@ -1825,29 +1826,51 @@ export function promptEntries(name: string, def: Obj, root: string): Obj[] {
     if (bad2) fail(`module ${name}: prompt ${p.id}: unknown frontmatter ${bad2} (a prompt has none)`);
     return { id: `${name}.${p.id}`, module: name, file: join(root, p.file), order: p.order ?? "normal", when: p.when ?? {}, unless: p.unless ?? {}, lane: p.lane === true };
   });
+}
+/**
+ * A module's skills (`skills/<name>/SKILL.md`, Codex's SKILL.md format: `name`, a one-line `description`): [{id:
+ * <module>.<name>, file, summary}]. The agents that list one get it (effectiveSkills); the engine reads it natively from the
+ * job's engine home, never from the handbook.
+ */
+/** A module's skills; `check: false` (a disabled module) lists their ids only, its SKILL.md text read and checked once it is on. */
+export function skillEntries(name: string, root: string, check = true): { id: string; file: string; summary: string }[] {
   const dir = join(root, "skills");
-  const skills = (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
+  return (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
     const file = join(dir, d.name, "SKILL.md");
+    if (!check) return { id: `${name}.${d.name}`, file, summary: "" };
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     // A skill is the module's own files: its folder resolves inside the module (jobs get a copy of it).
     if (!realpathSync(join(dir, d.name)).startsWith(realpathSync(root) + sep)) fail(`module ${name}: skill ${d.name}: its folder must be inside the module`);
-    const { name: skillName, description, when, unless, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
+    const { name: skillName, description, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
     if (skillName !== d.name) fail(`module ${name}: skill ${d.name}: its SKILL.md name must be its folder name (${d.name})`);
-    const bad = ["when", "unless"].flatMap((k) => Object.keys((k === "when" ? when : unless) ?? {}).filter((t) => !PROMPT.tests.includes(t)).map((t) => `${k}.${t}`))[0];
-    if (bad) fail(`module ${name}: skill ${d.name}: unknown ${bad} (tests: ${PROMPT.tests.join(", ")})`);
     const extra = Object.keys(meta).find((k) => !["license", "metadata", "allowed-tools"].includes(k));
-    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools)`);
+    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools; an agent lists the skills it uses in skills:)`);
     const summary = typeof description === "string" ? description.trim() : "";
     if (!summary || summary.includes("\n")) fail(`module ${name}: skill ${d.name}: needs a one-line description`);
-    return { id: `${name}.${d.name}`, module: name, file, order: "normal", when: when ?? {}, unless: unless ?? {}, lane: false, skill: Object.keys(def.connections ?? {}), summary };
+    return { id: `${name}.${d.name}`, file, summary };
   });
-  return [...prompts, ...skills];
+}
+/**
+ * An agent's skills, the one rule: (its `skills:` ∪ override.add) − override.remove, sorted. `override` is instance.yaml
+ * overrides.agents.<key>.skills ({ add?, remove? }); `catalog` maps every available module's skill id to whether its module
+ * is enabled. A skill of an available but disabled module is dropped; an id no available module has fails.
+ */
+export function effectiveSkills(key: string, def: Obj, override: Obj | undefined, catalog: Record<string, boolean>): string[] {
+  const list = (v: unknown, where: string): string[] => {
+    if (v == null) return [];
+    if (!Array.isArray(v) || v.some((id) => typeof id !== "string")) fail(`agents.${key}.${where}: a list of skill ids (<module>.<name>)`);
+    for (const id of v as string[]) if (!Object.hasOwn(catalog, id)) fail(`agents.${key}.skills: unknown skill ${id}`);
+    return v as string[];
+  };
+  if (override != null && (typeof override !== "object" || Array.isArray(override) || Object.keys(override).some((k) => k !== "add" && k !== "remove"))) fail(`overrides.agents.${key}.skills: { add?: [ids], remove?: [ids] }`);
+  const remove = new Set(list(override?.remove, "skills.remove"));
+  return [...new Set([...list(def.skills, "skills"), ...list(override?.add, "skills.add")])].filter((id) => !remove.has(id) && catalog[id]).sort();
 }
 /** Handbook order: first, normal, last; then module; then id. */
 export const promptOrder = (a: Obj, b: Obj) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
 const holds = (t: Obj, a: Obj, enabled: string[]) => [...(t.tools ?? []).map((x: string) => a.enabled_tools?.[x.split(".")[0]!]?.includes(x.split(".")[1]) ?? false), ...(t.roles ?? []).map((r: string) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m: string) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
-/** Its tests hold for the agent; a skill also needs the agent to be its module's or to hold a grant on one of its connections. */
-export const promptApplies = (p: Obj, a: Obj, enabled: string[]) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean) && (!p.skill || a.module === p.module || p.skill.some((c: string) => a.enabled_tools?.[c]?.length));
+/** Its tests hold for the agent. */
+export const promptApplies = (p: Obj, a: Obj, enabled: string[]) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean);
 
 /**
  * instance.yaml `outcomes:`: at most 7 standing goals, each `{id, outcome, done, owner}` (id a-z, 0-9, -; owner an agent
@@ -1918,16 +1941,6 @@ async function ensureLogTasks({ api, companyId, keys, holders, step, kind, title
   });
   return Object.fromEntries(keys.map((key: string, i: number) => [key, ids[i]]));
 }
-
-/**
- * One "Memory inbox: <key>" task per agent that has `memory_note` (marker memory-inbox:<key>), held by that agent: its notes
- * land there as comments, for the Librarian's daily pass. memory_note and the bridge's inbox guards read its id from the
- * grants table (memory_inbox); nothing searches for the marker at run time.
- */
-export const ensureMemoryInboxes = ({ api, companyId, keys, holders, step }: Obj) => ensureLogTasks({
-  api, companyId, keys, holders, step, kind: "memory-inbox", title: (key: string) => `Memory inbox: ${key}`, what: (key: string) => `memory inbox of ${key}`,
-  description: (key: string) => `Facts ${key} noted for its memory, one comment each (memory_note). The Librarian curates them daily into agents/${key}/memory.md; nobody else reads or edits this task.`,
-});
 
 /**
  * One "Chat with <name>" task per agent with a `chat:` block (marker chat-task:<key>), held by that agent: the fast chat

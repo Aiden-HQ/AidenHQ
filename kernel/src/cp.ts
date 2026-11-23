@@ -10,8 +10,7 @@
 //   a child of a task assigned to it, and creates tasks as itself (under such a task, a part of its own under any task, or
 //   top-level). A fleet overseer (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit) comments on any
 //   task of its company; an agent comments on the tasks the
-//   grants table names for it (memory inbox, review log, chat), on the shared "Fleet issues" log task (grants `fleet_issues`),
-//   and a librarian on every memory inbox. A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
+//   grants table names for it (review log, chat) and on the shared "Fleet issues" log task (grants `fleet_issues`). A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
 //   task of its company an agent made (scope `settle`): a comment, a status (done only on a task in review, through the finish
 //   gate, heard as the task's own close), and handing the task to any agent; never a task a person
 //   made (the owner's own task or chat) and never a log task. Anything else is
@@ -20,7 +19,6 @@
 //   agent's comment does.
 // - A status change to `done` is for the job's own task, a task the job's agent holds (from an earlier run that left it
 //   open), or a fleet settler's task to settle; it passes the finish gate first (checks.ts): held or reopened, nothing is written and the answer says so (202).
-// - A task a job creates gets the kernel's provenance row (provenance.ts) from the plugin's answer.
 // A user assignee is only ever the owner; a PATCH hands a task back (assigneeAgentId null, to the owner), and only a fleet
 // settler's hands it to another agent.
 // Every open task has a holder, an agent or the owner (leavesNoHolder): a create or a change that would leave one with neither
@@ -36,7 +34,6 @@ import { TYPED } from "./cplimit.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
 import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
-import type { Provenance } from "./provenance.ts";
 import { fail } from "./proxy.ts";
 import { ProjectError, type Projects } from "./projects.ts";
 import { isLogTask, logTasks, scopeOf as taskScopeOf } from "./task-scope.ts";
@@ -77,7 +74,7 @@ export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: 
 }
 export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
 
-export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, provenance, appOwners, facts, observe, projects, log = () => {} }: {
+export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fleetIssues = () => "", controlUrl, checks, appOwners, facts, observe, projects, log = () => {} }: {
   /** Projects (projects.ts): an agent's `project` tag by name. */
   projects?: Pick<Projects, "serial" | "named">;
   /** The wake inbox's observe (wakes.ts): a task this route just changed has its facts recorded at once, from the issue the write returned. */
@@ -95,7 +92,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
   fleetIssues?: () => string;
   /** The keys of the agents that own an app (apps-mcp's registry), for a `delegate_to` that names app-owners. */
   appOwners?: () => Promise<string[]>;
-  controlUrl: string; checks?: Checks; provenance: Pick<Provenance, "carried" | "intend" | "record">; log?: (msg: string, f?: Record<string, unknown>) => void;
+  controlUrl: string; checks?: Checks; log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   const fact = factWriter(facts, log);
   /** `who`: the module and the agent the call is for, as soon as they are known (a refusal's log line names them). */
@@ -144,13 +141,12 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     // Setup's log tasks (grants): held by an agent, they take comments only, and never a child (task-scope.ts).
     const logs = logTasks({ agents: table as never, fleet_issues: fleetIssues() });
     const scopeOf = (t: Issue) => taskScopeOf(t, agent, issue, logs);
-    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a librarian's inboxes, a fleet overseer (the chief of staff, fleet-admin, or the Fleet Steward, fleet-audit) anywhere. */
+    /** A comment-only write's scope where the job has no other: the grants table's tasks for it, the Fleet issues log, a fleet overseer (the chief of staff, fleet-admin, or the Fleet Steward, fleet-audit) anywhere. */
     const commentScope = (t: Issue) => {
       const own = table[agent] ?? {};
-      if ([own.memory_inbox, own.review_log, own.chat_task].includes(t.id)) return "listed";
+      if ([own.review_log, own.chat_task].includes(t.id)) return "listed";
       const fleet = fleetIssues();
       if (fleet && t.identifier === fleet) return "listed";
-      if (roles.includes("librarian") && Object.values(table).some((g) => g.memory_inbox === t.id)) return "listed";
       return roles.includes("fleet-admin") || roles.includes("fleet-audit") ? "admin" : undefined;
     };
     /** A task a fleet settler may change: one an agent made (never a person's own task or chat), and not a log task. */
@@ -233,12 +229,9 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
         // Its project: the one named, else its parent's, else (none there either) that of the task the job works on.
         const projectId = b.project !== undefined ? await projectNamed(decodeURIComponent(company), b.project) : (parent ? (await issue(parent.id)).projectId : undefined) ?? (await issue(task)).projectId;
         if (projectId) child.projectId = projectId;
-        // The cap goes on record under the new task's origin (its tag) before the task exists.
-        provenance.intend(tag.slice(5, -4), await provenance.carried({ agent, task }));
         return send({ tag, ...(parent ? { issueId: parent.id, scope } : {}), child, delegateTo });
       });
       if (!d) return;
-      provenance.record(d.child!, tag.slice(5, -4));
       return issueAnswer(d.child!, 201, { deduplicated: d.found });
     }
 
@@ -353,7 +346,7 @@ const BOARD_MAX_BODY = 16 * 1024 * 1024;
  * answers pass as they are (an attachment upload is multipart, its content bytes). `X-AidenHQ-Account` names the signed-in
  * admin a write is for (none: the board's own timers and notices); it is logged with the write.
  */
-export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, log = () => {}, onRoutine = () => {} }: { onRoutine?: (id: string) => void; /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
+export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, observe, facts, ownerFiled = () => {}, log = () => {} }: { /** A task the owner filed on the board (admission.ts reads it: platform authority). */ ownerFiled?: (task: string) => void; /** The fact log: the owner's comments are recorded here, whichever agents are polled. */ facts?: Facts; controlUrl: string; key: () => string; fetch?: typeof globalThis.fetch; observe?: (issue: { id: string }, actor: string) => Promise<void>; log?: (msg: string, f?: Record<string, unknown>) => void }) {
   return async function boardCp(req: IncomingMessage, res: ServerResponse, lane: string, path: string, query: string): Promise<void> {
     const method = String(req.method);
     const allowed = lane === "read" ? method === "GET" && BOARD_READ_PATHS.some((re) => re.test(path)) : BOARD_WRITE_PATHS.some(([m, re]) => m === method && re.test(path));
@@ -367,6 +360,13 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     const type = req.headers["content-type"];
     // An owner write that would leave an open task with no holder (leavesNoHolder) is refused before it reaches the control plane.
     const created = method === "POST" && /^\/api\/companies\/[^/]+\/issues$/.test(path), changed = method === "PATCH" && /^\/api\/issues\/[^/]+$/.test(path);
+    // A routine the board makes is an owner's recurring task, titled "Repeats: …": that prefix is the board's alone (compile
+    // refuses it for a module's routine), so setup can tell the board's routines from its own.
+    if (method === "POST" && /^\/api\/companies\/[^/]+\/routines$/.test(path)) {
+      let title = "";
+      try { title = String(JSON.parse(body!.toString("utf8") || "{}").title ?? ""); } catch { /* refused below */ }
+      if (!title.startsWith("Repeats: ")) throw fail(403, "forbidden", 'the board makes only recurring tasks\' routines, titled "Repeats: …"');
+    }
     if (created || changed) {
       let b: Record<string, unknown>;
       try { b = JSON.parse(body!.toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
@@ -386,10 +386,6 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     });
     const out = Buffer.from(await r.arrayBuffer());
     if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
-    // A routine the board makes for the owner's recurring task ("Repeats: <task>") is the owner's own: the kernel records its id (main.ts caps it "full").
-    if (r.ok && method === "POST" && /^\/api\/companies\/[^/]+\/routines$/.test(path)) {
-      try { if (String(JSON.parse(body!.toString("utf8")).title).startsWith("Repeats: ")) onRoutine(String(JSON.parse(out.toString("utf8")).id)); } catch { /* not a routine answer */ }
-    }
     if (lane === "owner") log("cp owner", { method, path, status: r.status, ...(account ? { account } : {}) });
     // The owner's comment is a fact at once (version = its id), whoever holds the task.
     if (lane === "owner" && r.ok && method === "POST") {
@@ -403,6 +399,7 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
     if (lane === "owner" && r.ok && (created || changed)) {
       try {
         const issue = JSON.parse(out.toString("utf8")) as { id?: unknown };
+        if (typeof issue.id === "string" && created && !(issue as { deduplicated?: unknown }).deduplicated) ownerFiled(issue.id);
         if (typeof issue.id === "string") await observe?.(issue as { id: string }, account ? `account:${account}` : "unknown");
       } catch (e) { log("observe failed", { path, err: (e as Error).message }); }
     }

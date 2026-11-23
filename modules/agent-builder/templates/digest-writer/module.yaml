@@ -1,0 +1,26 @@
+# Role template: a local module (modules/<name>/ in the instance repo) holding one agent that writes a scheduled digest of
+# named sources and posts it to its own task. The Agent Architect copies it, renames it and fills in the sources.
+name: digest-writer
+description: A scheduled digest of named sources.
+agents:
+  digest-writer:
+    name: Digest Writer
+    description: Writes a scheduled digest of named sources (Slack channels, GitHub repos, a warehouse query) and posts it to its task; does not triage or act on what it reads.
+    reports_to: chief-of-staff
+    skills: [ tasks.delegate-work ]
+    model: ~deepseek/deepseek-flash-latest
+    connections:
+      slack?: read
+      github?: read
+      paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_block, task_cancel ]
+      # Warehouse reads, plus the apps' live pages (every agent).
+      apps: [ web_view, app_view, warehouse_query ]
+routines:
+  digest-writer-digest:
+    title: Write the digest
+    agent: digest-writer
+    description: |
+      Today is {{date}}. Follow "Each run" in your instructions and post the digest to this task.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 8 * * 1-5", timezone: "${settings.timezone}", label: "weekday morning" }

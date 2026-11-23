@@ -105,7 +105,7 @@ test("a setting change sets exactly that key; an unknown kind or a stray field i
 test("on a team, the record's settings edit teams.<t>.defaults, a member's its entry; the rest is refused", () => {
   const compiled = { agents: { engineer: { team: { name: "engineering", members: ["kai"] } }, kai: { member_of: "engineer" }, lead: {} } };
   const text = "product: x\nteams:\n  engineering:\n    template: engineering.engineer\n    members:\n      kai: { name: Kai }\n";
-  const plan = (changes) => YAML.parse(planFiles(changes, { read: (p) => (p === "instance.yaml" ? text : undefined), isInstance: () => false, teamOf: (k) => (k === "engineer" ? { team: "engineering", record: true } : k === "kai" ? { team: "engineering", record: false } : undefined), moduleHandbook: () => undefined, bundle: [] }).get("instance.yaml"));
+  const plan = (changes) => YAML.parse(planFiles(changes, { read: (p) => (p === "instance.yaml" ? text : undefined), localOf: () => undefined, teamOf: (k) => (k === "engineer" ? { team: "engineering", record: true } : k === "kai" ? { team: "engineering", record: false } : undefined), moduleHandbook: () => undefined, bundle: [] }).get("instance.yaml"));
   const out = plan([{ kind: "agent", agent: "engineer", field: "model", value: "openrouter/m1" }, { kind: "agent", agent: "kai", field: "max_parallel", value: 3 }, { kind: "agent", agent: "lead", field: "model", value: "m2" }]);
   assert.equal(out.teams.engineering.defaults.model, "openrouter/m1");
   assert.equal(out.teams.engineering.members.kai.max_parallel, 3);

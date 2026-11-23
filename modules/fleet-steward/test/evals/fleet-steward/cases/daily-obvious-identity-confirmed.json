@@ -2,7 +2,7 @@
  "name": "daily-obvious-identity-confirmed",
  "why": "Same email on every linked user and matching names: confirm.",
  "routine": "knowledge-daily",
- "input": "Run task: \"Librarian daily pass\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\nobsidian_search new since yesterday -> []\nwarehouse_query src_meta.people_identities status=proposed -> [{\"person\":\"p-12\",\"source\":\"slack\",\"source_user_id\":\"U0DANA0001\",\"display_name\":\"Dana Whitfield\",\"email\":\"dana@example.com\"},{\"person\":\"p-12\",\"source\":\"github\",\"source_user_id\":\"dwhitfield\",\"display_name\":\"Dana Whitfield\",\"email\":\"dana@example.com\"}]\ntask_search \"Memory inbox\" -> []\n",
+ "input": "Run task: \"Librarian daily pass\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\nobsidian_search new since yesterday -> []\nwarehouse_query src_meta.people_identities status=proposed -> [{\"person\":\"p-12\",\"source\":\"slack\",\"source_user_id\":\"U0DANA0001\",\"display_name\":\"Dana Whitfield\",\"email\":\"dana@example.com\"},{\"person\":\"p-12\",\"source\":\"github\",\"source_user_id\":\"dwhitfield\",\"display_name\":\"Dana Whitfield\",\"email\":\"dana@example.com\"}]\n",
  "expect": [
   {
    "tool": "person_identity_decide",

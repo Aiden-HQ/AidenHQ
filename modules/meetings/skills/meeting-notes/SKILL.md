@@ -1,7 +1,6 @@
 ---
 name: meeting-notes
 description: "Turns transcripts and Google Meet documents into a meeting note, a project-note entry and tasks for the owner's own action items through ops-mcp. Use on the meeting scan run (Researcher)."
-when: { fields: { name: Researcher } }
 ---
 
 # Meeting notes

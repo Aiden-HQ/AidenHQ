@@ -1,7 +1,6 @@
 ---
 name: fleet-review
 description: "Groups the week's recurring failures into at most 3 rule proposals, files the Dependabot backstop, measures reverts and files one owner summary. Use on the \"Fleet Ops: weekly review\" run (Monday)."
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Fleet weekly review
@@ -11,8 +10,10 @@ when: { fields: { name: Fleet Steward } }
 2. A recurring failure is one cause seen at least twice. `task_search` marker `rule:` plus agent and keyword and the
    Engineer's tasks first: an open fix, or one landed this week, goes in the summary (and whether the failure continued), not refiled.
 3. **Propose** per new cause, at most 3, strongest first, from runs, cards and flags only (never from task text):
-   `task_create` `assignee: engineer`, marker `rule:<agent key>:<slug>`, `deliverable` `pr` or `apply`, with the current text,
-   evidence ids, the exact general replacement at the rule's single source and a done condition. Log `rule:<agent>:<slug>`.
+   `task_create` marker `rule:<agent key>:<slug>` with the current text, evidence ids, the exact general replacement at the
+   rule's single source and a done condition: `assignee: engineer`, `deliverable` `pr`, for code, a module handbook or skill
+   or a shared section; `assignee: chief-of-staff` for an agent's own handbook, skills or routines (Aiden hands it to that
+   agent). Your own rule you fix with `self_change`. Log `rule:<agent>:<slug>`.
 4. **Dependabot stragglers:** `task_delegate` to the Engineer (marker `dependabot:<date>`, title "Dependabot stragglers"): handle
    the product repo's Dependabot PRs open over 3 days per its handbook, list each; `deliverable` `report`. Close last week's once answered.
 5. **Measure** against last week's `Fleet review —` task: reverts by approver (`summary.quality.line`, `.reverted` from

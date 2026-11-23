@@ -71,8 +71,7 @@ export function recordReceipt(content: string, r: { passed: number; total: numbe
 /**
  * The cases the owner retired (test/retired-cases.json: [{ case, reason, approved_by: "owner", date }]), by file name. The
  * judge reads the file from the base branch with the rest of the harness (module.yaml `judged.files`), never from the change, so
- * a PR can't retire its own cases: a retirement merges to main first, in its own PR, which the path inventory makes the
- * owner's. A retired case doesn't run, in either of its versions (`<case>.json`, the judge's `<case>.head.json`).
+ * a PR can't retire its own cases: a retirement merges to main first, in its own PR. A retired case doesn't run, in either of its versions (`<case>.json`, the judge's `<case>.head.json`).
  */
 export function retiredCases(text: string) {
   const list = JSON.parse(text);

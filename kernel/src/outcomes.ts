@@ -12,7 +12,6 @@ import type { Finish } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { createOnce } from "./once.ts";
-import type { Provenance } from "./provenance.ts";
 import { signature } from "../../services/paperclip-events/sign.js";
 import { heldRoles } from "./identity.ts";
 
@@ -78,7 +77,7 @@ export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30
 }
 export type PluginPost = ReturnType<typeof createPluginPost>;
 
-export function createOutcomes({ db, plugin, delegates, finish, provenance, relay, facts, agentKey = (id) => id, chatTask, log = () => {} }: {
+export function createOutcomes({ db, plugin, delegates, finish, relay, facts, agentKey = (id) => id, chatTask, log = () => {} }: {
   db: DatabaseSync; plugin: PluginPost;
   /** Flow's fact log (facts.ts): task.commented for each comment an agent's outcome posts, and an agent's key for its actor. */
   facts?: Facts; agentKey?: (agent: string) => string;
@@ -86,8 +85,6 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
   delegates: (agent: string) => Promise<string[]>;
   /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
   finish: (task: string, agent: string) => Promise<Finish>;
-  /** A child the job creates gets its provenance row (provenance.ts). */
-  provenance: Pick<Provenance, "carried" | "intend" | "record">;
   /** A reply, once posted, also goes to the channel the owner wrote from (relay.ts). */
   relay?: (job: { agent: string; task: string }, body: string) => Promise<void>;
   /** The grants table's `chat_task` for an agent: the only task a `listed` post may name (the lane's reply). */
@@ -111,8 +108,6 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
         gate = await finish(job.task, job.agent);
         if (!gate.pass) status = undefined;
       }
-      const origin = tag(job.id, req.kind).slice(5, -4);
-      if (req.child) provenance.intend(origin, await provenance.carried({ job: job.id, agent: job.agent, task: job.task }));
       const params = { issueId: job.task, tag: tag(job.id, req.kind), body: req.body, ...(req.scope ? { scope: req.scope } : {}), ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
       const r = await plugin.post(job.agent, params);
       // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
@@ -124,7 +119,6 @@ export function createOutcomes({ db, plugin, delegates, finish, provenance, rela
       // A 404 is the plugin's route missing while setup reinstalls the plugin during an apply: retried (a 502), never final.
       if (r.status === 404) throw new OutcomeError(502, "unknown", "the post action isn't there (the plugin is being reinstalled): try again");
       if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 400 && r.status !== 429 ? r.status : r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
-      if (req.child && data.child) provenance.record(data.child, origin);
       log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
       if (data.comment) fact({ type: "task.commented", subject: `task:${job.task}`, version: String(data.comment), at: iso(Date.now()), actor: `agent:${agentKey(job.agent)}`, task: job.task, data: { kind: req.kind, job: job.id } });
       return { comment: data.comment, status: data.status ?? null, ...(gate ? { finish: gate } : {}) };
@@ -165,7 +159,8 @@ type Delegator = { key?: string; roles?: string[]; profile?: string; reports_to?
 /**
  * The ids of the agents `agent` may hand a task to, the one place the rule lives: its `delegate_to` keys when it has them
  * (`key?` optional ones too; `app-owners` adds the keys of the apps' owners), else anyone in the company for the chief of staff
- * (role fleet-admin), else its direct reports (grants `reports_to`) and the Engineers (profile engineer). A team's key stands
+ * (role fleet-admin), else its direct reports (grants `reports_to`), the Engineers (profile engineer) and the chief of staff
+ * (what only it changes, the owner's profile among them, is asked of it). A team's key stands
  * for its record and every member (naming a member is the structured assignment); a member is never reached any other way.
  */
 export const delegateIds = async (agents: Record<string, Delegator> | undefined, agent: string, appOwners: () => Promise<string[]> = async () => []) => {
@@ -177,5 +172,5 @@ export const delegateIds = async (agents: Record<string, Delegator> | undefined,
     return all.filter(([, g]) => keys.has(g.key!) || (g.member_of !== undefined && keys.has(g.member_of))).map(([id]) => id);
   }
   if (heldRoles(agents, agent).includes("fleet-admin")) return all.map(([id]) => id);
-  return all.filter(([, g]) => g.profile === "engineer" || (me?.key !== undefined && g.reports_to === me.key)).map(([id]) => id);
+  return all.filter(([id, g]) => g.profile === "engineer" || (me?.key !== undefined && g.reports_to === me.key) || heldRoles(agents, id).includes("fleet-admin")).map(([id]) => id);
 };

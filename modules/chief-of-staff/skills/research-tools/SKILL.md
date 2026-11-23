@@ -1,7 +1,6 @@
 ---
 name: research-tools
 description: "Explains the Researcher's tools: reads (Glean, Jira, reference docs, notes, Google) and writes (Slack drafts, Primer publish, GitHub comment, issue, review and re-run, voice lessons). Use before any Researcher write tool, or when unsure which read tool fits."
-when: { fields: { name: Researcher } }
 ---
 
 # Your tools

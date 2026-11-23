@@ -334,29 +334,6 @@ test("a head-bound kind keeps its approval requirements, and a plan that names n
   assert.equal(count(), before);
 });
 
-test("a module write on a task under a routine's run task gets that routine's autonomy cap, as the runner's kinds do", async (t) => {
-  // TASK-1 is a child of RUN-1, the routine r1's run task.
-  const issues = { "TASK-1": { id: "TASK-1", parentId: "RUN-1" }, "RUN-1": { id: "RUN-1", originKind: "routine_execution", originId: "r1" } };
-  let down = false;
-  const onControl = (req) => {
-    const id = /^\/api\/issues\/([^/]+)$/.exec(req.url)?.[1];
-    if (id) return down ? { status: 500, body: {} } : { body: issues[id] };
-  };
-  const capped = await twin(t, { settings: { routines: { r1: "tier0" } }, onControl });
-  const p = await capped.pending(await capped.tool("post_note", { note: "a" }));
-  assert.deepEqual(((r) => [r.tier, r.merit, r.cap])(capped.k.records.get(p.approval)), [1, 1, { by: "routine", value: "tier0", routine: "r1" }]);
-  // A trace the control plane can't answer now files nothing (never a stricter cap from a blip); once it answers, a
-  // destructive tool (conn.tool, Tier 1) is capped the same way.
-  down = true;
-  assert.match(JSON.stringify(await (await capped.tool("note_drop", { id: "1" })).json()), /routine trace couldn't be read now/);
-  down = false;
-  const d = await capped.pending(await capped.tool("note_drop", { id: "1" }));
-  assert.deepEqual([d.tier, capped.k.records.get(d.approval).cap], [1, { by: "routine", value: "tier0", routine: "r1" }]);
-  // A routine with full autonomy leaves it the reviewer's.
-  const full = await twin(t, { settings: { routines: { r1: "full" } }, onControl });
-  assert.equal((await full.pending(await full.tool("post_note", { note: "a" }))).tier, 1);
-});
-
 test("a Tier 0 conn.tool call leaves a completed record whose outcome is the MCP result; a Tier 0 kind answers with its outcome", async (t) => {
   const { k, fx, tool, moduleCalls } = await twin(t);
   const r = await tool("note_write", { text: "x" });

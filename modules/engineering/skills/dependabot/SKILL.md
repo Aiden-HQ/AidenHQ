@@ -12,7 +12,7 @@ them with `github_search_issues` (`is:pr is:open author:app/dependabot`, per rep
 1. **Major jump** (or a group including one): a planned migration; never merge the group's PR (step 5 is for PRs without
    one). Take each other bump through steps 2-4 on its own terms: a bump that cannot go yet (undated, or too young) is posted
    on the task now as "undated" or "too young, not taken". Publish the eligible ones together on your own branch
-   (`fleet/deps-<slug>`, `aidenhq publish`; a security fix takes its exception entry); its Done notice wakes you when it merges
+   (`agent/<your task>/deps-<slug>`, `aidenhq publish`; a security fix takes its exception entry); its Done notice wakes you when it merges
    (in a repo without agent-PR merge notices, request the merge with `aidenhq merge` once its checks pass).
    Close a major-jump group PR only after the replacement PR carrying its eligible bumps has merged: closing the group PR ends the task, and a replacement still open at that point is closed without merging, so the bumps never land.
    With nothing eligible there is no replacement to wait for, so that rule does not hold the PR: close now. Then `aidenhq close
@@ -23,7 +23,7 @@ them with `github_search_issues` (`is:pr is:open author:app/dependabot`, per rep
    least 16 minutes ahead (the tool's limits). On waking, if it is still young wait again; once eligible, publish the same
    versions on your own branch as in 4 (a fresh head runs the age check anew) and Dependabot closes its PR.
 4. **Other red checks** (an age failure is step 2 or 3): read the failed job's `github_job_log`; make the same version changes plus the smallest fix on
-   `fleet/deps-<slug>` and `aidenhq publish <repo> <branch>`; Dependabot closes its PR once `main` has those versions. A red
+   `agent/<your task>/deps-<slug>` and `aidenhq publish <repo> <branch>`; Dependabot closes its PR once `main` has those versions. A red
    supply-chain check on a security update needs its `.github/supply-chain-exceptions.yaml` entry first (own PR, the owner's
    tap). Real migration work: list it with the reason.
 5. **Green, pins only** (lockfiles, Dockerfile `FROM`, compose image pins, action SHAs; every check green, supply-chain

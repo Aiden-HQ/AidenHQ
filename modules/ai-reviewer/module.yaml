@@ -44,6 +44,5 @@ settings:
   ai_review_code:
     default: all
     values: [ all, none, unless_code_review_mandatory ]
-    owner: [ { path: "", change: true, default: all } ]
 generated_secrets:
   - ai_reviewer_key

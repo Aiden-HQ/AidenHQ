@@ -6,12 +6,11 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CODEHOSTS } from "./codehost.ts";
-import { heldRoles, rolesOf } from "./identity.ts";
+import { heldRoles } from "./identity.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { JobError, queueFacts } from "./jobs.ts";
 import type { JobTools } from "./jobtools.ts";
-import type { RoutineCap } from "./tier.ts";
 import type { Skill } from "./sandbox.ts";
 import type { Pool } from "./pool.ts";
 
@@ -25,7 +24,7 @@ const IMAGE: Record<Profile, string> = { crew: "agent-base", engineer: "engineer
 
 /** A grants-table entry (config/grants/grants.json `agents`, compiled by scripts/modules.ts grantEntry). */
 export type AgentGrant = {
-  key?: string; roles?: string[]; trial?: boolean; private_reads?: boolean; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
+  key?: string; roles?: string[]; web_search?: string; profile?: Profile; image?: string; engine?: string; engines?: string[]; model?: string; effort?: string; models?: string[]; skills?: Skill[];
   tools?: Record<string, string[]>; jobcaps?: string[]; max_parallel?: number; routines?: Record<string, { model?: string; effort?: string }>;
   /** A team record (compile's teams): it never runs; its members do. A member names its team record's key. */
   team?: { name: string; members: string[] }; member_of?: string;
@@ -35,9 +34,7 @@ export type Authority = {
   /** `engines`: the engines a job may ask its next turn to run on (`aidenhq engine`): the grant's, else only its own. */
   profile: Profile; image: string; engine: string; engines: string[]; model: string; effort: string; models: string[]; skills: Skill[];
   tools: Record<string, string[]>; jobcaps: string[]; writes: string[]; roles: string[];
-  /** The agent reads private data (private_reads): its jobs get no web search, and only they its private jobcaps. */
-  reads: boolean;
-  /** Web search: off for an agent that reads private data or whose definition turns it off (web_search: disabled). */
+  /** Web search: off for an agent whose definition turns it off (web_search: disabled). */
   web: boolean;
 };
 /** A wake in the inbox (wakes.ts): the task and agent it is for and why (`routine:<key>` names the routine whose run it is). */
@@ -71,21 +68,20 @@ export type Admitted = { id: string; module: string; agent: string; task: string
 const LIVE = "state IN ('admitted', 'running')";
 const ID = /^[\w.:-]{1,200}$/;
 
-export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, provenance, routineCap, nextTurn, launch, release, facts, log }: {
+export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayDispatch, cp, wakes, nextTurn, launch, release, facts, routineKey = () => undefined, log }: {
+  /** A Paperclip routine's compiled key (grants.json routine_keys): a routine run's task names its routine (originId), so a
+   * later job on it (a retry, a reopen) is still that routine's. */
+  routineKey?: (id: string) => string | undefined;
   /** Flow's fact log (facts.ts): job.queued and wake.bound with a job's first start (jobs.ts queueFacts) or its couldn't-start end, job.held when it is refused or deferred. */
   facts?: Facts;
   /** What the task's last job asked of this turn (jobtools.ts): read in the transaction, spent once the job has started. */
   nextTurn: Pick<JobTools, "pending" | "taken" | "refusal">;
-  /** Kernel provenance (provenance.ts): a task the kernel's plugin made runs only with its provenance row. */
-  provenance: { settled(issue: { id: string; originKind?: string | null; originId?: string | null }): boolean; filedBy(issue: { id: string; originKind?: string | null; originId?: string | null }): string | undefined };
-  /** The task's routine cap as the kernel traces it now (tier.ts taskRoutineCap): frozen on the job row at admission. */
-  routineCap: (task: string) => Promise<RoutineCap | undefined>;
   /** kernel.db, with the jobs table (jobs.ts) already made. */
   db: DatabaseSync;
   grants: () => Record<string, AgentGrant | undefined>;
   /** Write kinds (config/kernel/writes.json and the kernel's): a job may request the reviewed ones (floor 1+) whose tools it
    * holds; an engineer job also the code host's kinds and kernel.apply. */
-  kinds: () => Record<string, { module: string; floor: number; tools: string[] }>;
+  kinds: () => Record<string, { module: string; floor: number; tools: string[]; filer?: string }>;
   /** settings.computers_max (config/computers.json `max`): the launcher's pool, so no job is admitted it can't box. */
   capacity: () => number;
   /** The pool's fair share (pool.ts): agent jobs and check jobs are each guaranteed half of `capacity`; this admits within it. */
@@ -93,7 +89,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   /** The spend limits a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
   mayDispatch: (module: string, agent: string) => boolean;
-  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; originId?: string | null } | undefined> };
+  cp: { task(id: string): Promise<{ id: string; identifier?: string; assigneeAgentId?: string | null; status?: string; description?: string | null; originKind?: string | null; originId?: string | null; createdByAgentId?: string | null } | undefined> };
   wakes: Wakes;
   /** Gets the job its computer and starts it (boxes.ts); a 503 means the computers are full: the job waits for the next tick. */
   launch: (job: Admitted) => Promise<void>;
@@ -104,6 +100,9 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   // Strict: each fact is written in the transaction of the change it describes, which fails with it.
   const fact = facts ? strictFact(facts) : () => {};
   /** The jobs this process admitted and is launching now: its drain waits for them, and recover() never takes them. */
+  // Who filed a task with no agent creator, as the kernel itself saw it: the owner on the board (cp.ts createBoardCp) or a module
+  // through /v1/tasks with the role it filed to (modtasks.ts). Made here too, so admission reads it in any order.
+  db.exec("CREATE TABLE IF NOT EXISTS task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL)");
   const launching = new Set<string>();
   const keyOf = (agent: string) => grants()[agent]?.key ?? agent;
   /**
@@ -118,30 +117,36 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     }
   };
 
-  /** Platform authority belongs to the task: a job holds the platform-engineer role only on a task no agent filed, or one the Architect or the Fleet Steward filed. */
-  function platformTask(t: Parameters<typeof provenance.filedBy>[0]): boolean {
-    const by = provenance.filedBy(t);
-    return by === undefined || (by !== "" && heldRoles(grants(), by).some((r) => PLATFORM_FILERS.includes(r)));
+  /**
+   * Platform authority comes only from a known filer, never from a missing one: a job holds the platform-engineer role on a
+   * task the owner filed (on the board or with his own message: cp.ts, channels.ts), one the Architect or the Fleet Steward filed (the control plane's creator: the kernel's plugin creates a job's task as that job's
+   * agent, and no write changes it), or a routine's run (an event routine never runs as a platform agent: compile). Anything
+   * else (a Slack mention, a module's task, a task whose filer the kernel never saw) holds no platform authority.
+   */
+  function platformTask(t: { id?: string; originKind?: string | null; createdByAgentId?: string | null }): boolean {
+    if (t.originKind === "routine_execution") return true;
+    if (t.createdByAgentId) return heldRoles(grants(), t.createdByAgentId).some((r) => PLATFORM_FILERS.includes(r));
+    const filer = t.id ? (db.prepare("SELECT filer FROM task_filers WHERE task = ?").get(t.id) as { filer: string } | undefined)?.filer : undefined;
+    return filer === "owner";
   }
 
-  function freeze(g: AgentGrant, cause: string, platform: boolean): Authority {
+  function freeze(g: AgentGrant, key: string | undefined, platform: boolean): Authority {
     const profile: Profile = g.profile ?? "crew";
     if (!PROFILES.includes(profile)) throw new JobError(403, "bad-profile", `profile ${profile} isn't one of ${PROFILES.join(", ")}`);
-    const key = /^routine:(.+)$/.exec(cause)?.[1];
     const routine = key ? g.routines?.[key] : undefined;
     // A check job runs repo code: no tools, no writes, nothing to reach.
     const tools = profile === "check" ? {} : Object.fromEntries(Object.entries(g.tools ?? {}).map(([c, t]) => [c, [...t]]));
     const holds = (ct: string) => { const [c, t] = ct.split("."); return Boolean(tools[c!]?.includes(t!)); };
     // An Engineer publishes its workspace's commits (push, PR, merge, close, a new repo) and applies instance changes: each
     // a record its tier decides, filed with the job's own workspace.
-    // Not an agent in trial: its writes come with the change that graduates it.
-    const engineer = (id: string, k: { module: string }) => profile === "engineer" && g.trial !== true && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
-    const writes = Object.entries(kinds()).filter(([id, k]) => (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k)).map(([id]) => id).sort();
+    const engineer = (id: string, k: { module: string }) => profile === "engineer" && (CODEHOSTS.includes(k.module) || id === "kernel.apply");
+    // A kind only the owner's own save files (`filer: owner`, a share's publish) is no job's.
+    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && ((k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k))).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
-      roles: profile === "check" ? [] : rolesOf(g).filter((r) => platform || r !== PLATFORM), reads: g.private_reads === true,
-      web: g.private_reads !== true && g.web_search !== "disabled",
+      roles: profile === "check" ? [] : (g.roles ?? []).filter((r) => platform || r !== PLATFORM),
+      web: g.web_search !== "disabled",
     };
   }
 
@@ -157,9 +162,6 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     const identifier = String(t.identifier ?? "");
     if (!/^[\w.-]{1,100}$/.test(identifier)) throw new JobError(400, "bad-task", `task ${task} has no identifier`);
 
-    // The routine cap is traced now and frozen on the row: never recomputed from mutable parents later, never the dispatcher's.
-    // A trace the control plane couldn't answer (a 5xx, a timeout) is no cap to freeze: the wake waits for its lease and comes back.
-    const cap = await routineCap(task).catch((e: Error) => { throw new JobError(503, "trace-unavailable", `task ${task}'s routine trace couldn't be read now (${String(e.message).slice(0, 200)}); try again shortly`); });
     // From here to COMMIT nothing awaits: two admits never interleave.
     const id = `j-${randomBytes(8).toString("hex")}`;
     let job: Admitted;
@@ -169,8 +171,6 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       const w = wakes.claimed(module, b.wake);
       if (!w || w.task !== task || w.agent !== agent) throw new JobError(409, "wake-not-claimed", `wake ${b.wake} isn't one this module claimed`);
       if (db.prepare(`SELECT 1 FROM jobs WHERE task = ? AND ${LIVE}`).get(task)) throw new JobError(409, "job-running", `task ${task} already has a job`);
-      // A task the plugin made with no provenance behind it: its routine cap is unknown, so nothing runs on it.
-      if (!provenance.settled(t)) throw new JobError(409, "provenance-unsettled", `task ${task} was made through the kernel's plugin with no provenance; it doesn't run`);
       const own = grants()[agent];
       if (!own) throw new JobError(403, "no-grants", `agent ${agent} has no grants`);
       if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
@@ -181,7 +181,9 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "max-parallel", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);
       if (over.length) throw new JobError(429, "over-cap", `${over.map((o) => (o.scope === "task" ? "the task's spend cap" : `the install's ${o.scope === "day" ? "daily" : "monthly"} spend limit`)).join(" and ")} is used up`);
-      const authority = freeze(g, w.cause, platformTask(t));
+      // The routine whose run this is: the wake's cause, else the routine its task came from (a retry or reopen of a run).
+      const routineOf = /^routine:(.+)$/.exec(w.cause)?.[1] ?? (t.originKind === "routine_execution" && t.originId ? routineKey(t.originId) : undefined);
+      const authority = freeze(g, routineOf, platformTask(t));
       // The last job's `aidenhq engine`: applied when the agent may still run it now, else ignored loudly (refusing would
       // wedge the task: the request would stand at every retry). Never widens `models`.
       const asked = nextTurn.pending(task);
@@ -191,8 +193,8 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
         else Object.assign(authority, { engine: asked.engine.kind }, asked.engine.model ? { model: asked.engine.model } : {});
       }
       const fresh = asked?.fresh === true;
-      db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, routine_cap, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?, ?)")
-        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), cap?.routine ?? null, cap?.cap ?? null, identifier);
+      db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, profile, wake, authority, routine, identifier) VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted', ?, ?, ?, ?, ?)")
+        .run(id, module, agent, task, authority.engine, Date.now(), JSON.stringify(authority.jobcaps), authority.profile, b.wake, JSON.stringify(authority), routineOf ?? null, identifier);
       wakes.bind(b.wake, id);
       db.exec("COMMIT");
       job = { id, module, agent, task, identifier, profile: authority.profile, authority, prompt: b.prompt, ...(b.full_prompt ? { fullPrompt: b.full_prompt } : {}), fresh, wake: b.wake };

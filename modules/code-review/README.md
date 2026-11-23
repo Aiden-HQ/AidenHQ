@@ -9,8 +9,8 @@ duration and findings (with their later outcome) in the module's SQLite, read th
 
 ## Connect
 
-Needs the `github` module. Add repos by asking Aiden (the Reviewer Manager changes `code_review`, within the caps you set
-under `code_review.owner`) or in the module's settings. `code_review_poll_seconds` (default 60) sets how often it looks
+Needs the `github` module. Add repos by asking Aiden (the Reviewer Manager changes `code_review`) or in the module's
+settings. `code_review_poll_seconds` (default 60) sets how often it looks
 at watched repos.
 
 ## What agents get

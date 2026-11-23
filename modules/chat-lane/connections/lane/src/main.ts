@@ -30,6 +30,8 @@ const port = Number(process.env.PORT ?? 8089);
 const inboundToken = env("MCP_BEARER_TOKEN");
 if (!inboundToken) throw new Error("MCP_BEARER_TOKEN(_FILE) is required");
 const kernel = kernelClient(kernelUrl, inboundToken, { timeoutMs: 20_000 }).call;
+// The agent's memory, once per turn, bounded: a slow or failed read never holds a turn up.
+const memoryRead = kernelClient(kernelUrl, inboundToken, { timeoutMs: 2_000 }).call;
 
 const store = openLaneStore(process.env.LANE_DB ?? "/data/lane.sqlite");
 const agents = laneConfig(process.env.LANE_CONFIG_FILE, (msg) => log.warn(msg));
@@ -39,7 +41,13 @@ const lane = makeLane({
   store,
   chat: kernelChat(kernel),
   agents,
-  tools: makeTools(),
+  tools: makeTools(inboundToken),
+  memory: async (agent) => {
+    try { return String((await memoryRead("GET", `/v1/memory/${encodeURIComponent(agent.key)}`)).view ?? ""); } catch (e) {
+      log.warn({ agent: agent.key, err: (e as Error).message }, "lane memory read failed");
+      return "memory unavailable this turn";
+    }
+  },
   gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201",
   laneSecret: env("GATEWAY_LANE_SECRET"),
   timezone: process.env.OWNER_TIMEZONE || "UTC",
@@ -92,8 +100,7 @@ const http = createServer(async (req, res) => {
         return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!)));
       }
     }
-    // An agent in trial ("draft, don't do") wakes and answers only its own chats (the kernel's role mark).
-    const server = buildServer(laneTools, caller && { id: caller.agent, name: caller.name, key: caller.key }, Boolean(caller?.roles.includes("kernel.trial")));
+    const server = buildServer(laneTools, caller && { id: caller.agent, name: caller.name, key: caller.key });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

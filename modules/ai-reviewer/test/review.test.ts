@@ -441,3 +441,10 @@ test("a tool_call whose arguments are missing or not an object is not a call: th
   assert.equal(good.decision, "approve");
   assert.match(user, /  a: 1/);
 });
+
+test("a git-quoted path is the same file in the count and the diff", async () => {
+  const { numstat, sameChanges, diffPath } = await import("../service/src/review-files.ts");
+  const header = 'diff --git "a/caf\\303\\251.txt" "b/caf\\303\\251.txt"';
+  assert.equal(diffPath(header), "café.txt");
+  assert.deepEqual(sameChanges(numstat('1\t0\t"caf\\303\\251.txt"\n'), `${header}\n@@ -0,0 +1 @@\n+x`), []);
+});

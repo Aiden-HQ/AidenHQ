@@ -10,9 +10,8 @@ export interface Grant {
   models?: string[];
   graded?: boolean;
   rev?: string;
-  /** The agent's profile and whether it reads private data (kernel/src/admission.ts): what scopes a read to its own task. */
+  /** The agent's profile (kernel/src/admission.ts). */
   profile?: string;
-  private_reads?: boolean;
 }
 
 /** The grants table, re-read whenever the file changes. */

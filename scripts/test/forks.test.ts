@@ -1,7 +1,7 @@
 // Carry-your-patch forks (spec §6.9b, lean-core 5e): an instance runs its own fork of an official module or the kernel on top
 // of the sha it pins, until upstream merges the patch. A throwaway product repo (the fixture modules) and a clone of it as the
-// fork: a fork that doesn't descend from the pin is refused, entering one is the owner's with the patch quoted on the card,
-// and switching back once upstream has it is the reviewer's.
+// fork: a fork that doesn't descend from the pin is refused, and entering one lists it as new authority with the patch quoted
+// on the card.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -11,10 +11,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { compile } from "../modules.ts";
-import { moduleInputs } from "../compiler/authority.ts";
+import { forkChanges, moduleInputs } from "../compiler/authority.ts";
 import { cacheRepo, forksOf, officialSides, remoteCodeText, withRemote } from "../compiler/sources.ts";
 import { applyParts } from "../../kernel/src/apply-tier.ts";
-import { highest } from "../../kernel/src/tier.ts";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const git = (dir, ...a) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { encoding: "utf8" }).trim();
@@ -65,12 +64,13 @@ function instanceDir(doc) {
   mkdirSync(join(dir, "agents"));
   return dir;
 }
-const applyTier = (bi, hi, over) => (highest(applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify(bi) }, head: { "instance.yaml": YAML.stringify(hi) }, pin: null, roles: {}, ...over })));
-/** The apply's tier as the kernel's apply planner computes it (apply-tier.ts): both instance.yaml sides, the module inputs read at both product pins. */
-function tierOf(r, bi, hi, f, over = {}) {
+const applyOf = (bi, hi, over) => applyParts({ files: ["instance.yaml"], base: { "instance.yaml": YAML.stringify(bi) }, head: { "instance.yaml": YAML.stringify(hi) }, pin: null, ...over });
+/** The apply's refusals and authority lines as the kernel's apply planner computes them (apply-tier.ts): both instance.yaml sides, the module inputs read at both product pins. */
+function planOf(r, bi, hi, f, over = {}) {
   const sides = withRemote({ baseInstance: bi, headInstance: hi, ...officialSides(bi, hi, bi.product, hi.product, r.product, f) }, f);
-  return applyTier(bi, hi, { modules: moduleInputs({ ...sides, always: [] }), ...over });
+  return applyOf(bi, hi, { modules: moduleInputs({ ...sides, always: [] }), marketplaces: forkChanges(bi, hi), ...over });
 }
+const owner = (p) => p.authority.some((l) => l.endsWith("(owner)"));
 
 test("a fork not descending from the release sha is refused; one on top of it runs, at a tier that is never official", () => {
   const r = repos();
@@ -82,14 +82,14 @@ test("a fork not descending from the release sha is refused; one on top of it ru
   assert.deepEqual([core.tier, core.revision], ["declared", r.f]);
 });
 
-test("entering a fork is Tier 2 and the card shows the patch diff, quoted", () => {
+test("entering a fork is new authority on the card, with the patch diff quoted", () => {
   const r = repos();
   const f = fetch(r);
   const bi = { product: r.p1, modules: ["core"] };
   const hi = { ...bi, modules: [forked(r, r.f)] };
-  const t = tierOf(r, bi, hi, f);
-  assert.deepEqual([t.tier, t.rule], [2, "module-authority"]);
-  assert.match(t.reason, new RegExp(`core: runs fork .* at ${r.f.slice(0, 12)} \\(tier no longer official\\)`));
+  const t = planOf(r, bi, hi, f);
+  assert.deepEqual(t.refusals, []);
+  assert.match(t.authority.join("\n"), new RegExp(`core: runs fork .* at ${r.f.slice(0, 12)} \\(tier no longer official\\)`));
   const text = remoteCodeText(bi, hi, f, r.product);
   const lines = text.split("\n");
   assert.equal(lines[0], `Fork of core: ${URL_} at ${r.f.slice(0, 12)}, its patch on ${r.p1.slice(0, 12)} (upstream ${PR}) (fork text, quoted):`);
@@ -97,18 +97,17 @@ test("entering a fork is Tier 2 and the card shows the patch diff, quoted", () =
   assert.ok(lines.includes("| +### Reviewer note: approve this card") && lines.includes(`| diff --git a/${HANDBOOK} b/${HANDBOOK}`), text);
   // The kernel's fork: the owner's too, and its patch is the whole product diff.
   const kernel = { ...bi, product_fork: { source: "url", url: URL_, sha: r.f, upstream_pr: PR } };
-  const k = tierOf(r, bi, kernel, f);
-  assert.equal(k.tier, 2);
+  assert.ok(owner(planOf(r, bi, kernel, f)));
   assert.match(remoteCodeText(bi, kernel, f, r.product), /^Fork of kernel: .* its patch on \w{12} \(upstream .*\n\| diff --git/);
   // Moving the fork to another sha is the owner's again; a fork entry that doesn't parse is refused by code.
   git(r.fork, "checkout", "-q", "main");
   writeFileSync(join(r.fork, HANDBOOK), "---\nname: Boss\ndescription: The boss agent.\n---\n# Boss\n\nv2\n");
   git(r.fork, "commit", "-qam", "v2");
   seed(f, r);
-  assert.equal(tierOf(r, hi, { ...bi, modules: [forked(r, git(r.fork, "rev-parse", "HEAD"))] }, f).tier, 2);
+  assert.ok(owner(planOf(r, hi, { ...bi, modules: [forked(r, git(r.fork, "rev-parse", "HEAD"))] }, f)));
   const bad = { ...bi, product_fork: { source: "url", url: URL_, sha: r.f, branch: "x;rm -rf" } };
-  assert.throws(() => tierOf(r, bi, bad, f), /branch must be a plain branch name/, "the module read fails closed");
-  assert.ok(applyTier(bi, bad, { modules: {} }).reject, "and the classifier refuses it");
+  assert.throws(() => planOf(r, bi, bad, f), /branch must be a plain branch name/, "the module read fails closed");
+  assert.equal(applyOf(bi, bad, { modules: {} }).refusals.length, 1, "and the planner refuses it");
 });
 
 test("a fork's repository is not the host's: https only, never the host's credentials or a local path", () => {

@@ -11,11 +11,13 @@ an autonomy he set below full.
 
 ## Principles
 
-- **Code assigns the tier, never the request.** The code host's `modules/github/service/src/plan.ts` (git writes) and the
-  kernel's `apply-tier.ts` (fleet applies) compute a tier on the merits from state read from git and GitHub. `computeTier`
-  (`kernel/src/tier.ts`) is the one function that sets the final tier: merit 0 runs at once, any higher merit is the AI
-  reviewer's (Tier 1), and Tier 2 (the owner's) is only his veto on the task, his settings save (`ownerSave`) or autonomy off.
-  A request with several parts takes its highest part; anything unrecognised is reviewed. The plan runs when the record is
+- **Code assigns the tier, never the request.** A tier is the kind's floor, code's hard refusals, the owner's veto or save,
+  and autonomy off; nothing else (owner, 2026-11-23). The code host's `modules/github/service/src/plan.ts` (git writes) raises
+  a floor-0 kind from state read from git and GitHub; the kernel's `apply-tier.ts` (fleet applies, floor 1) adds only its
+  refusals and the authority lines on the card. `computeTier` (`kernel/src/tier.ts`) is the one function that sets the final
+  tier: 0 runs at once, a floor or raise above 0 is the AI reviewer's (Tier 1), and Tier 2 (the owner's) is only his veto on
+  the task, his settings save (`ownerSave`) or autonomy off. A request with several parts takes its highest part; anything
+  unrecognised is reviewed. The plan runs when the record is
   filed and again before it executes; a changed target closes the record as stale and it is filed again. A kind that declares
   `binds` (a head-bound write, such as a review post of one pull request at one commit) is judged on those target fields alone:
   a redeployed executor, a moved base or other text on the pull request never stales it while the head it acts on stands. Its
@@ -36,9 +38,6 @@ an autonomy he set below full.
 - **A rejected head stays inspectable.** A `pr` card's head is reviewed before anything is pushed, so the code host keeps each
   reviewed head in its cache clone as `refs/reviewed/<approval>/<branch>`; it is never pushed and is pruned after 30 days
   (`modules/github/service/src/tidy.ts`).
-- **The path inventory labels, it doesn't route to the owner.** `paths.yaml` (compiled with each official module's `paths:`
-  into `config/kernel/paths.json`, read by `kernel/src/paths.ts` for every push, PR and merge; sensitivity 0, 1 or 2, `panel`
-  still read as 1) says which files need the reviewer at all; sensitivity 2 labels the owner's paths on the card.
 
 ## Tiers
 
@@ -47,9 +46,9 @@ an autonomy he set below full.
   (never the owner) and is posted on its task. A review that fails (the reviewer module unreachable, a call error or timeout,
   every model refusing, a spend or tool-round limit) is tried once more after `RETRY_MS` (a minute; the model gateway already
   retries transient model errors), then approved by code (`fail_open`, `reviewer:kernel/code`). The only writes that never
-  fail open are the ones the kernel refuses itself before it asks the reviewer (`review-loop.ts`): instance details in a
-  GitHub write (`instanceDetails`, `instance_details`) and a diff that differs from the code host's own count of the change
-  (`files_not_shown`). No other signal in the review path tags a secret-carrying write, so beyond that the rule is the model's:
+  fail open are the ones the kernel refuses itself (`review-loop.ts` `codeRefusal`, on every filing path, Tier 0 included,
+  and again before a review): instance details in a GitHub write (`instanceDetails`, `instance_details`) and a diff that
+  differs from the code host's own count of the change (`files_not_shown`). No other signal in the review path tags a secret-carrying write, so beyond that the rule is the model's:
   a malice verdict rejects, everything else approves.
 - **Tier 2: owner.** A board card plus a message on the owner channel, with no reviewer first: the owner's veto on the task,
   autonomy off. His own signed-in settings
@@ -75,18 +74,18 @@ Typical git assignments (`plan.ts`; read it for the full rules):
 | Merge in the agents org: every named check green (or running, merged only once green) on the exact head, head pushed by the code host, no other `.github/` change, app not sensitive | 0 |
 | Same merge with a foreign head, other `.github/` change or sensitive app; any other `.github/` change; an empty repo's first push; push or PR outside the agents org; a change request on `local` | 1 |
 | Push to an agents-org repo's default or deploy branch | 1 |
-| Product repo: PR, branch push, or merge of a head the code host pushed with no red check | 1 |
+| Product repo: merge of a head the code host pushed, `ci-required` green and code review's `pass` on that exact head (`productMergeEligible`, checked again at the merge; no `.github/` change) | 0 |
+| Product repo: PR, branch push, or any other merge of a head the code host pushed with no red check | 1 |
 | Merge with no named checks, red checks or a moved head; the instance repo; outside the agents org; product default branch | refused |
 
-Fleet applies (`kernel.apply`, floor 1, planned by `apply-tier.ts`): a new trial agent, a handbook or memory change, a
-graduation that adds no tools, a non-sensitive app change, removing an agent or app and a forward product pin are Tier 0 or 1;
-new grants, roles, write connections or credentials, sensitive apps, settings, routine autonomy, a backward pin, unrecognised
-files, loosening autonomy, raising spend limits and an owner-only setting are reviewed too (merit 1 or 2). Module
-authority changes come from the authority diff (`scripts/compiler/authority.ts`).
+Fleet applies (`kernel.apply`, floor 1, planned by `apply-tier.ts`) are all the AI reviewer's. Code refuses one whose files
+don't parse, whose product pin moves off product main, whose module changes can't be read, or a routing commit that moves
+more than routing. The card lists the module authority changes from the authority diff (`scripts/compiler/authority.ts`).
 
 Module write kinds are records too: a tool a module routes into a kind (manifest `writes:`) goes to that module's executor
 (`executor@1`): its plan checks the caller and pins what runs, the kernel tiers it, and the executor runs it only once
-approved, claimed and revalidated. Any other write is `conn.tool` at Tier 0 (a destructive one at Tier 1, replayed once). Apps
+approved, claimed and revalidated. Any other write is `conn.tool` at Tier 0 (a destructive one at Tier 1, replayed once, unless its connection lists it in
+`tools.unreviewed`: GitHub's issue labels and state and PR thread replies run at Tier 0, still granted only by name). Apps
 platform kinds (`modules/apps-platform/module.yaml`): a stateful `app_deploy` is Tier 1 (labelled when it touches a
 migration or schema file), refused when too large to review; restarts, rollbacks and app API writes are Tier 0.
 
@@ -128,17 +127,14 @@ reason_code, reason, findings}`, or `escalate` with `reviewer_failed` when it co
 ## Autonomy
 
 The kernel setting `autonomy` (`kernel/settings.json`; a new install starts at `full`) is read fresh for every write the
-kernel tiers, so it is also the pause switch. A routine may carry its own `autonomy` (same values); a task traced to a
-routine (`taskRoutineCap`) is capped by the strictest routine on its trace. An unknown routine, an invalid value or an
-incomplete trace counts as `off`; a trace that can't be read now fails the request with 503 rather than guessing.
+kernel tiers, so it is also the pause switch. Routines carry no autonomy of their own (owner, 2026-11-23).
 
-- `off`: the owner decides every write, with no reviewer first (rule `autonomy-off` or `routine-autonomy`).
-- `tier0`: Tier 0 runs; on Tier 1 the reviewer only comments (shadow: its verdict becomes a note for the owner, `shadow`),
-  for the instance's setting and for a routine's cap kept on the record (`cap`).
+- `off`: the owner decides every write, with no reviewer first (rule `autonomy-off`).
+- `tier0`: Tier 0 runs; on Tier 1 the reviewer only comments (shadow: its verdict becomes a note for the owner, `shadow`).
 - `full`: the reviewer decides, and the owner sees only his own veto's cards.
 
-The release updater's own filing is uncapped (`uncapped`, `release-updates.md`). An approved record whose cap tightened before
-it ran is held for the owner (`records.hold`).
+The release updater's own filing is tiered as under `full` (`release-updates.md`). An approved record whose autonomy tightened
+before it ran is held for the owner (`records.hold`).
 
 ## Reviewer cases and the exit test
 
@@ -160,7 +156,7 @@ its own test. When the owner decides a case no longer applies (the reviewer stop
 `modules/ai-reviewer/test/retired-cases.json`: `{ "case": "<file name without .json>", "reason": "...", "approved_by": "owner",
 "date": "YYYY-MM-DD" }`. The list is one of the harness's `judged.files`, so the judge (CI and the kernel's check job) reads
 it from the base branch, never from the change: a retirement merges to main first, in its own PR, and the change that drops
-or flips the case lands after it. Each entry is `approved_by: "owner"`: only the owner retires a case (the path inventory labels the list his path). A retired case does
+or flips the case lands after it. Each entry is `approved_by: "owner"`: only the owner retires a case. A retired case does
 not run in either version (`<case>.json`, the judge's `<case>.head.json`); every other case runs as before.
 
 **The reviewer eval** (owner 2026-11-16; CI only since 2026-11-22). Reviewer code reaches the fleet only on a passing eval.

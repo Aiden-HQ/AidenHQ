@@ -1,8 +1,8 @@
 // The kernel's apply land on this server (kernel/src/apply.ts picks it for the org `local`): the instance repo is a bare repo on
 // this host, so the code host's two apply calls are plain git on it, with the codehost-github service's limits and rules.
 //   read(s)  what the kernel plans on: the files the commit changes against its merge base with main, the texts its rules read
-//            on both sides (each changed file, the agent.yaml of each agent it touches, instance.yaml; absent where the file
-//            isn't), the diff, and the graduation card's trial edits. From git only, never from the requester.
+//            on both sides (each changed file and instance.yaml; absent where the file isn't) and the diff. From git only,
+//            never from the requester.
 //   land(s)  the commit on main, as a compare-and-swap on main's ref (a commit main already has is a no-op), once.
 //   write(w) the owner's typed settings change (kernel/src/settings-change.ts) as a commit on main's head `base`, on `branch`:
 //            the texts the kernel computed, nothing else; it lands only through a kernel.apply, like any other.
@@ -13,13 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ENV, SAFE_GIT_ARGS, fail } from "./git.ts";
+import { APPLY_PATHS } from "../../../kernel/sdk/src/instance-paths.ts";
 
 const run = promisify(execFile);
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const SHA = /^[0-9a-f]{40}$/;
-const AGENT = /^agents\/([a-z0-9][a-z0-9-]*)\/(agent\.yaml|AGENTS\.md|memory\.md)$/;
-/** The instance config files a settings write may touch (kernel/src/apply.ts APPLY_PATHS). */
-const INSTANCE_PATH = /^(instance\.yaml|apps\.yaml|agents\/[\w-][\w.-]*\.md|agents\/[a-z0-9][a-z0-9-]*\/(agent\.yaml|AGENTS\.md|memory\.md)|owner\/profile\.md)$/;
 const BRANCH = /^settings\/[a-z0-9][a-z0-9-]{0,80}$/;
 
 type Source = { repo: string; branch: string; sha: string; workspace?: string };
@@ -56,36 +54,14 @@ export function localApply({ bare, instanceRepo, ingest }: { bare: string; insta
     return t;
   }
 
-  /** The graduation card's handbook-only commits since each agent's trial began (codehost-github's trialEdits, here). */
-  async function trialEdits(base: string, agents: string[], texts: { base: Record<string, string>; head: Record<string, string> }) {
-    const isTrial = (t: string | undefined) => t !== undefined && /^trial:[ \t]*true[ \t]*(#.*)?$/m.test(t);
-    const out: string[] = [];
-    for (const key of agents) {
-      const def = `agents/${key}/agent.yaml`, book = `agents/${key}/AGENTS.md`;
-      if (!isTrial(texts.base[def]) || texts.head[def] === undefined || isTrial(texts.head[def])) continue;
-      const added = (await g(["log", "--diff-filter=A", "--format=%H", base, "--", def])).split("\n").filter(Boolean).pop();
-      if (!added) continue;
-      const edits: string[] = [];
-      for (const sha of (await g(["log", "--first-parent", "--format=%H", `${added}..${base}`, "--", book])).split("\n").filter(Boolean)) {
-        const [date, short, ...subject] = (await g(["log", "-1", "--format=%as%x09%h%x09%s", sha])).split("\t");
-        const [num] = (await g(["diff", "--no-renames", "--numstat", `${sha}^1`, sha, "--", book])).split("\n").map((l) => l.split("\t"));
-        const others = (await g(["diff", "--no-renames", "--name-only", "-z", `${sha}^1`, sha])).split("\0").filter((f) => f && f !== book).length;
-        edits.push(`${short}  ${date}  ${subject.join(" ").replace(/[\x00-\x1f\x7f]/g, "").slice(0, 100)}  (+${num?.[0] ?? 0} -${num?.[1] ?? 0})${others ? `  also changed: ${others} other file${others === 1 ? "" : "s"}` : ""}`);
-      }
-      out.push(`${key}: ${edits.length ? `${edits.length} handbook change${edits.length === 1 ? "" : "s"} since the trial began (those not marked "also changed" landed without a tap):\n${edits.join("\n")}` : "no handbook changes since the trial began."}`);
-    }
-    return out.length ? `Trial edits that landed without a tap:\n${out.join("\n")}` : "";
-  }
-
   return {
     async read(s: Source) {
       const c = await commit(s);
       const files = (await git(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", c.base, c.sha])).split("\0").filter(Boolean);
       if (files.length > MAX_FILES) throw fail(413, `the commit changes ${files.length} files; an apply reviews at most ${MAX_FILES}`);
-      const agents = [...new Set(files.map((f) => AGENT.exec(f)?.[1]).filter(Boolean))] as string[];
       const texts: { base: Record<string, string>; head: Record<string, string> } = { base: {}, head: {} };
       let budget = MAX_TOTAL;
-      for (const p of new Set([...files, ...agents.map((k) => `agents/${k}/agent.yaml`), "instance.yaml"])) {
+      for (const p of new Set([...files, "instance.yaml"])) {
         for (const [side, rev] of [["base", c.base], ["head", c.sha]] as const) {
           const t = await fileAt(rev, p);
           if (t === undefined) continue;
@@ -97,7 +73,7 @@ export function localApply({ bare, instanceRepo, ingest }: { bare: string; insta
         throw e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? fail(413, `the commit's diff is too large to review (over ${MAX_TOTAL} bytes with its files)`) : e;
       });
       // base and main: the merge base and main's head (the kernel reads base === sha as "already on main").
-      return { files, texts, diff, trial: await trialEdits(c.base, agents, texts), base: c.base, main: c.main };
+      return { files, texts, diff, base: c.base, main: c.main };
     },
     /** `official`: the official modules' pin on both sides (apply.ts officialMove). No reviewer-eval gate runs here, so a move is refused. */
     async land(s: Source & { official: { from: Pin; to: Pin } }) {
@@ -113,7 +89,7 @@ export function localApply({ bare, instanceRepo, ingest }: { bare: string; insta
       if (String(w.repo).toLowerCase() !== instanceRepo.toLowerCase()) throw fail(403, `a settings change writes only the instance repo (${instanceRepo}), not ${w.repo}`);
       if (!BRANCH.test(String(w.branch))) throw fail(400, "branch is settings/<task>");
       const paths = Object.keys(w.files ?? {});
-      if (!paths.length || paths.some((p) => !INSTANCE_PATH.test(p) || (w.files[p] !== null && typeof w.files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
+      if (!paths.length || paths.some((p) => !APPLY_PATHS.test(p) || (w.files[p] !== null && typeof w.files[p] !== "string"))) throw fail(400, "files: instance config paths, each a text or null");
       const head = await g(["rev-parse", "--verify", "refs/heads/main^{commit}"]);
       if (head !== w.base) throw fail(409, "the instance's main moved on since the change was read; try again");
       const date = await g(["log", "-1", "--format=%cI", head]);

@@ -44,13 +44,3 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   assert.deepEqual(c.connections.paperclip_tasks, { tool_timeout_sec: 300 });
 });
 
-test("a box Engineer never holds private data, untrusted input and a way out at once: private reads mean no web", () => {
-  const box = (enabled_tools, extra = {}) => ({ e: { profile: "engineer", image: "engineer", enabled_tools, ...extra } });
-  // App UI work: apps' public views, the web, GitHub reads.
-  validateImages(box({ apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_issue_read"] }));
-  // Data work: the warehouse (or any private source) only with private_reads (its jobs: no web search), and then no web_view.
-  assert.throws(() => validateImages(box({ apps: ["app_list", "warehouse_query"] })), /apps\.warehouse_query read private data: set private_reads: true/);
-  assert.throws(() => validateImages(box({ slack: ["slack_search"] })), /slack\.slack_search read private data/);
-  assert.throws(() => validateImages(box({ apps: ["warehouse_query", "web_view"] }, { private_reads: true })), /no web_view/);
-  validateImages(box({ apps: ["app_list", "app_view", "warehouse_query"] }, { private_reads: true }));
-});

@@ -89,7 +89,6 @@ export interface RosterAgent {
   running: number;
   queued: number;
   workingSince: string | null;
-  trial: boolean;
   schedules: { title: string; paused: boolean; nextRunAt: string | null }[];
   lastRunAt: string | null;
   lastRunStatus: string | null;
@@ -171,13 +170,12 @@ export function roster(agents: Agent[], routines: Routine[], last: Map<string, {
       name: a.name,
       ...identity(a),
       title: a.title?.trim() || null,
-      system: Boolean(a.metadata?.module) && a.metadata?.module !== "instance",
+      system: Boolean(a.metadata?.module) && a.metadata?.tier !== "local",
       department: departmentOf(a),
       model: shortModel(a),
       reportsTo: a.reportsTo ?? null,
       ...teamOf(a),
       ...agentState(a, act),
-      trial: a.metadata?.trial === true,
       schedules: routines
         .filter((r) => r.assigneeAgentId === a.id && r.status !== "archived" && (r.triggers ?? []).some((t) => t.kind === "schedule" || t.nextRunAt))
         .map((r) => ({ title: r.title, paused: r.status === "paused", nextRunAt: (r.triggers ?? []).filter((t) => t.enabled !== false).map((t) => t.nextRunAt).filter((x): x is string => Boolean(x)).sort()[0] ?? null })),

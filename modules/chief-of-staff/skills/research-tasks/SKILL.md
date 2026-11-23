@@ -1,7 +1,6 @@
 ---
 name: research-tasks
 description: "Handles a task assigned to the Researcher or delegated by Aiden, and hands code work to an Engineer on the owner's request. Use when the Researcher receives a task or the owner asks for code work."
-when: { fields: { name: Researcher } }
 ---
 
 # A task assigned to you

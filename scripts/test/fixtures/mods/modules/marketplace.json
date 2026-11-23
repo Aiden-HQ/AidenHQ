@@ -101,10 +101,6 @@
       "source": "./jc"
     },
     {
-      "name": "jcpriv",
-      "source": "./jcpriv"
-    },
-    {
       "name": "jcunknown",
       "source": "./jcunknown"
     },

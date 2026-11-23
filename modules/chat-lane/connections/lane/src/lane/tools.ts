@@ -1,5 +1,6 @@
-// The lane's tools: an MCP client per (agent, connection), calling the kernel's proxy with the agent's own key as bearer,
-// so every call passes the same grants check as a normal run. Only the tools in the agent's `chat.tools` are offered
+// The lane's tools: an MCP client per (agent, connection), calling the kernel's proxy with the lane's own module token and
+// the agent it speaks for (x-aidenhq-lane-agent; the kernel takes that agent's grants on its chat task, kernel/src/identity.ts
+// laneCaller), so every call passes the same grants check as a normal run. Only the tools in the agent's `chat.tools` are offered
 // to the model; schemas come from tools/list and are cached.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -8,18 +9,18 @@ import type { ToolDef } from "./model.js";
 
 const MAX_RESULT = 6000;
 
-export function makeTools() {
+export function makeTools(token: string) {
   const clients = new Map<string, Promise<Client>>();
   const schemas = new Map<string, { at: number; defs: ToolDef[] }>();
 
   const client = (agent: LaneAgent, connection: string): Promise<Client> => {
-    const k = `${agent.key}|${agent.apiKey.slice(-8)}|${connection}`;
+    const k = `${agent.id}|${connection}`;
     let c = clients.get(k);
     if (!c) {
       const url = new URL(`/c/${connection}/mcp`, process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130");
       c = (async () => {
         const cl = new Client({ name: "fast-lane", version: "0.1.0" });
-        await cl.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { authorization: `Bearer ${agent.apiKey}` } } }));
+        await cl.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { authorization: `Bearer ${token}`, "x-aidenhq-lane-agent": agent.id } } }));
         return cl;
       })();
       c.catch(() => clients.delete(k));

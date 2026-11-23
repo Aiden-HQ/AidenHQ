@@ -10,7 +10,6 @@
 //   config/jobcaps.json        → the kernel (job tokens on /c/<connection>/mcp) and the runner: what jobs may read (modules' jobcaps:)
 //   config/kernel/connections.json → the kernel's tool proxy: each connection's endpoint, service key secret, module and tool tags
 //   config/kernel/writes.json  → the kernel's write kinds (modules' `writes:`): floor, card, args schema, executor, routed tools
-//   config/kernel/paths.json   → the kernel's tier function: each path's sensitivity and owning role (paths.yaml, modules' paths:)
 //   config/kernel/checks.json  → the kernel: modules' task.finish checks (url, key secret, label, scope) and write.filed ones (kinds)
 //   config/kernel/modules.json → the kernel: modules' kernel roles, privileged entries, own tokens and channels (settings),
 //                                each enabled module's compose services and its setup secrets
@@ -24,7 +23,6 @@
 // Staging (`--stage`, or AIDENHQ_COMPILE_STAGE=1; ops/apply-config-work.sh validates a generation with it before anything
 // restarts): the same files go to config.next/ and compose.modules.next.yaml, and nothing else on the host is touched (no
 // secrets, keys, data dirs or account files are created). The apply then compiles for real and checks the two agree.
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +30,6 @@ import YAML from "yaml";
 import type { Obj } from "./modules.ts";
 import { compile, composeSecretFiles, ensureMountedSecrets, ensureOptionalSecrets, hostMounts, hostDirs, migrateSettings } from "./modules.ts";
 import { computersConfig } from "./computers.ts";
-import { pathInventory } from "./paths.ts";
 import { checkIngress } from "./edge.ts";
 import { caddyfile, caddyService, publicUrls } from "./front-door.ts";
 import { ensureIdentityKeys } from "./identity.ts";
@@ -41,17 +38,11 @@ import { sizesReport } from "./handbook.ts";
 import { checkDataVersion } from "./compiler/data-version.ts";
 import { hostFetch } from "./compiler/sources.ts";
 import { readRelease } from "./compiler/release.ts";
+import { hostEnv, loadInputs } from "./compiler/inputs.ts";
 import { computerPulls, useReleaseImages } from "./release-images.ts";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dotenv: Record<string, string> = {};
-if (existsSync(join(repo, ".env"))) {
-  for (const line of readFileSync(join(repo, ".env"), "utf8").split("\n")) {
-    const m = /^\s*([A-Z0-9_]+)=(.*)$/.exec(line);
-    if (m) dotenv[m[1]!] = m[2]!.replace(/^["']|["']$/g, "");
-  }
-}
-const env = (k: string) => process.env[k] ?? dotenv[k];
+const env = hostEnv(repo);
 const die: (msg: string) => never = (msg) => { console.error(`compile: ${msg}`); process.exit(1); };
 const stage = process.argv.includes("--stage") || process.env.AIDENHQ_COMPILE_STAGE === "1";
 const cfgOut = join(repo, stage ? "config.next" : "config");
@@ -60,26 +51,16 @@ if (stage) { rmSync(cfgOut, { recursive: true, force: true }); mkdirSync(cfgOut,
 
 const instanceDir = env("AIDENHQ_INSTANCE_DIR");
 if (!instanceDir || !existsSync(join(instanceDir, "instance.yaml"))) die("set AIDENHQ_INSTANCE_DIR to your instance checkout (see docs/USAGE.md)");
-let revision: string | undefined;
-try { revision = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
-
-// The bundle this host last compiled and what it added from it (modules.ts); the first compile after an upgrade learns the
-// previous product's bundle from the apply (AIDENHQ_OLD_BUNDLE, a JSON list) and records both on success.
 const bundleFile = join(repo, "data", "bundle-state.json");
-let bundleState: Obj | undefined; try { bundleState = JSON.parse(readFileSync(bundleFile, "utf8")); } catch {}
-let oldBundle: Obj | undefined; try { oldBundle = JSON.parse(env("AIDENHQ_OLD_BUNDLE") || "null") ?? undefined; } catch {}
 // DELETE in the release after #1065: the retired GitHub App's id, which the github process looks for in the repos' rules
 // (migrate.ts). Apply removes the vault's github-app dir after the first good generation, so the id is kept beside it first.
-const retiredAppId = (() => {
-  const dir = env("AIDENHQ_SECRETS_DIR");
-  if (!dir) return "";
-  const kept = join(dir, "github_retired_app_id"), old = join(dir, "github-app", "app_id");
-  // A staged compile reads only; the switch's compile (before apply's retireUnits) keeps it.
-  if (!stage && !existsSync(kept) && existsSync(old)) writeFileSync(kept, `${readFileSync(old, "utf8").trim()}\n`, { mode: 0o600 });
-  return (existsSync(kept) ? readFileSync(kept, "utf8") : existsSync(old) ? readFileSync(old, "utf8") : "").trim();
-})();
+// A staged compile reads only; the switch's compile (before apply's retireUnits) keeps it.
+const secrets = env("AIDENHQ_SECRETS_DIR");
+if (secrets && !stage && !existsSync(join(secrets, "github_retired_app_id")) && existsSync(join(secrets, "github-app", "app_id"))) writeFileSync(join(secrets, "github_retired_app_id"), `${readFileSync(join(secrets, "github-app", "app_id"), "utf8").trim()}\n`, { mode: 0o600 });
+// The host's inputs (scripts/compiler/inputs.ts): the kernel compiles an agent's prospective change with the same ones.
+const inputs = loadInputs(repo, env);
 let out!: ReturnType<typeof compile>, computers!: ReturnType<typeof computersConfig> & { pull?: ReturnType<typeof computerPulls> };
-try { out = compile(repo, instanceDir, { revision, bundleState, oldBundle, door: { publicIp: env("AIDENHQ_PUBLIC_IP"), adminUrl: env("AIDENHQ_ADMIN_URL"), boardUrl: env("BOARD_LAN_URL") }, legacyAgentsOrg: env("AIDENHQ_GITHUB_AGENTS_ORG") ?? "", retiredAppId }); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die((e as Error).message); }
+try { out = compile(repo, instanceDir, inputs); computers = computersConfig(out.paperclip, repo, out.computersMax); } catch (e) { die((e as Error).message); }
 if (!stage) { mkdirSync(dirname(bundleFile), { recursive: true }); writeFileSync(bundleFile, JSON.stringify(out.bundleState)); }
 if (process.argv.includes("--sizes")) {
   try { console.log(sizesReport(out.paperclip, { repo, instanceDir, engines: out.engines })); } catch (e) { die((e as Error).message); }
@@ -185,7 +166,6 @@ writeFileSync(join(cfgOut, "jobcaps.json"), JSON.stringify(out.jobcaps, null, 2)
 mkdirSync(join(cfgOut, "kernel"), { recursive: true });
 writeFileSync(join(cfgOut, "kernel/connections.json"), JSON.stringify(out.connections, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/writes.json"), JSON.stringify(out.writes, null, 2) + "\n");
-try { writeFileSync(join(cfgOut, "kernel/paths.json"), JSON.stringify(pathInventory(repo), null, 2) + "\n"); } catch (e) { die((e as Error).message); }
 // Always written ({} when no module checks): the kernel's finish gate refuses every close when it is missing.
 writeFileSync(join(cfgOut, "kernel/checks.json"), JSON.stringify(out.checks, null, 2) + "\n");
 writeFileSync(join(cfgOut, "kernel/modules.json"), JSON.stringify(out.kernelModules, null, 2) + "\n");

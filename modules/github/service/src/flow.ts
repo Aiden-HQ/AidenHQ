@@ -14,6 +14,9 @@
 // The churn pass (every 15 minutes, a cursor per repo in the data dir) reads each repo's merged commits from its cache clone,
 // never the GitHub API. The first pass also runs the GitHub backfill once (no route, no button): the managed repos' history through
 // the API within the owner's rate budget. It stops when GitHub says little is left and the next pass goes on; done is recorded in the data dir.
+//
+// Routines' events (kernel events.ts): the same pass reads each subscribed repo's events feed (GET /v1/events/sources) and sends
+// the kinds routines may take to the kernel (POST /v1/events). Best-effort: GitHub can delay its feed, and the pass runs every 15 minutes.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { churnFromGit, DEFAULT_CHURN_EXCLUDE } from "./aidenhq-sdk/churn.ts";
@@ -22,7 +25,7 @@ import { hasFooter, hasTrailer } from "./aidenhq-sdk/attribution.ts";
 
 type Json = any;
 /** GitHub as the owner, background (git-auth.ts Gh). */
-type Gh = (method: string, path: string) => Promise<{ status: number; body: any; headers?: Headers }>;
+type Gh = (method: string, path: string, o?: { etag?: string }) => Promise<{ status: number; body: any; headers?: Headers }>;
 const WINDOW_DAYS = 30;
 const DAY = 86_400_000;
 /** The backfill pauses below this share of the hourly budget, before the limiter's 20% reserve holds every background call. */
@@ -41,6 +44,20 @@ export const utc = (at: string | number | Date): string => new Date(at).toISOStr
 const login = (l?: string | null) => String(l ?? "").toLowerCase().replace(/^app\//, "").replace(/\[bot\]$/, "");
 type Kind = "agent" | "owner" | "outside";
 const FAILED = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure"]);
+/** Repos whose events feed one pass reads. */
+const EVENT_REPOS = 30;
+/** A repo events-feed entry as a routine's event (kernel events.ts SourceEvent), or undefined for a kind routines don't take. */
+export function sourceEvent(repo: string, e: Json): Json | undefined {
+  const p = e.payload ?? {}, issue = p.issue ?? p.pull_request ?? {};
+  const kind = e.type === "IssuesEvent" && p.action === "opened" ? "issues.opened"
+    : e.type === "IssueCommentEvent" && p.action === "created" ? "issue_comment.created"
+    : e.type === "PullRequestEvent" && p.action === "opened" ? "pull_request.opened" : undefined;
+  if (!kind) return undefined;
+  const text = kind === "issue_comment.created" ? String(p.comment?.body ?? "") : `${issue.title ?? ""}\n\n${issue.body ?? ""}`;
+  const url = String((kind === "issue_comment.created" ? p.comment?.html_url : issue.html_url) ?? "");
+  const labels = (issue.labels ?? []).map((l: Json) => String(l.name ?? l)).filter(Boolean).slice(0, 10);
+  return { connection: "github", resource: repo, id: String(e.id), kind, author: String(e.actor?.login ?? "ghost"), text: text.slice(0, 2000), ...(text.length > 2000 ? { truncated: true } : {}), ...(labels.length ? { labels } : {}), ...(url.startsWith("https://") ? { url: url.slice(0, 500) } : {}) };
+}
 
 export const prSubject = (repo: string, n: number | string) => `pr:${repo.toLowerCase()}#${n}`;
 const issueSubject = (repo: string, n: number) => `issue:${repo.toLowerCase()}#${n}`;
@@ -216,7 +233,74 @@ export function createFlow(d: FlowDeps) {
       // Issues go on from the backfill's end (an unfinished backfill reads them itself).
       if (status.state === "done") for (const repo of await d.repos()) await issuesRepo(repo).catch((e) => d.log("issue pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
       for (const repo of await d.repos()) await churnRepo(repo).catch((e) => d.log("churn pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
+      await eventsPass();
     } finally { churning = false; }
+  }
+
+  // ---- routines' events ----
+  const eventsFile = join(d.cacheDir, "events.json");
+  /** The repos routines subscribe to (`*`: the managed repos), at most EVENT_REPOS, each read from its events feed. */
+  async function eventsPass() {
+    if (!d.gh) return;
+    const wanted: string[] = (await client.call("GET", "/v1/events/sources?connection=github").catch((e: Error) => { d.log("events: sources unreadable", { err: String(e.message).slice(0, 200) }); return {}; })).resources ?? [];
+    const repos = [...new Set([...(wanted.includes("*") && d.repos ? await d.repos() : []), ...wanted.filter((r) => r !== "*")].map((r) => r.toLowerCase()))];
+    // At most EVENT_REPOS a pass, starting where the last pass stopped, so every subscribed repo is read in turn.
+    const state = readJson(eventsFile, {});
+    const from = repos.length ? Number(state["@next"] ?? 0) % repos.length : 0;
+    const turn = [...repos.slice(from), ...repos.slice(0, from)].slice(0, EVENT_REPOS);
+    lowBudget = "";
+    let visited = 0;
+    for (const repo of turn) {
+      await eventsRepo(repo).catch((e) => d.log("events pass failed", { repo, err: String(e?.message ?? e).slice(0, 300) }));
+      visited++;
+      if (lowBudget) { d.log("events: the pass stops under the API budget", { repo, why: lowBudget }); break; }
+    }
+    // The next pass starts after the last repo this one read.
+    if (repos.length) writeJson(eventsFile, { ...readJson(eventsFile, {}), "@next": (from + visited) % repos.length });
+  }
+  /**
+   * One repo's new events, oldest first, to the kernel. Page one is a conditional read (its ETag); later pages run back to the
+   * cursor (the newest event sent). A repo's first read (not yet started) marks it started, at its newest event if it has one
+   * (an empty feed starts at 0), and sends nothing: a subscription starts from now. A cursor the feed no longer reaches reads page one only: a logged gap.
+   * The cursor moves with each event the kernel answered 2xx (it does for skipped and dropped ones too); a 429, a 5xx or no answer
+   * stops here and the next pass goes on. The ETag is kept only once every event of the read was sent.
+   */
+  async function eventsRepo(repo: string) {
+    const saved = readJson(eventsFile, {})[repo] ?? {};
+    const fresh: Json[] = [];
+    let etag: string | undefined, reached = false;
+    for (let page = 1; page <= 3 && !reached; page++) {
+      const r = await d.gh!("GET", `/repos/${repo}/events?per_page=100&page=${page}`, page === 1 && saved.etag ? { etag: saved.etag } : undefined);
+      if (page === 1 && r.status === 304) return;
+      if (r.status >= 300) throw new Error(`GitHub GET /repos/${repo}/events: ${r.status}`);
+      if (page === 1) etag = r.headers?.get("etag") ?? undefined;
+      const remaining = Number(r.headers?.get("x-ratelimit-remaining")), limit = Number(r.headers?.get("x-ratelimit-limit"));
+      if (limit > 0 && remaining < limit * LOW_SHARE) lowBudget = `GitHub's rate limit is nearly used (${remaining} left)`;
+      const items: Json[] = Array.isArray(r.body) ? r.body : [];
+      for (const e of items) { if (saved.cursor && BigInt(e.id) <= BigInt(saved.cursor)) { reached = true; break; } fresh.push(e); }
+      if (!saved.cursor || items.length < 100) break;
+    }
+    if (!saved.cursor) {
+      writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { cursor: fresh[0] ? String(fresh[0].id) : "0", ...(etag ? { etag } : {}) } });
+      return;
+    }
+    // A repo started on an empty feed (cursor 0) has no gap: everything read since is new.
+    if (saved.cursor === "0") reached = true;
+    const batch = reached ? fresh : fresh.slice(0, 100);
+    if (!reached) d.log("events: a gap in the feed; read its newest page only", { repo, cursor: saved.cursor ?? null });
+    let cursor = saved.cursor as string | undefined, sent = 0;
+    for (const e of batch.reverse()) {
+      const ev = sourceEvent(repo, e);
+      if (ev) {
+        const r = await client.raw("POST", "/v1/events", ev).catch(() => ({ status: 0, json: {} }));
+        // The kernel answers 2xx for an event it skipped or dropped: any other answer keeps the cursor before it, for the next pass.
+        if (r.status === 0 || r.status >= 300) { if (r.status >= 300 && r.status < 500) d.log("events: the kernel refused an event; tried again next pass", { repo, id: ev.id, status: r.status }); break; }
+      }
+      cursor = String(e.id);
+      sent++;
+    }
+    const all = sent === batch.length;
+    writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { ...(cursor ? { cursor } : {}), ...(all && etag ? { etag } : {}) } });
   }
 
   // ---- backfill ----
@@ -348,7 +432,7 @@ export function createFlow(d: FlowDeps) {
     return running;
   }
   return Object.assign(f, {
-    churnPass, churnRepo, issuesRepo, backfill,
+    churnPass, churnRepo, issuesRepo, backfill, eventsPass,
     /** The churn loop: a first pass shortly after start, then every 15 minutes. */
     startChurn() {
       const t = setInterval(() => void churnPass(), 15 * 60_000);

@@ -8,10 +8,10 @@ import { REVIEWER_CODE, touchesReviewer } from "../service/src/evalgate.ts";
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@example.com" };
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, env, stdio: "pipe" }).toString().trim();
 
-// The check recipes and what wires them to a receipt are reviewer code: a change to one needs an eval receipt.
-it("check recipes, their manifests and wiring are reviewer code", () => {
-  const paths = ["modules/github/checks/tests.sh", "modules/platform/checks/contract.sh", "modules/github/module.yaml", "modules/platform/module.yaml", "scripts/modules.ts", "kernel/src/checkbox.ts", "kernel/src/checkjobs.ts"];
-  assert.deepEqual(paths.filter((p) => !touchesReviewer([p])), []);
+// Only the reviewer's own code runs the eval.
+it("the reviewer's own code is reviewer code; the gates around it are not", () => {
+  assert.deepEqual(["modules/ai-reviewer/policy.md", "kernel/sdk/src/reviewer.ts", "kernel/src/review-loop.ts", "kernel/src/reviews.ts"].filter((p) => !touchesReviewer([p])), []);
+  assert.deepEqual(["kernel/src/tier.ts", "kernel/src/writes.ts", "modules/github/service/src/plan.ts", "scripts/modules.ts"].filter((p) => touchesReviewer([p])), []);
 });
 
 // A stale pattern (a .mjs that became .ts) would take the renamed file out of the eval and out of its reuse key.

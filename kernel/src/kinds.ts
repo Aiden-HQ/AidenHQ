@@ -10,19 +10,18 @@ const REPO: Schema = { type: "string", pattern: `^${NAME}$` };
 const REF: Schema = { type: "string", minLength: 1, maxLength: 200, pattern: "^[^\\s`]+$" };
 const obj = (properties: Record<string, Schema>, required: string[]): Schema => ({ type: "object", additionalProperties: false, required, properties });
 
-// authority: the module changes the apply brings, one line each (scripts/compiler/authority.ts), shown on the card;
-// ownerRequired: one of them is the owner's under every autonomy (new authority from a module that isn't official, or new
-// spend), so after the reviewer only the owner approves it (in the digest, as args); release: the release the owner's
-// auto-updates ask for, set only by the planner on the updater's verified move (apply-tier.ts standingRelease).
+// authority: the module changes the apply brings, one line each (scripts/compiler/authority.ts), shown on the card; release:
+// the release the owner's auto-updates ask for, set only by the planner on the updater's verified move (apply-tier.ts
+// standingRelease).
 const APPLY_ARGS = obj({
   repo: REPO, branch: REF, sha: SHA, files: { type: "array", minItems: 1, maxItems: 200, items: { type: "string", maxLength: 300 } },
-  authority: { type: "array", minItems: 1, maxItems: 1000, items: { type: "string", maxLength: 4000, pattern: "^[^\\p{Cc}\\p{Cf}]+$" } }, ownerRequired: { type: "boolean" },
+  authority: { type: "array", minItems: 1, maxItems: 1000, items: { type: "string", maxLength: 4000, pattern: "^[^\\p{Cc}\\p{Cf}]+$" } },
   release: { type: "string", pattern: "^[0-9]{4}\\.[0-9]{1,2}(\\.[0-9]+){0,2}$" },
 }, ["repo", "branch", "sha", "files"]);
 
 /** An apply's card, from its validated args and the diff the planner computed (bound by its hash in the record's targets). */
 export function applyCard(a: { repo: string; branch: string; sha: string; files: string[]; authority?: string[] }, diff: string): Card {
-  const authority = a.authority?.length ? `\nModule changes (the owner decides those marked owner, after the AI reviewer):\n${a.authority.join("\n")}` : "";
+  const authority = a.authority?.length ? `\nModule changes:\n${a.authority.join("\n")}` : "";
   return { target: `${a.repo} ${a.branch}`, sentence: `Apply a change to the fleet's configuration (commit ${a.sha.slice(0, 12)}).`, changes: `Lands ${a.sha.slice(0, 12)} on ${a.repo}'s main and re-applies the live fleet. Files: ${a.files.join(", ")}${authority}`, reads: "Nothing new.", cost: "No model cost; services restart.", details: diff };
 }
 
@@ -46,10 +45,10 @@ export function repoKey(v: unknown): string | undefined {
  * The kernel's roles a module may request (module.yaml roles.requests): each opens one backplane route or, for kernel.apply,
  * filing that kernel kind. No module declares a kernel.* role or a role named after a write kind (compile refuses both).
  */
-export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.notify", "kernel.owner-notice", "kernel.routines", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.wake", "kernel.work-read"];
+export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.events", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.memory", "kernel.notify", "kernel.owner-notice", "kernel.routines", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.wake", "kernel.work-read"];
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
-  // An apply is always read by the reviewer first (floor 1): planned by the kernel (apply-tier.ts); its files raise it by the path inventory.
-  "kernel.apply": { module: "kernel", floor: 1, paths: true, tools: [], args: APPLY_ARGS },
+  // An apply is always read by the reviewer first (floor 1): planned by the kernel (apply-tier.ts).
+  "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS },
 };

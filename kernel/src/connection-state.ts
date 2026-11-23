@@ -1,7 +1,7 @@
 // Connect on first use (spec 2026-11-20 §2): a connection that answers needs_owner (sdk/src/vendor/needs.ts) is recorded as
 // down, by connection (connection_state, keyed `<connection>:<cause>[:<org>|:<scope>|:account:<a>]`; its `module` column holds the
 // connection's name, so a user sign-in that expired never marks a sibling connection of the same module down), and decides who hears it:
-// - the owner asked for the work (the task chain's root, walked by parent links and the kernel's provenance, holds the owner's
+// - the owner asked for the work (the task chain's root, walked by parent links, holds the owner's
 //   own words, escalate.ts ownerWroteAt): one decision message on that root task with the one link, once per need until it
 //   clears (`told`), and the calling task waits on the connection (idle.ts, as an agent's own wait: 7 days for a full cause,
 //   a day for a partial one, so it retries daily);
@@ -13,7 +13,7 @@
 // Partial causes (scope, sso, restricted) mean the connection works: a success never clears them and downFor() omits them.
 import type { DatabaseSync } from "node:sqlite";
 import type { Cause, Need } from "../sdk/src/vendor/needs.ts";
-import { creatorTask, ownerWroteAt } from "./escalate.ts";
+import { ownerWroteAt } from "./escalate.ts";
 import { inTx, iso, type Log } from "./factlog.ts";
 import type { Connection, Grant, Identity } from "./identity.ts";
 import type { Idle } from "./idle.ts";
@@ -126,14 +126,13 @@ export function createConnectionState(o: {
     `${module}:${n.cause}${n.cause === "sso" || n.cause === "restricted" ? `:${n.org ?? ""}` : n.cause === "scope" && n.scope ? `:${n.scope}` : n.account ? `:account:${n.account}` : ""}`;
   const link = (module: string, url: string | null | undefined) => url ?? `${o.boardUrl().replace(/\/+$/, "")}/connect/${module}`;
 
-  /** The task, the root of its chain (parent, else the job that created it; ≤ 10 up) and the root's comments. */
+  /** The task, the root of its chain (parents, ≤ 10 up) and the root's comments. */
   async function chain(task: string) {
     const first = await o.issue(task);
     if (!first) return undefined;
     let root = first;
     for (let i = 0; i < 10; i++) {
-      const up = root.parentId ?? creatorTask(db, root.id);
-      const next = up ? await o.issue(up) : undefined;
+      const next = root.parentId ? await o.issue(root.parentId) : undefined;
       if (!next) break;
       root = next;
     }

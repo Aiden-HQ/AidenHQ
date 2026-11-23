@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
 
-const DIRECTORY = ["key", "roles", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for", "profile", "private_reads"];
+const DIRECTORY = ["key", "roles", "description", "delegate_to", "review_log", "graded", "feedback_for", "profile"];
 const SERVICE_KEY = "tasks-service-key";
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const jwks = { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k1" }] };
@@ -18,6 +18,10 @@ let current = { handler: () => {}, board: undefined, directory: { agents: {} }, 
 export const cpSeen = [];
 /** Waits the tasks server asked the kernel to record (POST /v1/wait), for a bridge made with `acceptWaits`; else /v1/wait is a 404. */
 export const waits = [];
+/** Memory calls the tasks server forwarded to the kernel (POST /v1/memory/<op>), with the key and assertion they came with. */
+export const memorySeen = [];
+/** Batch reads the tasks server forwarded to the kernel (GET /v1/events/batch/<id>). */
+export const eventsSeen = [];
 
 const front = await listen(async (req, res) => {
   const u = req.url ?? "";
@@ -46,6 +50,14 @@ const kernel = await listen(async (req, res) => {
   if (u === "/v1/wait" && req.method === "POST" && current.acceptWaits) {
     waits.push(JSON.parse(await read(req)));
     return send(200, { waiting: true });
+  }
+  if (u.startsWith("/v1/memory/") && req.method === "POST") {
+    memorySeen.push({ op: u.slice("/v1/memory/".length), moduleKey, caller: req.headers["x-aidenhq-caller"], body: JSON.parse(await read(req)) });
+    return send(200, { line: "- (2026-11-23, src: WOR-12) noted" });
+  }
+  if (u.startsWith("/v1/events/batch/") && req.method === "GET") {
+    eventsSeen.push({ path: u, moduleKey, caller: req.headers["x-aidenhq-caller"] });
+    return send(200, { count: 1, events: [{ resource: "C1", id: "e1", kind: "message", text: "hello" }] });
   }
   if (u.startsWith("/v1/cp/agent/")) {
     if (!moduleKey || !req.headers["x-aidenhq-caller"]) return send(401, {});
@@ -84,14 +96,14 @@ export async function rpc(msg, headers = {}) {
 
 /**
  * The tasks server for one agent: `handler` is the fake Paperclip (and apps-mcp, gateway), `board` the fake board (default:
- * every gate passes), `agents` the grants table the directory comes from, `states` the kernel's task state rows by task id, `agent` the caller (its key, roles and trial from
+ * every gate passes), `agents` the grants table the directory comes from, `states` the kernel's task state rows by task id, `agent` the caller (its key and roles from
  * `agents`), `task`/`run` what the kernel knows of its run. call(name, args) resolves with the JSON-RPC reply ({ result }).
  */
 export function bridge({ handler, board, agents = {}, agent = "me", task, run, states = {}, repos, acceptWaits = false }) {
   current = { handler, board, directory: { agents }, states, repos, acceptWaits };
   forget();
   const g = agents[agent] ?? {};
-  const caller = { agent, key: g.key ?? agent, roles: [...(g.roles ?? []), ...(g.trial ? ["kernel.trial"] : [])], task, run };
+  const caller = { agent, key: g.key ?? agent, roles: [...(g.roles ?? [])], task, run };
   const call = async (name, args, as = caller) => (await rpc({ method: "tools/call", params: { name, arguments: args } }, { "x-aidenhq-caller": assertion(as) })).json;
   return { call, caller };
 }

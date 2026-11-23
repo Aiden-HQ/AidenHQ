@@ -22,11 +22,11 @@ export function readInside(dir: string, path: unknown, what: string) {
  * plus the instance's agents/<key>.md under "## Instance rules" when there is one.
  */
 export function readInstructions(cfg: Obj, a: Obj, { repo, instanceDir = "" }: { repo: string; instanceDir?: string }) {
-  // An instance agent's handbook is its folder's AGENTS.md in the instance repo (agents/<key>/AGENTS.md).
-  // A forked module agent's (handbook_fork) is the instance's agents/<key>/AGENTS.md too.
+  // A local agent's handbook is its local module's agents/<key>/AGENTS.md in the instance repo.
+  // A forked module agent's (handbook_fork) is the instance's agents/<key>/AGENTS.md.
   // A module read from the sources cache (a per-module pin, a third-party module) has its handbook in the fetched tree.
   const trees = join(defaultCache(), "trees");
-  const mod = a.module === "instance" || a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
+  const mod = a.tier === "local" ? join(instanceDir, "modules", a.module, "agents") : a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
   // Handbooks say "the owner"; one line names them.
   const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}.\n\n` : "";
   // Where agent-built repos live: handbooks say "the agents org", one per enabled code host (compile's agents_orgs).
@@ -75,11 +75,11 @@ const APPROVALS_SECTION = section("approvals");
 // apps and can wake themselves later (app_logs and wake_at).
 const appFollowupSection = (a: Obj) => (a.enabled_tools?.apps?.includes("app_logs") && a.enabled_tools?.chat_lane?.includes("wake_at") ? section("app-followup", "") : "");
 
-/** A section's text as the agent reads it: past its frontmatter, `{{fleet_issues}}` and `{{memory}}` filled in. */
+/** A section's text as the agent reads it: past its frontmatter, `{{fleet_issues}}` filled in. `{{memory}}` stays: the kernel fills it from the agent's memory when a job starts, and the chat lane each turn (memory.ts fillMemory). */
 function sectionText(cfg: Obj, a: Obj, id: string, { repo, fleetIssues }: { repo: string; fleetIssues?: string }) {
   const { body } = frontmatter(readInside(join(repo, "modules"), cfg.prompts?.[id]?.file, `agent ${a.name}: section ${id}`));
   if (body.includes("{{fleet_issues}}") && !fleetIssues) throw new Error(`section ${id}: the Fleet issues task is missing`);
-  return body.replaceAll("{{fleet_issues}}", fleetIssues!).replace("{{memory}}", () => a.memory ?? "");
+  return body.replaceAll("{{fleet_issues}}", fleetIssues!);
 }
 /**
  * The module sections compile picked for this agent that load always (spec §3.1 `prompts`, after the kernel's sections), in

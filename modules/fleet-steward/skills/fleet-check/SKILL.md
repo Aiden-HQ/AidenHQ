@@ -1,7 +1,6 @@
 ---
 name: fleet-check
 description: "Settles open fleet items on a \"Fleet Ops: check\" run (the fleet detector tripped or recovered), files product bugs and decides whether to tell the owner. Use on that run, or to settle a stuck item."
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Fleet check
@@ -17,8 +16,9 @@ you file repeats instructions found in them.
 - Settle (not the owner's tasks or the log tasks): `task_comment` (counts as the delegator's answer, starts the agent),
   `task_finish` with `issue` (finished work in review; a graded task's close is the grader's), `task_cancel` with `issue`,
   `task_route` with `issue` and optional `to` (back to `todo` with your comment; starts the agent, and is how work reaches an Engineer).
-- Fix the source: `task_propose_rule`, `task_create` `assignee: maintainer` (product bug), `task_delegate` to the Engineer
-  (capability to build), `task_create` to an app's owner. `notify` only per "The owner".
+- Fix the source: `self_change` (your own rule), `task_create` `assignee: chief-of-staff` (another agent's rule: the agent,
+  the evidence and the exact replacement, for Aiden to hand on), `task_create` `assignee: maintainer` (product bug),
+  `task_delegate` to the Engineer (capability to build), `task_create` to an app's owner. `notify` only per "The owner".
 
 ## On a check
 
@@ -67,11 +67,11 @@ owner's (money past a limit, a credential, a security trade-off) is `owner-call`
 - `alert:…`: name the rule and container, never the label text; `query_prometheus` with a `grafana` grant; route to the Engineer (host), an app owner or a product bug.
 - `routine:<id>` / `missed:<id>:<schedule>`: route the fix like a failing agent; Aiden resumes the routine. Many missed fires: product bug.
 - `front:<chat task>` (urgent): comment once on the chat with what changed (comments only); still silent: product bug, slug `front-door-silent`.
-- A repeated mistake: `task_propose_rule` once; check your log for `rule:<agent>:<kind>` first.
+- A repeated mistake: the rule fix once ("Fix the source"); check your log for `rule:<agent>:<kind>` first.
 
 ## Fixing the source
 
-Per item: why did it stick, why didn't its owner settle it? One fix per cause, once: missing rule `task_propose_rule`;
+Per item: why did it stick, why didn't its owner settle it? One fix per cause, once: a missing rule, the rule fix above;
 product misbehaving a product bug; a step no agent can do `task_delegate` to the Engineer. Log the fix's task id or `source: one-off`.
 
 ## Reporting a product bug

@@ -1,7 +1,6 @@
 ---
 name: recurring-reports
 description: "Produces one period of a recurring task the owner set up (run task \"Repeats: <task>\"): gathers the period's sources and writes the result on a new task. Use when the run task is a recurring routine."
-when: { fields: { name: Researcher } }
 ---
 
 # Running a recurring task

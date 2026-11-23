@@ -1,7 +1,6 @@
 ---
 name: fleet-digest
 description: "Works the day's deep-look log lines, verifies product-bug fixes live and sends the owner one digest message. Use on the \"Fleet Ops: daily digest\" run (evening)."
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Fleet digest

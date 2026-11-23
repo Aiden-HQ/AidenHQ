@@ -14,7 +14,7 @@ If nothing happens: it waits. Nothing is built until you say ready.
 | **Its job** | Finds pull requests waiting on review and drafts a nudge for whoever holds each one |
 | **What wakes it** | Its weekday schedule, or a request ("chase the reviews on acme/api") |
 | **Schedule** | Weekdays at 10:00 |
-| **Reports to** | The Agent Architect while in trial, then Aiden |
+| **Reports to** | Aiden |
 
 ## How each run works
 
@@ -41,11 +41,11 @@ In words:
 
 ## What it can read and change
 
-| | In trial | After trial |
-|---|---|---|
-| **Reads** | GitHub pull requests and reviews; Slack, to see earlier nudges | The same |
-| **Changes** | Nothing: it writes drafts in its report | Sends its nudges in Slack, each reviewed before it goes |
-| **Contacts** | Nobody | The reviewers of your repositories |
+| | |
+|---|---|
+| **Reads** | GitHub pull requests and reviews; Slack, to see earlier nudges |
+| **Changes** | Its nudges, as Slack drafts you send |
+| **Contacts** | Nobody: you send each nudge |
 
 ## Schedule and cost
 
@@ -53,11 +53,11 @@ In words:
 |---|---|---|
 | Weekdays at 10:00 (about 22 a month) | about $0.10 | about $2.20 |
 
-## Trial plan
+## Onboarding plan
 
 1. It reproduces the three examples below correctly.
 2. Then it works real weekdays in batches of five runs, each report reviewed by the Agent Architect.
-3. It runs on its own after two clean batches in a row; you say yes first.
+3. It runs on its own after two clean batches in a row.
 
 ## Examples
 
@@ -72,4 +72,4 @@ In words:
 | Decision | Recommended | Other choice |
 |---|---|---|
 | How long before chasing | **2 working days**: catches stuck reviews without nagging | 1 working day |
-| Where nudges go after trial | **A Slack DM to the reviewer**: personal, easy to act on | A comment on the pull request |
+| Where nudges go | **A Slack DM to the reviewer**: personal, easy to act on | A comment on the pull request |

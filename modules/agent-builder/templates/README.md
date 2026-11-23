@@ -1,10 +1,12 @@
 # Agent templates
 
-The Agent Architect starts from the closest template here (an instance agent folder: `agent.yaml` + `AGENTS.md`, in trial) and adapts it. Each has explicit grants and a routine with a done condition.
+The Agent Architect starts from the closest template here and adapts it. Each is a local module (`module.yaml` +
+`agents/<key>/AGENTS.md`, which goes to `modules/<name>/` in the instance repo) with its designed grants and one routine
+with a done condition.
 
-| Template | Does | Trial grants |
+| Template | Does | Grants |
 |---|---|---|
-| `pr-review-chaser` | Drafts nudges for pull requests waiting on review | github?, slack? read |
+| `pr-review-chaser` | Drafts nudges for pull requests waiting on review | github? read, slack? write (drafts) |
 | `digest-writer` | Scheduled digest of named sources, posted to its task | slack?, github? read, `warehouse_query` |
-| `triage-bot` | Sorts a feed into act, delegate or ignore; after trial files tasks | slack? read (after trial `task_create`, `task_delegate`) |
-| `app-owner` | Owns one app's backlog and files improvements to the Engineer (not the app's health: DevOps Engineer) | apps read, `app_requests` (after trial `task_delegate`) |
+| `triage-bot` | Sorts a feed into act, delegate or ignore and files tasks | slack? read, `task_create`, `task_delegate` |
+| `app-owner` | Owns one app's backlog and files improvements to the Engineer (not the app's health: DevOps Engineer) | apps read, `app_requests`, `task_delegate` |

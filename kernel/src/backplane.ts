@@ -90,6 +90,14 @@
 //                              down now (a connection that recovered or was removed is absent); the owner channel appends them to each digest
 //   POST /v1/auth/:op, /v1/auth/mcp/:op, /v1/owner/{decide,update}, /v1/accounts/:op, /v1/apps/:op, /v1/operator/:op  the accounts' routes (auth-api.ts): module UI
 //                              sessions and account admin (the board), in-app requests (apps-platform), setup links (operator)
+//   POST /v1/memory/:op       (a module with role kernel.memory, serving a job's memory_<op> call in flight) note | forget | read |
+//                              rewrite on the job's own agent's memory (memory.ts); read and a removals-only rewrite of any agent's
+//                              for a librarian. GET /v1/memory/:key (the board, or role kernel.lane) {view, facts, updated}
+//   POST /v1/events            (a module with role kernel.events) one source event of a connection it serves (events.ts) -> {queued} |
+//                              {skipped} | {dropped}, always 200 unless it isn't that connection's module (403).
+//                              GET /v1/events/sources?connection= the resources its connection's routines subscribe to.
+//                              GET /v1/events/batch/:batch (role kernel.events, serving a job's routine_events call in flight) the
+//                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
 import type { Projects } from "./projects.ts";
@@ -126,13 +134,15 @@ import type { ModuleTasks } from "./modtasks.ts";
 import { CONN_TOOL, type Writes } from "./writes.ts";
 import { requestChain } from "./review-loop.ts";
 import type { ConnectionState } from "./connection-state.ts";
+import { MemoryError, memoryOp, view as memoryView, type Memory } from "./memory.ts";
+import { EventsError, type Events } from "./events.ts";
 import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
 type Handler = (req: IncomingMessage, res: ServerResponse, ...a: string[]) => Promise<void>;
 /** Directory fields a module may read (name and model: code review's judge picks a model family other than a PR author's);
  * everything else in the grants table (tools, model lists, caps, images) stays here. */
-const DIRECTORY = ["key", "name", "model", "roles", "profile", "trial", "description", "delegate_to", "memory_inbox", "review_log", "graded", "feedback_for", "private_reads"];
+const DIRECTORY = ["key", "name", "model", "roles", "profile", "description", "delegate_to", "review_log", "graded", "feedback_for"];
 
 /** The tool calls that record a wait on their job's task (POST /v1/wait, idle.ts). */
 const WAIT_TOOLS = ["task_wait", "task_handoff", "notify"];
@@ -212,10 +222,17 @@ export const ROUTES = [
   { method: "GET", path: "/v1/connections/down", auth: "module" },
   { method: "GET", path: "/v1/connections/needs", auth: "module" },
   { method: "POST", path: "/v1/settings/change", auth: "board" },
+  { method: "POST", path: "/v1/modules/share/preview", auth: "board" },
+  { method: "POST", path: "/v1/modules/share", auth: "board" },
   { method: "POST", path: "/v1/validate", auth: "board" },
   { method: "POST", path: "/v1/stop", auth: "board" },
   { method: "POST", path: "/v1/routing/:op", auth: "module+assertion" },
   { method: "POST", path: "/v1/settings/agent", auth: "module+assertion" },
+  { method: "POST", path: "/v1/memory/:op", auth: "module+assertion" },
+  { method: "GET", path: "/v1/memory/:key", auth: "module|board" },
+  { method: "POST", path: "/v1/events", auth: "module" },
+  { method: "GET", path: "/v1/events/sources", auth: "module" },
+  { method: "GET", path: "/v1/events/batch/:batch", auth: "module+assertion" },
   { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/auth/mcp/:op", auth: "board" },
@@ -227,7 +244,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
 // `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:batch\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], live: ["review", "owner", "approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };
@@ -245,7 +262,8 @@ function workRead(work: Work, p: URLSearchParams) {
   if (p.get("generations")) return work.generations();
   if (record) return work.record(record.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no record ${record.slice(0, 40)}`); })();
   if (job) return work.job(job.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no job ${job.slice(0, 40)}`); })();
-  if (agent) return work.agent(agent.slice(0, 100));
+  // `shown=1` (the board's Activity tab): quiet routine runs left out before the limit; detectors read every run.
+  if (agent) return work.agent(agent.slice(0, 100), { shown: p.get("shown") === "1" });
   if (since) {
     const to = p.get("to") ?? undefined;
     if (Number.isNaN(Date.parse(since)) || (to && Number.isNaN(Date.parse(to)))) throw fail(400, "bad_request", "since and to are ISO timestamps");
@@ -283,7 +301,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, validate, routing, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -347,12 +365,18 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   connectionHealth?: () => Promise<Record<string, unknown>>;
   /** Connect on first use (connection-state.ts): the board's /ok and the dispatcher's down list. */
   connectionState?: Pick<ConnectionState, "okModule" | "downFor" | "needs" | "has" | "report">;
+  /** A local module's share: its preview, and the owner's save of it (module-share.ts createSharing). */
+  sharing?: { preview(b: Record<string, unknown>): Promise<unknown>; share(b: Record<string, unknown>): Promise<unknown> };
   /** The owner's typed settings change on their settings task (settings-change.ts). */
   /** A module's own check of settings the board is about to file (module-validate.ts). */
   validate?: (module: string, input: { settings?: Record<string, unknown> }) => Promise<unknown>;
-  settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string) => Promise<unknown> };
+  settingsChange?: ((task: unknown, changes: unknown, session?: unknown) => Promise<unknown>) & { asAgent?: (requester: Requester, task: string, changes: unknown, module: string, o?: { tool?: string; why?: unknown }) => Promise<unknown> };
   /** The routing learning loop (routing-tune.ts). */
   routing?: Routing;
+  /** Agents' memory documents (memory.ts). */
+  memory?: Memory;
+  /** The event router (events.ts). */
+  events?: Events;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
   boardApi?: BoardApi;
 }) {
@@ -628,19 +652,80 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           // owner's board session or MCP sign-in it was made in (the kernel checks it; its account decides the record).
           try { return send(res, 200, await settingsChange(b.task, b.changes, b.credential)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
         }
+        case "POST /v1/modules/share/preview":
+        case "POST /v1/modules/share": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!sharing) throw fail(503, "unavailable", "sharing is off");
+          const b = await json(req, 100_000);
+          // The owner reads why: the export's refusal, the code host's, or the filing's (a moved tip, a private repo).
+          try { return send(res, 200, await (hit!.path === "/v1/modules/share" ? sharing.share(b) : sharing.preview(b))); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+        }
       }
       if (hit?.path === "/v1/settings/agent") {
-        // A module holding kernel.settings, serving a kernel job's tool call in flight: the agent's typed setting change on its
-        // own task, for a setting whose module names one of the job's roles as a writer (settings-change.ts asAgent).
+        // A module holding kernel.settings, serving a kernel job's tool call in flight, on the job's own task: through the signed
+        // tool self_change, the agent's change to itself; through any other, a setting whose module names one of the agent's
+        // roles as a writer (settings-change.ts asAgent). The agent's key and roles are its live grants row's, never the assertion's.
         const w = await moduleOf(req);
         if (!w.roles.includes("kernel.settings")) throw fail(403, "forbidden", `${w.module} may not file settings changes (role kernel.settings)`);
         if (!settingsChange?.asAgent) throw fail(503, "unavailable", "settings changes are off");
         const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
         const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
         if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight changes settings");
-        const requester = { agent: job.agent ?? "", key: job.key ?? "", name: job.name ?? "", roles: job.roles, kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
+        const row = grantsFile().agents?.[job.agent!];
+        if (!row?.key) throw fail(403, "forbidden", "the job's agent has no grants row");
+        const requester = { agent: job.agent ?? "", key: String(row.key), name: job.name ?? "", roles: [...(row.roles ?? [])], kind: job.kind, task: job.task, ...(job.run ? { run: job.run } : {}), ...(job.model ? { model: job.model } : {}) };
         const b = await json(req, 400_000);
-        try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!)); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+        // The task tools' own self_change (paperclip_tasks), never a same-named tool on another connection.
+        const signed = String(live.caller.tool ?? ""), tool = signed === "paperclip_tasks.self_change" ? "self_change" : signed.endsWith(".self_change") ? "" : signed.split(".").pop();
+        // A run an event routine fired (its job's routine is an event subscription, or its task was bound to a batch) read outside
+        // text (Slack, GitHub): it changes nothing about itself; a task of its own may.
+        const routine = (() => { try { return (records?.db.prepare("SELECT routine FROM jobs WHERE id = ?").get(job.job) as { routine: string | null } | undefined)?.routine; } catch { return undefined; } })();
+        const evented = Boolean(routine && Object.values((grantsFile().routine_events ?? {}) as Record<string, { key?: string }>).some((s) => s.key === routine)) || Boolean(events?.fired(job.task));
+        // An untrusted agent (it reads outside text by design) changes nothing about itself (compile never grants it either).
+        if (tool === "self_change" && row.isolation === "untrusted") throw fail(403, "forbidden", "an untrusted agent changes nothing about itself");
+        if (tool === "self_change" && evented) throw fail(403, "forbidden", "a run fired by events changes nothing about its agent: file the change as a task of your own (task_create), with the evidence, and make it there");
+        try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!, { tool, why: b.why })); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
+      }
+      if (hit?.path === "/v1/memory/:op") {
+        // A module holding kernel.memory, serving a kernel job's memory_<op> call in flight: the job is read from its own token
+        // and its agent from the grants table, never the body's say-so (a lane turn holds no job, so it never writes memory).
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.memory")) throw fail(403, "forbidden", `${w.module} may not reach agents' memory (role kernel.memory)`);
+        if (!memory) throw fail(503, "unavailable", "memory is off");
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+        if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight reaches memory");
+        const op = m[0]!;
+        if (!["note", "forget", "read", "rewrite"].includes(op)) throw fail(404, "not_found", `no memory op ${op}`);
+        if (String(live.caller.tool ?? "") !== `paperclip_tasks.memory_${op}`) throw fail(403, "forbidden", `memory ${op} is memory_${op}'s only`);
+        const agents = grantsFile().agents ?? {}, row = agents[job.agent!];
+        if (!row?.key) throw fail(403, "forbidden", "the job's agent has no grants row");
+        const keys = Object.values(agents).map((g) => String(g.key ?? "")).filter(Boolean);
+        try { return send(res, 200, memoryOp(memory, op, await json(req, 100_000), { key: row.key, job: job.job, task: job.task, librarian: (row.roles ?? []).includes("librarian") }, keys)); } catch (e) { if (e instanceof MemoryError) throw fail(e.status, "refused", e.message); throw e; }
+      }
+      if (hit?.path === "/v1/memory/:key") {
+        if (!isBoard(req)) { const w = await moduleOf(req); if (!w.roles.includes("kernel.lane")) throw fail(403, "forbidden", `${w.module} may not read agents' memory (role kernel.lane)`); }
+        if (!memory) throw fail(503, "unavailable", "memory is off");
+        const key = decodeURIComponent(m[0]!);
+        if (!Object.values(grantsFile().agents ?? {}).some((g) => g.key === key)) throw fail(404, "not_found", `no agent ${key.slice(0, 60)}`);
+        const { doc } = memory.read(key);
+        return send(res, 200, { view: memoryView(doc), facts: doc.facts, updated: memory.updated(key) ?? null });
+      }
+      if (hit?.path.startsWith("/v1/events")) {
+        const w = await moduleOf(req);
+        if (!w.roles.includes("kernel.events")) throw fail(403, "forbidden", `${w.module} may not reach the event router (role kernel.events)`);
+        if (!events) throw fail(503, "unavailable", "events are off");
+        try {
+          if (hit.path === "/v1/events") return send(res, 200, events.ingest(w.module!, await json(req, 64_000)));
+          if (hit.path === "/v1/events/sources") return send(res, 200, { resources: events.resources(w.module!, String(new URLSearchParams(q ?? "").get("connection") ?? "")) });
+          // A kernel job's routine_events call in flight: the job, its task, agent and routine from its own token and row.
+          const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+          const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+          if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight reads a batch");
+          if (String(live.caller.tool ?? "") !== "paperclip_tasks.routine_events") throw fail(403, "forbidden", "a batch is routine_events's only");
+          const row = records?.db.prepare("SELECT routine FROM jobs WHERE id = ?").get(job.job) as { routine: string | null } | undefined;
+          return send(res, 200, await events.batch({ task: job.task, agent: job.agent!, routine: row?.routine }, m[0]!));
+        } catch (e) { if (e instanceof EventsError) throw fail(e.status, "refused", e.message); throw e; }
       }
       if (hit?.path === "/v1/routing/:op") {
         // A module holding kernel.routing (the fleet-steward), serving a kernel job's tool call in flight: the job is read from
@@ -780,7 +865,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           case "POST /v1/channel/owner-message": return send(res, 200, await channels.ownerMessage(mod, await json(req), cos));
           case "POST /v1/channel/thread": {
             const b = await json(req);
-            return send(res, 200, await channels.thread(mod, b, (key) => { const e = Object.entries(grantsFile().agents ?? {}).find(([, g]) => key && g.key === key); return e && { id: e[0], trial: Boolean(e[1].trial) }; }));
+            return send(res, 200, await channels.thread(mod, b, (key) => { const e = Object.entries(grantsFile().agents ?? {}).find(([, g]) => key && g.key === key); return e && { id: e[0] }; }));
           }
           case "POST /v1/channel/stop": return send(res, 200, await channels.stop(mod, await json(req)));
           case "POST /v1/channel/exchange": {

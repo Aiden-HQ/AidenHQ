@@ -785,11 +785,11 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # the head the record bound (GitHub refuses any other), only after decide says so (open on the default branch, at that head,
 # every named check green, none truncated, the base's gate check present). Nothing in the
 # queue updates, rebases, retargets, re-runs, deletes or closes: a moved head or base goes back to the PR's own path. Its only
-# other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure, so the code
-# host can only hold a merge, never pass the review). Its only other GitHub calls are two confirming reads on the same token
+# other GitHub write is the design review's `pending` commit status (design-review.ts; never success or failure: the review
+# is advisory and never holds a merge). Its only other GitHub calls are two confirming reads on the same token
 # — `GET /repos/:slug`, and the PR itself (`GET /repos/:slug/pulls/:n`) — which tell a deleted repo or PR from one this token
 # can no longer see before a NOT_FOUND ends an approved merge; neither writes. The record is the
-# review in our own repos; a product merge is never Tier 0. Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
+# review in our own repos; a product merge is Tier 0 only on its exact-head eligibility (productMergeEligible). Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
@@ -814,18 +814,21 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (!def || pr.baseRefName !== def) return { do: "fail"' "$rm_" \
   && grep -qF 'if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail"' "$rm_" \
   && grep -qF 'if (!named.length) return { do: "wait"' "$rm_" \
-  && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW.name,' "$rdr" \
+  && [ "$(grep -c 'o\.gh("POST"' "$rdr")" = 2 ] && grep -qF 'o.gh("POST", `/repos/${ask.repo}/statuses/${ask.head}`' "$rdr" && grep -qF '{ state: "pending", context: DESIGN_REVIEW_CHECK,' "$rdr" \
   && grep -qF 'if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge"' "$rplan" \
   && grep -qF 'export const ownRepo = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos) => inOrg(fleetOrg, slug) || isProduct(slug, productRepo);' modules/github/service/src/git-auth.ts \
   && grep -qF 'const isProduct = (slug: string | undefined, product: ProductRepos) => [product ?? []].flat().some((p) => sameSlug(slug, p));' modules/github/service/src/git-auth.ts \
-  && grep -qF 'if (same(p.repo, s.productRepo)) return [productMergePart(p, ref)];' "$rplan" \
-  && [ "$(awk '/^function productMergePart/,/^}/' "$rplan" | grep -oE 'T\([0-9]' | sort -u | tr '\n' ' ')" = "T(1 " ] \
+  && grep -qF 'if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);' "$rplan" \
+  && grep -qF 'const eligible = productMergeEligible({ repo: p.repo, head: String(p.head ?? ""), checks: p.checks, verdict: p.verdict, productRepo: String(s.productRepo ?? "") });' "$rplan" \
+  && grep -qF 'const ci = p.checks.some((c) => c.name === GATE_CHECK && c.success === true && !c.pending);' "$rm_" \
+  && grep -qF 'return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true);' "$rm_" \
+  && grep -qF '!productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");' "$rq" \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge"' "$rplan" \
   && grep -qF 'if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close"' "$rplan" \
   && grep -qF 'const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
   && grep -qF 'agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
-  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is never Tier 0 ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
+  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); its only other write is a pending design-review status; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required successful (not neutral or skipped) and code review's pass on its exact head, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
 # The AI reviewer's own code (evalgate.ts REVIEWER_CODE) merges on CI's reviewer-eval job, part of ci-required; the code host
 # runs no eval of its own. An `aidenhq` marketplace pin never lands through an apply: official modules come with the product pin.
 rgate="modules/github/service/src/evalgate.ts"
@@ -833,49 +836,45 @@ grep -qF 'export const touchesReviewer' "$rgate" && ! grep -qE 'createEvalGate|d
   && grep -qF 'if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422' modules/github/service/src/service.ts \
   && pass "codehost: the reviewer's code list is CI's; no marketplace pin moves through an apply ($rgate)" \
   || fail "codehost: the reviewer's code list or the marketplace pin refusal changed ($rgate)"
-# Who decides a write (owner, 2026-11-22): the AI reviewer, which blocks only malice and fails open; the owner only for his
-# own veto on a task, his signed-in settings save and an autonomy of off (the instance's or a routine's; tier0 shadows the
-# reviewer's verdict for him). A Tier 2 raise on its merits is the reviewer's (tier.ts computeTier), and no record is held
-# for a second reviewer or a review-first owner card. The kernel's floors take every agents org (product #324 0c527d0f:
-# `agentsOrgs`), never the product or instance repo, and a local change request's merge is never floor 0 (localMerge: no
-# CI review read it). The gate's core, compose files and dispatch are the path inventory's (paths.yaml), the owner-approval
-# records its sensitivity 2 in any repo; the code hosts' push, pr and merge read their paths, and every filing runs the
-# write.filed checks before its tier (writes.ts), the platform check (check.ts: the owner-approval records change alone) a
-# hard gate the kernel runs in process.
+# Who decides a write (owner, 2026-11-22/23): a tier is the kind's floor, code's hard refusals, the owner's veto or save, and
+# autonomy off (tier.ts computeTier); nothing else. The AI reviewer blocks only malice and fails open; the owner decides only
+# his own veto on a task, his signed-in settings save and the instance's autonomy off (tier0 shadows the reviewer's verdict for
+# him). The kernel's floors take every agents org (product #324 0c527d0f: `agentsOrgs`), never the product or instance repo,
+# and a local change request's merge is never floor 0 (localMerge: no CI review read it). Every filing runs the write.filed
+# checks before its tier (writes.ts), the platform check (check.ts: the owner-approval records change alone) a hard gate the
+# kernel runs in process. A share's publish (publish-module) is the owner's alone: only his save files it (`filer: owner`).
+# The reviewer eval triggers only on the reviewer's own code (evalgate.ts).
 rreview="modules/ai-reviewer/service/src/review.ts"
-[ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rplan" "$rcheck" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "unrecognised" ' ] \
+[ "$(grep -ohE 'T\(2, "[a-z-]+"' "$rplan" "$rcheck" kernel/src/tier.ts | sort -u | tr '\n' ' ')" = 'T(2, "owner-veto" T(2, "publish-module" T(2, "unrecognised" ' ] \
+  && grep -qF 'if (k.filer === "owner") throw fail(403, "owner-only"' kernel/src/writes.ts \
   && grep -qF 'if (ownerSave || priorVeto) return { tier: 2, merit, state: "owner" };' kernel/src/tier.ts \
-  && grep -qF 'if (off) return { tier: 2, merit, cap: off, rule: off.by === "autonomy" ? "autonomy-off" : "routine-autonomy", state: "owner" };' kernel/src/tier.ts \
+  && grep -qF 'if (autonomy === "off") return { tier: 2, merit, cap: { by: "autonomy", value: "off" }, rule: "autonomy-off", state: "owner" };' kernel/src/tier.ts \
   && grep -qF 'if (v.decision === "escalate" && v.code === "reviewer_failed") {' kernel/src/writes.ts && grep -qF 'const post = v.model === "kernel/code" && v.decision === "reject" ? v : shadowed(v, mode);' kernel/src/writes.ts \
-  && grep -qF 'const leaked = instanceDetails({ action }, diff, toolCall);' kernel/src/review-loop.ts && grep -qF 'const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];' kernel/src/review-loop.ts \
-  && node --input-type=module -e 'const { pathInventory } = await import(process.argv[1]); const { sensitivityOf } = await import(process.argv[2]); const inv = pathInventory(process.argv[3]); const must = ["merge-gate.ts","merges.ts","evalgate.ts","plan.ts","train.ts","release.ts"].map((n) => `modules/github/service/src/${n}`).concat(["modules/github/connections/github-mcp/src/official.ts", "modules/platform/src/check.ts", "modules/glean/connections/glean-mcp/src/aidenhq-sdk/caller.ts", "modules/engine-claude/src/claude.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/grading/service/src/main.ts", "modules/grading/service/Dockerfile", "modules/grading/package.json", "ops/grades-move.ts", "kernel/src/auth-rules.ts", "kernel/src/signin.ts", "kernel/src/progress.ts", "kernel/src/assert.ts", "kernel/src/cp.ts"], ["app","fleet","kernel-auth","session"].map((n) => `services/board/src/${n}.ts`), ["modules","paperclip-setup","computers"].map((n) => `scripts/${n}.ts`), ["modules/engine-codex/bin/engine", "kernel/sdk/src/engine-io.ts", "kernel/src/sandbox.ts", "kernel/src/jobs.ts", "kernel/src/boxes.ts", "kernel/src/admission.ts", "kernel/src/accounts.ts", "kernel/src/proxy.ts", "kernel/src/identity.ts", "kernel/src/gateway/lib.ts", "kernel/sdk/src/caller.ts", "modules/apps-platform/apps-mcp/src/aidenhq-sdk/caller.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/tier.ts", "kernel/src/kinds.ts", "kernel/src/review-loop.ts", "kernel/src/apply-tier.ts", "kernel/src/checkjobs.ts", "kernel/sdk/src/executor.ts", "modules/apps-platform/apps-mcp/src/executor.ts", "modules/apps-platform/module.yaml", "modules/primer/module.yaml", "modules/primer/connections/primer-mcp/src/publish.ts", "modules/ai-reviewer/service/src/review.ts", "kernel/sdk/src/reviewer.ts", "services/shared/review-files.ts", "kernel/src/checks.ts", "modules/grading/module.yaml", "modules/grading/service/src/server.ts", "modules/grading/service/src/grades.ts", "paths.yaml", "scripts/paths.ts", "scripts/verify-security.sh", "compose.yaml", "compose.base.yaml", "modules/dispatch/module.yaml"]); const miss = must.filter((f) => sensitivityOf(inv, "product", f).sensitivity === 0); if (miss.length) { console.error("not reviewed: " + miss.join(" ")); process.exit(1); } if (sensitivityOf(inv, "other", ".github/supply-chain-source-exceptions.yaml").sensitivity !== 2) { console.error("the owner-approval records are not the owner'"'"'s"); process.exit(1); }' "$repo/scripts/paths.ts" "$repo/kernel/src/paths.ts" "$repo" \
-  && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/tier.ts", "kernel/src/provenance.ts", "kernel/src/writes.ts", "kernel/src/records.ts", "kernel/src/reviews.ts", "kernel/src/kinds.ts", "kernel/src/apply.ts", "modules/github/service/src/plan.ts", "modules/platform/src/check.ts"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/$rgate" \
-  && [ "$(grep -cE '^  (push|pr|merge): \{ args: schemas/[a-z]+\.json, floor: 0, paths: true,' modules/github/module.yaml)" = 3 ] \
-  && [ "$(grep -cE '^  \{ action: "(push|pr|merge)", args: [A-Z]+(\(true\))?, paths: true \},$' modules/codehost-local/src/kinds.ts)" = 3 ] \
-  && grep -qF '{ module: "codehost-local", floor: 0, ...(paths ? { paths: true } : {}), tools: [], args, card: CARD }' modules/codehost-local/src/kinds.ts \
-  && grep -qF 'const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];' kernel/src/writes.ts \
+  && grep -qF 'const leaked = instanceDetails({ action }, diff, toolCallOf(action, r.args));' kernel/src/review-loop.ts && grep -qF 'const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];' kernel/src/review-loop.ts \
+  && grep -qF 'const refused = codeRefusal(r);' kernel/src/review-loop.ts && [ "$(grep -c 'if (t.state === "rejected") throw fail(422' kernel/src/writes.ts)" = 2 ] \
+  && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/review-loop.ts", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "modules/ai-reviewer/service/src/review.ts"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/$rgate" \
+  && grep -qF 'const top = filedRaises(kind, plan).reduce<Raise | undefined>(' kernel/src/writes.ts \
   && grep -qF 'if (!run) throw unavailable(`${id} has no code in this kernel`);' kernel/src/writes.ts \
   && grep -qF 'filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck }' kernel/src/main.ts \
   && grep -qF 'export const HARD_GATES = new Set(["platform.product-gate"]);' kernel/src/gates.ts \
   && grep -qF 'if (files.has(OWNER_APPROVAL_FILE) && files.size > 1) return { verdict: "deny"' "$rcheck" \
   && grep -qF 'if (!(await revalidate(pre))) return void runRetries.delete(id);' kernel/src/writes.ts && grep -qF 'if (!records.claim(id)) return;' kernel/src/writes.ts \
   && grep -qF 'if (workflow && !(inAgents && b.ciTemplate === true)) parts.push(T(1, "github-dir"' "$rplan" \
-  && pass "kernel and codehost: the AI reviewer decides every reviewed write (malice only, fail open); the owner decides only his veto, his settings save and autonomy off; code's own refusals run before any review; the gate's core is reviewed, checked by the path inventory; a CI template copy is Tier 0 only by tree identity with the deployed product (paths.yaml, $rreview)" \
-  || fail "kernel or codehost: who decides a write changed (the Tier 2 rules, the path inventory, fail open, or code's refusals)"
-# Jobs reach connections only through the kernel: a job holds no connection URL or token (its grants and its non-private
-# jobcaps through the kernel's proxy with its job token), private reads go only to Engineers whose definition opts in
-# (private_reads), with web search off; a repository is never created outside the code host's approved create_repo; every
+  && pass "kernel and codehost: a tier is the floor, code's refusals, the owner's veto or save and autonomy off; the AI reviewer decides every reviewed write (malice only, fail open); code's own refusals run before any review; the reviewer eval runs on the reviewer's own code; a CI template copy is Tier 0 only by tree identity with the deployed product ($rreview)" \
+  || fail "kernel or codehost: who decides a write changed (the Tier 2 rules, fail open, or code's refusals)"
+# Jobs reach connections only through the kernel: a job holds no connection URL or token (its grants and its jobcaps through
+# the kernel's proxy with its job token), with web search off where its agent turns it off (web_search: disabled); a
+# repository is never created outside the code host's approved create_repo; every
 # Primer publish is a primer.publish record at floor 1, and a thread reply a primer.reply record at floor 1.
 [ "$(awk '/^writes:/{on=1} on && /^    (floor|tools):/' modules/primer/module.yaml | tr -s ' ')" = "$(printf ' floor: 1\n tools: [ primer_create_document, primer_add_version ]\n floor: 1\n tools: [ primer_reply_to_thread, primer_resolve_thread ]')" ] \
   && grep -qF 'mcp: [], env: [],' kernel/src/sandbox.ts \
-  && grep -qF 'if (j.private && a.private_reads !== true) fail(' scripts/modules.ts \
   && grep -qF 'web: !observes(engine),' kernel/src/sandbox.ts \
-  && grep -qF 'if (c && (!c.private || j.authority.reads === true)) tools[c.connection]' kernel/src/identity.ts \
+  && grep -qF 'for (const id of j.authority.jobcaps) { const c = jobcaps()[id]; if (c) tools[c.connection]' kernel/src/identity.ts \
   && grep -q 'export const observes = (engine?: Engine) => engine?.reads === true;' kernel/src/sandbox.ts \
   && grep -qF '...(a.web === false ? { reads: true } : {})' kernel/src/jobs.ts \
-  && grep -qF 'web: g.private_reads !== true && g.web_search !== "disabled",' kernel/src/admission.ts \
-  && pass "kernel: jobs hold no connection URL or token, private reads only by opt-in with web search off; Primer publishes are primer.publish records at floor 1" || fail "kernel: jobs' connection reach or the Primer publish kind changed"
-# engine@1: the runner writes `web: false` into job.json for a job holding private data; every engine module keeps such a job
+  && grep -qF 'web: g.web_search !== "disabled",' kernel/src/admission.ts \
+  && pass "kernel: jobs hold no connection URL or token, web search off by the agent's setting; Primer publishes are primer.publish records at floor 1" || fail "kernel: jobs' connection reach or the Primer publish kind changed"
+# engine@1: the runner writes `web: false` into job.json for a job whose agent turns web search off; every engine module keeps such a job
 # off the web (by behaviour: each module's own builder, as its bin/engine runs it).
 if web_probe="$(node --input-type=module -e '
   const spec = { contract: "engine@1", prompt: "", mcp: [], env: [], web: false, limits: { timeout_s: 1 }, model: { base_url: "http://127.0.0.1:1/api/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "m", effort: "" }, sandbox: { kind: "box", writable: [], network: true } };

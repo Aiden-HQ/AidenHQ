@@ -1,7 +1,6 @@
 ---
 name: scan-slack
 description: "Turns Slack asks to the owner, their commitments, promises to them and messages pinned with their task emoji into deduplicated tasks, and closes tasks once answered or unpinned. Use on the half-hourly Slack scan run (Intake)."
-when: { fields: { name: Intake } }
 ---
 
 # Slack scan

@@ -10,14 +10,14 @@ requires:
 isolation: code-exec
 roles:
   declares:
-    - { id: platform-engineer, description: "The agent that makes fleet and product changes: settings changes, rule proposals and Dependabot PRs are filed to it." }
+    - { id: platform-engineer, description: "The agent that makes fleet and product changes: settings changes, access proposals and Dependabot PRs are filed to it." }
 agents:
   engineer:
     department: engineering
-    # Skills of this module apply on their own; design-system (app UI) comes from the apps platform. The dependabot and forks
-    # skills are the routines' and the Dependabot tasks' how-to.
-    skills: [ apps-platform.design-system ]
-    # platform-engineer: settings changes, rule proposals, Dependabot tasks and pin bumps are filed to the agent holding it,
+    # Its skills, every one listed (design-system, app UI, comes from the apps platform). The dependabot and forks skills are
+    # the routines' and the Dependabot tasks' how-to.
+    skills: [ apps-platform.design-system, engineering.aidenhq-product, engineering.build-app, engineering.dependabot, engineering.fleet-change, engineering.forks, engineering.publish, engineering.supply-chain, engineering.write-code ]
+    # platform-engineer: settings changes, access proposals, Dependabot tasks and pin bumps are filed to the agent holding it,
     # and it may push any branch (the code host's "Platform line": the kernel's record of who asked, never the args).
     roles: [ platform-engineer ]
     # Briefed and graded: deliverables delegated to it are checked against their rubric before they close (the grader).
@@ -43,8 +43,6 @@ agents:
     image: engineer
     isolation: code-exec
     max_parallel: 4 # independent changes run side by side, each in its own task workspace
-    # Public reads only (App UI work: web search and web_view on). Data work needs private_reads: true and drops the web
-    # (scripts/computers.ts privateGrants, checked at compile): a separate mode, not this agent's yet.
     connections:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       # GitHub reads, a PR's review threads, and a reply on one: answering a code review finding (write-code skill, Checks).

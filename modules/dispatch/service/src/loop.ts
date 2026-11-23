@@ -76,9 +76,9 @@ const blockedEpisode = (task: Issue) => `blocked:${(task.blockedBy ?? []).filter
 const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
 /**
  * Refusals a recompile or a re-queue clears (admission.ts: grants, profile or dispatcher list replaced under an older table,
- * provenance not settled, the task moved under the wake): the wake is kept and tried again for as long as its task is open, each time later (retryIn).
+ * the task moved under the wake): the wake is kept and tried again for as long as its task is open, each time later (retryIn).
  */
-const TRIES_AGAIN = new Set(["no-grants", "not-your-agent", "bad-profile", "task-not-assigned", "provenance-unsettled"]);
+const TRIES_AGAIN = new Set(["no-grants", "not-your-agent", "bad-profile", "task-not-assigned"]);
 const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || e.status === 409) && TRIES_AGAIN.has(e.body?.type ?? "");
 
 /**

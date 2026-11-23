@@ -87,7 +87,8 @@ export type Identity = {
   /** Each write as it was answered: a refusal (its words) or a success (undefined), so its owner sees when it stops working. */
   wrote?(refusal?: string): void;
 };
-type CallOpts = { background?: boolean; accept?: string; as?: Identity };
+/** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
+type CallOpts = { background?: boolean; accept?: string; as?: Identity; etag?: string };
 
 export interface GitHubAccess {
   connected(): boolean;
@@ -303,9 +304,9 @@ export function createAccess(o: {
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string) {
     const p = paceOf(as);
-    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, undefined, as);
+    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, undefined, as, false, etag);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
@@ -364,7 +365,7 @@ export function createAccess(o: {
     }
   }
 
-  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false): Promise<{ status: number; body: any; headers: Headers }> {
+  async function attempt(p: Pace, method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, deadline?: number, as?: Identity, retried = false, etag?: string): Promise<{ status: number; body: any; headers: Headers }> {
     // Only the path asked for: a `.` or `..` segment (encodeURIComponent leaves them) would move the request elsewhere.
     if (!path.startsWith("/") || new URL(path, API).pathname !== path.split("?")[0]) throw new Error(`refused a GitHub path that resolves elsewhere: ${path.slice(0, 200)}`);
     await admit(p, resource, background, deadline);
@@ -376,7 +377,7 @@ export function createAccess(o: {
     const res = await fetchImpl(`${API}${path}`, {
       method,
       signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
-      headers: { authorization: `Bearer ${t}`, accept: accept ?? "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { authorization: `Bearer ${t}`, accept: accept ?? "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(etag ? { "if-none-match": etag } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (createsContent(method, path, body)) {
@@ -390,7 +391,7 @@ export function createAccess(o: {
     let parsed: any = text;
     try { parsed = text ? JSON.parse(text) : {}; } catch { /* a non-JSON answer (a diff, a log) stays text */ }
     // Another identity's token GitHub refused (revoked, or the installation changed): once more with a new token.
-    if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true);
+    if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag);
     const need = classify(p, path, res, parsed, Boolean(as));
     if (need?.cause === "expired") o.auth.mark("expired", "GitHub refused the token (401)");
     if (need) fail(need);
@@ -421,7 +422,7 @@ export function createAccess(o: {
     connected,
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;

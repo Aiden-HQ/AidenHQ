@@ -21,7 +21,7 @@ export type Issue = { id: string; title?: string; description?: string | null; p
 export type Comment = { body?: string | null; authorType?: string; authorUserId?: string | null; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null };
 /**
  * The control plane as the owner (the board key): the task, its comments, the key's own user, and a notice on the task.
- * `delegator`: the agent that created the task (escalate.ts creatorAgent: the kernel's provenance, else the control plane's
+ * `delegator`: the agent that created the task (escalate.ts creatorAgent: the control plane's
  * creator; never its parent's assignee, which the requester could move); `agent`: an agent's key and roles (the grants table).
  */
 export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string): Promise<Comment[]>; me(): Promise<string>; notify(task: string, text: string): Promise<void>;
@@ -181,22 +181,33 @@ export function toolCallOf(action: string, args: unknown): ToolCall | undefined 
 }
 
 /**
+ * Code's own refusals, on every filing path (writes.ts file and fileTool) and again before any review, so a failed review
+ * never approves past them: private data to an outside thread (`instance_details`), and a diff that differs from the code
+ * host's own count of the change (`files_not_shown`: what is reviewed must be what runs). The diff is the whole planned one.
+ */
+export function codeRefusal(r: Pick<Rec, "kind" | "args" | "card" | "context">): Verdict | undefined {
+  const action = actionOf(r.kind);
+  const diff = cardDiff(action, r.context?.diff ?? r.card.details);
+  // A conn.tool call's arguments are checked as arguments too: a nested map keyed by a host, or a value the details text's JSON
+  // escaping would hide, is caught by the same check the reviewer module runs (review.ts).
+  const leaked = instanceDetails({ action }, diff, toolCallOf(action, r.args));
+  if (leaked.length) return { decision: "reject", code: "instance_details", reason: `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.`, model: "kernel/code" };
+  const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];
+  if (differs.length) return { decision: "reject", code: "files_not_shown", reason: `the diff sent for review differs from the code host's own count of the change, so it can't be reviewed. File the card again:\n${differs.slice(0, 40).map((d) => `- ${d}`).join("\n")}`, model: "kernel/code" };
+  return undefined;
+}
+
+/**
  * What the reviewer reads of one record, or code's verdict in its place: the owner's veto on the task (his card).
  */
 export async function reviewInput(r: Rec, { records, task }: { records: Records; task: TaskApi }): Promise<{ verdict?: Verdict; request: Record<string, unknown> }> {
   const action = actionOf(r.kind);
   const prior = priorPart(priorDecisions(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), action, requestKey(action, { ...(r.args && typeof r.args === "object" ? r.args : {}), digest: r.digest })));
   if (prior) return { verdict: { decision: "escalate", code: "owner_veto", reason: String(prior.reason), model: "kernel/code" }, request: {} };
-  // Code's own refusals run before any review, so a failed review never approves past them: private data to an outside
-  // thread, and a diff that differs from the code host's own count of the change (what is reviewed must be what runs).
+  const refused = codeRefusal(r);
+  if (refused) return { verdict: refused, request: {} };
   const diff = cardDiff(action, r.context?.diff ?? r.card.details);
   const toolCall = toolCallOf(action, r.args);
-  // A conn.tool call's arguments are checked as arguments too: a nested map keyed by a host, or a value the details text's JSON
-  // escaping would hide from the refusals below, is caught by the same check the reviewer module runs (review.ts).
-  const leaked = instanceDetails({ action }, diff, toolCall);
-  if (leaked.length) return { verdict: { decision: "reject", code: "instance_details", reason: `instance details in a GitHub write: ${leaked.slice(0, 8).join(", ")}. A GitHub thread is outside the instance; leave out its hosts, addresses and paths and file the call again.`, model: "kernel/code" }, request: {} };
-  const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];
-  if (differs.length) return { verdict: { decision: "reject", code: "files_not_shown", reason: `the diff sent for review differs from the code host's own count of the change, so it can't be reviewed. File the card again:\n${differs.slice(0, 40).map((d) => `- ${d}`).join("\n")}`, model: "kernel/code" }, request: {} };
   const issue = await task.issue(r.task);
   // Comments, the owner's id or the delegator unread: no comment is read.
   const [comments, owner, delegator, chain] = await Promise.all([task.comments(r.task).catch(() => []), task.me().catch(() => ""), task.delegator?.(issue).catch(() => undefined), requestChain(issue, task.issue)]);

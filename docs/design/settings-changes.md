@@ -4,7 +4,7 @@ The owner changes instance settings (a connection's URL, a kill switch, an agent
 typed changes below) from the board's Settings pages instead of editing `.env` or `instance.yaml` by hand. The change lands as
 an instance-repo commit through a `kernel.apply` record. Saved in the owner's signed-in board session, his Save is his approval
 (owner, 2026-11-20: "Owner saves skip AI review"), like tapping Approve on a card: the kernel checks that session and decides the
-record as his account. An agent's settings change keeps the AI reviewer and its module's owner rules.
+record as his account. An agent's settings change is the AI reviewer's (Tier 1).
 
 ## Where a value lives
 
@@ -65,6 +65,32 @@ compiler's is the last gate.
 Code writes the commit, not a model: a model adds nothing to a typed edit and could drift from it, and the card shows the exact
 diff before anything lands. The board's check is the owner's feedback; the kernel's is the gate; the compiler's the last.
 
+## An agent's change to itself (`self_change`)
+
+Every crew agent holds `self_change` (tasks module, tagged `read`: the `kernel.apply` it files is its only record). The tasks
+service forwards it to `POST /v1/settings/agent` with the call's assertion; the kernel takes the job from its own token and the
+agent's key and roles from the live grants row, and treats the call as a self change only when the signed tool is `self_change`
+(any other tool reaching the route, such as code review's config tool, is the `setting` path above, by module and
+`settings.<key>.writers`). The typed changes, each naming only the filer:
+
+| Kind | Writes |
+|---|---|
+| `{ kind: rules, agent, text }` | a local agent's `modules/<m>/agents/<k>/AGENTS.md` (no frontmatter), else `agents/<k>.md` |
+| `{ kind: skill, name, text }` | `modules/library/skills/<name>/SKILL.md` (id `library.<name>`; any agent; the first one also writes `modules/library/module.yaml`) |
+| `{ kind: skills, agent, add?, remove? }` | `instance.yaml` `overrides.agents.<k>.skills { add, remove }` |
+| `{ kind: routine_def, key, routine? , delete? }` | `modules/library/module.yaml` `routines["<k>-<key>"]`, `agent` set to the filer |
+| `{ kind: profile, text }` | `owner/profile.md`, at most 20 KB; the live role `fleet-admin` only |
+
+It is validated at the instance's main as the kernel fetched it (`base`), never on the live config: the config files at `base`
+(`instance.yaml`, `apps.yaml`, `owner/`, `agents/`, `modules/`, regular files, at most 2 MB) go into a scratch folder and compile
+there with the staged compiler's own inputs (`scripts/compiler/inputs.ts`); paths, local or not, routine ownership and product
+routine keys come from that compile. The edits are written into the folder and it compiles again: a compile error (a skill's
+frontmatter, a routine's fields, more than 20 local routines for one agent, a schedule faster than hourly) is the refusal.
+Refusals come before any branch: `<k> changes only itself`, `routine <key> belongs to <other>`, `routine key <key> is a product
+routine`, `only fleet-admin (Aiden) changes the owner profile: ask Aiden`, `a local handbook has no frontmatter`. The commit is
+written on that same `base`, so a main that moved since is the code host's "main moved on … try again". The record is Tier 1:
+the AI reviewer reads it, with the agents each changed skill steers (apply-tier.ts).
+
 ## Routing tuning
 
 The learning loop (`kernel/src/routing-tune.ts`): the same writer has one agent-filed variant, `routing.tune`, for the Fleet
@@ -85,7 +111,7 @@ never from the request.
 - **Filing** (`routing_tune`): `{ base_sha, team, weights?, repos?, decisions, hypothesis, revert }`. The kernel writes the
   commit with the code host and files one `kernel.apply` with the Steward as requester (no owner identity, no updater
   exemption). `computeTier` alone sets the tier: under autonomy `full` the AI reviewer approves it; with autonomy off or
-  `tier0`, a restrictive routine cap or an owner veto, the owner decides as for any Tier 1 write. The card leads with the
+  `tier0` or an owner veto, the owner decides as for any Tier 1 write. The card leads with the
   kernel's notes (the leaves, the replay, the revert criterion, the Steward's hypothesis, fenced as data).
 - **Limits** (kernel.db `routing_experiments`, held by unique indexes): one open experiment per instance, one proposal per UTC
   day. No minimum sample or wait before the next change (owner, 2026-11-19: active discovery). After the review or the owner

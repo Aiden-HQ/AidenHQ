@@ -36,8 +36,8 @@ pushes things to you. You rarely need to open anything else.
   needs) and you approve. Disabling pauses the module's agents and routines; nothing is deleted.
 - **Upgrading the product** is a `product:` bump in `instance.yaml`. The Engineer shows the product commits between the
   old and new pin; the new commit must be on product main.
-- **New agents:** ask the Agent Architect for one; it designs the agent and hands the change to the Engineer.
-  A new agent starts in trial (reads only) and graduates on a second approval.
+- **New agents:** ask the Agent Architect for one; it designs the agent (a local module of your instance repo) and hands
+  the change to the Engineer. A new agent starts with its designed grants once the AI reviewer passes the change.
 - **Product code or a module's handbook** is not instance config: the Engineer opens a PR on the product repo, which
   you merge as usual.
 
@@ -86,7 +86,7 @@ Agents post only to channels you list, from the instance's Slack bot (never your
 "*<Agent>* (AI agent)", with no @channel or @here. Two steps, both reviewed like any change:
 
 1. Add the channel ids to `instance.yaml`: `settings: { slack_post_channels: [C0123ABCD] }`.
-2. Grant the agent the tool: `slack_live: [slack_post]` (agents in trial cannot have it).
+2. Grant the agent the tool: `slack_live: [slack_post]`.
 
 Replies in the thread are read with the Slack read tools, using the post's `ts`.
 

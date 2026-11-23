@@ -16,11 +16,10 @@ import { createChecks } from "../src/checkjobs.ts";
 import { fakeBox } from "./helpers.ts";
 import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
-import { pathInventory } from "../../scripts/paths.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../modules/codehost-local");
-// As main.ts tiers them: by the product repo and the path inventory (push, pr and merge read their paths).
-const tiering = { repos: () => ({ product: "acme/aidenhq" }), paths: () => pathInventory(join(root, "../..")) };
+// As main.ts tiers them: by the product repo.
+const tiering = { repos: () => ({ product: "acme/aidenhq" }) };
 const git = (cwd, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...a], { cwd, encoding: "utf8" }).trim();
 
 test("local-only: create a repo, publish a change request, merge it at its head once its checks pass", async (t) => {

@@ -93,7 +93,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   /** Whether a module dispatches an agent (jobs.ts dispatchesFrom), and the agents it dispatches (ids). */
   dispatches: { may: (module: string, agent: string) => boolean; agents: (module: string) => string[] };
   /**
-   * The log tasks setup makes and an agent holds (grants memory_inbox, review_log, chat_task, fleet_issues), by id or
+   * The log tasks setup makes and an agent holds (grants review_log, chat_task, fleet_issues), by id or
    * identifier: written to by many, they wake nobody (the chat lane answers a chat task's words itself).
    */
   containers?: () => Set<string>;
@@ -231,14 +231,12 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const last = lastFacts(issue.id);
     const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
     const changed = ms(issue.updatedAt) || now();
-    // A task a kernel job created without a Paperclip parent: the creating job's task (provenance.ts) is its parent.
-    const parentByJob = (id: string) => { try { return (q("SELECT j.task FROM provenance p JOIN jobs j ON j.id = p.created_by_job WHERE p.task = ?").get(id) as { task: string } | undefined)?.task ?? null; } catch { return null; } };
     // A task a module filed (modtasks.ts: its marker and source, no agent made it) has the module as origin and its source as marker.
     const module = issue.createdByAgentId ? undefined : /<!-- aidenhq-module:([\w-]+) -->/.exec(issue.description ?? "")?.[1];
     const marker = module ? /<!-- source:(\S{1,200}) -->/.exec(issue.description ?? "")?.[1] : undefined;
     const chat = Array.isArray(issue.labels) ? issue.labels.some((l) => l.name === "chat") : undefined;
     const created = last.get("task.created");
-    if (!created) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? parentByJob(issue.id), identifier: issue.identifier ?? null, chat: Boolean(chat), origin: issue.originKind ?? (module ? `module:${module}` : null), source_marker: issue.originId ?? marker ?? null } });
+    if (!created) fact({ ...base, type: "task.created", version: "created", at: iso(ms(issue.createdAt) || changed), data: { parent: issue.parentId ?? null, identifier: issue.identifier ?? null, chat: Boolean(chat), origin: issue.originKind ?? (module ? `module:${module}` : null), source_marker: issue.originId ?? marker ?? null } });
     else if (chat !== undefined && chatOf(last) !== chat) fact({ ...base, type: "task.labeled", version: `chat:${chat}@${issue.updatedAt ?? changed}`, at: created.at, data: { chat } });
     const status = String(issue.status ?? "");
     const was = str(last.get("task.status_changed")?.data.to);

@@ -21,9 +21,9 @@ import { LOCAL_ORG, repoKey, type Repos } from "./kinds.ts";
 import { openRefusals, markRefusal } from "./refusals.ts";
 import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
-import { writeRaise, type Inventory } from "./paths.ts";
 import { gateMode } from "./gates.ts";
-import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type RoutineCap, type Tier, type Verdict } from "./tier.ts";
+import { codeRefusal } from "./review-loop.ts";
+import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
 /** The target fields a head-bound kind can bind to: what it acts on, per target, instead of its whole plan. */
@@ -32,8 +32,10 @@ export type Bind = "repo" | "ref" | "commit";
  * One kind (config/kernel/writes.json and kinds.ts, keyed `<module>.<kind>`); `tools` are `connection.tool`.
  * `binds`: a head-bound write (a review post on one commit): staleness is judged on these target fields alone, not on the
  * executor's code revision, the kind's declaration, its args or its other targets (writes.ts `boundOf`).
+ * `filer: owner`: only the owner's own verified save files it (fileKernel `owner`); no job, module or agent can.
+ * `stale: fail`: a record whose plan changed after the decision fails ("preview again") instead of being filed again.
  */
-export type Kind = { module: string; floor: Tier; paths?: boolean; filed_by?: string[]; binds?: Bind[]; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
+export type Kind = { module: string; floor: Tier; filed_by?: string[]; binds?: Bind[]; filer?: "owner"; stale?: "fail"; tools: string[]; card?: Partial<Card>; args?: Schema; executor?: { url: string; auth_secret: string; rev?: string } };
 /** A plan (executor@1's, or the kernel's own planner's). */
 type Plan = { args: unknown; targets?: { [k: string]: unknown }; facts?: { [k: string]: unknown }; raise?: Raise; paths?: unknown; card?: { [k: string]: string }; satisfied?: { evidence: string }; review?: ReviewContext };
 /** A write.filed check as config/kernel/checks.json holds it (`<module>.<id>`): the kinds it runs on. */
@@ -110,17 +112,15 @@ export function codeReviewOwns(r: Pick<Rec, "kind" | "targets">, { mode = "all",
   return repos.length > 0 && repos.every((repo) => repo && (mode === "none" || (mode === "unless_code_review_mandatory" && mandatory.includes(repo))));
 }
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), reviewCode = () => ({}), paths = () => undefined, checks = () => ({}), filedChecks = {}, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), reviewCode = () => ({}), checks = () => ({}), filedChecks = {}, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
   autonomy?: () => Autonomy;
-  /** The product and instance repositories (which repository a `paths: true` kind's files are in). */
+  /** The product and instance repositories (the filed checks' facts). */
   repos?: () => Repos;
   /** ai_review_code and the mandatory code-review repos (codeReviewOwns), read on each review. */
   reviewCode?: () => ReviewCode;
-  /** The path inventory (config/kernel/paths.json, paths.ts): a `paths: true` kind's files raise its tier; missing is the owner's. */
-  paths?: () => Inventory | undefined;
   /** The checks registry (config/kernel/checks.json, the finish gate's too): its write.filed entries run on every filing of their kinds; one that won't load throws. */
   checks?: () => Record<string, FiledCheck>;
   /** The write.filed checks' code, by `<module>.<id>` (the platform check): run in process. */
@@ -129,7 +129,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
   onTask: {
     /** `parent`: the notice goes to the task's parent (notices.ts), if it has one. */
     open(task: string): Promise<boolean>; /** `tag`: what makes two notices with the same text distinct (a wait's reason), never shown. */
-    notify(task: string, text: string, o?: { parent?: boolean; close?: "done" | "cancelled"; tag?: string }): Promise<void>; routineCap?(task: string): Promise<RoutineCap | undefined>;
+    notify(task: string, text: string, o?: { parent?: boolean; close?: "done" | "cancelled"; tag?: string }): Promise<void>;
     /** A task a conn.tool call names, and why its agent may write there (cp.ts scopeOf); undefined when there is no such task. */
     scope?(task: string, agent: string): Promise<{ id: string; identifier?: string | null; scope?: "own" | "created" | "child" } | undefined>;
   };
@@ -213,26 +213,15 @@ export function createWrites({ records, registry, connections, secret, resolver,
     return Object.keys(out).length ? canonical(out) : undefined;
   }
 
+  /** The autonomy a requester's write is tiered under: the instance's, except the release updater's own filing (full). */
+  const autonomyOf = (q: Requester): Autonomy => (isUpdater(q) ? "full" : autonomy());
   /**
-   * Which of the inventory's repositories `repo` is: the product, the official modules repo or another; undefined when it
-   * can't be told (not owner/name, or the product repo isn't set here: fails closed).
-   */
-  const repoKindOf = (repo: string) => { const k = repoKey(repo), product = repoKey(repos().product); return !k || !product ? undefined : k === product ? "product" as const : "other" as const; };
-  /** The cap of a routine whose run started the task's chain (tier.ts taskRoutineCap: a trace the control plane couldn't answer now throws, 503). */
-  const routineOf = async (task: string) => (task && onTask.routineCap ? onTask.routineCap(task) : undefined);
-  /** The cap now that outranks the AI reviewer's yes on a task: the instance's autonomy below full, or a routine's below full. */
-  const capOverReviewer = (routine: RoutineCap | undefined): Cap | undefined =>
-    routine && routine.cap !== "full" ? { by: "routine", value: routine.cap, ...(routine.routine ? { routine: routine.routine } : {}) } : autonomy() !== "full" ? { by: "autonomy", value: autonomy() } : undefined;
-  /**
-   * Revalidate at execution: a record the AI reviewer approved runs only while its yes still stands, under the autonomy and
-   * the routine cap now (traced again; a trace that can't be read now throws: run() tries again later, never holds it).
+   * Revalidate at execution: a record the AI reviewer approved runs only while its yes still stands under the autonomy now.
    * Tightened since: held for the owner instead (false).
    */
   async function revalidate(r: Rec): Promise<boolean> {
-    // The caps hold every requester but the release updater (computeTier `uncapped`).
-    if (!r.decided_by?.startsWith("reviewer:") || isUpdater(r.requester)) return true;
-    const cap = capOverReviewer(await routineOf(r.task));
-    if (!cap) return true;
+    if (!r.decided_by?.startsWith("reviewer:") || autonomyOf(r.requester) === "full") return true;
+    const cap: Cap = { by: "autonomy", value: autonomy() };
     records.hold(r.id, cap, `since the AI reviewer approved it, ${capText(cap)}, so the owner decides`);
     return false;
   }
@@ -285,14 +274,15 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}) };
     if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
-    const byPaths = k.paths ? writeRaise(paths(), plan.paths, repoKindOf) : undefined;
-    const checkRaises = [...(byPaths ? [byPaths] : []), ...filedRaises(kind, plan)];
-    const t = computeTier({ floor: k.floor, raise, checkRaises, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomy(), routine: await routineOf(task), uncapped: isUpdater(requester), ownerSave });
     // The reason and rule shown: the strictest raise, the plan's on a tie.
-    const top = checkRaises.reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
+    const top = filedRaises(kind, plan).reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
+    // Code's refusals read the whole planned diff (never the card cut for storage), whatever the tier.
+    const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext });
+    const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomyOf(requester), ownerSave });
+    if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
     // context while it is open (records.ts drops it once closed), and the card keeps what it shows.
-    return { base, filed: { ...base, card: { ...card, reason: (t.rule ? capText(t.cap!) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
+    return { base, filed: { ...base, card: { ...card, reason: [top?.reason, t.cap && capText(t.cap)].filter(Boolean).join("; ").slice(0, 300) }, tier: t.tier, merit: t.merit, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
@@ -343,7 +333,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
       const o = await own.execute({ id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => ({ ok: false, text: e.message }));
       return void outcomeOf(r.id, o.ok, o.text, (o as { objects?: string[] }).objects);
     }
-    await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
+    await call(k!, "execute", { id: r.id, kind: r.kind, args: r.args, digest: r.digest, idempotency_key: r.id, tier: r.tier, ...(r.task ? { task: r.task } : {}), ...(r.identifier ? { identifier: r.identifier } : {}) }).catch((e: Error) => outcomeOf(r.id, false, `not executed: ${e.message}`));
   }
 
   /**
@@ -388,7 +378,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
 
   /**
    * An approved record: revalidated, its task still open and (a module kind) planned again, then claimed once and executed.
-   * Everything before the claim that fails transiently (the routine trace, the task read, the executor's plan) leaves the
+   * Everything before the claim that fails transiently (the task read, the executor's plan) leaves the
    * record approved, to be run again with backoff capped at 15 minutes (retryApproved), for as long as its task is open: only a real
    * 4xx, a stale record or a closed task (an agent's request; a module's write of its own kind runs regardless) ends it.
    * Never throws.
@@ -447,6 +437,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const r = records.get(id)!;
     try {
       if (!open) return void records.finish(id, false, "Not run: the task is closed, so a leftover request runs nothing.");
+      // An owner-only kind is never filed again on its own: only the owner's save files one.
+      if (stale && (k?.stale === "fail" || k?.filer === "owner")) return void outcomeOf(id, false, "Not run: what it acts on changed since your preview, so nothing was written. Preview again and save that.");
       if (stale) {
         records.close(id, "stale", "stale: what it acts on changed since it was approved");
         const next = k ? await file(r.kind, k, r.requester, r.args, r.task, undefined, r.identifier ?? undefined).catch((e: Error) => e) : new Error(`${r.kind} is no longer installed`);
@@ -505,8 +497,9 @@ export function createWrites({ records, registry, connections, secret, resolver,
     try { kind = routeKind(asked, args); } catch (e) { throw fail(400, "bad_args", (e as Error).message); }
     const k = kindOf_(kind);
     if (!k || !(k.executor || Object.hasOwn(planners, kind) || inProcess(k))) throw fail(404, "unknown_kind", `no write kind ${kind}`);
+    if (k.filer === "owner") throw fail(403, "owner-only", `${kind} is filed only by the owner's own save on the board`);
     // A job only by the kinds its token names (its minter names them), on the token's task; its tier is the kind's, as any
-    // requester's (floor, the executor's plan, caps and the routine cap: computeTier). A module files its own kinds, and another module's only when that kind's `filed_by` names it (the owner of the kind consents); a kernel
+    // requester's (floor, the executor's plan and autonomy: computeTier). A module files its own kinds, and another module's only when that kind's `filed_by` names it (the owner of the kind consents); a kernel
     // kind the kernel plans itself (kernel.apply) only by holding the kernel role of that name, which compile allows only as
     // a request of a defined kernel role (KERNEL_ROLES) and the authority diff marks as owner authority.
     const kernelRole = k.module === "kernel" && Object.hasOwn(planners, kind) && (who.roles ?? []).includes(kind);
@@ -553,16 +546,18 @@ export function createWrites({ records, registry, connections, secret, resolver,
       return { rec: { ...filed!, id: "precheck", digest: digestOf(base), created_at: at, updated_at: at } as Rec };
     },
     /**
-     * A kind the kernel plans (kernel.apply), filed by the kernel itself: the release updater (updates.ts, UPDATER) or the
-     * owner's typed settings change (settings-change.ts, SETTINGS). Planned and tiered as any requester's. A requester of kind
-     * `kernel` is set only here, never from a token, so the planner can tell the updater's own filing (a release move it
-     * verifies itself) from anyone else's. `owner`: the owner's own settings change from his signed-in board session (the
-     * account the kernel verified, settings-change.ts): his Save is his approval, so the record is his and is decided as his
-     * account at filing (computeTier `ownerSave`), never put to the reviewer.
+     * A write the kernel files itself: a kind it plans (kernel.apply) or a module kind with an executor (a share's
+     * github.publish_module), for the release updater (updates.ts, UPDATER) or the owner's typed settings change or share
+     * (settings-change.ts, module-share.ts: SETTINGS). Planned and tiered as any requester's. A requester of kind `kernel` is
+     * set only here, never from a token, so the planner can tell the updater's own filing (a release move it verifies itself)
+     * from anyone else's. `owner`: the owner's own save from his signed-in session (the account the kernel verified): his Save
+     * is his approval, so the record is his and is decided as his account at filing (computeTier `ownerSave`), never put to
+     * the reviewer. A `filer: owner` kind is filed only that way.
      */
     async fileKernel(kind: string, { args, task, requester, owner }: { args: unknown; task: string; requester: typeof UPDATER; owner?: { account: string; via: string } }): Promise<Rec> {
       const k = kindOf_(kind);
-      if (!k || !Object.hasOwn(planners, kind)) throw fail(404, "unknown_kind", `no kernel-planned kind ${kind}`);
+      if (!k || !(Object.hasOwn(planners, kind) || k.executor)) throw fail(404, "unknown_kind", `no kind ${kind} the kernel files`);
+      if (k.filer === "owner" && !owner) throw fail(403, "owner-only", `${kind} is filed only by the owner's own save`);
       const r = await file(kind, k, requester, args, task, undefined, undefined, Boolean(owner));
       if (owner) {
         const d = records.decide(r.id, r.digest, "approve", `account:${owner.account}`, owner.via);
@@ -633,17 +628,22 @@ export function createWrites({ records, registry, connections, secret, resolver,
         if (!t.scope) throw fail(403, "forbidden", `${t.identifier || t.id} isn't yours to write on: a ${connection}.${tool} call goes on a task assigned to you, one you created, or a child of one assigned to you`);
         record = t.id, identifier = t.identifier || undefined;
       }
-      const floor: Tier = c.tools.destructive.includes(tool) ? 1 : 0;
-      // The owner's no on a destructive tool holds for that tool on the task, never for the task's other writes.
-      const t = computeTier({ floor, priorVeto: floor > 0 && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy(), routine: await routineOf(record) });
-      if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
+      // A destructive tool is the reviewer's, unless its connection lists it `unreviewed` (it still runs only on an explicit grant).
+      const floor: Tier = c.tools.destructive.includes(tool) && !(c.tools.unreviewed ?? []).includes(tool) ? 1 : 0;
       const shown = JSON.stringify(args ?? {});
+      const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${shown}`;
+      // Code's refusals hold on every call, Tier 0 included.
+      const refused = codeRefusal({ kind: CONN_TOOL, args: { connection, tool, arguments: args ?? {} }, card: { details } as Card, context: null });
+      // The owner's no on a destructive tool (an unreviewed one too) holds for that tool on the task, never for the task's other writes.
+      const destructive = c.tools.destructive.includes(tool);
+      const t = computeTier({ floor, refusal: refused?.code, priorVeto: destructive && record ? records.vetoed(record, CONN_TOOL, { tool: `${connection}.${tool}` }) : false, autonomy: autonomy() });
+      if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
+      if (t.tier > 0 && !record) throw fail(400, "no_task", `${connection}.${tool} needs approval: pass your current task`);
       if (t.tier > 0 && shown.length > CONN_TOOL_ARGS_MAX) throw fail(400, "args_too_large", `${connection}.${tool}: the arguments are ${shown.length.toLocaleString("en-US")} characters, over the ${CONN_TOOL_ARGS_MAX.toLocaleString("en-US")}-character limit for a call that needs a card; shorten the arguments`);
       // Where the call is aimed: its tool and the arguments that name an issue, a PR, a channel or a thread (never its text).
       const aim = ["repo", "number", "issue_number", "pull_number", "channel", "thread_ts", "id"].filter((k) => ["string", "number"].includes(typeof (args as Record<string, unknown> | undefined)?.[k])).map((k) => `${k}=${String((args as Record<string, unknown>)[k]).toLowerCase()}`);
       const target = `${connection}.${tool}${aim.length ? ` (${aim.join(", ")})` : ""}`;
-      const details = `tool: ${connection}.${tool}\narguments (written by the requesting agent): ${t.tier > 0 ? shown : shown.slice(0, 4000)}`;
-      const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details, ...(target ? { target } : {}) };
+      const card = { sentence: `Call ${connection}.${tool}.`, changes: `Whatever ${connection}.${tool} changes, with these arguments.`, reads: "Nothing new.", cost: "No model cost.", details: t.tier > 0 ? details : details.slice(0, details.length - shown.length + 4000), ...(target ? { target } : {}) };
       // The requester keeps the job's own task (the run's): it is the job's credential's reach, and replay signs the caller
       // assertion with it, so a card on another task still can't finish that task as its own (cp.ts cross-task finish gate).
       const requester = requesterOf(who, task);
@@ -656,7 +656,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
         const prior = [...records.open(record, CONN_TOOL, digest), ...records.ran(record, CONN_TOOL, digest, new Date(Date.now() - 10 * 60_000).toISOString())].find((r) => r.tier >= t.tier && by(r.requester) === by(requester));
         if (prior) return prior;
       }
-      return records.file({ ...call, card: t.rule ? { ...card, reason: capText(t.cap!) } : card, requester, task: record, ...(identifier ? { identifier } : {}), tier: t.tier, merit: t.merit, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
+      return records.file({ ...call, card: t.cap ? { ...card, reason: capText(t.cap) } : card, requester, task: record, ...(identifier ? { identifier } : {}), tier: t.tier, merit: t.merit, rule: t.rule ?? null, cap: t.cap ?? null, state: t.state });
     },
     outcome: outcomeOf,
     waiting: waitOf,
@@ -687,7 +687,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
      * One record's review (the kernel's review loop, review-loop.ts): code's verdict when it has one (the owner's veto, malice
      * resent), else the bound reviewer's. The reviewer blocks only malice and fails open (owner, 2026-11-22): a failed review
      * (the reviewer unreachable, failing, slow, refusing or stopped at a limit) is tried once more after RETRY_MS, then approved.
-     * The owner's autonomy below full (the instance's, or a routine's cap on the record) makes the verdict a note for him.
+     * The owner's autonomy below full (the instance's) makes the verdict a note for him.
      * The record moves once; the verdict as posted comes back, so the review loop can post a reject's note.
      */
     async review(id: string, b: { verdict?: Verdict; request: Record<string, unknown> }): Promise<{ record: Rec; posted?: Verdict; deferred?: number; refused?: string }> {
@@ -709,7 +709,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
           v = { decision: "approve", code: "fail_open", reason: `Approved without a finished review (fail open): ${v.reason}`.slice(0, 1990), model: "kernel/code" };
         }
         retries.delete(id);
-        // The autonomy cap holds every requester but the release updater (computeTier `uncapped`), whose record takes the verdict as given.
+        // The autonomy cap holds every requester but the release updater, whose record takes the verdict as given.
         const mode = isUpdater(r.requester) ? "full" : [autonomy(), r.cap?.value ?? "full"].filter((c) => AUTONOMY.includes(c as Autonomy)).reduce((a, c) => (AUTONOMY.indexOf(c as Autonomy) < AUTONOMY.indexOf(a) ? c as Autonomy : a), "full" as Autonomy);
         // Code's own refusals (a diff mismatch, instance details, malice resent) are never shadowed into an owner card.
         const post = v.model === "kernel/code" && v.decision === "reject" ? v : shadowed(v, mode);

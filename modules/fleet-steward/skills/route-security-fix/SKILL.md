@@ -1,7 +1,6 @@
 ---
 name: route-security-fix
 description: "Routes a `security`-labelled task from Security Watch to the agent that makes the change, or closes a \"nothing to do\" report; never fixes it itself or hands it to the owner. Use when Security Watch assigns the Fleet Steward a `security`-labelled task."
-when: { fields: { name: Fleet Steward } }
 ---
 
 # Routing a security fix

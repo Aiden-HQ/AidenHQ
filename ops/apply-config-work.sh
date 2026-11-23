@@ -734,6 +734,7 @@ setupInputs() {
   git ls-tree HEAD -- $code scripts/prompts scripts/package-lock.json kernel/package-lock.json kernel/settings.json kernel/defaults.json kernel/schemas services/paperclip-events
   git ls-tree -r HEAD -- modules | grep -E $'\tmodules/[^/]+/(module\\.yaml$|(agents|prompts|skills)/)' || true
   git -C "$inst" ls-tree HEAD -- agents
+  git -C "$inst" ls-tree -r HEAD -- modules
   cat .env config/*.yaml config/*.json 2>/dev/null | sed "s/$(git rev-parse HEAD)//g" || true
 }
 
@@ -780,7 +781,8 @@ switchOver() {
   # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
   if [ -f ops/grades-move.ts ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
     stopBoard
-    echo "grades: $(node ops/grades-move.ts "$data") (data/board/board.sqlite -> data/modules/grading/grades/)"
+    local moved; moved="$(node ops/grades-move.ts "$data")"
+    echo "grades: $moved (data/board/board.sqlite -> data/modules/grading/grades/)"
   fi
   # codehost-github became the github module's code host part (docs/design/connections-simple.md): its data dir (cache clones,
   # merge queue, PR-task map, release train) moves once, its old container stopped first so nothing writes mid-move; compose
@@ -802,6 +804,10 @@ switchOver() {
     docker ps -q --filter label=aidenhq.module=channel-slack | xargs -r docker stop >/dev/null
     echo "slack-live: $(node ops/slack-live-move.ts "$data") (data/modules/channel-slack/ -> data/modules/slack/)"
   fi
+  # Each agent's legacy memory file in the instance repo moves into the kernel's memory store once, before the kernel restarts and runtime
+  # memory writes start (resumable: an agent already imported is skipped). A failure stops the apply. Only a product that ships
+  # it runs it: a rollback to an older product has no kernel memory store to move into.
+  if [ -f ops/memory-move.ts ]; then node ops/memory-move.ts "$data" "$inst"; fi
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn"
     systemctl --user daemon-reload

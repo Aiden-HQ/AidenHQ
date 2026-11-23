@@ -1,0 +1,26 @@
+# Role template: a local module (modules/<name>/ in the instance repo) holding one agent, the owner of one app's backlog
+# (not its health: that is the core DevOps Engineer). The Agent Architect copies it, renames it and fills in the app.
+name: app-owner
+description: The owner of one app's backlog.
+agents:
+  app-owner:
+    name: App Owner
+    description: Owns one named app's backlog, reads its requests and usage and files improvements to the Engineer; does not run, deploy or fix the app's health (the DevOps Engineer does).
+    reports_to: chief-of-staff
+    skills: [ tasks.delegate-work ]
+    model: ~deepseek/deepseek-flash-latest
+    graded: true
+    connections:
+      # app_requests: the app's open in-app requests; the rest are read-only views of the app.
+      apps: [ app_list, app_status, app_view, web_view, app_requests ]
+      # task_delegate: code changes to the Engineer, who takes them from any agent.
+      paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_comment, task_handoff, task_finish, task_block, task_cancel, task_delegate ]
+routines:
+  app-owner-backlog:
+    title: Review the app backlog
+    agent: app-owner
+    description: |
+      Today is {{date}}. Follow "Each run" in your instructions for the app named in your handbook.
+    concurrency: skip_if_active
+    schedules:
+      - { cron: "0 10 * * 1", timezone: "${settings.timezone}", label: "Monday morning" }

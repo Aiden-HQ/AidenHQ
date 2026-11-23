@@ -46,8 +46,9 @@ for (const kind of kinds) for (const failing of [true, false]) for (const mode o
     }
     const state = records.get(r.id)!.state;
     assert.notEqual(state, "review", `still in review after ${PASSES} passes (refusals: ${refusals.join(" | ")})`);
-    // The reviewer approves, so the record is approved (then claimed, done or failed by its executor), never the owner's or rejected.
-    assert.ok(["approved", "claimed", "done", "failed"].includes(state), state);
+    // The reviewer approves, so the record is approved (then claimed, done, failed or stale by its executor: this fixture's kind
+    // has none to plan it again), never the owner's or rejected.
+    assert.ok(["approved", "claimed", "done", "failed", "stale"].includes(state), state);
     // A push or PR on a repo code review gates is code's approval, unasked; everything else is asked (twice when it fails).
     const code = kind.startsWith("github.") && mode !== "all";
     assert.equal(asked, code ? 0 : failing ? 2 : 1, `reviewer calls (${state})`);

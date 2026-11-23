@@ -23,13 +23,12 @@ export const ChangeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agent"), agent: AGENT, field: z.enum(["model", "reasoning_effort", "heartbeat", "max_parallel"]), value: SCALAR }).strict(),
   // A module on or off (instance.yaml modules:; the owner's, Tier 2). On for a module of a configured marketplace installs it.
   z.object({ kind: z.literal("module"), name: NAME, on: z.boolean() }).strict(),
-  // A routine's schedules, status or model (overrides.routines.<key>).
+  // A routine's schedules or model (overrides.routines.<key>). Pause and resume are the routine's live controls (fleet.ts).
   z.discriminatedUnion("field", [
     z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("schedules"), value: z.array(SCHEDULE).max(10) }).strict(),
-    z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("status"), value: z.enum(["active", "paused"]) }).strict(),
     z.object({ kind: z.literal("routine"), routine: NAME, field: z.literal("model"), value: MODEL }).strict(),
   ]),
-  // The owner's rules for an agent: agents/<key>.md (a module agent; empty deletes it), or an instance agent's whole handbook.
+  // The owner's rules for an agent: agents/<key>.md (a module agent; empty deletes it), or a local agent's whole handbook.
   z.object({ kind: z.literal("rules"), agent: AGENT, text: TEXT(120_000) }).strict(),
   // A module agent's own copy of its main handbook (agents/<key>/AGENTS.md + overrides.agents.<key>.handbook_fork).
   z.object({ kind: z.literal("handbook"), agent: AGENT, text: TEXT(120_000).min(1) }).strict(),
@@ -40,8 +39,13 @@ export const ChangeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("marketplace"), op: z.enum(["add", "update", "remove"]), name: NAME, source: z.object({ source: z.literal("github"), repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }).strict().optional(), sha: SHA.optional() }).strict(),
   // An agent's tools on one connection (overrides.agents.<key>.connections.<id>); null resets it to the module's grant.
   z.object({ kind: z.literal("grants"), agent: AGENT, connection: KEY, tools: z.array(z.string().max(100)).max(200).nullable() }).strict(),
+  // A local module shared to a public repo (docs/design/sharing.md): the owner's save of one preview, bound to its digest,
+  // source commit, repo, ref and base tip. The kernel exports it again and files it as his own github.publish_module.
+  z.object({ kind: z.literal("share"), module: NAME, repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), ref: z.string().regex(/^(?!-)(?!.*\.\.)[\w./-]{1,200}$/), source: SHA, base: SHA, digest: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
 ]);
 export const ChangesSchema = z.object({ changes: z.array(ChangeSchema).min(1).max(10) }).strict();
+/** A share's preview request: which local module, to which repo and branch. */
+export const SharePreviewSchema = z.object({ module: NAME, repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/), ref: z.string().regex(/^(?!-)(?!.*\.\.)[\w./-]{1,200}$/) }).strict();
 export type Change = z.infer<typeof ChangeSchema>;
 
 interface Catalog {
@@ -92,6 +96,8 @@ const plain = (s: string) => !/[\x00-\x1f\x7f$]/.test(s);
 
 /** The change, checked; throws ChangeRefused with a reason the owner can act on. */
 export function checkChange(ch: Change, compiled: Compiled | null, catalog: Catalog[]): Change {
+  // The kernel checks a share whole (the export again, at the previewed source).
+  if (ch.kind === "share") return ch;
   if (!compiled) throw new ChangeRefused("the board can't read the compiled config yet");
   if (ch.kind === "setting") {
     if (/token|secret|password/i.test(ch.key)) throw new ChangeRefused(`${ch.key} is a secret: secrets live in the vault, not in settings`);
@@ -151,19 +157,19 @@ export function checkChange(ch: Change, compiled: Compiled | null, catalog: Cata
   }
   const a = compiled.agents?.[ch.agent];
   if (!a) throw new ChangeRefused(`there is no agent ${ch.agent}`);
-  const own = a.module === "instance";
+  const own = a.tier === "local";
   if (ch.kind === "rules") {
-    if (own && !ch.text.trim()) throw new ChangeRefused("an instance agent's handbook can't be empty");
+    if (own && !ch.text.trim()) throw new ChangeRefused("a local agent's handbook can't be empty");
     if (!own && ch.text.length > 20_000) throw new ChangeRefused("your rules are at most 20,000 characters: a longer change belongs in the main handbook");
     return ch;
   }
   if (ch.kind === "handbook" || ch.kind === "unfork") {
-    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is the instance's own agent: its whole handbook is its rules`);
+    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is a local agent: its whole handbook is its rules`);
     if (ch.kind === "unfork" && !a.handbook_fork) throw new ChangeRefused(`${a.name ?? ch.agent}'s handbook isn't forked`);
     return ch;
   }
   if (ch.kind === "grants") {
-    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is the instance's own agent: its grants are in its agent.yaml`);
+    if (own) throw new ChangeRefused(`${a.name ?? ch.agent} is a local agent: its grants are in its module.yaml`);
     const c = compiled.mcp_servers?.[ch.connection];
     if (!c) throw new ChangeRefused(`there is no connection ${ch.connection}`);
     const all = [...(c.tools?.read ?? []), ...(c.tools?.write ?? []), ...(c.tools?.destructive ?? [])];
@@ -195,6 +201,7 @@ export function describe(ch: Change, compiled: Compiled | null): string {
   if (ch.kind === "module") return `${ch.on ? "turn on" : "turn off"} the ${ch.name} module`;
   if (ch.kind === "pin") return ch.sha ? `pin the ${ch.name} module at ${ch.sha.slice(0, 12)}` : `the ${ch.name} module follows its marketplace`;
   if (ch.kind === "marketplace") return `${ch.op} the ${ch.name} marketplace${ch.source ? ` (${ch.source.repo})` : ""}${ch.sha ? ` at ${ch.sha.slice(0, 12)}` : ""}`;
+  if (ch.kind === "share") return `share the ${ch.module} module to ${ch.repo} (${ch.ref})`;
   if (ch.kind === "routine") return `routine ${compiled?.routines?.[ch.routine]?.title ?? ch.routine}: ${ch.field} → ${ch.field === "schedules" ? ch.value.map((x) => x.label ?? x.cron).join(", ") || "none" : ch.value}`;
   const name = compiled?.agents?.[ch.agent]?.name ?? ch.agent;
   if (ch.kind === "rules") return `${name}'s rules${ch.text.trim() ? "" : " cleared"}`;
@@ -242,7 +249,8 @@ const UNFILED_MS = 10 * 60_000;
 
 /** Where a settings task stands, from its task status and its newest apply card. */
 export function stageOf(status: string, cards: Pick<Approval, "action" | "state" | "outcome" | "tier" | "outcomeText" | "id">[] | undefined, createdAt: string): { stage: Stage; tier?: number; approval?: string; detail?: string } {
-  const a = cards?.find((c) => c.action === "apply");
+  // A settings change's apply, or a share's publish.
+  const a = cards?.find((c) => c.action === "apply" || c.action === "github.publish_module");
   if (a) {
     if (a.outcome === "applied") return { stage: "applied", approval: a.id };
     if (a.outcome === "failed") return { stage: "failed", approval: a.id, ...(a.outcomeText ? { detail: a.outcomeText.slice(-300) } : {}) };

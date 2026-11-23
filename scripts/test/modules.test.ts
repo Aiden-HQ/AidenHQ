@@ -132,7 +132,8 @@ test("overrides apply to allowed fields only", () => {
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { max_parallel: 0 } } } })), /max_parallel must be 1 to 10/);
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { mcp_servers: [] } } } })), /override not allowed: agents\.x\.mcp_servers/);
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { nope: { model: "m" } } } })), /unknown agent: nope/);
-  assert.deepEqual(compile(mods, finst([], base, { overrides: { routines: { daily: { status: "paused" } } } })).paperclip.routines.daily.status, "paused");
+  // A routine's status is Paperclip's after setup creates it: the live controls pause and resume it, never an override.
+  assert.throws(() => compile(mods, finst([], base, { overrides: { routines: { daily: { status: "paused" } } } })), /override not allowed: routines\.daily\.status/);
 });
 test("grants entry: models, graded off by default; a removed spend key fails compile naming the replacement", () => {
   const r = compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2" } } } })).paperclip;
@@ -141,14 +142,13 @@ test("grants entry: models, graded off by default; a removed spend key fails com
   assert.throws(() => compile(mods, finst(["a"], { ...base, eval_day_usd: 5 })), /settings\.eval_day_usd is gone/);
   assert.throws(() => compile(mods, finst(["a"], { ...base, code_review: { repos: [{ repo: "a/b", on_open: [{ engine: "codex", model: "m", effort: "low", run_usd: 5 }] }] } })), /code_review\.repos\.0\.on_open: run_usd is gone/);
 });
-test("jobcaps: compiled for the gateway, carried in the grants entry; unknown or private-without-private_reads fail", () => {
+test("jobcaps: compiled for the gateway, carried in the grants entry; unknown fails", () => {
   const out = compile(mods, finst(["jc"]));
   assert.deepEqual(out.jobcaps["jc-read"], { connection: "jconn", url: "http://j-mcp:81/mcp/read", bearer_secret: "j_mcp_read_token", tools: ["j_get", "j_list"] });
   assert.equal(out.jobcaps["jc-secret"].tool_timeout_s, 90);
   assert.deepEqual(grantEntry("eng", out.paperclip.agents.eng).jobcaps, ["jc-read"]); // nope-read? is optional
   assert.deepEqual(out.paperclip.agents.deep.jobcaps, ["jc-read", "jc-secret"]);
   assert.throws(() => compile(mods, finst(["jcunknown"])), /lost: unknown jobcap nope-read/);
-  assert.throws(() => compile(mods, finst(["jcpriv"])), /nosy: jobcap jc-secret reads private data: set private_reads: true/);
 });
 test("generated compose: module services from services:, root services only gain board_env, links and secrets; compose fragments fail", () => {
   const a = compile(mods, finst(["a"])).compose;
@@ -203,8 +203,8 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   };
   // 2f split owner-channel into channel-telegram, channel-slack and chat-lane: each may keep only a part of what it had.
   const split = { "channel-telegram": "owner-channel", "chat-lane": "owner-channel", grading: "board-grades" };
-  // The connections build merged channel-slack into slack: slack keeps what both had (the sign-in's board link, the writer's warehouse and Paperclip links); the owner is the paired one, so no host variable carries over.
-  was.links.slack = ["board", "sources", "paperclip"];
+  // The connections build merged channel-slack into slack: slack keeps what both had (the sign-in's board link, the writer's warehouse link); the owner is the paired one, so no host variable carries over.
+  was.links.slack = ["board", "sources"];
   // 3h moved the grade rows out of the board into the grading module: its one link is the pair network to the board, for the
   // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
   // One-way phase 2: and a pair link to apps-mcp for the grader's app reads (role apps.read), until 4c.
@@ -357,12 +357,6 @@ test("exposure: unset is tailscale (installs before the setting), one mode reach
   assert.throws(() => compile(product, pinst([], { ...owner, exposure: ["public", "local"] })), /exposure/);
 });
 
-test("routine autonomy: full by default, tier0 for a webhook routine unless it says otherwise; an override must be a known value", () => {
-  const { routines } = compile(mods, finst(["wiper"])).paperclip;
-  assert.deepEqual([routines.sweep.autonomy, routines.hook.autonomy, routines.hookfull.autonomy], ["full", "tier0", "full"]);
-  assert.throws(() => compile(mods, finst(["wiper"], base, { overrides: { routines: { sweep: { autonomy: "yes" } } } })), /routine sweep: autonomy is off, tier0, full/);
-});
-
 test("enumeration (spec §9): every shipped write or destructive tool maps to a kind or to conn.tool, each tool to at most one kind", () => {
   const product = join(here, "../..");
   const kinds = {};
@@ -380,7 +374,7 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   const kindOf = Object.fromEntries(writes.map(([ct, floor]) => [ct, routed[ct] ?? `conn.tool@${floor}`]));
   assert.deepEqual(["apps.app_deploy", "apps.app_run_request", "apps.app_restart", "apps.app_rollback", "apps.app_api", "apps.app_remove", "apps.app_create"].map((ct) => kindOf[ct]),
     ["apps-platform.deploy", "apps-platform.run", "apps-platform.restart", "apps-platform.rollback", "apps-platform.api_write", "conn.tool@1", "conn.tool@0"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "code-review.post": 0, "code-review.notice": 0, "code-review.reply": 0, "code-review.status": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "slack.post": 1, "slack.memory": 1, "slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0, "github.setup": 1 });
+  assert.deepEqual(Object.fromEntries(Object.entries(kinds).map(([id, k]) => [id, k.floor])), { "apps-platform.deploy": 0, "apps-platform.run": 1, "apps-platform.restart": 0, "apps-platform.rollback": 0, "apps-platform.api_write": 0, "code-review.post": 0, "code-review.notice": 0, "code-review.reply": 0, "code-review.status": 0, "hubspot.crm_write": 1, "primer.publish": 1, "primer.reply": 1, "slack.post": 1, "slack.memory": 1, "slack.bind": 0, "github.push": 0, "github.pr": 0, "github.merge": 0, "github.close": 0, "github.create_repo": 0, "github.setup": 1, "github.publish_module": 2 });
   assert.deepEqual(["primer.primer_create_document", "primer.primer_add_version", "primer.primer_reply_to_thread", "primer.primer_resolve_thread"].map((ct) => kindOf[ct]), ["primer.publish", "primer.publish", "primer.reply", "primer.reply"]);
   assert.equal(kindOf["slack_live.slack_post"], "slack.post");
   assert.equal(kindOf["slack_live.channel_memory"], "slack.memory");

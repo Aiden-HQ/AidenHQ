@@ -236,6 +236,7 @@ button.st-row-hit:hover { background: var(--hover); }
 .hb-part > pre { margin: 0; padding: 10px 12px; white-space: pre-wrap; font: var(--text-sm)/1.5 var(--mono); }
 .hb-row { display: grid; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .hb-row > div { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.hb-row > span { overflow-wrap: anywhere; }
 .hb-dialog { border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--text); padding: 18px 20px; max-width: 460px; }
 .hb-dialog::backdrop { background: var(--scrim); }
 .hb-dialog p { margin: 0 0 14px; line-height: 1.5; }

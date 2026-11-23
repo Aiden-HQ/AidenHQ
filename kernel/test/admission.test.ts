@@ -8,10 +8,9 @@ import { openFacts } from "../src/facts.ts";
 import { createAdmission, wakeInbox } from "../src/admission.ts";
 import { createPool } from "../src/pool.ts";
 import { createWakes } from "../src/wakes.ts";
-import { createProvenance, ORIGIN } from "../src/provenance.ts";
 import { createJobTools } from "../src/jobtools.ts";
 
-function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g } = {}) {
+function setup({ capacity = 12, spend = () => [], launch = async () => {}, grants: g, routineKey = undefined } = {}) {
   const db = new DatabaseSync(":memory:");
   const facts = openFacts(db);
   const jobs = createJobs({ db, cfg: {}, cp: {}, mayDispatch: () => false, log: () => {}, boxWrap: "" });
@@ -19,7 +18,7 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     "agent-1": { key: "acme-crew", tools: { slack: ["search"], tasks: ["create"] }, models: ["acme/m1", "acme/m2"], model: "acme/m1", effort: "high", skills: [{ id: "engineering.write-code", dir: "/x" }], routines: { digest: { model: "acme/m2", effort: "low" } } },
     "agent-2": { key: "acme-engineer", profile: "engineer", tools: { github: ["read"] }, jobcaps: ["gh-read"], max_parallel: 2 },
     "agent-3": { key: "acme-other", tools: {} },
-    "agent-4": { key: "engineer", profile: "engineer", roles: ["platform-engineer"], tools: {}, max_parallel: 5 },
+    "agent-4": { key: "engineer", profile: "engineer", roles: ["platform-engineer"], tools: {}, max_parallel: 10 },
     "agent-5": { key: "architect", tools: {}, roles: ["architect"] },
   };
   // The wake inbox (wakes.ts): a row the dispatcher claimed; admission binds a job to it, or gives it back for another try.
@@ -30,13 +29,12 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     return key;
   };
   const wakes = { get: (key) => db.prepare("SELECT * FROM wakes WHERE key = ?").get(key) };
-  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5" };
+  const tasks = { "task-1": "agent-1", "task-2": "agent-1", "task-3": "agent-2", "task-4": "agent-2", "task-5": "agent-2", "task-6": "agent-3", "task-7": "agent-4", "task-8": "agent-4", "task-9": "agent-4", "task-10": "agent-5", "task-11": "agent-4", "task-12": "agent-4", "task-13": "agent-4", "task-14": "agent-4" };
   const launched = [], released = [];
-  // Kernel provenance over the same db; a task's origin (`origins`: what the plugin gave it) and traced routine cap, per task.
-  const provenance = createProvenance({ db, cap: async () => undefined });
-  const origins = {}, caps = {};
+  // What the control plane says of a task beyond its assignee (`origins`: its creator), per task.
+  const origins = {};
   const adm = createAdmission({
-    provenance, routineCap: async (task) => caps[task], nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
+    nextTurn: createJobTools({ db, secret: () => "s", engines: () => [] }),
     db, facts, grants: () => grants, capacity: () => capacity, pool: createPool({ capacity: () => capacity, agentLive: () => db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get().n }), spend: (...a) => spend(...a),
     kinds: () => ({ "tasks.create_task": { module: "tasks", floor: 1, tools: ["tasks.create"] }, "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] }, "tasks.now": { module: "tasks", floor: 0, tools: ["tasks.create"] }, "github.pr": { module: "github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] } }),
     mayDispatch: (module, agent) => module === "acme-dispatch" && agent !== "agent-3",
@@ -45,9 +43,10 @@ function setup({ capacity = 12, spend = () => [], launch = async () => {}, grant
     // A launch that returns started the job: its first start writes the queue facts (jobs.ts start).
     launch: async (job) => { launched.push(job); await launch(job); queueFacts(db, (f) => facts.record(f), job.id, grants[job.agent]?.key ?? job.agent); },
     release: async (id) => void released.push(id),
+    routineKey,
     log: () => {},
   });
-  return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, released, origins, provenance, caps };
+  return { db, facts, adm, jobs, grants, wake, wakes, inbox, launched, released, origins };
 }
 
 const req = (wake) => ({ wake, prompt: "do the thing" });
@@ -105,13 +104,27 @@ test("a module that doesn't dispatch the agent → 403; a wake it didn't claim �
   await assert.rejects(adm.admit("acme-other", req(wake("w2", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "wake-not-claimed");
 });
 
-test("a task the kernel's plugin made runs only with its provenance: with no intent behind it → 409; its intent settles it", async () => {
-  const { adm, wake, db, origins, provenance } = setup();
-  origins["task-1"] = { originKind: ORIGIN, originId: "aidenhq:op=forged" };
-  await assert.rejects(adm.admit("acme-dispatch", req(wake("w1", "task-1", "agent-1"))), (e) => e.status === 409 && e.code === "provenance-unsettled");
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 0);
-  // The kernel recorded the cap under the op before the create; the plugin's answer was lost: the first read completes it.
-  provenance.intend("aidenhq:op=forged", { job: "j-parent", cap: { cap: "off", routine: "digest" } });
-  assert.equal((await adm.admit("acme-dispatch", req("w1"))).state, "admitted");
-  assert.deepEqual({ ...db.prepare("SELECT created_by_job, routine_cap FROM provenance WHERE task = 'task-1'").get() }, { created_by_job: "j-parent", routine_cap: "off" });
+
+test("the platform-engineer role holds only on a task with a known filer: the owner, the Architect, a routine's run", async () => {
+  const { adm, wake, origins, db } = setup();
+  const roles = async (key, task, origin) => { origins[task] = origin; return (await adm.admit("acme-dispatch", req(wake(key, task, "agent-4")))).authority.roles; };
+  const filed = (task, filer) => db.prepare("INSERT INTO task_filers (task, filer) VALUES (?, ?)").run(task, filer);
+  filed("task-7", "owner");
+  assert.deepEqual(await roles("w7", "task-7", {}), ["platform-engineer"], "the owner filed it on the board");
+  assert.deepEqual(await roles("w8", "task-8", { createdByAgentId: "agent-5" }), ["platform-engineer"], "the Architect filed it");
+  assert.deepEqual(await roles("w9", "task-9", { createdByAgentId: "agent-1" }), [], "a crew agent filed it");
+  assert.deepEqual(await roles("w11", "task-12", { originKind: "routine_execution" }), ["platform-engineer"], "a routine's run");
+  assert.deepEqual(await roles("w10", "task-11", {}), [], "no filer the kernel saw: none");
+  filed("task-13", "module:code-review");
+  assert.deepEqual(await roles("w12", "task-13", {}), [], "a module's task to an agent");
+  filed("task-14", "module:github");
+  assert.deepEqual(await roles("w13", "task-14", {}), [], "a module filed it to the platform-engineer role (a Dependabot PR): it works in its task's namespace");
+});
+
+test("a later job on a routine run's task is still that routine's: its model and its row", async () => {
+  const { adm, wake, origins, db } = setup({ routineKey: (id) => (id === "r-digest" ? "digest" : undefined) });
+  origins["task-1"] = { originKind: "routine_execution", originId: "r-digest" };
+  const a = await adm.admit("acme-dispatch", req(wake("w-retry", "task-1", "agent-1", "scheduled: retry")));
+  assert.equal(a.authority.model, "acme/m2", "the routine's own model");
+  assert.equal(db.prepare("SELECT routine FROM jobs WHERE task = 'task-1'").get().routine, "digest");
 });

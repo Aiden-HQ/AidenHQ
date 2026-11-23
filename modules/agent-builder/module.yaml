@@ -1,14 +1,14 @@
 name: agent-builder
-description: "The Agent Architect (designs, builds and improves agents; reviews agents in trial) and the agent templates it starts from."
+description: "The Agent Architect (designs, builds and improves agents; onboards each on its first work) and the agent templates it starts from."
 requires: [ owner-channel, primer ] # the Architect tells the owner through its notify tool; its design reviews are Primer documents
 roles:
   declares:
-    - { id: architect, description: "Its Engineer tasks may use the trial exception (the runner reads it from the grants table)." }
+    - { id: architect, description: "The tasks it files may run on the product line (the kernel's admission reads it from the grants table)." }
     - { id: repo-checkout, description: "A commit of an agents-org repo placed in its computer (services/computer/launcher.ts POST /repo)." }
 agents:
   architect:
     department: agents
-    skills: [ engineering.write-code, engineering.supply-chain ]
+    skills: [ agent-builder.design-doc, engineering.supply-chain, engineering.write-code, primer.primer-docs, tasks.delegate-work ]
     # Designs and onboards new agents. DeepSeek Flash at max effort (the owner's pick after a blind bake-off, 2026-11-13): its
     # handbooks are what the other agents run on. Max can reason 60-90k tokens a turn: nothing in its path sets an output cap
     # (Codex and the gateway send none), and the longer timeout covers slow turns. A 90k-token turn costs about $0.05, so
@@ -35,16 +35,6 @@ agents:
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_amend_rubric, task_comment, task_handoff, task_block, task_cancel, task_finish ]
     heartbeat: true
-    # architect: handbook-only edits to agents in trial on its Engineer tasks land without a tap (the runner checks).
+    # architect: the tasks it files may run on the product line (kernel admission's platform filers).
     # repo-checkout: the instance repo's agents/ and handbooks, read-only, once the Architect has a computer (`image:`).
     roles: [ architect, repo-checkout ]
-routines:
-  trial-review:
-    title: Review agents in trial
-    agent: architect
-    description: |
-      Today is {{date}}. Follow "Daily review" in your instructions: review each finished task of the agents in trial
-      that report to you. If none are in trial, close this task at once with "nothing to review".
-    concurrency: skip_if_active
-    schedules:
-      - { cron: "0 17 * * 1-5", timezone: "${settings.timezone}", label: "weekday evening" }

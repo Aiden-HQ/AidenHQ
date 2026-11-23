@@ -20,6 +20,8 @@ export interface AgentJob {
   cause?: string | null;
   caused_by?: string | null;
   cost_usd?: number | null;
+  /** A routine run that only closed or parked its task (kernel quiet.ts): the kernel leaves these out before its limit. */
+  quiet?: boolean;
   error?: string | null;
   writes?: { id: string; kind: string; tier: number; state: string; decided_by: string | null; review_code: string | null; created_at: string }[];
 }
