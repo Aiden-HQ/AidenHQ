@@ -59,8 +59,8 @@ const QUIET_MS = 20_000;
  * pace is this over a rebuild's latency: 8 reaches the whole corpus (about 11k tasks) in about an hour at 2-3 s a task.
  */
 const WORKERS = 8;
-/** The most rebuilds one tick starts, so the next tick (the fact log, the edits poll) comes within about a minute. */
-const TICK_BUDGET = 120;
+/** How long one tick keeps starting rebuilds, so the next tick (the fact log, the edits poll) comes within about a minute. */
+const TICK_MS = 30_000;
 /** The query's embedding: past this it is answered with keyword hits only. */
 const QUERY_EMBED_MS = 2_500;
 /** Reciprocal-rank fusion's constant. */
@@ -267,10 +267,10 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       };
       // A rolling pool: a free slot takes the next due row at once (live changes before the backfill, read afresh each time),
       // so one slow rebuild holds back only itself.
-      for (let started = 0; started < TICK_BUDGET; ) {
+      for (const until = Date.now() + TICK_MS; Date.now() < until || active.size; ) {
         const next = (db.prepare("SELECT task, gen, tries FROM search_dirty WHERE due <= ? ORDER BY backfill, due LIMIT ?").all(now(), WORKERS) as { task: string; gen: number; tries: number }[]).find((r) => !flying.has(r.task));
-        if (!next || active.size >= WORKERS) { if (!active.size) break; await Promise.race(active); continue; }
-        flying.add(next.task); started++;
+        if (!next || active.size >= WORKERS || Date.now() >= until) { if (!active.size) break; await Promise.race(active); continue; }
+        flying.add(next.task);
         const p: Promise<void> = run(next).finally(() => { flying.delete(next.task); active.delete(p); });
         active.add(p);
       }
