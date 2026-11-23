@@ -176,8 +176,12 @@ describe("internal listener", () => {
     }
   });
 
-  it("a card recovered as unknown says it wakes nobody, so the run does not wait on a notice", async () => {
-    const records = fakeRecords([card({ id: "k-0000000000000080", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: false, outcome: "failed", outcomeText: "unknown: it was claimed and its outcome never came back", createdAt: "2026-11-10T09:00:00.000Z" })]);
+  it("a card the code closed says it wakes nobody: recovered as unknown, expired, or replaced", async () => {
+    const records = fakeRecords([
+      card({ id: "k-0000000000000080", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: false, outcome: "failed", outcomeText: "unknown: it was claimed and its outcome never came back", createdAt: "2026-11-10T09:00:00.000Z" }),
+      card({ id: "k-0000000000000081", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "expired", live: false, wakes: false, outcome: "failed", outcomeText: "expired: not decided in 7 days", createdAt: "2026-11-10T09:00:00.000Z" }),
+      card({ id: "k-0000000000000082", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "expired", live: false, wakes: false, outcome: "failed", outcomeText: "replaced by a newer request", replaced: true, createdAt: "2026-11-10T09:00:00.000Z" }),
+    ]);
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
     await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
     const portA = (board.address() as AddressInfo).port;
@@ -189,7 +193,7 @@ describe("internal listener", () => {
           res.on("end", () => resolve(JSON.parse(text)));
         }).on("error", reject).end();
       });
-      expect(out.approvals.find((a) => a.id === "k-0000000000000080")?.wakes).toBe(false);
+      for (const id of ["k-0000000000000080", "k-0000000000000081", "k-0000000000000082"]) expect(out.approvals.find((a) => a.id === id)?.wakes).toBe(false);
     } finally {
       board.close();
     }
