@@ -13,6 +13,10 @@ function handbook() {
   return readFileSync(join(product, "modules/security/agents/red-teamer/AGENTS.md"), "utf8");
 }
 
+function moduleYaml() {
+  return readFileSync(join(product, "modules/security/module.yaml"), "utf8");
+}
+
 function section(text: string, heading: string) {
   const start = text.indexOf(heading);
   if (start < 0) return "";
@@ -57,5 +61,13 @@ test("Done when asks every owner alert to name an owner-only decision", () => {
     done,
     /every owner alert sent this run names an owner-only decision/,
     "the alert rule: each owner alert sent this run names an owner-only decision",
+  );
+});
+
+test("the weekly routine defers the owner alert to the handbook", () => {
+  assert.doesNotMatch(
+    moduleYaml(),
+    /notify \(kind alert\)/,
+    "a routine's own prompt must defer the owner alert to the handbook; a severity-based alert line there reintroduces the defect the handbook rule removes",
   );
 });
