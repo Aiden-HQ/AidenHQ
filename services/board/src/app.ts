@@ -19,7 +19,7 @@ import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type Live
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
 import { RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
-import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
+import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
@@ -374,7 +374,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   };
   /** The tasks the board shows: assigned to the user, the Researcher or an Engineer; never setup's log tasks an agent holds. */
   const mine = (issues: Issue[], ctx: { me: string; assignees: Assignee[] }) =>
-    issues.filter((i) => (i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) && !logTasks().has(i.id) && !logTasks().has(i.identifier) : i.assigneeUserId === ctx.me));
+    issues.filter((i) => onMyDay(i, ctx) && !(i.assigneeAgentId && (logTasks().has(i.id) || logTasks().has(i.identifier))));
 
   /** A task the board may change: assigned to the user, the Researcher or an Engineer. */
   async function ownIssue(ref: string) {

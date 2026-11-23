@@ -61,23 +61,23 @@ export function useTaskSearch(text: string, keep: (c: WorkCard) => boolean, acti
   useEffect(() => {
     if (!q || !active || a.busy || a.n !== seq.current) return;
     const n = a.n;
-    let running = false;
+    let running = false, gone = false;
     const refresh = async () => {
       const r = await api.search(q);
       let { done, next } = r;
-      while (next && done.length < loaded.current && n === seq.current) {
+      while (next && done.length < loaded.current && !gone) {
         const p = await api.search(q, { after: next, keyword: !r.semantic });
         done = [...done, ...p.done.filter((c) => !done.some((d) => d.id === c.id))];
         next = p.next;
       }
-      setA((s) => (s.n !== n || n !== seq.current || s.paging ? s : answerOf(n, { ...r, done, next })));
+      if (!gone) setA((s) => (s.n !== n || n !== seq.current || s.paging ? s : answerOf(n, { ...r, done, next })));
     };
     const timer = setInterval(() => {
       if (document.hidden || running) return;
       running = true;
       refresh().catch(() => {}).finally(() => (running = false));
     }, REFRESH_MS);
-    return () => clearInterval(timer);
+    return () => { gone = true; clearInterval(timer); };
   }, [q, active, a.busy, a.n]);
   // The next page of older closed hits while the filters keep fewer than wanted: only from the answer to the query in the field.
   const kept = a.done.filter(keep).length;

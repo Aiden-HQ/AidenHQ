@@ -157,6 +157,10 @@ export function workCard(issue: Issue, list: Assignee[], state: ShownState | nul
 const isBrief = (i: Issue) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL);
 /** The owner's settings task as the board files it (made by no agent, held by none): a label alone hides nothing. */
 const isSettings = (i: Issue) => !i.assigneeAgentId && !i.createdByAgentId && (i.labels ?? []).some((l) => l.name === SETTINGS_LABEL);
+/** A task My day holds (app.ts mine(), and older search hits): assigned to a crew agent, or else to the owner. */
+export const onMyDay = (i: { assigneeAgentId?: string | null; assigneeUserId?: string | null }, ctx: { me: string; assignees: Assignee[] }) =>
+  i.assigneeAgentId ? ctx.assignees.some((a) => a.key === i.assigneeAgentId) : i.assigneeUserId === ctx.me;
+
 /** A task Agent work shows: anything but the brief and the owner's settings tasks. */
 export const isWork = (i: Issue) => !isBrief(i) && !isSettings(i);
 

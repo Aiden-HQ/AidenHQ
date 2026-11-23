@@ -2,7 +2,7 @@
 // /search, through the kernel's /v1/board-api/warehouse/search with the board's key). The module ranks; the board keeps its
 // lanes, so it takes the ranked hit ids (what its inventory holds: open, and closed in the last 48 hours), and draws the tasks
 // closed before that, a page at a time newest first, as Done cards. Without the module the kernel answers 404: unavailable.
-import { isWork, workCard, type Assignee, type WorkCard } from "./board.js";
+import { isWork, onMyDay, workCard, type Assignee, type WorkCard } from "./board.js";
 import type { Issue, Label } from "./paperclip.js";
 
 /** An older closed hit as the module answers it (modules/warehouse/search/src/search.ts Hit; change them together). */
@@ -46,9 +46,8 @@ export function searchView(a: SearchAnswer, ctx: { me: string; labels: Label[]; 
     } as Issue;
     if (!isWork(issue)) continue;
     const state = { task: h.id, identifier: h.identifier, idle_wakes: 0, kind: "done" as const, reason: h.status === "cancelled" ? ("cancelled" as const) : ("closed" as const), since: closed, holder: null, attention: [], lane: "done" as const };
-    // `mine`: what My day's own Done would hold (app.ts mine()): assigned to the owner or a crew agent.
-    const mine = h.assignee ? ctx.assignees.some((x) => x.key === h.assignee) : h.assigneeUser === ctx.me;
-    done.push({ ...workCard(issue, ctx.assignees, state, null, h.crew), mine });
+    // `mine`: what My day's own Done would hold (log tasks are already left out above).
+    done.push({ ...workCard(issue, ctx.assignees, state, null, h.crew), mine: onMyDay(issue, ctx) });
   }
   return { ids: a.ids, done, next: a.next, semantic: a.semantic };
 }
