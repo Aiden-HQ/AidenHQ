@@ -99,7 +99,7 @@ jobs:
           # runner no longer does was removed at runtime (an install's lifecycle script can do it), which is a suite that
           # vanished, not one that did not run: fail the shard rather than let it pass.
           while IFS=$'\t' read -r name dir _; do
-            if [ -n "$dir" ] && [ ! -d "$dir" ] && git cat-file -e "HEAD:$dir" 2>/dev/null; then
+            if [ -n "$dir" ] && [ ! -d "$dir" ] && [ "$(git cat-file -t "HEAD:$dir" 2>/dev/null)" = tree ]; then
               echo "::error::$name: $dir is in the tested commit but gone at runtime"
               exit 1
             fi
@@ -148,7 +148,7 @@ jobs:
           # runner no longer does was removed at runtime (an install's lifecycle script can do it), which is a suite that
           # vanished, not one that did not run: fail the shard rather than let it pass.
           while IFS=$'\t' read -r name dir _; do
-            if [ -n "$dir" ] && [ ! -d "$dir" ] && git cat-file -e "HEAD:$dir" 2>/dev/null; then
+            if [ -n "$dir" ] && [ ! -d "$dir" ] && [ "$(git cat-file -t "HEAD:$dir" 2>/dev/null)" = tree ]; then
               echo "::error::$name: $dir is in the tested commit but gone at runtime"
               exit 1
             fi
