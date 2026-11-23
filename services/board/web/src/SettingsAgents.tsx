@@ -7,9 +7,12 @@ import { api } from "./api";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./types";
-import { StatusDot } from "./ui";
+import { useModelCatalog } from "./useModelCatalog";
+import { ModelPicker, StatusDot } from "./ui";
 
 type Routine = AgentSettings["routines"][number];
+/** An agent works with tools, so only models that call them are offered. */
+const TOOL_MODELS = { tools: true };
 const hours = (v: unknown) => (v === true ? "the fleet's heartbeat" : typeof v === "number" ? `every ${v} hour${v === 1 ? "" : "s"}` : "off");
 
 /** One editable row: value (and the module's default beside it), the pending change's stage, the editor, Reset to default. */
@@ -54,10 +57,10 @@ function Field({ title, value, def, filed, children }: { title: string; value: R
 }
 
 /** A text or select input with Review change: files `item(value)` when it differs from `current`. */
-function Edit({ label, current, item, input, options, list }: { label: string; current: string; item: (v: string) => SettingChange; input?: "text"; options?: { value: string; label: string }[]; list?: string[] }) {
+function Edit({ label, current, item, input, options, models }: { label: string; current: string; item: (v: string) => SettingChange; input?: "text"; options?: { value: string; label: string }[]; models?: string[] }) {
   const [v, setV] = useState(current);
   const [review, setReview] = useState(false);
-  const listId = `dl-${label.replace(/\W/g, "")}`;
+  const catalog = useModelCatalog();
   return (
     <div className="st-change">
       <label className="ui-field">
@@ -70,17 +73,10 @@ function Edit({ label, current, item, input, options, list }: { label: string; c
               </option>
             ))}
           </select>
+        ) : models ? (
+          <ModelPicker label={label} value={v} catalog={catalog} recommended={models} accepts={TOOL_MODELS} onChange={(m) => (setV(m), setReview(false))} />
         ) : (
-          <>
-            <input className="ui-input" list={list ? listId : undefined} value={v} onChange={(e) => (setV(e.target.value), setReview(false))} spellCheck={false} />
-            {list && (
-              <datalist id={listId}>
-                {list.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-            )}
-          </>
+          <input className="ui-input" value={v} onChange={(e) => (setV(e.target.value), setReview(false))} spellCheck={false} />
         )}
       </label>
       {review ? (
@@ -113,7 +109,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
       {a.memberOf && <p className="fleet-empty">A team member: these settings are this member's own. The team's defaults are on the team's page.</p>}
       <Group title="How it thinks">
         <Field title="Model" value={<code>{a.model ? modelShort(a.model) : "the runner's"}</code>} def={dflt("model", a.model, (v) => <code>{modelShort(String(v))}</code>)} filed={fModel}>
-          {() => <Edit label="Model" current={a.model} item={(v) => ({ kind: "agent", agent: a.key, field: "model", value: v })} list={data.choices.models} />}
+          {() => <Edit label="Model" current={a.model} item={(v) => ({ kind: "agent", agent: a.key, field: "model", value: v })} models={data.choices.models} />}
         </Field>
         {a.efforts.length > 0 && (
           <Field title="Effort" value={a.effort || "the model's default"} def={dflt("reasoning_effort", a.effort, String)} filed={fEffort}>
@@ -175,7 +171,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : r.webhook ? "on an event" : "when asked";
-  const listId = `rm-${r.key}`;
+  const catalog = useModelCatalog();
   return (
     <Row
       title={r.title}
@@ -204,15 +200,10 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
                   <input className="ui-input" value={s.timezone} aria-label={`${r.title}: timezone`} placeholder="timezone" onChange={(e) => (setSched(sched.map((x, j) => (j === i ? { ...x, timezone: e.target.value } : x))), setReview(false))} spellCheck={false} />
                 </div>
               ))}
-              <label className="ui-field">
+              <div className="ui-field">
                 <span className="ui-field-label">Model</span>
-                <input className="ui-input" list={listId} value={model} placeholder="the agent's" onChange={(e) => (setModel(e.target.value), setReview(false))} spellCheck={false} />
-                <datalist id={listId}>
-                  {models.map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-              </label>
+                <ModelPicker label={`${r.title}: model`} value={model} catalog={catalog} recommended={models} accepts={TOOL_MODELS} none="The agent's model" onChange={(m) => (setModel(m), setReview(false))} />
+              </div>
               {review && items.length ? (
                 <ChangePreview items={items} was={was} onCancel={() => setReview(false)} onDone={() => setReview(false)} />
               ) : (

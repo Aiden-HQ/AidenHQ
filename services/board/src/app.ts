@@ -35,7 +35,7 @@ import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, chang
 import { createGrading, gradePassed, type Grading } from "./grading.js";
 import { CodeReviewSchema, CombosSchema, TreeRequestSchema, configProblems, insightsOf, upgradeConfig } from "./reviews.js";
 import { ReviewsRefused, ReviewsUnavailable, type Reviews } from "./reviews-client.js";
-import { UsageSchema, keyUsage, prices, spendSummary } from "./costs.js";
+import { UsageSchema, keyUsage, modelCatalog, prices, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -1935,6 +1935,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "GET", path: /^\/api\/reviews\/run\/([\w-]{1,80})$/, handle: async (m) => reviewsCall((r) => r.get(m[1]!)) },
     { method: "GET", path: /^\/api\/reviews\/repos$/, handle: async () => reviewsCall((r) => r.repos()) },
     { method: "GET", path: /^\/api\/reviews\/engines$/, handle: async () => reviewsCall((r) => r.engines()) },
+    // The model picker's list (OpenRouter's text models, from the kernel's gateway); 503 when it can't be read: the picker then offers each engine's short list.
+    { method: "GET", path: /^\/api\/model-catalog$/, handle: async () => { const models = await modelCatalog(opts.gateway); if (!models) throw new HttpError(503, "OpenRouter's model list isn't available yet"); return { models }; } },
     { method: "GET", path: /^\/api\/reviews\/available$/, handle: async (_m, _b, url) => reviewsCall((r) => r.available((url.searchParams.get("q") ?? "").slice(0, 100))) },
     {
       method: "GET",

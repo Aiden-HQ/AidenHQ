@@ -4,6 +4,7 @@ import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
 import type { Catalog, CodeReview, Combo, EngineCatalog, FindingRow, Gate, ReposView, Review, ReviewInsights, Run, TreeBatch, TreeRequest } from "../../src/reviews";
+import type { CatalogModel } from "../../src/model-catalog";
 import type { BrowseModule, GrantConnection, MarketplaceRow, SavedView, ViewSpec } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown, answered?: Response): Promise<T> {
@@ -301,6 +302,7 @@ export const api = {
   review: (id: string) => call<{ run: Run; review: Review | null; findings: FindingRow[]; gate: Gate | null }>("GET", `/api/reviews/run/${encodeURIComponent(id)}`),
   dismissFinding: (b: { repo: string; number: number; id: string; reason: string }) => call<{ dismissed: string }>("POST", "/api/reviews/dismiss", b),
   reviewRepos: () => call<ReposView>("GET", "/api/reviews/repos"),
+  modelCatalog: () => call<{ models: CatalogModel[] }>("GET", "/api/model-catalog"),
   reviewEngines: () => call<{ engines: EngineCatalog }>("GET", "/api/reviews/engines"),
   reviewAvailable: (q: string) => call<{ repos: { repo: string; private: boolean; pushed_at?: string }[] }>("GET", `/api/reviews/available?q=${encodeURIComponent(q)}`),
   reviewInsights: (days: number) => call<ReviewInsights>("GET", `/api/reviews/insights?days=${days}`),

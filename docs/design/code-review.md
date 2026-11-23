@@ -43,8 +43,9 @@ code_review:
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
 claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service, the board and the compile all say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
-short model list per engine; any other OpenRouter id may be typed, and the gateway refuses one `models-openrouter` doesn't
-price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
+short model list per engine (the board picker's "Recommended" group) and what the engine can run (`accepts`: one provider's
+models, or models that call tools), which filters the picker's full list: every text model of OpenRouter's catalog, read from the
+kernel gateway's own hourly list (`GET /v1/models/catalog`). Only a listed id is pickable; the gateway refuses one OpenRouter doesn't price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
 whole. The old shape (named `reviewers`, a string trigger, `on_risk`) is refused: the owner re-saves the repo on the board.
 

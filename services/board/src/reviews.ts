@@ -2,6 +2,7 @@
 // The module owns the runs, the PR state and every GitHub write; the board only reads them, starts one-off runs,
 // and files the owner's change to settings.code_review through the normal settings change. Types mirror the module's API.
 import { z } from "zod";
+import type { Accepts } from "./model-catalog.js";
 
 export type Severity = "important" | "nit" | "pre_existing";
 export interface Finding {
@@ -105,7 +106,7 @@ export interface ReposView {
 }
 /** GET /engines: the catalog the pickers offer (the module's ENGINES). */
 export type Engine = "codex" | "claude-code" | "codegenie" | "codex-native";
-export type EngineCatalog = Record<Engine, { label: string; efforts: string[]; models: string[] }>;
+export type EngineCatalog = Record<Engine, { label: string; efforts: string[]; models: string[]; accepts: Accepts }>;
 /** One review run's reviewer: its engine, model and effort. */
 export interface Combo {
   engine: Engine;

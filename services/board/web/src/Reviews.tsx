@@ -3,7 +3,8 @@ import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
 import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type Catalog, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
-import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
+import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, ModelPicker, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
+import { useModelCatalog } from "./useModelCatalog";
 import { agoLabel, elapsed } from "./util";
 import { Markdown } from "./markdown";
 import "./reviews.css";
@@ -75,24 +76,22 @@ const ComboTag = ({ c, engines }: { c: Pick<Combo, "engine" | "model" | "effort"
 );
 
 const MODEL_ID = /^~?[\w.-]+\/[\w.:~-]+$/;
-const CUSTOM = "__custom";
 /** One moment's (or one ask's) combos: a row each of engine, model and effort, up to MAX_COMBOS. */
 /** `gates`: each row has a Mandatory switch (its review gates the repo's merges); a one-off has none. */
 function ComboPicker({ label, value, onChange, engines, none, gates, single, noEngine }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean; single?: boolean; noEngine?: boolean }) {
   const set = (i: number, c: Combo) => onChange(value.map((x, j) => (j === i ? c : x)));
+  const catalog = useModelCatalog();
   const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium" });
   return (
     <div className="rv-combos" role="group" aria-label={label}>
       {!value.length && <span className="rv-muted rv-combo-none">{none ?? "None"}</span>}
       {value.map((c, i) => {
         const e = engines[c.engine];
-        const custom = !e.models.includes(c.model);
         return (
           <div key={i} className="rv-combo">
             {!noEngine && <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", ...(c.mandatory ? { mandatory: true } : {}) })} />}
             <span className="rv-combo-model">
-              <Select aria-label={`${label} ${i + 1} model`} value={custom ? CUSTOM : c.model} options={[...e.models.map((m) => [m, m.replace(/^~/, "")] as const), [CUSTOM, "Other model…"] as const]} onChange={(m) => set(i, { ...c, model: m === CUSTOM ? "" : m })} />
-              {custom && <Input aria-label={`${label} ${i + 1} model id`} aria-invalid={!MODEL_ID.test(c.model)} placeholder="vendor/model, like z-ai/glm-5.3" value={c.model} autoFocus={!c.model} onChange={(ev) => set(i, { ...c, model: ev.target.value.trim() })} />}
+              <ModelPicker label={`${label} ${i + 1} model`} value={c.model} catalog={catalog} recommended={e.models} accepts={e.accepts} onChange={(m) => set(i, { ...c, model: m })} />
             </span>
             <Select aria-label={`${label} ${i + 1} effort`} value={c.effort} options={e.efforts.map((x) => [x, x] as const)} onChange={(x) => set(i, { ...c, effort: x })} />
             {gates && (
