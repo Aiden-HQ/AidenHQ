@@ -152,7 +152,8 @@ const http = createServer(async (req, res) => {
         return send(res, 200, {});
       }
       const r = await d.pool.query(
-        "SELECT source, max(finished_at) FILTER (WHERE error IS NULL) AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
+        // A retired row is a marker, not a good pass: it never counts as the source's last good pass.
+        "SELECT source, max(finished_at) FILTER (WHERE error IS NULL AND status IS DISTINCT FROM 'retired') AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
       );
       // The detail (scope and error text) goes only to the board's internal token and the Fleet Steward (the module that
       // reads the warehouse's health); other apps.read callers get the summary rows. A scope still recording runs (one within 8

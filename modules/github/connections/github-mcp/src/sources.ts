@@ -244,6 +244,9 @@ export function startSync(store: SourceStore, gh: Gh, orgs: string[], log: Logge
     await retireRemoved().catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_github scope retirement pass failed"));
     for (const org of orgs) {
       try {
+        // The org's own scope row, saved before its first request: an org whose every pass fails never reaches saveScope
+        // below, and this row is what retireRemoved finds once the org leaves the config.
+        await store.saveScope(`org:${org}`, null);
         const rows = await store.run("github", `org:${org}`, () => syncOrg(store, gh, org, Date.now(), log));
         log.info({ org, rows }, "src_github sync done");
       } catch (err) {

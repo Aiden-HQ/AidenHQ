@@ -123,12 +123,13 @@ function retireStore(orgs: string[]) {
   const retired: { source: string; scope: string; error: string | null; status: string }[] = [];
   const deleted: string[] = [];
   const queries: string[] = [];
+  const saved: string[] = [];
   const store = {
     scopesByPrefix: async (prefix: string) => new Map([...held].filter(([s]) => s.startsWith(prefix))),
     run: async (_source: string, _scope: string, fn: () => Promise<number>) => fn(),
     migrate: async () => undefined,
     scope: async () => ({ baselined: true, cursor: null }),
-    saveScope: async () => undefined,
+    saveScope: async (scope: string) => void (saved.push(scope), held.set(scope, { baselined: false, cursor: null, syncedAt: 0 })),
     upsert: async () => "same",
     pool: {
       query: async (sql: string, p: any[] = []) => {
@@ -142,7 +143,7 @@ function retireStore(orgs: string[]) {
       },
     },
   };
-  return { store: store as unknown as SourceStore, held, retired, deleted, queries };
+  return { store: store as unknown as SourceStore, held, retired, deleted, queries, saved };
 }
 
 it("src_github: an org dropped from the configured list gets one retired ingest_run row and loses its scope rows; a re-start writes nothing", async () => {
@@ -153,7 +154,7 @@ it("src_github: an org dropped from the configured list gets one retired ingest_
   expect(retired).toEqual([{ source: "github", scope: "org:acme", error: null, status: "retired" }]);
   expect(deleted.sort()).toEqual(["board:acme/1", "issues:acme", "prs:acme"]);
   expect([...held.keys()].filter((s) => s.includes("acme"))).toEqual([]);
-  expect([...held.keys()].filter((s) => s.includes("kept"))).toHaveLength(3);
+  expect([...held.keys()].filter((s) => s.includes("kept")).sort()).toEqual(["board:kept/1", "issues:kept", "org:kept", "prs:kept"]);
 
   // A second start (the process restarts, or a later tick) finds the rows gone and writes nothing new.
   retired.length = 0;
@@ -170,4 +171,20 @@ it("src_github: an org name compares case-insensitively, and no configured org i
   await vi.advanceTimersByTimeAsync(30_000);
   expect(retired).toEqual([]);
   expect(deleted).toEqual([]);
+});
+
+it("src_github: an org records its own scope row before its first request, so an org whose passes all fail is still retired once removed", async () => {
+  // A configured org that has never saved a scope row (its every pass failed): startSync saves `org:<org>` before syncOrg.
+  const { store, held, retired, deleted, saved } = retireStore([]);
+  const failing = { account: async () => { throw new Error("GitHub refused: SSO required"); }, request: async () => ({ items: [] }) } as any;
+  startSync(store, failing, ["acme"], { info: () => {}, warn: () => {} } as any);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(saved).toContain("org:acme");
+  expect(held.has("org:acme")).toBe(true);
+
+  // Removed with no orgs left to sync: the retirement sweep still runs and retires it.
+  startSync(store, failing, [], { info: () => {}, warn: () => {} } as any);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(retired).toEqual([{ source: "github", scope: "org:acme", error: null, status: "retired" }]);
+  expect(deleted).toEqual(["org:acme"]);
 });

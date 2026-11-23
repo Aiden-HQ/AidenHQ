@@ -209,6 +209,12 @@ const localHost = () => catalog().some((m) => m.name === "codehost-local" && m.e
 renameKinds(records.db, catalog(), registry());
 const baseRepos = { product: env("AIDENHQ_PRODUCT_REPO") || undefined, instance: env("AIDENHQ_INSTANCE_REPO") || undefined };
 const repos = () => ({ ...baseRepos, agentsOrg: fleetOrg(), agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])].filter((o): o is string => Boolean(o)) });
+/** Every code-host org the instance reaches (codehostRepos' list, by org): a connection need naming any other org is stale. */
+function codehostOrgs(): string[] {
+  const r = codehostRepos();
+  const owner = (slug?: string) => slug?.split("/")[0];
+  return [...(r.orgs ?? []), ...(r.agentsOrgs ?? []), ...[r.product, r.instance, ...(r.maintained ?? [])].map(owner)].filter((o): o is string => Boolean(o));
+}
 log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set", repos());
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
 const reviews = createReviews({ slot: () => modulesFile().reviewer, secret, resolver, log, modelToken: (component) => mintToken(secret("gateway_job_secret"), { kind: "reviewer", component, ttlMs: 3600_000 }) });
@@ -504,9 +510,10 @@ connectionState = createConnectionState({
   // The module's display name from its module.yaml (compile: its sign-in label, else its setup flow title), else its name.
   label: (m) => modulesFile().modules?.[m]?.label ?? m,
   connections, grants: () => grantsTable().agents ?? {},
-  // The code-host orgs still configured (the github sync's list plus the agents orgs): an sso/restricted need on any other
-  // org is stale, and tick clears it (connection-state.ts).
-  orgs: () => [...(modulesFile().repos?.orgs ?? []), ...repos().agentsOrgs],
+  // Every code-host org the instance reaches (codehostRepos: github_orgs, the agents orgs, and the owners of the product,
+  // instance and maintained repos): an sso/restricted need on any other org is stale, and tick clears it (connection-state.ts).
+  // A tool call to a maintained repo's org is a live need, not a retired sync scope, so its org must stay allowed.
+  orgs: () => codehostOrgs(),
   // The board's origin (declared below; read only when a need is routed, after the listeners are up).
   boardUrl: () => boardOrigins[0] ?? "http://localhost:3121",
 });

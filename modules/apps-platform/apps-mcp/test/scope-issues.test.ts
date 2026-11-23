@@ -45,13 +45,25 @@ it("a retired scope is in neither list; the same scope failing again returns to 
   expect(first.failing.map((r) => r.scope)).toEqual(["org:kept"]);
   expect(first.short.map((r) => r.scope)).toEqual(["org:short"]);
 
-  // Later it is configured again and its every pass since fails: its newest pass is a normal failure, so its key returns by
-  // itself (the 24-hour rule still runs from its last good pass, which is the retirement row).
-  await run("org:removed", 30, { error: "org restricts OAuth apps" });
+  // Later it is configured again: its re-sync baselines (a good pass), then every pass fails, so its key returns by itself.
+  await run("org:removed", 28, { total: 3, fetched: 3 });
+  await run("org:removed", 26, { error: "org restricts OAuth apps" });
   await run("org:removed", 1, { error: "org restricts OAuth apps" });
   const again = await scopeIssues(deps);
   expect(again.failing.map((r) => r.scope).sort()).toEqual(["org:kept", "org:removed"]);
   expect(again.short.map((r) => r.scope)).toEqual(["org:short"]);
+});
+
+it("a retirement marker never counts as a source's or a scope's last good pass", async () => {
+  const { run, deps } = await setup();
+  await run("org:acme", 40, { error: "boom" });
+  await run("org:acme", 1, { status: "retired" });
+  // The source summary (main.ts' own query): this scope's only non-error row is a marker, so the source has no good pass.
+  const { rows } = await (deps.pool as unknown as { query: (t: string) => Promise<{ rows: { last_ok: string | null }[] }> }).query(
+    "SELECT source, max(finished_at) FILTER (WHERE error IS NULL AND status IS DISTINCT FROM 'retired') AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
+  );
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.last_ok).toBeNull();
 });
 
 it("a retired row is only the newest one that counts: an older retirement does not hide a later failure", async () => {

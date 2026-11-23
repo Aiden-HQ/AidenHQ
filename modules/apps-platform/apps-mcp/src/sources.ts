@@ -106,8 +106,9 @@ export interface WarehouseDeps {
 export async function scopeIssues(d: Pick<WarehouseDeps, "pool">): Promise<{ failing: Record<string, unknown>[]; short: Record<string, unknown>[] }> {
   // Each scope's newest pass; a retired newest row drops the scope from both lists below.
   const latest = `latest AS (SELECT DISTINCT ON (source, scope) source, scope, error, status, finished_at FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC)`;
+  // A retired row has no error, but it is a marker, not a good pass: it must not count as the scope's last good pass.
   const f = await d.pool.query(
-    `WITH ok AS (SELECT source, scope, max(finished_at) AS last_ok FROM src_meta.ingest_run WHERE error IS NULL GROUP BY source, scope), ${latest}
+    `WITH ok AS (SELECT source, scope, max(finished_at) AS last_ok FROM src_meta.ingest_run WHERE error IS NULL AND status IS DISTINCT FROM 'retired' GROUP BY source, scope), ${latest}
      SELECT l.source, l.scope, left(l.error, 500) AS error, ok.last_ok AS since
      FROM latest l LEFT JOIN ok USING (source, scope)
      WHERE l.error IS NOT NULL AND l.finished_at > now() - interval '8 days' AND l.status IS DISTINCT FROM 'retired'
