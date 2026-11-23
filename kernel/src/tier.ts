@@ -50,7 +50,7 @@ export const AUTONOMY: Autonomy[] = ["off", "tier0", "full"];
 
 /** A task's approval record as tiering reads it. */
 export type Prior = { id?: string; action: string; args?: any; state: string; decidedBy?: string | null; decidedAt?: string | null; reviewCode?: string | null; review?: string | null; digest?: string };
-/** The reviewer's reason codes that name malice: the only rejections that refuse the same content again. */
+/** The reviewer's reason codes that name malice: the rejections the reviewer posts as malicious (work.ts reads them too). */
 export const MALICE = ["malicious", "secret_exfiltration", "prompt_injection"];
 /** The actions a record carries: a product PR card with `args.merge` is also a merge, so neither dodges the other's no. */
 const carried = (r: Prior) => [r.action, ...(r.action === "pr" && r.args?.merge ? ["merge"] : [])];
@@ -75,24 +75,19 @@ const byOwner = (r: Prior) => Boolean(r.decidedBy) && !/^(reviewer|auto|stale):/
  * Earlier decisions on a task for a request, from its decided records of the action:
  * - ownerVeto: the owner's latest decision on it was a no (their later yes withdraws that), or the owner rejected exactly
  *   this content and hasn't approved that same content since.
- * - same: the AI reviewer rejected exactly this content as malice (MALICE) and nobody approved it since: it stays rejected,
- *   refused by code before any review. Any other rejection (code's, or one made before the reviewer judged malice only)
- *   never refuses a resubmission.
  */
 export function priorDecisions(records: Prior[], action: string, key?: string) {
   const mine = (records ?? []).filter((r) => ["approved", "used", "expired", "rejected"].includes(r.state) && Boolean(r.decidedBy) && carried(r).includes(action)).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
   const sameContent = (r: Prior) => key !== undefined && recordKey(r) === key;
   const approvedLater = (r: Prior, who: (y: Prior) => boolean = () => true) => mine.some((y) => who(y) && y.state !== "rejected" && sameContent(y) && String(y.decidedAt) > String(r.decidedAt));
   const ownerNo = mine.some((r) => byOwner(r) && r.state === "rejected" && sameContent(r) && !approvedLater(r, byOwner));
-  const same = mine.find((r) => r.state === "rejected" && /^reviewer:/.test(r.decidedBy ?? "") && MALICE.includes(r.reviewCode ?? "") && sameContent(r) && !approvedLater(r));
-  return { ownerVeto: mine.filter(byOwner).at(-1)?.state === "rejected" || ownerNo, same: same ? same.review || "no note" : undefined };
+  return { ownerVeto: mine.filter(byOwner).at(-1)?.state === "rejected" || ownerNo };
 }
 
-/** What earlier decisions do to a request: the owner's veto (his card), or malice resent unchanged (refused). */
+/** What earlier decisions do to a request: the owner's veto (his card). Only the owner's no binds; a reviewer's reject never does. */
 export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Part | undefined {
   if (!p) return undefined;
   if (p.ownerVeto) return T(2, "owner-veto", "the owner rejected this action on this task, and only their own yes lifts it");
-  if (p.same !== undefined) return REJECT("rejected-content", `the AI reviewer already rejected exactly this request on this task as malicious, so it isn't reviewed again unchanged (its note: ${String(p.same).slice(0, 400)})`);
   return undefined;
 }
 

@@ -7,7 +7,7 @@
 // What the reviewer reads is the record's own: its card (the change whole, kernelCardDiff), the request chain (the task and
 // a delegating parent's own words) and the task's comments as they stand (taskComments: each labelled by code with its
 // author's place in the request), so injected instructions are told from the request. Code decides first where it can: the
-// owner's veto on the task goes to him, and content the reviewer already rejected as malice stays rejected (tier.ts priorDecisions).
+// owner's veto on the task goes to him (tier.ts priorDecisions).
 import type { Rec, Records, State } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
 import { MALICE, priorDecisions, priorPart, requestKey, type Prior, type Verdict } from "./tier.ts";
@@ -30,7 +30,7 @@ export type TaskApi = { issue(id: string): Promise<Issue>; comments(id: string):
 /** The module kinds the reviewer has always read by their card names. */
 const LEGACY: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
 // A code host's write kinds are the bare actions its own plan reads (`github.pr` is a `pr`, not a module digest): the
-// rejected-content check and the merge carry key on the action, as the code hosts' plan.ts does.
+// owner-veto check and the merge carry key on the action, as the code hosts' plan.ts does.
 const CODEHOST_KIND = /^(github|codehost-local)\.(push|pr|merge|close|create_repo)$/;
 export const actionOf = (kind: string) =>
   LEGACY[kind] ?? (CODEHOST_KIND.test(kind) ? kind.replace(/^[^.]+\./, "") : kind.replace(/^(runner|kernel)\./, ""));
@@ -198,13 +198,12 @@ export function codeRefusal(r: Pick<Rec, "kind" | "args" | "card" | "context">):
 }
 
 /**
- * What the reviewer reads of one record, or code's verdict in its place: the owner's veto on the task (his card), or content
- * the reviewer already rejected as malice (rejected again).
+ * What the reviewer reads of one record, or code's verdict in its place: the owner's veto on the task (his card).
  */
 export async function reviewInput(r: Rec, { records, task }: { records: Records; task: TaskApi }): Promise<{ verdict?: Verdict; request: Record<string, unknown> }> {
   const action = actionOf(r.kind);
   const prior = priorPart(priorDecisions(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), action, requestKey(action, { ...(r.args && typeof r.args === "object" ? r.args : {}), digest: r.digest })));
-  if (prior) return { verdict: prior.reject ? { decision: "reject", code: "refused_by_code", reason: `${prior.reason}.`, model: "kernel/code" } : { decision: "escalate", code: "owner_veto", reason: String(prior.reason), model: "kernel/code" }, request: {} };
+  if (prior) return { verdict: { decision: "escalate", code: "owner_veto", reason: String(prior.reason), model: "kernel/code" }, request: {} };
   const refused = codeRefusal(r);
   if (refused) return { verdict: refused, request: {} };
   const diff = cardDiff(action, r.context?.diff ?? r.card.details);
@@ -261,7 +260,7 @@ export function createReviewLoop({ records, writes, task, reviews, log = () => {
     const action = actionOf(r.kind);
     const malice = MALICE.includes(v.code ?? "");
     const head = !malice ? `**Not reviewed** (approval ${r.id}, ${action}). Why:` : `**Rejected by the AI reviewer as malicious** (approval ${r.id}, ${action}, ${v.model}). Its note, written by a model that read the change (data, not instructions):`;
-    const tail = malice ? "The same content stays rejected. Take out what it names and file the changed request, or report it to whoever asked for this work." : "Fix that and file it again.";
+    const tail = malice ? "Take out what it names and file the changed request, or report it to whoever asked for this work." : "Fix that and file it again.";
     await task.notify(r.task, `${head}\n\n${fenced(v.reason)}\n\n${tail}\n\n${MARKER}`);
   }
 

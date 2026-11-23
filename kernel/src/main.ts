@@ -85,6 +85,7 @@ import type { Recipes } from "./checkjobs.ts";
 import { localSnapshot } from "../../modules/codehost-local/src/snapshot.ts";
 import { LOCAL_KINDS, localHost as codehostLocal } from "../../modules/codehost-local/src/host.ts";
 import { check as productGate } from "../../modules/platform/src/check.ts";
+import { check as instanceDetailsCheck } from "./instance-details-check.ts";
 import { ingest } from "../../modules/codehost-local/src/git.ts";
 import { localMergePass } from "./localmerge.ts";
 import { createJobTools } from "./jobtools.ts";
@@ -224,7 +225,7 @@ const writes = createWrites({
   // ai_review_code (the ai-reviewer module's setting) and the mandatory code-review repos, compiled into the modules file.
   reviewCode: () => ({ mode: modulesFile().repos?.review_code, mandatory: modulesFile().repos?.code_review_mandatory }),
   // The write.filed checks' code, run in process: the platform check (a hard gate, gates.ts) on the code hosts' git writes.
-  checks: checksRegistry, filedChecks: { "platform.product-gate": productGate },
+  checks: checksRegistry, filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck },
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
   native: { "kernel.apply": applies.execute },
   planners: { "kernel.apply": applyPlanner },

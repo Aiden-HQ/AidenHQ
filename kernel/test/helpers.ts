@@ -26,6 +26,7 @@ import { openRecords } from "../src/records.ts";
 import { createWrites } from "../src/writes.ts";
 import { createWork } from "../src/work.ts";
 import { check as productGate } from "../../modules/platform/src/check.ts";
+import { check as instanceDetailsCheck } from "../src/instance-details-check.ts";
 import { KERNEL_KINDS } from "../src/kinds.ts";
 import { scopeOf } from "../src/task-scope.ts";
 import { createPluginPost } from "../src/outcomes.ts";
@@ -121,7 +122,7 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const reviews = { request: async (request) => { reviewed.push(request); if (!reviewer) throw new Error("no reviewer module is installed"); return reviewer(request); } };
   // `checks` is the finish gate's table and the write.filed checks' too; the platform check's code runs in process, as main.ts wires it.
   const writes = createWrites({ records, registry: () => ({ ...moduleKinds(), ...KERNEL_KINDS }), connections: connectionsTable, secret, resolver: createResolver(), log: logf, replay: (r) => replay(r), reviews, native, planners, repos: () => repos,
-    checks: typeof checkTable === "function" ? checkTable : () => checkTable ?? {}, filedChecks: { "platform.product-gate": productGate },
+    checks: typeof checkTable === "function" ? checkTable : () => checkTable ?? {}, filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck },
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text, o) => { const to = o?.parent ? parents[task] : task; if (to && !closed.includes(to)) notices.push({ task: to, text }); },
       scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; } } });
   // `connect`: connect on first use wired as main.ts wires it (facts, the wake inbox, waits, the connection state).

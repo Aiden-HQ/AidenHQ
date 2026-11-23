@@ -847,14 +847,13 @@ rreview="modules/ai-reviewer/service/src/review.ts"
   && grep -qF 'if (k.filer === "owner") throw fail(403, "owner-only"' kernel/src/writes.ts \
   && grep -qF 'if (ownerSave || priorVeto) return { tier: 2, merit, state: "owner" };' kernel/src/tier.ts \
   && grep -qF 'if (autonomy === "off") return { tier: 2, merit, cap: { by: "autonomy", value: "off" }, rule: "autonomy-off", state: "owner" };' kernel/src/tier.ts \
-  && grep -qF 'const same = mine.find((r) => r.state === "rejected" && /^reviewer:/.test(r.decidedBy ?? "") && MALICE.includes(r.reviewCode ?? "")' kernel/src/tier.ts \
   && grep -qF 'if (v.decision === "escalate" && v.code === "reviewer_failed") {' kernel/src/writes.ts && grep -qF 'const post = v.model === "kernel/code" && v.decision === "reject" ? v : shadowed(v, mode);' kernel/src/writes.ts \
   && grep -qF 'const leaked = instanceDetails({ action }, diff, toolCallOf(action, r.args));' kernel/src/review-loop.ts && grep -qF 'const differs = r.context?.files?.changed?.length ? sameChanges(r.context.files.changed, diff) : [];' kernel/src/review-loop.ts \
   && grep -qF 'const refused = codeRefusal(r);' kernel/src/review-loop.ts && [ "$(grep -c 'if (t.state === "rejected") throw fail(422' kernel/src/writes.ts)" = 2 ] \
   && node --input-type=module -e 'const { touchesReviewer } = await import(process.argv[1]); const must = ["kernel/src/review-loop.ts", "kernel/src/reviews.ts", "kernel/sdk/src/reviewer.ts", "modules/ai-reviewer/service/src/review.ts"]; const miss = must.filter((f) => !touchesReviewer([f])); if (miss.length) { console.error("not reviewer code: " + miss.join(" ")); process.exit(1); }' "$repo/$rgate" \
   && grep -qF 'const top = filedRaises(kind, plan).reduce<Raise | undefined>(' kernel/src/writes.ts \
   && grep -qF 'if (!run) throw unavailable(`${id} has no code in this kernel`);' kernel/src/writes.ts \
-  && grep -qF 'filedChecks: { "platform.product-gate": productGate }' kernel/src/main.ts \
+  && grep -qF 'filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck }' kernel/src/main.ts \
   && grep -qF 'export const HARD_GATES = new Set(["platform.product-gate"]);' kernel/src/gates.ts \
   && grep -qF 'if (files.has(OWNER_APPROVAL_FILE) && files.size > 1) return { verdict: "deny"' "$rcheck" \
   && grep -qF 'if (!(await revalidate(pre))) return void runRetries.delete(id);' kernel/src/writes.ts && grep -qF 'if (!records.claim(id)) return;' kernel/src/writes.ts \

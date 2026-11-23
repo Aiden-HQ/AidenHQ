@@ -75,6 +75,8 @@ export function sharedCopies(root = repo) {
     ...(f === "needs.ts" ? ["modules/google/connections/google-workspace-mcp/src/aidenhq-sdk/needs.ts"] : [])]])),
   // The reviewer side of reviewer@1, in the reviewer module's service (its own Docker build context).
   "kernel/sdk/src/reviewer.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/reviewer.ts"],
+  // The instance-details scan: the reviewer's code check, and the code-review service that removes them before it files.
+  "kernel/sdk/src/instance-details.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/instance-details.ts", "modules/code-review/service/src/aidenhq-sdk/instance-details.ts"],
   // The eval's pass rule: the kernel's check job and the reviewer's own eval script apply this one copy.
   "kernel/sdk/src/pass-rule.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/pass-rule.ts"],
   // The one kernel client (design: one Paperclip/kernel client): every module that calls the kernel with its own token.

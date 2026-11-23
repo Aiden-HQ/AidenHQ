@@ -103,8 +103,8 @@ connections:
       read: [ code_review_config, code_review_runs, code_review_findings ]
       write: [ code_review_run, code_review_configure, code_review_resolve ]
 # Posting: this service files a record per post, per acknowledgement and per status and executes it (executor@1) through
-# github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post is Tier 1 (the AI reviewer
-# reads the whole rendered review first); a
+# github-mcp's /internal/review routes (the github module's poster, as the owner's sign-in). A post and a reply are Tier 0: no
+# AI reviewer reads them (the instance-details check below refuses a host, home path or address in either, before it runs); a
 # notice is Tier 0 (fixed words: phase and reason only), and so is a status (the commit status aidenhq/review on a gated repo's PR
 # head, mirroring the merge verdict in fixed words). Plan refuses a record this service didn't file for one of its runs.
 providers:
@@ -112,20 +112,26 @@ providers:
   executor:
     url: http://code-review:8098/aidenhq/v1/executor
     auth: code_review_service_key
+# kernel/src/instance-details-check.ts: a GitHub thread is outside the instance, so a post or reply naming its hosts, home paths or
+# addresses is refused at filing (a write.filed check always enforces).
+checks:
+  - id: instance-details
+    at: write.filed
+    kinds: [ code-review.post, code-review.reply ]
 writes:
   post:
     args: schemas/post.json
-    floor: 1
+    floor: 0
     # Head-bound: a post is of one pull request at one commit, so only those decide whether it may still run. Redeploying this
     # module (its code revision) or the pull request's base moving never stales a review of a head that still stands.
     binds: [ repo, ref, commit ]
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
   # An agent's recorded answer to an important finding, replied on that finding's thread so it shows closed: the text is the
-  # agent's own (Tier 1, the AI reviewer decides). It never holds the outcome, which is already in the store.
+  # agent's own (Tier 0). It never holds the outcome, which is already in the store.
   reply:
     args: schemas/reply.json
-    floor: 1
+    floor: 0
     tools: []
     card: { target: "{{target}}", sentence: "{{sentence}}", changes: "{{changes}}", details: "{{details}}" }
   notice:
