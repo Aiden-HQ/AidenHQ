@@ -144,7 +144,7 @@ test("a task whose identifier is the query ranks first and meaning brings nothin
     ["t-21", issue("t-21", "Lens work after REVIEW-1", { identifier: "REVIEW-10", description: "Follows REVIEW-1." })],
     ["t-22", issue("t-22", "Code review lenses", { identifier: "WOR-22" })],
     ["t-23", issue("t-23", "task_wait answers early", { identifier: "WOR-23" })],
-    ["t-24", issue("t-24", "A task that should wait for the code-review", { identifier: "WOR-24" })],
+    ["t-24", issue("t-24", "A task that should wait_code-review", { identifier: "WOR-24" })],
   ]);
   const { search, drain } = await setup({ issues });
   for (const id of issues.keys()) search.mark(id);
@@ -153,6 +153,7 @@ test("a task whose identifier is the query ranks first and meaning brings nothin
   assert.deepEqual((await search.search("REVIEW-1")).hits.map((h) => h.identifier), ["REVIEW-1", "REVIEW-10"]);
   assert.deepEqual((await search.search("task_wait")).hits.map((h) => h.identifier), ["WOR-23"], "not task and wait anywhere");
   assert.deepEqual((await search.search("code-rev", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24"], "a half-typed compound is a prefix");
+  assert.deepEqual((await search.search("wait_code-review", { keyword: true })).hits.map((h) => h.identifier), ["WOR-24"], "a compound inside a term keeps its place");
   assert.deepEqual((await search.search("code-review", { keyword: true })).hits.map((h) => h.identifier).sort(), ["WOR-22", "WOR-24"], "a compound finds its words spaced too");
 });
 

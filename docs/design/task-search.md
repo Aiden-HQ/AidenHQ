@@ -86,7 +86,8 @@ status, routine runs included), with three separate rules:
 
 1. Embed `q` (timeout 2.5 s). A failure, timeout or spend refusal sets `semantic: false` and the query goes on keyword only.
 2. One SQL statement over every live row: the typed terms ANDed, each term's words as a phrase (`task_wait` is `task`
-   then `wait`, not both anywhere in the task; `code-review` is `code` then `review`, so "code review" matches too) and the
+   then `wait`, not both anywhere in the task; `code-review` is `code` then `review`, so "code review" matches too, the
+   compound token keeping its place so `task_code-review` still finds itself) and the
    last term's as prefixes (so `WOR-12`, `dispat`, `code-rev` and `kernel/src/jo` match as typed), OR `1 − (embedding <=> v) ≥ threshold` (calibrated per model by the eval's negative
    queries). Exact cosine over ~11k rows is tens of milliseconds.
 3. **Each side brings at most its best 50** (`PER_SIDE`): the keyword matches by `ts_rank_cd`, the meaning matches by
@@ -101,8 +102,8 @@ status, routine runs included), with three separate rules:
    since `closed_before` as cards (the board may lack one: a close with no task state yet); `done`, the matches closed before it, newest close first, a page of `limit` after the cursor `after`
    (`closed_at|task id`), and `next` while more remain. A chip ANDs with the match set, and Done pages the older closes in
    it by date, so a task past a side's best 50 doesn't show under a chip or deep in Done either: a narrower query finds it.
-   The board keeps each lane's own order (the hits decide membership), so an identifier's own task is the only card for an
-   exact id, not the first of many.
+   The board keeps each lane's own order (the hits decide membership): an exact id shows its own task and the few that
+   cite it or share its prefix, not its meaning neighbours.
 
 ## Board
 
