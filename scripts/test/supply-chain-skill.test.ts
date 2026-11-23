@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 
 const step3 = () => {
   const text = readFileSync(new URL("../../modules/engineering/skills/supply-chain/SKILL.md", import.meta.url), "utf8");
-  const start = text.indexOf("\n3. State the release date"), end = text.indexOf("\n4. ");
+  const start = text.indexOf("\n3. "), end = text.indexOf("\n4. ");
   assert.ok(start !== -1 && end > start, "the skill has step 3");
   return text.slice(start, end).replace(/\s+/g, " ");
 };
@@ -28,8 +28,7 @@ test("an unreadable digest-bound date is not approximated from the release or th
 test("an undated image is adopted only through an owner-reviewed exceptions entry for its exact digest", () => {
   const text = step3();
   assert.match(text, /adopted through an entry in `\.github\/supply-chain-exceptions\.yaml` instead/, "the exceptions file is where it is recorded");
-  assert.match(text, /owner's (?:recorded )?decision at review|owner's (?:unexpired )?approval of that exact digest/, "an owner approves that digest");
-  assert.match(text, /exact digest/, "the approval names the exact digest");
+  assert.match(text, /owner's (?:unexpired |recorded )?(?:decision at review|approval)[^.]*exact digest/, "the owner's decision covers that exact digest");
   assert.match(text, /not something an Engineer records on its own/, "an Engineer does not record the approval");
 });
 
