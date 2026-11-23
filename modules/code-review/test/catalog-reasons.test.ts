@@ -17,5 +17,5 @@ test("whyNot: a missing stack, a pull-request-only option, an unavailable engine
   assert.equal(whyNot(opt("sec.govulncheck"), ["go.mod"], "one_off"), undefined);
   assert.equal(whyNot(opt("cor.codegenie"), ["go.mod"], "one_off"), "Runs on pull requests only");
   assert.match(whyNot(opt("sec.codex-security"), [], "one_off")!, /Codex Security engine/);
-  assert.equal(whyNot(opt("sec.gitleaks"), [], "one_off"), undefined);
+  assert.equal(whyNot(opt("sec.tob-audit"), [], "one_off"), undefined);
 });

@@ -9,7 +9,7 @@ export const LENSES = ["correctness", "security", "maintainability", "performanc
 export const MODES = ["one_off", "continuous"] as const;
 export const KINDS = ["tool", "skill", "engine"] as const;
 /** How a tool's output is read: SARIF, a named JSON/text mapper (sarif.ts), or `findings` (a skill or engine restates its own). */
-export const OUTPUTS = ["sarif", "knip", "jscpd", "vulture", "scc", "gcc", "findings"] as const;
+export const OUTPUTS = ["sarif", "knip", "vulture", "scc", "gcc", "findings"] as const;
 export type Lens = (typeof LENSES)[number];
 export type Mode = (typeof MODES)[number];
 
