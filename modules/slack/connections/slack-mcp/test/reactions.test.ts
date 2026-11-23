@@ -331,7 +331,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async (_r, n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async (n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
