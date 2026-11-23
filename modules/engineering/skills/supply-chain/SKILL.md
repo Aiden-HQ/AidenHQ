@@ -26,15 +26,15 @@ security fix (step 4).
    --before=<7 days ago>`, global `npm i -g name@1.2.3`); `pip install name==1.2.3`; images `image:tag@sha256:…`; Actions by
    commit SHA with the tag in a comment; apt `name=version`. Install scripts come from a pinned package, never `curl … | sh`.
    Workspace dev tools (`npm i -D`, `npx`, `pip install --user`) follow the same rule; commit only what the repo keeps using.
-3. State the release date of any image or action you bump in the PR. An image's release date is not digest-bound: a tag
-   can be re-pushed after its release, so the release still shows the old date. A date is digest-bound only when the
-   registry reports it for that digest (a ghcr image: the Packages API). When it cannot be read — a token with no access to
-   another org's package, say — do not approximate it from the release or the tag. The image is adopted only through
-   `.github/supply-chain-exceptions.yaml`, which the owner reviews either way: a security fix whose advisory covers the
-   pinned digest (the entry matches image and tag, so confirm the digest itself carries the fix), or the owner's
-   unexpired approval of that exact digest, at most 14 days out, for a release of code already running elsewhere in the
-   product that waiting would block. CI reads exceptions only after it dates the pin and lets an undatable one through
-   with a warning, so a green check is never proof the image is old enough.
+3. State the release date of any image or action you bump in the PR. For an image, a release date is not a digest-bound
+   date: a tag can be re-pushed after its release, so the release still shows the old date. A date is digest-bound only when
+   the registry reports it for that digest (a ghcr image: the Packages API); when it cannot be read — a token with no access
+   to another org's package, say — do not approximate it from the release or the tag. Such an image is adopted through an
+   entry in `.github/supply-chain-exceptions.yaml` instead. No check enforces that entry: `pins.ts` dates the pin itself,
+   prints a warning when it cannot and passes it, so CI cannot confirm the age and a green check never proves the image is
+   old enough. The entry is the owner's recorded decision at review — an advisory covering the exact digest, or the
+   owner's approval of that exact digest, at most 14 days out, for a release of code already running in the product that
+   waiting would block — and it is not something an Engineer records on its own.
 4. A newer version is allowed only for a security fix: the script returns it with the advisory (the lowest fixing
    release). List it in `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in
    the same PR as the pin. An app repo's CI runs the checker from its base commit, so until its default branch carries the
