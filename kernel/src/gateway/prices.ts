@@ -21,9 +21,10 @@ type Entry = { id?: unknown; name?: unknown; created?: unknown; context_length?:
 /** One text model of the list as the board's model picker shows it: USD per million tokens, `created` in unix seconds. */
 export type CatalogModel = { id: string; name: string; provider: string; created: number; context: number; in: number; out: number; tools: boolean; reasoning: boolean };
 
-/** One list entry → its catalog row, or undefined when it isn't a priced text-in, text-out model (an image model, a router's -1). */
+/** One list entry → its catalog row, or undefined when it isn't a priced text-in, text-out model (an image model, a router's -1, a batch-only model). */
 export function catalogOf(e: Entry): CatalogModel | undefined {
-  if (typeof e.id !== "string") return undefined;
+  // A `:batch` model answers only the batch endpoint, which no interactive route (chat, messages, responses) reaches.
+  if (typeof e.id !== "string" || e.id.endsWith(":batch")) return undefined;
   const modes = (v: unknown) => (Array.isArray(v) ? v : ["text"]);
   if (!modes(e.architecture?.input_modalities).includes("text") || !modes(e.architecture?.output_modalities).includes("text")) return undefined;
   const inn = perM(e.pricing?.prompt), out = perM(e.pricing?.completion);

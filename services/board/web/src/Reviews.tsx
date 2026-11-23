@@ -80,7 +80,7 @@ const MODEL_ID = /^~?[\w.-]+\/[\w.:~-]+$/;
 /** `gates`: each row has a Mandatory switch (its review gates the repo's merges); a one-off has none. */
 function ComboPicker({ label, value, onChange, engines, none, gates, single, noEngine }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean; single?: boolean; noEngine?: boolean }) {
   const set = (i: number, c: Combo) => onChange(value.map((x, j) => (j === i ? c : x)));
-  const catalog = useModelCatalog();
+  const [catalog, refreshCatalog] = useModelCatalog();
   const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium" });
   return (
     <div className="rv-combos" role="group" aria-label={label}>
@@ -91,7 +91,7 @@ function ComboPicker({ label, value, onChange, engines, none, gates, single, noE
           <div key={i} className="rv-combo">
             {!noEngine && <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", ...(c.mandatory ? { mandatory: true } : {}) })} />}
             <span className="rv-combo-model">
-              <ModelPicker label={`${label} ${i + 1} model`} value={c.model} catalog={catalog} recommended={e.models} accepts={e.accepts} onChange={(m) => set(i, { ...c, model: m })} />
+              <ModelPicker label={`${label} ${i + 1} model`} value={c.model} catalog={catalog} recommended={e.models} accepts={e.accepts} onOpen={refreshCatalog} onChange={(m) => set(i, { ...c, model: m })} />
             </span>
             <Select aria-label={`${label} ${i + 1} effort`} value={c.effort} options={e.efforts.map((x) => [x, x] as const)} onChange={(x) => set(i, { ...c, effort: x })} />
             {gates && (

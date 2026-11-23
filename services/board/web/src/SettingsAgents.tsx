@@ -13,6 +13,12 @@ import { ModelPicker, StatusDot } from "./ui";
 type Routine = AgentSettings["routines"][number];
 /** An agent works with tools, so only models that call them are offered. */
 const TOOL_MODELS = { tools: true };
+/**
+ * A router engine stores its models with a prefix (openrouter/z-ai/glm-5.3) where the catalog lists z-ai/glm-5.3: the prefix is
+ * whatever the agent's current model carries before its vendor/name, and the picker adds it back to a pick.
+ */
+const prefixOf = (model: string) => model.split("/").slice(0, -2).map((x) => `${x}/`).join("");
+const bare = (model: string, prefix: string) => (prefix && model.startsWith(prefix) ? model.slice(prefix.length) : model);
 const hours = (v: unknown) => (v === true ? "the fleet's heartbeat" : typeof v === "number" ? `every ${v} hour${v === 1 ? "" : "s"}` : "off");
 
 /** One editable row: value (and the module's default beside it), the pending change's stage, the editor, Reset to default. */
@@ -60,7 +66,8 @@ function Field({ title, value, def, filed, children }: { title: string; value: R
 function Edit({ label, current, item, input, options, models }: { label: string; current: string; item: (v: string) => SettingChange; input?: "text"; options?: { value: string; label: string }[]; models?: string[] }) {
   const [v, setV] = useState(current);
   const [review, setReview] = useState(false);
-  const catalog = useModelCatalog();
+  const [catalog, refreshCatalog] = useModelCatalog();
+  const prefix = prefixOf(current);
   return (
     <div className="st-change">
       <label className="ui-field">
@@ -74,7 +81,7 @@ function Edit({ label, current, item, input, options, models }: { label: string;
             ))}
           </select>
         ) : models ? (
-          <ModelPicker label={label} value={v} catalog={catalog} recommended={models} accepts={TOOL_MODELS} onChange={(m) => (setV(m), setReview(false))} />
+          <ModelPicker label={label} value={bare(v, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} onOpen={refreshCatalog} onChange={(m) => (setV(prefix + m), setReview(false))} />
         ) : (
           <input className="ui-input" value={v} onChange={(e) => (setV(e.target.value), setReview(false))} spellCheck={false} />
         )}
@@ -136,7 +143,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
           </Field>
         )}
         {routines.map((r) => (
-          <RoutineField key={r.key} r={r} models={data.choices.models} />
+          <RoutineField key={r.key} r={r} models={data.choices.models} agentModel={a.model} />
         ))}
         {!routines.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
       </Group>
@@ -149,7 +156,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
  * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed; pause and
  * resume are its live controls here (Paperclip's status, no settings change).
  */
-function RoutineField({ r, models }: { r: Routine; models: string[] }) {
+function RoutineField({ r, models, agentModel }: { r: Routine; models: string[]; agentModel: string }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
@@ -171,7 +178,8 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : r.webhook ? "on an event" : "when asked";
-  const catalog = useModelCatalog();
+  const [catalog, refreshCatalog] = useModelCatalog();
+  const prefix = prefixOf(r.model ?? agentModel);
   return (
     <Row
       title={r.title}
@@ -202,7 +210,7 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
               ))}
               <div className="ui-field">
                 <span className="ui-field-label">Model</span>
-                <ModelPicker label={`${r.title}: model`} value={model} catalog={catalog} recommended={models} accepts={TOOL_MODELS} placeholder="The agent's model" onChange={(m) => (setModel(m), setReview(false))} />
+                <ModelPicker label={`${r.title}: model`} value={bare(model, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} placeholder="The agent's model" onOpen={refreshCatalog} onChange={(m) => (setModel(prefix + m), setReview(false))} />
                 {model !== (r.model ?? "") && <button className="btn quiet sm" type="button" onClick={() => (setModel(r.model ?? ""), setReview(false))}>Undo model change</button>}
               </div>
               {review && items.length ? (

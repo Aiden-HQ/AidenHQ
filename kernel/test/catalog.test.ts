@@ -9,5 +9,6 @@ test("catalogOf: a priced text model with its capabilities; images, routers and 
   assert.equal(catalogOf({ ...text, architecture: { input_modalities: ["text"], output_modalities: ["image"] } }), undefined);
   assert.equal(catalogOf({ ...text, pricing: { prompt: "-1", completion: "-1" } }), undefined);
   assert.equal(catalogOf({ ...text, id: undefined }), undefined);
+  assert.equal(catalogOf({ ...text, id: "anthropic/claude-haiku-5.5:batch" }), undefined);
   assert.equal(catalogOf({ ...text, supported_parameters: undefined })?.tools, false);
 });

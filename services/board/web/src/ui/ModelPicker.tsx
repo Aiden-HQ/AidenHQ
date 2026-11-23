@@ -8,11 +8,13 @@ import { contextText, listing, priceText, shortId, type Accepts, type CatalogMod
 interface Place { left: number; width: number; top?: number; bottom?: number; maxHeight: number }
 
 const where = (anchor: HTMLElement): Place => {
+  // The visual viewport: on a phone the keyboard shrinks it without changing window.innerHeight.
+  const vv = window.visualViewport, top = vv?.offsetTop ?? 0, bottom = top + (vv?.height ?? window.innerHeight);
   const r = anchor.getBoundingClientRect(), vw = document.documentElement.clientWidth, vh = window.innerHeight, gap = 4, edge = 8;
   const narrow = vw <= 560;
   const width = narrow ? vw - 2 * edge : Math.min(Math.max(r.width, 400), vw - 2 * edge);
   const left = narrow ? edge : Math.max(edge, Math.min(r.left, vw - width - edge));
-  const below = vh - r.bottom - gap - edge, above = r.top - gap - edge;
+  const below = bottom - r.bottom - gap - edge, above = r.top - top - gap - edge;
   return below >= 280 || below >= above
     ? { left, width, top: r.bottom + gap, maxHeight: Math.min(440, below) }
     : { left, width, bottom: vh - r.top + gap, maxHeight: Math.min(440, above) };
@@ -22,7 +24,7 @@ const Check = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
 
-export function ModelPicker({ value, onChange, catalog, recommended, accepts, label, placeholder, disabled }: {
+export function ModelPicker({ value, onChange, catalog, recommended, accepts, label, placeholder, disabled, onOpen }: {
   value: string;
   onChange: (id: string) => void;
   /** null while it loads, [] when it couldn't be read. */
@@ -35,6 +37,8 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
   /** What the button says while no model is set. */
   placeholder?: string;
   disabled?: boolean;
+  /** The picker opened: the place to ask the catalog again. */
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -63,14 +67,15 @@ export function ModelPicker({ value, onChange, catalog, recommended, accepts, la
     const again = () => trigger.current && setPlace(where(trigger.current));
     const away = (e: PointerEvent) => { const t = e.target as Node; if (!panel.current?.contains(t) && !trigger.current?.contains(t)) setOpen(false); };
     window.addEventListener("resize", again);
+    window.visualViewport?.addEventListener("resize", again);
     window.addEventListener("scroll", again, true);
     document.addEventListener("pointerdown", away);
-    return () => { setPlace(null); window.removeEventListener("resize", again); window.removeEventListener("scroll", again, true); document.removeEventListener("pointerdown", away); };
+    return () => { setPlace(null); window.removeEventListener("resize", again); window.visualViewport?.removeEventListener("resize", again); window.removeEventListener("scroll", again, true); document.removeEventListener("pointerdown", away); };
   }, [open]);
   useEffect(() => { if (place) input.current?.focus(); }, [place === null]);
   useEffect(() => { if (open) document.getElementById(optId(active))?.scrollIntoView({ block: "nearest" }); }, [open, active]);
 
-  const show = () => { setQuery(""); setOlder(false); setActiveId(value || undefined); setOpen(true); };
+  const show = () => { setQuery(""); setOlder(false); setActiveId(value || undefined); setOpen(true); onOpen?.(); };
   const keys = (e: KeyboardEvent) => {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); return close(true); }
     if (e.target !== input.current) return;
