@@ -212,7 +212,7 @@ export function createMcp(d: McpDeps) {
           const { messages } = (key ? await call("GET", `/api/lane/${encodeURIComponent(key)}/messages`) : await call("GET", `/api/chats/${encodeURIComponent(id)}?peek=1`)) as { messages: any[] };
           const last = messages.at(-1)?.id as string | undefined;
           if (key) return { last, replies: messages.slice(messages.map((m) => m.role).lastIndexOf("owner") + 1).filter((m) => m.role === "agent").map((m) => m.text) };
-          return { last, replies: messages.slice(after ? messages.findIndex((m) => m.id === after) + 1 : 0).filter((m) => m.kind === "reply").map((m) => m.text) };
+          return { last, replies: messages.slice(after ? messages.findIndex((m) => m.id === after) + 1 || messages.length : 0).filter((m) => m.kind === "reply").map((m) => m.text) };
         };
         let id = a.chat as string | undefined;
         let after: string | undefined;

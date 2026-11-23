@@ -394,7 +394,10 @@ export function createChecks({ db, registry, owner, secret, resolver, agentKey =
   async function rubric(task: { id: string; identifier?: string }, module: string, b: { rubric: string[]; deliverable: unknown }) {
     const takers = finishing().filter(([, c]) => c.rubric);
     if (!takers.length) throw fail(409, "conflict", "no check takes a rubric, so this task can't be graded");
-    for (const [id, c] of takers) await ask(id, c, { task, module, ...b }, c.rubric);
+    for (const [id, c] of takers) {
+      const v = await ask(id, c, { task, module, ...b }, c.rubric);
+      if (v.verdict !== "ok") throw fail(409, "refused", `the finish check ${id} refused the rubric${v.reason ? `: ${v.reason}` : ""}`);
+    }
   }
   /**
    * The latest verdict that sent a task's work back, for the AI reviewer (review-loop.ts): asked of the enforcing finish check
