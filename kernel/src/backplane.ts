@@ -287,7 +287,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
-  projects?: Pick<Projects, "touch">;
+  projects?: Pick<Projects, "queue" | "touch">;
   /** An agent's own wait on its job's task (idle.ts): POST /v1/wait. */
   idle?: Idle;
   whoami: Whoami; asserter: Asserter; proxy: Handler; cp: Handler; boardCp?: Handler; grantsFile: () => { agents?: Record<string, Grant> } & Record<string, unknown>;
@@ -432,7 +432,11 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
               if (facts.record({ type: f.type, subject: f.subject, version: `${w.module}/${f.version}`, at: f.at, actor, ...(typeof f.task === "string" && f.task ? { task: f.task.slice(0, 100) } : {}), source: f.source === "backfill" ? "backfill" : "live", data })) {
                 recorded++;
                 // A code host's new PR on a task: the task joins the repo's project (projects.ts touch).
-                if (f.type === "pr.opened" && CODEHOSTS.includes(w.module!) && typeof f.task === "string" && f.task && typeof data.repo === "string" && f.source !== "backfill") opened.push({ task: f.task, repo: data.repo });
+                // Queued in this transaction, so a restart before the fill keeps it.
+                if (f.type === "pr.opened" && CODEHOSTS.includes(w.module!) && typeof f.task === "string" && f.task && typeof data.repo === "string" && f.source !== "backfill") {
+                  projects?.queue(f.task, data.repo);
+                  opened.push({ task: f.task, repo: data.repo });
+                }
               }
             }
             records.db.exec("COMMIT");

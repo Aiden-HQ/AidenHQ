@@ -122,12 +122,15 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
   let syncing = false;
   const api = {
     serial,
-    /** A PR for `task` on `repo`: queued (kernel.db, so a restart keeps it) and tried now; the minute's run retries it. */
+    /** A PR's fill, queued: called in the transaction that records the PR fact, so the two land together (kernel.db). */
+    queue: (task: string, repo: string) => {
+      const key = repoKey(repo);
+      if (key) db.prepare("INSERT OR IGNORE INTO project_pending (task, repo) VALUES (?, ?)").run(task, key);
+    },
+    /** A queued fill tried now (after its fact's commit); the minute's run retries one that fails. */
     touch: async (task: string, repo: string): Promise<void> => {
       const key = repoKey(repo);
-      if (!key) return;
-      db.prepare("INSERT OR IGNORE INTO project_pending (task, repo) VALUES (?, ?)").run(task, key);
-      await attempt(task, key);
+      if (key) await attempt(task, key);
     },
     /** An agent's tag: the project of that name, made when there is none. Call it inside `serial` with the write it is for. */
     named: (company: string, name: string) => byName(company, name, true) as Promise<string>,

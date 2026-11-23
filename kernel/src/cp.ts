@@ -227,10 +227,10 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
       const scope = parent ? (await scopeOf(parent)) ?? (b.assigneeAgentId === agent ? "part" : refuse(parent)) : "own";
       const child: Record<string, unknown> = Object.fromEntries(CREATE.slice(0, 7).filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
       const tag = tagOf("created", op);
-      // Under the projects chain whether named or inherited: the project read is the one the task is filed in.
-      const d = await tagged(true, async () => {
+      // A named project goes on the projects chain (projects.ts serial); an inherited one is read as it is, and a create never
+      // waits behind other project writes for it.
+      const d = await tagged(b.project !== undefined, async () => {
         // Its project: the one named, else its parent's, else (none there either) that of the task the job works on.
-        // Read here, on the chain, so a fill or a move queued before it has landed.
         const projectId = b.project !== undefined ? await projectNamed(decodeURIComponent(company), b.project) : (parent ? (await issue(parent.id)).projectId : undefined) ?? (await issue(task)).projectId;
         if (projectId) child.projectId = projectId;
         // The cap goes on record under the new task's origin (its tag) before the task exists.
