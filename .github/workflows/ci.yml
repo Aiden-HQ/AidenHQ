@@ -39,6 +39,10 @@ jobs:
     if: needs.checks.outputs.packages != '[]'
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 6
+    # This job runs the suites, so it runs PR code (`npm ci` and its lifecycle scripts included): read-only, no secret, and
+    # no `checks: write`. `post-checks` below is the only job that may write a check.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +69,7 @@ jobs:
           git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$PR_BASE"
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
+        # Runs PR code (`npm ci` and the suites): no token or secret is exposed to it, and this job cannot write a check.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
         run: |
@@ -91,6 +96,9 @@ jobs:
     if: needs.checks.outputs.modules != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    # Suites only, so PR code runs here: read-only, no secret, no `checks: write`.
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +113,7 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
+        # Runs PR code (`npm ci` and the suites): no token or secret is exposed to it, and this job cannot write a check.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
         run: |
@@ -163,18 +172,22 @@ jobs:
             jobs.push(...(data.jobs ?? []));
             if (jobs.length >= (data.total_count ?? 0) || (data.jobs ?? []).length === 0) break;
           }
-          // A suite's directory exists in the tree the shards tested (their checkout is `github.sha`, the PR merge commit): the contents API answers 404 for a missing one (run-suites.sh writes
-          // `gone: <dir>` and exits 0 for it, so it did not run).
+          // A suite's directory must be a directory at the PR head, where the check is posted, and in the tree the shards tested
+          // (`github.sha`, the PR's merge commit): the contents API answers 404 for a missing one, and lists a file as an object
+          // (run-suites.sh tests -d, writes `gone: <dir>` and exits 0, so it did not run). Both must hold, so neither a directory
+          // only the merge brought in nor one only the head carries earns a check for a suite that did not run.
           const dirs = new Map();
-          const exists = async (dir) => {
-            if (dirs.has(dir)) return dirs.get(dir);
+          const isDir = async (dir, ref) => {
+            const key = `${dir}\t${ref}`;
+            if (dirs.has(key)) return dirs.get(key);
             const path = dir.split("/").map(encodeURIComponent).join("/");
-            const res = await fetch(`${base}/repos/${REPO}/contents/${path}?ref=${encodeURIComponent(TESTED_SHA)}`, { headers });
-            if (res.status === 404) dirs.set(dir, false);
+            const res = await fetch(`${base}/repos/${REPO}/contents/${path}?ref=${encodeURIComponent(ref)}`, { headers });
+            if (res.status === 404) dirs.set(key, false);
             else if (!res.ok) throw new Error(`GET contents/${dir} failed: ${res.status}`);
-            else dirs.set(dir, Array.isArray(await res.json())); // a directory lists as an array, a file as an object (run-suites.sh tests -d)
-            return dirs.get(dir);
+            else dirs.set(key, Array.isArray(await res.json())); // a directory lists as an array, a file as an object
+            return dirs.get(key);
           };
+          const exists = async (dir) => (await isDir(dir, HEAD_SHA)) && (await isDir(dir, TESTED_SHA));
           const post = async (body) => {
             const res = await fetch(`${base}/repos/${REPO}/check-runs`, { method: "POST", headers, body: JSON.stringify(body) });
             if (!res.ok) throw new Error(`POST check-runs failed: ${res.status} ${await res.text()}`);
@@ -197,7 +210,7 @@ jobs:
               if (job.conclusion !== "success" || job.head_sha !== HEAD_SHA) { console.log(`${name} did not conclude success on the head: posting nothing for this shard`); continue; }
               for (const entry of shard.entries) {
                 if (have.has(`${entry.name}\t${RUN_ID}/${job.id}/${shard.shard}`)) continue;
-                if (!(await exists(entry.dir))) { console.log(`${entry.name}: ${entry.dir} is gone in the tested tree: posting no check`); continue; }
+                if (!(await exists(entry.dir))) { console.log(`${entry.name}: ${entry.dir} is not a directory at the head or in the tested tree: posting no check`); continue; }
                 await post({
                   name: entry.name,
                   head_sha: HEAD_SHA,
@@ -222,6 +235,9 @@ jobs:
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/board')
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 3
+    # The board suite is PR code: read-only, no secret, no `checks: write` (only `post-checks` has it).
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,6 +248,7 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
+        # Runs PR code (the board suite): no token or secret is exposed to it, and this job cannot write a check.
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
