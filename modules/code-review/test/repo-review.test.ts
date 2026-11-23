@@ -13,7 +13,7 @@ const REPO = "acme/app";
 const CATALOG = [
   { id: "maint.knip", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "webpro-nl/knip", version: "5.0.0", licence: "ISC" }, run: { cmd: "knip" }, when: ["package.json"], output: "knip", runs_code: false, cost: "free" },
   { id: "sec.gitleaks", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "gitleaks/gitleaks", version: "8.0.0", licence: "MIT" }, run: { cmd: "gitleaks" }, when: [], output: "sarif", runs_code: false, cost: "free" },
-  { id: "sec.cloudflare", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skill: "security-audit" }, when: [], output: "findings", runs_code: false, cost: "low" },
+  { id: "sec.cloudflare", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skills: ["cloudflare/security-audit-skill:security-audit"] }, when: [], output: "findings", runs_code: false, cost: "low" },
   { id: "sec.deepsec", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec" }, when: [], output: "findings", runs_code: true, cost: "high" },
   { id: "maint.vulture", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "jendrikseipp/vulture", version: "2.0", licence: "MIT" }, run: {}, when: ["**/*.py"], output: "vulture", runs_code: false, cost: "free" },
 ];
@@ -68,8 +68,8 @@ test("the commit is resolved once at start: the default branch moving mid-run ch
   w.finish(0, { findings: [w.finding("k1", { option: "maint.knip", severity: "nit" })] });
   await w.tick();
   assert.equal(w.started.length, 2);
-  assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].combo.harness, w.started[1].combo.skill, w.started[1].option, w.started[1].lens, w.started[1].head],
-    ["code-review", "skill:sec.cloudflare", "claude-code", "security-audit", "sec.cloudflare", "security", sha("1")]);
+  assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].combo.harness, w.started[1].combo.skills, w.started[1].option, w.started[1].lens, w.started[1].head],
+    ["code-review", "skill:sec.cloudflare", "claude-code", ["cloudflare/security-audit-skill:security-audit"], "sec.cloudflare", "security", sha("1")]);
   w.finish(1, {}, 1.5);
   await w.tick();
   const [batch] = w.engine.batches({});

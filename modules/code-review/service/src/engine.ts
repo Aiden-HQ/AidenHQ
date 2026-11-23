@@ -589,7 +589,7 @@ export function createEngine(d: EngineDeps) {
       const fits = JSON.stringify(boxed).length <= SETUP_FILES_MAX;
       if (!fits) log("deepsec's setup files are too big for a check's spec: it sets up itself", { run: r.id });
       const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: tools ? "code-review-tools" : "code-review",
-        combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skill: o.run.skill } : {}) },
+        combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skills: o.run.skills } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
         ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}),
         focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });

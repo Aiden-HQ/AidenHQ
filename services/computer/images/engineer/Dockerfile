@@ -141,7 +141,7 @@ RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force && deeps
 RUN set -eu; mkdir -p /opt/review/skills /opt/review/plugins; \
     pin() { d=$1; repo=$2; sha=$3; git init -q "$d" && git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$sha" && git -C "$d" checkout -q FETCH_HEAD && rm -rf "$d/.git"; }; \
     skills() { pin "/opt/review/skills/$(echo "$1" | sed 's#/#__#')" "$1" "$2"; }; \
-    # Skill repos (names pass through to run.skill as <owner>/<repo>:<skill>).
+    # Skill repos (each passes through to run.skills as <owner>/<repo>:<skill>).
     skills cloudflare/security-audit-skill c1c8a8c1471069fb0e188eeaff69b8e8db6564a8; \
     skills trailofbits/skills 149d7b21f4067765b82e67029730b42d228ef4b4; \
     skills mattpocock/skills 5863806dd4e15c63174bee4e7515a4256792ecfa; \

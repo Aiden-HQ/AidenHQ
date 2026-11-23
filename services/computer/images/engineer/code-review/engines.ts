@@ -59,8 +59,8 @@ const MODEL = /^~?[\w.-]+\/[\w.:~-]+$/;
 /** One review run's engine, model and effort (JSON from the spec, with the repo's ignore globs and max_nits). */
 export interface Combo {
   engine: string; model: string; effort: string; ignore?: string[]; max_nits?: number; mandatory?: boolean;
-  /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skill` (see resolveSkill). */
-  harness?: string; skill?: string;
+  /** `skill:<id>` engines: the catalog option's `run.harness` and `run.skills` (see resolveSkills). */
+  harness?: string; skills?: string[];
 }
 export interface EngineInput {
   prompt: string; instructions: string; model: string; effort: string; root: string; base: string; minutes?: string | number; scratch: string;
@@ -76,8 +76,8 @@ export interface EngineInput {
   left?: string[];
   /** `tree`: the whole tree at the head (base is the empty tree); else the change. */
   target?: "tree" | "pr";
-  /** Skill engines: the harness, the skill (resolveSkill) and where the image keeps skills (default /opt/review). */
-  harness?: string; skill?: string; skillsRoot?: string;
+  /** Skill engines: the harness, the skills (resolveSkills) and where the image keeps skills (default /opt/review). */
+  harness?: string; skills?: string[]; skillsRoot?: string;
   /** deepsec: its spend cap, and the files of a pending setup (JSON: path to text) to scan with instead of setting up. */
   budget_usd?: number; setupFiles?: Record<string, string>;
 }
@@ -119,7 +119,7 @@ export const callOf = (tool: string, a: Record<string, unknown> | undefined): Ca
 export function comboProblem(c: Combo | null | undefined) {
   if (!c || typeof c !== "object") return "a combo is an object";
   const skill = typeof c.engine === "string" && c.engine.startsWith("skill:");
-  if (skill && (!HARNESSES.includes(c.harness as string) || typeof c.skill !== "string" || !c.skill)) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skill`;
+  if (skill && (!HARNESSES.includes(c.harness as string) || !Array.isArray(c.skills) || !c.skills.length || c.skills.some((x) => typeof x !== "string"))) return `a skill engine names its harness (${HARNESSES.join(" or ")}) and skills`;
   const e = skill ? ENGINES[c.harness!] : ENGINES[c.engine];
   if (!e) return `engine is one of ${Object.keys(ENGINES).join(", ")}, skill:<option>`;
   if (typeof c.model !== "string" || !MODEL.test(c.model)) return "model is an OpenRouter model id (e.g. ~deepseek/deepseek-flash-latest)";
@@ -150,33 +150,44 @@ export async function runEngine(engine: string, i: EngineInput): Promise<EngineR
   throw new Error(`no engine ${engine}`);
 }
 
-/** An installed skill: how its harness invokes it, the skill folders to load and the plugin folders to enable. */
-export interface Skill { invocation: string; skillDirs: string[]; pluginDirs: string[] }
+/** The installed skills of one run: how its harness invokes each (in order), the skill folders to load and the plugin folders to enable. */
+export interface Skill { invocations: string[]; skillDirs: string[]; pluginDirs: string[] }
 /** Where the engineer image keeps what it installs for these options: skills/<owner>__<repo>/ (a pinned checkout) and plugins/<name>/. */
 const SKILLS_ROOT = "/opt/review";
 
-/**
- * The catalog's `run.skill` as an installed skill. `/<plugin>:<command>` is a Claude Code plugin (plugins/<plugin>); `/<name>` a
- * skill of that name under skills/ (or, when none is installed, the harness's own command, e.g. `/code-review`); and
- * `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>` (`$<name>` in codex).
- * Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
- */
-export function resolveSkill(skill: string, harness: string, root = SKILLS_ROOT): Skill {
+/** One catalog skill spec read: `<owner>/<repo>:<name>` (that repo's skill), `/<plugin>:<command>` (a Claude Code plugin's) or `/<name>`. Throws on any other form. */
+export function parseSkill(skill: string) {
   const repo = /^([\w.-]+)\/([\w.-]+):([\w.-]+)$/.exec(skill);
   const cmd = /^\/([\w.-]+)(?::([\w.-]+))?$/.exec(skill);
   if (!repo && !cmd) throw new Error(`skill "${skill}" is /<name>, /<plugin>:<command> or <owner>/<repo>:<name>`);
-  const sigil = harness === "codex" ? "$" : "/";
-  if (cmd?.[2]) {
-    const dir = join(root, "plugins", cmd[1]!);
-    if (harness !== "claude-code" || !existsSync(dir)) throw new Error(`plugin ${cmd[1]} isn't installed for ${harness}`);
-    return { invocation: skill, skillDirs: [], pluginDirs: [dir] };
+  return repo ? { owner: repo[1]!, repo: repo[2]!, name: repo[3]! } : { plugin: cmd![2] ? cmd![1]! : undefined, name: cmd![2] ?? cmd![1]! };
+}
+
+/**
+ * The catalog's `run.skills` as installed skills, run in order in one session. `/<plugin>:<command>` is a Claude Code plugin
+ * (plugins/<plugin>); `/<name>` a skill of that name under skills/ (or, when none is installed, the harness's own command, e.g.
+ * `/code-review`); and `<owner>/<repo>:<name>` the skill `<name>` of that one repo (names repeat across repos), invoked as `/<name>`
+ * (`$<name>` in codex). Only what the image installed is ever loaded: never a skill, plugin or setting of the repo under review.
+ */
+export function resolveSkills(skills: string[], harness: string, root = SKILLS_ROOT): Skill {
+  const all: Skill = { invocations: [], skillDirs: [], pluginDirs: [] };
+  for (const skill of skills) {
+    const p = parseSkill(skill), sigil = harness === "codex" ? "$" : "/";
+    if ("plugin" in p && p.plugin) {
+      const dir = join(root, "plugins", p.plugin);
+      if (harness !== "claude-code" || !existsSync(dir)) throw new Error(`plugin ${p.plugin} isn't installed for ${harness}`);
+      all.invocations.push(skill);
+      all.pluginDirs.push(dir);
+      continue;
+    }
+    const base = "repo" in p ? join(root, "skills", `${p.owner}__${p.repo}`) : join(root, "skills");
+    let found: string[] = [];
+    try { found = readdirSync(base, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === p.name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(base, dirname(f))); } catch {}
+    if (!found.length && "repo" in p) throw new Error(`skill ${p.name} isn't installed from ${p.owner}/${p.repo}`);
+    all.invocations.push(`${sigil}${p.name}`);
+    all.skillDirs.push(...found.slice(0, 1));
   }
-  const name = (repo ? repo[3] : cmd![1])!;
-  const base = repo ? join(root, "skills", `${repo[1]}__${repo[2]}`) : join(root, "skills");
-  let found: string[] = [];
-  try { found = readdirSync(base, { recursive: true }).map(String).filter((f) => basename(dirname(f)) === name && basename(f) === "SKILL.md" && !f.split("/").includes("node_modules")).sort().map((f) => join(base, dirname(f))); } catch {}
-  if (!found.length && repo) throw new Error(`skill ${name} isn't installed from ${repo[1]}/${repo[2]}`);
-  return { invocation: `${sigil}${name}`, skillDirs: found.slice(0, 1), pluginDirs: [] };
+  return all;
 }
 
 /** The skill's folders linked into the harness's user skills folder (a fresh one per run: nothing else is loaded). */
@@ -187,11 +198,11 @@ function linkSkills(sk: Skill | undefined, dir: string) {
 }
 
 async function skillEngine(i: EngineInput): Promise<EngineResult> {
-  const sk = resolveSkill(String(i.skill), String(i.harness), i.skillsRoot);
+  const sk = resolveSkills(i.skills ?? [], String(i.harness), i.skillsRoot);
   if (!i.own) return i.harness === "codex" ? codex(i) : claudeCode(i); // an ask (recheck): the harness answers it plainly
   const r = await (i.harness === "codex" ? codex(i, sk) : claudeCode(i, sk));
   // It ran its own way: a finished run counts as read, and says its coverage isn't tracked.
-  return r.cause ? r : { ...r, read: true, untracked: `${sk.invocation} reads the code its own way, so which files it read isn't tracked` };
+  return r.cause ? r : { ...r, read: true, untracked: `${sk.invocations.join(" ")} reads the code its own way, so which files it read isn't tracked` };
 }
 
 /** deepsec's scan as our finder JSON, its coverage and, after a setup, the files to commit (deepsec.ts). */
@@ -227,9 +238,11 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   let session: string | undefined;
   if (sk && own) {
     // The skill's own run over the range, its findings then restated as our JSON in the same thread.
-    const first = await turn(`${sk.invocation} ${base}..HEAD`);
-    if (!first.done || !first.thread) return { message: "", read: false, calls, cause: first.done ? "codex gave no thread to continue" : stopped(first.r, first.said) };
-    session = first.thread;
+    for (const inv of sk.invocations) {
+      const t = await turn(`${inv} ${base}..HEAD`, session);
+      if (!t.done || !(t.thread ?? session)) return { message: "", read: false, calls, cause: t.done ? "codex gave no thread to continue" : stopped(t.r, t.said) };
+      session ??= t.thread;
+    }
     prompt = `Now restate every finding of that run in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
   }
   const last = await turn(prompt, session);
@@ -299,10 +312,12 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   if (own) {
     // Claude Code's own review of the change (base..HEAD in the box's history), or the skill's command over that range, its
     // findings then restated as our JSON.
-    const first = await turn(sk ? `${sk.invocation} ${base}..HEAD` : `/code-review ${effort} ${base}..HEAD --max-findings all`);
-    if (!first.ok) return { message: "", read: false, calls, cause: stopped(first.r, first.end?.result ?? "") };
-    if (!first.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
-    session = first.end.session_id;
+    for (const task of sk ? sk.invocations.map((v) => `${v} ${base}..HEAD`) : [`/code-review ${effort} ${base}..HEAD --max-findings all`]) {
+      const t = await turn(task, session);
+      if (!t.ok) return { message: "", read: false, calls, cause: stopped(t.r, t.end?.result ?? "") };
+      if (!t.end?.session_id) return { message: "", read: false, calls, cause: "claude gave no session to continue" };
+      session = t.end.session_id;
+    }
     prompt = `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.\n${prompt}`;
   }
   const last = await turn(prompt, session);

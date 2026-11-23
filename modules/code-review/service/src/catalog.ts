@@ -7,7 +7,7 @@ export type Mode = "one_off" | "continuous";
 export type Option = {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
   source: { repo: string; version: string; licence: string };
-  run: { cmd?: string; harness?: string; skill?: string; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[] };
+  run: { cmd?: string; harness?: string; skills?: string[]; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[] };
   when: string[]; output: "sarif" | "knip" | "jscpd" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean; severity?: "nit";
 };
 

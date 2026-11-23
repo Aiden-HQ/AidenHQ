@@ -16,7 +16,7 @@ export type Mode = (typeof MODES)[number];
  * One option. `recommended`: the modes it is ticked by default in (a subset of `modes`). `when`: file globs (the recipe's globRe,
  * over the snapshot's paths); none means always. `run`: a tool's shell command (run in the checkout copy, its stdout is the
  * output) and `exits`, the exit codes of a finished scan (default [0]; a scanner's "found something" code too: any other code is a
- * failed tool, report or not), a skill's harness and skill names (space separated: run in order), or an engine's id. `runs_code`:
+ * failed tool, report or not), a skill's harness and `skills` (specs, run in order in one session; engines.ts parseSkill), or an engine's id. `runs_code`:
  * the tool can run the repo's code (a JS config it imports): only a tool, never on a fork's PR, after the others (tools.ts). `severity: "nit"` caps a tool whose
  * output marks everything an error (ruff, fallow); `hidden` options are never offered. `source.version` is the pin: a release tag,
  * package version or commit.
@@ -24,7 +24,7 @@ export type Mode = (typeof MODES)[number];
 export interface Option {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: (typeof KINDS)[number];
   source: { repo: string; version: string; licence: string };
-  run: { cmd?: string; exits?: number[]; harness?: string; skill?: string; engine?: string };
+  run: { cmd?: string; exits?: number[]; harness?: string; skills?: string[]; engine?: string };
   when: string[]; output: (typeof OUTPUTS)[number]; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean; severity?: "nit";
 }
 
@@ -49,7 +49,7 @@ export function loadCatalog(source: string): Option[] {
     if (!text(o.source?.repo) || !text(o.source?.version) || !text(o.source?.licence)) bad(id, "source needs repo, a pinned version and a licence");
     if (!OUTPUTS.includes(o.output)) bad(id, "unknown output");
     const run = o.run ?? {};
-    if (o.kind === "tool" ? !text(run.cmd, 2000) || o.output === "findings" : o.output !== "findings" || (o.kind === "skill" ? !text(run.harness) || !text(run.skill, 500) : !text(run.engine))) bad(id, `${o.kind} has the run fields (and the output) its kind takes`);
+    if (o.kind === "tool" ? !text(run.cmd, 2000) || o.output === "findings" : o.output !== "findings" || (o.kind === "skill" ? !text(run.harness) || !(Array.isArray(run.skills) && run.skills.length && run.skills.every((x: unknown) => text(x))) : !text(run.engine))) bad(id, `${o.kind} has the run fields (and the output) its kind takes`);
     if (!Array.isArray(o.when) || o.when.some((g: unknown) => !text(g))) bad(id, "when is a list of globs");
     if (run.exits !== undefined && (o.kind !== "tool" || !Array.isArray(run.exits) || !run.exits.length || run.exits.some((c: unknown) => !Number.isInteger(c) || (c as number) < 0 || (c as number) > 255))) bad(id, "exits is a tool's list of exit codes");
     if (o.runs_code === true && o.kind !== "tool") bad(id, "only a tool option runs repo code (runs_code)");
