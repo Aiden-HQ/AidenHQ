@@ -147,7 +147,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<pr url>:<head>:<job id>` -> the same for a wedged check run
-    state.wedgedFirst ??= {}; // `<pr url>:<head>:<job id>` -> { at, accepted }: when its wedged re-run was first asked (kept across refusals), and whether GitHub took it
+    state.wedged ??= {};      // `<pr url>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's first re-run ask, and whether GitHub took it
     state.wedgedTold ??= {}; // `<pr url>:<head>` -> when the task was told its check run is still wedged after a re-run
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
@@ -233,13 +233,16 @@ export function startPrWatch(o: PrWatchOptions) {
     }
     /**
      * A check run that is not COMPLETED while its Actions job has finished: re-run that job, so GitHub reposts the check run
-     * and the merge gate is no longer held by it. Once per head per job, with the refusal backoff `neverStarted` uses (a
+     * and the merge gate is no longer held by it. Once per head per check, with the refusal backoff `neverStarted` uses (a
      * refused or unanswered re-run is asked again after five minutes, never counted as handled). Not on a cross-repository PR.
      *
      * The check runs come from REST's own list of the head's latest ones (its `details_url` carries the full Actions job id,
      * which the rollup's 32-bit `databaseId` does not), and a job counts only when its own `head_sha` and `check_run_url` name
-     * that check run. Returns the checks GitHub has asked about at this head with when their re-run was first asked, for the
-     * report: a check still wedged after the interval is no longer waited on silently.
+     * that check run. A re-run gives its job a new id, so what was asked is kept by the check's suite and name at the head:
+     * the replacement of a re-run GitHub took is not re-run again.
+     *
+     * Returns the checks GitHub has asked about at this head with when their re-run was first asked and whether it took it,
+     * for the report: a check still wedged after the interval is no longer waited on silently.
      */
     async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
@@ -261,17 +264,18 @@ export function startPrWatch(o: PrWatchOptions) {
       const out: { at: number; accepted: boolean }[] = [];
       // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix.
       for (const c of runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed")) {
+        const name = `${url}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
+        const asked: { at: string; accepted: boolean; job: number } | undefined = state.wedged[name];
         const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head, check: String(c.name ?? "").slice(0, 100) }); continue; }
-        const key = `${url}:${head}:${jobId}`;
-        const first: { at: string; accepted: boolean } | undefined = state.wedgedFirst[key];
-        const prior: string | undefined = state.reran[key];
+        const prior: string | undefined = state.reran[`${url}:${head}:${jobId}`];
+        if (!asked && prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) continue;
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         let job: { status: number; body: any };
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
         catch (e) {
           log("wedged check run's job read failed", { pr: pr.url, head, job: jobId, err: String((e as Error).message).slice(0, 200) });
-          state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+          state.reran[`${url}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
           continue;
         }
@@ -280,25 +284,28 @@ export function startPrWatch(o: PrWatchOptions) {
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== head || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt) || Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a fresh job's check run can lag
-        // The job is finished and its check run is not: the most a report can say is what the ask's clock says.
-        if (first) out.push({ at: Date.parse(first.at), accepted: first.accepted });
-        // Asked about at this head, or a refusal still backing off: nothing more is asked this tick.
-        if (prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) continue;
+        // The ask's clock already runs: the check is reported from it, and one GitHub took is not re-run again. One GitHub
+        // refused is asked again once its backoff has passed.
+        if (asked) {
+          out.push({ at: Date.parse(asked.at), accepted: asked.accepted });
+          if (asked.accepted) continue;
+          if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) continue;
+        }
         // The first ask starts the report's clock and is not moved by a refusal.
-        state.wedgedFirst[key] ??= { at: new Date().toISOString(), accepted: false };
+        state.wedged[name] ??= { at: new Date().toISOString(), accepted: false, job: Number(jobId) };
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
         catch (e) {
           log("wedged check run's re-run failed to send", { pr: pr.url, head, job: jobId, err: String((e as Error).message).slice(0, 200) });
-          state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+          state.reran[`${url}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
           continue;
         }
         log(r.status < 300 ? "wedged check run's job re-run" : "wedged check run's re-run refused", { pr: pr.url, head, job: jobId, status: r.status });
+        if (r.status < 300) state.wedged[name].accepted = true;
         // Only a re-run GitHub took is recorded as done: a refusal backs off and is asked again instead of leaving the head
         // marked as handled with its check run still wedged.
-        if (r.status < 300) state.wedgedFirst[key].accepted = true;
-        state.reran[key] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+        state.reran[`${url}:${head}:${jobId}`] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
         save();
       }
       return out;
@@ -558,7 +565,8 @@ export function startPrWatch(o: PrWatchOptions) {
         const w = opener && opener.branch === pr.headRefName ? await wake(pr, opener.task, text) : "sent";
         // Told once at this head, and only once a re-run was asked for here: a head whose ask GitHub refused is reported
         // again after its backoff, not marked as reported for a re-run that never happened.
-        if (w !== "failed" && wedged.some((x) => x.accepted)) {
+        // Told once at this head, whether or not GitHub took the re-run: the ask's clock ran, so the next tick must not repeat it.
+        if (w !== "failed") {
           state.wedgedTold[url] = pr.headRefOid;
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });

@@ -276,7 +276,7 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
   const c = await rig(t);
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   c.set([c.agentPr(44, stuckPr(44))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedgedFirst: { "https://github.com/acme/app/pull/44:h44:77": { at: asked, accepted: true } } } }));
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/44:h44:500:image-changes": { at: asked, accepted: true, job: 77 } } } }));
   await c.watch.tick(); await c.watch.tick();
   assert.equal(c.woke.length, 1, "told once at this head");
   assert.equal(c.woke[0].task, "ACME-44");
@@ -293,14 +293,14 @@ test("a refused re-run is reported after the interval, and a check job still run
   // A refused re-run keeps the first ask's clock, so the check is reported rather than retried unseen.
   const c = await rig(t, { jobRerun: () => 502 });
   c.set([c.agentPr(46, stuckPr(46))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedgedFirst: { "https://github.com/acme/app/pull/46:h46:77": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false } } } }));
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/46:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false, job: 77 } } } }));
   await c.watch.tick();
   assert.equal(c.woke.length, 1);
   assert.match(c.woke[0].text, /the request to re-run the job was refused/);
   // A replacement job still queued or running is not stuck: nothing is reported for it.
   const running = await rig(t, { job: { status: "in_progress", completed_at: null } });
   running.set([running.agentPr(49, stuckPr(49))]);
-  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedgedFirst: { "https://github.com/acme/app/pull/49:h49:77": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true } } } }));
+  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/49:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true, job: 77 } } } }));
   await running.watch.tick();
   assert.equal(running.woke.length, 0, "a re-run still running is not a stuck check");
 });
