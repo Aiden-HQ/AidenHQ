@@ -10,6 +10,8 @@ export interface Grant {
   models?: string[];
   graded?: boolean;
   rev?: string;
+  /** The agent's profile (kernel/src/admission.ts). */
+  profile?: string;
 }
 
 /** The grants table, re-read whenever the file changes. */

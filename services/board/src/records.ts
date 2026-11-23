@@ -42,9 +42,23 @@ export interface Approval {
   /** Why the claimed record is still running (its executor's, from the kernel): null once it leaves `claimed`. */
   wait: string | null;
   createdAt: string;
+  /** The kernel's `updated_at`: two snapshots of one card are reconciled by which the kernel wrote later, never by state name. */
+  updatedAt: string;
+  /** The owner's own typed reason when they reject a card (the kernel's `owner_reason`): untrusted words, and what a run needs
+   * to change a rejected request. Null when the owner gave none. */
+  ownerReason: string | null;
   replaced: boolean;
   panel: boolean;
   reviewFirst: "final" | "owner" | null;
+  /** Whether its outcome is posted to the task: a decided record (a rejection and a stale close notify too), or one a module
+   * filed for its agent. A Tier 0 record an agent filed itself answers that call inline and wakes nobody; a card still waiting
+   * on the reviewer or owner, one expired or replaced (`cancelled`), and one the kernel recovers as `unknown` after a restart
+   * are all closed by the code with no notice (kernel/src/writes.ts reconcile, records.ts expire), so none of those is a
+   * wake. */
+  wakes: boolean;
+  /** Still able to act: waiting on the reviewer or owner, approved, or claimed. A Tier 0 record shows `auto` both while it is
+   * queued and once it ended, so its state alone can't say; this can. */
+  live: boolean;
 }
 
 /** What GET /v1/writes returns: the kernel's record, its state already as a person sees it. */
@@ -52,7 +66,8 @@ type KernelRecord = {
   id: string; kind: string; args: unknown; digest: string; tier: Tier; panel: boolean; task: string; identifier?: string | null; state: string; review: string | null;
   review_code?: string | null; review_first?: "final" | "owner" | null; rule?: string | null; decided_by: string | null; decided_at?: string | null; replaced?: boolean;
   outcome: { ok: boolean; text: string } | null; wait?: string | null; created_at: string; updated_at: string;
-  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string };
+  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string; filed_by?: string };
+  owner_reason?: string | null;
 };
 const KIND: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
 // `claimed` has a state of its own: it is live, and `used` is only ever an end (done/failed/unknown).
@@ -86,8 +101,8 @@ export function recordApproval(r: KernelRecord): Approval {
     // A claimed record is `running` whatever its tier: Tier 0 is only the audit word for one that has ended (or is approved
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
-    usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null,
+    ownerReason: r.owner_reason ?? null, usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner", "unknown", "cancelled"].includes(r.state) && r.state !== "expired", live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
   };
 }
 
@@ -97,7 +112,7 @@ export type Records = {
    * [] when the kernel is unreachable or not configured (logged once until it answers again): a page never fails on it.
    * `tier0`: Tier 0 runs too (the history's audit rows), else only the records that went to the reviewer or the owner.
    */
-  list(state: "owner" | "pending" | "recent" | "finished" | "approved", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean; after?: string }): Promise<Approval[]>;
+  list(state: "owner" | "pending" | "recent" | "finished" | "approved" | "live", opts?: { task?: string; limit?: number; tier0?: boolean; strict?: boolean; after?: string; kinds?: string[] }): Promise<Approval[]>;
   /**
    * Every live record (`approved`, and `claimed` ones an executor holds), whatever its tier: the kernel's page size is its own
    * cap, so this walks the pages (`after`) rather than treating the largest one as the whole set. A Tier 0 merge held on review
@@ -105,6 +120,9 @@ export type Records = {
    * read so far: a caller must not mistake a timeout for "no more live records".
    */
   live(): Promise<Approval[]>;
+  /** Every page of a state (`live` is every state a record can still act in), for one task and optionally one kind: a card
+   * moving between states mid-read is never missed, and it is never behind the page cap, however many records follow it. */
+  allOf(state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages?: number): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -132,10 +150,15 @@ const neverConnected = (c?: Cause): boolean => !!c && (c.errors?.length ? c.erro
 
 export function kernelRecords(k: { url: string; token: string } | undefined, log?: { warn(o: object, m: string): void }): Records {
   let down = false;
-  const list: Records["list"] = async (state, { task, limit, tier0, strict, after } = {}) => {
-    if (!k) return [];
+  const list: Records["list"] = async (state, { task, limit, tier0, strict, after, kinds } = {}) => {
+    // No kernel is not the same as no cards, for a read whose answer decides a write (the approvals check a run makes before it
+    // waits or files a merge): `strict` throws, so an unreadable history is never reported as "there is no merge card".
+    if (!k) {
+      if (strict) throw new Error("the kernel's records are not configured on this board, so a task's cards can't be read");
+      return [];
+    }
     try {
-      const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}${after ? `&after=${encodeURIComponent(after)}` : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
+      const res = await fetch(`${k.url}/v1/writes?state=${state}${task ? `&task=${encodeURIComponent(task)}` : ""}${limit ? `&limit=${limit}` : ""}${tier0 ? "&tier0=1" : ""}${kinds?.length ? `&kinds=${encodeURIComponent(kinds.join(","))}` : ""}${after ? `&after=${encodeURIComponent(after)}` : ""}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
       const { records } = (await res.json()) as { records: KernelRecord[] };
       down = false;
@@ -151,6 +174,25 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
   const PAGE = 1000;
   /** Hard bound on pages walked in one read: 1,000 pages is a million live records, past any real queue. */
   const PAGES_MAX = 1000;
+  /**
+   * Every page of a state, walked with `after`: a bounded read that must not lose a record behind the page cap. `live` is the
+   * kernel's own read of every approved and claimed record, one query, so a card moving between the states mid-read is not missed.
+   */
+  const allOf = async (state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string, maxPages = PAGES_MAX): Promise<Approval[]> => {
+    const out: Approval[] = [];
+    const seen = new Set<string>();
+    let after = "";
+    for (let i = 0; i < maxPages; i++) {
+      // The kernel's live list is one read of both states; the page params still apply (its default page is 100).
+      const page = await list(state, { limit: PAGE, tier0: true, strict: true, ...(task ? { task } : {}), ...(kinds?.length ? { kinds } : {}), ...(after ? { after } : {}) });
+      const fresh = page.filter((a) => !seen.has(a.id));
+      for (const a of fresh) seen.add(a.id);
+      out.push(...fresh);
+      if (page.length < PAGE || !fresh.length) break;
+      after = page[page.length - 1]!.id;
+    }
+    return out;
+  };
   const live: Records["live"] = async () => {
     const all: Approval[] = [];
     const seen = new Set<string>();
@@ -227,5 +269,5 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
     const asked = chain?.ok ? String(((await chain.json()) as { chain?: unknown }).chain ?? "") : null;
     return explain((await rec.json()) as RecordWhole, asked);
   };
-  return { list, live, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, sharePreview, share, validate };
+  return { list, live, allOf, connectionHealth, connectionOk, explain: explainOf, advisories, settingsChange, sharePreview, share, validate };
 }

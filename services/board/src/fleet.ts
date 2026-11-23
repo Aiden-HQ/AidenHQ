@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { IncomingMessage } from "node:http";
 import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
-import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
+import { kernelJwks, verifyCaller, type Caller } from "./aidenhq-sdk/caller.js";
 import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
 import { isLive, type Records } from "./records.js";
@@ -38,6 +38,11 @@ let jwks: ReturnType<typeof kernelJwks> | undefined;
  * table setup writes, never metadata) pass `ok`. Agents reach the internal token; this says which one called.
  */
 export async function requireAgent(pc: Paperclip, req: IncomingMessage, ok: (g: Grant) => boolean, refusal: string): Promise<Agent> {
+  return (await requireAgentCaller(pc, req, ok, refusal)).agent;
+}
+
+/** As requireAgent, and the caller's own claims too: a route that must scope a read to the caller's own task needs its task. */
+export async function requireAgentCaller(pc: Paperclip, req: IncomingMessage, ok: (g: Grant) => boolean, refusal: string): Promise<{ agent: Agent; caller: Caller; grant: Grant }> {
   if (!req.headers["x-aidenhq-caller"]) throw new Refused("missing caller assertion");
   const caller = await verifyCaller(req, (jwks ??= kernelJwks()), "tasks").catch((e: Error) => {
     throw new Refused(`refused: ${e.message}`);
@@ -48,7 +53,7 @@ export async function requireAgent(pc: Paperclip, req: IncomingMessage, ok: (g: 
     g = me && grantsTable(process.env.AIDENHQ_GRANTS_FILE)()[me.id];
   } catch {}
   if (!me || !g || !ok(g)) throw new Refused(refusal);
-  return { ...me, companyId: pc.companyId };
+  return { agent: { ...me, companyId: pc.companyId }, caller, grant: g };
 }
 
 /** A transcribed voice note ("[telegram voice] …"): may be misheard, so it never authorizes anything; a button tap does. */

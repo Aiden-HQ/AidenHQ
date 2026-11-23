@@ -246,7 +246,7 @@ export const ROUTES = [
 const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:batch\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
-const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };
+const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], live: ["review", "owner", "approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };
 
 async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   const chunks: Buffer[] = [];
@@ -1042,7 +1042,10 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
             // `after=<record id>` is the next page in the same order (keyset): a reader that must see every matching record
             // (the board's live list) walks the pages instead of treating the largest one as the whole set.
             const after = p.get("after") || undefined;
-            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}), ...(after ? { after } : {}) });
+            // `kinds`: only these record kinds (comma-separated). A read of one kind's history — a task's merge cards — must not
+            // lose it behind newer writes of other kinds, whatever the page cap.
+            const kinds = (p.get("kinds") ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+            const rows = records.list(list, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}), ...(kinds.length ? { kinds } : {}), ...(after ? { after } : {}) });
             // An open record's card shows the whole diff the reviewer reads (context.diff), so the owner decides on all of it; the
             // reviewer's other input (the files' text) stays in the kernel.
             return send(res, 200, { records: rows.map(({ context, ...r }) => ({ ...r, card: context?.diff ? { ...r.card, details: context.diff } : r.card, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });

@@ -71,6 +71,7 @@ export const SKIP_REASONS = {
   fork: "this pull request comes from a fork; a maintainer asks for a review with `aiden review`",
   superseded: "a newer commit arrived",
   stopped: "reviews are stopped on this pull request (`aiden review always` starts them again)",
+  push_cap: "this repository reviews a set number of pushes per pull request and that number is reached; a maintainer asks for another review with `aiden review`",
   unchanged: "nothing changed since the last review",
   ignored: "every changed file is ignored by this repository's review settings",
   no_access: "the pull request can't be read",

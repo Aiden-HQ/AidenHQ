@@ -755,6 +755,35 @@ test("a conn.tool call naming no task stays on the job's own task", async (t) =>
   assert.deepEqual([rec.task, rec.identifier, rec.requester.task], ["HB-1", "HB-1", "HB-1"]);
 });
 
+test("GET /v1/writes?state=live reads every state a record can still act in, in one query", async (t) => {
+  const { k } = await twin(t);
+  const card = { sentence: "s", changes: "", reads: "", cost: "", details: "" };
+  const file = (state: string, n: number) => k.records.file({ kind: "github.merge", module: "github", args: { n }, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: state as never });
+  const review = file("review", 1), owner = file("owner", 2), approved = file("approved", 3), claimed = file("approved", 4), done = file("approved", 5);
+  assert.equal(k.records.claim(claimed.id), true);
+  assert.equal(k.records.claim(done.id), true);
+  assert.equal(k.records.finish(done.id, true, "merged"), true);
+  const live = await k.v1("GET", "/v1/writes?state=live").then((r) => r.json.records.map((r) => r.id));
+  assert.deepEqual(live.sort(), [review.id, owner.id, approved.id, claimed.id].sort(), "every state a record can still act in, and no ended one");
+});
+
+test("GET /v1/writes?kinds= reads one kind's history whole, past the page cap and newer writes of other kinds", async (t) => {
+  const { k } = await twin(t);
+  const card = { sentence: "s", changes: "", reads: "", cost: "", details: "" };
+  const file = (kind: string) => k.records.file({ kind, module: "github", args: {}, targets: {}, executor: { module: "github" }, policy: "p", tier: 1, card, requester: { agent: "ag-ada", key: "ada", name: "Ada", roles: [], kind: "run" }, task: "TASK-1", state: "approved" });
+  const merge = file("github.merge");
+  // Newer writes of another kind, more than a page: the merge card is behind all of them.
+  for (let i = 0; i < 3; i++) file("github.push");
+  const read = (q: string) => k.v1("GET", `/v1/writes?state=approved&tier0=1${q}`).then((r) => r.json.records.map((r) => r.kind));
+  assert.deepEqual(await read("&limit=2"), ["github.push", "github.push"], "the unfiltered read is the newest page only");
+  assert.deepEqual(await read("&limit=2&kinds=github.merge"), ["github.merge"], "the kind's own history is read whole");
+  // An ended record is in it too: the state filter still decides which states, the kind only which records.
+  assert.equal(k.records.claim(merge.id), true);
+  assert.equal(k.records.finish(merge.id, true, "merged-prs: []"), true);
+  const finished = await k.v1("GET", "/v1/writes?state=finished&tier0=1&kinds=github.merge").then((r) => r.json.records.map((r) => r.kind));
+  assert.deepEqual(finished, ["github.merge"], "an ended merge card is read by kind as well");
+});
+
 test("GET /v1/writes pages with `after`: a live read walks past the page cap instead of treating it as the whole set", async (t) => {
   const { k } = await twin(t);
   const card = { sentence: "s", changes: "", reads: "", cost: "", details: "" };

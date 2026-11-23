@@ -58,6 +58,24 @@ export function githubSource(base: string, token: () => string, fetcher: typeof 
   };
 }
 
+/** The previous findings ride in PREVIOUS_FIELDS json spec fields (the kernel holds 16 KB each): `previous`, `previous_b`, … The
+ * budget leaves room for an entry that doesn't fit the end of a field. */
+export const PREVIOUS_FIELDS = 6, PREVIOUS_BUDGET = PREVIOUS_FIELDS * 13_500;
+const FIELD_MAX = 15_000;
+function shards(findings: unknown[]): Record<string, string> {
+  let cut = 0;
+  const out: unknown[][] = Array.from({ length: PREVIOUS_FIELDS }, () => []);
+  let at = 0, size = 0;
+  for (const f of findings) {
+    const n = JSON.stringify(f).length + 1;
+    // A finding that fits no field stays open (never marked fixed unseen); the first field says how many were left out.
+    if (size + n > FIELD_MAX && out[at]!.length) { if (at === PREVIOUS_FIELDS - 1) { cut++; continue; } at++; size = 0; }
+    out[at]!.push(f);
+    size += n;
+  }
+  return Object.fromEntries(out.map((l, i) => [i ? `previous_${"bcdef"[i - 1]}` : "previous", JSON.stringify(i ? { findings: l } : { findings: l, cut })]));
+}
+
 /**
  * The check job's spec, by profile (module.yaml check_jobs; every declared field always sent, each a string of its kind).
  * `code-review` (a combo, or one model option: combo.engine `skill:<id>` with the catalog's harness and skill, or an engine):
@@ -75,10 +93,10 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   return {
     base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
     option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
-    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory, ...(s.recheck_only ? { recheck_only: true } : {}) }), focus: s.focus ?? "",
+    combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
-    previous: JSON.stringify({ findings: s.previous }),
+    ...shards(s.previous),
   };
 }
 
@@ -101,11 +119,12 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
 }
 
 /** A reason as the notice's fixed words name it (seams' `why` starts with its key): a skip's, or a refused post's. */
-export function reasonOf(why: string | undefined): "post_refused" | "draft" | "fork" | "superseded" | "stopped" | undefined {
+export function reasonOf(why: string | undefined): "post_refused" | "draft" | "fork" | "superseded" | "stopped" | "push_cap" | undefined {
   const w = String(why ?? "");
   // A post the kernel refused after its review ran (refused, stale, rejected): the run row keeps the reason, the PR's notice
   // says in fixed words that this head's review was not posted. Checked first: its words are never read as a skip's.
   if (/^not posted:/.test(w)) return "post_refused";
+  if (/^push review cap reached:/.test(w)) return "push_cap";
   const key = w.split(":")[0]!;
   return ["draft", "fork", "superseded", "stopped"].includes(key) ? (key as "draft" | "fork" | "superseded" | "stopped") : undefined;
 }
@@ -179,7 +198,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // (`addressed`, `guidance`) that no post renders, so what is sent is picked, never what is left after stripping.
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
-      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
+      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 200), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
       return filed(async () => (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args: withoutInstanceDetails(args), task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string });
     },
     async status(s: Status) {

@@ -12,10 +12,11 @@ them with `github_search_issues` (`is:pr is:open author:app/dependabot`, per rep
 1. **Major jump** (or a group including one): a planned migration; never merge the group's PR (step 5 is for PRs without
    one). Take each other bump through steps 2-4 on its own terms: a bump that cannot go yet (undated, or too young) is posted
    on the task now as "undated" or "too young, not taken". Publish the eligible ones together on your own branch
-   (`agent/<your task>/deps-<slug>`, `aidenhq publish`; a security fix takes its exception entry) and keep the group's PR open until that
-   PR has merged (its Done notice wakes you; in a repo without agent-PR merge notices, request the merge with `aidenhq merge`
-   once its checks pass). Then `aidenhq close <PR link>` and confirm it reads closed before `task_finish`. With nothing
-   eligible, close now. Say "major jump: a planned migration, not a routine bump".
+   (`agent/<your task>/deps-<slug>`, `aidenhq publish`; a security fix takes its exception entry); its Done notice wakes you when it merges
+   (in a repo without agent-PR merge notices, request the merge with `aidenhq merge` once its checks pass).
+   Close a major-jump group PR only after the replacement PR carrying its eligible bumps has merged: closing the group PR ends the task, and a replacement still open at that point is closed without merging, so the bumps never land.
+   With nothing eligible there is no replacement to wait for, so that rule does not hold the PR: close now. Then `aidenhq close
+   <PR link>`, confirm it reads closed before `task_finish`, and say "major jump: a planned migration, not a routine bump".
 2. **Version can't be dated** (no publish date: the age check fails with a lookup error or, even with every check green, logs "could not be dated"; a known date under the minimum age is step 3; read the supply-chain check's log with `github_job_log` before any merge): fix the dating source, pin or exception entry on your own branch as in 4, or list it with the reason; never merge it.
 3. **Too young** (fails the age check, even as the only red check). A security fix goes to its exception entry as in 4; any
    other: `task_wait` until the earlier of eligibility (the release date plus the minimum age) and 7 days ahead, and at

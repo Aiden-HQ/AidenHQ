@@ -193,7 +193,7 @@ test("a data version 1 database keeps its PR runs, reviews and findings readable
     INSERT INTO findings (run, id, repo, number, severity, path, line, title, outcome) VALUES ('cr-aaaaaaaaaaaa', 'f1', 'acme/app', 4, 'important', 'a.ts', 3, 't', 'fixed');
     PRAGMA user_version = 1;`);
   const w = world({ db });
-  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 2);
+  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
   const r = w.engine.run("cr-aaaaaaaaaaaa");
   assert.deepEqual([r.run.target, r.run.number, r.review.version], ["pr", 4, 1]);
   assert.deepEqual(r.findings, [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", outcome: "fixed" }]);

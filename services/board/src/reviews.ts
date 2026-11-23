@@ -189,6 +189,7 @@ export const RepoSchema = z
     repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, "a repo is owner/name"),
     on_open: CombosSchema,
     on_push: CombosSchema,
+    push_rounds: z.number().int().min(0).max(100).nullable().optional(),
     drafts: z.boolean().optional(),
     forks: z.enum(["manual", "auto"]).optional(),
     ignore: z.array(PLAIN(200).min(1)).max(50).optional(),
@@ -211,7 +212,8 @@ export type CodeReview = z.infer<typeof CodeReviewSchema>;
 /** A repo's defaults when the owner watches it (the module's REPO_DEFAULTS). */
 export const REPO_DEFAULTS = {
   on_open: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" }] as Combo[],
-  on_push: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "low" }] as Combo[],
+  on_push: [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "low" }] as Combo[],
+  push_rounds: 1 as number | null,
   drafts: false,
   forks: "manual" as "manual" | "auto",
   max_nits: 5,

@@ -18,7 +18,7 @@
 // already reported (a finding that restates one is dropped, never reported twice) and rechecked: `fixed` lists the ids a recheck
 // that read the head found gone. A gating one (an important finding a mandatory review made) is always rechecked, full reviews
 // and force-pushes included; any other only where the change since the last reviewed head touched its lines (or removed its
-// file). Never one merely absent from this run, one found again, or, on a full review, anything when the change holds text addressed to a reviewer (a claim recheck always asks). Everything the repo wrote (code, guidance, the focus a commenter typed) is data, fenced,
+// file). Never one merely absent from this run, one found again, or, on a full review, anything when the change holds text addressed to a reviewer. Everything the repo wrote (code, guidance, the focus a commenter typed) is data, fenced,
 // never instructions; guidance grants no authority. Partial coverage is said (`coverage.incomplete`), never shown as clean.
 // Tree target (spec.target "tree", the one-off whole-repo review): the merge base is the empty tree, so the "change" is every
 // file at the head, in one pass, with no previous findings and no guidance (there is no trusted base to read it from). The files
@@ -48,7 +48,7 @@ import type { Combo, EngineResult } from "./engines.ts";
 type Git = (args: string[]) => string;
 /** The review job's spec ($AIDENHQ_SPEC): the PR and the heads to review; combo and previous are JSON text. */
 export interface Spec {
-  repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string;
+  repo?: string; head: string; base: string; incremental_from: string; pr: number | string; combo: string; focus?: string; previous?: string; previous_b?: string; previous_c?: string; previous_d?: string; previous_e?: string; previous_f?: string;
   /** The pull request's title and description (its author's words, data): behaviour it states as intended is not a finding. */
   intent?: string;
   /** `tree`: the whole tree at the head against the empty tree; `pr` (default): the change. */
@@ -66,7 +66,7 @@ interface Result {
   coverage: { eligible?: string[]; reviewed: string[]; excluded: string[]; incomplete: string | null; counts?: { eligible: number; reviewed: number } };
   /** Files the engine set the repo up with (deepsec): path to text, the allowlisted ones only. */
   setup?: Record<string, string>;
-  findings: Placed[]; fixed: string[]; unsafe?: Unsafe[]; cleared?: string[]; still?: string[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
+  findings: Placed[]; fixed: string[]; unsafe?: Unsafe[]; withheld: Record<Severity, number>; cost_usd: number; stale_guidance: string[]; guidance: string[];
   /** Important findings the engine gave without a failure scenario, made nits by code (never posted: the run's record). */
   downgraded: number;
   /** A note on coverage that isn't a gap (an engine that doesn't report what it read); never posted, never incomplete. */
@@ -76,6 +76,8 @@ interface Result {
 export type Unsafe = { id: string; why: string; line?: number };
 const RANK: Record<Severity, number> = { important: 0, nit: 1, pre_existing: 2 };
 const MAX_PRE = 5;
+/** Findings per recheck call (few enough that one answer covers them all) and calls in flight at once. */
+const RECHECK_CHUNK = 15, RECHECK_PARALLEL = 3;
 const LENSES = [
   "correctness: logic errors, wrong results, edge cases and inputs the code mishandles",
   "security and data: injection, authorisation, secrets, unsafe handling of untrusted input, data loss",
@@ -301,7 +303,16 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // The PR's title and body (spec.intent) too: steering text there is the same attempt.
   const addressed = h.anyLine(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--text", h.from, "HEAD"], atReviewer) || (!tree && atReviewer(String(spec.intent ?? "").split("\n").map((l) => `+${l}`).join("\n")));
   // The PR's still-open findings: already reported (the finders say when theirs restates one) and rechecked below.
-  const previous = tree ? [] : (() => { try { const p = JSON.parse(spec.previous ?? "{}").findings; return Array.isArray(p) ? p : []; } catch { return []; } })()
+  // Each shard is read on its own: a bad one is a gap naming it, never every earlier finding lost; `cut` is how many the
+  // service couldn't fit in the check.
+  const shardGaps: string[] = [];
+  const previous = tree ? [] : ([spec.previous, spec.previous_b, spec.previous_c, spec.previous_d, spec.previous_e, spec.previous_f] as (string | undefined)[]).flatMap((t, i) => {
+    try {
+      const j = JSON.parse(t ?? "{}");
+      if (Number(j.cut) > 0) shardGaps.push(`${Number(j.cut)} earlier findings didn't fit in this check and were not rechecked`);
+      return Array.isArray(j.findings) ? j.findings : [];
+    } catch { shardGaps.push(`earlier findings in spec field ${i + 1} were unreadable and not rechecked`); return []; }
+  })
     .filter((f) => f && /^[0-9a-f]{16}$/.test(f.id) && typeof f.path === "string")
     .map((f) => ({ id: f.id as string, severity: (SEVERITIES.includes(f.severity) ? f.severity : "pre_existing") as Severity, path: f.path as string, line: Number(f.line) || 1, title: cap(f.title, 120), why: cap(f.why, 1000), evidence: cap(f.evidence, 1000), gating: f.gating === true, claim: typeof f.claim === "string" && f.claim ? cap(f.claim, 300) : undefined }));
   const reported = new Map(previous.map((f) => [f.id, f]));
@@ -322,72 +333,72 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     coverage: { reviewed, excluded: excluded.map((e) => `${e.path} (${e.why})`), incomplete: null },
     findings: [], fixed: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], guidance: guides.map((g) => g.path), downgraded: 0,
   };
-  const gaps = [];
+  const gaps = [...shardGaps];
   const hidden = excluded.filter((e) => e.gap);
   if (hidden.length) gaps.push(`${hidden.length} changed file${hidden.length > 1 ? "s" : ""} got no findings pass (${hidden.slice(0, 5).map((e) => `${e.path}: ${e.why}`).join("; ")}${hidden.length > 5 ? "; …" : ""})`);
+  const ids = (l: string[]) => `${l.slice(0, 5).join(", ")}${l.length > 5 ? ", …" : ""}`;
   /** The PR's earlier findings at this head (`again`: found or restated by this run): which are fixed, which answers unsafe. */
   async function recheck(again: Set<string>, claimsOnly = false) {
     const root = ws.replace(/\/$/, "");
-    const fixed = [];
     // A gating finding is always rechecked; any other only where the change since the last reviewed head touched it.
     const near = (t: ReturnType<typeof touched>, line: number) => t === "all" || (Array.isArray(t) && t.some(([a, b]) => line >= a - 3 && line <= b + 3));
     // An answered one (a claim) is always rechecked for an unsafe fix or reason, whether or not this run restated it.
     const ask = previous.filter((f) => !f.path.split("/").includes("..") && (f.claim || (!claimsOnly && !again.has(f.id) && (f.gating || (!full && near(touched(h.git, h.from, f.path), f.line))))));
     const unsafe: Unsafe[] = [];
-    if (ask.length) {
-      // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
-      const by = asker(combo);
-      const v = await run(by.engine, { prompt: recheckPrompt(ask), instructions, model: combo.model, effort: by.effort, root: ws, base: h.from, minutes, scratch })
+    const named = new Set<string>(), fixed: string[] = [], omitted: string[] = [], unread: string[] = [], failed: string[] = [];
+    // An engine that only reviews (codegenie) has codex on the same model answer the recheck.
+    const by = asker(combo);
+    const rel = (p: string) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p).replace(/^\.\//, "");
+    /** One chunk of the asked findings: each is judged on its own against the answer. */
+    async function ask1(chunk: typeof ask) {
+      const v = await run(by.engine, { prompt: recheckPrompt(chunk), instructions, model: combo.model, effort: by.effort, root: ws, base: h.from, minutes, scratch })
         .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }));
       const j = answer(v.message);
-      const rel = (p: string) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p).replace(/^\.\//, "");
+      // A malformed `still` is no usable answer (never read as "nothing is still there").
+      if (!(j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string"))) {
+        failed.push(...chunk.map((f) => f.id));
+        return void gaps.push(`the recheck of ${chunk.length} earlier finding${chunk.length > 1 ? "s" : ""} didn't finish (${v.cause ?? "no usable answer"}), so ${chunk.length > 1 ? "they stay" : "it stays"} as ${chunk.length > 1 ? "they were" : "it was"}`);
+      }
       // It must have looked: read the file, or (a moved or deleted file) searched the head for the code.
       const looked = new Set((v.calls ?? []).filter((c) => c.path && c.tool === "read_file").map((c) => rel(c.path!)));
       const searched = (v.calls ?? []).some((c) => c.tool === "search");
-      // A malformed `still` is no usable answer (never read as "nothing is still there").
-      if (j && Array.isArray(j.fixed) && Array.isArray(j.still) && j.still.every((x: unknown) => typeof x === "string")) {
-        const still: string[] = j.still;
-        // An answer that leaves an asked finding in neither `fixed` nor `still` is unfinished: it clears and fixes nothing (its `unsafe` verdicts still count).
-        const whole = ask.every((f) => f.claim || j.fixed.includes(f.id) || still.includes(f.id));
-        if (!whole) gaps.push("the recheck of earlier findings left some unanswered, so none is marked fixed or cleared");
-        const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
-        for (const f of ask) if (whole && !f.claim && j.fixed.includes(f.id) && !still.includes(f.id) && seen(f)) fixed.push(f.id);
-        // An unsafe entry needs a reason: a bare id, null or an entry without a why is silence, and the finding stays closed.
-        const answered = new Map(ask.filter((f) => f.claim).map((f) => [f.id, f]));
-        const named = new Set<string>();
-        for (const u of Array.isArray(j.unsafe) ? j.unsafe : []) {
-          const id = u && typeof u === "object" && typeof u.id === "string" ? u.id : "";
-          const why = u && typeof u === "object" && typeof u.why === "string" ? u.why.trim() : "";
-          const f = answered.get(id);
-          if (!f || !why || named.has(id) || !seen(f)) continue;
-          named.add(id);
-          // The defect's line at the head, when it gives one inside the post schema's range; else the finding keeps its own.
-          const line = Number.isInteger(u.line) && u.line >= 1 && u.line <= 10_000_000 ? u.line : undefined;
-          unsafe.push({ id, why: why.slice(0, 800), ...(line ? { line } : {}) });
-        }
-        // Open findings it was asked about, looked at and didn't call still there: an agent's pending `fixed` claim on one of them stands.
-        // And the ones it looked at and called still there: shown to the agent who claimed them fixed.
-        result.still = ask.filter((f) => !f.claim && still.includes(f.id) && seen(f)).map((f) => f.id);
-        result.cleared = ask.filter((f) => whole && !f.claim && !still.includes(f.id) && seen(f)).map((f) => f.id);
-      } else {
-        gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
+      const seen = (f: { path: string }) => looked.has(f.path) || (searched && !existsSync(join(ws, f.path)));
+      const gone = new Set<string>(j.still);
+      for (const f of chunk) {
+        if (f.claim) continue;
+        if (!gone.has(f.id) && !j.fixed.includes(f.id)) omitted.push(f.id);
+        else if (!seen(f)) unread.push(f.id);
+        else if (!gone.has(f.id)) fixed.push(f.id);
+      }
+      // An unsafe entry needs a reason: a bare id, null or an entry without a why is silence, and the finding stays closed.
+      const claims = new Map(chunk.filter((f) => f.claim).map((f) => [f.id, f]));
+      for (const u of Array.isArray(j.unsafe) ? j.unsafe : []) {
+        const id = u && typeof u === "object" && typeof u.id === "string" ? u.id : "";
+        const why = u && typeof u === "object" && typeof u.why === "string" ? u.why.trim() : "";
+        const f = claims.get(id);
+        if (f && why && !seen(f)) unread.push(id);
+        if (!f || !why || named.has(id) || !seen(f)) continue;
+        named.add(id);
+        // The defect's line at the head, when it gives one inside the post schema's range; else the finding keeps its own.
+        const line = Number.isInteger(u.line) && u.line >= 1 && u.line <= 10_000_000 ? u.line : undefined;
+        unsafe.push({ id, why: why.slice(0, 800), ...(line ? { line } : {}) });
       }
     }
-    // Text addressed to a reviewer never closes a finding: `fixed` is withheld, and so is `cleared` (a pending claim standing) on a full review.
-    // A claim recheck still answers for pending claims (the kernel applies `cleared` only to a finding with a pending `fixed` claim).
-    if (addressed && (fixed.length || (!combo.recheck_only && result.cleared?.length))) {
+    // Every asked finding is checked, in chunks small enough to be answered whole; a few at a time.
+    const chunks = Array.from({ length: Math.ceil(ask.length / RECHECK_CHUNK) }, (_, i) => ask.slice(i * RECHECK_CHUNK, (i + 1) * RECHECK_CHUNK));
+    for (let i = 0; i < chunks.length; i += RECHECK_PARALLEL) await Promise.all(chunks.slice(i, i + RECHECK_PARALLEL).map(ask1));
+    if (omitted.length) gaps.push(`the recheck left ${omitted.length} earlier finding${omitted.length > 1 ? "s" : ""} unanswered, so ${omitted.length > 1 ? "they stay" : "it stays"} as ${omitted.length > 1 ? "they were" : "it was"}`);
+    if (unread.length) gaps.push(`the recheck gave a verdict on ${unread.length} earlier finding${unread.length > 1 ? "s" : ""} without opening ${unread.length > 1 ? "their files" : "its file"}, so ${unread.length > 1 ? "they stay" : "it stays"} as ${unread.length > 1 ? "they were" : "it was"}`);
+    // A post resolves at most 100 threads (review-post.ts RESOLVE_MAX): the rest stay open for the next recheck, and it says so.
+    if (fixed.length > 100) { gaps.push(`${fixed.length - 100} more earlier findings are fixed; the next recheck confirms them`); fixed.length = 100; }
+    if (failed.length + omitted.length + unread.length) gaps.push(`ids left as they were: ${ids([...failed, ...omitted, ...unread])}`);
+    // Text addressed to a reviewer never closes a finding: `fixed` is withheld.
+    if (addressed && fixed.length) {
       fixed.length = 0;
-      if (!combo.recheck_only) result.cleared = [];
       gaps.push("the change holds text addressed to a reviewer, so this recheck confirms no finding fixed outright");
     }
     result.fixed = fixed;
     result.unsafe = unsafe;
-  }
-  if (combo.recheck_only) {
-    // A claim recheck: the previous findings only (open ones and answers), no finders and no verifier, so no new findings.
-    await recheck(new Set());
-    result.coverage.incomplete = gaps.join("; ") || null;
-    return bound(result);
   }
   if (!reviewed.length) {
     // Nothing to review (lockfiles, ignored or binary files only) is no gap; a hiding place the change adds is.
@@ -437,10 +448,10 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   result.downgraded += down.n;
   const cleaned = down.findings;
   // A finder's own `same_as` restatement counts as still there only at a line that exists at the head: placed under the earlier id.
-  const refound = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).filter((f) => !f.why.startsWith("[on a file this change deletes")).map((f) => f.id)); // a real line only
-  const restated = new Set(refound); // only a restatement at a real line skips that finding's recheck
+  // Only a restatement at a real line skips that finding's recheck.
+  const restated = new Set<string>(place(cleaned.filter((f) => restates(f, f.same_as)).map(({ same_as, ...f }) => ({ ...f, id: same_as! })), ws, reviewedSet, own, out_).filter((f) => !f.why.startsWith("[on a file this change deletes")).map((f) => f.id)); // a real line only
   let candidates = dedupe(place(cleaned.filter((f) => !restates(f, f.same_as)).map(({ same_as: _s, ...f }) => f), ws, reviewedSet, own, out_));
-  for (const f of candidates) if (restates(f, f.id) && !f.why.startsWith("[on a file this change deletes")) { restated.add(f.id); refound.add(f.id); }
+  for (const f of candidates) if (restates(f, f.id) && !f.why.startsWith("[on a file this change deletes")) restated.add(f.id);
   candidates = candidates.filter((f) => !restates(f, f.id));
   result.stale_guidance = [...new Set(good.filter(Boolean).flatMap((j) => (Array.isArray(j.stale_guidance) ? j.stale_guidance : [])).filter((s) => typeof s === "string" && s.trim()).map((s) => cap(s, 300)))].slice(0, 10);
 
@@ -482,7 +493,6 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
 
   // Previous findings: fixed only when confirmed gone (never merely missing from this run, never found again or restated now).
   await recheck(new Set([...kept.map((f) => f.id), ...restated]));
-  result.still = [...new Set([...(result.still ?? []), ...previous.filter((f) => !f.claim && refound.has(f.id)).map((f) => f.id)])];
   result.coverage.incomplete = gaps.length ? gaps.join("; ") : null;
   if (tree) {
     // The eligible files, apart from what was actually covered: the files the engine says it analysed, else those whose diff a
@@ -517,6 +527,14 @@ export function bound(result: Result, max = 200_000) {
   // Sizes summed, not the whole result restringified per finding (a tools run can have thousands); 600 bytes of room for the
   // counts' digits and the note below.
   const size = (x: unknown) => Buffer.byteLength(JSON.stringify(x)) + 1;
+  // Unsafe verdicts (a recheck of many answered findings can name hundreds) keep to 120 KB: their reasons are cut short before any
+  // verdict is dropped, and a dropped one is said, never the result lost.
+  if (result.unsafe) {
+    for (const cut of [800, 300, 100]) if (size((result.unsafe = result.unsafe.map((u) => ({ ...u, why: u.why.slice(0, cut) })))) <= 120_000) break;
+    let n = 0, bytes = 0;
+    while (n < result.unsafe.length && (bytes += size(result.unsafe[n])) <= 120_000) n++;
+    if (n < result.unsafe.length) { gap(`${result.unsafe.length - n} more unsafe verdicts not listed`); result.unsafe = result.unsafe.slice(0, n); }
+  }
   let total = size(result) + 600;
   const withhold = (all: boolean) => {
     for (let i = result.findings.length - 1; i >= 0 && total > max; i--) {
