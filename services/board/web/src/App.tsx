@@ -19,7 +19,7 @@ import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSo
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { SignInRequired, api, type Session } from "./api";
-import { SignInScreen } from "./Accounts";
+import { SignInScreen, RETURN_KEY } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
 import { AttentionStrip } from "./Attention";
 import { ApprovalsView, onYouBeyondCards } from "./Chat";
@@ -331,7 +331,14 @@ export function App() {
   }, [view, refresh]);
 
   useEffect(() => {
-    load("session", api.session, false).then(setSession, () => {});
+    load("session", api.session, false).then((s) => {
+      // Back from signing in: open the page the link named (a card, a task) before the sign-in.
+      try {
+        const back = s.account ? sessionStorage.getItem(RETURN_KEY) : null;
+        if (back) (sessionStorage.removeItem(RETURN_KEY), location.hash.length <= 2 && (location.hash = back));
+      } catch {}
+      setSession(s);
+    }, () => {});
     void refresh(true);
     // Every 10s on Tasks; elsewhere only the header reads it (the working dot, sign-in banners, the brief): once a minute.
     const t = setInterval(() => {

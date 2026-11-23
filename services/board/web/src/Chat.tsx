@@ -8,7 +8,7 @@ import { Explain } from "./Explain";
 import { CardListSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Approval, ShownState } from "./types";
 import { StatusDot } from "./ui/StatusDot";
-import { Button, EmptyState, Input } from "./ui";
+import { Banner, Button, EmptyState, Input } from "./ui";
 import { TaskState } from "./ui/TaskState";
 import { ago } from "./util";
 
@@ -73,15 +73,13 @@ function Decide({ a }: { a: Approval }) {
  * The batch bar for the cards picked on the Approvals list: Approve n, or Reject n with one reason. Each card is decided on its
  * own against the digest it showed (as a single card is), so one that changed meanwhile fails alone and is named here.
  */
-function BatchBar({ cards, done }: { cards: Approval[]; done: () => void }) {
+function BatchBar({ cards, done }: { cards: Approval[]; /** The cards not decided (each with why), once the batch has run. */ done: (failed: string[]) => void }) {
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
-  const [failed, setFailed] = useState<string[]>([]);
   const n = cards.length;
   const decide = async (d: "approve" | "reject") => {
     setBusy(d);
-    setFailed([]);
     const bad: string[] = [];
     for (const a of cards) {
       try {
@@ -91,9 +89,8 @@ function BatchBar({ cards, done }: { cards: Approval[]; done: () => void }) {
       }
     }
     setBusy(null);
-    setFailed(bad);
     if (!bad.length) (setRejecting(false), setReason(""));
-    done();
+    done(bad);
   };
   return (
     <div className="batch-bar" role="region" aria-label="Decide the selected cards">
@@ -111,11 +108,6 @@ function BatchBar({ cards, done }: { cards: Approval[]; done: () => void }) {
           <Button onClick={() => setRejecting(true)} disabled={busy !== null}>Reject {n}…</Button>
           <Button variant="primary" onClick={() => void decide("approve")} disabled={busy !== null}>{busy === "approve" ? "Approving…" : `Approve ${n}`}</Button>
         </div>
-      )}
-      {failed.length > 0 && (
-        <p className="decide-error batch-failed" role="alert">
-          Not decided: {failed.join("; ")}
-        </p>
       )}
     </div>
   );
@@ -312,6 +304,8 @@ function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; 
   const [filter, setFilter] = useState<Filter | null>(null);
   const [showCalls, setShowCalls] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
+  // A batch's cards that weren't decided, each with why: kept here, past the refresh that clears the selection.
+  const [unbatched, setUnbatched] = useState<string[]>([]);
   const load = useCallback(async () => {
     await Promise.all([approvalsQ.reload(), needsQ.reload()]);
   }, [approvalsQ.reload, needsQ.reload]);
@@ -357,6 +351,11 @@ function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; 
         </div>
       </header>
       {error && <div className="alert">{error}</div>}
+      {unbatched.length > 0 && (
+        <Banner tone="danger" action={<Button size="sm" variant="quiet" onClick={() => setUnbatched([])}>Dismiss</Button>}>
+          Not decided: {unbatched.join("; ")}
+        </Banner>
+      )}
       {!cards ? (
         !error && <CardListSkeleton />
       ) : (
@@ -373,11 +372,11 @@ function AllApprovals({ open, onSignIn }: { open: (identifier: string) => void; 
           {(f === "pending" || f === "all") && pending.length > 0 && (
             <ul className="approval-list pending-grid">
               {pending.map((a) => (
-                <ApprovalCard key={a.id} a={a} open={open} pick={pending.length > 1 ? { on: picked.includes(a.id), toggle: () => setPicked((p) => (p.includes(a.id) ? p.filter((x) => x !== a.id) : [...p, a.id])) } : undefined} />
+                <ApprovalCard key={a.id} a={a} open={open} pick={{ on: picked.includes(a.id), toggle: () => setPicked((p) => (p.includes(a.id) ? p.filter((x) => x !== a.id) : [...p, a.id])) }} />
               ))}
             </ul>
           )}
-          {chosen.length > 0 && <BatchBar cards={chosen} done={() => (setPicked([]), void load())} />}
+          {(f === "pending" || f === "all") && chosen.length > 0 && <BatchBar cards={chosen} done={(failed) => (setUnbatched(failed), setPicked([]), void load())} />}
           {(f === "pending" || f === "all") && others.length > 0 && (
             <section>
               <header className="section-head">
