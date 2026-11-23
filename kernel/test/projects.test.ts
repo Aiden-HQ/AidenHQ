@@ -5,6 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createProjects } from "../src/projects.ts";
+import { openFacts } from "../src/facts.ts";
+import { localFacts } from "../src/codehost.ts";
 
 const NOW = Date.parse("2026-11-23T08:00:00Z");
 function fake(products = {}) {
@@ -127,4 +129,32 @@ test("fills that keep failing go to the back of the queue, so later ones are sti
   assert.equal(issues.t1.projectId, null);
   await p.sync();
   assert.equal(issues.t1.projectId, "p-1");
+});
+
+test("a local code host's new PR queues and fills its task's project, as a github one does", async () => {
+  const { owner, issues } = fake();
+  const db = new DatabaseSync(":memory:");
+  const facts = openFacts(db);
+  const p = createProjects({ db, owner, now: () => NOW });
+  localFacts(facts, p)({ type: "pr.opened", subject: "pr:local/app#1", version: "2", at: new Date(NOW).toISOString(), task: "t1", data: { repo: "local/app" } });
+  await p.serial(async () => {});
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(issues.t1.projectId);
+});
+
+test("a task the control plane refuses to move is skipped; the others move and the repo moves once it can", async () => {
+  const { owner, issues, projects } = fake();
+  let refuse = true;
+  const map = { products: {} as Record<string, string[]> };
+  const flaky = async (m, path, body) => (refuse && m === "PATCH" && path === "/api/issues/t1" && body.projectId === "p-2" ? { status: 500, json: {} } : owner(m, path, body));
+  const p = createProjects({ db: new DatabaseSync(":memory:"), owner: flaky, products: () => map.products, now: () => NOW });
+  for (const t of ["t1", "t2"]) await p.touch(t, "acme/distro");
+  await p.sync();
+  map.products = { Platform: ["acme/distro"] };
+  await p.sync();
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-1", "p-2"]);
+  refuse = false;
+  await p.sync();
+  assert.deepEqual([issues.t1.projectId, issues.t2.projectId], ["p-2", "p-2"]);
+  assert.equal(projects.length, 2);
 });

@@ -410,8 +410,13 @@ export function productsOf(v: unknown): Record<string, string[]> {
   if (!v || typeof v !== "object" || Array.isArray(v)) fail("projects: a map of a product's name to its repos (owner/name)");
   const out: Record<string, string[]> = {};
   const seen = new Map<string, string>();
+  const names = new Map<string, string>();
   for (const [name, repos] of Object.entries(v as Obj)) {
     if (!name.trim() || name.length > 100) fail(`projects: "${name}" is not a project name (1 to 100 characters)`);
+    // The kernel finds a product's project by name in any case: two names differing only in case would be one project.
+    const lower = name.trim().replace(/\s+/g, " ").toLowerCase();
+    if (names.has(lower)) fail(`projects: "${names.get(lower)}" and "${name}" differ only in case: a product's name is one name`);
+    names.set(lower, name);
     // owner/name is a repo's own project's name (beside another org's repo of the same short name): never a product's.
     if (repoKey(name)) fail(`projects: "${name}" reads as a repo (owner/name): a product's name is a plain name (AidenHQ), its repos are owner/name`);
     if (!Array.isArray(repos) || !repos.length) fail(`projects.${name}: a list of repos (owner/name)`);

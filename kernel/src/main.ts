@@ -389,7 +389,7 @@ mkdirSync(localScratch, { recursive: true });
 try { ensureStateDirs(sandbox.stateDir, warnStateNeed); } catch (e) { log("WARNING: the runner state directory can't be made", { err: (e as Error).message }); }
 const instanceRemote = env("AIDENHQ_INSTANCE_REMOTE", "");
 const localCode = codehostLocal({
-  fact: localFacts(facts),
+  fact: localFacts(facts, projects),
   root: path.join(dataDir, "codehost"), tasksDir, scratchDir: localScratch, instanceRepo: baseRepos.instance, productRepo: baseRepos.product,
   sources: baseRepos.instance && instanceRemote.startsWith("/") ? { [baseRepos.instance]: instanceRemote } : {},
   // `retry` asks for a run (idempotent: the one already running or done); otherwise this only reads the one already asked for,

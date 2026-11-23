@@ -189,19 +189,27 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
           }
           try {
             const to = await serial(() => projectFor(r.company, r.repo));
-            let moved = 0;
+            let moved = 0, skipped = 0;
             if (to !== r.project) for (const { task } of db.prepare("SELECT task FROM project_tasks WHERE repo = ?").all(r.repo) as { task: string }[]) {
-              moved += await serial(async () => {
-                const r2 = await owner("GET", `/api/issues/${enc(task)}`);
-                if (r2.status === 404) return 0;
-                const i = ok(r2, "reading a task") as Issue;
-                // Closed in the board's Done window, by when it closed (an old task edited since stays where it is).
-                const recent = !["done", "cancelled"].includes(String(i.status)) || now() - Date.parse(String(i.completedAt ?? i.cancelledAt ?? i.updatedAt)) < RECENT_MS;
-                if (i.companyId !== r.company || i.projectId !== r.project || !recent) return 0;
-                ok(await owner("PATCH", `/api/issues/${enc(i.id)}`, { projectId: to }), "moving a task");
-                return 1;
-              });
+              // A task the control plane refuses is skipped and logged; the others still move. The repo's row moves last, only when
+              // none was skipped, so the next run tries the skipped ones again (those moved already no longer match, and are left).
+              try {
+                moved += await serial(async () => {
+                  const r2 = await owner("GET", `/api/issues/${enc(task)}`);
+                  if (r2.status === 404) return 0;
+                  const i = ok(r2, "reading a task") as Issue;
+                  // Closed in the board's Done window, by when it closed (an old task edited since stays where it is).
+                  const recent = !["done", "cancelled"].includes(String(i.status)) || now() - Date.parse(String(i.completedAt ?? i.cancelledAt ?? i.updatedAt)) < RECENT_MS;
+                  if (i.companyId !== r.company || i.projectId !== r.project || !recent) return 0;
+                  ok(await owner("PATCH", `/api/issues/${enc(i.id)}`, { projectId: to }), "moving a task");
+                  return 1;
+                });
+              } catch (e) {
+                skipped++;
+                log("task move refused; skipped, tried again in a minute", { task, repo: r.repo, err: (e as Error).message });
+              }
             }
+            if (skipped) { failed = true; continue; }
             db.prepare("UPDATE project_repos SET project = ?, product = ? WHERE company = ? AND repo = ?").run(to, product, r.company, r.repo);
             if (to !== r.project) log("repo moved to the project the map gives it", { company: r.company, repo: r.repo, from: r.project, to, moved });
           } catch (e) {
