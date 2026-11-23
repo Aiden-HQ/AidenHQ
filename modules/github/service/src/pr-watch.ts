@@ -233,29 +233,36 @@ export function startPrWatch(o: PrWatchOptions) {
     }
     /**
      * A check run GitHub never gave a conclusion, while its Actions job has finished: re-run that job, so GitHub reposts the
-     * check run and the merge gate is no longer held by it. Once per head per job, with the refusal backoff `neverStarted` uses
-     * (a refused re-run is asked again after five minutes, never counted as handled). Not on a cross-repository PR.
+     * check run and the merge gate is no longer held by it. Once per check per head, with the refusal backoff `neverStarted`
+     * uses (a refused re-run is asked again after five minutes, never counted as handled). Not on a cross-repository PR.
      *
-     * A re-run gives its job a new id, so the bookkeeping is also keyed by the check's name at the head: a replacement that
+     * The job is resolved from the head's check runs over REST, not from the rollup's `databaseId`: the GraphQL schema declares
+     * that as a 32-bit Int while an Actions job id is far larger today, and REST carries the full id in `details_url`.
+     *
+     * A re-run gives its job a new id, so the record is keyed by the check's suite and name at the head: a replacement that
      * wedges again is the same stuck check, not a new one, and is not re-run (nor its report deadline restarted) forever. The
-     * first ask's time is kept across refusals too, so a re-run GitHub keeps refusing is reported rather than retried unseen.
-     * Returns the stuck checks asked about at this head with their first ask's time, for the report.
+     * first ask's time is kept across refusals too, and a job that is still queued or running is never reported as wedged.
      */
-    async function wedgedAfterJob(pr: Json): Promise<{ job: number; at: number; accepted: boolean }[]> {
+    async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
       const rollup = rollupOf(pr);
       if (rollup?.contexts?.pageInfo?.hasNextPage) return []; // not every check run is here: a complete verdict needs them all
-      const stuck = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED" && n.databaseId);
-      for (const n of stuck) {
-        const url = pr.url.toLowerCase(), jobId = String(n.databaseId);
-        const name = String(n.name ?? "");
-        const key = `${url}:${pr.headRefOid}:${jobId}`, named = `${url}:${pr.headRefOid}:${name}`;
+      const stuck = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED");
+      if (!stuck.length) return [];
+      const url = pr.url.toLowerCase();
+      let listed: { status: number; body: any };
+      try { listed = await gh("GET", `/repos/${repo}/commits/${pr.headRefOid}/check-runs?filter=all&per_page=100`); }
+      catch (e) { log("wedged check runs' read failed", { pr: pr.url, head: pr.headRefOid, err: String((e as Error).message).slice(0, 200) }); return []; }
+      if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) return [];
+      const names = new Set(stuck.map((n: Json) => String(n.name ?? "")));
+      const out: { at: number; accepted: boolean }[] = [];
+      for (const c of listed.body.check_runs.filter((c: Json) => c.status !== "completed" && names.has(String(c.name ?? "")))) {
+        const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
+        const named = `${url}:${pr.headRefOid}:${String(c.check_suite?.id ?? c.id)}:${String(c.name ?? "")}`;
+        if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head: pr.headRefOid, check: String(c.name ?? "").slice(0, 100) }); continue; }
+        const key = `${url}:${pr.headRefOid}:${jobId}`;
+        const seen: { job: number; at: string; accepted?: boolean } | undefined = state.wedged[named];
         const prior: string | undefined = state.reran[key];
-        const seen: { accepted?: boolean } | undefined = state.wedged[named];
-        // A re-run GitHub took for this check at this head: a replacement that wedges again is not re-run a second time.
-        if (seen?.accepted) continue;
-        // Asked about at this head, or a refusal still backing off: nothing is asked this tick.
-        if (prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) continue;
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
         let job: { status: number; body: any };
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
@@ -265,24 +272,36 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           continue;
         }
-        if (job.status >= 300 || job.body?.status !== "completed" || !job.body?.completed_at) continue;
-        if (Date.now() - Date.parse(job.body.completed_at) < WEDGED_GRACE_MS) continue;
+        const completedAt = Date.parse(job.body?.completed_at ?? "");
+        // Only a job that itself finished can leave its check run wedged: a replacement still queued or running is not stuck.
+        if (job.status >= 300 || job.body?.status !== "completed" || !Number.isFinite(completedAt)) continue;
+        // A re-run GitHub took for this check: a replacement that wedges again is not re-run a second time. Neither is the
+        // first ask moved, so the report still goes out once the interval since it has passed.
+        if (seen?.accepted) { out.push({ at: Date.parse(seen.at), accepted: true }); continue; }
+        // A refusal still backing off: nothing is asked this tick, but its first ask still counts towards the report.
+        if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) {
+          if (seen) out.push({ at: Date.parse(seen.at), accepted: false });
+          continue;
+        }
+        if (Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a freshly finished job's check run can lag
         // Only a re-run GitHub took is recorded as done: a refusal backs off and is asked again instead of leaving the head
-        // marked as handled with its check run still wedged. Neither is this check's first ask moved.
-        state.wedged[named] ??= { job: Number(n.databaseId), at: new Date().toISOString() };
+        // marked as handled with its check run still wedged.
+        state.wedged[named] ??= { job: Number(jobId), at: new Date().toISOString() };
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
-        catch (e) { log("wedged check run's re-run failed to send", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) }); state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`; save(); continue; }
+        catch (e) {
+          log("wedged check run's re-run failed to send", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
+          state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
+          save();
+          continue;
+        }
         log(r.status < 300 ? "wedged check run's job re-run" : "wedged check run's re-run refused", { pr: pr.url, head: pr.headRefOid, job: jobId, status: r.status });
         if (r.status < 300) state.wedged[named] = { ...state.wedged[named], accepted: true };
         state.reran[key] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
         save();
+        out.push({ at: Date.parse(state.wedged[named].at), accepted: r.status < 300 });
       }
-      return stuck.flatMap((n: Json) => {
-        const seen: { job: number; at: string; accepted?: boolean } | undefined = state.wedged[`${pr.url.toLowerCase()}:${pr.headRefOid}:${String(n.name ?? "")}`];
-        const at = Date.parse(seen?.at ?? "");
-        return Number.isFinite(at) ? [{ job: seen!.job, at, accepted: !!seen!.accepted }] : [];
-      });
+      return out;
     }
     /**
      * A title-only edit starts no workflow run, so a red `policy` (the Conventional Commit title gate) stays on the head, and

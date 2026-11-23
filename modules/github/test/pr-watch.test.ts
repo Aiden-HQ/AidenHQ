@@ -150,6 +150,13 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const api = async (method, path, body) => {
     gh.push(`${method} ${path}${body?.update_method ? ` ${body.update_method}` : ""}`);
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: mainBefore?.() ?? "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    // REST check runs for a head, as GitHub lists them: the full Actions job id is carried in details_url.
+    const headRuns = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/);
+    if (headRuns) {
+      const head = open.find((p) => p.headRefOid === headRuns[1]);
+      const nodes = head?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+      return { status: 200, body: { check_runs: nodes.filter((n) => n.__typename === "CheckRun").map((n) => ({ id: n.databaseId, name: n.name, status: n.status, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/${n.checkSuite?.workflowRun?.databaseId ?? 500}/job/${n.databaseId}` })) } };
+    }
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (method === "POST" && /^\/repos\/acme\/app\/actions\/jobs\/\d+\/rerun$/.test(path)) return { status: jobRerun(), body: {} };
     if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps, status: "completed", completed_at: new Date(Date.now() - 10 * 60_000).toISOString(), ...job } };
@@ -257,7 +264,7 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
   const c = await rig(t);
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   c.set([c.agentPr(44, stuckPr(44))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/44:h44:image-changes": { job: 77, at: asked, accepted: true } } } }));
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/44:h44:500:image-changes": { job: 77, at: asked, accepted: true } } } }));
   await c.watch.tick(); await c.watch.tick();
   assert.equal(c.woke.length, 1, "told once at this head");
   assert.equal(c.woke[0].task, "ACME-44");
@@ -268,6 +275,12 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
   await c.watch.tick();
   assert.ok(!c.gh.includes("POST /repos/acme/app/actions/jobs/78/rerun"), "a replacement job that wedges again is not re-run again");
   assert.equal(c.woke.length, 1);
+  // A replacement job still queued or running is not stuck: nothing is reported for it.
+  const running = await rig(t, { job: { status: "in_progress", completed_at: null } });
+  running.set([running.agentPr(49, stuckPr(49, 78))]);
+  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/49:h49:500:image-changes": { job: 77, at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true } } } }));
+  await running.watch.tick();
+  assert.equal(running.woke.length, 0, "a re-run still running is not a stuck check");
   // A head the re-run was just asked at waits for the interval: nothing is reported yet.
   const fresh = await rig(t);
   fresh.set([fresh.agentPr(45, stuckPr(45))]);
@@ -278,7 +291,7 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
 test("a re-run GitHub kept refusing is reported after the interval, and an unanswered call stops no other PR's merge", async (t) => {
   const c = await rig(t, { jobRerun: () => 502 });
   c.set([c.agentPr(46, stuckPr(46))]);
-  const db = { "acme/app": { wedged: { "https://github.com/acme/app/pull/46:h46:image-changes": { job: 77, at: new Date(Date.now() - 21 * 60_000).toISOString() } } } };
+  const db = { "acme/app": { wedged: { "https://github.com/acme/app/pull/46:h46:500:image-changes": { job: 77, at: new Date(Date.now() - 21 * 60_000).toISOString() } } } };
   writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify(db));
   await c.watch.tick();
   assert.equal(c.woke.length, 1, "the first ask's time is kept across refusals, so a refused re-run is still reported");
@@ -296,6 +309,11 @@ test("a re-run GitHub kept refusing is reported after the interval, and an unans
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
   const gh = async (method, path) => {
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    const head = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/)?.[1];
+    if (head) {
+      const nodes = open.find((p) => p.headRefOid === head)?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+      return { status: 200, body: { check_runs: nodes.map((n) => ({ id: n.databaseId, name: n.name, status: n.status, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${n.databaseId}` })) } };
+    }
     if (path.startsWith("/repos/acme/app/actions/jobs/")) throw new Error("The operation was aborted due to timeout");
     return { status: 200, body: {} };
   };
