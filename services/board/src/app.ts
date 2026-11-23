@@ -143,6 +143,7 @@ const approvalView = (approval: Approval) => {
 const newer = (a: Approval, b: Approval) => {
   const ta = Date.parse(a.updatedAt), tb = Date.parse(b.updatedAt);
   if (Number.isNaN(ta)) return false;
+  if (!Number.isNaN(tb) && ta === tb) return a.live === true && b.live !== true; // a tie: the live snapshot is the current one
   return Number.isNaN(tb) || ta > tb;
 };
 /** The registered merge kinds: the two code hosts' (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
@@ -1170,9 +1171,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const seen = byId.get(a.id);
           if (!seen || newer(a, seen)) byId.set(a.id, a);
         }
-        // Newest first, and equal stamps keep the kernel's own order (it answers newest first by rowid): a stable sort that
-        // returns 0 for a tie never reverses which of two attempts filed in the same millisecond is the current one.
-        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? 1 : -1));
+        // Newest first. Two attempts filed in the same millisecond have no order the kernel gives us here, so a live card comes
+        // before an ended one: the current attempt is the one that can still land, never an older rejection read as final.
+        const shown = [...byId.values()].sort((a, b) => (a.createdAt === b.createdAt ? Number(b.live === true) - Number(a.live === true) : a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(mergeView) };
       },
     },
