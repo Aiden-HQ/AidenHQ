@@ -44,7 +44,7 @@ describe("chat routes", () => {
   const records = fakeRecords([card({ id: "A1", issueId: child.id, identifier: child.identifier, sentence: "Move the brief to 08:45 on weekdays.", requestedBy: "Fleet Engineer" })]);
   const states = fakeStates([
     row(chat.id, { identifier: "WOR-10", kind: "waiting", reason: "chat_turn" }),
-    row(child.id, { identifier: "WOR-11", kind: "waiting", reason: "card_owner", ref: "record:A1", attention: [{ who: "owner", why: "card", ref: "record:A1" }] }),
+    row(child.id, { identifier: "WOR-11", kind: "waiting", reason: "card_owner", ref: "record:A1", attention: [{ who: "owner", why: "card", ref: "record:A1", since: "2026-11-01T00:00:00Z" }] }),
   ]);
   const app = createApp({ taskStates: states, paperclip: pc, store, records, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
   let port = 0;

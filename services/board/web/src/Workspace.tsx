@@ -590,7 +590,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
               <NoiseFold lines={it.items.map((x) => (x as Item & { type: "message" }).m)} from={it.at} until={it.until} prefix={prefix} />
             ) : it.type === "approval" ? (
               <ul className="approval-list inline">
-                <ApprovalCard a={it.a} open={openChat} inline prefix={prefix} />
+                <ApprovalCard a={it.a} open={openChat} inline prefix={prefix} hold={hold} />
               </ul>
             ) : it.type === "ask" ? (
               <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />

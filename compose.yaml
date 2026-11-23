@@ -21,13 +21,18 @@ services:
     # Docker's default 10s kills the embedded Postgres mid-shutdown, leaving postmaster.pid and a crash-looping next start
     # (2026-11-14). tini forwards SIGTERM to the server, which stops Postgres first.
     stop_grace_period: 60s
-    # Read the auth secret from a file instead of putting its value in this file.
+    # Read the auth secrets from files instead of putting their values in this file. A secret file that is missing or empty
+    # stops the start: an empty secret would sign sessions and agent tokens with an empty key.
     entrypoint:
       - /bin/sh
       - -c
       # No connection token or internal token lives here: agents' tool calls go to the kernel's proxy with the run's own
       # credential (scripts/paperclip-setup.ts ensureCodexConfig). $$ escapes compose interpolation.
       - >-
+        for s in paperclip_auth_secret paperclip_agent_jwt_secret; do
+        test -f "/run/secrets/$$s" && test -s "/run/secrets/$$s" || { echo "paperclip: the secret $$s is missing or empty" >&2; exit 1; };
+        done;
+        case "$${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-}" in false) ;; *) export PAPERCLIP_AUTH_DISABLE_SIGN_UP=true ;; esac;
         export BETTER_AUTH_SECRET="$$(cat /run/secrets/paperclip_auth_secret)"
         PAPERCLIP_AGENT_JWT_SECRET="$$(cat /run/secrets/paperclip_agent_jwt_secret)";
         exec /usr/bin/tini -- docker-entrypoint.sh "$$@"
@@ -45,7 +50,9 @@ services:
       PAPERCLIP_API_URL: http://localhost:3100
       # "paperclip" lets ops-mcp and the watcher reach the API by service name.
       PAPERCLIP_ALLOWED_HOSTNAMES: paperclip,localhost
-      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_DISABLE_SIGN_UP:-false}"
+      # Closed unless .env opens it with exactly `false` (the entrypoint closes any other value): .env.example opens it for the
+      # owner's first account and ops/setup.sh closes it after.
+      PAPERCLIP_AUTH_DISABLE_SIGN_UP: "${PAPERCLIP_DISABLE_SIGN_UP:-true}"
       USER_UID: "${PUID:-1000}"
       USER_GID: "${PGID:-100}"
       # No usage telemetry to Paperclip's servers.

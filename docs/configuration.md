@@ -350,7 +350,7 @@ Copy `.env.example` to `.env`. It holds host paths and endpoints, never agent-ed
   returns, from a request that reached the board by that name; the default returns to `http://localhost:3121` and is pasted back; a module contributing board.signins may pass it to its service (`${BOARD_LAN_URL:-}`) as its allowed redirect, and one contributing board.setup_flows (a chat message links back to the board) may pass it so an in-app `#/route` link resolves to the board's own address.
 - Host firewall: `AIDENHQ_PUBLIC_IF`, read by `ops/vm/setup.sh` with `settings.exposure` (default: the default-route interface; see
   [operations/migrate-host.md](operations/migrate-host.md#2-the-new-host-what-reaches-it-from-the-internet)).
-- `PAPERCLIP_DISABLE_SIGN_UP`, `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.
+- `PAPERCLIP_DISABLE_SIGN_UP` (unset means closed; `.env.example` opens it for the first account), `TELEGRAM_TASK_URL`, `COMPOSE_FILE`.
 
 ## Job settings
 

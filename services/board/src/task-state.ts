@@ -1,37 +1,7 @@
 // The kernel's task state, as the board reads it (kernel/src/task-state.ts computes it from the fact log; GET /v1/tasks/state
 // serves it). The board never works a state out itself: every view shows this row, a task the kernel has no facts for shows none.
-//
-// The types are copies of the kernel's (kernel/src/task-state.ts, task-state-read.ts); change them together.
-
-export type Kind = "done" | "working" | "waiting" | "idle";
-export type Reason =
-  | "closed" | "cancelled"
-  | "job_running"
-  | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
-  | "blocked" | "agent_wait" | "module_wait" | "owner_task" | "scheduled" | "chat_turn" | "backlog"
-  | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string; since?: string };
-/** The board's column (Agent work), set once by the kernel from all of a task's obligations: the board never derives it. */
-export type Lane = "needs_you" | "working" | "waiting" | "blocked" | "idle" | "done";
-export type TaskState = {
-  kind: Kind; reason: Reason; ref?: string; since: string; holder: string | null; attention: Attention[];
-  lane: Lane;
-  /** An open blocker (`task:<id>`), whatever the representative reason. */
-  blocker?: string;
-  stage?: string;
-  grade?: "pass" | "fail";
-  question?: string;
-  /** The open wait's own words. */
-  note?: string;
-  /** When the open owner wait began (present whenever one is open, whatever the task shows first). */
-  wait_since?: string;
-  /** When the earliest open scheduled wake is due. */
-  scheduled_for?: string;
-  /** The agent (id) an open delegator wait's question went to. */
-  waits_on?: string;
-};
-export type StateRow = TaskState & { task: string; identifier: string | null; idle_wakes: number; holder_name?: string; holder_gone?: true };
-export type StateRead = { as_of: string; tasks: StateRow[]; counts: { needs_you: number; failed: number; unexplained_idle: number } };
+// Its shape is the kernel's own (aidenhq-sdk/task-state-types.ts, a synced copy).
+import type { StateRead, StateRow } from "./aidenhq-sdk/task-state-types.js";
 
 /**
  * A row with what its refs name, read from where the board already has it (see `shown`): `refLabel` for the primary reason's

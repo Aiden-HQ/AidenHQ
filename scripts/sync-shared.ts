@@ -18,6 +18,7 @@
 //   services/shared/review-files.ts  the changed files as the reviewer reads them, in the reviewer module's service
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
 //   kernel/sdk/src/quality.ts        the revert and incident linker, in the board (the kernel's flow DORA imports it)
+//   kernel/sdk/src/task-state-types.ts  a task's state as the kernel serves it, in the board
 //   kernel/sdk/src/agent-paused.ts   the one paused rule (lifecycle holds), in the board, the Telegram channel and the Fleet Steward
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
@@ -123,6 +124,8 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/agent-paused.ts": ["services/board/src/aidenhq-sdk/agent-paused.ts", "modules/channel-telegram/connections/telegram/src/aidenhq-sdk/agent-paused.ts", "modules/fleet-steward/service/src/aidenhq-sdk/agent-paused.ts"],
   // The revert and incident linker: the board's quality report and the kernel's flow DORA (flow.ts imports the original).
   "kernel/sdk/src/quality.ts": ["services/board/src/aidenhq-sdk/quality.ts"],
+  // A task's state as GET /v1/tasks/state serves it: the kernel computes it, the board reads it (and its web shows it).
+  "kernel/sdk/src/task-state-types.ts": ["services/board/src/aidenhq-sdk/task-state-types.ts"],
   "services/shared/reason-codes.ts": ["services/board/src/reason-codes.ts"],
   "services/shared/url-setting.ts": ["services/board/src/url-setting.ts"],
   // A rubric criterion claiming a file's contents lack something: refused wherever a rubric is written (the grading service

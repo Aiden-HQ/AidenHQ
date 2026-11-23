@@ -1,3 +1,5 @@
+import type { Lane } from "../../src/aidenhq-sdk/task-state-types";
+import type { ShownState } from "../../src/task-state";
 export type Bucket = "triage" | "today" | "tomorrow" | "later" | "backlog";
 export const BUCKETS: Bucket[] = ["triage", "today", "tomorrow", "later", "backlog"];
 export const BUCKET_NAMES: Record<Bucket, string> = { triage: "Triage", today: "Today", tomorrow: "Tomorrow", later: "Later", backlog: "Backlog" };
@@ -526,47 +528,8 @@ export interface AppRow {
   stats?: { cpu_pct: number; mem_bytes: number; mem_limit_bytes: number };
 }
 
-/** The kernel's state of a task (services/board/src/task-state.ts; copied): null when it has no facts for the task. */
-export type TaskKind = "done" | "working" | "waiting" | "idle";
-export type TaskReason =
-  | "closed" | "cancelled" | "job_running" | "job_queued" | "job_held" | "card_review" | "card_owner" | "owner_wait" | "delegator_wait" | "handback"
-  | "blocked" | "agent_wait" | "module_wait" | "owner_task" | "scheduled" | "chat_turn" | "backlog" | "failed" | "unpolled" | "orphaned" | "unknown" | "history_expired";
-/** The board's column (Agent work): the kernel sets it from all of a task's obligations; the board never derives it. */
-export type Lane = "needs_you" | "working" | "waiting" | "blocked" | "idle" | "done";
-export type Attention = { who: "owner" | "agent" | "reviewer"; why: "card" | "owner_wait" | "delegator_wait" | "handback" | "failed" | "stalled_wait" | "unpolled" | "orphaned" | "unknown" | "history_expired"; ref: string; since?: string };
-export interface ShownState {
-  task: string;
-  identifier: string | null;
-  kind: TaskKind;
-  reason: TaskReason;
-  ref?: string;
-  since: string;
-  holder: string | null;
-  attention: Attention[];
-  lane: Lane;
-  /** An open blocker (`task:<id>`), whatever the representative reason. */
-  blocker?: string;
-  stage?: string;
-  grade?: "pass" | "fail";
-  question?: string;
-  /** The open wait's own words. */
-  note?: string;
-  /** When the open owner wait began (present whenever one is open, whatever the task shows first). */
-  wait_since?: string;
-  /** When the earliest open scheduled wake is due. */
-  scheduled_for?: string;
-  /** The agent (id) an open delegator wait's question went to. */
-  waits_on?: string;
-  /** What `ref` names, in a few words: a card's sentence, a blocker's identifier, how a job ended. */
-  refLabel?: string;
-  /** The same for each attention entry's ref and the blocker's, by ref. */
-  refs?: Record<string, string>;
-  /** The name of the agent `waits_on` names. */
-  waits_on_name?: string;
-  /** A holder Paperclip reports removed: its name. */
-  holder_name?: string;
-  holder_gone?: true;
-}
+/** The kernel's state of a task as the board shows it (services/board/src/task-state.ts): null when it has no facts for the task. */
+export type { Lane, ShownState };
 export interface ChatRow {
   identifier: string;
   title: string;
