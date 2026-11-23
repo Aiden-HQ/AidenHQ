@@ -227,8 +227,8 @@ export function skillOutcome(r: EngineResult, names: string[], idle = new Set<nu
   const said = answer(r.message)?.skills as { ran?: unknown; why?: unknown }[] | undefined;
   if (!Array.isArray(said) || said.length !== names.length || said.some((s) => typeof s?.ran !== "boolean")) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
   // A turn that called no tool read no code, whatever the restate says of it.
-  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i].why ?? "no reason given").slice(0, 150)}`;
-  const not = names.flatMap((_, i) => (said[i].ran && !idle.has(i) ? [] : [why(i)]));
+  const why = (i: number) => `${names[i]}: ${idle.has(i) ? "it called no tool" : String(said[i]!.why ?? "no reason given").slice(0, 150)}`;
+  const not = names.flatMap((_, i) => (said[i]!.ran && !idle.has(i) ? [] : [why(i)]));
   if (not.length === names.length) return { ...r, message: "", read: false, cause: `no skill reviewed the code (${not.join("; ")})` };
   return { ...r, read: true, untracked: `${names.join(" ")} reads the code its own way, so which files it read isn't tracked`, ...(not.length ? { incomplete: `a skill didn't review the code (${not.join("; ")})` } : {}) };
 }
