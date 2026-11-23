@@ -175,7 +175,7 @@ export function createSharing(d: {
     // Every value a setting has here, side by side: applied, at the shared commit and at the newest main (`also`).
     const at = async (c: string): Promise<Dict> => (YAML.parse(await text(["cat-file", "blob", `${c}:instance.yaml`]).catch(() => "")) ?? {}).settings ?? {};
     const sides = [Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value])), await at(sha), await at(profileAt)];
-    const settings: Dict = {};
+    const settings: Dict = Object.create(null);
     for (const side of sides) for (const [k, v] of Object.entries(side)) settings[k] = [...(settings[k] ?? []), v];
     const profile = await text(["cat-file", "blob", `${profileAt}:owner/profile.md`]).catch(() => "");
     return exportModule(module, { instanceDir: d.instanceDir, sha, catalog, compiled, settings, secrets: d.secrets(), memory: d.memory(), profile, instanceRepo: d.instanceRepo() });
