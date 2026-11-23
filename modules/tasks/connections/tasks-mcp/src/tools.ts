@@ -809,6 +809,9 @@ const clip = (text: string, max: Json, more: Json) => {
   return t.length > max ? `${t.slice(0, max)}\n[truncated, ${t.length - max} more chars: ${more}]` : t;
 };
 const DESC_MAX = 8000;
+/** The actions whose outcome is merge evidence: the board's short `merge` and the two registered code-host merge kinds. A module's
+ * own kind, whatever its name or text, is never merge evidence. */
+const MERGE_KINDS = ["merge", "github.merge", "codehost-local.merge"];
 const READ_COMMENT_MAX = 1500;
 const SNIPPET_MAX = 300;
 
@@ -1318,7 +1321,7 @@ const TOOLS: Record<string, Tool> = {
           // `merged-prs:` is evidence only on a merge kind's own outcome: any other card's text is a module's own words, whatever
           // it begins with, and must not pass for a merge that landed the PR. The evidence line is structured and returned whole
           // as `mergedPrs`; the executor's prose is untrusted text, fenced and labelled (300 characters at most), as its notice is.
-          const merge = a.action === "merge" || a.action.endsWith(".merge");
+          const merge = MERGE_KINDS.includes(a.action);
           const evidence = merge && (first ?? "").startsWith("merged-prs: ") ? (first ?? "").slice("merged-prs: ".length) : undefined;
           const prose = (evidence !== undefined ? rest.join("\n") : text).replace(/<\/?untrusted-outcome[^>]*>/gi, "").trim().slice(0, 300);
           const outcomeText = prose ? `<untrusted-outcome source="${a.action} card ${a.id}, ${a.state}">\n${prose}\n</untrusted-outcome>` : "";

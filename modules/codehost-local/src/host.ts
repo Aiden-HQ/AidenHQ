@@ -298,7 +298,9 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
           // A wait on the checks, and CI's end on this head (the same facts as codehost-github's merge queue).
           if (Date.now() - t0 > 2000) { const since = new Date(t0).toISOString(); fact({ type: "work.waiting", subject: subject(p.repo, c.n), version: since, at: since, task, data: { reason: "checks" } }); fact({ type: "work.resumed", subject: subject(p.repo, c.n), version: since, at, task, data: { reason: "checks" } }); }
           fact({ type: "pr.checks_completed", subject: `${subject(p.repo, c.n)}@${p.head}`, version: `${p.head}:1`, at, task, data: { head: p.head, conclusion: why ? "failure" : "success", failed: why ? ["checks"] : [] } });
-          if (why) return { ok: false, text: `${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
+          // A batch that landed some of its PRs before one refused still reports them as merged: the evidence line comes first,
+          // as the success text's does, so a run reading the outcome knows which heads did land.
+          if (why) return { ok: false, text: `${merged.length ? `merged-prs: ${JSON.stringify(merged)}\n` : ""}${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
           const sha = await land(p.repo, c.n, p.head);
           fact({ type: "pr.merged", subject: subject(p.repo, c.n), version: p.head, at: new Date().toISOString(), task: (c.meta.task as string | undefined) ?? null, data: { sha, head: p.head } });
           void churnLocal(p.repo).catch(() => {}); // churn never delays or fails a merge
