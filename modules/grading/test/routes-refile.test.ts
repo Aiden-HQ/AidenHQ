@@ -14,8 +14,8 @@ const PR = { kind: "pr", ref: "" };
 const APP = { kind: "app", ref: "roadmap-keeper" };
 const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64url");
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-const assertion = (agent, tool = "task_delegate") => {
-  const body = `${b64({ alg: "EdDSA", typ: "JWT", kid: "k1" })}.${b64({ agent, key: agent, name: agent, roles: [], tool: `paperclip_tasks.${tool}`, kind: "run", aud: "tasks", jti: "j", exp: Math.floor(Date.now() / 1000) + 60 })}`;
+const assertion = (agent, tool = "task_delegate", roles = []) => {
+  const body = `${b64({ alg: "EdDSA", typ: "JWT", kid: "k1" })}.${b64({ agent, key: agent, name: agent, roles, tool: `paperclip_tasks.${tool}`, kind: "run", aud: "tasks", jti: "j", exp: Math.floor(Date.now() / 1000) + 60 })}`;
   return `${body}.${sign(null, Buffer.from(body), privateKey).toString("base64url")}`;
 };
 
@@ -53,6 +53,8 @@ async function harness(t) {
     moduleFile: (module, body) => call("POST", "/check/rubric", { authorization: `Bearer ${KEYS.check}` }, { ...body, module }),
     // An in-place amendment, as the tasks module makes it (task_amend_rubric as the tool).
     agentAmend: (agent, body) => call("POST", "/grades/amend", { "x-aidenhq-caller": assertion(agent, "task_amend_rubric") }, body),
+    // The Fleet Steward's rebind (task_rebind), with the roles its signed assertion carries.
+    rebind: (agent, roles, body) => call("POST", "/grades/rebind", { "x-aidenhq-caller": assertion(agent, "task_rebind", roles) }, body),
   };
 }
 
@@ -362,4 +364,19 @@ test("an amending tool reads a row it may amend; a filing tool still reads only 
   // A filing tool still reads only the task it delegated.
   assert.equal((await h.agentRead("cos", "t1", "task_delegate")).status, 200);
   assert.equal((await h.agentRead("other", "t1", "task_delegate")).status, 403);
+});
+
+test("the Fleet Steward rebinds a graded task to the PR that landed, rubric kept and graded again; any other caller is refused", async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.agentFile("cos", { issue: "WOR-1", rubric: RUBRIC, deliverable: PR })).status, 200);
+  const landed = { kind: "pr", ref: "codehost:local/app/change/3" };
+  assert.equal((await h.rebind("eng", [], { issue: "WOR-1", deliverable: landed })).status, 403, "the role, not the tool alone");
+  assert.equal((await h.rebind("cos", ["fleet-read"], { issue: "WOR-1", deliverable: landed })).status, 403);
+  const r = await h.rebind("steward", ["fleet-settle"], { issue: "WOR-1", deliverable: landed });
+  assert.equal(r.status, 200);
+  assert.deepEqual([r.json.rebound, r.json.rubric, r.json.deliverable], [true, RUBRIC, landed]);
+  const g = h.grades.get("t1");
+  assert.deepEqual([g.state, g.resume, g.deliverable], ["open", true, landed], "graded again at once against the kept rubric");
+  assert.equal((await h.rebind("steward", ["fleet-settle"], { issue: "WOR-1", deliverable: APP })).status, 400, "the kind stays");
+  assert.equal((await h.rebind("steward", ["fleet-settle"], { issue: "WOR-3", deliverable: landed })).status, 409, "no row (or a closed task) is refused");
 });

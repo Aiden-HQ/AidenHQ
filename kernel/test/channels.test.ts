@@ -12,10 +12,9 @@ const MODULES = { owner: { name: "Ada", timezone: "UTC" }, modules: {
   "channel-std": { privileged: ["speaks-as-owner"], channel: {}, token: "std_token", settings: { std_decide: "standard" } },
   "chat-lane": { roles: ["kernel.cp-read", "kernel.wake"], token: "lane_token" },
   "owner-channel": { roles: ["kernel.cp-read", "kernel.notify"], token: "router_token" },
-  pauser: { roles: ["kernel.routines"], token: "pauser_token" },
   plain: { token: "plain_token" },
 } };
-const SECRETS = { router_token: "router-key", tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key", pauser_token: "pauser-key" };
+const SECRETS = { router_token: "router-key", tg_token: "tg-key", op_token: "op-key", lane_token: "lane-key", plain_token: "plain-key", quiet_token: "quiet-key", std_token: "std-key" };
 const TG = "tg-key", OP = "op-key", LANE = "lane-key", PLAIN = "plain-key";
 
 /** A kernel with two records waiting for the owner: the code host's push (WOR-1) and another module kind's. */
@@ -304,13 +303,4 @@ test("a wake notice already posted on a task that has since closed is a duplicat
   readFails = true;
   assert.equal((await k.v1("POST", "/v1/wakes", { ...key, id: "k2" }, LANE)).status, 502);
   assert.equal(writes, 1);
-});
-
-test("POST /v1/routines/pause: a module with role kernel.routines pauses a routine as the owner; no other module does", async (t) => {
-  const patched = [];
-  const { k } = await setup(t, { onControl: async (req, body) => (req.method === "PATCH" ? (patched.push([req.url, body]), { body: { id: "r-1", status: "paused" } }) : undefined) });
-  assert.equal((await k.v1("POST", "/v1/routines/pause", { routine: "r-1" }, PLAIN)).status, 403);
-  assert.equal((await k.v1("POST", "/v1/routines/pause", { routine: "../x" }, "pauser-key")).status, 400);
-  assert.deepEqual((await k.v1("POST", "/v1/routines/pause", { routine: "r-1" }, "pauser-key")).json, { paused: true });
-  assert.deepEqual(patched, [["/api/routines/r-1", JSON.stringify({ status: "paused" })]]);
 });

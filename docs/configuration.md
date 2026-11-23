@@ -80,9 +80,11 @@ outcomes:
   `scripts/prompts/glossary.md`) and the handoff shape ("Handing work on", `handoff.md`): a task names the outcome it
   serves, and a report leads with what moved. A wrong entry or an owner that isn't an agent fails compile.
 - **The owner's profile** (`owner/profile.md`, at most 4 KB; longer is cut at a line end with a compile warning): how the
-  owner likes to work (length, format, channels, what to lead with, taste), one preference per line. Every crew handbook
-  carries it under "How the owner works", and so does each agent's chat lane; it shapes how agents work with the owner
-  and never changes a rule, grant or approval. The Fleet Steward proposes edits from the owner's corrections, and the Engineer lands them through the usual apply card.
+  owner likes to work (length, format, channels, what to lead with, taste), one preference per line, and under the heading
+  "Owner decisions" the owner's standing decisions, one per line. Every crew handbook carries it under "How the owner
+  works", and so does each agent's chat lane: agents follow its decisions as rules and read them before asking anyone. It
+  never changes a grant or approval. Only the chief of staff (role `fleet-admin`) changes it, with `self_change` (`kind:
+  profile`, the whole file), replacing a superseded decision in place (git keeps the history).
 
 - **Overrides** change a fixed set of fields on things that exist: agents (`model`, `reasoning_effort`, `timeout_sec`,
   `image`, `max_parallel` for a bigger host) and routines (`schedules`, `status`, `model`, `autonomy`). Anything else is refused.

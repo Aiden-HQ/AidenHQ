@@ -153,7 +153,7 @@ export function createCp({ whoami, asserter, plugin, once, agentKey, grants, fle
     const settleScope = (t: Issue) => (roles.includes(SETTLE) && !isLogTask(t, logs) && t.createdByAgentId && !t.createdByUserId ? "settle" : undefined);
     const refuse = (t: Issue): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
-      throw fail(403, "forbidden", `${t.identifier ?? t.id} isn't yours to change: ask ${who} or the chief of staff to pass it on`);
+      throw fail(403, "forbidden", `${t.identifier ?? t.id} isn't yours to change: ask ${who} or the Fleet Steward to pass it on`);
     };
     // The write's once-only key: this call's write itself, so a module's retry of it within the call is the same op.
     const op = createHash("sha256").update(`${c.call}\n${method}\n${path}\n${JSON.stringify(b)}`).digest("base64url").slice(0, 32);

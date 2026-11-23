@@ -59,9 +59,9 @@ rollover();
 setInterval(rollover, 60_000).unref();
 // The board's owner alerts go through the kernel's queue to owner-channel's notify (notify.ts).
 if (cfg.gateway) startNotify({ url: (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, ""), token: cfg.gateway.token }, log);
-// The app alerts (app-watch.ts): a task for the chief of staff through the kernel, never the owner. apps-mcp unreachable: skipped.
+// The app alerts (app-watch.ts): a task for the Fleet Steward (role fleet-settle) through the kernel, never the owner. apps-mcp unreachable: skipped.
 const fileAlert = async (a: Alert) => {
-  const r = await fetch(`${kernelUrl}/v1/board-tasks`, { method: "POST", headers: { authorization: `Bearer ${cfg.gateway!.token}`, "content-type": "application/json" }, body: JSON.stringify({ ...a, role: "fleet-admin" }), signal: AbortSignal.timeout(20_000) });
+  const r = await fetch(`${kernelUrl}/v1/board-tasks`, { method: "POST", headers: { authorization: `Bearer ${cfg.gateway!.token}`, "content-type": "application/json" }, body: JSON.stringify({ ...a, role: "fleet-settle" }), signal: AbortSignal.timeout(20_000) });
   if (!r.ok) throw new Error(`the kernel answered ${r.status} filing an app alert`);
 };
 const appWatch = () => void appWatchTick({ apps: () => appsApi<AppStatus[]>("/internal/status"), diskPct: async () => (await appsApi<{ disk_pct: number }>("/internal/host")).disk_pct, store, file: fileAlert }).catch((err) => log.warn({ err: String(err) }, "app alerts tick failed"));

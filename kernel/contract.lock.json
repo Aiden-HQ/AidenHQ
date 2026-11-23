@@ -154,7 +154,6 @@
     "route POST /v1/reviews": {"state":"experimental","fp":"auth=reviewer-key"},
     "route POST /v1/reviews/:review": {"state":"experimental","fp":"auth=review-token"},
     "route POST /v1/routines/cancel": {"state":"experimental","fp":"auth=module"},
-    "route POST /v1/routines/pause": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/routing/:op": {"state":"experimental","fp":"auth=module+assertion"},
     "route POST /v1/settings/agent": {"state":"experimental","fp":"auth=module+assertion"},
     "route POST /v1/settings/change": {"state":"experimental","fp":"auth=board"},

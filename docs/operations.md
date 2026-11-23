@@ -151,11 +151,10 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   label text carries a second fence) and logs on the "Fleet issues" task (`log ·` lines). The same service serves the Coach's
   `coach_due` and `coach_evidence` and `fleet_generation_status` (the kernel's `/v1/work?generations=1`), and `/metrics`
   (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine whose last three kernel jobs all
-  hard-failed (`failed` or `timeout`, counted from the jobs' `routine` in `GET /v1/work?agent=`) is paused by the detector itself
-  (`POST /v1/routines/pause`, role `kernel.routines`, pause only; setup keeps a paused routine paused across applies) and the
-  owner is told once (notify kind alert, dedupe key `routine-paused:<id>`; Aiden resumes it, and a resume starts a fresh
-  count). Nothing is paused while the failures are fleet-wide (no agent finishing a job, or a 401 or 402 in a recent failure);
-  the routine stays flagged. The `missed` group raises an active routine whose next schedule fire (`nextRunAt`, read with
+  hard-failed (`failed` or `timeout`, counted from the jobs' `routine` in `GET /v1/work?agent=`) is an incident: the Steward
+  decides whether to pause it (`fleet_operate`, the kernel's `kernel.fleet_op`, AI-reviewed) and fixes its cause. A pause the
+  Steward made stays an incident (`paused:<target>`, from `GET /v1/work?pauses=1`) until the Steward resumes it; it resumes
+  only its own pauses, and a resume starts a fresh count. Setup keeps a paused routine paused across applies. The `missed` group raises an active routine whose next schedule fire (`nextRunAt`, read with
   kernel.cp-read) is over 15 minutes overdue: Paperclip's scheduler has stopped.
 
 - The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): every

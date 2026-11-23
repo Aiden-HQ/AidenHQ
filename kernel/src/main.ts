@@ -58,7 +58,7 @@ import { createFlow } from "./flow.ts";
 import { createTaskStateRead } from "./task-state-read.ts";
 import { createIdle } from "./idle.ts";
 import { createConnectionState, type ConnectionState } from "./connection-state.ts";
-import { CHIEF, CONVERSING_MS, createEscalate, ownerWroteAt } from "./escalate.ts";
+import { CHIEF, CONVERSING_MS, SETTLER, createEscalate, ownerWroteAt } from "./escalate.ts";
 import { pidAlive, recordKernel } from "./previous.ts";
 import { createReviews, type ReviewerSlot } from "./reviews.ts";
 import { createReviewLoop } from "./review-loop.ts";
@@ -77,6 +77,7 @@ import { hostPlanner } from "./apply-tier.ts";
 import type { Verdict } from "./tier.ts";
 import { logTasks, scopeOf } from "./task-scope.ts";
 import { KERNEL_KINDS, LOCAL_ORG } from "./kinds.ts";
+import { FLEET_OP, createFleetOps } from "./fleet-ops.ts";
 import { JobError, admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
 import { createAdmission, wakeInbox } from "./admission.ts";
 import { createPool } from "./pool.ts";
@@ -228,8 +229,9 @@ const writes = createWrites({
   // The write.filed checks' code, run in process: the platform check (a hard gate, gates.ts) on the code hosts' git writes.
   checks: checksRegistry, filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck },
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
-  native: { "kernel.apply": applies.execute },
-  planners: { "kernel.apply": applyPlanner },
+  // kernel.fleet_op (fleet-ops.ts): its planner and executor are bound once fleetOps exists below (called only after start).
+  native: { "kernel.apply": applies.execute, [FLEET_OP]: (r) => fleetOps.execute(r) },
+  planners: { "kernel.apply": applyPlanner, [FLEET_OP]: (b) => fleetOps.plan(b) },
   executors: (): Record<string, Executor> => (localHost() ? { "codehost-local": localCode.executor } : {}),
   resume: ["kernel.apply"],
 });
@@ -279,7 +281,10 @@ const escalate = createEscalate({
   },
   notice: (task, body) => { notices.queue(task, body); setImmediate(sendNotices); },
   owner: (n) => notify.queue(n),
-  // The chief of staff settles every judgement that isn't the owner's conversation: one kernel-filed task per ask, by role.
+  // The Fleet Steward settles every judgement that isn't the owner's conversation (the chief of staff the Steward's own): one
+  // kernel-filed task per ask, by role.
+  settle: (b) => moduleTasks.file("kernel", { ...b, role: SETTLER }),
+  settleAgent: () => Object.entries(grantsTable().agents ?? {}).find(([, g]) => (g.roles ?? []).includes(SETTLER))?.[0],
   chief: (b) => moduleTasks.file("kernel", { ...b, role: CHIEF }),
   chiefAgent: () => chiefOfStaff(grantsTable().agents),
   conversing: async (id) => {
@@ -530,7 +535,20 @@ let drain: () => void = () => stop("SIGUSR2");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig));
 process.on("SIGUSR2", () => drain());
 // The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
-const work = createWork({ db: records.db, records, generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
+// The Fleet Steward's operations (fleet-ops.ts): pause/resume, stop a run, restart a module's service, roll back.
+const fleetOps = createFleetOps({
+  db: records.db, owner: ownerApi, log,
+  roles: (id) => (grantsTable().agents?.[id] as { roles?: string[] } | undefined)?.roles ?? [],
+  services: () => Object.values(modulesFile().services ?? {}).flat(),
+  // A task by its id or its identifier (WOR-12): the job rows carry both.
+  running: (task) => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = 'running' AND (task = ? OR identifier = ?)").get(task, task) as { n: number }).n,
+  stop: (task) => [...new Set((records.db.prepare("SELECT task FROM jobs WHERE state = 'running' AND (task = ? OR identifier = ?)").all(task, task) as { task: string }[]).map((r) => r.task))].flatMap((id) => jobs.stopRunning({ task: id }, "fleet-steward")),
+  note: (j, body) => outcomes.post(j, { kind: "notice", body }),
+  generations: () => { const g = work.generations(); return "error" in g ? [] : g.generations; },
+  launch: (unit, args) => applyHost.launch(unit, args),
+  recreate: (services) => composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") })(services),
+});
+const work = createWork({ db: records.db, records, pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
 // Flow: what the kernel kept before the fact log, once (idempotent), and the host's deploys as they settle (generations.ts).
 try { log("flow backfill", { recorded: backfillLocal(records.db, facts, { agentKey: (id) => grantsTable().agents?.[id]?.key }) }); } catch (e) { log("WARNING: flow backfill failed", { err: String((e as Error).message) }); }
 const deploys = createDeploys({ db: records.db, file: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), repo });

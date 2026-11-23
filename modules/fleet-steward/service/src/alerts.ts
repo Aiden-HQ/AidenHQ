@@ -1,7 +1,7 @@
 // Monitoring alerts (modules/monitoring, docs/design/monitoring.md). Alertmanager posts its webhook here (POST /alerts, on the
 // network only it and this service share); firing alerts are kept until resolved, and the detector's `alert` group opens one
-// incident per alert and recovers it on resolve. A newly firing `severity: critical` alert also files one fixed line for the chief of staff (main.ts toChief).
-// An alert's label and annotation text is free text: it reaches the Steward only inside fence(), never the chief of staff's task.
+// incident per alert and recovers it on resolve. A newly firing `severity: critical` alert also files one fixed line as a Steward check task (main.ts toSteward).
+// An alert's label and annotation text is free text: it reaches the Steward only inside fence(), never the check task's text.
 import { fence } from "./aidenhq-sdk/fence.ts";
 import type { Incident, Kv } from "./detector.ts";
 
@@ -33,7 +33,7 @@ export function firing(kv: Pick<Kv, "get">): Firing {
 }
 
 /**
- * What the chief of staff reads for each critical rule (modules/monitoring/prometheus/rules.yml): fixed sentences, never alert text.
+ * What the check task says for each critical rule (modules/monitoring/prometheus/rules.yml): fixed sentences, never alert text.
  * Label and annotation values can carry names an agent's app chose, so none of them reaches its task.
  */
 const OWNER_SENTENCE: Record<string, string> = {
@@ -66,7 +66,7 @@ async function applyAlerts(kv: Kv, alerts: Alert[], notify: (text: string, key?:
     const severity = slug(a.labels.severity, 20) || "warning";
     // Free text (the rule's summary with label values in it): bounded here, fenced as data in the incident's reason.
     const summary = String(a.annotations.summary ?? a.annotations.description ?? "").slice(0, 300);
-    // The chief of staff hears of a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
+    // A check task names a critical alert once, when it starts firing; the Steward works every alert. Marked told only once the
     // notice went out: a kernel that was down is tried again on the next webhook or tick.
     let told = f[a.fingerprint]?.told;
     const since = f[a.fingerprint]?.since ?? (a.startsAt && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(a.startsAt) && !a.startsAt.startsWith("0001") ? a.startsAt : now.toISOString());

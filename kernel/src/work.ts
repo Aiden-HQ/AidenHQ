@@ -15,6 +15,10 @@
 //                            five costliest components and subjects; the Fleet Steward's scorecards and spend check; each record says
 //                            whether it is a `judged` rejection: the AI reviewer's, not code's)
 //   GET /v1/work?generations=1  the host's apply generations: the current product pin and the last 20 applies (generations.ts)
+//   GET /v1/work?owner_cards=1[&after=<record id>][&limit=<n>]  the cards that went to the owner (Tier 2), newest first, a page at
+//                            a time (default 20, at most 100; `next` is the id to pass as `after`): what interrupted the owner, for
+//                            the Fleet Steward's daily interruption pass. The card's sentence and who filed it, never its args.
+//   GET /v1/work?pauses=1    the Fleet Steward's open pauses (fleet-ops.ts): the detector keeps each one an incident
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
@@ -25,7 +29,7 @@ import type { Records } from "./records.ts";
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
-export function createWork({ db, records, generationsFile = "", capacity = () => 0 }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number }) {
+export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; pauses?: () => { target: string; kind: string; name: string; at: string }[] }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   const job = (r: Record<string, any>) => ({ id: r.id, agent: r.agent, task: r.task, engine: r.engine, state: r.state, started_at: iso(r.at), ended_at: iso(r.ended), session: r.session ?? null });
   /** A rejection the AI reviewer judged malicious (tier.ts MALICE), not code's refusal. */
@@ -111,6 +115,18 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       return { records: recs, usage, spend_components: top("component"), spend_subjects: top("task_subject") };
     },
     generations: () => fleetGenerations(generationsFile),
+    pauses: () => ({ pauses: pauses() }),
+    /** The cards that went to the owner (Tier 2), newest first, `limit` a page from after record `after`. */
+    ownerCards(after: string | undefined, limit: number) {
+      const keyset = after ? " AND (created_at, rowid) < (SELECT created_at, rowid FROM records WHERE id = ?)" : "";
+      const got = rows(`SELECT id, kind, state, task, identifier, requester, card, decided_by, created_at, decided_at FROM records WHERE tier = 2${keyset} ORDER BY created_at DESC, rowid DESC LIMIT ?`, ...(after ? [after] : []), limit + 1);
+      const cards = got.slice(0, limit).map((r) => {
+        const who = JSON.parse(r.requester || "{}") as { key?: string; module?: string; name?: string };
+        const card = JSON.parse(r.card || "{}") as { sentence?: string; reason?: string };
+        return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, requester: who.key || who.module || who.name || null, sentence: card.sentence ?? null, reason: card.reason ?? null, decided_by: r.decided_by ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null };
+      });
+      return { cards, next: got.length > limit ? cards.at(-1)!.id : null };
+    },
     /** One write record (an approval card) by id, for a reader that only has the id a report cited; null for none. */
     record(id: string) {
       const r = records.get(id);

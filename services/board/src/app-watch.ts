@@ -1,17 +1,17 @@
 // The fleet's app alerts (plain code, no LLM), moved here from the owner channel in lean-core 2f: the channel modules no
-// longer reach apps-mcp, the board does. Every alert is a task for the chief of staff, never a message to the owner: it gets
-// the app fixed (the DevOps Engineer, a delegate) and tells the owner only what needs their authority (its prompt `deciding`).
-// - An app incident wakes the DevOps Engineer first (apps-mcp fires its routine); the chief of staff is given the incident
+// longer reach apps-mcp, the board does. Every alert is a task for the Fleet Steward, never a message to the owner: it gets
+// the app fixed (the DevOps Engineer, a delegate) and brings the chief of staff only what needs the owner's authority (skill `fleet-check`).
+// - An app incident wakes the DevOps Engineer first (apps-mcp fires its routine); the Fleet Steward is given the incident
 //   when it has stayed open over 30 minutes or the app had 3 or more incidents in 24 hours: one task per incident.
 // - Resources: an app over 90% of its memory limit, or the host disk over 85%: one task per cause per day.
 import type { Store } from "./store.js";
 
 export interface AppStatus { name: string; incident?: { opened_at: number | string; kind: string; detail: string }; stats?: { mem_bytes: number; mem_limit_bytes: number } }
-/** A task for the chief of staff; the same `source` is the same task (POST /v1/board-tasks). */
+/** A task for the Fleet Steward; the same `source` is the same task (POST /v1/board-tasks). */
 export interface Alert { title: string; description: string; source: string }
 type Kv = Pick<Store, "meta" | "setMeta">;
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
-const HOW = "Get it fixed: check the app's current state first (finish this task if it is healthy again), see whether the DevOps Engineer ran on it and wake or re-brief it, or delegate. Tell the owner only if their authority is needed (money, a credential, a security trade-off) or their users are affected and nobody can fix it.";
+const HOW = "Get it fixed: check the app's current state first (finish this task if it is healthy again), see whether the DevOps Engineer ran on it and wake or re-brief it, or delegate. Bring it to the chief of staff only if the owner's authority is needed (money, a credential, a security trade-off).";
 
 export async function appWatchTick(d: { apps: () => Promise<AppStatus[]>; diskPct?: () => Promise<number>; store: Kv; file: (a: Alert) => Promise<unknown>; now?: number }): Promise<void> {
   const now = d.now ?? Date.now();

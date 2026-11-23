@@ -1,6 +1,8 @@
-// The kernel's own write kind (spec §5.2): kernel.apply (a fleet apply: a commit landed on the instance repo and applied,
-// with the module changes it brings; planned by apply-tier.ts). Its args schema is strict.
+// The kernel's own write kinds (spec §5.2): kernel.apply (a fleet apply: a commit landed on the instance repo and applied,
+// with the module changes it brings; planned by apply-tier.ts) and kernel.fleet_op (the Fleet Steward's operations,
+// fleet-ops.ts). Their args schemas are strict.
 import type { Card } from "./records.ts";
+import { FLEET_OP, FLEET_OP_KIND } from "./fleet-ops.ts";
 import type { Kind, Schema } from "./writes.ts";
 
 const SHA: Schema = { type: "string", pattern: "^[0-9a-f]{40}$" };
@@ -45,10 +47,12 @@ export function repoKey(v: unknown): string | undefined {
  * The kernel's roles a module may request (module.yaml roles.requests): each opens one backplane route or, for kernel.apply,
  * filing that kernel kind. No module declares a kernel.* role or a role named after a write kind (compile refuses both).
  */
-export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.events", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.memory", "kernel.notify", "kernel.owner-notice", "kernel.routines", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.wake", "kernel.work-read"];
+export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.events", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.memory", "kernel.notify", "kernel.owner-notice", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.wake", "kernel.work-read"];
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
   // An apply is always read by the reviewer first (floor 1): planned by the kernel (apply-tier.ts).
   "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS },
+  // The Fleet Steward's operations (fleet-ops.ts): filed through its tool, read by the AI reviewer first.
+  [FLEET_OP]: FLEET_OP_KIND,
 };

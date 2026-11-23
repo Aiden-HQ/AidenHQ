@@ -37,9 +37,8 @@
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
 //                              agent it dispatches, cancelled as that agent (wakes.ts)
-//   POST /v1/routines/pause   (a module with role kernel.routines) {routine}: that routine paused, as the owner (never resumed here)
 //   POST /v1/wakes/:key/note   (the module that claimed it) {body}: a note on its task as its agent, once (no job answers it)
-//   POST /v1/board-tasks       (the board's key) {title, description, role | agent, source}: the same, as module "board" (app incidents for the chief of staff)
+//   POST /v1/board-tasks       (the board's key) {title, description, role | agent, source}: the same, as module "board" (app incidents for the Fleet Steward)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?, quiet?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
 //                              the open tasks of the module's own `release:instance:` family (the release train's sweep); POST /v1/tasks/:task/close
@@ -191,7 +190,6 @@ export const ROUTES = [
   { method: "POST", path: "/v1/wakes/:key/drop", auth: "module" },
   { method: "POST", path: "/v1/wakes/:key/note", auth: "module" },
   { method: "POST", path: "/v1/routines/cancel", auth: "module" },
-  { method: "POST", path: "/v1/routines/pause", auth: "module" },
   { method: "GET", path: "/v1/tasks/state", auth: "module|board" },
   { method: "POST", path: "/v1/tasks", auth: "module" },
   { method: "POST", path: "/v1/tasks/:task/close", auth: "module" },
@@ -259,10 +257,17 @@ async function json(req: IncomingMessage, max = 1_000_000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
 }
 
-/** GET /v1/work's reads, by query: ?job=, ?record=, ?task=, ?agent=, ?since=[&to=], ?generations=1, or what runs now (work.ts). */
+/** GET /v1/work's reads, by query: ?job=, ?record=, ?task=, ?agent=, ?since=[&to=], ?generations=1, ?pauses=1, ?owner_cards=1[&after=&limit=], or what runs now (work.ts). */
 function workRead(work: Work, p: URLSearchParams) {
   const [job, task, agent, since, record] = [p.get("job"), p.get("task"), p.get("agent"), p.get("since"), p.get("record")];
   if (p.get("generations")) return work.generations();
+  if (p.get("pauses")) return work.pauses();
+  if (p.get("owner_cards")) {
+    const limit = Number(p.get("limit") ?? 20), after = p.get("after") ?? undefined;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw fail(400, "bad_request", "limit is 1 to 100");
+    if (after !== undefined && !/^[\w-]{1,64}$/.test(after)) throw fail(400, "bad_request", "after is a record id");
+    return work.ownerCards(after, limit);
+  }
   if (record) return work.record(record.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no record ${record.slice(0, 40)}`); })();
   if (job) return work.job(job.slice(0, 40)) ?? (() => { throw fail(404, "not_found", `no job ${job.slice(0, 40)}`); })();
   // `shown=1` (the board's Activity tab): quiet routine runs left out before the limit; detectors read every run.
@@ -784,17 +789,6 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         const b = await json(req);
         const r = await (hit.path === "/v1/tasks" ? tasks.file(w.module!, b) : hit.path.endsWith("/comment") ? tasks.comment(w.module!, decodeURIComponent(m[0]!), b) : tasks.close(w.module!, decodeURIComponent(m[0]!), b)).catch((e: { name?: string; status?: number; message: string }) => { throw e.name === "TaskError" ? fail(e.status!, "bad_request", e.message) : e; });
         return send(res, 200, r);
-      }
-      if (hit?.path === "/v1/routines/pause") {
-        const w = await moduleOf(req);
-        if (!w.roles.includes("kernel.routines")) throw fail(403, "forbidden", `${w.module} may not pause routines (role kernel.routines)`);
-        if (!owner) throw fail(503, "unavailable", "the control plane is off");
-        const b = await json(req);
-        if (!/^[A-Za-z0-9_-]{1,100}$/.test(String(b.routine))) throw fail(400, "bad_request", "send {routine: the routine's id}");
-        const r = await owner("PATCH", `/api/routines/${b.routine}`, { status: "paused" });
-        if (r.status !== 200) throw fail(502, "upstream", `the control plane answered ${r.status}`);
-        log("routine paused", { module: w.module, routine: b.routine });
-        return send(res, 200, { paused: true });
       }
       if (hit && (hit.path.startsWith("/v1/wakes") || hit.path === "/v1/routines/cancel")) {
         if (hit.path === "/v1/wakes/events") {

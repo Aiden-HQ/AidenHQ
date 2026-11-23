@@ -361,7 +361,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       // A handoff (task_handoff on the agent's part of the owner's own task) is a report on their task, not a question: it waits
       // on them as before.
       const r = who && escalate && b.handoff !== true ? await escalate.ask(caller.task, who, question, asked, () => { if (deadlineError) throw deadlineError; }) : undefined;
-      if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the chief of staff too many questions today: nothing was sent and this task's wait is unchanged. Decide with your handbook, brief and advisor, and note the assumption in your result.");
+      if (r?.sent === "limit") throw fail(429, "rate_limited", "You have asked the Fleet Steward or the chief of staff too many questions today: nothing was sent and this task's wait is unchanged. Decide with your handbook, brief and advisor, and note the assumption in your result.");
       // One open ask per task: a different question while the recorded one is unanswered fails the call, actionably (escalate.ask
       // answers only a retry of the same question). A state that can't be read now fails the call too.
       if (r?.sent === "open" && r.to) throw fail(409, "conflict", `This task's earlier question is still open with ${r.to}: tell that recipient to answer it, or finish the work that asks, then ask again. Nothing was sent and this task's wait is unchanged.`);
@@ -403,7 +403,7 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       freshAgents();
       if (after && !CLOSED.has(String(after.status))) await reconcileOne(after, parkOf(caller.task)).catch((e: Error) => log("task wait park failed", { task: caller.task, err: e.message }));
       log("task wait", { task: caller.task, agent: caller.key, until: iso(until), ...(who ? { to } : {}) });
-      const chief = to === "chief_of_staff" ? { note: "Your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on this task and wakes you." } : {};
+      const chief = to === "steward" ? { note: "Your question went to the Fleet Steward, who settles it from the owner's decisions (and has it brought to the owner only when the call is theirs). Its answer comes as a comment on this task and wakes you." } : to === "chief_of_staff" ? { note: "Your question went to the chief of staff, who settles it (and brings it to the owner only when the call is theirs). Its answer comes as a comment on this task and wakes you." } : {};
       return { waiting: true, until: iso(until), ...(who ? { to } : {}), ...(r?.sent === "asked" ? { asked: true } : {}), ...chief };
     },
 

@@ -348,6 +348,34 @@ export class Grades {
   }
 
   /**
+   * The Fleet Steward's rebind (role fleet-settle, checked by the route): a filed task's deliverable moved to the work that
+   * actually landed (a merged PR the task's own PRs didn't name), its rubric kept as filed. The row restarts as a re-file does
+   * and, the work being done, is graded at once (`resume`). Any filer's row, recorded or not; a settled row or a closed task is
+   * refused, and the same deliverable is no change.
+   */
+  rebind(issueId: string, deliverable: Deliverable, { closed = false }: { closed?: boolean } = {}): Grade {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const have = this.get(issueId);
+      if (!have) throw new Conflict("this task has no filed rubric: there is no grade to rebind");
+      if (have.deliverable.kind !== deliverable.kind) throw new Invalid(`deliverable.kind: this task's deliverable is a ${have.deliverable.kind}; a rebind keeps its kind`);
+      if (JSON.stringify(have.deliverable) === JSON.stringify(deliverable)) {
+        this.db.exec("COMMIT");
+        return have;
+      }
+      if (have.state === "satisfied" || have.state === "not_graded") throw new Conflict(`this task's grade is settled (${have.state}): nothing to rebind`);
+      if (closed) throw new Conflict("this task is already closed: its grade is left as it settled");
+      this.restart(issueId, JSON.stringify(have.rubric), JSON.stringify(deliverable), { resume: true });
+      this.db.exec("COMMIT");
+      this.events?.emit("grades", issueId);
+      return this.get(issueId)!;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  /**
    * The rows the runner grades: a completion path hit the gate, the evidence was still coming, the grader failed (no verdict
    * yet) and its next retry is due, or an amendment restarted a row whose work was already submitted (`resume`).
    */

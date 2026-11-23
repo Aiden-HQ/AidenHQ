@@ -93,7 +93,7 @@ type QualityRow = { name: string; state: "none" | "ok" | "unknown"; checks?: { n
 /** An app-supplied name reduced to a short slug (a-z, 0-9, - and _). */
 const slug = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "unnamed";
 
-/** A routine's title for a line the chief of staff reads: its own words, minus anything but letters, digits and light punctuation, at most 60. */
+/** A routine's title for a line an agent reads: its own words, minus anything but letters, digits and light punctuation, at most 60. */
 const plain = (v: unknown) => String(v ?? "").replace(/[^\w .:-]+/g, " ").trim().slice(0, 60);
 
 export function qualityFindings(apps: QualityRow[], openKeys: string[]): Incident[] {
@@ -132,7 +132,7 @@ export function missedFires(routines: RoutineRow[], t: number): Incident[] {
   return out;
 }
 
-/** The routines (by id) whose newest FAILS finished jobs all hard-failed; `since[id]` is when the detector last paused it, so a resume counts only newer jobs. */
+/** The routines (by id) whose newest FAILS finished jobs all hard-failed; `since[id]` is when it was last found paused, so a resume counts only newer jobs. */
 export function failingRoutines(jobs: JobRow[], since: Record<string, string> = {}): { routine: string; failures: number }[] {
   const by = new Map<string, JobRow[]>();
   for (const j of jobs) if (j.routine && j.ended_at && !["running", "admitted", "cancelled", "lost"].includes(j.state) && !(since[j.routine] && j.ended_at <= since[j.routine]!)) by.set(j.routine, [...(by.get(j.routine) ?? []), j]);
@@ -148,7 +148,7 @@ export function failingRoutines(jobs: JobRow[], since: Record<string, string> = 
 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
 export interface Incident { key: string; reason: string; critical?: boolean; /** The evidence changes while the flag stays open (a total): each poll replaces the stored reason. */ refresh?: boolean; /** The task the flag is about, when its key names a card rather than a task. */ task?: string }
-/** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: the chief of staff was told the gate stayed jammed (open two hours). Each once, apart. */
+/** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: the Steward got a check task for the gate that stayed jammed (open two hours). Each once, apart. */
 interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean; task?: string; /** When the gate's activity lookup first failed while the gate was past its two hours. */ lookup_failed_at?: string; /** The newest activity observed for this flag, kept so a later lookup that finds none, or fails, doesn't rewind the clock. */ last_activity?: string }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
 
@@ -186,7 +186,7 @@ export const QUIET_MS = 30 * MIN;
  * One tick: run the checks, open what newly tripped, close what recovered, and file once for whatever is new (incidents and
  * recovery notes together). Marked filed only when the kernel took it; otherwise the next tick tries again. Within `quietMs`
  * of the last filing only a new critical incident files; the rest wait (still unfiled) for a later tick. `jam`: a task for the
- * chief of staff naming the jammed gates' keys (the Steward didn't clear them), never the owner.
+ * Steward naming the jammed gates' keys (its check runs didn't clear them), never the owner.
  */
 export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: { incidents: { key: string }[]; recovered: { key: string }[] }) => Promise<boolean>, notify: (text: string) => Promise<void>, now = new Date(), quietMs = 0, stewardOn = true, acting?: (task: string) => Promise<string | undefined>, jam?: (keys: string[]) => Promise<void>): Promise<void> {
   const s = detectorState(kv);
@@ -221,7 +221,7 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     if (await notify("The Fleet Steward is unreachable: its health flags have not reached it for a day. Ask Aiden to check the fleet-steward module.").then(() => true, () => false)) for (const o of unheard) o.told = true;
   }
   // A jammed gate (a PR on code review, an approval card with the AI reviewer, an answered wait that never resumed) stays closed for
-  // everyone while it is open, so two hours after it was raised the chief of staff gets a task naming it (the Steward didn't clear
+  // everyone while it is open, so two hours after it was raised the Steward gets its own check task naming it (the Steward didn't clear
   // it), whether or not a check task carried it. The owner is not told: an agent settles it.
   // A gate someone is acting on is not jammed: its two hours restart from the last job or agent comment (`acting`).
   const jammed: [string, Open][] = [];
@@ -298,7 +298,7 @@ const QUEUE_MS = HOUR_MS; // an agent's tasks held on capacity this long (the ol
 const REVIEW_STALL_MS = 15 * MIN; // a card with the AI reviewer, undecided this long (a review normally takes seconds to a few minutes)
 const REVIEW_GATE_MS = 90 * MIN; // a PR the merge queue holds for code review's verdict with no job on the task, twice a review run's 45-minute limit
 const UNRESUMED_MS = HOUR_MS; // a task still waiting on an answer that arrived this long ago
-const GATE_ESCALATE_MS = 2 * HOUR_MS; // a jammed gate's flag still open this long after it was raised goes to the chief of staff (tick's `jam`)
+const GATE_ESCALATE_MS = 2 * HOUR_MS; // a jammed gate's flag still open this long after it was raised files a Steward check task (tick's `jam`)
 const GATE_LOOKUP_MS = HOUR_MS; // a failed activity lookup defers that flag this long; still failing past it, the clock decides
 const JAMMED = /^(gate|unresumed|review-stall):/;
 const MAX_LOOKUPS = 20;
@@ -544,8 +544,8 @@ export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
   }).map((s) => s.name);
 }
 
-/** The owner's alert list, as checks. `pause` pauses a routine (kernel role kernel.routines). `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: string) => Promise<void>; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
+/** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
+export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -584,7 +584,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
   };
   /** Tasks a component incident explains this run: their own incidents are not raised anew (one already open stays until it recovers). */
   let explained = new Set<string>();
-  // A notice per incident (a task for the chief of staff, main.ts toChief), recorded as told only once it went out: a failed send is tried again on the next check, and
+  // A notice per incident (a Steward check task, main.ts toSteward), recorded as told only once it went out: a failed send is tried again on the next check, and
   // forgotten when the incident is gone, so its next occurrence is told again.
   const told = (): string[] => JSON.parse(d.kv.get("owner_told") ?? "[]");
   const announce = async (key: string, text: string, send = (x: string) => d.notify?.(x, key)) => {
@@ -664,65 +664,25 @@ export function checks(d: { kernel: KernelClient; kv: Kv; pause: (routine: strin
       }
       return out;
     },
-    // A routine whose last 3 jobs all hard-failed is paused (the owner is told; Aiden resumes it once it's fixed). Not while the
-    // failures are fleet-wide: a credits (402) or key (401) refusal, or no agent finishing a job at all, is not the routine's fault.
+    // A routine whose last 3 jobs all hard-failed is an incident for the Steward, which decides whether to pause it
+    // (fleet_operate) and fixes its cause (a fleet-wide failure, a credits or key refusal, is not the routine's own). A pause the
+    // Steward made stays an incident until it resumes it.
     async routine() {
       const t = now();
       const rows = await routines();
       const jobs = (await Promise.all((await agents()).map((a) => jobsOf(a.id)))).flat();
-      const recent = jobs.filter((j) => !["running", "admitted", "cancelled"].includes(j.state) && age(j.ended_at, t) < 60 * MIN);
-      const failed = recent.filter((j) => HARD_FAIL.has(j.state));
-      let fleetWide = failed.length > 0 && !recent.some((j) => j.state === "done") && new Set(failed.map((j) => j.agent)).size >= 2;
-      for (const j of failed.sort((a, b) => b.ended_at!.localeCompare(a.ended_at!)).slice(0, 5)) {
-        if (fleetWide) break;
-        const final = ((await d.kernel.call("GET", `/v1/work?job=${encodeURIComponent(j.id)}`).catch(() => undefined)) as { final?: string | null } | undefined)?.final ?? "";
-        fleetWide = /\b(401|402)\b|insufficient credits|invalid api key/i.test(final);
-      }
+      // When each routine was found paused: its failures before then never flag it again once it is resumed.
       const since: Record<string, string> = JSON.parse(d.kv.get("routine_paused_at") ?? "{}");
-      const owed = (): Record<string, number> => JSON.parse(d.kv.get("routine_notice_owed") ?? "{}");
-      // The routines this detector paused itself (`since` is only the failure cutoff, set for a hand-paused one too).
-      const mine = new Set<string>(JSON.parse(d.kv.get("routine_paused_by_detector") ?? "[]"));
-      const justPaused = new Set<string>(); // paused by this check: the rows were read before it
       const out: Incident[] = [];
       for (const { routine, failures } of failingRoutines(jobs, since)) {
         const row = rows.find((r) => r.id === routine);
         if (!row || row.status === "archived") continue;
-        // Paused by hand: its old failures must not re-pause it on resume.
-        if (row.status === "paused" && !since[routine]) { since[routine] = new Date(t).toISOString(); d.kv.set("routine_paused_at", JSON.stringify(since)); continue; }
-        if (row.status === "active" && !fleetWide) {
-          await d.pause(routine);
-          since[routine] = new Date(t).toISOString();
-          d.kv.set("routine_paused_at", JSON.stringify(since));
-          mine.add(routine);
-          justPaused.add(routine);
-          // Kept at once, beside the cutoff: a later failure in this check must not lose whose pause it is.
-          d.kv.set("routine_paused_by_detector", JSON.stringify([...mine]));
-          // Its id only: a routine's title is an agent's words, and this text is the chief of staff's instruction. Owed until told: a
-          // failed filing (quiet start, the kernel down) is tried again below on each check while it stays paused.
-          d.kv.set("routine_notice_owed", JSON.stringify({ ...owed(), [routine]: failures }));
-        }
-        out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed${row.status === "paused" ? " (paused until the owner resumes it)" : ""}` });
+        if (row.status === "paused") { since[routine] = new Date(t).toISOString(); d.kv.set("routine_paused_at", JSON.stringify(since)); continue; }
+        out.push({ key: routine, reason: `routine ${plain(row.title)}: its last ${failures} runs failed` });
       }
-      // Paused by this detector and still paused: the flag stays open until the owner resumes it (a resume clears it). A routine
-      // paused by hand is the owner's choice: no flag.
-      for (const id of [...mine]) {
-        const row = rows.find((r) => r.id === id);
-        const pausedNow = row?.status === "paused" || justPaused.has(id);
-        if (!pausedNow) { mine.delete(id); continue; }
-        if (row && !out.some((i) => i.key === id)) out.push({ key: id, reason: `routine ${plain(row.title)}: paused after repeated failures, until the owner resumes it` });
-      }
-      d.kv.set("routine_paused_by_detector", JSON.stringify([...mine]));
-      // The notices this detector owes (routines it paused), each told once; one no longer paused is owed nothing.
-      for (const [id, n] of Object.entries(owed())) {
-        const left = { ...owed() };
-        // Paused now: read so, or paused by this very check (the rows were read before it).
-        if (rows.find((r) => r.id === id)?.status === "paused" || justPaused.has(id)) {
-          const ok = await d.notify?.(`Routine paused: routine ${id} failed ${n} runs in a row (fleet_status names it). Resume it once its cause is fixed.`, `routine-paused:${id}`).then(() => true, () => false);
-          if (!ok) continue;
-        }
-        delete left[id];
-        d.kv.set("routine_notice_owed", JSON.stringify(left));
-      }
+      // The Steward's own pauses (the kernel's record of its fleet_operate pauses): each open until it resumes the target.
+      const pauses = ((await d.kernel.call("GET", "/v1/work?pauses=1")).pauses ?? []) as { target: string; kind: string; name?: string; at: string }[];
+      for (const p of pauses) out.push({ key: `paused:${p.target}`, reason: `${p.kind} ${plain(p.name ?? p.target)}: paused by the Steward since ${p.at}; resume it once its cause is fixed` });
       return out;
     },
     // An active routine whose next cron fire is overdue by 15 minutes and no run started: Paperclip's scheduler has stopped.

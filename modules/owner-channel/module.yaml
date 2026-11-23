@@ -15,8 +15,10 @@ connections:
       named: [ notify_recent ]
       # notify: a message to the owner (decision, done, fyi, alert, digest); with `task`, the agent's reply on that chat.
       write: [ notify ]
-# Before telling the owner something, the agent glances at what they were already told.
 prompts:
+  # One rule for every message an agent sends the owner on its own (the Steward's daily interruption pass checks it).
+  - { id: notify, file: prompts/notify.md, when: { tools: [ owner_channel.notify ] } }
+  # Before telling the owner something, the agent glances at what they were already told.
   - { id: told, file: prompts/told.md, when: { tools: [ owner_channel.notify_recent ] } }
 settings:
   # The channels a message tries, in order: the first one set up that delivers it gets it (the one the owner last wrote from
