@@ -329,12 +329,19 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // The caller's `limit` bounds what one answer returns. When it is reached the scan stops and hands back a continuation
   // that resumes exactly where it stopped (mid-page included), so nothing is skipped and `null` still means exhausted.
   const reachedLimit = () => plan.limit !== undefined && messages.length >= plan.limit;
+  // Once the limit is reached, the rest of the feed is only walked to find out whether one more match exists: the answer
+  // says the set is complete when it doesn't, so a continuation is never an empty page (which a caller reads as unknown).
+  let full = false;
+  let pending: Position | undefined;
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
     const r = await get("reactions.list", { full: "true", limit: String(pageSize), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
     if (!r.ok) return r;
     const { json } = r;
     const items: unknown[] = Array.isArray(json.items) ? json.items : [];
+    // Where a continuation for this page would resume, if a match turns up after the limit: the same page, skipping what
+    // was already returned. A later page replaces it with that page's own start.
+    pending = { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] };
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as Record<string, any>;
       const message = messageOf(item, plan.emoji, signIn.userId);
@@ -346,22 +353,19 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       }
       const key = `${message.channel}\u0000${message.ts}`;
       if (seen.has(key)) continue;
+      if (full) {
+        // The limit was reached on an earlier page and this is the first match after it: the continuation starts here.
+        return { ok: true, messages, nextCursor: encodePosition({ ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] }) };
+      }
       seen.add(key);
       messages.push(message);
-      if (reachedLimit()) {
-        // Re-read this same page next time (the cursor, the numbered page, or the first page) and skip what was returned.
-        const rest = i + 1 < items.length ? { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] } : undefined;
-        if (rest) return { ok: true, messages, nextCursor: encodePosition(rest) };
-        break; // this page is done: continue to the cursor below, where the limit check hands the next page back
-      }
+      if (reachedLimit()) full = true;
     }
+    if (full) pending = { ...(cursor ? { c: cursor } : {}), ...(numbered ? { p: numbered } : {}), ...(!cursor && !numbered ? { f: true as const } : {}), n: pageSize, seen: [...seen] };
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
     if (next) {
       // A cursor already visited can't advance: the set is incomplete, and handing the same cursor back would loop.
       if (cursors.has(next)) return { ok: false, detail: "reactions.list returned a cursor this scan had already followed" };
-      // The limit was reached exactly at a page boundary: the continuation re-reads this same page and skips what was
-      // returned, so a reaction removed since then (which shifts items into this page) can't make it miss one.
-      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ ...(cursor ? { c: cursor } : { f: true as const }), n: pageSize, seen: [...seen] }) };
       cursor = next;
       numbered = undefined;
       continue;
@@ -369,15 +373,15 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // No cursor: Slack's other shape is numbered pages. More of them is not the end of the set.
     const pages = Number(json.paging?.pages), current = Number(json.paging?.page);
     if (Number.isFinite(pages) && pages > current) {
-      // At a page boundary the same rule applies: re-read this page and filter by identity, never jump past an unread one.
-      if (reachedLimit()) return { ok: true, messages, nextCursor: encodePosition({ p: Number.isFinite(current) ? current : numbered ?? 1, n: pageSize, seen: [...seen] }) };
       if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
       else numbered++;
       continue;
     }
     return { ok: true, messages, nextCursor: null };
   }
-  // The cap: a cursor continues the set, but numbered paging has none to hand back, so the set is unknown.
+  // The cap. With the limit already reached and more of the feed unread, the page just walked is the continuation; without
+  // one (numbered paging, which has no cursor to hand back) the set is unknown.
+  if (full && pending) return { ok: true, messages, nextCursor: encodePosition(pending) };
   if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
   // A cursor continuation carries the same fixed page size and identities, so resuming can't repeat a message.
   return { ok: true, messages, nextCursor: cursor ? encodePosition({ c: cursor, n: pageSize, seen: [...seen] }) : null };
@@ -412,6 +416,7 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
+    let ended = false;
     const settle = (out: Peeked) => {
       if (settled) return;
       settled = true;
@@ -420,10 +425,14 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       req.off("close", onClose);
       req.off("error", onClose);
       req.pause();
-      try {
-        if (chunks.length) req.unshift(Buffer.concat(chunks));
-      } catch {
-        /* nothing read yet: the proxy reads the stream as it is */
+      // Only replay while the stream is still readable: an ended stream throws ERR_STREAM_UNSHIFT_AFTER_END_EVENT
+      // asynchronously, which a try/catch here can't stop. When it has ended, these bytes are the answer's, not the proxy's.
+      if (!ended) {
+        try {
+          if (chunks.length) req.unshift(Buffer.concat(chunks));
+        } catch {
+          /* nothing read yet: the proxy reads the stream as it is */
+        }
       }
       resolve(out);
     };
@@ -457,11 +466,12 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
     };
     const onEnd = () => {
       if (settled) return;
+      ended = true;
       if (!chunks.length) return settle({ kind: "pass" }); // no body: the proxy answers it as it always has
       settle(parse() ?? { kind: "invalid" });
     };
     // A client that goes away mid-body never emits `end`: settle so the route ends and its listeners are removed.
-    const onClose = () => settle({ kind: "pass" });
+    const onClose = () => { ended = true; settle({ kind: "pass" }); };
     // No pause first: an explicitly paused stream doesn't flow when a `data` listener is added.
     req.on("data", onData);
     req.on("end", onEnd);
