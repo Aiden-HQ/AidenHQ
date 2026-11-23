@@ -30,11 +30,11 @@ security fix (step 4).
    can be re-pushed after its release, so the release still shows the old date. A date is digest-bound only when the
    registry reports it for that digest (a ghcr image: the Packages API). When it cannot be read — a token with no access to
    another org's package, say — do not approximate it from the release or the tag. The image is adopted only through
-   `.github/supply-chain-exceptions.yaml`: a security fix whose advisory covers the pinned digest (the entry matches image
-   and tag, so confirm the digest itself carries the fix), or the owner's unexpired approval of that exact digest, at most
-   14 days out, for a release of code already running elsewhere that waiting would block. CI reads exceptions only after
-   it dates the pin and lets an undatable one through with a warning, so a green check is never proof the image is old
-   enough.
+   `.github/supply-chain-exceptions.yaml`, which the owner reviews either way: a security fix whose advisory covers the
+   pinned digest (the entry matches image and tag, so confirm the digest itself carries the fix), or the owner's
+   unexpired approval of that exact digest, at most 14 days out, for a release of code already running elsewhere in the
+   product that waiting would block. CI reads exceptions only after it dates the pin and lets an undatable one through
+   with a warning, so a green check is never proof the image is old enough.
 4. A newer version is allowed only for a security fix: the script returns it with the advisory (the lowest fixing
    release). List it in `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in
    the same PR as the pin. An app repo's CI runs the checker from its base commit, so until its default branch carries the
