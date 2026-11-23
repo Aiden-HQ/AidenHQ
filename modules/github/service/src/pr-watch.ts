@@ -67,7 +67,8 @@ const UPDATE_OK_WAIT_MIN = 10;
 /** A check run left not completed while its Actions job finished is re-run only once the job's completion is this old: a fresh
  * job's check run can lag by seconds, and a spurious re-run wastes a whole run. */
 const WEDGED_GRACE_MS = 3 * 60_000;
-/** Per pass, the wedged checks whose Actions job is read, and the re-runs asked: a queued matrix must not hold the scan. */
+/** Per pass, across every PR, the wedged checks whose Actions job is read, and the re-runs asked: a queued matrix must not
+ * hold the scan. What the pass does not reach, the next resumes from. */
 const WEDGED_READS_PER_PASS = 20, WEDGED_ASKS_PER_PASS = 3;
 /** How long after a re-run was asked a check run still not completed is reported to its task: the merge gate waits on it, so a
  * still-stuck head is reported rather than waited on silently. */
@@ -120,6 +121,10 @@ export function startPrWatch(o: PrWatchOptions) {
   const stateFile = join(o.cacheDir, "pr-watch.json");
   let findingsWakes = 0; // review-findings wakes sent in this pass
   let gateDown = false;  // code review answered unreachable in this pass: no more verdict calls until the next
+  // The wedged check runs this pass:
+  let wedgedReads = 0;   // their Actions jobs read, across every PR of every repo
+  let wedgedAsks = 0;    // the re-runs asked
+  let wedgedAt = 0;      // where the last PR's list stopped, so the next visit resumes rather than starving its tail
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => ({}));
@@ -264,13 +269,14 @@ export function startPrWatch(o: PrWatchOptions) {
       } catch (e) { log("wedged check runs' read failed", { pr: pr.url, head, err: String((e as Error).message).slice(0, 200) }); return []; }
       if (total && runs.length < total) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length, total });
       const out: { at: number; accepted: boolean }[] = [];
-      // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix. The pass reads at
-      // most this many of their jobs, and stops asking once it has re-run another this many: a queued matrix must not hold a
-      // later PR's merge (the rest are handled on the following passes).
-      let budget = WEDGED_READS_PER_PASS;
-      let asked = 0;
-      for (const c of runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed")) {
-        if (budget <= 0) break;
+      // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix. The pass reads a
+      // bounded number of their jobs and asks for a bounded number of re-runs, across all PRs, so a queued matrix cannot hold
+      // a later PR's merge. The scan starts from where this head's last visit stopped, so no check is starved by the limit.
+      const live = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed");
+      const start = live.length ? wedgedAt % live.length : 0;
+      wedgedAt = start;
+      for (const c of [...live.slice(start), ...live.slice(0, start)]) {
+        if (wedgedReads >= WEDGED_READS_PER_PASS || wedgedAsks >= WEDGED_ASKS_PER_PASS) { wedgedAt = start + 1; break; }
         const ledgerKey = `${url}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
         const seen: { at: string; done: { check: number; at: string; accepted: boolean }[] } | undefined = state.wedged[ledgerKey];
         const myself = seen?.done.find((d) => d.check === Number(c.id));
@@ -284,7 +290,7 @@ export function startPrWatch(o: PrWatchOptions) {
         // A refusal still backing off: nothing is asked this tick, but the check is already one the head asked about.
         if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) { wedged(); continue; }
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
-        budget--;
+        wedgedReads++;
         let job: { status: number; body: any };
         try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
         catch (e) {
@@ -325,8 +331,8 @@ export function startPrWatch(o: PrWatchOptions) {
         save();
         // A refusal keeps the first ask's time, so a check GitHub keeps refusing is reported once the interval has passed.
         if (r.status >= 300 && Date.now() - Date.parse(state.wedged[ledgerKey].at) >= WEDGED_REPORT_MS) out.push({ at: Date.parse(state.wedged[ledgerKey].at), accepted: false });
-        asked++;
-        if (asked >= WEDGED_ASKS_PER_PASS) break;
+        wedgedAsks++;
+        wedgedAt = start + 1;
       }
       return out;
     }
@@ -699,6 +705,8 @@ export function startPrWatch(o: PrWatchOptions) {
     let open = 0;
     findingsWakes = 0;
     gateDown = false;
+    wedgedReads = 0;
+    wedgedAsks = 0;
     if (o.connected && !o.connected()) return open;
     for (const { repo, duties } of o.repos) {
       try { open += await scan(repo, duties, all); }
