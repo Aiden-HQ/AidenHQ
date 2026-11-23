@@ -331,7 +331,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async (n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async (_r, n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
@@ -378,7 +378,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async () => false, readKey: "rd", caller: async () => ({}) }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => false, readKey: "rd", caller: async () => ({}) }),
     });
     const strictBase = await listen(strict);
     const res = await fetch(`${strictBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
@@ -389,6 +389,26 @@ describe("interception through the proxy", () => {
     const list = await fetch(`${strictBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
     expect(((await list.json()) as any).result.tools.map((t: any) => t.name)).toEqual(["slack_search_public", "slack_search_public_and_private"]);
     strict.close();
+  });
+
+  it("refuses on /mcp where the proxy would not serve the tool, never answering from the Web API alone", async () => {
+    const unlisted = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      serviceKey: "svc",
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => false, serviceKey: "svc", caller: async () => ({}) }),
+    });
+    const unlistedBase = await listen(unlisted);
+    const res = await fetch(`${unlistedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(body.result).toMatchObject({ isError: true });
+    expect(payload(body)).toMatchObject({ error: "refused", set: "unknown" });
+    unlisted.close();
   });
 
   it("returns an explicit unsupported error for has:: and for hasmy:: with an extra modifier, never an empty page", async () => {
@@ -489,7 +509,7 @@ describe("interception through the proxy", () => {
       caller: async () => ({}),
       instructions: "test",
       stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({}), authState: () => "expired", servedRead: async () => false, readKey: "rd", caller: async () => ({}) }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({}), authState: () => "expired", served: async () => false, readKey: "rd", caller: async () => ({}) }),
     });
     const signedOutBase = await listen(signedOut);
     const readRes = await fetch(`${signedOutBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
