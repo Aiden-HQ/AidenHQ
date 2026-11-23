@@ -211,13 +211,14 @@ export class Store {
 
   /**
    * One usage record; the same key again (a retried report) is ignored, except over an `unsettled` call (the gateway's
-   * reservation for a call a kernel restart cut off), which its trued-up `interrupted` record replaces. An unsettled call's
+   * reservation for a call cut off before its final usage), which its trued-up `interrupted` record replaces, keeping the
+   * call's own time (the true-up's is later, maybe another day). An unsettled call's
    * reserved amount is the gateway's fail-closed hold, not spend: it counts as unpriced here.
    */
   addUsage(u: UsageRecord): void {
     this.db
       .prepare(`INSERT INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (key) DO UPDATE SET at = excluded.at, model = excluded.model, input = excluded.input, cached = excluded.cached, output = excluded.output, cost_usd = excluded.cost_usd, ms = excluded.ms, status = excluded.status WHERE usage.status = 'unsettled'`)
+        ON CONFLICT (key) DO UPDATE SET model = excluded.model, input = excluded.input, cached = excluded.cached, output = excluded.output, cost_usd = excluded.cost_usd, ms = excluded.ms, status = excluded.status WHERE usage.status = 'unsettled'`)
       .run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.status === "unsettled" ? null : (u.costUsd ?? null), u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
   }
 

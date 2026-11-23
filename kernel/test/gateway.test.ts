@@ -144,12 +144,13 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
   now += 120_000;
   assert.equal((await call(jobToken("ag1", "run3", exp))).status, 401);
 
-  // OpenRouter's stream breaks mid-body: the call still lands in the ledger (upstream_aborted), charged its reservation (the input's estimate).
+  // OpenRouter's stream breaks mid-body: the call still lands in the ledger, charged its reservation (the input's estimate and
+  // its 4,096 output tokens) as `unsettled` until OpenRouter's record of its generation trues it up.
   await call(jobToken("ag1", "run4"));
   await call(jobToken("ag1", "run4"), { model: "breaks" }).catch(() => {});
-  const aborted = (await usage()).filter((r) => r.status === "upstream_aborted");
+  const aborted = (await usage()).filter((r) => r.status === "unsettled");
   assert.deepEqual(aborted.map((r) => r.runId), ["run4"]);
-  assert.ok(aborted[0].costUsd > 0 && aborted[0].costUsd < 0.0001, String(aborted[0].costUsd));
+  assert.ok(aborted[0].costUsd > 0.004096 && aborted[0].costUsd < 0.0042, String(aborted[0].costUsd));
 
   // A chat task's cap counts the UTC day: refused at $0.09 today, open again tomorrow.
   for (const r of ["c1", "c2", "c3"]) await call(jobToken("ag1", r));
@@ -294,7 +295,7 @@ test("gateway: a control plane blip never settles a chat run as capped for life,
   assert.equal(gw.db.prepare("SELECT perpetual FROM runs").get().perpetual, 1);
   for (let i = 0; i < 100 && gw.inflight() > 0; i++) await new Promise((ok) => setTimeout(ok, 10));
   assert.equal(gw.inflight(), 0);
-  assert.equal(gw.db.prepare("SELECT status FROM calls").get().status, "upstream_aborted");
+  assert.equal(gw.db.prepare("SELECT status FROM calls").get().status, "unsettled"); // its generation is trued up later
 });
 
 test("gateway: Anthropic format: a check token's call settles at the streamed usage; only allowed betas and fields go up; a server tool is refused", async (t) => {
@@ -340,14 +341,15 @@ const completed = sse([...opened("gen-ok"), { type: "response.output_text.delta"
 async function streamRig(t, settings = {}) {
   const dir = mkdtempSync(join(tmpdir(), "gw-"));
   writeFileSync(join(dir, "gateway.json"), JSON.stringify(settings));
-  const rig = { answers: [], posts: 0, logged: [] };
-  const upstream = await serve((req, res) => { req.resume(); req.on("end", () => { rig.posts++; rig.answers.shift()(res); }); });
+  const rig = { answers: [], posts: 0, logged: [], bodies: [] };
+  const upstream = await serve((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { rig.posts++; if (b) rig.bodies.push(JSON.parse(b)); rig.answers.shift()(res); }); });
   const gw = createGateway({ dbFile: join(dir, "usage.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => ({ openrouter_key: "sk-real", gateway_job_secret: "job-secret" })[n] ?? "", upstream: upstream.url, modelsUrl, retryDelaysMs: [0, 0], streamIdleMs: 300, log: (m, f) => rig.logged.push([m, f]) });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.closeAllConnections?.(); upstream.s.close(); front.s.close(); gw.close(); });
   const token = mintToken("job-secret", { kind: "reviewer" });
   // A 30 KB prompt: reserved at about 10,000 input tokens x $1/M = $0.01.
   rig.body = { model: "m", stream: true, input: "x".repeat(30_000) };
+  rig.gw = gw;
   rig.call = async (path = "responses", body = rig.body) => { const r = await fetch(`${front.url}/api/v1/${path}`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); return { status: r.status, text: await r.text() }; };
   rig.rows = () => gw.db.prepare("SELECT status, cost_usd, input, output FROM calls ORDER BY rowid").all().map((x) => ({ ...x }));
   rig.fresh = () => { gw.db.exec("DELETE FROM calls"); rig.posts = 0; };
@@ -385,11 +387,23 @@ test("gateway: a stream that fails in-band is booked free as stream_error (OpenR
   await rig.call();
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
 
-  // A clean end with neither usage nor a finish (no error event) fails the same way.
+  // A clean end with neither usage nor a finish (no error event) is no in-band failure: OpenRouter may have billed it, so it
+  // keeps its reservation (input estimate plus its output bound), then is settled from OpenRouter's record of its generation.
   rig.fresh();
   rig.answers = [streamed(sse([...opened("gen-c"), { type: "response.output_text.delta", delta: "Hi" }]))];
   await rig.call();
-  assert.deepEqual(rig.rows().map((x) => x.status), ["stream_error"]);
+  [row] = rig.rows();
+  assert.equal(row.status, "unsettled");
+  assert.ok(row.cost_usd > 0.01, String(row.cost_usd));
+  rig.answers = [(res) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { model: "m", total_cost: 0.0042, native_tokens_prompt: 10_000, native_tokens_completion: 3 } }))];
+  await rig.gw.trueUp();
+  assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["interrupted", 0.0042]]);
+  // Without a generation id it stays at the reservation, never $0, still `unsettled` (a hold, not a bill, for the board).
+  rig.fresh();
+  rig.answers = [streamed(sse([{ type: "response.output_text.delta", delta: "Hi" }]))];
+  await rig.call();
+  [row] = rig.rows();
+  assert.deepEqual([row.status, row.cost_usd > 0.01], ["unsettled", true]);
   assert.doesNotMatch(JSON.stringify(rig.logged), /secret provider text/, "provider and model text stay out of the journal");
 });
 
@@ -446,12 +460,41 @@ test("gateway: an answer that failed before any output is re-run once when its e
   assert.equal(rig.posts, 1);
   assert.deepEqual(rig.rows().map((x) => [x.status, x.cost_usd]), [["ok", 0.02]]);
 
-  // A re-run is cap-checked: once the call's own reservation ($0.01) is past the install's day limit ($0.005 here), it goes to the caller as it came.
+  // A re-run is cap-checked against everything but the call's own hold (which already covers it): its own reservation past
+  // the install's day limit ($0.005 here) still re-runs; other spend reaching the limit meanwhile sends the failure to the caller.
   const capped = await streamRig(t, { install_day_usd: 0.005 });
   capped.answers = [streamed(sse([...opened("gen-c"), failed("gen-c", "rate_limit_exceeded")])), streamed(completed)];
+  assert.match((await capped.call()).text, /response\.completed/);
+  assert.equal(capped.posts, 2);
+  capped.fresh();
+  const other = () => { const t0 = new Date(); capped.gw.db.prepare("INSERT INTO calls (key, at, day, run_key, kind, component, model, cost_usd, status) VALUES ('other', ?, ?, 'r', 'agent', 'agent', 'm', 1, 'ok')").run(t0.toISOString(), t0.toISOString().slice(0, 10)); };
+  capped.answers = [(res) => { other(); streamed(sse([...opened("gen-c"), failed("gen-c", "rate_limit_exceeded")]))(res); }, streamed(completed)];
   assert.match((await capped.call()).text, /response\.failed/);
   assert.equal(capped.posts, 1);
-  assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error"]);
+  assert.deepEqual(capped.rows().map((x) => x.status), ["stream_error", "ok"]); // the call, then the other spend
+  // The re-run is sized again: the discarded attempt's input estimate ($0.01) leaves it less output than the first attempt got.
+  const tight = await streamRig(t, { install_day_usd: 0.022 });
+  tight.answers = [streamed(sse(opened("gen-t"))), streamed(completed)];
+  assert.match((await tight.call()).text, /response\.completed/);
+  assert.equal(tight.posts, 2);
+  assert.equal(tight.bodies[0].max_output_tokens, 4096);
+  assert.ok(tight.bodies[1].max_output_tokens > 1900 && tight.bodies[1].max_output_tokens < 2000, String(tight.bodies[1].max_output_tokens));
+  // An attempt that ended before any output may be billed: its own input estimate ($0.01) past the limit refuses the re-run.
+  capped.fresh();
+  capped.answers = [streamed(sse(opened("gen-q"))), streamed(completed)];
+  await capped.call();
+  assert.equal(capped.posts, 1);
+  assert.deepEqual(capped.rows().map((x) => x.status), ["unsettled"]);
+
+  // An attempt that just ended before any output (no error event) is re-run too, but not booked free: its row keeps the input
+  // estimate, trued up from its generation.
+  rig.fresh();
+  rig.answers = [streamed(sse(opened("gen-n"))), streamed(completed)];
+  assert.match((await rig.call()).text, /response\.completed/);
+  assert.equal(rig.posts, 2);
+  const rows = rig.rows();
+  assert.deepEqual(rows.map((x) => x.status), ["ok", "unsettled"]);
+  assert.equal(rows[1].cost_usd, Math.ceil(JSON.stringify(rig.body).length / 3) / 1e6); // the input estimate at $1 a million
 
   // Keep-alives past the first-output wait (a quarter of the idle cut here): passed through as they come, and still billed.
   rig.fresh();
@@ -465,7 +508,13 @@ test("usage tap: an echoed finish_reason is no finish, and completed usage outli
   const echoed = usageTap(true);
   echoed.feed(sseOf({ type: "response.created", response: { id: "gen-1", error: null, tools: [{ parameters: { example: { finish_reason: "stop" } } }] } }));
   echoed.done();
-  assert.match(echoed.failure() ?? "", /no usage or finish/);
+  assert.match(echoed.failure()?.reason ?? "", /no usage or finish/);
+  assert.equal(echoed.failure()?.inBand, false);
+  // A finish without its final usage (Anthropic's message_stop with no usage-bearing message_delta): not complete either.
+  const unbilled = usageTap(true);
+  unbilled.feed(sseOf({ type: "message_start", message: { id: "msg_1", model: "m", usage: { input_tokens: 100, output_tokens: 1 } } }, { type: "message_stop" }));
+  unbilled.done();
+  assert.deepEqual(unbilled.failure(), { reason: "a finish without final usage; last event: message_stop", inBand: false });
   const completed = usageTap(true);
   completed.feed(sseOf({ id: "gen-2", model: "m", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.02 } }, { id: "gen-2", error: { code: 500 }, usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 } }));
   assert.deepEqual([completed.done()?.output, completed.done()?.costUsd, completed.failure()], [5, 0.02, undefined]);
