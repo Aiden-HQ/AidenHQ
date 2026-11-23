@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
-import { createSearch, gatewayModels, type Issue, type Models } from "../src/search.ts";
+import { PER_SIDE, createSearch, gatewayModels, type Issue, type Models } from "../src/search.ts";
 
 async function setup({ issues, failEmbed = () => false, listFails = () => false, hang = () => false, recent = () => [], summarize, slowEmbed, reconcileTimeoutMs }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; hang?: () => boolean; reconcileTimeoutMs?: number; recent?: () => Issue[]; summarize?: () => Models["summarize"]; slowEmbed?: () => Promise<void> }) {
   const pg = new PGlite({ extensions: { vector } });
@@ -109,7 +109,7 @@ test("keyword and meaning hits come back together with summaries off; a failed q
   assert.deepEqual((await search.search("WOR-0")).hits.map((h) => h.identifier).sort(), ["WOR-05", "WOR-06", "WOR-07"], "a half-typed identifier is a prefix");
 });
 
-test("tasks closed before the window page out newest first by a cursor, never cut by rank", async () => {
+test("tasks closed before the window page out newest first by a cursor", async () => {
   const closed = (id: string, at: string) => issue(id, "Lens cleanup", { status: "done", completedAt: at, updatedAt: at });
   const issues = new Map([["t-10", issue("t-10", "Lens work in progress")], ["t-11", closed("t-11", "2026-09-01T00:00:00Z")], ["t-12", closed("t-12", "2026-10-01T00:00:00Z")], ["t-13", closed("t-13", "2026-08-01T00:00:00Z")], ["t-14", closed("t-14", "2026-11-22T00:00:00Z")]]);
   const { search, drain } = await setup({ issues });
@@ -121,6 +121,33 @@ test("tasks closed before the window page out newest first by a cursor, never cu
   assert.deepEqual(first.done.map((h) => h.id), ["t-12", "t-11"]);
   const rest = await search.search("lens", { closedBefore: "2026-11-21T00:00:00Z", limit: 2, after: first.next! });
   assert.deepEqual({ done: rest.done.map((h) => h.id), next: rest.next }, { done: ["t-13"], next: null });
+});
+
+test("each side brings its best PER_SIDE, so a word every task shares doesn't return them all", async () => {
+  const issues = new Map(Array.from({ length: PER_SIDE + 5 }, (_, i) => { const id = `t-${String(100 + i)}`; return [id, issue(id, `Review lens ${i}`, { identifier: `WOR-${100 + i}` })] as const; }));
+  const { search, drain } = await setup({ issues });
+  for (const id of issues.keys()) search.mark(id);
+  await drain();
+  assert.equal((await search.search("lens")).hits.length, PER_SIDE, "keyword side");
+  assert.equal((await search.search("critique")).hits.length, PER_SIDE, "meaning side");
+});
+
+test("an identifier query is keyword only and ranks its own task first; a term's words match as a phrase", async () => {
+  const issues = new Map([
+    ["t-20", issue("t-20", "Kernel scheduler", { identifier: "WOR-1" })],
+    ["t-21", issue("t-21", "Review lens, after WOR-1", { identifier: "WOR-10", description: "Follows WOR-1." })],
+    ["t-22", issue("t-22", "task_wait answers early", { identifier: "WOR-11" })],
+    ["t-23", issue("t-23", "A task that should wait for review", { identifier: "WOR-12" })],
+  ]);
+  const { search, drain, embeds } = await setup({ issues });
+  for (const id of issues.keys()) search.mark(id);
+  await drain();
+  const asked = embeds.length;
+  const r = await search.search("WOR-1");
+  assert.equal(r.hits[0]!.identifier, "WOR-1", "its own task first, ahead of the tasks citing it and the prefix matches");
+  assert.equal(r.semantic, true);
+  assert.equal(embeds.length, asked, "no query embedding for an identifier");
+  assert.deepEqual((await search.search("task_wait")).hits.map((h) => h.identifier), ["WOR-11"], "not task and wait anywhere");
 });
 
 test("live changes go before the backfill, and a fresh edit pulls a backed-off retry forward", async () => {

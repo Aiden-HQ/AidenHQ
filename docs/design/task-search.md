@@ -85,14 +85,19 @@ status, routine runs included), with three separate rules:
 `/v1/board-api/warehouse/search`. One operation:
 
 1. Embed `q` (timeout 2.5 s). A failure, timeout or spend refusal sets `semantic: false` and the query goes on keyword only.
-2. One SQL statement over every live row: every typed term's lexemes ANDed, the last term's as prefixes (so `WOR-12`,
-   `dispat` and `kernel/src/jo` match as typed), OR `1 − (embedding <=> v) ≥ threshold` (calibrated per model by the
-   eval's negative queries). Exact cosine over ~11k rows is tens of milliseconds.
-3. Rank by reciprocal-rank fusion (k 60) of the keyword rank (`ts_rank_cd`) and the cosine rank.
-4. Answer `{ids, done, next, semantic}`: `ids`, every match not closed before `closed_before`, ranked (ids only: the board
+   A query that is one task identifier (`WOR-10957`) is keyword only and not embedded: its meaning is noise.
+2. One SQL statement over every live row: the typed terms ANDed, each term's lexemes as a phrase (`task_wait` is `task`
+   then `wait`, not both anywhere in the task) and the last term's last lexeme as a prefix (so `WOR-12`, `dispat` and
+   `kernel/src/jo` match as typed), OR `1 − (embedding <=> v) ≥ threshold` (calibrated per model by the eval's negative
+   queries). Exact cosine over ~11k rows is tens of milliseconds.
+3. **Each side brings at most its best 50** (`PER_SIDE`): the keyword matches by `ts_rank_cd` (a task whose identifier is
+   the query first), the meaning matches by cosine, ties by task id. The union is the match set, at most 100 tasks.
+4. Rank by reciprocal-rank fusion (k 60) of the keyword rank and the cosine rank.
+5. Answer `{ids, done, next, semantic}`: `ids`, every match not closed before `closed_before`, ranked (ids only: the board
    holds those cards, and the answer stays far under the board API's 4 MB); `recent`, on the first page, the matches closed
    since `closed_before` as cards (the board may lack one: a close with no task state yet); `done`, the matches closed before it, newest close first, a page of `limit` after the cursor `after`
-   (`closed_at|task id`), and `next` while more remain. No ranked cut anywhere, so a filter never hides the newest match.
+   (`closed_at|task id`), and `next` while more remain. A chip ANDs with the match set, so a task past a side's best 50
+   doesn't show under a chip either: a narrower query finds it.
 
 ## Board
 
@@ -139,8 +144,9 @@ the task text fenced as data (reasoning off and room for the JSON: a cut-off ans
 PGlite (Postgres in WASM, with pgvector) runs the real SQL offline in the module's suite (`modules/warehouse/search`): rebuild idempotency and stale-gen
 rejection, tombstone safety (a partial listing deletes nothing; a late write can't resurrect), cursor paging of old closes, keyword + meaning union with
 summaries off, the query-time embed failure falling back to keyword hits, live changes ahead of the backfill and an
-edit pulling a backed-off retry forward, an edit found among the recently updated tasks, and older closed hits carrying
-their crew. The kernel suite covers the seams: `GET /v1/facts` behind its role, and a task's work read naming its PRs, paths
+edit pulling a backed-off retry forward, an edit found among the recently updated tasks, older closed hits carrying
+their crew, each side's cut at `PER_SIDE`, and an identifier query (keyword only, its own task first, a term's words as a
+phrase). The kernel suite covers the seams: `GET /v1/facts` behind its role, and a task's work read naming its PRs, paths
 and last final.
 
 ## New installs
@@ -170,6 +176,47 @@ nDCG@10, meaning alone 0.597. The threshold is calibrated per model: a model cha
 follows its findings: the head line weighted A (a task's own id ranked fourth behind tasks citing it; MRR on ids 0.33 to
 1.00), the label words every document carries deleted, path segments and the bare id number as keyword-only terms.
 A reranker was measured in part and left out (owner): a backlog issue.
+
+### Precision (2026-11-23, live index: 10,977 tasks, summaries on)
+
+The first release matched far too much: "slack reactions" 4,582 tasks, "code review recheck" 2,064, "review module" 1,378,
+"WOR-10957" 92. The board shows every match, so a search that matches 40% of tasks doesn't filter. Causes, measured:
+
+- **Meaning (most of it).** Gemini's cosines sit in a narrow band (a query's median 0.46–0.60, its best 0.60–0.75) and the
+  band moves per query, so a fixed floor of 0.63 admits a handful for one query and thousands for another ("slack
+  reactions": 15 keyword matches, 4,567 meaning ones; the Slack triage routine runs all sit at 0.66). The floor was
+  calibrated only on queries that should match nothing, and still does that job (0/12). Summaries didn't cause it: the
+  eval's index without them admitted as many or more at 0.63 ("slack" 5,068 then, 2,434 now).
+- **Keyword words that are really in the text.** "review module" is 1,342 keyword matches: 1,056 tasks hold both words
+  exactly (comments, PR titles, paths), the prefix `module:*` adds 286, summaries and tags 62, the keyword-only terms 2.
+  Only the ranking can tell the ones about it.
+- **A term's lexemes were ANDed, not a phrase**: `task_wait` matched 2,274 tasks with `task` and `wait` anywhere (113 as a phrase).
+- **An identifier was embedded**: `WOR-10957` has one keyword match and 91 meaning neighbours; and a short id's own task
+  ranked behind longer ids it prefixes (`WOR-109` put WOR-10915 first).
+
+A relative cut on meaning (cosine z-score ≥ 3 against the query's own distribution) was measured and rejected: it can't
+fire on a corpus under about ten tasks (a new install) and dropped every meaning hit for "slack reactions". A cap per side
+is size-independent, one number, and keeps the fused ranking's top intact.
+
+Before and after on the 45 scored queries (graded relevance sets; precision counts a returned task relevant when its
+duplicate group is) and the 12 negatives, the after column from the shipped SQL read-only on the live index:
+
+| Set | Matches, mean (max) | Precision@all | Recall at the result count | R@10 | nDCG@10 |
+| --- | --- | --- | --- | --- | --- |
+| All 45 | 636 (5,948) → 46 (100) | 0.439 → 0.601 | 0.713 → 0.405 | 0.725 → 0.727 | 0.680 → 0.710 |
+| Paraphrase (16) | 255 → 43 | 0.244 → 0.315 | 0.491 → 0.335 | 0.362 → 0.356 | 0.342 → 0.337 |
+| Identifier, path (13) | 335 → 34 | 0.471 → 0.538 | 0.819 → 0.703 | 0.850 → 0.865 | 0.809 → 0.863 |
+| Area word (10) | 1,236 → 64 | 0.673 → 0.925 | 0.764 → 0.176 | 0.990 → 0.980 | 0.942 → 0.949 |
+| Half-typed (6) | 1,308 → 51 | 0.497 → 0.961 | 0.989 → 0.328 | 0.983 → 1.000 | 0.870 → 0.972 |
+
+Negatives with any match: 0/12 → 0/12. The owner's queries: "review module" 1,378 → 75, "slack reactions" 4,582 → 63,
+"code review recheck" 2,063 → 67, "approval card on the board" 475 → 89, "task search" 628 → 98, "kernel spend cap" 16 →
+16, "warehouse pgvector" 13 → 13, "telegram bot" 46 → 46, "WOR-10957" 92 → 1 (itself). Recall at the result count falls by
+construction where the relevant set is in the hundreds (an area word): those are the matches past the best 50 on each side.
+The baseline here is below the encoder table's (0.725 against 0.763 R@10): it runs on the live index with summaries, and
+tasks created since the queries were labelled count as not relevant. Relevance is a predicate over task text, so precision
+on area and half-typed queries leans lexical. Per side 30 scored 0.727 / 0.707 with at most 60 matches, 20 lost recall
+(0.722); 50 keeps every quality metric level or up. SQL: about 130–150 ms on the host.
 
 Latency (typing to rendered results): 250 ms debounce, the query embedding above, the SQL (exact cosine over 11k 3072-d rows,
 the worst case where every row matches: 115 / 331 ms p50 / p95 on a laptop's Docker), the board, kernel and service hops and the
