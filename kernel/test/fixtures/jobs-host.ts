@@ -1,5 +1,4 @@
-// A kernel's job half in its own process, as main.ts runs it (createJobs, adopt at start, detach and exit on SIGTERM, SIGINT or
-// SIGUSR2), over JOBS_DIR's kernel.db and sandbox.json (kernel/test/jobs.test.ts). Serves POST /run {box, kind} (an admitted job
+// A kernel's job half in its own process, as main.ts runs it (createJobs, adopt at start, detach and exit on SIGUSR2; SIGTERM and SIGINT also kill its jobs), over JOBS_DIR's kernel.db and sandbox.json (kernel/test/jobs.test.ts). Serves POST /run {box, kind} (an admitted job
 // started in that box, as boxes.ts starts one) and the job routes (GET/DELETE /v1/jobs/:id, POST /v1/jobs/:id/input) for the
 // module acme-dispatch. Prints its port.
 import http from "node:http";
@@ -15,7 +14,10 @@ const cfg = JSON.parse(readFileSync(join(dir, "sandbox.json"), "utf8"));
 const db = new DatabaseSync(join(dir, "kernel.db"));
 const jobs = createJobs({ db, cfg, cp: { task: async () => undefined }, mayDispatch: () => true, boxWrap: 'exec "$@"', log: (msg, f = {}) => console.error(msg, JSON.stringify(f)) });
 jobs.adopt();
-for (const sig of ["SIGTERM", "SIGINT", "SIGUSR2"]) process.on(sig, () => { jobs.detach(); process.exit(0); });
+// SIGUSR2 is the restart: the jobs keep running for the next kernel. SIGTERM and SIGINT end the test: no job outlives its host.
+const endJobs = () => { for (const { pid } of db.prepare("SELECT pid FROM jobs WHERE state = 'running' AND pid > 0").all()) try { process.kill(-pid, "SIGKILL"); } catch {} };
+process.on("SIGUSR2", () => { jobs.detach(); process.exit(0); });
+for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { jobs.detach(); endJobs(); process.exit(0); });
 const server = http.createServer(async (req, res) => {
   const send = (status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
   try {

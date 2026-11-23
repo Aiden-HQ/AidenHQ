@@ -9,7 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, JSONRPCRequestSchema, SUPPORTED_PROTOCOL_VERSIONS, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { needsOwner, signedIn } from "./vendor/needs.js";
 
 /** Search tools whose `filters` Slack parses as search modifiers. */
@@ -18,13 +18,19 @@ export const SEARCH_TOOLS = new Set(["slack_search_public", "slack_search_public
 /** Slack's own maximum for a page of `reactions.list`; the page size when the caller gives none. */
 const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 200;
+/**
+ * The answer's own size budget. The kernel rejects an answer over 16 MiB (MAX_ANSWER), so the scan stops well short of it
+ * and hands back a continuation instead of accumulating message texts until the whole call fails.
+ */
+const ANSWER_BUDGET = 4 * 1024 * 1024;
 /** A runaway guard: past this many pages the answer says which cursor continues, rather than looping forever. */
 const MAX_PAGES = 200;
 /** A scan that runs longer than this answers "unknown" rather than outliving the kernel's call timeout. */
 const DEFAULT_DEADLINE_MS = 120_000;
 const BODY_LIMIT = 8 * 1024 * 1024;
-// Slack's errors that mean the sign-in itself is refused, not the read.
-const AUTH_ERROR = /invalid_auth|not_authed|token_expired|token_revoked|account_inactive|missing_scope/;
+// Slack's errors that mean the sign-in itself is refused, not the read. `missing_scope` is not one of them: the sign-in
+// works, it just lacks one permission, and the kernel records that as a partial cause, never a Slack outage.
+const AUTH_ERROR = /invalid_auth|not_authed|token_expired|token_revoked|account_inactive/;
 // A conversation that is gone or that this sign-in can't reach: not shown, rather than failing the whole scan.
 const UNREACHABLE = /channel_not_found|not_in_channel|is_archived|access_denied/;
 
@@ -37,6 +43,10 @@ const NEGATED_REACTION = /^-has(my)?::/;
 // A whitespace-delimited token that is a search modifier rather than a term clause. Slack's `-in:`/`-from:`/… are the
 // same modifiers negated, and a modifier still has no term clause to act on.
 const MODIFIER = /^-?(?:in|from|to|with|creator|is|has|hasmy|before|after|on|during|type|content_type):/;
+
+// The search tool's own options. Everything here is either reproduced by this path or refused with a reason; an option
+// this path doesn't know is refused too, so a narrowing or ordering the scan can't repeat is never silently dropped.
+const KNOWN_OPTIONS = new Set(["query", "keywords", "natural_language_query", "filters", "limit", "cursor", "channel_types", "content_types", "after", "before", "sort", "response_format", "include_context"]);
 
 /** One message carrying the reaction, in the search tool's per-message shape. */
 export interface ReactionMessage {
@@ -120,6 +130,13 @@ export function planReactionSearch(name: string, args: Record<string, unknown>):
   // reactions.list's message items are messages; a search that also asks for files would come back short.
   const types = filterText(args.content_types);
   if (types && types.split(",").map((t) => t.trim()).some((t) => t && t !== "messages")) return { kind: "unsupported", filter: only, reason: `${only} with content_types:${types} also asks for non-message content` };
+  // Ordering and response shape are the search tool's, and reactions.list's feed order is its own: an option that would
+  // reorder or reshape the answer is refused rather than quietly ignored.
+  if (text(args.sort)) return { kind: "unsupported", filter: only, reason: `${only} with sort:${text(args.sort)} asks for an order reactions.list doesn't return` };
+  if (text(args.response_format) && text(args.response_format) !== "detailed") return { kind: "unsupported", filter: only, reason: `${only} with response_format:${text(args.response_format)} asks for a shape this path doesn't return` };
+  if (args.include_context === true || text(args.include_context) === "true") return { kind: "unsupported", filter: only, reason: `${only} with include_context asks for surrounding messages this path doesn't return` };
+  const unknown = Object.keys(args).filter((k) => !KNOWN_OPTIONS.has(k) && args[k] !== undefined && args[k] !== null && args[k] !== "");
+  if (unknown.length) return { kind: "unsupported", filter: only, reason: `${only} with ${unknown.join(", ")} asks for an option this path doesn't reproduce` };
 
   const n = Number(args.limit);
   const limit = Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), MAX_LIMIT) : undefined;
@@ -180,10 +197,45 @@ export interface ScanOptions {
   maxPages?: number;
   deadlineMs?: number;
   now?: () => number;
+  /** The answer's own size budget, in bytes of the messages array; smaller only in tests. */
+  budget?: number;
 }
 
 /** The scan's outcome: the whole set (`nextCursor: null`), or what stopped it from computing one. */
-export type ScanResult = { ok: true; messages: ReactionMessage[]; nextCursor: string | null } | { ok: false; detail: string };
+export type ScanResult =
+  | { ok: true; messages: ReactionMessage[]; nextCursor: string | null }
+  // `messages` rides along only when matches were verified before the failure: the answer reports them as an incomplete
+  // set rather than discarding them, and still says plainly that the whole set is unknown.
+  | { ok: false; detail: string; error?: string; needed?: unknown; method?: string; messages?: ReactionMessage[] };
+
+// A continuation: the caller's `limit` was reached, so the token carries the messages already returned and the upstream
+// page size. A resume walks the feed from the start again and skips those messages by identity. Positions are never
+// reused: Slack's cursors and numbered pages are both positional, so a reaction removed between calls shifts every later
+// page, and resuming from a saved page could skip a match that moved earlier. Identity is the only stable key. A walk
+// that itself began at a caller-supplied Slack cursor keeps it (`from`): its earlier results are unknown, so restarting
+// at the head could repeat them.
+type Position = { n: number; seen: string[]; from?: string; e: string; pub: boolean; u: string; s: string };
+const POSITION = "aidenhq:pos:";
+const encodePosition = (pos: Position): string => `${POSITION}${Buffer.from(JSON.stringify(pos)).toString("base64url")}`;
+function decodePosition(value: string): Position | undefined {
+  if (!value.startsWith(POSITION)) return undefined;
+  try {
+    const v = JSON.parse(Buffer.from(value.slice(POSITION.length), "base64url").toString("utf8")) as Record<string, unknown>;
+    if (!v || typeof v !== "object") return undefined;
+    const n = Number(v.n);
+    if (!Number.isInteger(n) || n <= 0) return undefined;
+    const seen = Array.isArray(v.seen) ? v.seen.filter((k): k is string => typeof k === "string" && k.length > 0 && k.length < 300) : [];
+    const from = typeof v.from === "string" && v.from ? v.from : undefined;
+    const e = typeof v.e === "string" ? v.e : undefined;
+    const pub = v.pub === true;
+    const u = typeof v.u === "string" ? v.u : undefined;
+    const s = typeof v.s === "string" ? v.s : undefined;
+    if (e === undefined || u === undefined || s === undefined) return undefined;
+    return { n, seen, ...(from ? { from } : {}), e, pub, u, s };
+  } catch {
+    return undefined;
+  }
+}
 
 const messageOf = (item: Record<string, any>, emoji: string, userId: string): ReactionMessage | undefined => {
   if (item?.type !== "message") return undefined;
@@ -218,30 +270,47 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   const now = o.now ?? Date.now;
   const deadline = now() + (o.deadlineMs ?? DEFAULT_DEADLINE_MS);
   const maxPages = o.maxPages ?? MAX_PAGES;
+  const budget = o.budget ?? ANSWER_BUDGET;
   const messages: ReactionMessage[] = [];
+  // The messages array as it will be serialized, so the answer stops short of the kernel's own size limit.
+  let bytes = 2;
   const seen = new Set<string>();
   const cursors = new Set<string>();
   const visibility = new Map<string, boolean>();
-  let cursor = plan.cursor ?? "";
+  const start = plan.cursor ?? "";
+  const position = decodePosition(start);
+  // A continuation names the search that issued it — the emoji, the channel scope, the Slack account and the granted
+  // search scopes. The `seen` keys identify messages, not one account's or one scope set's view of them, so reused
+  // against any of those changing it could skip a message that is visible now, and it is refused rather than answered
+  // short. The scope set is sorted, so its order in token.json can't change the identity.
+  const granted = [...(plan.scopes ?? [])].sort().join(",");
+  const scopeKey = { e: plan.emoji, pub: Boolean(plan.publicOnly), u: signIn.userId, s: granted };
+  if (position && (position.e !== scopeKey.e || position.pub !== scopeKey.pub || position.u !== scopeKey.u || position.s !== scopeKey.s)) {
+    return { ok: false, detail: "the cursor belongs to a different reaction search (another emoji, channel scope, Slack account or set of granted scopes); start it without a cursor" };
+  }
+  // A continuation token walks from the start; any other cursor value is Slack's own, resumed where it names.
+  let cursor = position ? position.from ?? "" : start;
+  // Resume skips by identity, not position: an item is dropped when it was already returned, so a reaction removed from an
+  // earlier item between calls can't shift the answer past one that was never returned.
 
-  const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string; error?: string; needed?: unknown }> => {
+  const get = async (method: string, params: Record<string, string>): Promise<{ ok: true; json: Record<string, any> } | { ok: false; detail: string; error?: string; needed?: unknown; method: string }> => {
     const url = new URL(`https://slack.com/api/${method}`);
     for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
     let res: Response | undefined;
     for (let attempt = 0; ; attempt++) {
       const remaining = deadline - now();
-      if (remaining <= 0) return { ok: false, detail: `${method} ran past the scan's deadline` };
+      if (remaining <= 0) return { ok: false, detail: `${method} ran past the scan's deadline`, method };
       try {
         res = await fetchImpl(url, { headers: { authorization: signIn.authorization }, signal: AbortSignal.timeout(Math.min(remaining, 30_000)) });
       } catch (err) {
-        return { ok: false, detail: `${method} couldn't be reached (${String((err as Error).message).slice(0, 200)})` };
+        return { ok: false, detail: `${method} couldn't be reached (${String((err as Error).message).slice(0, 200)})`, method };
       }
       if (res.status !== 429 || attempt >= 2) break;
       await sleep(Math.min((Number(res.headers.get("retry-after")) || 30) * 1000, Math.max(0, deadline - now())));
     }
-    if (!res.ok) return { ok: false, detail: `${method} answered HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, detail: `${method} answered HTTP ${res.status}`, method };
     const json = (await res.json().catch(() => undefined)) as Record<string, any> | undefined;
-    if (!json || json.ok !== true) return { ok: false, detail: `${method} refused the read (${String(json?.error ?? "no answer")})`, ...(json ? { error: String(json.error ?? ""), needed: json.needed } : {}) };
+    if (!json || json.ok !== true) return { ok: false, detail: `${method} refused the read (${String(json?.error ?? "no answer")})`, method, ...(json ? { error: String(json.error ?? ""), needed: json.needed } : {}) };
     return { ok: true, json };
   };
 
@@ -251,7 +320,7 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
    * reaction read never returns what the tool itself is not allowed to. A channel Slack can't describe fails the scan,
    * unless its `missing_scope` answer names the kind: that is still enough to scope it correctly.
    */
-  const visible = async (channel: string): Promise<boolean | string> => {
+  const visible = async (channel: string): Promise<boolean | { detail: string; error?: string; needed?: unknown; method?: string }> => {
     const known = visibility.get(channel);
     if (known !== undefined) return known;
     const r = await get("conversations.info", { channel });
@@ -260,32 +329,103 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // (Slack's `needed` field) still says what the conversation is, so it can be scoped like a described one.
     if (!r.ok && UNREACHABLE.test(r.detail)) return visibility.set(channel, false), false;
     const kind = r.ok ? channelKind(r.json.channel ?? {}) : r.error === "missing_scope" ? kindFromNeeded(r.needed) : undefined;
-    if (!r.ok && !kind) return r.detail;
-    if (!kind) return `Slack didn't say what kind of conversation ${channel} is`;
+    if (!r.ok && !kind) return { detail: r.detail, method: "conversations.info", ...(r.error ? { error: r.error } : {}), ...(r.needed !== undefined ? { needed: r.needed } : {}) };
+    if (!kind) return { detail: `Slack didn't say what kind of conversation ${channel} is` };
+    // A kind inferred from a missing permission (not from the channel's own flags) is only used to exclude: a channel that
+    // needed a non-public scope can't be public, and one whose kind's search scope wasn't granted is out of scope anyway.
+    // It is never used to include a channel, since the permission names what the call needed, not what the channel is.
+    if (!r.ok) {
+      const excluded = plan.publicOnly ? kind !== "public" : !(plan.scopes === undefined || plan.scopes.has(SEARCH_SCOPE[kind]));
+      if (excluded) return visibility.set(channel, false), false;
+      return { detail: r.detail, error: r.error, needed: r.needed, method: "conversations.info" };
+    }
     const ok = (plan.publicOnly ? kind === "public" : true) && (plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]));
     visibility.set(channel, ok);
     return ok;
   };
 
-  // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives.
-  let numbered = plan.cursor ? undefined : 1;
+  // Slack answers with cursors or, on some deployments, with numbered pages: follow whichever the page gives. A
+  // continuation always starts again at the first page and skips by identity, so a feed that shifted can't hide a match.
+  // Cursor pagination is the modern shape (and the only one without Slack's 100-page ceiling): ask for it first, with
+  // `limit` as the page size, and fall back to `count`+`page` only when Slack answers numbered pages instead.
+  let numbered: number | undefined;
+  // The size numbered pages continue at. It starts as the size we asked for, and drops to a smaller size Slack reports
+  // having used: a smaller page only re-reads items (deduplicated by identity), while a larger one could skip the gap.
+  let numberedSize = 0;
+  // The upstream page size is the caller's `limit` when that is larger than the default (so a big ask reads fewer pages),
+  // and never smaller than the default: a small result limit must not turn one scan into hundreds of one-item requests.
+  // It is fixed for the whole walk and carried in every continuation, so page boundaries don't move.
+  const pageSize = position?.n ?? Math.min(MAX_LIMIT, Math.max(plan.limit ?? DEFAULT_LIMIT, DEFAULT_LIMIT));
+  // Slack lists a message once per reaction, so it can recur on a later page; the keys already returned ride along.
+  for (const k of position?.seen ?? []) seen.add(k);
+  // The caller's `limit` bounds what one answer returns. When it is reached the scan stops and hands back a continuation
+  // that resumes exactly where it stopped (mid-page included), so nothing is skipped and `null` still means exhausted.
+  const reachedLimit = () => plan.limit !== undefined && messages.length >= plan.limit;
+  // Once the limit is reached, the rest of the feed is only walked to find out whether one more match exists: the answer
+  // says the set is complete when it doesn't, so a continuation is never an empty page (which a caller reads as unknown).
+  let full = false;
+  // What this answer hands back when it stops early: everything returned so far, and the identity that resumes past it.
+  const continuation = () => encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) });
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
-    const r = await get("reactions.list", { full: "true", limit: String(plan.limit ?? DEFAULT_LIMIT), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
-    if (!r.ok) return r;
+    // The page-size parameter follows the shape: `limit` with a cursor, `count` with a numbered page (Slack's two
+    // paginations take different names for it). `count` rides along on the first request too, so a numbered answer
+    // starts at the size we chose and every later page keeps the same boundaries rather than Slack's default.
+    const paging: Record<string, string> = numbered !== undefined ? { count: String(numberedSize || pageSize), page: String(numbered) } : { limit: String(pageSize), count: String(pageSize), ...(cursor ? { cursor } : {}) };
+    const r = await get("reactions.list", { full: "true", ...paging });
+    // A later page failing after the caller's limit was already met must not throw away matches this answer holds: the
+    // set read so far is real, and the continuation says it isn't complete. With nothing new to hand back, though, the
+    // honest answer is the failure itself, never an empty page behind a cursor that would keep returning it.
+    // Any stop after verified matches were found (a failed page, the deadline) hands them back with a continuation that
+    // resumes past this page, rather than discarding them for an error the next run would repeat from the start.
+    // Any page after the first is an advance, whether Slack pages by cursor or by number, so verified matches are kept.
+    if (!r.ok) {
+      if (messages.length && (full || cursor || numbered !== undefined)) return { ok: true, messages, nextCursor: continuation() };
+      return messages.length ? { ...r, messages } : r;
+    }
     const { json } = r;
-    for (const item of Array.isArray(json.items) ? json.items : []) {
+    // A page without an item list isn't an empty page: it is an answer this scan can't read. When matches were already
+    // verified (and there is a way to resume) they are kept with a continuation; otherwise the set is unknown.
+    if (!Array.isArray(json.items)) {
+      if (messages.length && (full || cursor || numbered !== undefined)) return { ok: true, messages, nextCursor: continuation() };
+      return { ok: false, detail: "reactions.list answered without an item list" };
+    }
+    const items: unknown[] = json.items;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i] as Record<string, any>;
       const message = messageOf(item, plan.emoji, signIn.userId);
       if (!message) continue;
-      if (plan.publicOnly || plan.scopes) {
-        const show = await visible(message.channel);
-        if (typeof show === "string") return { ok: false, detail: `couldn't tell what ${message.channel} is (${show})` };
-        if (!show) continue;
-      }
+      // Skip what an earlier answer already returned before any metadata lookup: a continuation replays those pages.
       const key = `${message.channel}\u0000${message.ts}`;
       if (seen.has(key)) continue;
+      if (plan.publicOnly || plan.scopes) {
+        const show = await visible(message.channel);
+        if (typeof show !== "boolean") {
+          const detail = `couldn't tell what ${message.channel} is (${show.detail})`;
+          // A missing permission can't be fixed by following a cursor: it must reach the owner even when matches were
+          // already verified, so it stays a failure (with those matches riding along) rather than a successful page.
+          if (show.error === "missing_scope") return { ok: false, detail, error: show.error, needed: show.needed, method: show.method ?? "conversations.info", ...(messages.length ? { messages } : {}) };
+          // Any other lookup failure after matches were verified keeps them: a continuation replays the feed by identity
+          // and re-checks this channel when the caller resumes. The failure is the answer only when nothing was verified.
+          if (messages.length) return { ok: true, messages, nextCursor: continuation() };
+          return { ok: false, detail, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}), ...(show.method ? { method: show.method } : {}) };
+        }
+        if (!show) continue;
+      }
+      if (full) {
+        // The limit was reached on an earlier page and this is the first match after it: there is more to return.
+        return { ok: true, messages, nextCursor: continuation() };
+      }
+      // The answer's own budget: one message always goes in, so a single oversized message can't loop forever, but the
+      // rest is handed back as a continuation rather than growing an answer the kernel would reject outright.
+      const size = Buffer.byteLength(JSON.stringify(message), "utf8") + 1;
+      if (messages.length && bytes + size > budget) {
+        return { ok: true, messages, nextCursor: continuation() };
+      }
       seen.add(key);
       messages.push(message);
+      bytes += size;
+      if (reachedLimit()) full = true;
     }
     const next = typeof json.response_metadata?.next_cursor === "string" ? json.response_metadata.next_cursor : "";
     if (next) {
@@ -298,15 +438,28 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // No cursor: Slack's other shape is numbered pages. More of them is not the end of the set.
     const pages = Number(json.paging?.pages), current = Number(json.paging?.page);
     if (Number.isFinite(pages) && pages > current) {
-      if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
-      else numbered++;
+      if (numbered === undefined) {
+        // Page 2 starts right after the items page 1 actually held, so it continues at the size Slack reports using
+        // (`paging.count`, else `per_page`). A size larger than the one we asked for would skip the gap; a smaller one
+        // would re-read items already returned. Clamped to Slack's own maximum.
+        const used = Number(json.paging?.count ?? json.paging?.per_page);
+        numberedSize = Number.isFinite(used) && used > 0 ? Math.min(MAX_LIMIT, Math.floor(used)) : pageSize;
+        numbered = Number.isFinite(current) ? current + 1 : 2;
+      } else numbered++;
       continue;
     }
     return { ok: true, messages, nextCursor: null };
   }
-  // The cap: a cursor continues the set, but numbered paging has none to hand back, so the set is unknown.
-  if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
-  return { ok: true, messages, nextCursor: cursor };
+  // The cap. When the caller's limit was reached, what was verified is real: hand it back with a continuation, which
+  // resumes past this page (a Slack cursor still advances), rather than discarding it for an error a retry would repeat.
+  if (full && cursor) return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, from: cursor }) };
+  // Numbered pages have no cursor to hand back, so a capped walk can't resume; matches verified before the cap are
+  // still real and ride along with the failure, which says the set is unknown.
+  const capped = `reactions.list's pages ran past the scan's ${maxPages}-page limit before the set ended`;
+  if (full || numbered !== undefined) return { ok: false, detail: capped, ...(messages.length ? { messages } : {}) };
+  // A Slack cursor still advances: hand it back inside a continuation that carries what was returned, so a capped walk
+  // continues past this page and a message Slack lists again after it isn't returned twice.
+  return { ok: true, messages, nextCursor: cursor ? encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, from: cursor }) : null };
 }
 
 /** The search tool's result shape, with the end-of-set marker the scan reads: `next_cursor: null` only when complete. */
@@ -338,6 +491,7 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
+    let ended = false;
     const settle = (out: Peeked) => {
       if (settled) return;
       settled = true;
@@ -346,10 +500,22 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       req.off("close", onClose);
       req.off("error", onClose);
       req.pause();
-      try {
-        if (chunks.length) req.unshift(Buffer.concat(chunks));
-      } catch {
-        /* nothing read yet: the proxy reads the stream as it is */
+      // Only replay while the stream is still readable: an ended stream throws ERR_STREAM_UNSHIFT_AFTER_END_EVENT
+      // asynchronously, which a try/catch here can't stop. When it has ended, these bytes are the answer's, not the proxy's.
+      if (!ended) {
+        try {
+          if (chunks.length) req.unshift(Buffer.concat(chunks));
+        } catch {
+          /* nothing read yet: the proxy reads the stream as it is */
+        }
+      } else {
+        // The stream has ended, so the bytes can't be pushed back onto it. The proxy reads its body by async iteration
+        // (readJson), so hand that the buffered bytes instead: every request this route declines keeps its body.
+        const body = Buffer.concat(chunks);
+        req[Symbol.asyncIterator] = async function* () {
+          if (body.length) yield body;
+          return undefined;
+        };
       }
       resolve(out);
     };
@@ -364,6 +530,12 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
     };
     // The body's last non-whitespace byte, tracked from each chunk alone so a large pass-through body isn't recopied.
     let tail: number | undefined;
+    // Only a request that declares its length can be known complete mid-stream: then the body ends at exactly that many
+    // bytes, so a `}` can't be a prefix with trailing bytes to come. A chunked body without one is settled only at `end`,
+    // where the whole thing has arrived and the proxy's own JSON validation would see the same bytes.
+    const declared = Number(req.headers["content-length"]);
+    const hasLength = Number.isFinite(declared) && declared >= 0;
+    const complete = () => hasLength && size >= declared;
     const onData = (chunk: Buffer) => {
       chunks.push(chunk);
       size += chunk.length;
@@ -378,16 +550,20 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       }
       // A whole JSON value ends at a `}` (an object) or `]` (a batch array), trailing whitespace aside.
       if (tail !== 0x7d && tail !== 0x5d) return;
+      // No declared length: wait for `end`, so a chunk that ends in `}` but has more coming isn't taken as the whole body.
+      if (!hasLength) return;
+      if (!complete()) return;
       const out = parse();
       if (out) settle(out);
     };
     const onEnd = () => {
       if (settled) return;
+      ended = true;
       if (!chunks.length) return settle({ kind: "pass" }); // no body: the proxy answers it as it always has
       settle(parse() ?? { kind: "invalid" });
     };
     // A client that goes away mid-body never emits `end`: settle so the route ends and its listeners are removed.
-    const onClose = () => settle({ kind: "pass" });
+    const onClose = () => { ended = true; settle({ kind: "pass" }); };
     // No pause first: an explicitly paused stream doesn't flow when a `data` listener is added.
     req.on("data", onData);
     req.on("end", onEnd);
@@ -404,11 +580,10 @@ export interface InterceptOptions {
   /** The sign-in's state, as the proxy reads it: a transient refresh failure is not the owner's to fix. */
   authState: () => string;
   /**
-   * Whether the proxy admits `name` now: a live upstream catalog that carries it, the manifest's read tag and the
-   * upstream's read-only hint (asked of the proxy's own `/mcp/read`, which lists nothing when either is missing). A tool
-   * admitted there is admitted on `/mcp` too, so the reaction path can't answer where the proxy would refuse.
+   * Whether the proxy admits `name` on the endpoint the call came to (`readOnly`): the same rule the proxy applies there,
+   * asked of the proxy itself, so the reaction path can't answer where the proxy would refuse.
    */
-  served?: (name: string) => Promise<boolean>;
+  served?: (readOnly: boolean, name: string) => Promise<{ served: boolean; confirmed: boolean }>;
   /** The kernel's bearer on /mcp. */
   serviceKey?: string;
   /** The kernel's read bearer on /mcp/read. */
@@ -446,9 +621,25 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
   const peeked = await peekJson(req, BODY_LIMIT);
   // A body the proxy can't parse either: answer as the proxy would, since its bytes are spent.
   if (peeked.kind === "invalid") return (send(res, 500, { error: "bad request" }), true);
-  // Only a single tools/call is intercepted. A batch (no caller here sends one) is the proxy's, unchanged.
+  // Only a single tools/call is intercepted. A batch goes to the proxy; its reaction searches are refused by the argument
+  // hook (src/slack.ts) rather than sent upstream, so a batch can't get the empty page either.
   if (peeked.kind === "pass" || peeked.message.method !== "tools/call") return false;
   const message = peeked.message;
+  // The SDK's own request schema, not a second set of rules: a request carries `jsonrpc: "2.0"`, a string-or-integer id
+  // and a `params` the transport accepts. Anything else (a notification, a malformed message) goes to the proxy, which
+  // answers it as it answers every other tool, so this path can never succeed where the transport would refuse.
+  if (!JSONRPCRequestSchema.safeParse(message).success) return false;
+  if (!CallToolRequestSchema.safeParse(message).success) return false;
+  // The transport's own media checks: without both accepted types and a JSON body it answers 406/415, and this route
+  // must not answer a call the rest of the connection would refuse. (`accept` is a list, so a substring check is right.)
+  const version = req.headers["mcp-protocol-version"];
+  if (typeof version === "string" && version && !SUPPORTED_PROTOCOL_VERSIONS.includes(version)) return false;
+  const accept = String(req.headers.accept ?? "");
+  if (!accept.includes("application/json") || !accept.includes("text/event-stream")) return false;
+  // The media type's essence, as the transport compares it: the part before any parameter, lowercased. A `+json` suffix
+  // (`application/mcp+json`) is not `application/json`, and the transport answers it 415.
+  const essence = String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+  if (essence !== "application/json") return false;
   const name = nameOf(message);
   const plan = planReactionSearch(name, argsOf(message));
   if (plan.kind === "pass") return false;
@@ -465,9 +656,19 @@ export async function interceptReactionSearch(req: IncomingMessage, res: ServerR
       return true;
     }
   }
-  if (o.served && !(await o.served(name).catch(() => false))) {
-    // Signed out, the proxy lists nothing: that is a sign-in to fix, not a tool that isn't served.
-    if (o.authState() !== "ok") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
+  const admission = o.served ? await o.served(readOnly, name).catch(() => ({ served: false, confirmed: false })) : { served: true, confirmed: true };
+  if (!admission.served) {
+    // Signed out (no token, or one Slack refused), the proxy lists nothing: that is a sign-in to fix, not a tool that
+    // isn't served. An `unknown` state is not that: it means the state couldn't be read right now, so it falls through
+    // to the retryable admission error rather than telling the owner to reconnect over a transient problem.
+    const state = o.authState();
+    if (state === "missing" || state === "expired" || state === "none") return (send(res, 200, answer(message.id, needsOwner({ cause: "not_connected", detail: "The reaction set is unknown: Slack isn't signed in, so reactions.list can't be read." }))), true);
+    // A probe that couldn't answer says nothing about the tool: that is a retry, not a policy refusal.
+    if (!admission.confirmed) {
+      o.log?.({ tool: name }, "couldn't confirm tool admission");
+      send(res, 200, answer(message.id, reactionError("admission_unknown", `The reaction set is unknown: the Slack connection couldn't confirm that ${name} is available right now; retry shortly.`)));
+      return true;
+    }
     const detail = readOnly ? `Tool ${name} is not a read: the read endpoint serves reads only.` : `The reaction set is unknown: Slack doesn't offer ${name} right now.`;
     o.log?.({ tool: name }, "refused a tool the proxy would not serve");
     send(res, 200, answer(message.id, reactionError("refused", detail)));
@@ -516,9 +717,21 @@ async function serveReaction(name: string, plan: Exclude<ReactionPlan, { kind: "
   const scan = await scanMyReactions({ ...plan, scopes }, { authorization, userId }, { fetchImpl: o.fetchImpl, sleep: o.sleep, maxPages: o.maxPages, deadlineMs: o.deadlineMs });
   if (!scan.ok) {
     o.log?.({ tool: name, filter: plan.filter, detail: scan.detail }, "reactions.list could not compute the set");
+    // A missing permission is not an outage: the sign-in works and every other tool still does, so it is a `scope` need
+    // the kernel records as a partial cause, naming the scope Slack said it needed.
+    if (scan.error === "missing_scope") {
+      const scope = (Array.isArray(scan.needed) ? scan.needed.filter((s) => typeof s === "string").join(",") : text(scan.needed)) || "reactions:read";
+      // Name the call Slack refused the permission for: a channel lookup that lacks a scope is not reactions.list.
+      const method = scan.method ?? "reactions.list";
+      const what = method === "reactions.list" ? "reactions.list can't be read" : `Slack couldn't check a conversation's visibility (${method})`;
+      return needsOwner({ cause: "scope", scope, detail: `The reaction set is unknown: the Slack sign-in is missing the ${scope} permission, so ${what} (Reconnect on the board and allow it).` });
+    }
     // Slack refusing the token is the owner's to fix; anything else is a plain error the caller retries or reports.
     if (AUTH_ERROR.test(scan.detail)) return need(`The reaction set is unknown: Slack refused the sign-in (${scan.detail}).`);
-    return reactionError("reactions_list_failed", `The reaction set is unknown: ${scan.detail}.`, { filter: plan.filter });
+    // Matches verified before the failure ride along: the error still says the set is unknown (no `next_cursor`), but the
+    // caller isn't made to discard messages Slack did return.
+    const partial = scan.messages?.length ? { messages: scan.messages } : {};
+    return reactionError("reactions_list_failed", `The reaction set is unknown: ${scan.detail}.`, { filter: plan.filter, ...partial });
   }
   o.log?.({ tool: name, filter: plan.filter, messages: scan.messages.length, complete: scan.nextCursor === null }, "answered a reaction search from reactions.list");
   return reactionResult(scan);

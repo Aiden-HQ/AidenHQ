@@ -61,6 +61,8 @@
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=]  (the board) the same reads; never the metrics or a token
 //   GET  /v1/flow?task=|?item=|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
+//   GET  /v1/facts[?since=<seq>&limit=]  (role kernel.flow-read) the fact log after `since` in ingestion order: {facts: [{seq,
+//                              type, task}], tail}; without `since`, none and the tail (where a new incremental reader starts)
 //   GET  /v1/tasks/state?ids=|?open=1[&closed_since=<iso>]  (the board, or a module with role kernel.flow-read) each task's one
 //                              state, computed from its facts (task-state.ts): `ids` (≤ 200, ids or identifiers, closures included) or
 //                              every open task (and every task closed since `closed_since`, no id limit), in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
@@ -180,6 +182,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/notify/ack", auth: "module" },
   { method: "POST", path: "/v1/notify/send", auth: "module" },
   { method: "POST", path: "/v1/facts", auth: "module" },
+  { method: "GET", path: "/v1/facts", auth: "module" },
   { method: "POST", path: "/v1/wait", auth: "module+assertion" },
   { method: "POST", path: "/v1/wakes/events", auth: "events-key" },
   { method: "POST", path: "/v1/wakes", auth: "module" },
@@ -302,7 +305,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
 }
 
 export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
-  /** Flow's fact log (facts.ts): POST /v1/facts. */
+  /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
   projects?: Pick<Projects, "queue" | "touch">;
@@ -414,6 +417,19 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (!live || job?.kind !== "run" || !job.task || !job.agent || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight records a wait on its task");
           if (!WAIT_TOOLS.includes(String(live.caller.tool ?? "").split(".").pop()!)) throw fail(403, "forbidden", `a wait is recorded by ${WAIT_TOOLS.join(", ")} only`);
           return send(res, 200, await idle.wait({ agent: job.agent, key: job.key ?? "", task: job.task }, await json(req)));
+        }
+        case "GET /v1/facts": {
+          // The fact log in ingestion order, for an incremental reader: each fact's seq, type and task (no data), after `since`;
+          // without `since`, none and the tail (a first reader starts there).
+          const w = await moduleOf(req);
+          if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read the fact log (role kernel.flow-read)`);
+          if (!facts) throw fail(503, "unavailable", "the fact log is off");
+          const p = new URLSearchParams(query.slice(1));
+          const since = p.get("since"), limit = Number(p.get("limit") ?? 1000);
+          if (since !== null && !/^\d{1,15}$/.test(since)) throw fail(400, "bad_request", "since is a fact's seq");
+          if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw fail(400, "bad_request", "limit is 1 to 1000");
+          const rows = since === null ? [] : facts.since(Number(since), limit).map((f) => ({ seq: f.seq, type: f.type, task: f.task }));
+          return send(res, 200, { facts: rows, tail: rows.at(-1)?.seq ?? (since === null ? facts.tail() : Number(since)) });
         }
         case "POST /v1/facts": {
           const w = await moduleOf(req);
@@ -784,7 +800,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         if (hit.path === "/v1/wakes/events") {
           if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
           if (!keyIs(req, eventsKey())) throw fail(401, "unauthorized", "the events plugin's key is required");
-          return send(res, 200, await wakes.event(await json(req)));
+          const b = await json(req);
+          return send(res, 200, await wakes.event(b));
         }
         const w = await moduleOf(req);
         if (hit.path === "/v1/wakes") {

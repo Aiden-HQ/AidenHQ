@@ -58,6 +58,10 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
     since(seq: number, limit = 1000): FactRow[] {
       return (db.prepare("SELECT * FROM facts WHERE seq > ? ORDER BY seq LIMIT ?").all(seq, limit) as any[]).map(row);
     },
+    /** The newest fact's seq (0 when there is none). */
+    tail(): number {
+      return (db.prepare("SELECT COALESCE(MAX(seq), 0) AS s FROM facts").get() as { s: number }).s;
+    },
     /** One task's facts, oldest first. */
     forTask(task: string): FactRow[] {
       return (db.prepare("SELECT * FROM facts WHERE task = ? ORDER BY at, seq").all(task) as any[]).map(row);

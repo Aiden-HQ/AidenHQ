@@ -212,6 +212,10 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   was.links["board-grades"] = ["board", "apps-mcp"];
   // The Fleet Steward service reads apps-mcp as a module holding apps.read (the detector moved out of the board).
   was.links["fleet-steward"] = ["apps-mcp"];
+  // Task search left the kernel for the warehouse module (2026-11-23): its service writes src_tasks and calls the model
+  // gateway as a source writer, the same link and key as every other writer until 3g.
+  was.links.warehouse = ["sources"];
+  was.secrets.warehouse = ["gateway_source_key"];
   const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
   assert.ok(within(LEGACY_SECRETS, was.secrets));

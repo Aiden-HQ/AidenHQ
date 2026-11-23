@@ -164,3 +164,15 @@
 .attn-count.on.attn-failed { color: var(--bad-text); font-weight: 600; }
 .attn-count.on.attn-idle { color: var(--text); font-weight: 600; }
 .attn-none { margin: 0; font-size: var(--text-sm); color: var(--faint); }
+
+/* ------------------------------------------------------------ task search (search.ts): working mark, degraded note, Done paging */
+.search { position: relative; }
+.search.busy input { padding-right: 30px; }
+.search-busy { position: absolute; right: 9px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; border: 1.5px solid var(--border-strong); border-top-color: var(--accent); animation: spin 0.7s linear infinite; pointer-events: none; }
+.search-note { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
+.search-note::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+p.search-note { margin: 0; white-space: normal; }
+.more-done { display: block; width: 100%; margin-top: 4px; border: 0; background: none; color: var(--accent); font-size: var(--text-base); padding: 7px; border-radius: var(--radius-md); cursor: pointer; }
+.more-done:hover { background: var(--hover); }
+.more-done:focus-visible { outline: none; box-shadow: var(--ring); }
+@media (prefers-reduced-motion: reduce) { .search-busy { animation-duration: 2.4s; } }

@@ -9,6 +9,7 @@ import { createBackplane } from "../src/backplane.ts";
 import { createJobs } from "../src/jobs.ts";
 import { openRecords } from "../src/records.ts";
 import { createWork } from "../src/work.ts";
+import { openFacts } from "../src/facts.ts";
 
 function setup() {
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "kernel-work-")), "kernel.db"));
@@ -107,11 +108,14 @@ test("the host's apply generations: the pin skips a refused apply, and a missing
 
 test("an agent's jobs and the records and billed cost since a time are reads of the role", async (t) => {
   const { work, records } = setup();
-  records.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, agent_id TEXT, cost_usd REAL)");
-  const call = records.db.prepare("INSERT INTO calls (key, at, day, agent_id, cost_usd) VALUES (?, ?, ?, ?, ?)");
-  call.run("c1", "2026-01-02T10:00:00.000Z", "2026-01-02", "a1", 0.5);
-  call.run("c2", "2026-01-02T11:00:00.000Z", "2026-01-02", "a1", null);
-  call.run("c3", "2025-12-01T11:00:00.000Z", "2025-12-01", "a1", 9);
+  records.db.exec("CREATE TABLE calls (key TEXT PRIMARY KEY, at TEXT NOT NULL, day TEXT NOT NULL, agent_id TEXT, cost_usd REAL, component TEXT, task_subject TEXT, status TEXT NOT NULL DEFAULT 'ok', input INTEGER NOT NULL DEFAULT 100, cached INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0)");
+  const call = records.db.prepare("INSERT INTO calls (key, at, day, agent_id, cost_usd, component, task_subject) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  call.run("c1", "2026-01-02T10:00:00.000Z", "2026-01-02", "a1", 0.5, "Engineer", "WOR-1");
+  call.run("c2", "2026-01-02T11:00:00.000Z", "2026-01-02", "a1", null, "Engineer", "WOR-1");
+  call.run("c3", "2025-12-01T11:00:00.000Z", "2025-12-01", "a1", 9, "Engineer", "WOR-1");
+  call.run("c4", "2026-01-02T12:00:00.000Z", "2026-01-02", null, 4, "Check jobs", "code-review:r1");
+  records.db.prepare("INSERT INTO calls (key, at, day, agent_id, cost_usd, component, task_subject, status) VALUES ('c5', '2026-01-02T13:00:00.000Z', '2026-01-02', 'a1', 50, 'Engineer', 'WOR-9', 'reserved')").run(); // an estimate: never spend
+  records.db.prepare("INSERT INTO calls (key, at, day, agent_id, cost_usd, component, task_subject, status, input) VALUES ('c6', '2026-01-02T14:00:00.000Z', '2026-01-02', 'a1', 70, 'Engineer', 'WOR-8', 'upstream_aborted', 0)").run(); // closed at its reservation: no tokens seen
   records.db.prepare("UPDATE jobs SET exit = 1, state = 'failed', progress = ? WHERE id = 'j-1'").run(JSON.stringify({ steps: [1, 2] }));
   const whoami = async () => ({ kind: "module", module: "fleet-steward", roles: ["kernel.work-read"], tools: [] });
   const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, graderToken: () => "tok" });
@@ -120,7 +124,11 @@ test("an agent's jobs and the records and billed cost since a time are reads of 
   const get = (path) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: "Bearer m" } });
   const a = await (await get("/v1/work?agent=a1")).json();
   assert.deepEqual(a.jobs.map((j) => [j.id, j.state, j.exit, j.steps]), [["j-2", "running", null, 0], ["j-1", "failed", 1, 2]]);
-  assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: "a1", day: "2026-01-02", cost_usd: 0.5, calls: 2, priced: 1 }]);
+  assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: null, day: "2026-01-02", cost_usd: 4, calls: 1, priced: 1 }, { agent: "a1", day: "2026-01-02", cost_usd: 0.5, calls: 4, priced: 1 }]);
+  // What the day's spend was on: its costliest components and subjects, so a spike names its cause.
+  const spend = await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json();
+  assert.deepEqual(spend.spend_components, [{ day: "2026-01-02", name: "Check jobs", cost_usd: 4, calls: 1 }, { day: "2026-01-02", name: "Engineer", cost_usd: 0.5, calls: 1 }]);
+  assert.deepEqual(spend.spend_subjects.map((s) => s.name), ["code-review:r1", "WOR-1"]);
   assert.equal((await get("/v1/work?since=yesterday")).status, 400);
   // A reviewer's malice rejection is `judged`; code's own refusal (a moved head) is not.
   const file = (args) => records.file({ kind: "runner.pr", module: "runner", args, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, card: {}, requester: { agent: "", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t-1", identifier: "WOR-1", state: "review" });
@@ -172,7 +180,6 @@ test("an agent's timeline: each job's wake and who caused it, why it ended, its 
 
 test("an agent's history leaves quiet routine runs out before its limit of 50", async () => {
   const { records, work } = setup();
-  const { openFacts } = await import("../src/facts.ts");
   const facts = openFacts(records.db);
   const ins = records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended) VALUES (?, 'dispatch', 'a9', ?, 'codex', 1, '', '', ?, '[]', 0, 0, ?, ?)");
   ins.run("j-fail", "t9", 3_000_000, "failed", 3_000_100);
@@ -183,4 +190,32 @@ test("an agent's history leaves quiet routine runs out before its limit of 50", 
   assert.deepEqual(work.agent("a9", { shown: true }).jobs.map((j) => j.id), ["j-fail"]);
   // A detector's read keeps them: a quiet success after failures is a success.
   assert.equal(work.agent("a9").jobs.length, 50);
+});
+
+test("a task's read names what its work made: its PRs, the files its landed writes changed, its last final", () => {
+  const { records, work } = setup();
+  const facts = openFacts(records.db);
+  facts.record({ type: "pr.opened", subject: "pr:o/r#7", version: "1", task: "t1", at: "2026-01-01T00:00:00Z", actor: "kernel", source: "live", data: { repo: "o/r", number: 7, title: "Lens" } });
+  records.db.prepare("UPDATE jobs SET final = 'shipped the lens' WHERE id = 'j-1'").run();
+  const rec = records.file({ kind: "runner.pr", module: "runner", args: {}, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t1", state: "review", paths: ["o/r:kernel/src/jobs.ts"] });
+  records.db.prepare("UPDATE records SET state = 'done' WHERE id = ?").run(rec.id);
+  const t = work.task("t1");
+  assert.deepEqual({ prs: t.prs, paths: t.paths, final: t.final }, { prs: [{ repo: "o/r", number: 7, title: "Lens" }], paths: ["kernel/src/jobs.ts"], final: "shipped the lens" });
+});
+
+test("GET /v1/facts: a module holding kernel.flow-read reads the log after a seq; without since, only its tail", async (t) => {
+  const { records } = setup();
+  const facts = openFacts(records.db);
+  facts.record({ type: "task.created", subject: "task:t1", version: "created", task: "t1", at: "2026-01-01T00:00:00Z", actor: "kernel", source: "live" });
+  const whoami = async (token) => ({ kind: "module", module: "warehouse", roles: token === "reader" ? ["kernel.flow-read"] : [], tools: [] });
+  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), facts });
+  const server = http.createServer(handle).listen(0);
+  t.after(() => (server.closeAllConnections(), server.close()));
+  // Its own origin: fetch's pool may still hold a kept-alive socket to an earlier test's server on the same port.
+  const get = (path, token) => fetch(`http://localhost:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal((await get("/v1/facts?since=0", "other")).status, 403);
+  const tail = (await (await get("/v1/facts", "reader")).json()).tail;
+  assert.ok(tail > 0);
+  assert.deepEqual((await (await get("/v1/facts?since=0", "reader")).json()).facts.map((f) => [f.type, f.task]), [["task.created", "t1"]]);
+  assert.deepEqual(await (await get(`/v1/facts?since=${tail}`, "reader")).json(), { facts: [], tail });
 });

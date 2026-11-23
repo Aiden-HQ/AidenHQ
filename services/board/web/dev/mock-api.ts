@@ -1,7 +1,8 @@
 // A fixture-backed stand-in for the board's API, for working on the web UI without a kernel or Paperclip:
 //   node web/dev/mock-api.ts & npm run dev:web     (vite proxies /api to :3120)
 // Neutral sample data only. Writes answer ok and change nothing. GET /__mock?welcome=1|0 shows or hides the first-run wizard;
-// GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states).
+// GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
+// answers task search with keyword hits only, or fails it (its degraded notes).
 import { createServer } from "node:http";
 
 const port = Number(process.env.PORT ?? 3120);
@@ -21,7 +22,7 @@ const MODEL_CATALOG = ([
   ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
   ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
 ] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, out: o, tools: !!tools, reasoning: !!reasoning }));
-const mock = { welcome: false, empty: false, slow: 0 };
+const mock = { welcome: false, empty: false, slow: 0, search: "ok" };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
@@ -97,6 +98,26 @@ const WORK = () => [
   // A long Idle lane: 25 cards, then "Show N more".
   ...Array.from({ length: 32 }, (_, i) => w(6900 + i, i === 1 ? "A very long title that should clamp to two lines and never push the card wider, with https://example.com/a/very/long/path/that/keeps/going" : `Archive the Q${(i % 4) + 1} vendor threads`, "aiden", st("waiting", "backlog", { since: ago(9000 + i) }), { age: 9000 + i })),
 ];
+// Task search (GET /api/search): any work card or old closed task sharing a word with the query (4+ letters, or a prefix of
+// one), and "review" also finds what is about review without the word (the meaning half). Old closed tasks are months back.
+const OLD_DONE = () => [
+  [7012, "Add a code-review lens for module repos", "engineer", 60], [6950, "Critique checklist for pull requests", "aiden", 95], [6870, "Reviewer eval: planted cases for false rejects", "engineer", 120],
+  [6801, "Tune the AI reviewer's malice-only rule", "platform-engineer", 150], [6744, "PR review comments land as one thread", "engineer", 180], [6702, "Second opinion on the checkout PR", "engineer", 210],
+  [6650, "Review the vendor security questionnaire", "me", 240], [6601, "Retire the old review dashboard", "aiden", 270], [6555, "Reviewer timeouts on large diffs", "platform-engineer", 300],
+  [6500, "Code review summary in the morning brief", "aiden", 330], [6444, "Lint rule for review comments", "engineer", 365], [6400, "Warehouse backups to the storage box", "platform-engineer", 400],
+  // A long tail, so Done pages ("Show more").
+  ...Array.from({ length: 30 }, (_, i) => [6300 - i, `Weekly review of the ${["billing", "export", "ingest"][i % 3]} PRs`, "engineer", 420 + i * 7]),
+].map(([n, title, who, days]) => w(n as number, title as string, who as string, st("done", "closed", { since: ago((days as number) * 1440) }), { status: "done", closedAt: ago((days as number) * 1440), age: (days as number) * 1440, projectId: (n as number) % 2 ? "p-launch" : null }));
+function search(q: string, after: string | null): [number, unknown] {
+  if (mock.search === "down") return [503, { error: "task search is unavailable" }];
+  const words = q.toLowerCase().split(/\s+/).filter((x) => x.length >= 3);
+  const hit = (title: string) => words.some((x) => title.toLowerCase().split(/[^a-z0-9-]+/).some((t) => t.startsWith(x))) || (mock.search === "ok" && words.some((x) => x.startsWith("review")) && /critique|second opinion|pr |lens/i.test(title));
+  // Older closed hits a page of 8 at a time, newest first, like the board's route (by the last one's id here).
+  const old = OLD_DONE().filter((c) => hit(c.title));
+  const from = after ? old.findIndex((c) => c.id === after) + 1 : 0;
+  const page = old.slice(from, from + 8);
+  return [200, { ids: WORK().filter((c) => hit(c.title)).map((c) => c.id), done: page, next: from + 8 < old.length ? page.at(-1)!.id : null, semantic: mock.search === "ok" }];
+}
 // Saved boards (GET/POST/PUT/DELETE /api/views): in memory, revisioned like the board's.
 let views = [
   { id: "00000000-0000-4000-8000-0000000000a1", name: "Needs review", rev: 1, spec: { layout: "work", groupBy: "none", filters: { label: ["l-review"] } } },
@@ -322,6 +343,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/reviews/catalog": return [200, catalog()];
     case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true }, googleConnect: true, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];
     case "/api/board": return [200, board()];
+    case "/api/search": return search(url.searchParams.get("q") ?? "", url.searchParams.get("after"));
     case "/api/welcome": return [200, welcome()];
     case "/api/organisations": return [200, { organisations: [], suggested: null, chosen: null }];
     case "/api/setup-flows": return [200, flows()];
@@ -397,6 +419,7 @@ createServer((req, res) => {
   if (url.pathname === "/__mock") {
     for (const k of ["welcome", "empty"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
+    if (url.searchParams.has("search")) mock.search = url.searchParams.get("search") ?? "ok";
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(mock));
   }
   if (url.pathname === "/api/events") {

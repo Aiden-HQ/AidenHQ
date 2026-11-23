@@ -9,6 +9,7 @@
 //                                 is dropped), custom tools only (a server tool, billed per use, is refused), anthropic-version and
 //                                 the ANTHROPIC_BETAS Claude Code sends. A cut-off call is trued up by OpenRouter's x-generation-id.
 //   POST /advisor/api/v1/... | /fanout/api/v1/...                kind advisor | fanout, counted against the caller's run
+//   POST /api/v1/embeddings       an embedding call (no output to bound: its input is its price)
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat
 //   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
 //   GET /v1/spend/summary         (Bearer gateway_board_key) the install's spend against its limits, as the gateway counts it:
@@ -79,7 +80,7 @@ type Sum = { s: number };
 /** A limit a call counts against: the install's day or month (subject: that day or month), or its task's cap (subject: the task), with what is spent on it. */
 type Limit = { scope: "day" | "month" | "task"; subject: string; cap: number; spent: number };
 /** What OpenRouter billed for one call. */
-type Usage = { key: string; model: string; input: number; cached: number; output: number; costUsd: number | null };
+type Usage = { key?: string; model: string; input: number; cached: number; output: number; costUsd: number | null };
 type UsageBlock = {
   input_tokens?: number; prompt_tokens?: number; output_tokens?: number; completion_tokens?: number; cost?: unknown;
   input_tokens_details?: { cached_tokens?: number }; prompt_tokens_details?: { cached_tokens?: number };
@@ -90,7 +91,7 @@ type Answer = { id?: unknown; model?: unknown; usage?: UsageBlock };
 type Log = (msg: string, fields?: Record<string, unknown>) => void;
 
 const SYSTEM: { source: string } & Record<string, string> = { reviewer: "AI reviewer", grader: "Grader", source: "Source writers" };
-const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions|messages)$/;
+const ROUTE = /^\/(?:(advisor|fanout)\/)?api\/v1\/(responses|chat\/completions|messages|embeddings)$/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** The Anthropic-format body fields a call may carry (what Claude Code sends); any other is dropped before it goes upstream. */
 const MESSAGE_FIELDS = new Set(["model", "messages", "system", "tools", "tool_choice", "metadata", "max_tokens", "thinking", "context_management", "output_config", "stream", "stop_sequences", "temperature", "top_p", "top_k", "provider"]);
@@ -256,7 +257,7 @@ function opening(data: string): boolean {
  * Never model text: the reason is safe to log.
  */
 export function usageTap(sse: boolean): { feed(text: string): void; done(): Usage | undefined; failure(): string | undefined } {
-  let tail = "", body = "", event: string[] = [], held = 0, last = "none", error: string | undefined, finished = false, final = false, found: (Answer & { id: string; usage: UsageBlock }) | undefined;
+  let tail = "", body = "", event: string[] = [], held = 0, last = "none", error: string | undefined, finished = false, final = false, found: (Answer & { usage: UsageBlock }) | undefined;
   const line = (data: string) => {
     if (data !== "[DONE]") last = eventType(data) ?? "chunk";
     const err = streamError(data);
@@ -282,7 +283,8 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
       // Anthropic's stream: the id and input in message_start, the final usage (and OpenRouter's cost) in message_delta.
       if (j?.type === "message_delta" && j.usage && found) { found.usage = { ...found.usage, ...j.usage }; final = true; return; }
       const r = j?.type === "response.completed" || j?.type === "response.incomplete" ? j.response : j?.type === "message_start" ? j.message : j; // an answer cut at its output limit is billed too
-      if (r?.usage && typeof r.id === "string") { found = r as Answer & { id: string; usage: UsageBlock }; final = j?.type !== "message_start"; }
+      // A whole JSON body is the answer itself, so its usage counts without an id (an embedding's may carry none).
+      if (r?.usage && (typeof r.id === "string" || !sse)) { found = r as Answer & { usage: UsageBlock }; final = j?.type !== "message_start"; }
     } catch {}
   };
   return {
@@ -305,7 +307,7 @@ export function usageTap(sse: boolean): { feed(text: string): void; done(): Usag
       const cached = (anthropic ? u.cache_read_input_tokens : u.input_tokens_details?.cached_tokens ?? u.prompt_tokens_details?.cached_tokens) ?? 0;
       const input = (u.input_tokens ?? u.prompt_tokens ?? 0) + (anthropic ? cached + (u.cache_creation_input_tokens ?? 0) : 0);
       return {
-        key: found.id.slice(0, 200),
+        key: typeof found.id === "string" ? found.id.slice(0, 200) : undefined, // none: the call's own ledger key
         model: typeof found.model === "string" ? found.model.slice(0, 120) : "",
         input: Math.max(0, input - cached),
         cached,
@@ -340,14 +342,14 @@ const NO_OUTPUT = { reason: "ended before any output", transient: true };
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, jobLive = () => false, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
   /** OpenRouter's public models list (prices.ts), and the waits between its fetches on a cold start. */
-  modelsUrl?: string; priceRetryMs?: number[];
+  modelsUrl?: string; embeddingModelsUrl?: string; priceRetryMs?: number[];
   githubJwksUrl?: string; log?: Log; now?: () => number;
   /** Waits between attempts at a transient OpenRouter failure (tests pass zeros). */
   retryDelaysMs?: number[];
@@ -377,6 +379,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   sweep(true);
   const grants = watched(grantsFile, (j) => (j.agents ?? {}) as Grants, {});
   const prices = createPrices({ url: modelsUrl, now, log, ...(priceRetryMs ? { retryMs: priceRetryMs } : {}) });
+  // Embedding models are listed apart (OpenRouter's /embeddings/models): their own catalog, read only by embedding calls.
+  const embeddingPrices = createPrices({ url: embeddingModelsUrl, now, log, ...(priceRetryMs ? { retryMs: priceRetryMs } : {}) });
   // CI code review (compile writes it from the ci module's settings): { orgs, models, review } or null.
   const ciConf = watched<CiConf | null>(settingsFile, (j) => (j.ci && typeof j.ci === "object" ? (j.ci as CiConf) : null), null);
   // The limits (settings.spend_day_usd, spend_month_usd, task_usd; compile writes all three). One missing or unreadable is its
@@ -546,9 +550,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * The prices a call is reserved at: its model's on OpenRouter's list, the dearest of any fallback `models`. A 403 for an id
    * OpenRouter doesn't list; a 503 (the caller retries) when no list could be read at all.
    */
-  async function priceOf(body: Record<string, unknown>): Promise<Price> {
+  async function priceOf(body: Record<string, unknown>, path: string): Promise<Price> {
     const ids = [body.model, ...(Array.isArray(body.models) ? body.models : [])].map(String);
-    const r = await prices.lookup(ids);
+    const r = await (path === "embeddings" ? embeddingPrices : prices).lookup(ids);
     if ("unavailable" in r) throw fail(503, "prices_unavailable", "OpenRouter's models list couldn't be read to price this call; try again");
     if ("missing" in r) throw fail(403, "not_priced", `OpenRouter lists no model ${r.missing.join(", ").slice(0, 200)}`);
     const most = (k: keyof Price, pick = Math.max) => pick(...r.prices.map((p) => p[k]));
@@ -671,7 +675,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       // A tool with a type is Anthropic's (a server tool is billed per use, outside any reservation): custom tools only.
       if (Array.isArray(body.tools) && body.tools.some((t) => !t || typeof t !== "object" || ((t as { type?: unknown }).type ?? "custom") !== "custom")) throw fail(403, "not_allowed", "only custom tools may be sent: a server tool is billed outside the call's reservation");
     }
-    const price = await priceOf(body);
+    const price = await priceOf(body, path);
     const upKey = secret("openrouter_key");
     if (!upKey) throw fail(503, "no_upstream_key", "the gateway has no OpenRouter key");
     // Bounded output: the request's own limit, the model's ceiling, and what the tighter spend limit's room buys (reserve).
@@ -689,8 +693,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       const next = over.scope === "task" ? "this task stops here; whoever asked for it has been told" : "the owner can raise it in Settings";
       throw fail(402, "cap_reached", `${what} $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)} (settings.${over.scope === "task" ? "task" : `spend_${over.scope}`}_usd); ${next}`, { scope: over.scope, cap: over.cap, spent: over.spent });
     }
-    body[field] = r.maxOutput;
-    if (body.max_completion_tokens !== undefined) body.max_completion_tokens = r.maxOutput;
+    // An embedding has no output to bound: its whole price is its input.
+    if (path !== "embeddings") {
+      body[field] = r.maxOutput;
+      if (body.max_completion_tokens !== undefined) body.max_completion_tokens = r.maxOutput;
+    }
     body.provider = { ...(body.provider && typeof body.provider === "object" ? body.provider : {}), zdr: true };
     // Settled once, however the call ends: at what OpenRouter billed (usage.cost; tokens x list price if a usage block lacks it,
     // never 0); nothing when the upstream refused before any output or a stream failed in-band (`free`: OpenRouter bills
@@ -939,5 +946,5 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    *  refuses and records them, so this is the limit event itself, never a caller's account of it. A refusal is never forgotten
    *  for the key: a call settling after it means the limit was raised, not that the case the limit cut was judged. */
   const refusedByKey = (runKey: string) => [...new Set((q.refusedRun.all(runKey) as { key: string }[]).map((r) => r.key.split(":")[2] ?? ""))];
-  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, refusedByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); db.close(); } };
+  return { handle, db, metricsText, exhausted, dayLimit: () => limitsSet().day, trueUp, spentBy, spentByKey, tokensByKey, refusedByKey, inflight: () => live, ciEnabled: () => Boolean(ciConf()), close: () => { clearInterval(pruner); clearInterval(trueUps); prices.close(); embeddingPrices.close(); db.close(); } };
 }

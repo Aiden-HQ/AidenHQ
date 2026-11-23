@@ -130,12 +130,16 @@ export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network, beside the sign-in's board link.
   slack: { until: "3g", to: ["board", "sources"] },
   security: { until: "4c", to: ["paperclip", "sources"] },
+  // The task search service writes src_tasks like every source writer, until 3g removes the lists (owner-directed: task
+  // search moved out of the kernel into the warehouse module, 2026-11-23).
+  warehouse: { until: "3g", to: ["sources"] },
 };
 /** Root secrets (the root compose's) a module's services may mount, until the same units. Closed; may only shrink. */
 export const LEGACY_SECRETS: Record<string, string[]> = {
   tasks: ["board_internal_token"],
   google: ["google_auth_token", "gateway_source_key"],
   jira: ["gateway_source_key"],
+  warehouse: ["gateway_source_key"],
   glean: ["glean_auth_token"],
   grafana: ["grafana_auth_token"],
   clickhouse: ["clickhouse_auth_token"],

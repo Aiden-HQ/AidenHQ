@@ -470,3 +470,9 @@ test("usage tap: an echoed finish_reason is no finish, and completed usage outli
   completed.feed(sseOf({ id: "gen-2", model: "m", choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.02 } }, { id: "gen-2", error: { code: 500 }, usage: { prompt_tokens: 0, completion_tokens: 0, cost: 0 } }));
   assert.deepEqual([completed.done()?.output, completed.done()?.costUsd, completed.failure()], [5, 0.02, undefined]);
 });
+
+test("usage tap: a JSON answer without an id (an embedding) still counts its usage, under the call's own key", () => {
+  const tap = usageTap(false);
+  tap.feed(JSON.stringify({ object: "list", data: [{ embedding: [0.1] }], model: "google/gemini-embedding-001", usage: { prompt_tokens: 12, total_tokens: 12, cost: 0.0002 } }));
+  assert.deepEqual(tap.done(), { key: undefined, model: "google/gemini-embedding-001", input: 12, cached: 0, output: 0, costUsd: 0.0002 });
+});

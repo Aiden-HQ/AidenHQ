@@ -124,8 +124,17 @@ test("a job's env in its box: the launcher's env file, nothing of the kernel's o
 });
 
 /** A kernel's job half in its own process (fixtures/jobs-host.ts) over `dir`'s kernel.db. */
-async function host(dir) {
+async function host(t, dir) {
   const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", HOST], { env: { ...process.env, JOBS_DIR: dir }, stdio: ["ignore", "pipe", "pipe"] });
+  // Registered at spawn, so a failed wait still stops the host and the detached jobs it (or a killed predecessor) started.
+  t.after(() => {
+    p.kill("SIGKILL");
+    try {
+      const db = new DatabaseSync(join(dir, "kernel.db"));
+      for (const { pid } of db.prepare("SELECT pid FROM jobs WHERE state = 'running' AND pid > 0").all()) try { process.kill(-pid, "SIGKILL"); } catch {}
+      db.close();
+    } catch {} // the host never got as far as its database: no job to stop
+  });
   let err = "";
   p.stderr.on("data", (d) => (err += d));
   const port = await new Promise((res, rej) => { p.stdout.once("data", (d) => res(Number(String(d).trim()))); p.once("exit", (c) => rej(new Error(`host exited ${c}: ${err}`))); });
@@ -138,10 +147,10 @@ async function host(dir) {
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 for (const signal of ["SIGUSR2", "SIGKILL"]) {
-  test(`a kernel restart (${signal}) leaves the job running and the next kernel adopts it: one finish, from where the last left off`, async () => {
+  test(`a kernel restart (${signal}) leaves the job running and the next kernel adopts it: one finish, from where the last left off`, async (t) => {
     const sb = sandbox();
     const { dir } = sb;
-    const a = await host(dir);
+    const a = await host(t, dir);
     const j = await a.run(sb, "slow");
     await until("some progress", async () => /^step [3-9]/.test((await a.call("GET", `/v1/jobs/${j.id}`)).progress.said ?? ""));
     a.p.kill(signal);
@@ -153,7 +162,7 @@ for (const signal of ["SIGUSR2", "SIGKILL"]) {
     db.close();
     assert.equal(saved.state, "running");
     assert.ok(saved.offset > 0, "the offset was saved as it read");
-    const b = await host(dir);
+    const b = await host(t, dir);
     assert.match(b.log(), /adopted a running job/);
     writeFileSync(join(dir, "state/logs/release"), "");
     const v = await until("the adopted job's end", async () => { const x = await b.call("GET", `/v1/jobs/${j.id}`); return x.state !== "running" && x; });

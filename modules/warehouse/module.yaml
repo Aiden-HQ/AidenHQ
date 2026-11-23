@@ -10,6 +10,11 @@ settings:
   product_repo:
     required: true
     pattern: '^[\w.-]+/[\w.-]+$'
+  # "on": a cheap model (~deepseek/deepseek-flash-latest, through the gateway) writes a 2-3 sentence summary and 5-8 tags for
+  # each task whose content changed, which keyword and meaning search then read too. Search works fully without them.
+  search_summaries:
+    default: "off"
+    values: [ "on", "off" ]
 apps:
   - name: warehouse
     description: Shared Postgres warehouse for all sources and apps
@@ -31,3 +36,37 @@ apps:
     # The shared-sources network (compose.yaml `sources`): source writers and apps-mcp reach Postgres there, on a network
     # no app shares with them.
     connects: [sources]
+# Task search (docs/design/task-search.md): the board's search field over every task, kept in src_tasks.task_search.
+roles:
+  # The control plane as the owner (each task and its comments), a task's work (PRs, changed paths, last final) and the fact
+  # log (what changed): read through the kernel with the module's own token.
+  requests: [ kernel.cp-read, kernel.work-read, kernel.flow-read ]
+providers:
+  # The board's search (services/board/src/search.ts), through the kernel's /v1/board-api/warehouse/search.
+  board: { url: "http://warehouse-search:8099", auth: warehouse_search_api_token }
+services:
+  data: true
+  run:
+    warehouse-search:
+      build: ./search
+      tmp: 16m
+      port: 8099
+      egress: true # the kernel's listener and the model gateway are host addresses
+      links: [sources] # the warehouse (shared sources)
+      data: ["search:/data"]
+      env:
+        SEARCH_DB: /data/search.db
+        SEARCH_SUMMARIES: "${settings.search_summaries}"
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+        WAREHOUSE_TOKEN_FILE: ${secrets.warehouse_token}
+        SEARCH_API_TOKEN_FILE: ${secrets.warehouse_search_api_token}
+        # src_tasks' warehouse login (ops/warehouse-sources.sh gives the role this password).
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_tasks_password}
+        # Embeddings and summaries through the model gateway with the source writers' key.
+        GATEWAY_KEY_FILE: ${secrets.gateway_source_key}
+        GATEWAY_URL: http://10.231.0.1:8201
+# The module's kernel token, the board's bearer for the search, and src_tasks' warehouse login: compile creates them when missing.
+generated_secrets:
+  - warehouse_token
+  - warehouse_search_api_token
+  - warehouse_src_tasks_password

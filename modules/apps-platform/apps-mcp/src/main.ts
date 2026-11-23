@@ -168,7 +168,20 @@ const http = createServer(async (req, res) => {
                AND (SELECT min(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = l.source AND i.scope = l.scope AND i.error IS NOT NULL AND i.finished_at > COALESCE(ok.last_ok, '-infinity')) < now() - interval '24 hours'`,
           )
         : { rows: [] };
-      return send(res, 200, { sources: r.rows, failing_scopes: f.rows });
+      // A scope whose last two passes that reported a total (a completed scope: SourceStore.run) both fetched fewer records than
+      // the source held: records are being missed. One short pass is not enough (a record deleted mid-pass); the scope must still
+      // be recording (8 days).
+      const sh = detail
+        ? await d.pool.query(
+            `SELECT source, scope, (array_agg(total ORDER BY finished_at DESC))[1] AS total, (array_agg(fetched ORDER BY finished_at DESC))[1] AS fetched
+             FROM (SELECT source, scope, total, fetched, finished_at, row_number() OVER (PARTITION BY source, scope ORDER BY finished_at DESC) AS n
+                   FROM src_meta.ingest_run WHERE error IS NULL AND total IS NOT NULL) t
+             WHERE n <= 2
+             GROUP BY source, scope
+             HAVING count(*) = 2 AND bool_and(fetched < total) AND max(finished_at) > now() - interval '8 days'`,
+          )
+        : { rows: [] };
+      return send(res, 200, { sources: r.rows, failing_scopes: f.rows, short_scopes: sh.rows });
     }
     // Each app's quality checks from its last health probe (quality.ts): name, ok and count only, never samples (app data,
     // read through app_status by a caller who may read the app). The board's detector raises the failing ones for Fleet Ops.
