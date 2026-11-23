@@ -373,11 +373,12 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
         gaps.push(`the recheck of earlier findings didn't finish (${v.cause ?? "no usable answer"}), so none is marked fixed`);
       }
     }
-    // On a full review, text addressed to a reviewer can't clear anything (a claim recheck judges only the claimed findings, never withheld by it).
-    if (addressed && !combo.recheck_only && (fixed.length || result.cleared?.length)) {
+    // Text addressed to a reviewer never closes a finding: `fixed` is withheld, and so is `cleared` (a pending claim standing) on a full review.
+    // A claim recheck still answers for pending claims (the kernel applies `cleared` only to a finding with a pending `fixed` claim).
+    if (addressed && (fixed.length || (!combo.recheck_only && result.cleared?.length))) {
       fixed.length = 0;
-      result.cleared = [];
-      gaps.push("the change holds text addressed to a reviewer, so no earlier finding is marked fixed or cleared");
+      if (!combo.recheck_only) result.cleared = [];
+      gaps.push("the change holds text addressed to a reviewer, so no earlier finding is closed by this recheck");
     }
     result.fixed = fixed;
     result.unsafe = unsafe;
