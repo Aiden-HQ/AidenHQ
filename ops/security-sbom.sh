@@ -555,7 +555,9 @@ snapshot() {
     # An image held only for its own scan still needs its own size again to unpack it, so twice its size must fit above
     # the floor or no wave can ever take it. It is a line now, with the numbers, and no bytes are written for it.
     if [ $(( 2 * szb )) -gt "$room_bytes" ]; then
-      fail "image:${p_key[$idx]}" "skipped: ${sz} GB image does not fit: $(space_need 0 "$sz" "$sz" "$room")"
+      # The shortfall comes from the bytes, not the rounded figures: 5 GiB against 9.5 GiB of room is short by 0.5 GiB,
+      # and subtracting the two rounded numbers would print "short by 0 GB".
+      fail "image:${p_key[$idx]}" "skipped: ${sz} GB image does not fit: $(space_need 0 "$sz" "$sz" "$room" $(( (2 * szb - room_bytes + 1073741823) / 1073741824 )))"
       continue
     fi
     if [ "$wave" -eq 0 ] || [ $(( wave_total + szb + (szb > wave_biggest ? szb : wave_biggest) )) -gt "$room_bytes" ]; then
