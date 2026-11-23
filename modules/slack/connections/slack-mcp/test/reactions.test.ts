@@ -306,7 +306,13 @@ describe("scanMyReactions", () => {
 
   it("does not read a page with no item list as an empty last page", async () => {
     const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "c2"), { ok: true, response_metadata: { next_cursor: "" } }]);
-    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("item list") });
+    // The first page's match is verified, so it is returned with a continuation; the unreadable page never reads as an
+    // empty, complete set. With nothing verified, the same answer is the unknown-set error.
+    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
+    // Nothing for "eyes" on the readable page, then a page with no item list: no verified match, so the set is unknown.
+    const unreadable = fakeSlack([{ ok: true, items: [item("C1", "1.1")], response_metadata: { next_cursor: "more" } }, { ok: true, response_metadata: { next_cursor: "" } }]);
+    expect(await scanMyReactions({ ...plan, emoji: "eyes" }, { authorization: "Bearer x", userId: ME }, { fetchImpl: unreadable.fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("item list") });
   });
 
   it("carries permalink when the item has one", async () => {
@@ -428,6 +434,14 @@ describe("scanMyReactions", () => {
       return Response.json({ ok: true, items: [item("C1", "1.1")], paging: { count: 1, total: 3, page: 1, pages: 3 } });
     }) as unknown as typeof fetch;
     const scan = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
+  });
+
+  it("keeps a verified match when a lookahead page comes back without an item list", async () => {
+    // Page 1 holds the match and a cursor; page 2 answers ok with no items. The match is real, so it is returned with a
+    // continuation rather than the whole call turning into an error.
+    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "more"), { ok: true, response_metadata: { next_cursor: "" } }]);
+    const scan = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
     expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
   });
 

@@ -378,8 +378,12 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // Any page after the first is an advance, whether Slack pages by cursor or by number, so verified matches are kept.
     if (!r.ok) return messages.length && (full || cursor || numbered !== undefined) ? { ok: true, messages, nextCursor: continuation() } : r;
     const { json } = r;
-    // A page without an item list isn't an empty page: it is an answer this scan can't read, so the set is unknown.
-    if (!Array.isArray(json.items)) return { ok: false, detail: "reactions.list answered without an item list" };
+    // A page without an item list isn't an empty page: it is an answer this scan can't read. When matches were already
+    // verified (and there is a way to resume) they are kept with a continuation; otherwise the set is unknown.
+    if (!Array.isArray(json.items)) {
+      if (messages.length && (full || cursor || numbered !== undefined)) return { ok: true, messages, nextCursor: continuation() };
+      return { ok: false, detail: "reactions.list answered without an item list" };
+    }
     const items: unknown[] = json.items;
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as Record<string, any>;
