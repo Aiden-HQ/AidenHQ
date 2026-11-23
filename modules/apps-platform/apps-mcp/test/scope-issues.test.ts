@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
-import { scopeIssues, type WarehouseDeps } from "../src/sources.js";
+import { scopeIssues, sourceHealth, type WarehouseDeps } from "../src/sources.js";
 
 // /internal/sources' two scope lists (sources.ts scopeIssues) against real Postgres SQL (PGlite): a scope whose newest pass is
 // `status = 'retired'` is in neither, and a re-added scope whose newest pass is a normal failure returns to both.
@@ -54,16 +54,39 @@ it("a retired scope is in neither list; the same scope failing again returns to 
   expect(again.short.map((r) => r.scope)).toEqual(["org:short"]);
 });
 
-it("a retirement marker never counts as a source's or a scope's last good pass", async () => {
+it("a re-added scope starts fresh: failures and short passes from before its retirement never reopen its key", async () => {
+  const { run, deps } = await setup();
+  // Failed for days, retired, then re-added minutes ago and its first pass failed: not yet 24 hours of failures.
+  await run("org:acme", 50, { error: "boom" });
+  await run("org:acme", 45, { error: "boom" });
+  await run("org:acme", 40, { status: "retired" });
+  await run("org:acme", 0.1, { error: "boom" });
+  // A scope short in its last two passes before the retirement, re-added and now passing normally: not short.
+  await run("org:short", 50, { total: 10, fetched: 8 });
+  await run("org:short", 45, { total: 10, fetched: 8 });
+  await run("org:short", 40, { status: "retired" });
+  await run("org:short", 0.1, { total: 10, fetched: 10 });
+
+  const out = await scopeIssues(deps);
+  expect(out.failing.map((r) => r.scope)).toEqual([]);
+  expect(out.short.map((r) => r.scope)).toEqual([]);
+});
+
+it("a retirement marker never counts as a source's or a scope's last good pass, and a fully retired source drops out", async () => {
   const { run, deps } = await setup();
   await run("org:acme", 40, { error: "boom" });
   await run("org:acme", 1, { status: "retired" });
-  // The source summary (main.ts' own query): this scope's only non-error row is a marker, so the source has no good pass.
-  const { rows } = await (deps.pool as unknown as { query: (t: string) => Promise<{ rows: { last_ok: string | null }[] }> }).query(
-    "SELECT source, max(finished_at) FILTER (WHERE error IS NULL AND status IS DISTINCT FROM 'retired') AS last_ok, (array_agg(error IS NOT NULL ORDER BY finished_at DESC))[1] AS failing FROM src_meta.ingest_run GROUP BY source",
-  );
-  expect(rows).toHaveLength(1);
-  expect(rows[0]!.last_ok).toBeNull();
+  // This scope's only non-error row is a marker: it is not a good pass. With nothing else synced, the source drops out.
+  expect(await sourceHealth(deps)).toEqual([]);
+
+  // A still-synced scope keeps the source reported, and the retirement marker is not its last good pass.
+  await run("org:live", 3, { total: 5, fetched: 5 });
+  await run("org:live", 0.1, { error: "boom" });
+  expect(await sourceHealth(deps)).toEqual([{ source: "github", last_ok: expect.any(Date), failing: true }]);
+
+  // Every scope retired: the source is not reported at all (its sync is off).
+  await run("org:live", 0.05, { status: "retired" });
+  expect(await sourceHealth(deps)).toEqual([]);
 });
 
 it("a retired row is only the newest one that counts: an older retirement does not hide a later failure", async () => {

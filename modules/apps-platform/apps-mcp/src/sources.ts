@@ -106,27 +106,48 @@ export interface WarehouseDeps {
 export async function scopeIssues(d: Pick<WarehouseDeps, "pool">): Promise<{ failing: Record<string, unknown>[]; short: Record<string, unknown>[] }> {
   // Each scope's newest pass; a retired newest row drops the scope from both lists below.
   const latest = `latest AS (SELECT DISTINCT ON (source, scope) source, scope, error, status, finished_at FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC)`;
+  // A retirement is a cutoff for the scope's history: a re-added scope starts fresh, so failures or completed passes from
+  // before its retirement never reopen its key or shorten its pass list (the owner's re-add is a new sync, not an old one).
+  const since = `since AS (SELECT source, scope, max(finished_at) AS at FROM src_meta.ingest_run WHERE status = 'retired' GROUP BY source, scope)`;
   // A retired row has no error, but it is a marker, not a good pass: it must not count as the scope's last good pass.
   const f = await d.pool.query(
-    `WITH ok AS (SELECT source, scope, max(finished_at) AS last_ok FROM src_meta.ingest_run WHERE error IS NULL AND status IS DISTINCT FROM 'retired' GROUP BY source, scope), ${latest}
+    `WITH ${since}, ok AS (SELECT i.source, i.scope, max(i.finished_at) AS last_ok FROM src_meta.ingest_run i LEFT JOIN since s USING (source, scope) WHERE i.error IS NULL AND i.status IS DISTINCT FROM 'retired' AND i.finished_at > COALESCE(s.at, '-infinity') GROUP BY i.source, i.scope), ${latest}
      SELECT l.source, l.scope, left(l.error, 500) AS error, ok.last_ok AS since
-     FROM latest l LEFT JOIN ok USING (source, scope)
+     FROM latest l LEFT JOIN ok USING (source, scope) LEFT JOIN since s USING (source, scope)
      WHERE l.error IS NOT NULL AND l.finished_at > now() - interval '8 days' AND l.status IS DISTINCT FROM 'retired'
-       AND (SELECT min(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = l.source AND i.scope = l.scope AND i.error IS NOT NULL AND i.finished_at > COALESCE(ok.last_ok, '-infinity')) < now() - interval '24 hours'
+       AND (SELECT min(i.finished_at) FROM src_meta.ingest_run i WHERE i.source = l.source AND i.scope = l.scope AND i.error IS NOT NULL AND i.finished_at > GREATEST(COALESCE(ok.last_ok, '-infinity'), COALESCE(s.at, '-infinity'))) < now() - interval '24 hours'
      ORDER BY l.source, l.scope`,
   );
   const sh = await d.pool.query(
-    `WITH ${latest}
+    `WITH ${since}, ${latest}
      SELECT t.source, t.scope, (array_agg(t.total ORDER BY t.finished_at DESC))[1] AS total, (array_agg(t.fetched ORDER BY t.finished_at DESC))[1] AS fetched
      FROM (SELECT i.source, i.scope, i.total, i.fetched, i.finished_at, row_number() OVER (PARTITION BY i.source, i.scope ORDER BY i.finished_at DESC) AS n
-           FROM src_meta.ingest_run i JOIN latest l USING (source, scope)
-           WHERE i.error IS NULL AND i.total IS NOT NULL AND l.status IS DISTINCT FROM 'retired') t
+           FROM src_meta.ingest_run i JOIN latest l USING (source, scope) LEFT JOIN since s USING (source, scope)
+           WHERE i.error IS NULL AND i.total IS NOT NULL AND l.status IS DISTINCT FROM 'retired' AND i.finished_at > COALESCE(s.at, '-infinity')) t
      WHERE t.n <= 2
      GROUP BY t.source, t.scope
      HAVING count(*) = 2 AND bool_and(t.fetched < t.total) AND max(t.finished_at) > now() - interval '8 days'
      ORDER BY t.source, t.scope`,
   );
   return { failing: f.rows, short: sh.rows };
+}
+
+/**
+ * Each source's last good pass and whether its latest pass failed (`/internal/sources`' `sources`), for the Fleet Steward's
+ * source check. Retired scopes are left out: their marker is not a pass, so it may neither pose as a fresh good pass (masking
+ * a failed org) nor keep a source whose every scope was retired looking alive. A source with no scope still syncing drops out.
+ */
+export async function sourceHealth(d: Pick<WarehouseDeps, "pool">): Promise<Record<string, unknown>[]> {
+  const r = await d.pool.query(
+    `WITH latest AS (SELECT DISTINCT ON (source, scope) source, scope, status FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC)
+     SELECT i.source, max(i.finished_at) FILTER (WHERE i.error IS NULL AND i.status IS DISTINCT FROM 'retired') AS last_ok,
+            (array_agg(i.error IS NOT NULL ORDER BY i.finished_at DESC))[1] AS failing
+     FROM src_meta.ingest_run i JOIN latest l USING (source, scope)
+     WHERE l.status IS DISTINCT FROM 'retired'
+     GROUP BY i.source
+     ORDER BY i.source`,
+  );
+  return r.rows;
 }
 
 /** The readonly pool, from the warehouse app's vault dir (apps-mcp's /secrets/apps); undefined while it has no password. */

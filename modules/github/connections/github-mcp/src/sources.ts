@@ -241,6 +241,9 @@ export function startSync(store: SourceStore, gh: Gh, orgs: string[], log: Logge
     for (const [org, scopes] of held) if (!configured.has(org.toLowerCase())) await retireOrg(store, org, scopes, log);
   };
   const tick = async () => {
+    // The scope table (src_github.scope) exists only after migrate: the sweep and the pre-request scope row need it first,
+    // even on a fresh warehouse where no pass has run yet.
+    await store.migrate(DDL).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_github migration failed"));
     await retireRemoved().catch((err) => log.warn({ err: String(err).slice(0, 300) }, "src_github scope retirement pass failed"));
     for (const org of orgs) {
       try {
