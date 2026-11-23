@@ -70,7 +70,7 @@ COPY code-review/ /opt/aidenhq/code-review/
 # Each is pinned (versions published on or before 2026-11-14, so 7+ days old) and checksummed (release downloads: sha256 per
 # architecture from the GitHub release's own digests), or resolved as of that date (npm --before, uv --exclude-newer, the Go
 # module proxy with its checksum database). gitleaks is the one above. Nothing is downloaded when a review runs, except the
-# vulnerability databases osv-scanner and govulncheck read (data, not code).
+# vulnerability database govulncheck reads (data, not code).
 # uv 0.13.8 builds the Python tools' venv, then stays only as a build step's tool.
 RUN case "$(dpkg --print-architecture)" in \
       amd64) triple=x86_64-unknown-linux-gnu sum=5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91 ;; \
@@ -84,24 +84,12 @@ RUN case "$(dpkg --print-architecture)" in \
     && ln -s /opt/review-py/bin/vulture /opt/review-py/bin/ruff /usr/local/bin/ \
     && rm -rf /tmp/uv /tmp/uv.tgz /tmp/uv-cache && chmod -R a+rX /opt/review-py \
     && vulture --version | grep -qx 'vulture 2.16' && ruff --version | grep -qx 'ruff 0.17.5'
-RUN npm i -g --before=2026-11-14 oxlint@1.93.0 knip@6.45.1 jscpd@5.4.3 fallow@3.43.0 && npm cache clean --force \
-    && oxlint --version | grep -q 1.93.0 && knip --version | grep -q 6.45.1 && jscpd --version | grep -q 5.4.3 && fallow --version | grep -q 3.43.0
+RUN npm i -g --before=2026-11-14 knip@6.45.1 fallow@3.43.0 && npm cache clean --force \
+    && knip --version | grep -q 6.45.1 && fallow --version | grep -q 3.43.0
 # govulncheck v1.9.0 (2026-10-11), built with the image's Go from the module proxy (go.sum and the checksum database verify it).
 RUN GOTOOLCHAIN=local CGO_ENABLED=0 GOBIN=/usr/local/bin GOPATH=/tmp/gopath GOCACHE=/tmp/gocache go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 \
     && chmod -R u+w /tmp/gopath && rm -rf /tmp/gopath /tmp/gocache && govulncheck -version | grep -q v1.9.0
-# osv-scanner 2.7.1, zizmor 1.32.0 and squawk 2.72.0: release binaries.
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) a=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8 file=osv-scanner_linux_amd64 ;; \
-      arm64) a=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81 file=osv-scanner_linux_arm64 ;; \
-    esac \
-    && curl -fsSLo /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.7.1/$file" && echo "$a  /usr/local/bin/osv-scanner" | sha256sum -c - \
-    && chmod 0755 /usr/local/bin/osv-scanner && osv-scanner --version | grep -q 2.7.1
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) a=bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b file=zizmor-x86_64-unknown-linux-gnu.tar.gz ;; \
-      arm64) a=cb152b207f815116d7fa1c1ee4614f61578803351395052908095e79adfd9fd0 file=zizmor-aarch64-unknown-linux-gnu.tar.gz ;; \
-    esac \
-    && curl -fsSLo /tmp/zz.tgz "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/$file" && echo "$a  /tmp/zz.tgz" | sha256sum -c - \
-    && tar -xzf /tmp/zz.tgz -C /usr/local/bin zizmor && rm /tmp/zz.tgz && zizmor --version | grep -q 1.32.0
+# squawk 2.72.0: a release binary.
 # scc 4.1.0 (2026-09-07; modules/code-review/service/src/catalog.json maint.scc): a review's complexity pass. Built from the module at
 # that tag with the image's Go, not from its release binary: those are cut with go1.27.0 and carry x/net 0.56.0 (critical
 # GO-2026-6612, highs GO-2026-6603/6610/6611/6617/6860), x/crypto 0.53.0 and x/text 0.39.0, and there is no newer release.
