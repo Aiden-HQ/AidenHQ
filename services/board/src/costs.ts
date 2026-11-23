@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import type { Logger } from "pino";
 import { z } from "zod";
 import type { Store } from "./store.js";
+import type { CatalogModel } from "./model-catalog.js";
 
 const OPENROUTER = "https://openrouter.ai/api/v1";
 const DAY = 864e5;
@@ -147,6 +148,17 @@ export async function spendSummary(gateway: { url: string; token: string } | und
   try {
     const res = await fetch(`${gateway.url}/v1/spend/summary`, { headers: { authorization: `Bearer ${gateway.token}` }, signal: AbortSignal.timeout(3_000) });
     return res.ok ? ((await res.json()) as SpendSummary) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** OpenRouter's text models, from the kernel's gateway (GET /v1/models/catalog: the list it already holds). null when it can't be read. */
+export async function modelCatalog(gateway: { url: string; token: string } | undefined): Promise<CatalogModel[] | null> {
+  if (!gateway) return null;
+  try {
+    const res = await fetch(`${gateway.url}/v1/models/catalog`, { headers: { authorization: `Bearer ${gateway.token}` }, signal: AbortSignal.timeout(25_000) });
+    return res.ok ? ((await res.json()) as { models: CatalogModel[] }).models : null;
   } catch {
     return null;
   }

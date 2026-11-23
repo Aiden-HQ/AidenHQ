@@ -56,7 +56,7 @@ and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on t
 | A collection (modules, apps, connections) | `TileGrid` + `Tile` (one target per tile, its action raised above it) |
 | A number and its trend | `StatBlock` (with `bars`) or `BarChart`; a count or cost that changes: `Ticker` |
 | A few label/value facts | `Card` + `Facts`; a usage bar: `Meter` |
-| A form | `Field`, `Input`, `Select`, `Switch`, `Checks`; a setting: `FieldRow` |
+| A form | `Field`, `Input`, `Select`, `Switch`, `Checks`; a setting: `FieldRow`; a model: `ModelPicker` (the one model picker, fed by `useModelCatalog`) |
 | Something new or wrong above the content | `Banner` (`info`, `warn`, `danger`) with one action |
 | Nothing to show | `EmptyState`, which says what to do |
 | Loading | a skeleton shaped like the content (`Skeleton.tsx`), never a spinner |

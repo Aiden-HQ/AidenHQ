@@ -4,11 +4,13 @@
 
 export type Lens = "correctness" | "security" | "maintainability" | "performance";
 export type Mode = "one_off" | "continuous";
+/** `name` and `description`: the board's words for the option (a proper name, and what it finds). `needs`: the stack it applies to,
+ * said as "Needs <needs>" when the repo lacks it (required with `when`). `unavailable`: why it can't run at all, in the owner's words. */
 export type Option = {
-  id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
+  id: string; name: string; description: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: "tool" | "skill" | "engine";
   source: { repo: string; version: string; licence: string };
   run: { cmd?: string; harness?: string; skill?: string; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[] };
-  when: string[]; output: "sarif" | "knip" | "jscpd" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean; severity?: "nit";
+  when: string[]; output: "sarif" | "knip" | "jscpd" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; needs?: string; severity?: "nit";
 };
 
 const LENSES = ["correctness", "security", "maintainability", "performance"];
@@ -30,6 +32,8 @@ export function loadCatalog(text: string): Option[] {
     if (!["tool", "skill", "engine"].includes(o.kind)) bad("kind is tool, skill or engine");
     if (!o.source?.version || !o.source?.licence) bad("source names its version and licence");
     if (!Array.isArray(o.when)) bad("when is a list of globs");
+    if (typeof o.name !== "string" || !o.name.trim() || typeof o.description !== "string" || !o.description.trim()) bad("name and description are the words the board shows");
+    if (o.when.length && (typeof o.needs !== "string" || !o.needs.trim())) bad("an option with `when` says what it needs");
   }
   return list;
 }
@@ -50,9 +54,17 @@ function globRe(glob: string) {
   return new RegExp(`^${re}$`);
 }
 
-/** The options a repo's paths fit for `mode` (never a hidden one), and which of them are ticked by default. */
+/** Why an option can't run on a repo's paths in `mode`, in the owner's words; undefined when it can. */
+export function whyNot(o: Option, paths: string[], mode: Mode): string | undefined {
+  if (o.unavailable) return o.unavailable;
+  if (!o.modes.includes(mode)) return mode === "one_off" ? "Runs on pull requests only" : "Runs on whole-repo reviews only";
+  if (o.when.length && !o.when.map(globRe).some((re) => paths.some((p) => re.test(p)))) return `Needs ${o.needs}`;
+  return undefined;
+}
+
+/** The options a repo's paths fit for `mode`, and which of them are ticked by default. */
 export function detect(paths: string[], catalog: Option[], mode: Mode): { available: Option[]; recommended: string[] } {
-  const available = catalog.filter((o) => !o.hidden && o.modes.includes(mode) && (!o.when.length || o.when.map(globRe).some((re) => paths.some((p) => re.test(p)))));
+  const available = catalog.filter((o) => !whyNot(o, paths, mode));
   return { available, recommended: available.filter((o) => o.recommended.includes(mode)).map((o) => o.id) };
 }
 

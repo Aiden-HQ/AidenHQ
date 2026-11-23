@@ -225,6 +225,10 @@ test("gateway: the install's day and month limits count every call, every caller
   const [jobCall] = (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: "{}" })).json()).records.filter((r) => r.agentId === "ag1");
   assert.equal(jobCall.runId, "j-0123456789abcdef");
   assert.equal((await fetch(`${front.url}/v1/spend/summary`, { headers: { authorization: "Bearer nope" } })).status, 401);
+  // The model picker's catalog: the list the gateway already holds, for the board's key only.
+  assert.equal((await fetch(`${front.url}/v1/models/catalog`, { headers: { authorization: "Bearer nope" } })).status, 401);
+  const { models } = await (await fetch(`${front.url}/v1/models/catalog`, { headers: { authorization: "Bearer gw-board" } })).json();
+  assert.deepEqual(models.find((x) => x.id === "anthropic/claude-haiku-5.5"), { id: "anthropic/claude-haiku-5.5", name: "anthropic/claude-haiku-5.5", provider: "anthropic", created: 0, context: 0, in: 1, out: 1, tools: false, reasoning: false });
   // Past the day's limit every caller is refused, the reviewer, the source writers and the board's side chat included; the
   // owner is told once.
   for (const cred of [reviewer(), "src-key", "gw-board", job()]) {

@@ -18,14 +18,14 @@ export type Mode = (typeof MODES)[number];
  * output) and `exits`, the exit codes of a finished scan (default [0]; a scanner's "found something" code too: any other code is a
  * failed tool, report or not), a skill's harness and skill names (space separated: run in order), or an engine's id. `runs_code`:
  * the tool can run the repo's code (a JS config it imports): only a tool, never on a fork's PR, after the others (tools.ts). `severity: "nit"` caps a tool whose
- * output marks everything an error (ruff, fallow); `hidden` options are never offered. `source.version` is the pin: a release tag,
+ * output marks everything an error (ruff, fallow); an option with `unavailable` (the reason) is never run. `name`, `description` and `needs` are the board's words for it (the service's catalog.ts reads them). `source.version` is the pin: a release tag,
  * package version or commit.
  */
 export interface Option {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: (typeof KINDS)[number];
   source: { repo: string; version: string; licence: string };
   run: { cmd?: string; exits?: number[]; harness?: string; skill?: string; engine?: string };
-  when: string[]; output: (typeof OUTPUTS)[number]; runs_code: boolean; cost: "free" | "low" | "high"; hidden?: boolean; severity?: "nit";
+  when: string[]; output: (typeof OUTPUTS)[number]; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; severity?: "nit"; name?: string; description?: string; needs?: string;
 }
 
 const bad = (id: unknown, why: string): never => { throw new Error(`catalog entry ${String(id)}: ${why}`); };
@@ -59,9 +59,9 @@ export function loadCatalog(source: string): Option[] {
   return list;
 }
 
-/** The options a repo's paths fit (hidden ones never) and, of those, the ticked-by-default ids for `mode`. */
+/** The options a repo's paths fit (an unavailable one never) and, of those, the ticked-by-default ids for `mode`. */
 export function detect(paths: string[], catalog: Option[], mode: Mode): { available: Option[]; recommended: string[] } {
-  const available = catalog.filter((o) => !o.hidden && o.modes.includes(mode) && (o.when.length === 0 || o.when.map(globRe).some((re) => paths.some((p) => re.test(p)))));
+  const available = catalog.filter((o) => !o.unavailable && o.modes.includes(mode) && (o.when.length === 0 || o.when.map(globRe).some((re) => paths.some((p) => re.test(p)))));
   return { available, recommended: available.filter((o) => o.recommended.includes(mode)).map((o) => o.id) };
 }
 

@@ -11,6 +11,17 @@ const ago = (min: number) => new Date(now - min * 60_000).toISOString();
 const ahead = (min: number) => new Date(now + min * 60_000).toISOString();
 /** Tomorrow 08:00 in the board's timezone (Asia/Dubai, UTC+4). */
 const TOMORROW_8 = (() => { const d = new Date(now + 4 * 3600_000); d.setUTCDate(d.getUTCDate() + 1); d.setUTCHours(8 - 4, 0, 0, 0); return d.toISOString(); })();
+// OpenRouter's text models as the gateway serves them (kernel/src/gateway/prices.ts catalogOf): [id, name, created (days ago), context, in, out, tools, reasoning].
+const MODEL_CATALOG = ([
+  ["~deepseek/deepseek-flash-latest", "DeepSeek: V4 Flash", 6, 1000000, 0.1, 0.4, 1, 1], ["~openai/gpt-luna-latest", "OpenAI: GPT Luna", 9, 400000, 0.3, 2, 1, 1], ["~openai/gpt-sol-latest", "OpenAI: GPT Sol", 9, 400000, 2.5, 15, 1, 1], ["~openai/gpt-terra-latest", "OpenAI: GPT Terra", 9, 400000, 1, 6, 1, 1],
+  ["~anthropic/claude-sonnet-latest", "Anthropic: Claude Sonnet", 12, 1000000, 3, 15, 1, 1], ["~anthropic/claude-opus-latest", "Anthropic: Claude Opus", 12, 1000000, 5, 25, 1, 1], ["~anthropic/claude-haiku-latest", "Anthropic: Claude Haiku", 12, 200000, 1, 5, 1, 1], ["~google/gemini-pro-latest", "Google: Gemini Pro", 20, 2000000, 1.25, 10, 1, 1], ["~moonshotai/kimi-latest", "MoonshotAI: Kimi", 30, 262144, 0.6, 2.5, 1, 1],
+  ["openai/gpt-6.2-sol", "OpenAI: GPT-6.2 Sol", 9, 400000, 2.5, 15, 1, 1], ["openai/gpt-6.1-sol", "OpenAI: GPT-6.1 Sol", 70, 400000, 2.5, 15, 1, 1], ["openai/gpt-6-sol", "OpenAI: GPT-6 Sol", 140, 400000, 2.5, 15, 1, 1], ["openai/gpt-6.2-luna", "OpenAI: GPT-6.2 Luna", 9, 400000, 0.3, 2, 1, 1], ["openai/gpt-6.1-luna", "OpenAI: GPT-6.1 Luna", 70, 400000, 0.3, 2, 1, 1], ["openai/gpt-oss-120b", "OpenAI: gpt-oss-120b", 300, 131072, 0.04, 0.2, 1, 1], ["openai/gpt-oss-20b:free", "OpenAI: gpt-oss-20b (free)", 300, 131072, 0, 0, 0, 1],
+  ["anthropic/claude-opus-5.5", "Anthropic: Claude Opus 5.5", 12, 1000000, 5, 25, 1, 1], ["anthropic/claude-sonnet-5.5", "Anthropic: Claude Sonnet 5.5", 12, 1000000, 3, 15, 1, 1], ["anthropic/claude-haiku-5.5", "Anthropic: Claude Haiku 5.5", 12, 200000, 1, 5, 1, 1], ["anthropic/claude-opus-5", "Anthropic: Claude Opus 5", 90, 1000000, 5, 25, 1, 1], ["anthropic/claude-sonnet-5", "Anthropic: Claude Sonnet 5", 90, 1000000, 3, 15, 1, 1], ["anthropic/claude-sonnet-4.5", "Anthropic: Claude Sonnet 4.5", 400, 1000000, 3, 15, 1, 1],
+  ["deepseek/deepseek-v4-pro", "DeepSeek: V4 Pro", 40, 1000000, 0.5, 2, 1, 1], ["deepseek/deepseek-v4-flash", "DeepSeek: V4 Flash", 6, 1000000, 0.1, 0.4, 1, 1], ["deepseek/deepseek-v3.2", "DeepSeek: V3.2", 200, 163840, 0.25, 0.4, 1, 1],
+  ["google/gemini-3.5-pro", "Google: Gemini 3.5 Pro", 20, 2000000, 1.25, 10, 1, 1], ["google/gemini-3-pro", "Google: Gemini 3 Pro", 150, 1000000, 1.25, 10, 1, 1], ["google/gemini-3.5-flash", "Google: Gemini 3.5 Flash", 20, 1000000, 0.3, 2.5, 1, 1], ["google/gemma-4-27b-it", "Google: Gemma 4 27B", 60, 131072, 0.1, 0.2, 0, 0],
+  ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
+  ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
+] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, out: o, tools: !!tools, reasoning: !!reasoning }));
 const mock = { welcome: false, empty: false, slow: 0, search: "ok" };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
@@ -135,7 +146,7 @@ const board = () => ({
   },
   brief: null, done: [], recurring: [],
   work: mock.empty ? [] : WORK(), asOf: new Date().toISOString(), incomplete: false, projects: mock.empty ? [] : PROJECTS,
-  assignees: [{ key: "me", kind: "me", name: "Me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, avatar: a.avatar }))],
+  assignees: [{ key: "me", kind: "me", name: "Me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, avatar: a.avatar, ...(a.key === "engineer" ? { defaultModel: "openrouter/~deepseek/deepseek-flash-latest", efforts: ["low", "medium", "high"] } : {}) }))],
   labels: mock.empty ? [] : LABELS, prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: "Monday", rollsTomorrow: true, agentsActive: 4,
   spend: { day: { spent: 3.42, cap: 50 }, month: { spent: 61.2, cap: 1000 } }, google: null, signIns: [],
 });
@@ -267,20 +278,51 @@ const flows = () => ({
 const REVIEW_COMBO = { engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" };
 const reviewRuns = () => [{ id: "cr-000000000001", repo: "acme/payments", number: 42, head: "a".repeat(40), engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium", kind: "auto", status: "done", why: null, cost_usd: 0.4, tokens_in: 12000, tokens_out: 3000, duration_ms: 90000, important: 1, nit: 2, pre_existing: 0, started: ago(30), ended: ago(28), full: false, incremental_from: null, posted: true, title: "Retry failed charges" }];
 const reviewBatches = () => [
-  { id: "b-000000000001", repo: "acme/payments", sha: "4e1a9c2".padEnd(40, "0"), sha7: "4e1a9c2", verdict: "concerns", cost_usd: 6.8, status: "done", started: ago(300), ended: ago(260) },
-  { id: "b-000000000002", repo: "acme/web", sha: "9b0c7de".padEnd(40, "0"), sha7: "9b0c7de", verdict: null, cost_usd: 1.2, status: "running", started: ago(4), ended: null },
+  { id: "b-000000000001", repo: "acme/payments", sha: "4e1a9c2".padEnd(40, "0"), sha7: "4e1a9c2", verdict: "concerns", cost_usd: 6.8, status: "done", started: ago(300), ended: ago(260), option_names: ["Lint (Oxlint)", "Secret scan (Gitleaks)", "Dependency vulnerabilities (OSV)", "GitHub Actions security (zizmor)", "Trail of Bits security audit", "React performance (Vercel)"] },
+  { id: "b-000000000002", repo: "acme/web", sha: "9b0c7de".padEnd(40, "0"), sha7: "9b0c7de", verdict: null, cost_usd: 1.2, status: "running", started: ago(4), ended: null, option_names: ["Secret scan (Gitleaks)", "Copy-paste detection (jscpd)"] },
 ];
-const O = (id: string, lens: string, kind: string, recommended: boolean, runs_code: boolean, cost: string, repo: string, version: string, licence: string) => ({ id, lens, kind, recommended, runs_code, cost, source: { repo, version, licence } });
-const catalog = () => ({ sha: "4e1a9c2f0b7d".padEnd(40, "0"), options: [
-  O("correctness.model-review", "correctness", "engine", true, false, "medium", "aidenhq/code-review", "1.0.0", "MIT"),
-  O("correctness.tsc", "correctness", "tool", true, true, "low", "microsoft/typescript", "5.6.3", "Apache-2.0"),
-  O("sec.quick-scan", "security", "skill", true, false, "medium", "aidenhq/code-review", "1.0.0", "MIT"),
-  O("sec.semgrep", "security", "tool", true, false, "low", "semgrep/semgrep", "1.95.0", "LGPL-2.1"),
-  O("sec.deepsec", "security", "engine", false, true, "high", "vercel-labs/deepsec", "0.4.0", "Apache-2.0"),
-  O("maint.knip", "maintainability", "tool", true, false, "low", "webpro-nl/knip", "5.38.0", "ISC"),
-  O("maint.jscpd", "maintainability", "tool", false, false, "low", "kucherenko/jscpd", "4.0.5", "MIT"),
-  O("perf.linters", "performance", "tool", true, false, "low", "aidenhq/code-review", "1.0.0", "MIT"),
-] });
+const CATALOG_ROWS: [string, string, string, string, string, boolean, boolean, string, string, string | null][] = [
+  ["cor.oxlint", "Lint (Oxlint)", "Fast linter for JavaScript and TypeScript: bugs, unused code and suspicious patterns.", "correctness", "tool", true, false, "free", "oxc-project/oxc", null],
+  ["cor.codex-native", "Codex code review", "OpenAI's Codex reads the whole repo and reports logic errors and broken edge cases.", "correctness", "engine", false, false, "high", "openai/codex", null],
+  ["cor.claude-review", "Claude Code review", "Anthropic's built-in code review: bugs, regressions and risky changes.", "correctness", "engine", false, false, "high", "anthropics/claude-code", null],
+  ["cor.codegenie", "Codegenie review", "Codegenie's reviewer for logic errors and missed cases.", "correctness", "engine", false, false, "high", "0xPolygon/codegenie", "Runs on pull requests only"],
+  ["cor.ce-code-review", "Compound Engineering review", "A multi-angle review that checks correctness, tests and design together.", "correctness", "skill", false, false, "high", "EveryInc/compound-engineering-plugin", null],
+  ["cor.pr-review-toolkit", "Silent failures and test gaps", "Finds swallowed errors and code paths no test covers.", "correctness", "skill", false, false, "low", "anthropics/claude-plugins-official", "Runs on pull requests only"],
+  ["cor.variant-analysis", "Variant analysis (Trail of Bits)", "Takes known bug patterns and hunts for the same flaw elsewhere in the code.", "correctness", "skill", false, false, "high", "trailofbits/skills", null],
+  ["sec.gitleaks", "Secret scan (Gitleaks)", "Finds API keys, tokens and passwords committed to the repo.", "security", "tool", true, false, "free", "gitleaks/gitleaks", null],
+  ["sec.osv-scanner", "Dependency vulnerabilities (OSV)", "Matches your lockfiles against known vulnerabilities in open-source packages.", "security", "tool", true, false, "free", "google/osv-scanner", null],
+  ["sec.govulncheck", "Go vulnerabilities (govulncheck)", "Reports known vulnerabilities in Go dependencies that your code actually calls.", "security", "tool", true, false, "free", "golang/vuln", "Needs Go (go.mod)"],
+  ["sec.zizmor", "GitHub Actions security (zizmor)", "Finds injection and permission problems in GitHub Actions workflows.", "security", "tool", true, false, "free", "zizmorcore/zizmor", null],
+  ["sec.deepsec", "Deep security scan (deepsec)", "Vercel's scanner sets itself up on the repo, then traces risky flows and revalidates each finding.", "security", "engine", false, false, "high", "vercel-labs/deepsec", null],
+  ["sec.cloudflare-audit", "Cloudflare security audit", "Cloudflare's security audit skill: auth, input handling and platform misconfigurations.", "security", "skill", true, false, "high", "cloudflare/security-audit-skill", null],
+  ["sec.codex-security", "Codex Security", "OpenAI's security reviewer for vulnerabilities in application code.", "security", "engine", false, false, "high", "openai/codex-security", "No Codex Security engine is built into the review box yet"],
+  ["sec.claude-security-review", "Claude security review", "Anthropic's security review of a change: injection, auth and data exposure.", "security", "engine", false, false, "high", "anthropics/claude-code", "Runs on pull requests only"],
+  ["sec.tob-audit", "Trail of Bits security audit", "A security audit that follows how data and trust cross the code.", "security", "skill", false, false, "high", "trailofbits/skills", null],
+  ["sec.solidity-auditor", "Solidity audit", "Reviews smart contracts for reentrancy, access control and arithmetic flaws.", "security", "skill", true, false, "high", "pashov/skills", "Needs Solidity contracts (.sol)"],
+  ["maint.knip", "Unused code and dependencies (Knip)", "Finds unused files, exports and packages in JavaScript and TypeScript projects.", "maintainability", "tool", true, true, "free", "webpro-nl/knip", null],
+  ["maint.vulture", "Dead Python code (Vulture)", "Finds unused functions, classes and variables in Python.", "maintainability", "tool", true, false, "free", "jendrikseipp/vulture", "Needs Python files"],
+  ["maint.ruff-unused", "Unused Python imports and variables (Ruff)", "Flags imports and variables nothing uses.", "maintainability", "tool", true, false, "free", "astral-sh/ruff", "Needs Python files"],
+  ["maint.jscpd", "Copy-paste detection (jscpd)", "Finds duplicated blocks of code across the repo.", "maintainability", "tool", true, false, "free", "kucherenko/jscpd", null],
+  ["maint.improve-architecture", "Architecture improvements", "Suggests refactors that deepen modules and untangle structure.", "maintainability", "skill", true, false, "high", "mattpocock/skills", null],
+  ["maint.fallow", "Codebase health (Fallow)", "Reports dead code, duplication and complexity in JavaScript projects.", "maintainability", "tool", false, false, "free", "fallow-rs/fallow", null],
+  ["maint.code-modernization", "Code modernization", "Finds outdated patterns and APIs and suggests current ones.", "maintainability", "skill", false, false, "high", "anthropics/claude-plugins-official", null],
+  ["maint.scc", "Code size and complexity (scc)", "Counts lines and complexity per language: a quick picture of the codebase.", "maintainability", "tool", false, false, "free", "boyter/scc", null],
+  ["maint.comment-analyzer", "Comment accuracy", "Checks that comments still match the code they describe.", "maintainability", "skill", false, false, "low", "anthropics/claude-plugins-official", "Runs on pull requests only"],
+  ["perf.ruff-perf", "Python performance lint (Ruff)", "Flags Python patterns that are slower than they need to be.", "performance", "tool", true, false, "free", "astral-sh/ruff", "Needs Python files"],
+  ["perf.squawk", "Risky SQL migrations (Squawk)", "Finds migrations that lock tables or break running queries.", "performance", "tool", true, false, "free", "sbdchd/squawk", "Needs SQL migrations"],
+  ["perf.supabase-postgres", "Postgres performance (Supabase)", "Reviews queries, indexes and schema for Postgres performance.", "performance", "skill", true, false, "high", "supabase/agent-skills", "Needs SQL or Supabase files"],
+  ["perf.react-best-practices", "React performance (Vercel)", "Finds slow renders, waterfalls and oversized bundles in React code.", "performance", "skill", true, false, "high", "vercel-labs/agent-skills", null],
+  ["perf.django", "Django performance (Sentry)", "Finds N+1 queries and slow ORM use in Django projects.", "performance", "skill", false, false, "high", "getsentry/skills", "Needs a Django project (manage.py)"],
+  ["perf.react-native", "React Native performance", "Finds slow lists, re-renders and bridge overhead in React Native apps.", "performance", "skill", false, false, "high", "callstackincubator/agent-skills", "Needs a React Native project"],
+  ["perf.dotnet", ".NET performance", "Finds allocation and async problems in .NET code.", "performance", "skill", false, false, "high", "dotnet/skills", "Needs .NET projects (.csproj)"],
+];
+// What past repo reviews cost, per option (the service reads it from its runs).
+const PAST: Record<string, { model: string; effort: string; n: number; usd: number }[]> = {
+  "sec.cloudflare-audit": [{ model: "anthropic/claude-haiku-5.5", effort: "medium", n: 2, usd: 0.62 }],
+  "cor.codex-native": [{ model: "~deepseek/deepseek-flash-latest", effort: "medium", n: 3, usd: 0.21 }],
+  "sec.tob-audit": [{ model: "anthropic/claude-sonnet-5.5", effort: "high", n: 1, usd: 4.8 }],
+};
+const catalog = () => ({ sha: "6018f7c2f0b7d".padEnd(40, "0"), options: CATALOG_ROWS.map(([id, name, description, lens, kind, recommended, runs_code, cost, repo, unavailable]) => ({ id, name, description, lens, kind, recommended: recommended && !unavailable, runs_code, cost, source: { repo, version: "1.0.0", licence: "MIT" }, ...(PAST[id] ? { past: PAST[id] } : {}), ...(unavailable ? { unavailable } : {}) })) });
 const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9c2`\n\n## Security\n\n- **Important** `src/billing/charge.ts:88`: a retried charge can post twice.\n  - Evidence: the idempotency key is written after the provider call.\n  - Found by: sec.quick-scan\n\n## Coverage\n\n| Option | Result |\n| --- | --- |\n| sec.quick-scan | done |\n| maint.knip | done |\n\nCost $6.80.";
 
 function route(method: string, url: URL): [number, unknown] {
@@ -289,12 +331,14 @@ function route(method: string, url: URL): [number, unknown] {
   const p = url.pathname;
   if (method === "POST" && p === "/api/reviews") return [200, { batch: "b-000000000003" }];
   if (method !== "GET") return [200, { ok: true, identifier: "WOR-900", id: "id-900" }];
+  if (p.startsWith("/api/models/")) return [200, { default: "openrouter/~deepseek/deepseek-flash-latest", models: ["openrouter/~deepseek/deepseek-flash-latest", "openrouter/~openai/gpt-luna-latest", "openrouter/z-ai/glm-5.3"], efforts: ["low", "medium", "high"] }];
   const m = (re: RegExp) => re.exec(p);
   switch (p) {
     case "/api/reviews/setup": return [200, { module: true, github: { configured: true, connected: true, state: "ok" }, config: { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [{ ...REVIEW_COMBO, effort: "low" }] }], day_usd: 200 }, problems: [] }];
     case "/api/reviews": return [200, { runs: reviewRuns(), batches: reviewBatches() }];
     case "/api/reviews/repos": return [200, { repos: [{ repo: "acme/payments", on_open: [REVIEW_COMBO], on_push: [], day_usd: 200, day_spent_usd: 3.2 }], day_usd: 200, day_spent_usd: 3.2 }];
-    case "/api/reviews/engines": return [200, { engines: { codex: { label: "Codex", efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "claude-code": { label: "Claude Code", efforts: ["low", "medium", "high"], models: ["~anthropic/claude-haiku-latest"], run_usd: 5 }, codegenie: { label: "Codegenie", efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", efforts: ["low", "medium"], models: ["~openai/gpt-sol-latest"], run_usd: 5 } } }];
+    case "/api/reviews/engines": return [200, { engines: { codex: { label: "Codex", accepts: { tools: true }, efforts: ["low", "medium", "high"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest", "~openai/gpt-sol-latest", "deepseek/deepseek-v4-pro", "z-ai/glm-5.3"], run_usd: 5 }, "claude-code": { label: "Claude Code", accepts: { provider: "anthropic" }, efforts: ["low", "medium", "high"], models: ["anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5", "anthropic/claude-haiku-5.5"], run_usd: 5 }, codegenie: { label: "Codegenie", accepts: { tools: true }, efforts: ["low", "medium"], models: ["~deepseek/deepseek-flash-latest", "~openai/gpt-luna-latest"], run_usd: 5 }, "codex-native": { label: "Codex native", accepts: { tools: true }, efforts: ["low", "medium"], models: ["openai/gpt-6.2-sol", "~openai/gpt-sol-latest"], run_usd: 5 } } }];
+    case "/api/model-catalog": return [200, { models: MODEL_CATALOG }];
     case "/api/reviews/available": return [200, { repos: [{ repo: "acme/payments", private: true }, { repo: "acme/web", private: true }, { repo: "acme/docs", private: false }] }];
     case "/api/reviews/catalog": return [200, catalog()];
     case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true }, googleConnect: true, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];

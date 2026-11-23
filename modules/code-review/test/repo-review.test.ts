@@ -77,6 +77,20 @@ test("the commit is resolved once at start: the default branch moving mid-run ch
   assert.match(w.engine.report(b.batch), new RegExp(`Commit \`${sha("1")}\``));
 });
 
+test("the catalog offers what past repo reviews of an option cost, by model and effort (none for an option never run)", async () => {
+  const w = world();
+  const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.cloudflare"] });
+  await w.tick();
+  w.finish(0, {}, 1.5);
+  await w.tick();
+  assert.equal(w.engine.batches({})[0].status, "done", b.batch);
+  const { options } = await w.engine.catalogFor({ repo: REPO });
+  const past = options.find((o) => o.id === "sec.cloudflare").past;
+  assert.equal(past.length, 1);
+  assert.deepEqual([past[0].n, past[0].usd], [1, 1.5]);
+  assert.equal(options.find((o) => o.id === "sec.deepsec").past, undefined);
+});
+
 test("a tools run's option it doesn't report as run never counts as run; a finding's option and lens come from the run, not the box", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.knip", "sec.gitleaks"] });

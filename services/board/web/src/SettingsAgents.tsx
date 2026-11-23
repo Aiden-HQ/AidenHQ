@@ -7,9 +7,13 @@ import { api } from "./api";
 import { cronText, modelShort, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Group, IN_FLIGHT, Row, useChanges, useFiled } from "./settings-ui";
 import type { AgentSettings, FiledChange, SettingChange, SettingsData } from "./types";
-import { StatusDot } from "./ui";
+import { bare, prefixOf } from "../../src/model-catalog";
+import { useModelCatalog } from "./useModelCatalog";
+import { ModelPicker, StatusDot } from "./ui";
 
 type Routine = AgentSettings["routines"][number];
+/** An agent works with tools, so only models that call them are offered. */
+const TOOL_MODELS = { tools: true };
 const hours = (v: unknown) => (v === true ? "the fleet's heartbeat" : typeof v === "number" ? `every ${v} hour${v === 1 ? "" : "s"}` : "off");
 
 /** One editable row: value (and the module's default beside it), the pending change's stage, the editor, Reset to default. */
@@ -54,10 +58,11 @@ function Field({ title, value, def, filed, children }: { title: string; value: R
 }
 
 /** A text or select input with Review change: files `item(value)` when it differs from `current`. */
-function Edit({ label, current, item, input, options, list }: { label: string; current: string; item: (v: string) => SettingChange; input?: "text"; options?: { value: string; label: string }[]; list?: string[] }) {
+function Edit({ label, current, item, input, options, models }: { label: string; current: string; item: (v: string) => SettingChange; input?: "text"; options?: { value: string; label: string }[]; models?: string[] }) {
   const [v, setV] = useState(current);
   const [review, setReview] = useState(false);
-  const listId = `dl-${label.replace(/\W/g, "")}`;
+  const [catalog, refreshCatalog] = useModelCatalog();
+  const prefix = prefixOf(current);
   return (
     <div className="st-change">
       <label className="ui-field">
@@ -70,17 +75,10 @@ function Edit({ label, current, item, input, options, list }: { label: string; c
               </option>
             ))}
           </select>
+        ) : models ? (
+          <ModelPicker label={label} value={bare(v, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} onOpen={refreshCatalog} onChange={(m) => (setV(prefix + m), setReview(false))} />
         ) : (
-          <>
-            <input className="ui-input" list={list ? listId : undefined} value={v} onChange={(e) => (setV(e.target.value), setReview(false))} spellCheck={false} />
-            {list && (
-              <datalist id={listId}>
-                {list.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-            )}
-          </>
+          <input className="ui-input" value={v} onChange={(e) => (setV(e.target.value), setReview(false))} spellCheck={false} />
         )}
       </label>
       {review ? (
@@ -113,7 +111,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
       {a.memberOf && <p className="fleet-empty">A team member: these settings are this member's own. The team's defaults are on the team's page.</p>}
       <Group title="How it thinks">
         <Field title="Model" value={<code>{a.model ? modelShort(a.model) : "the runner's"}</code>} def={dflt("model", a.model, (v) => <code>{modelShort(String(v))}</code>)} filed={fModel}>
-          {() => <Edit label="Model" current={a.model} item={(v) => ({ kind: "agent", agent: a.key, field: "model", value: v })} list={data.choices.models} />}
+          {() => <Edit label="Model" current={a.model} item={(v) => ({ kind: "agent", agent: a.key, field: "model", value: v })} models={data.choices.models} />}
         </Field>
         {a.efforts.length > 0 && (
           <Field title="Effort" value={a.effort || "the model's default"} def={dflt("reasoning_effort", a.effort, String)} filed={fEffort}>
@@ -140,7 +138,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
           </Field>
         )}
         {routines.map((r) => (
-          <RoutineField key={r.key} r={r} models={data.choices.models} />
+          <RoutineField key={r.key} r={r} models={data.choices.models} agentModel={a.model} />
         ))}
         {!routines.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
       </Group>
@@ -153,7 +151,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
  * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed; pause and
  * resume are its live controls here (Paperclip's status, no settings change).
  */
-function RoutineField({ r, models }: { r: Routine; models: string[] }) {
+function RoutineField({ r, models, agentModel }: { r: Routine; models: string[]; agentModel: string }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
@@ -171,11 +169,12 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
   const was: unknown[] = [];
   const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
   if (!same(sched, r.schedules)) (items.push({ kind: "routine", routine: r.key, field: "schedules", value: sched.map((s) => ({ cron: s.cron.trim(), ...(s.timezone.trim() ? { timezone: s.timezone.trim() } : {}), ...(s.label ? { label: s.label } : {}) })) }), was.push(r.schedules.map((s) => ({ cron: s.cron, timezone: s.timezone }))));
-  if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() }), was.push(r.model ?? null));
+  if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() || null }), was.push(r.model ?? null));
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : r.webhook ? "on an event" : "when asked";
-  const listId = `rm-${r.key}`;
+  const [catalog, refreshCatalog] = useModelCatalog();
+  const prefix = prefixOf(r.model ?? agentModel);
   return (
     <Row
       title={r.title}
@@ -204,15 +203,11 @@ function RoutineField({ r, models }: { r: Routine; models: string[] }) {
                   <input className="ui-input" value={s.timezone} aria-label={`${r.title}: timezone`} placeholder="timezone" onChange={(e) => (setSched(sched.map((x, j) => (j === i ? { ...x, timezone: e.target.value } : x))), setReview(false))} spellCheck={false} />
                 </div>
               ))}
-              <label className="ui-field">
+              <div className="ui-field">
                 <span className="ui-field-label">Model</span>
-                <input className="ui-input" list={listId} value={model} placeholder="the agent's" onChange={(e) => (setModel(e.target.value), setReview(false))} spellCheck={false} />
-                <datalist id={listId}>
-                  {models.map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-              </label>
+                <ModelPicker label={`${r.title}: model`} value={bare(model, prefix)} catalog={catalog} recommended={models.map((m) => bare(m, prefix))} accepts={TOOL_MODELS} none="Default" onOpen={refreshCatalog} onChange={(m) => (setModel(m && prefix + m), setReview(false))} />
+                <span className="ui-field-help">Default is the model the routine's module sets, or the agent's when it sets none.</span>
+              </div>
               {review && items.length ? (
                 <ChangePreview items={items} was={was} onCancel={() => setReview(false)} onDone={() => setReview(false)} />
               ) : (

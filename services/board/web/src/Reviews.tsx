@@ -3,7 +3,9 @@ import { SignInRequired, api, type ReviewsSetup } from "./api";
 import { IN_FLIGHT } from "./settings-ui";
 import type { FiledChange } from "./types";
 import { LENSES, MAX_COMBOS, REPO_DEFAULTS, comboLabel, type Catalog, type CatalogOption, type CodeReview, type Combo, type EngineCatalog, type Finding, type FindingRow, type Gate, type Outcome, type RepoConfig, type ReposView, type Review, type ReviewInsights, type Run, type RunStatus, type Severity, type TreeBatch, type Verdict } from "../../src/reviews";
-import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Page, PageHeader, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
+import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, ModelPicker, Page, PageHeader, SearchPicker, Section, Segmented, Select, StatBlock, StatusDot, Switch, Tabs, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
+import { useModelCatalog } from "./useModelCatalog";
+import { costText, estimate } from "../../src/model-catalog";
 import { agoLabel, elapsed } from "./util";
 import { Markdown } from "./markdown";
 import "./reviews.css";
@@ -75,24 +77,22 @@ const ComboTag = ({ c, engines }: { c: Pick<Combo, "engine" | "model" | "effort"
 );
 
 const MODEL_ID = /^~?[\w.-]+\/[\w.:~-]+$/;
-const CUSTOM = "__custom";
 /** One moment's (or one ask's) combos: a row each of engine, model and effort, up to MAX_COMBOS. */
 /** `gates`: each row has a Mandatory switch (its review gates the repo's merges); a one-off has none. */
 function ComboPicker({ label, value, onChange, engines, none, gates, single, noEngine }: { label: string; value: Combo[]; onChange: (v: Combo[]) => void; engines: EngineCatalog; none?: string; gates?: boolean; single?: boolean; noEngine?: boolean }) {
   const set = (i: number, c: Combo) => onChange(value.map((x, j) => (j === i ? c : x)));
+  const [catalog, refreshCatalog] = useModelCatalog();
   const fresh = (): Combo => ({ engine: "codex", model: engines.codex.models[0]!, effort: "medium" });
   return (
     <div className="rv-combos" role="group" aria-label={label}>
       {!value.length && <span className="rv-muted rv-combo-none">{none ?? "None"}</span>}
       {value.map((c, i) => {
         const e = engines[c.engine];
-        const custom = !e.models.includes(c.model);
         return (
           <div key={i} className="rv-combo">
             {!noEngine && <Select aria-label={`${label} ${i + 1} engine`} value={c.engine} options={(Object.keys(engines) as (keyof EngineCatalog)[]).map((k) => [k, engines[k].label] as const)} onChange={(k) => set(i, { engine: k, model: engines[k].models[0]!, effort: engines[k].efforts.includes(c.effort) ? c.effort : "medium", ...(c.mandatory ? { mandatory: true } : {}) })} />}
             <span className="rv-combo-model">
-              <Select aria-label={`${label} ${i + 1} model`} value={custom ? CUSTOM : c.model} options={[...e.models.map((m) => [m, m.replace(/^~/, "")] as const), [CUSTOM, "Other model…"] as const]} onChange={(m) => set(i, { ...c, model: m === CUSTOM ? "" : m })} />
-              {custom && <Input aria-label={`${label} ${i + 1} model id`} aria-invalid={!MODEL_ID.test(c.model)} placeholder="vendor/model, like z-ai/glm-5.3" value={c.model} autoFocus={!c.model} onChange={(ev) => set(i, { ...c, model: ev.target.value.trim() })} />}
+              <ModelPicker label={`${label} ${i + 1} model`} value={c.model} catalog={catalog} recommended={e.models} accepts={e.accepts} onOpen={refreshCatalog} onChange={(m) => set(i, { ...c, model: m })} />
             </span>
             <Select aria-label={`${label} ${i + 1} effort`} value={c.effort} options={e.efforts.map((x) => [x, x] as const)} onChange={(x) => set(i, { ...c, effort: x })} />
             {gates && (
@@ -405,6 +405,7 @@ function BatchRow({ b }: { b: TreeBatch }) {
           {b.repo} <b className="rv-mono">{b.sha7}</b>
         </span>
         <span className="rv-run-title">{b.status === "failed" || b.status === "skipped" ? (b.why ?? word) : "Whole-repo review"}</span>
+        {b.option_names?.length ? <span className="rv-run-with" title={b.option_names.join("\n")}>Ran with {b.option_names.slice(0, 4).join(", ")}{b.option_names.length > 4 ? ` and ${b.option_names.length - 4} more` : ""}</span> : null}
       </span>
       <span className="rv-run-who">{b.verdict ? <Tag tone={VERDICTS[b.verdict][1]}>{VERDICTS[b.verdict][0]}</Tag> : null}</span>
       <span className="rv-run-sev" />
@@ -459,7 +460,7 @@ function BatchPage({ id, batch, onSignIn, reload }: { id: string; batch: TreeBat
         <Card className="rv-report">
           <h3>Findings by option</h3>
           <p className="muted">The report above keeps within Primer's size; each option's page lists all of its findings.</p>
-          <ul>{batch.runs.map((r) => <li key={r.id}><a href={`#/reviews/r/${encodeURIComponent(r.id)}`}>{r.option}</a>: {r.status}{r.status === "done" ? `, ${r.important} important, ${r.nit} nits, ${r.pre_existing} pre-existing` : ""}</li>)}</ul>
+          <ul>{batch.runs.map((r) => <li key={r.id}><a href={`#/reviews/r/${encodeURIComponent(r.id)}`}>{(r.names ?? [r.option]).join(", ")}</a>: {r.status}{r.status === "done" ? `, ${r.important} important, ${r.nit} nits, ${r.pre_existing} pre-existing` : ""}</li>)}</ul>
         </Card>
       ) : null}
     </Page>
@@ -801,18 +802,54 @@ const LENS_WORDS: Record<(typeof LENSES)[number], [string, string]> = {
   performance: ["Performance", "Slow paths, wasted work, heavy dependencies"],
 };
 const SHA = /^[0-9a-f]{40}$/i;
+/** The presets: which available options each ticks. */
+const PRESETS: { key: string; name: string; pick: (o: CatalogOption) => boolean }[] = [
+  { key: "recommended", name: "Recommended", pick: (o) => o.recommended },
+  { key: "all", name: "All available", pick: () => true },
+  { key: "free", name: "Free tools only", pick: (o) => o.cost === "free" },
+  { key: "security", name: "Security", pick: (o) => o.lens === "security" },
+];
+const sameSet = (a: Set<string>, b: string[]) => a.size === b.length && b.every((x) => a.has(x));
+const REPO_NAME = /^[\w.-]+\/[\w.-]+$/;
+
+/** One check: its name and what it finds, its cost, and a quiet link to where it comes from. An unavailable one is greyed and says why. */
+function OptionRow({ o, on, onToggle, cost }: { o: CatalogOption; on: boolean; onToggle: () => void; cost: string | null }) {
+  const off = o.unavailable !== undefined;
+  const src = REPO_NAME.test(o.source.repo) ? `https://github.com/${o.source.repo}` : undefined;
+  return (
+    <div className={`rv-opt${off ? " off" : ""}`} title={off ? o.description : undefined}>
+      <label className="rv-opt-main">
+        <input type="checkbox" checked={on} disabled={off} onChange={onToggle} />
+        <span className="rv-opt-text">
+          <b>{o.name}</b>
+          <span className="rv-muted">{off ? o.unavailable : o.description}</span>
+        </span>
+      </label>
+      {!off && (
+        <span className="rv-opt-side">
+          {o.runs_code && <Tag tone="needs" title="Runs the repo's own code in a sandbox">Runs code</Tag>}
+          <span className={`rv-opt-cost${o.cost === "free" ? "" : " paid"}`} title={o.cost === "free" ? "No model calls: free" : cost ? "About what past reviews with this check cost on the chosen model" : "Calls the chosen model. No past review to estimate from yet"}>{o.cost === "free" ? "Free" : cost ?? "Model cost"}</span>
+          {src && <a className="rv-opt-src" href={src} target="_blank" rel="noreferrer" title={`${o.source.repo} ${o.source.version}, ${o.source.licence}`}>Source</a>}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function RepoReviewPage({ config, engines }: { config: CodeReview | null; engines: EngineCatalog }) {
   const [repo, setRepo] = useState("");
   const [commit, setCommit] = useState("");
+  const [pinning, setPinning] = useState(false);
   const [combos, setCombos] = useState<Combo[]>(() => defaultCombos(config, "").slice(0, 1));
   const [options, setOptions] = useState<CatalogOption[] | null>(null);
   const [sha, setSha] = useState("");
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [models, refreshModels] = useModelCatalog();
   const commitOk = !commit.trim() || SHA.test(commit.trim());
   const edited = useRef(false);
-  // The catalog for this repo and commit: what applies there, with the recommended ones ticked (until the owner ticks their own).
+  // The catalog for this repo and commit: every option, those that can't run here marked; the recommended ones ticked (until the owner ticks their own).
   useEffect(() => {
     setOptions(null);
     setSha("");
@@ -822,7 +859,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
     const timer = setTimeout(() => {
       const got = (c: Catalog) => {
         if (stale) return;
-        const ids = new Set(c.options.map((o) => o.id));
+        const ids = new Set(c.options.filter((o) => !o.unavailable).map((o) => o.id));
         setOptions(c.options);
         setSha(c.sha);
         // The owner's own ticks stay across a new commit (those the commit still offers); otherwise the recommended ones.
@@ -849,68 +886,123 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       return n;
     });
   };
+  const choose = (ids: string[]) => ((edited.current = true), setTicked(new Set(ids)));
   const c = combos[0];
-  const chosen = options ? options.filter((o) => ticked.has(o.id)).map((o) => o.id) : [];
+  const model = models?.find((m) => m.id === c?.model);
+  const can = options?.filter((o) => !o.unavailable) ?? [];
+  const cant = options?.filter((o) => o.unavailable) ?? [];
+  const chosen = can.filter((o) => ticked.has(o.id));
+  const paid = chosen.filter((o) => o.cost !== "free");
+  // Any check may run on any engine (Codex, Claude Code, ...): the efforts they all take.
+  const efforts = Object.values(engines).map((x) => x.efforts).reduce((a, b) => a.filter((x) => b.includes(x)));
+  // A check's cost on the chosen model comes from what it cost before (the service's `past`); none yet: no number.
+  const effort = c ? efforts.includes(c.effort) ? c.effort : "medium" : "medium";
+  const guess = (o: CatalogOption) => (c ? estimate(o.past, c.model, effort, models ?? []) : null);
+  const known = paid.filter((o) => guess(o) !== null);
+  const total = known.reduce((n, o) => n + guess(o)!, 0);
+  const e = c ? engines[c.engine] : undefined;
   const run = async () => {
     if (!c || !sha || !chosen.length) return;
     setBusy(true);
     setErr("");
     try {
-      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen, combo: { model: c.model, effort: c.effort } });
+      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen.map((o) => o.id), combo: { model: c.model, effort: efforts.includes(c.effort) ? c.effort : "medium" } });
       location.hash = `#/reviews/b/${encodeURIComponent(r.batch)}`;
-    } catch (e) {
-      setErr((e as Error).message);
+    } catch (x) {
+      setErr((x as Error).message);
       setBusy(false);
     }
   };
   return (
     <Page className="rv-page" label="New repo review">
-      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" sub="Reviews a whole repo at one commit with the options you tick. The report lands on this page, and in Primer when it is connected. Nothing is posted to GitHub." />
+      <PageHeader crumb={<a href="#/reviews/reviews">Code review</a>} title="New repo review" sub="Reviews a whole repo at one commit with the checks you tick. The report lands on this page, and in Primer when it is connected. Nothing is posted to GitHub." />
       {err && <Banner tone="danger">{err}</Banner>}
       <Card className="rv-form">
-      <div className="rv-split">
-        <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setRepo(r))} />
-        <Field label="Commit" help={options && sha ? <>Reviewing <b className="rv-mono">{sha.slice(0, 7)}</b></> : "Optional. A full commit SHA; the default branch's head when empty."} error={commitOk ? null : "A full 40-character commit SHA"}>
-          {(id, d) => <Input id={id} aria-describedby={d} className="rv-mono" placeholder="default branch head" value={commit} onChange={(e) => setCommit(e.target.value)} spellCheck={false} />}
-        </Field>
-      </div>
-      <Field label="Options" help="Ready-made checks in four lenses. Recommended ones for this repo are ticked.">
-        {() =>
-          !repo ? (
-            <span className="rv-muted">Pick a repo to see what applies to it.</span>
-          ) : !commitOk ? (
-            <span className="rv-muted">Fix the commit to see what applies.</span>
-          ) : options === null ? (
-            err ? null : <div className="rv-loading rv-loading-sm" aria-busy="true" />
-          ) : (
+        <div className="rv-split">
+          <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setRepo(r))} autoFocus />
+          <div className="ui-field">
+            <span className="ui-field-label">Commit</span>
+            {pinning ? (
+              <div className="ui-input-row">
+                <Input aria-label="Commit SHA" aria-invalid={!commitOk} className="rv-mono" placeholder="Full 40-character commit SHA" value={commit} autoFocus onChange={(ev) => setCommit(ev.target.value)} spellCheck={false} />
+                <Button size="sm" variant="quiet" onClick={() => (setCommit(""), setPinning(false))}>Use the default</Button>
+              </div>
+            ) : (
+              <div className="rv-commit">
+                <span>{commit.trim() && commitOk ? "Pinned commit" : "Default branch head"}{sha && <> <span className="rv-muted">({sha.slice(0, 7)})</span></>}</span>
+                <Button size="sm" variant="quiet" onClick={() => setPinning(true)}>Use another commit</Button>
+              </div>
+            )}
+            {!commitOk && <span className="ui-field-error" role="alert">A full 40-character commit SHA</span>}
+          </div>
+        </div>
+
+        {!repo ? (
+          <p className="rv-muted rv-form-hint">Pick a repository to see which checks apply to it.</p>
+        ) : !commitOk ? (
+          <p className="rv-muted rv-form-hint">Fix the commit to see which checks apply.</p>
+        ) : options === null ? (
+          err ? null : <div className="rv-loading rv-loading-sm" aria-busy="true" />
+        ) : (
+          <>
+            <div className="rv-checks-head">
+              <div>
+                <h3>Checks</h3>
+                <span className="rv-muted" aria-live="polite">{chosen.length} of {can.length} selected</span>
+              </div>
+              <div className="rv-presets" role="group" aria-label="Quick picks">
+                {PRESETS.map((p) => {
+                  const ids = can.filter(p.pick).map((o) => o.id);
+                  return <button key={p.key} type="button" className="rv-preset" aria-pressed={ids.length > 0 && sameSet(ticked, ids)} disabled={!ids.length} onClick={() => choose(ids)}>{p.name}</button>;
+                })}
+                <button type="button" className="rv-preset" disabled={!chosen.length} onClick={() => choose([])}>Clear</button>
+              </div>
+            </div>
             <div className="rv-lenses">
               {LENSES.map((lens) => {
-                const opts = options.filter((o) => o.lens === lens);
+                const opts = can.filter((o) => o.lens === lens);
+                if (!opts.length) return null;
                 return (
                   <section key={lens} className={`rv-lens rv-lens-${lens}`} aria-label={LENS_WORDS[lens][0]}>
-                    <h4>{LENS_WORDS[lens][0]}</h4>
+                    <header>
+                      <h4>{LENS_WORDS[lens][0]}</h4>
+                      <span className="rv-muted">{opts.filter((o) => ticked.has(o.id)).length} of {opts.length}</span>
+                    </header>
                     <p className="rv-muted">{LENS_WORDS[lens][1]}</p>
-                    {!opts.length ? <span className="rv-muted rv-lens-none">Nothing applies here</span> : opts.map((o) => (
-                      <label key={o.id} className="rv-opt">
-                        <input type="checkbox" checked={ticked.has(o.id)} onChange={() => toggle(o.id)} />
-                        <span className="rv-opt-name">{o.id}
-                        <span className="rv-opt-tags">
-                          {o.runs_code && <Tag tone="needs" title="Runs the repo's own code in a sandbox">runs code</Tag>}
-                          {o.cost === "high" && <Tag tone="failed" title="Spends a lot of the install's spend limit">high cost</Tag>}
-                        </span></span>
-                        <span className="rv-muted rv-opt-src" title={`${o.source.repo} ${o.source.version}, ${o.source.licence}`}>{o.source.repo.split("/").pop()} {o.source.version}</span>
-                      </label>
-                    ))}
+                    {opts.map((o) => <OptionRow key={o.id} o={o} on={ticked.has(o.id)} onToggle={() => toggle(o.id)} cost={o.cost === "free" || guess(o) === null ? null : `~${costText(guess(o)!)}`} />)}
                   </section>
                 );
               })}
             </div>
-          )
-        }
-      </Field>
-      <Field label="Model options run by" help="The model and effort for options that call a model">{() => <ComboPicker single noEngine label="Reviewer" value={combos} engines={engines} onChange={setCombos} />}</Field>
+            {cant.length > 0 && (
+              <section className="rv-lens rv-lens-off" aria-label="Can't run on this repo">
+                <header>
+                  <h4>Can't run on this repo</h4>
+                  <span className="rv-muted">{cant.length}</span>
+                </header>
+                <div className="rv-off-grid">{cant.map((o) => <OptionRow key={o.id} o={o} on={false} onToggle={() => {}} cost={null} />)}</div>
+              </section>
+            )}
+          </>
+        )}
+
+        <div className="rv-model">
+          <div className="ui-field">
+            <span className="ui-field-label">Model for the checks that call one</span>
+            {c && e && (
+              <div className="rv-model-row">
+                <ModelPicker label="Review model" value={c.model} catalog={models} recommended={e.models} accepts={e.accepts} onOpen={refreshModels} onChange={(m) => setCombos([{ ...c, model: m }])} />
+                <Select aria-label="Effort" value={efforts.includes(c.effort) ? c.effort : "medium"} options={efforts.map((x) => [x, x] as const)} onChange={(x) => setCombos([{ ...c, effort: x }])} />
+              </div>
+            )}
+            <span className="ui-field-help">Free checks don't use it. Effort is how hard the model thinks.</span>
+          </div>
+        </div>
       </Card>
       <div className="rv-form-actions">
+        <span className="rv-form-sum rv-muted">
+          {chosen.length ? <>{chosen.length} check{chosen.length === 1 ? "" : "s"}{paid.length ? <>, {paid.length} on the model: {known.length ? <>about <b>{costText(total)}</b> from past runs{known.length < paid.length && <> + {paid.length - known.length} without history</>}</> : "no cost history yet"}</> : ", all free"}</> : "No checks selected"}
+        </span>
         <Button variant="quiet" onClick={() => (location.hash = "#/reviews/reviews")}>Cancel</Button>
         <Button variant="primary" disabled={!repo || !commitOk || !sha || !chosen.length || !c || !MODEL_ID.test(c.model) || busy} onClick={() => void run()}>{busy ? "Starting…" : "Run review"}</Button>
       </div>
@@ -918,43 +1010,42 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   );
 }
 
-/** Pick a repo your GitHub sign-in can read, or type owner/name. `taken` repos (lower case) are listed but not pickable. */
-function RepoPicker({ repo, onPick, taken, takenWord }: { repo: string; onPick: (repo: string) => void; taken?: Set<string>; takenWord?: [string, string] }) {
+/** Pick a repo your GitHub sign-in can read, or type owner/name (a combobox). `taken` repos (lower case) are listed but not pickable. */
+function RepoPicker({ repo, onPick, taken, takenWord, autoFocus }: { repo: string; onPick: (repo: string) => void; taken?: Set<string>; takenWord?: [string, string]; autoFocus?: boolean }) {
   const [q, setQ] = useState("");
-  const [found, setFound] = useState<{ repo: string; private: boolean }[] | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // The results and the search they answer: a row of an older search is never offered for the current one.
+  const [answer, setAnswer] = useState<{ q: string; repos: { repo: string; private: boolean }[] } | null>(null);
   useEffect(() => {
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => void api.reviewAvailable(q.trim()).then((r) => setFound(r.repos), () => setFound([])), q ? 250 : 0);
-    return () => clearTimeout(timer.current);
+    let stale = false;
+    const timer = setTimeout(() => void api.reviewAvailable(q.trim()).then((r) => !stale && setAnswer({ q: q.trim(), repos: r.repos }), () => !stale && setAnswer({ q: q.trim(), repos: [] })), q ? 250 : 0);
+    return () => { stale = true; clearTimeout(timer); };
   }, [q]);
-  const typed = /^[\w.-]+\/[\w.-]+$/.test(q.trim()) ? q.trim() : "";
+  const found = answer?.q === q.trim() ? answer.repos : null;
+  const typed = REPO_NAME.test(q.trim()) ? q.trim() : "";
   const isTaken = (r: string) => Boolean(taken?.has(r.toLowerCase()));
+  const row = (name: string, note: string) => <><span className="ui-mp-id">{name}</span><span className="ui-mp-meta">{note}</span></>;
+  const listed = (found ?? []).slice(0, 40).map((x) => ({ id: x.repo, disabled: isTaken(x.repo), node: row(x.repo, isTaken(x.repo) ? takenWord![1] : x.private ? "private" : "public") }));
+  const sections = [
+    ...(typed && !found?.some((x) => x.repo.toLowerCase() === typed.toLowerCase()) ? [{ title: "Not in your list", items: [{ id: typed, disabled: isTaken(typed), node: row(typed, isTaken(typed) ? takenWord![0] : "use this name") }] }] : []),
+    ...(listed.length ? [{ title: "Your repositories", items: listed }] : []),
+  ];
   return (
-    <div className="rv-picker">
-      <Field label="Repository" help={repo ? <>Selected: <b>{repo}</b></> : "Repos your GitHub sign-in can read. Type owner/name for one that isn't listed."}>
-        {(id, d) => <Input id={id} aria-describedby={d} autoFocus placeholder="Search, or type acme/payments" value={q} onChange={(e) => setQ(e.target.value)} />}
-      </Field>
-      <div className="rv-picker-list" role="listbox" aria-label="Repositories">
-        {typed && !found?.some((x) => x.repo.toLowerCase() === typed.toLowerCase()) && (
-          <button type="button" role="option" aria-selected={repo === typed} className={repo === typed ? "on" : ""} onClick={() => onPick(typed)} disabled={isTaken(typed)}>
-            <span>{typed}</span>
-            <span className="rv-muted">{isTaken(typed) ? takenWord![0] : "use this name"}</span>
-          </button>
-        )}
-        {found === null ? (
-          <span className="rv-muted rv-picker-note">Loading your repos…</span>
-        ) : !found.length && !typed ? (
-          <span className="rv-muted rv-picker-note">{q ? "No listed repo matches: type its full name, like acme/payments." : "Type a repo's full name, like acme/payments."}</span>
-        ) : (
-          found.slice(0, 40).map((x) => (
-            <button key={x.repo} type="button" role="option" aria-selected={repo === x.repo} className={repo === x.repo ? "on" : ""} disabled={isTaken(x.repo)} onClick={() => onPick(x.repo)}>
-              <span>{x.repo}</span>
-              <span className="rv-muted">{isTaken(x.repo) ? takenWord![1] : x.private ? "private" : "public"}</span>
-            </button>
-          ))
-        )}
-      </div>
+    <div className="ui-field">
+      <span className="ui-field-label">Repository</span>
+      <SearchPicker
+        label="Repository"
+        value={repo}
+        triggerLabel={`Repository: ${repo || "none chosen"}`}
+        display={<span className={repo ? "" : "ui-mp-none"}>{repo || "Choose a repository"}</span>}
+        sections={sections}
+        query={q}
+        onQuery={setQ}
+        searchPlaceholder="Search, or type acme/payments"
+        onPick={onPick}
+        autoFocus={autoFocus}
+        empty={found === null ? "Loading your repos…" : q ? "No listed repo matches: type its full name, like acme/payments." : "Type a repo's full name, like acme/payments."}
+      />
+      <span className="ui-field-help">Repos your GitHub sign-in can read. Type owner/name for one that isn't listed.</span>
     </div>
   );
 }

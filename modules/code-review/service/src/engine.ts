@@ -29,7 +29,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { parseCommand, type Command } from "./commands.ts";
 import { combos as parseCombos, DEFAULT_MODEL, ENGINES, gated, openOnly, REPO_DEFAULTS, type Combo, type Config, type Repo } from "./config.ts";
 import type { Ack, CodeHost, Finding, Posted, Poster, PrSource, Publisher, PullRequest, Review, ReviewRunner, RunResult, Status as Mirror, Thread, Unsafe } from "./seams.ts";
-import { detect, toolSpec, type Option } from "./catalog.ts";
+import { detect, toolSpec, whyNot, type Option } from "./catalog.ts";
 import { render } from "./report.ts";
 import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
@@ -1931,7 +1931,13 @@ export function createEngine(d: EngineDeps) {
     async catalogFor(q: { repo?: unknown; commit?: unknown }) {
       const { repo, tree } = await readTree(q.repo, q.commit);
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
-      return { repo, sha: tree.sha, recommended, options: available.map((o) => ({ id: o.id, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source })) };
+      // What past repo reviews cost, per option, model and effort (finished runs of one option; the board's cost hint reads it).
+      const past = new Map<string, { model: string; effort: string; n: number; usd: number }[]>();
+      for (const r of all<{ option: string; model: string; effort: string; n: number; usd: number }>("SELECT option, model, effort, COUNT(*) n, AVG(cost_usd) usd FROM runs WHERE target = 'tree' AND status = 'done' AND cost_usd > 0 GROUP BY option, model, effort")) {
+        past.set(r.option, [...(past.get(r.option) ?? []), { model: r.model, effort: r.effort, n: r.n, usd: r.usd }]);
+      }
+      // Every option, the ones that can't run here with why (the board lists them last, greyed).
+      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
     },
     /**
      * A repo review: `target` { repo, commit? } (no commit: the default branch's head, resolved once now and kept), its options
@@ -1982,12 +1988,16 @@ export function createEngine(d: EngineDeps) {
     /** Repo reviews, newest first (the board's TreeBatch): commit, spend, status and why, and once ended the verdict, the report
      * the service serves and its Primer document. */
     batches(q: { repo?: string; limit?: number }) {
+      // The options by their names (an unreadable catalog, or an option since removed, leaves its id).
+      const names = new Map<string, string>();
+      try { for (const o of d.catalog()) names.set(o.id, o.name); } catch { /* ids */ }
+      const named = (ids: string) => ids.split(",").map((id) => names.get(id) ?? id);
       return all<BatchRow & { cost: number }>(`SELECT b.*, (SELECT COALESCE(SUM(cost_usd), 0) FROM runs r WHERE r.batch = b.id) cost FROM batches b ${q.repo ? "WHERE b.repo = ?" : ""} ORDER BY b.created DESC LIMIT ?`, ...(q.repo ? [q.repo.toLowerCase()] : []), Math.min(Math.max(1, q.limit ?? 50), 500))
         .map((b) => ({ id: b.id, repo: b.repo, sha: b.sha, sha7: b.sha.slice(0, 7), verdict: b.verdict, cost_usd: round(b.cost), status: b.status, why: b.report_why,
-          started: new Date(b.created).toISOString(), ended: b.ended, options: JSON.parse(b.options) as string[], combo: JSON.parse(b.combo),
+          started: new Date(b.created).toISOString(), ended: b.ended, options: JSON.parse(b.options) as string[], option_names: named((JSON.parse(b.options) as string[]).join(",")), combo: JSON.parse(b.combo),
           // `published`: the report's Primer outcome is in (a link or a refusal); the board follows the batch until then.
           published: b.report_url !== null || b.report_why !== null,
-          runs: all<{ id: string; option: string; status: string; important: number; nit: number; pre_existing: number }>("SELECT id, option, status, important, nit, pre_existing FROM runs WHERE batch = ? ORDER BY rowid", b.id),
+          runs: all<{ id: string; option: string; status: string; important: number; nit: number; pre_existing: number }>("SELECT id, option, status, important, nit, pre_existing FROM runs WHERE batch = ? ORDER BY rowid", b.id).map((r) => ({ ...r, names: named(r.option) })),
           ...(b.status === "done" ? { report_url: `/reviews/${b.id}/report` } : {}), ...(b.report_url ? { primer_url: b.report_url } : {}) }));
     },
     /** A finished repo review's report (markdown), as Primer has it. */
