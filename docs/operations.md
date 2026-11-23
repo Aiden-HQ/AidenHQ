@@ -233,6 +233,11 @@ own, since a container listing that failed while the daemon was unreachable can 
 re-listing, and that fresh listing alone would read as a clean scan. A `build-cache` snapshot that could not be read is
 reported as unknown, never as "nothing cached".
 
+Each step's last record (`<INVOCATION_ID> <rc>`) is also exported to node-exporter as
+`aidenhq_prune_docker_step_rc{step,invocation}` with its write time as
+`aidenhq_prune_docker_step_run_timestamp_seconds{step,invocation}` (`ops/host-metrics.sh`, `prune-docker.prom`), so a failed
+unit's failing step can be found from Prometheus without the journal. A missing or malformed record is absent, never guessed.
+
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be
 built from a backup with `ops/setup.sh --restore`. Off-host, nightly: [operations/migrate-host.md](operations/migrate-host.md#10-backups-off-host).

@@ -18,7 +18,7 @@ tell the owner.
 | Board `/internal/metrics` | board's internal listener | `board:3122`, monitoring token only |
 | Fleet Steward service `/alerts`, `/metrics` | `aidenhq-mod-fleet-steward`, shared only with Alertmanager and Prometheus | `fleet-steward:8097`, the monitoring token only (the service asks the kernel's `/v1/whoami`: module `monitoring`) |
 | Gateway metrics | `data/modules/monitoring/textfile/gateway.prom`, written by the kernel every 30 s while the directory exists | node-exporter's textfile collector |
-| Unit, container and apply-generation states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s): `units.prom`, `containers.prom`, `generations.prom`, `docker.prom` | the same |
+| Unit, container and apply-generation states | `ops/host-metrics.sh` (user timer `aidenhq-host-metrics`, every 30 s): `units.prom`, `containers.prom`, `generations.prom`, `docker.prom`, `prune-docker.prom` | the same |
 
 Networks (generated from `services:` in `modules/monitoring/module.yaml`): `aidenhq-mod-monitoring` (the module's services),
 `aidenhq-mod-monitoring-board` (Prometheus and Alertmanager to the board's internal listener, and the board), and the grafana
@@ -59,6 +59,9 @@ its final stage is `alpine:3.24.4`, 2026-11-08, and the Dockerfile upgrades that
   `aidenhq_unit_declared{scope="user",unit}` (the enabled set an apply keeps running, so `CiRunnerUnitMissing` ignores a
   retired unit), `aidenhq_fleet_draining`,
   `aidenhq_container_running|restarts|unhealthy{id,project,service,name}`, `aidenhq_apply_failed{n,reason,log,health}`,
+  `aidenhq_prune_docker_step_rc{step,invocation}` and `aidenhq_prune_docker_step_run_timestamp_seconds{step,invocation}` (each
+  prune-docker step's last recorded status and write time, from `ops/prune-docker-step.sh`; a malformed or missing record is
+  absent, never guessed),
   the Docker disk breakdown `aidenhq_docker_{images,containers,build_cache,volumes}_{size,reclaimable}_bytes` (from
   `docker system df`, capped at 10 s) and `aidenhq_docker_collect_ok`. `docker system df` walks every image, container and
   volume, so its answer is cached for 5 minutes (`data/modules/monitoring/docker-df.json`): a run inside that window

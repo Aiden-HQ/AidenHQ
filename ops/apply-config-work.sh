@@ -918,6 +918,11 @@ switchOver() {
   if [ -e "$docker_prom_dir/docker.prom" ] && ! grep -q 'write docker.prom' ops/host-metrics.sh 2>/dev/null; then
     rm -f "$docker_prom_dir/docker.prom" "$docker_prom_dir/docker-df.json" && echo "docker.prom removed (this product version has no Docker disk collector)"
   fi
+  # prune-docker.prom is written the same way. A rollback to a product version from before it leaves the last records in
+  # the textfile directory, where node-exporter would keep serving a failed unit's stale step as current.
+  if [ -e "$docker_prom_dir/prune-docker.prom" ] && ! grep -q 'write prune-docker.prom' ops/host-metrics.sh 2>/dev/null; then
+    rm -f "$docker_prom_dir/prune-docker.prom" && echo "prune-docker.prom removed (this product version has no prune step collector)"
+  fi
   # The security module's daily SBOM batch (ops/security-sbom.sh): its timer runs while the module's security-scanner service
   # is in the compiled compose, and is removed once the module is off. Its last EnvironmentFile= names the checkout this apply
   # applied, written every apply: an unchanged unit would otherwise keep running whatever ~/.config/aidenhq-checkout.env

@@ -6,7 +6,7 @@
 // `docker system df` without serving stale numbers (or failing the metrics timer) when Docker cannot answer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -94,6 +94,15 @@ test("applying a product without the Docker disk collector removes the stale doc
   assert.match(commands(apply), /rm -f "\$docker_prom_dir\/docker\.prom" "\$docker_prom_dir\/docker-df\.json"/);
   // And nothing legitimate: while the applied product does write it, the apply leaves both alone.
   assert.match(readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"), /} \| write docker\.prom/);
+});
+
+test("applying a product without the prune step collector removes the stale prune-docker.prom", () => {
+  // The same rollback path as docker.prom: a product from before this collector would leave the last step records on the
+  // scrape, and a failed unit's stale step would read as current. The apply removes the file when the applied version has
+  // no writer for it; a version that writes it leaves it alone (its first run rewrites it).
+  assert.match(commands(apply), /! grep -q 'write prune-docker\.prom' ops\/host-metrics\.sh/);
+  assert.match(commands(apply), /rm -f "\$docker_prom_dir\/prune-docker\.prom"/);
+  assert.match(readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"), /} \| write prune-docker\.prom/);
 });
 
 test("the container step removes only one-offs stopped over a day, and the verification is what fails the unit", () => {
@@ -523,8 +532,10 @@ ${df}\n`);
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
   });
   const file = join(data, "modules/monitoring/textfile/docker.prom");
+  const pruneFile = join(data, "modules/monitoring/textfile/prune-docker.prom");
   return {
-    r, file, dir, body: existsSync(file) ? readFileSync(file, "utf8") : "",
+    r, file, dir, pruneFile, body: existsSync(file) ? readFileSync(file, "utf8") : "",
+    prune: existsSync(pruneFile) ? readFileSync(pruneFile, "utf8") : "",
     calls: existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "",
   };
 }
@@ -550,6 +561,47 @@ test("docker.prom carries a size gauge per consumer, from docker system df", () 
   assert.match(m.body, /^aidenhq_docker_build_cache_reclaimable_bytes 10520000000$/m);
   // The other textfiles are still written beside it.
   assert.ok(existsSync(m.file.replace("docker.prom", "units.prom")));
+});
+
+test("prune-docker.prom carries each step's last recorded status and invocation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prune-prom-"));
+  const state = join(dir, "state");
+  mkdirSync(join(state, "prune-docker"), { recursive: true });
+  const stamp = new Date("2026-11-23T15:35:45Z");
+  // The wrapper's record: `<INVOCATION_ID> <rc>` on the first line. build-cache carries its rows after it, which are not
+  // part of the header.
+  writeFileSync(join(state, "prune-docker/builder-buildx"), "0f2a 1\n");
+  writeFileSync(join(state, "prune-docker/builder-classic"), "0f2a 0\n");
+  writeFileSync(join(state, "prune-docker/build-cache"), '0f2a 0\n{"Type":"Build Cache","Size":"53.87GB","Reclaimable":"3GB"}\n');
+  writeFileSync(join(state, "prune-docker/images"), "0f2a 0\n");
+  writeFileSync(join(state, "prune-docker/containers"), "0f2a 0\n");
+  for (const name of readdirSync(join(state, "prune-docker"))) utimesSync(join(state, "prune-docker", name), stamp, stamp);
+  const m = metrics({ dir, df: DF });
+  const ts = Math.floor(stamp.getTime() / 1000);
+  assert.match(m.prune, /^# TYPE aidenhq_prune_docker_step_rc gauge$/m);
+  assert.match(m.prune, /^aidenhq_prune_docker_step_rc\{step="builder-buildx",invocation="0f2a"\} 1$/m);
+  assert.match(m.prune, /^aidenhq_prune_docker_step_rc\{step="builder-classic",invocation="0f2a"\} 0$/m);
+  assert.match(m.prune, /^aidenhq_prune_docker_step_rc\{step="build-cache",invocation="0f2a"\} 0$/m);
+  assert.match(m.prune, new RegExp(`^aidenhq_prune_docker_step_run_timestamp_seconds\\{step="build-cache",invocation="0f2a"\\} ${ts}$`, "m"));
+  // The rows after the header are not a second series and the atomic write's .tmp is not a step.
+  assert.equal((m.prune.match(/^aidenhq_prune_docker_step_rc\{/gm) ?? []).length, 5);
+  // An empty state directory still writes the file (its mtime is what HostMetricsStale reads) with no series.
+  const empty = metrics({ dir: mkdtempSync(join(tmpdir(), "prune-prom-empty-")), df: DF });
+  assert.match(empty.prune, /^# TYPE aidenhq_prune_docker_step_rc gauge$/m);
+  assert.doesNotMatch(empty.prune, /^aidenhq_prune_docker_step_rc\{/m);
+});
+
+test("a malformed prune step record is skipped, never guessed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prune-prom-bad-"));
+  const state = join(dir, "state");
+  mkdirSync(join(state, "prune-docker"), { recursive: true });
+  writeFileSync(join(state, "prune-docker/images"), "not-a-status\n");
+  writeFileSync(join(state, "prune-docker/containers"), "inv-b 0\n");
+  writeFileSync(join(state, "prune-docker/images.tmp"), "inv-c 0\n");
+  const m = metrics({ dir, df: DF });
+  assert.doesNotMatch(m.prune, /step="images"/, "a record without a numeric rc is not a status");
+  assert.match(m.prune, /^aidenhq_prune_docker_step_rc\{step="containers",invocation="inv-b"\} 0$/m);
+  assert.doesNotMatch(m.prune, /step="images\.tmp"/, "the atomic write's temporary file is not a step");
 });
 
 // A run where docker cannot answer still rewrites the file: collect_ok 0 and no byte count, so the previous run's sizes

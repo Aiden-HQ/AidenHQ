@@ -6,6 +6,8 @@
 #                    template unit's enabled instances, read them as the owner's user.
 #   generations.prom the newest apply generation (ops/lib/generations.sh): 1 when it failed its health check (and was
 #                    auto-reverted) or was refused at validation, with its reason and log; the ApplyFailed alert reads it.
+#   prune-docker.prom each prune-docker step's last recorded status and invocation (ops/prune-docker-step.sh), so a failed
+#                    unit's failing step is visible in Prometheus without the journal.
 #   docker.prom      Docker's own disk breakdown (images, containers, build cache, local volumes) and whether this run could
 #                    read it (aidenhq_docker_collect_ok), so DiskSpaceLow names its top consumer from a query.
 #   containers.prom  every container on the host (compose service, computer box or anything else) and its running state,
@@ -150,6 +152,34 @@ gens="$state/generations.jsonl"
     echo "aidenhq_apply_failed 0"
   fi
 } | write generations.prom
+
+# Each prune-docker step's last record (ops/prune-docker-step.sh): `<INVOCATION_ID> <rc>` on the first line, with the
+# build-cache step's `docker system df` rows after it. The unit's steps are `-`-prefixed, so systemd never sees a failure;
+# the verification reads the records and fails the unit. This exports the same records so a failed unit's failing step is
+# visible in Prometheus without the journal. The file is one atomic write per step, so the first line is the run's header;
+# the rows after it are not a label or a value. A step whose record is missing or malformed is skipped, never guessed.
+prune="$state/prune-docker"
+{
+  echo "# HELP aidenhq_prune_docker_step_rc The last recorded exit status of a prune-docker step; labels name the step and the systemd invocation."
+  echo "# TYPE aidenhq_prune_docker_step_rc gauge"
+  echo "# HELP aidenhq_prune_docker_step_run_timestamp_seconds When the prune-docker step last wrote its record (the end of the step), in Unix seconds."
+  echo "# TYPE aidenhq_prune_docker_step_run_timestamp_seconds gauge"
+  if [ -d "$prune" ]; then
+    for record in "$prune"/*; do
+      [ -f "$record" ] || continue
+      case "$record" in *.tmp) continue ;; esac
+      read -r invocation rc < "$record" 2>/dev/null || continue
+      invocation="$(printf '%s' "$invocation" | clean | tr -d '\n')"
+      [[ "$rc" =~ ^[0-9]+$ ]] || continue
+      [ -n "$invocation" ] || continue
+      stamp="$(stat -c %Y "$record" 2>/dev/null || true)"
+      [[ "$stamp" =~ ^[0-9]+$ ]] || continue
+      step="$(basename "$record" | clean | tr -d '\n')"
+      echo "aidenhq_prune_docker_step_rc{step=\"$step\",invocation=\"$invocation\"} $rc"
+      echo "aidenhq_prune_docker_step_run_timestamp_seconds{step=\"$step\",invocation=\"$invocation\"} $stamp"
+    done
+  fi
+} | write prune-docker.prom
 
 # Docker's own disk usage: which consumer is filling `/` (images, containers, build cache, local volumes), so DiskSpaceLow
 # can name it from a query instead of an inference. `docker system df` walks every image, container and volume, which is far
