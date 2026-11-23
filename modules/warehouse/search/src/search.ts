@@ -63,6 +63,11 @@ const WORKERS = 8;
 const QUERY_EMBED_MS = 2_500;
 /** Reciprocal-rank fusion's constant. */
 const RRF_K = 60;
+/**
+ * The most hits each side (keyword, meaning) brings: a search answers with the tasks about the query, not every task that
+ * mentions its words or sits near it in meaning. Chosen by the precision eval in the design note.
+ */
+export const PER_SIDE = 50;
 /** The most closed-before hits one answer pages out. */
 const MAX_DONE_PAGE = 100;
 /** Fact types that change what a task's row holds. */
@@ -340,13 +345,17 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
   }
 
   /**
-   * The search: keyword and meaning in one statement over every live row. Keyword: every typed term (the last one as a
-   * prefix, so a half-typed word or identifier matches). Meaning: cosine to the query's embedding at least the model's
-   * threshold. An embedding that fails or is late leaves keyword hits only (`semantic: false`).
+   * The search: keyword and meaning in one statement over every live row. Keyword: every typed term, its words as a phrase
+   * (`task_wait` is `task` then `wait`, not both anywhere), either as typed or with its compounds' words spaced
+   * (`code-review` also finds "code review"),
+   * the last one's as prefixes, so a half-typed word or identifier matches. Meaning: cosine to the query's embedding at least
+   * the model's threshold. Each side brings its best PER_SIDE (keyword by `ts_rank_cd`, meaning by cosine), among the hits
+   * and among the older closes each, so neither takes the other's room. A task whose identifier is the query ranks first,
+   * and then meaning brings nothing (an identifier's meaning is noise). An embedding that fails or is late leaves keyword hits only (`semantic: false`).
    *
    * `hits`: every match not closed before `closedBefore` (all of them without it), ranked by reciprocal-rank fusion of the
    * two. `done`: the matches closed before it, newest close first, a page of `limit` after the cursor `after` ([closed_at,
-   * task id] of the last one read), with `next` while more remain: the board's Done lane pages them, never a ranked cut.
+   * task id] of the last one read), with `next` while more remain: the board's Done lane pages them by date.
    */
   async function search(q: string, o: { closedBefore?: string; after?: [string, string]; limit?: number; keyword?: boolean } = {}): Promise<{ hits: Hit[]; recent: (Hit & { crew: string[] })[]; done: (Hit & { crew: string[] })[]; next: [string, string] | null; semantic: boolean }> {
     const s = await store();
@@ -358,16 +367,30 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
     const v = o.keyword ? null : await m.embed([q.slice(0, 2000)], QUERY_EMBED_MS).then((x) => x[0]!, (e: Error) => (log("search query embed failed", { err: String(e.message).slice(0, 200) }), null));
     if (o.after && !o.keyword && !v) throw Object.assign(new Error("meaning search failed on a later page; ask again"), { status: 503 });
     const rows = (await s.query(`WITH q AS (
-        SELECT (SELECT to_tsquery('simple', string_agg(quote_literal(lexeme) || CASE WHEN ord = cardinality($1::text[]) THEN ':*' ELSE '' END, ' & '))
-                FROM unnest($1::text[]) WITH ORDINALITY AS u(term, ord), unnest(to_tsvector('simple', term))) AS tq,
-               $2::vector AS v)
-      SELECT task_id, identifier, title, status, closed_at, updated_at, assignee_agent_id, assignee_user_id, created_by_agent_id, project_id, labels, priority,
-        CASE WHEN q.tq IS NOT NULL AND tsv @@ q.tq THEN ts_rank_cd(tsv, q.tq) END AS lex,
-        CASE WHEN q.v IS NOT NULL AND embedding IS NOT NULL AND model = $3 THEN 1 - (embedding <=> q.v) END AS cos
-      FROM src_tasks.task_search, q
-      WHERE NOT deleted AND ((q.tq IS NOT NULL AND tsv @@ q.tq) OR (q.v IS NOT NULL AND embedding IS NOT NULL AND model = $3 AND 1 - (embedding <=> q.v) >= $4))`,
-      [terms.map((t) => t.toLowerCase()), vec(v), m.model, m.threshold])).rows as (Record<string, any> & { lex: number | null; cos: number | null })[];
-    const rank = (key: "lex" | "cos") => new Map(rows.filter((r) => r[key] != null).sort((a, b) => b[key]! - a[key]!).map((r, i) => [r.task_id as string, i + 1]));
+        SELECT (SELECT string_agg(phrase, ' & ' ORDER BY ord)::tsquery FROM (
+                  SELECT ord, '(' || string_agg(w, ' <-> ' ORDER BY tok) FILTER (WHERE NOT compound) || ' | ' || string_agg(w, ' <-> ' ORDER BY tok) || ')' AS phrase
+                  FROM (SELECT ord, tok, alias IN ('asciihword', 'hword', 'numhword') AS compound,
+                          quote_literal(lexemes[1]) || CASE WHEN ord = cardinality($1::text[]) THEN ':*' ELSE '' END AS w
+                        FROM unnest($1::text[]) WITH ORDINALITY AS u(term, ord), ts_debug('simple', term) WITH ORDINALITY AS d(alias, description, token, dictionaries, dictionary, lexemes, tok)
+                        WHERE cardinality(lexemes) > 0) l
+                  GROUP BY ord) t) AS tq,
+               $2::vector AS v),
+      m AS (
+        SELECT task_id, identifier, title, status, closed_at, updated_at, assignee_agent_id, assignee_user_id, created_by_agent_id, project_id, labels, priority,
+          coalesce(lower(identifier) = $5, false) AS own, coalesce(closed_at < $7::timestamptz, false) AS old,
+          CASE WHEN q.tq IS NOT NULL AND tsv @@ q.tq THEN ts_rank_cd(tsv, q.tq) END AS lex,
+          CASE WHEN q.v IS NOT NULL AND embedding IS NOT NULL AND model = $3 THEN 1 - (embedding <=> q.v) END AS cos
+        FROM src_tasks.task_search, q
+        WHERE NOT deleted AND ((q.tq IS NOT NULL AND tsv @@ q.tq) OR (q.v IS NOT NULL AND embedding IS NOT NULL AND model = $3 AND 1 - (embedding <=> q.v) >= $4))),
+      r AS (
+        SELECT *, row_number() OVER (PARTITION BY old ORDER BY own DESC, lex DESC NULLS LAST, task_id) AS lr,
+          row_number() OVER (PARTITION BY old ORDER BY cos DESC NULLS LAST, task_id) AS cr, bool_or(own) OVER () AS found
+        FROM m)
+      SELECT * FROM r WHERE (lex IS NOT NULL AND lr <= $6) OR (cos >= $4 AND NOT found AND cr <= $6)`,
+      [terms.map((t) => t.toLowerCase()), vec(v), m.model, m.threshold, q.toLowerCase(), PER_SIDE, o.closedBefore ?? null])).rows as (Record<string, any> & { own: boolean; lex: number | null; cos: number | null })[];
+    const byId = (a: Record<string, any>, b: Record<string, any>) => (a.task_id < b.task_id ? -1 : a.task_id > b.task_id ? 1 : 0);
+    const rank = (key: "lex" | "cos") => new Map(rows.filter((r) => r[key] != null)
+      .sort((a, b) => b[key]! - a[key]! || byId(a, b)).map((r, i) => [r.task_id as string, i + 1]));
     const lex = rank("lex"), cos = rank("cos");
     const score = (id: string) => (lex.has(id) ? 1 / (RRF_K + lex.get(id)!) : 0) + (cos.has(id) ? 1 / (RRF_K + cos.get(id)!) : 0);
     const hit = (r: Record<string, any>): Hit => ({
@@ -375,9 +398,8 @@ export function createSearch({ db, sql, migrate, facts, cp, local, agentName, pr
       assignee: r.assignee_agent_id ?? null, assigneeUser: r.assignee_user_id ?? null, createdByAgent: r.created_by_agent_id ?? null, projectId: r.project_id ?? null,
       labels: Array.isArray(r.labels) ? r.labels : [], priority: r.priority ?? null,
     });
-    const cut = o.closedBefore ? Date.parse(o.closedBefore) : NaN;
-    const old = (r: Record<string, any>) => r.closed_at != null && new Date(r.closed_at).getTime() < cut;
-    const hits = rows.filter((r) => !old(r)).sort((a, b) => score(b.task_id) - score(a.task_id)).map(hit);
+    const old = (r: Record<string, any>) => r.old === true;
+    const hits = rows.filter((r) => !old(r)).sort((a, b) => Number(b.own) - Number(a.own) || score(b.task_id) - score(a.task_id) || byId(a, b)).map(hit);
     const key = (h: Hit): [string, string] => [h.closedAt ?? "", h.id];
     const newer = (a: [string, string], b: [string, string]) => (a[0] !== b[0] ? a[0] > b[0] : a[1] > b[1]);
     const closed = rows.filter(old).map(hit).sort((a, b) => (newer(key(a), key(b)) ? -1 : 1)).filter((h) => !o.after || newer(o.after, key(h)));
