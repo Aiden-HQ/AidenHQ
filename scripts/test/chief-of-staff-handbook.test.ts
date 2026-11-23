@@ -32,8 +32,8 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
 
 test("each task the reply run holds has its own close path", () => {
   const bullet = block(read("modules/chief-of-staff/skills/task-replies/SKILL.md"), /\*\*Done or not needed:\*\*/);
-  assert.match(bullet, /A task assigned to this agent finishes with `task_finish` and that task's `issue` — except its part of the owner's task, which goes back with `task_handoff` \(on the run's own task it also records the owner wait; a part the run task only names gets no wait, so say in the run summary that it is theirs to close\)/, "the run's own part is handed back, and a part that gets no wait is reported as the owner's to close");
-  assert.match(bullet, /A child of one of its tasks takes `task_comment` and stays open/, "a child of a task the agent holds is in its write scope (task-scope.ts scopeOf)");
+  assert.match(bullet, /A task assigned to this agent finishes with `task_finish` and that task's `issue`, or `task_cancel` when they say it is no longer needed — except its part of the owner's task, which goes back with `task_handoff` \(on the run's own task it also records the owner wait; a part the run task only names gets no wait, so say in the run summary that it is theirs to close\)/, "an agent-held task is finished or cancelled by the reply, its own part is handed back, and a part with no wait is reported as the owner's");
+  assert.match(bullet, /A child of one of its tasks that is neither assigned to it nor filed by it takes `task_comment` and stays open/, "a child of a task the agent holds is in its write scope, and one it does not hold is commented (task-scope.ts scopeOf)");
   assert.match(bullet, /Finishing the run task itself is step 4's, after every reply/, "the run task is finished once, after every reply");
 });
 
