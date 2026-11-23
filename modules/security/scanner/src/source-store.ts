@@ -96,7 +96,7 @@ export class SourceStore {
   private migrated = false;
   readonly schema: string;
   readonly pool: pg.Pool;
-  // Plain fields (no parameter properties): the kernel runs this file directly with Node's type stripping.
+  // Plain fields (no parameter properties): the warehouse search service runs this file directly with Node's type stripping.
   constructor(schema: string, pool: pg.Pool) {
     this.schema = ident(schema);
     this.pool = pool;
