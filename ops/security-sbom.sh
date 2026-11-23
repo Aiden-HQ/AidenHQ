@@ -351,16 +351,33 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform]
   if [ "$(pin_of "$ref" "$plat")" = "$pin" ]; then export_err=""; return 0; fi
   rm -f "$dest"; export_err="the tag moved during this pass; not scanning a different image"; return 1
 }
-# The batch's images, decided from one snapshot of the containers, taken under the host's apply lock: between an apply's
-# `docker compose build` and its recreate every rebuilt tag names the new image while its container still runs the old
-# one, and a batch enumerated there is a half-applied snapshot. The lock is released before the scans, so an apply never
-# waits on one. Returns 1 when the enumeration itself failed: the caller keeps the previous batch rather than publish a
-# short one.
+# The batch's images, enumerated and sized from one snapshot of the containers, taken under the host's apply lock: between
+# an apply's `docker compose build` and its recreate every rebuilt tag names the new image while its container still runs
+# the old one, and a batch enumerated there is a half-applied snapshot. The survey fixes the target list and the waves;
+# each wave's saves then happen under a lock hold and its scans after the lock is released (the driver below), so an apply
+# waits only for one wave's saves. Returns 1 when the enumeration itself failed: the caller keeps the previous batch
+# rather than publish a short one.
 plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=()
 plan_add() { plan_target+=("$1"); plan_source+=("$2"); plan_pin+=("$3"); plan_ref+=("$4"); plan_size+=("${5:-0}"); }
+# The units this pass resolved and sized, indexed alike for the wave driver below. The sizes are known before any bytes
+# are written; the driver decides each wave from them, so a later wave never needs to look at the daemon again for size.
+p_key=(); p_pin=(); p_ref=(); p_plat=(); p_size=()
+archive_seq=0
+# Each wave's index, 0 for a unit that never fits (a line at survey time): the save and scan of a wave select their units.
+declare -a wave_of=()
+# Why a target was not admitted, with the numbers that decided it: the archives the wave holds, this image's size, the
+# largest archive among them, the room above the floor, and the shortfall. A line that says "17 GB does not fit in 101 GB"
+# hides that the other archives are what made it not fit. <short> is passed where the room already has the held archives
+# subtracted (a save or a scan after earlier writes), so the held bytes are named but not charged twice.
+space_need() { # <admitted GB> <this image GB> <largest archive GB> <room GB> [short GB]
+  local admitted="$1" size="$2" largest="$3" room="$4" short="${5:-}"
+  [ -n "$short" ] || short=$(( admitted + size + largest - room ))
+  printf 'admitted %s GB of archives, this %s GB image, largest archive %s GB, room %s GB above the %s GB floor on %s, short by %s GB' \
+    "$admitted" "$size" "$largest" "$room" "$min_free_gb" "$out" "$short"
+}
 snapshot() {
-  local listing rows cid row image config desc label want key raw size size_gb avail ref saved archive pin now
-  local plat avail_now man nodesc unit need room top
+  local listing rows cid row image config desc label want key raw size ref saved pin now
+  local plat man nodesc unit
   local -A variant_count=()
   if ! listing="$(docker_call 10 ps -q 2>&1)"; then
     echo "security-sbom: could not enumerate containers (${listing:-docker ps failed}); keeping the previous batch" >&2
@@ -458,12 +475,9 @@ snapshot() {
     [ -n "${u_pinned[$unit]:-}" ] || u_pinned[$unit]="$now"
   done <<< "$rows"
   [ "$nodesc" -eq 0 ] || echo "security-sbom: $nodesc container(s) report no platform manifest descriptor; read on the Docker server platform $platform" >&2
-  plan_target=(); plan_source=(); plan_pin=(); plan_ref=(); plan_size=()
-  # Every archive stays on disk until its scan, so the room a scan needs is not known until every image is sized: the
-  # batch must fit all its archives *and*, at the scan of the largest, its own archive twice over as workspace. Saving as
-  # the sizes arrive would admit an image whose scan then skips it every pass (a saved archive that is never read). So the
-  # plan is two passes under the lock: resolve and size every unit first, then admit a set that fits and save only that.
-  local -a p_key=() p_want=() p_pin=() p_ref=() p_image=() p_plat=() p_size=()
+  p_key=(); p_pin=(); p_ref=(); p_plat=(); p_size=()
+  # Every unit is resolved and sized first, before any bytes are written: a save is only worth making for a target whose
+  # scan can be planned. The wave driver uses these sizes to decide which images go in this pass at all.
   for unit in "${units[@]}"; do
     image="${u_image[$unit]}"; plat="${u_plat[$unit]}"; man="${u_man[$unit]}"
     # The image the container runs: its tag while the tag still names what runs, else the platform manifest compose
@@ -489,7 +503,7 @@ snapshot() {
     # after the size checks, is what lets an image whose own id is gone but whose index another tag holds still be
     # exported instead of dropped as unreadable.
     if ! ref="$(resolve_ref "$pin" "$image" "$plat")"; then
-      plan_add "image:$key" "fail:docker save: no local image exports $want" "$pin" "$image"; continue
+      fail "image:$key" "docker save: no local image exports $want"; continue
     fi
     # Size the very variant the save will write, through the very reference it will read: `docker image inspect` on an
     # index reports the index's total, while `docker save --platform` writes one platform manifest. A plain save (no
@@ -503,67 +517,110 @@ snapshot() {
     fi
     if [ -z "$saved" ] && raw="$(docker_call 5 image inspect -f '{{.Size}}' "$ref" 2>&1)"; then saved=1; fi
     if [ -z "$saved" ]; then
-      plan_add "image:$key" "fail:docker image inspect: ${raw:-failed}" "$pin" "$image"; continue
+      fail "image:$key" "docker image inspect: ${raw:-failed}"; continue
     fi
     # The template prints one number; a warning ahead of it is not the size, so the last line is what is judged. A size
     # nothing answers is unknown, not zero: an unknown demand can't be judged to fit, so the target is recorded.
     size="$(printf '%s\n' "$raw" | tail -1)"
     if [[ ! "$size" =~ ^[0-9]+$ ]]; then
-      plan_add "image:$key" "fail:docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')" "$pin" "$image"; continue
+      fail "image:$key" "docker image inspect: no size ('$(printf '%s' "$raw" | tr '\t\n' '  ' | tail -c 100)')"; continue
     fi
-    p_key+=("$key"); p_want+=("$want"); p_pin+=("$pin"); p_ref+=("$ref")
-    p_image+=("$image"); p_plat+=("$plat"); p_size+=("$(ceil_gb "$size")")
+    p_key+=("$key"); p_pin+=("$pin"); p_ref+=("$ref"); p_plat+=("$plat"); p_size+=("$(ceil_gb "$size")")
   done
-  # Admit smallest first while `archives + largest admitted` fits above the floor, and scan largest first. At the first
-  # scan every admitted archive is on disk and that image is unpacked beside them; each later scan has already had its
-  # predecessors' archives deleted, so those peaks are lower. Scanning smallest first would instead keep the largest
-  # archive beside a larger and larger set, which is the case this accounting exists to rule out. An image that does not
-  # fit is a line and no bytes are written for it.
+  # Cut the surveyed set into waves, smallest first, each wave admitted only while its peak fits above the floor. A
+  # wave's peak is all of its archives on disk at the first scan plus the largest one's own size again, unpacked beside
+  # them; later scans have their predecessors' archives deleted, so those peaks are lower. Every wave is a separate lock
+  # hold: its saves happen under the lock, its scans after the lock is released and before the next wave's saves, so the
+  # archives of two waves are never resident together. This is what makes a set whose whole archive total plus its
+  # largest does not fit (every running image's set at 2026-11-23's sizes) still get every image inventoried instead of
+  # dropping its largest on every pass. An image that cannot fit even alone (its archive held for its own scan plus its
+  # own size to unpack it, twice over) never fits any wave: that one is a line stating the numbers.
   room=$(( $(free_gb) - min_free_gb ))
   [ "$room" -lt 0 ] && room=0
-  local -A admit=()
-  local -a saves=()
-  local total=0 biggest=0 idx sz i
+  local idx sz wave wave_total wave_biggest
+  wave_of=(); wave=0; wave_total=0; wave_biggest=0; wave_count=0
   # NB: the loop body runs in this shell only if the loop itself is not at the end of a pipeline; the sizes come from a
-  # process substitution so `admit`/`order` persist for the second pass.
+  # process substitution so `wave_of` persists for the save pass.
   while IFS=$'\t' read -r sz idx; do
     [ -n "$idx" ] || continue
-    top=$(( sz > biggest ? sz : biggest ))
-    if [ $(( total + sz + top )) -le "$room" ]; then
-      admit[$idx]=1; total=$(( total + sz )); if [ "$sz" -gt "$biggest" ]; then biggest="$sz"; fi
-    else
-      admit[$idx]=0
+    # An image held only for its own scan still needs its own size again to unpack it, so twice its size must fit above
+    # the floor or no wave can ever take it. It is a line now, with the numbers, and no bytes are written for it.
+    if [ $(( 2 * sz )) -gt "$room" ]; then
+      fail "image:${p_key[$idx]}" "skipped: ${sz} GB image does not fit: $(space_need 0 "$sz" "$sz" "$room")"
+      continue
     fi
+    if [ "$wave" -eq 0 ] || [ $(( wave_total + sz + (sz > wave_biggest ? sz : wave_biggest) )) -gt "$room" ]; then
+      # Does not fit where the wave stands. Ascending order means no later (larger) image fits there either, so the wave
+      # is closed.
+      wave=$((wave + 1)); wave_count="$wave"; wave_total=0; wave_biggest=0
+    fi
+    wave_of[$idx]="$wave"; wave_total=$(( wave_total + sz )); [ "$sz" -gt "$wave_biggest" ] && wave_biggest="$sz"
   done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
-  # Two orders, not one. The scans run largest first (see the accounting above), but the exports under the snapshot
-  # deadline run smallest first: a save that runs out the budget must not be the one that takes every smaller archive
-  # down with it, and a smaller archive written first still lands even if the largest export times out. The scan order is
-  # recovered after the saves from the saved sizes, so it does not depend on the order the archives were written.
+  return 0
+}
+# Save one wave's archives, smallest first, with the apply lock held. Exports run smallest first because the snapshot
+# deadline is spent on them: a save that runs out the budget must not be the one that takes every smaller archive down
+# with it. Every archive is written from the reference the survey resolved, re-checked at save time; each failure is a
+# line, never a gap.
+save_wave() { # <wave>
+  local w="$1" idx sz key pin ref plat archive top avail_now written=0 written_big=0
   while IFS=$'\t' read -r sz idx; do
-    [ "${admit[$idx]:-0}" = 1 ] && saves+=("$idx")
-  done < <(for i in "${!p_size[@]}"; do printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
-  for idx in "${!p_size[@]}"; do
+    [ -n "$idx" ] || continue
+    [ "${wave_of[$idx]:-0}" = "$w" ] || continue
     key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
-    if [ "${admit[$idx]:-0}" != 1 ]; then
-      plan_add "image:$key" "fail:skipped: ${sz} GB image does not fit: the batch keeps every archive until it is scanned and unpacks this one beside them, so it needs ${sz} GB of room and only ${room} GB is above the ${min_free_gb} GB floor on $out" "$pin" "$ref"
-    fi
-  done
-  for idx in "${saves[@]}"; do
-    key="${p_key[$idx]}"; pin="${p_pin[$idx]}"; ref="${p_ref[$idx]}"; plat="${p_plat[$idx]}"; sz="${p_size[$idx]}"
-    # Free space is read again with the archives already written: the plan's budget counted them, but another writer on the
-    # same filesystem can have taken room since, and a save that starts below the floor fills the disk the host runs on.
+    # Free space is read again with this wave's archives already written: the plan's budget counted them, but another
+    # writer on the same filesystem can have taken room since, and a save that starts below the floor fills the disk the
+    # host runs on. That image is a line with the numbers that decided it.
+    # Below the floor the room is negative, and it must stay negative here: clamping it to 0 would let a free image save
+    # while the filesystem is already under the floor.
     avail_now=$(( $(free_gb) - min_free_gb ))
     if [ "$avail_now" -lt "$sz" ]; then
-      plan_add "image:$key" "fail:skipped: ${sz} GB image does not fit in the ${avail_now} GB of room above the ${min_free_gb} GB floor on $out" "$pin" "$ref"; continue
+      top=$(( sz > written_big ? sz : written_big ))
+      fail "image:$key" "skipped: ${sz} GB image does not fit: $(space_need "$written" "$sz" "$top" "$avail_now" $(( sz - avail_now )))"
+      continue
     fi
-    # Exported now, under the lock, from the reference resolved above: the archive holds exactly what runs, and nothing
-    # that moves after the lock is released can change it. The scan-time path only re-opens archives.
-    archive="$archives/${#plan_target[@]}.tar"
+    # Exported now, under the lock, from the reference resolved by the survey: the archive holds exactly what runs, and
+    # nothing that moves after this lock is released can change it. The scan only re-opens archives.
+    archive="$archives/$((archive_seq += 1)).tar"
     if export_image "$pin" "$ref" "$archive" "$plat"; then
       plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz"
+      written=$(( written + sz )); [ "$sz" -gt "$written_big" ] && written_big="$sz"
     else
-      plan_add "image:$key" "fail:docker save: ${export_err:-failed}" "$pin" "$ref"
+      fail "image:$key" "docker save: ${export_err:-failed}"
     fi
+  done < <(for i in "${!p_size[@]}"; do [ "${wave_of[$i]:-0}" = "$w" ] && printf '%s\t%s\n' "${p_size[$i]}" "$i"; done | sort -n)
+  return 0
+}
+# Scan one wave's archives, largest first, and delete each as its scan ends. At the first scan every archive of the wave
+# is on disk and this image is unpacked beside them; each later scan has fewer archives waiting. The space check repeats
+# before each scan, since a scan that has already unpacked images (or another writer) can have left less room than the
+# plan expected. An archive that no longer fits is a line and its bytes go back before the next target.
+scan_wave() { # <first plan index>
+  local first="$1" i k target archive avail size_gb remaining=0 room_now largest=0 sz_bytes
+  local -a order=() sizes=()
+  if [ "${#plan_target[@]}" -le "$first" ]; then return 0; fi
+  while IFS=$'\t' read -r _ i; do [ -n "$i" ] && order+=("$i"); done \
+    < <(for i in "${!plan_target[@]}"; do [ "$i" -ge "$first" ] && printf '%s\t%s\n' "${plan_size[$i]}" "$i"; done | sort -rn)
+  for k in "${!order[@]}"; do
+    archive="${plan_source[${order[$k]}]#archive:}"
+    sz_bytes="$(stat -c %s "$archive" 2>/dev/null || echo 0)"
+    sizes[$k]="$(ceil_gb "$sz_bytes")"; remaining=$(( remaining + sizes[k] ))
+    [ "${sizes[$k]}" -gt "$largest" ] && largest="${sizes[$k]}"
+  done
+  for k in "${!order[@]}"; do
+    i="${order[$k]}"; target="${plan_target[$i]}"; archive="${plan_source[$i]#archive:}"; size_gb="${sizes[$k]}"
+    if [ ! -f "$archive" ]; then
+      remaining=$(( remaining - size_gb )); fail "$target" "docker save: its archive is gone"; continue
+    fi
+    # `free` already has this wave's archives subtracted, so the extra room this scan needs is this archive's own size
+    # again to unpack it; the other waiting archives are stated in the line but are not charged twice.
+    avail="$(free_gb)"; room_now=$(( avail - min_free_gb ))
+    if [ "$avail" -lt "$min_free_gb" ] || [ "$size_gb" -gt "$room_now" ]; then
+      fail "$target" "skipped: ${size_gb} GB image does not fit: $(space_need $(( remaining - size_gb )) "$size_gb" "$largest" "$room_now" $(( size_gb - room_now )))"
+      rm -f "$archive"; remaining=$(( remaining - size_gb )); continue
+    fi
+    scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
+    rm -f "$archive"; remaining=$(( remaining - size_gb ))
   done
 }
 if ! snapshot; then
@@ -571,42 +628,50 @@ if ! snapshot; then
   rm -rf "$next" "$work" "$archives"
   exit 0
 fi
-# From here the target list is fixed and every archive holds the image verified under the lock; let an apply run and scan.
-# The snapshot deadline bounded the work under the lock, not the scans.
+# The survey is done under the lock and fixed the target list. Each wave is saved under its own lock hold and scanned
+# after the lock is released, before the next wave's saves: an apply waits only for one wave's saves, never for a scan,
+# and two waves' archives are never resident together. The host target keeps its place at the head of the batch and runs
+# with the apply lock free, as before.
+first="${#plan_target[@]}"
+save_wave 1
+# What is left of the pass's one overall export budget, carried to the later waves so a set that needs many of them cannot
+# add up to an apply waiting for hours. A pass whose budget is spent stops exporting and records the rest as lines.
+export_left=$(( SNAPSHOT_DEADLINE - SECONDS ))
+[ "$export_left" -lt 0 ] && export_left=0
 SNAPSHOT_DEADLINE=""
 exec 8>&-
 scan host "" -v /:/host:ro -- dir:/host "${host_args[@]}"
-# Scan largest first: every admitted archive is on disk at the first scan, so that one is the peak, and each later scan
-# has its predecessors' archives deleted. The archives were written smallest first (above); this order is recovered from
-# their sizes, so it does not depend on how they were written. Failures cost no space and go first.
-scan_order=()
-for i in "${!plan_target[@]}"; do
-  case "${plan_source[$i]}" in archive:*) ;; *) scan_order+=("$i") ;; esac
+scan_wave "$first"
+wave_no=2
+while [ "$wave_no" -le "$wave_count" ]; do
+  if [ "$export_left" -le 0 ]; then
+    echo "security-sbom: the export budget is spent; the rest of the images are recorded unscanned" >&2
+    break
+  fi
+  # A later wave takes the apply lock again for its saves, so those bytes are written on a consistent store too. A pass
+  # that cannot get the lock now keeps what it has, and every image it did not reach is a line rather than a gap.
+  exec 8>>"$APPLY_LOCK"
+  if ! flock -n 8; then
+    echo "security-sbom: an apply took the apply lock between waves; the rest of the images are recorded unscanned" >&2
+    exec 8>&-
+    break
+  fi
+  SNAPSHOT_DEADLINE=$((SECONDS + export_left))
+  first="${#plan_target[@]}"
+  save_wave "$wave_no"
+  export_left=$(( SNAPSHOT_DEADLINE - SECONDS ))
+  [ "$export_left" -lt 0 ] && export_left=0
+  SNAPSHOT_DEADLINE=""
+  exec 8>&-
+  scan_wave "$first"
+  wave_no=$((wave_no + 1))
 done
-while IFS=$'\t' read -r sz i; do
-  [ -n "$i" ] && scan_order+=("$i")
-done < <(for i in "${!plan_target[@]}"; do
-  case "${plan_source[$i]}" in archive:*) printf '%s\t%s\n' "${plan_size[$i]}" "$i" ;; esac
-done | sort -rn)
-for i in "${scan_order[@]}"; do
-  target="${plan_target[$i]}"; source="${plan_source[$i]}"
-  case "$source" in
-    fail:*) fail "$target" "${source#fail:}" ;;
-    archive:*)
-      # Recheck this image against free space now, with every archive still waiting on disk: the plan's budget judged it
-      # beside the archives it knew of, and a scan that has since unpacked images can have left less room than that. An
-      # archive that no longer fits is a line, and its bytes go back before the next target.
-      archive="${source#archive:}"
-      if [ ! -f "$archive" ]; then fail "$target" "docker save: its archive is gone"; continue; fi
-      # The archive is already on disk and counted in `free`; unpacking it needs its own size again above the floor.
-      avail="$(free_gb)"; need="$(ceil_gb "$(stat -c %s "$archive")")"
-      if [ "$avail" -lt "$min_free_gb" ] || [ "$need" -gt $(( avail - min_free_gb )) ]; then
-        fail "$target" "skipped: ${need} GB image does not fit in the ${avail} GB free on $out above the ${min_free_gb} GB floor"
-        rm -f "$archive"; continue
-      fi
-      scan "$target" "" -v "$archive:/image.tar:ro" -- "docker-archive:/image.tar"
-      rm -f "$archive" ;;
-  esac
+# An image only ever left for a later wave is placed by its index; a wave that did not run (the lock was lost) leaves its
+# images without a row. They are lines saying so, never a silent gap in the batch.
+for idx in "${!p_size[@]}"; do
+  [ "${wave_of[$idx]:-0}" -gt 0 ] || continue
+  [ "${wave_of[$idx]}" -lt "$wave_no" ] && continue
+  fail "image:${p_key[$idx]}" "skipped: not reached: this wave's export did not start (the pass's export budget was spent or an apply took the apply lock)"
 done
 rm -rf "$archives"
 scan repo:product "$(git -C "$PWD" rev-parse HEAD 2>/dev/null || true)" -v "$PWD:/src:ro" -- dir:/src --exclude './data/**' --exclude './.git/**' --exclude '**/node_modules/**'

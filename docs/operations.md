@@ -422,14 +422,22 @@ records the checkout's git HEAD for `repo:product` and `repo:instance`, and the 
 archive in `data/modules/security/sbom/.archives` until its scan. Every image is saved under the lock, from a reference
 resolved there on the container's own platform (an immutable id that holds its platform manifest, else the tag itself),
 sized as that same reference and platform (an index reports the whole index while a platform save writes one manifest),
-and the plan sizes every image before writing anything, then admits smallest first only while all admitted archives plus
-the largest one's own size again (the workspace its scan unpacks into while every archive is still on disk) fit above the
-floor. Exports run smallest first and scans largest first: the snapshot deadline is spent on exports, so a large save that
-runs it out still leaves the smaller archives written, while the peak scan is the first one, with every archive on disk and
-its predecessors' archives deleted after each scan — the accounting above is that peak, not a sum of every workspace. An image the batch cannot fit beside the archives already retained, or
-whose own scan would not have room after all of them, is a line and no bytes are written for it; free space is checked
-again before each save and again before each scan. It empties the work dir after every target, keeps 30 GB free (an image whose size the daemon won't report is
-recorded and not scanned: an unknown demand can't be judged to fit). A container that reports no platform descriptor (an
+and the plan sizes every image before writing anything, then cuts the set into waves smallest first, admitting an image
+only while that wave's archives plus the largest one's own size again (the workspace its scan unpacks into while every
+archive is still on disk) fit above the floor. Exports run smallest first and scans largest first: the snapshot deadline
+is spent on exports, so a large save that runs it out still leaves the smaller archives written, while the peak scan is
+the first one, with the whole wave on disk and its predecessors' archives deleted after each scan — the accounting above
+is that peak, not a sum of every workspace. Each wave's saves happen under the apply lock and its scans after the lock is
+released, before the next wave's saves, so two waves' archives are never resident together. That is what lets a set whose
+whole archive total plus its largest does not fit above the floor still be inventoried in full instead of dropping its
+largest image on every pass (2026-11-23: the set's 17 GB image was skipped every pass though each wave could hold it). A
+later wave takes the lock again for its saves, within what is left of the pass's one overall export budget; a wave that
+cannot get the lock, or starts after that budget is spent, is recorded as unscanned lines rather than a gap.
+An image that cannot fit even a wave of its own — its archive held for its own scan plus its own size to unpack it — is a
+line stating the admitted total, its size, the largest archive, the room above the floor and the shortfall, and no bytes
+are written for it. A target that loses its room between waves is a line with the same numbers; free space is checked
+again before each save and again before each scan. It empties the work dir after every target, keeps 30 GB free (an
+image whose size the daemon won't report is recorded and not scanned: an unknown demand can't be judged to fit). A container that reports no platform descriptor (an
 older daemon, or a single-platform
 store) is read on the Docker server platform, and the pass says on stderr how many it did that for; a Docker API older
 than 1.48 (which has no `image save --platform`) uses a plain save, sized as the whole reference because that is what the

@@ -80,6 +80,12 @@ case "$1" in run|save) printf '%s\\n' "$*" >> "$CALLS" ;; esac
 if [ "$1" = run ] && [ -n "$FAKE_HOST_SCAN_SLEEP" ] && [[ "$*" == *"--source-name host"* ]]; then
   read -r -t "$FAKE_HOST_SCAN_SLEEP" _ < <(exec perl -e "select undef, undef, undef, $FAKE_HOST_SCAN_SLEEP")
 fi
+# An apply that starts while the scans run: FAKE_TAKE_LOCK_ON_HOST_SCAN has a background process hold the apply lock as the
+# host scan begins, so a later wave cannot export and must record its images rather than leave a gap. It lives longer than
+# the pass and dies on its own (its stdout is closed, so the host scan's command substitution does not wait on it).
+if [ "$1" = run ] && [ -n "\${FAKE_TAKE_LOCK_ON_HOST_SCAN:-}" ] && [[ "$*" == *"--source-name host"* ]]; then
+  ( exec 9>>"$FAKE_APPLY_LOCK"; flock 9; read -r -t 5 _ < <(exec perl -e "select undef, undef, undef, 5") ) >/dev/null 2>&1 </dev/null &
+fi
 # rm -f clears a container the script named before a run; a name nothing holds is a normal answer, not a failure.
 [ "$1" = rm ] && exit 0
 # Only a container carrying this scanner's own label may be removed: inspect prints the label, or fails as Docker does.
@@ -837,6 +843,78 @@ test("security-sbom: two containers running one index on different platforms are
   assert.equal(saves.length, 2, `one archive per variant:\n${calls.join("\n")}\ntargets:\n${targets.map((t) => t.join("\t")).join("\n")}`);
   assert.ok(saves.some((c) => /--platform linux\/amd64 /.test(c)), saves.join("\n"));
   assert.ok(saves.some((c) => /--platform linux\/arm64\/v8 /.test(c)), saves.join("\n"));
+});
+
+test("security-sbom: a set whose archives plus the largest exceed the room is scanned in waves, every image scanned", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. The five archives total 40 GB and the largest is 10 GB, so the whole set at
+  // once needs 50 GB and cannot fit. Scanned in waves, each wave's archives plus its largest fit: 6+7+8 GB with 8 GB
+  // unpacked is 29 GB, and 9+10 GB with 10 GB unpacked is 29 GB. Every image must be inventoried, with no skip line, and
+  // the second wave's saves must run only after the first wave's scans have freed their archives.
+  const ids = ["sha256:a1", "sha256:a2", "sha256:a3", "sha256:a4", "sha256:a5"];
+  const sizes = [6, 7, 8, 9, 10];
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "62914560" }, {
+    containers: ids.map((id, i) => ({ id: `c${i + 1}`, image: id, config: `svc${i + 1}:local`, label: id })),
+    tags: Object.fromEntries(ids.map((id, i) => [`svc${i + 1}:local`, id])),
+    held: ids,
+    sizes: Object.fromEntries(ids.map((id, i) => [id, sizes[i] * 1024 ** 3])),
+  });
+  assert.equal(status, 0, out);
+  const rows = targets.filter((t) => t[0].startsWith("image:"));
+  assert.equal(rows.length, ids.length, rows.map((t) => t.join("\t")).join("\n"));
+  for (const row of rows) assert.notEqual(row[1], "-", `${row[0]} was skipped: ${row[2]}`);
+  assert.ok(!rows.some((t) => /does not fit|skipped/.test(t[2])), `a target was space-skipped:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, ids.length);
+  const firstScan = calls.findIndex((c) => c.startsWith("run ") && c.includes("--source-name image:"));
+  const lastSave = calls.map((c, i) => (c.startsWith("save ") ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+  const secondWaveSave = calls.findIndex((c, i) => i > firstScan && c.startsWith("save "));
+  assert.ok(secondWaveSave > firstScan, `a later wave was saved before the first wave's scans freed its archives:\n${calls.join("\n")}`);
+  assert.ok(lastSave > firstScan, "every save must be accounted for");
+});
+
+test("security-sbom: a target no wave can hold is a line naming the admitted total, its size, the largest and the room", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 6 GB image needs its 6 GB archive held to scan plus 6 GB to unpack it, 12 GB
+  // in all, which no wave of 10 GB ever has. The line must state the budget that decided it rather than "6 GB does not fit
+  // in 10 GB", which reads as though the image alone were over the room.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "41943040" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 6 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-");
+  assert.match(line[2], /admitted 0 GB of archives/);
+  assert.match(line[2], /this 6 GB image/);
+  assert.match(line[2], /largest archive 6 GB/);
+  assert.match(line[2], /room 10 GB above the 30 GB floor/);
+  assert.match(line[2], /short by 2 GB/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran for an image no wave can hold:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an apply that takes the lock between waves leaves those images as lines, not gaps", { skip: NOT_LINUX }, async () => {
+  // The first wave exports and scans; an apply starts while the scans run and holds the apply lock, so the second wave
+  // cannot export. The images it would have carried must be recorded with the reason, never silently dropped.
+  const ids = ["sha256:a1", "sha256:a2", "sha256:a3", "sha256:a4", "sha256:a5"];
+  const sizes = [6, 7, 8, 9, 10];
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "62914560", FAKE_TAKE_LOCK_ON_HOST_SCAN: "1" }, {
+    containers: ids.map((id, i) => ({ id: `c${i + 1}`, image: id, config: `svc${i + 1}:local`, label: id })),
+    tags: Object.fromEntries(ids.map((id, i) => [`svc${i + 1}:local`, id])),
+    held: ids,
+    sizes: Object.fromEntries(ids.map((id, i) => [id, sizes[i] * 1024 ** 3])),
+  });
+  assert.equal(status, 0, out);
+  const rows = targets.filter((t) => t[0].startsWith("image:"));
+  assert.equal(rows.length, ids.length, `every running image has a row:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  const scanned = rows.filter((t) => t[1] !== "-");
+  const unreached = rows.filter((t) => /not reached/.test(t[2]));
+  assert.ok(scanned.length >= 1, `the first wave was still scanned:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.ok(unreached.length >= 1, `the later wave's images are lines:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(scanned.length + unreached.length, ids.length, rows.map((t) => t.join("\t")).join("\n"));
+  assert.match(out, /an apply took the apply lock between waves/);
+  // The later wave wrote no bytes, and the pass still swapped its batch in.
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, scanned.length);
 });
 
 test("security-sbom: an archive is admitted only when its own scan has workspace left", { skip: NOT_LINUX }, async () => {
