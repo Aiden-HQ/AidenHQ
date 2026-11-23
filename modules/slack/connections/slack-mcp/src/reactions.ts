@@ -371,8 +371,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // the honest answer is that the set is unknown, with what was read so far.
   if (full) return { ok: false, detail: `the reaction feed ran past the scan's ${maxPages}-page limit before the set ended` };
   if (numbered !== undefined) return { ok: false, detail: `reactions.list's numbered pages ran past the scan's ${maxPages}-page limit` };
-  // A Slack cursor still advances: hand it back as it is, so a capped walk continues past this page.
-  return { ok: true, messages, nextCursor: cursor || null };
+  // A Slack cursor still advances: hand it back inside a continuation that carries what was returned, so a capped walk
+  // continues past this page and a message Slack lists again after it isn't returned twice.
+  return { ok: true, messages, nextCursor: cursor ? encodePosition({ n: pageSize, seen: [...seen], from: cursor }) : null };
 }
 
 /** The search tool's result shape, with the end-of-set marker the scan reads: `next_cursor: null` only when complete. */
@@ -435,6 +436,10 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
     };
     // The body's last non-whitespace byte, tracked from each chunk alone so a large pass-through body isn't recopied.
     let tail: number | undefined;
+    // When the request declares its length, the body is complete exactly at that many bytes: only then is a `}` the end
+    // of the whole body, so a later chunk can't carry trailing bytes the proxy would reject.
+    const declared = Number(req.headers["content-length"]);
+    const complete = () => Number.isFinite(declared) && declared >= 0 ? size >= declared : tail === 0x7d || tail === 0x5d;
     const onData = (chunk: Buffer) => {
       chunks.push(chunk);
       size += chunk.length;
@@ -449,6 +454,7 @@ function peekJson(req: IncomingMessage, limit: number): Promise<Peeked> {
       }
       // A whole JSON value ends at a `}` (an object) or `]` (a batch array), trailing whitespace aside.
       if (tail !== 0x7d && tail !== 0x5d) return;
+      if (!complete()) return;
       const out = parse();
       if (out) settle(out);
     };

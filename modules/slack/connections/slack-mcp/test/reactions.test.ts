@@ -288,8 +288,10 @@ describe("scanMyReactions", () => {
   it("hands back Slack's own cursor at the page cap, which still advances the set", async () => {
     const pages = Array.from({ length: 4 }, (_, i) => page([item("C1", `${i}.0`)], `c${i + 1}`));
     const { fetchImpl } = fakeSlack(pages);
-    // No result limit: the Slack cursor resumes the walk past this page, so nothing is skipped.
-    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 })).toMatchObject({ ok: true, nextCursor: "c3" });
+    // No result limit: the continuation resumes the walk past this page, so nothing is skipped.
+    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 });
+    expect(scan).toMatchObject({ ok: true, nextCursor: expect.any(String) });
+    expect((scan as { nextCursor: string }).nextCursor).toMatch(/^aidenhq:pos:/);
   });
 
   it("is not a complete set when the page cap is hit after the result limit was reached", async () => {
