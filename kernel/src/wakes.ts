@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS wake_tasks (task TEXT PRIMARY KEY, agent TEXT, status
 CREATE TABLE IF NOT EXISTS wake_dispatchers (module TEXT PRIMARY KEY, since INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
-  state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);`;
+  state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
+CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
@@ -318,15 +319,27 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const finishedAt = String(issue.status ?? "") === "done" ? Math.max(ms(issue.completedAt ?? undefined), lastStatus?.data.to === "done" ? ms(lastStatus.at) : 0) : 0;
     let reopenedHere = false;
     if (String(issue.status ?? "") === "done" && isChat(issue) && all.some((c) => !c.deletedAt && ms(c.createdAt) > finishedAt && ownerWord(c))) {
-      const p = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo" });
-      // A failed reopen leaves this scan's cursor where it was, so the next one reads the same comment and tries the move again;
-      // filing its wake on the closed task would only be refused.
-      if (p.status >= 300) { log("wake chat reopen failed", { task: issue.id, status: p.status }); return; }
-      // The issue is the reopened task from here on: its row below records `todo`, so the next scan files no status wake for the
-      // move. Its facts are written before the wake it lets start, so task state reads the chat open when its run begins.
-      issue = { ...issue, ...(p.json && typeof p.json === "object" ? p.json : {}), status: "todo", updatedAt: typeof p.json?.updatedAt === "string" ? p.json.updatedAt : iso(now()) };
-      taskFacts(issue, source, actor);
-      reopenedHere = true;
+      // Said before the move: the comment read is a snapshot, and the owner may have cancelled the chat since. Only a task still
+      // `done` is reopened (a cancelled chat stays closed), and a read that fails writes nothing.
+      const fresh = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+      if (fresh.status !== 200) { log("wake chat reopen read failed", { task: issue.id, status: fresh.status }); return; }
+      if (String(fresh.json?.status) !== "done") { issue = { ...issue, ...(fresh.json as Issue) }; }
+      else {
+        const p = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo" });
+        // A failed reopen leaves this scan's cursor where it was and the task on the poll's retry list, so the next scan reads
+        // the same comment and tries the move again; filing its wake on the closed task would only be refused.
+        if (p.status >= 300) {
+          q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+          log("wake chat reopen failed", { task: issue.id, status: p.status });
+          return;
+        }
+        q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+        // The issue is the reopened task from here on: its row below records `todo`, so the next scan files no status wake for the
+        // move. Its facts are written before the wake it lets start, so task state reads the chat open when its run begins.
+        issue = { ...issue, ...(p.json && typeof p.json === "object" ? p.json : {}), status: "todo", updatedAt: typeof p.json?.updatedAt === "string" ? p.json.updatedAt : iso(now()) };
+        taskFacts(issue, source, actor);
+        reopenedHere = true;
+      }
     }
     for (const c of all) {
       if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
@@ -664,6 +677,15 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         } catch (e) {
           log("wake poll failed", { agent, err: (e as Error).message });
         }
+      }
+      // A reopen the control plane refused waits here until it succeeds, whatever the rolling finished-chat window below says:
+      // the scan reads its comment again and retries the move (no wake was filed for it).
+      for (const { task } of q("SELECT task FROM chat_reopen ORDER BY at").all() as { task: string }[]) {
+        try {
+          const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
+          if (r.status === 404) q("DELETE FROM chat_reopen WHERE task = ?").run(task);
+          else if (r.status === 200) await scan(r.json as Issue, { source: "poll" });
+        } catch (e) { log("wake scan failed", { task, err: (e as Error).message }); }
       }
       if (settleEach) await settleEach().catch((e: Error) => log("task wait settle failed", { err: e.message }));
       // A parked task (backlog, its own wait armed) is outside OPEN, so the per-agent list above never scans it, and the

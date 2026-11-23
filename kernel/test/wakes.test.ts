@@ -22,7 +22,10 @@ function world() {
     let m;
     if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1", status: "idle", lifecycleHolds: [] } };
     // A list row may leave blockedBy out (`omitBlocked`): the single-issue read still has it.
-    if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId"))).map((i) => ({ ...i, blockedBy: i.omitBlocked ? undefined : i.blockedBy })) };
+    if (u.pathname === "/api/companies/c-1/issues") {
+      const since = u.searchParams.get("updatedSince");
+      return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "todo,in_progress,in_review").split(",").includes(i.status) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) && (!since || Date.parse(i.updatedAt) >= Date.parse(since))).map((i) => ({ ...i, blockedBy: i.omitBlocked ? undefined : i.blockedBy })) };
+    }
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
       let list = [...(comments[m[1]] ?? [])];
       const after = u.searchParams.get("after");
@@ -40,7 +43,14 @@ function world() {
       if (body.comment) (comments[i.id] ??= []).push({ id: `c-p${(comments[i.id] ?? []).length}`, body: body.comment, authorAgentId: null, createdAt: iso(clock) });
       return { status: 200, json: i };
     }
-    if ((m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) { if (method === "GET") reads[m[1]] = (reads[m[1]] ?? 0) + 1; const i = issues[m[1]]; if (fail.get[m[1]]) return { status: fail.get[m[1]], json: {} }; return i ? { status: 200, json: i.omitSingle ? { ...i, blockedBy: undefined } : i } : { status: 404, json: {} }; }
+    if ((m = /^\/api\/issues\/([^/]+)$/.exec(u.pathname))) {
+      // The owner's own write landing between the scan's comment read and its reopen (see the cancel test).
+      if (method === "GET" && fail.cancelOnRead?.[m[1]]) { Object.assign(issues[m[1]], { status: "cancelled", cancelledAt: iso(clock) }); delete fail.cancelOnRead[m[1]]; }
+      if (method === "GET") reads[m[1]] = (reads[m[1]] ?? 0) + 1;
+      const i = issues[m[1]];
+      if (fail.get[m[1]]) return { status: fail.get[m[1]], json: {} };
+      return i ? { status: 200, json: i.omitSingle ? { ...i, blockedBy: undefined } : i } : { status: 404, json: {} };
+    }
     return { status: 404, json: {} };
   };
   // Writes as the agent (outcomes.ts): recorded, and the status applied.
@@ -703,9 +713,31 @@ test("a reopen the control plane refuses is retried on the next scan, and files 
   await w.wakes.event({ issueId: "chat" });
   assert.equal(w.issues.chat.status, "done", "nothing moved");
   assert.deepEqual(w.rows("chat"), [], "no wake filed on a task admission would refuse");
-  await w.wakes.poll(); // its cursor still sits before the comment, so the same scan tries again
+  // Its cursor still sits before the comment, so the same scan tries again: long after the finished-chat window closed too,
+  // because a failed reopen is kept on its own retry list rather than left to the rolling query.
+  w.tick(60 * 60_000);
+  await w.wakes.poll();
   assert.equal(w.issues.chat.status, "todo");
   assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
+  assert.equal(w.db.prepare("SELECT count(*) n FROM chat_reopen").get().n, 0, "the retry list is cleared once it landed");
+});
+
+test("a chat cancelled after the scan read it is never reopened by its older comment", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  const closed = "2026-11-18T10:00:02.500Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.event({ issueId: "chat" });
+  w.wakes.claim("dispatch");
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  // The owner's cancel lands after the scan read the task as done: the re-validation read sees it, and the chat stays closed.
+  w.fail.cancelOnRead = { chat: true };
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.issues.chat.status, "cancelled", "the reopen wrote nothing over the owner's cancel");
+  assert.equal(w.issues.chat.statusVersion, 2, "no status write was made");
 });
 
 test("a finished chat's owner comment whose event was lost is still found by the poll", async () => {
