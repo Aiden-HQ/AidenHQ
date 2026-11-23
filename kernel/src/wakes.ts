@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS wake_tasks (task TEXT PRIMARY KEY, agent TEXT, status
 CREATE TABLE IF NOT EXISTS wake_dispatchers (module TEXT PRIMARY KEY, since INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
-  state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);`;
+  state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
+CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS chat_cursor (agent TEXT PRIMARY KEY, at INTEGER NOT NULL, after TEXT, until INTEGER);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
@@ -143,6 +145,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
       return r.changes > 0;
     });
     if (opened) log("wake", { key, task, cause });
+    return opened;
   };
   /**
    * A routine run's dropped wake comes back: dispatch drops a 4xx for good (the pre-#790 403 on the routine read), and without a
@@ -214,6 +217,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   const lastFacts = (task: string) => facts?.latest(`task:${task}`, TASK_FACTS) ?? new Map<string, FactRow>();
   /** A task's chat flag: its newest task.labeled, else its created fact's (undefined for a created fact older than the flag). */
   const chatOf = (last: Map<string, FactRow>) => { const c = last.get("task.labeled")?.data.chat ?? last.get("task.created")?.data.chat; return typeof c === "boolean" ? c : undefined; };
+  /** A chat: the `chat` label when the read has labels, else the chat flag its facts recorded. */
+  const isChat = (issue: Issue) => (Array.isArray(issue.labels) ? issue.labels.some((l) => l.name === "chat") : chatOf(lastFacts(issue.id)) === true);
+  /**
+   * The owner's own word on a task: a person's comment, never an agent's or any kernel-written tag (a kernel notice, a wake
+   * notice, a bridge's relay: all posted under the owner's key but not said by them).
+   */
+  const ownerWord = (c: Comment) => !c.authorAgentId && Boolean(c.authorUserId) && !String(c.body ?? "").includes("<!-- aidenhq");
   /**
    * The issue as its facts need it: a list row may lack the description a first fact reads (a module's markers) or the labels a
    * chat flag reads, so a task with no created fact, or one whose chat flag nobody recorded, is read once whole.
@@ -304,9 +314,105 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (c.deletedAt || /<!-- aidenhq(:(job|op)=|-kernel-notice:)/.test(c.body ?? "")) continue;
       fact({ type: "task.commented", subject: `task:${issue.id}`, version: String(c.id), at: iso(ms(c.createdAt) || now()), actor: c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown", task: issue.id, source, data: { kind: "comment" } });
     }
+    // An owner's word on a finished chat reopens it before its wake is filed: admission refuses a wake on a done task, and a
+    // comment through any route but the board's chat composer or a channel never reopened it. Only a word said after the close
+    // counts (so an unrelated event on a long-done chat reopens nothing), and a cancelled chat stays closed.
+    const chat = isChat(issue);
+    const closed = (status: unknown) => status === "done" || status === "cancelled";
+    /** An owner's own word said after `from` (ms): the only comment that can reopen a finished chat. */
+    const ownerWordAfter = (from: number) => all.some((c) => !c.deletedAt && ownerWord(c) && ms(c.createdAt) > from);
+    // A chat can close between the read this scan started from and the comment read: the poll listed it open, its job finished it,
+    // then the owner replied. A comment at or after that snapshot's own `updatedAt` may not be reflected in its status, so the
+    // task is read again before anything is filed from it: consuming the reply on the old open status would file a wake admission
+    // then refuses for a done task. A re-read that fails proves nothing either way, so the reply is not consumed on the snapshot:
+    // the task goes on the durable retry list and this scan files nothing, leaving the reply for the next read (a poll's window or
+    // the retry row below) to judge against a status it actually saw. Filing it on the snapshot's open status is exactly the
+    // wake admission then refuses `task-closed`.
+    const snapshotAt = ms(issue.updatedAt);
+    if (chat && !closed(issue.status) && all.some((c) => !c.deletedAt && ownerWord(c) && ms(c.createdAt) >= snapshotAt)) {
+      const r2 = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+      if (r2.status === 200 && r2.json && typeof r2.json === "object") issue = { ...issue, ...(r2.json as Issue) };
+      else {
+        q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+        log("wake chat status re-read failed", { task: issue.id, status: r2.status });
+        return;
+      }
+    }
+    // A comment written after the task's last status change, as the facts saw it: a done status fact the fresh read still
+    // reports was recorded when that close was seen, so a reply said after it is newer than the close, whatever clock wrote it.
+    const lastStatus = lastFacts(issue.id).get("task.status_changed");
+    const changedAt = ms(lastStatus?.at);
+    const finishedAt = String(issue.status ?? "") === "done" ? Math.max(ms(issue.completedAt ?? undefined), lastStatus?.data.to === "done" ? changedAt : 0) : 0;
+    let reopenedHere = false;
+    // What a finished chat's pending reopen (chat_reopen) needs: a word still there to act on.
+    const chatWord = String(issue.status ?? "") === "done" && chat && ownerWordAfter(finishedAt);
+    // A finished chat with no owner word left to act on (the read found none, or the owner reopened or cancelled it himself) has
+    // nothing to retry, so its row goes rather than being re-scanned every poll.
+    if (!chatWord && q("SELECT 1 FROM chat_reopen WHERE task = ?").get(issue.id)) q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+    if (chatWord) {
+      // Said before the move: the comment read is a snapshot, and the owner may have cancelled the chat since. Only a task still
+      // `done` is reopened (a cancelled chat stays closed), and a read that fails writes nothing.
+      const fresh = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+      if (fresh.status !== 200) {
+        // A read that failed says nothing either way: keep the task on the retry list so a transient failure can't strand it.
+        q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+        log("wake chat reopen read failed", { task: issue.id, status: fresh.status });
+        return;
+      }
+      if (String(fresh.json?.status) !== "done") { issue = { ...issue, ...(fresh.json as Issue) }; q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id); }
+      else if (!ownerWordAfter(Math.max(finishedAt, ms((fresh.json as Issue).completedAt ?? undefined), lastStatus?.data.to === "done" ? changedAt : 0))) {
+        // The chat closed again after this word: the read is from before that, and the word it carries was already answered by
+        // the newer turn. Reopening on it would put the chat in todo with nothing to run, so it stays closed.
+        issue = { ...issue, ...(fresh.json as Issue) };
+        q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+        log("wake chat reopen skipped: a newer close than the reply", { task: issue.id });
+      }
+      else {
+        const p = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo" });
+        // A failed reopen leaves this scan's cursor where it was and the task on the poll's retry list, so the next scan reads
+        // the same comment and tries the move again; filing its wake on the closed task would only be refused.
+        if (p.status >= 300) {
+          q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+          log("wake chat reopen failed", { task: issue.id, status: p.status });
+          return;
+        }
+        // The control plane's PATCH takes no expected status or version (no If-Match; `expectedStatusVersion` only promotes a
+        // backlog task), so a close that landed between the read above and this write cannot be refused where it is applied.
+        // What is checked is its outcome: a task that is closed again right after the write is not reopened, and nothing is
+        // filed for it. A read that fails says nothing and the write's own answer stands.
+        const after = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+        if (after.status === 200 && closed(after.json?.status)) {
+          issue = { ...issue, ...(after.json as Issue) };
+          if (String(after.json?.status) === "done" && ownerWordAfter(finishedAt)) q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+          else q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+          log("wake chat reopen lost a race with a close", { task: issue.id, status: after.json?.status });
+          return;
+        }
+        q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+        // The issue is the reopened task from here on: its row below records `todo`, so the next scan files no status wake for the
+        // move. Its facts are written before the wake it lets start, so task state reads the chat open when its run begins.
+        issue = { ...issue, ...(p.json && typeof p.json === "object" ? p.json : {}), status: "todo", updatedAt: typeof p.json?.updatedAt === "string" ? p.json.updatedAt : iso(now()) };
+        taskFacts(issue, source, actor);
+        reopenedHere = true;
+      }
+    }
+    // The fresh read or the reopen's answer may name another assignee than the one this scan is for (the owner moved the chat
+    // while its reply was read, or reopened it under another agent). A wake filed for the old one is refused
+    // `task-not-assigned`, and the comment cursor below would pass the reply for nobody: leave the row as it was, and the new
+    // assignee's own event or the next poll scans it.
+    if (chat && (issue.assigneeAgentId ?? null) !== agent) {
+      log("wake scan deferred: the chat moved to another agent", { task: issue.id, from: agent, to: issue.assigneeAgentId ?? null });
+      return;
+    }
+    // A chat reopened here also files the owner's word that reopened it, even when first sight put the comment cursor past
+    // it: without that wake the chat would sit open with nothing to run it. A comment the cursor has not passed is filed as on
+    // any task, whether or not it reopens the chat: on one that stays closed admission refuses the wake, and dispatch tells the
+    // owner rather than passing the words silently.
+    let commentFiled = false;
     for (const c of all) {
-      if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
-      insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
+      if (c.deletedAt || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
+      if (ms(c.createdAt) <= boundary && !(reopenedHere && ownerWord(c) && ms(c.createdAt) > finishedAt)) continue;
+      commentFiled = insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown") || commentFiled;
     }
     const status = String(issue.status ?? "");
     // Handed to this agent since the scan last saw the task (from the owner, say, while nobody polled it): a wake, even if an
@@ -317,7 +423,12 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // status wake filed for one of those moves would start a second job beside the one the wait's wake starts. The wait's own
     // wake is the only thing that dispatches it.
     const armedWait = Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND state = 'open' AND key LIKE 'wait:%'").get(issue.id));
-    const fileable = !armedWait && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
+    // The reopen above files the owner's comment's wake: no second status wake for the move itself. A chat whose comment wake
+    // this scan filed is the same case seen from another scan (a concurrent one reopened it): the comment carries the run.
+    // A reply already has a wake (another scan filed it while this one read an older cursor): its run is that comment's, not a
+    // second status wake for the same move. A chat that went done -> todo is exactly the reopen that reply caused.
+    const replyWake = chat && prev?.status === "done" && status === "todo" && Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND key LIKE 'comment:%' AND state IN ('open', 'claimed')").get(issue.id));
+    const fileable = !armedWait && !reopenedHere && !(chat && commentFiled) && !replyWake && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
     // A move made while a job runs is filed once that job ends: until then the cursor keeps what it last saw (`deferred`).
     const deferred = fileable && Boolean(liveJob(issue.id));
     if (fileable && !deferred) {
@@ -574,6 +685,21 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   }
 
   const companies = new Map<string, string>();
+  /**
+   * Since when an agent's finished chats are re-read (chat_cursor): a durable cursor per agent, so a comment missed while the
+   * kernel is down is still found after it restarts, however long it was away. Per agent, not per company: one agent whose
+   * turn failed (its company unknown, a list or a chat read broken) holds only its own window, never a colleague's.
+   */
+  const chatSince = (agent: string) => {
+    const row = q("SELECT at, after, until FROM chat_cursor WHERE agent = ?").get(agent) as { at: number; after: string | null; until: number | null } | undefined;
+    return row ?? { at: now() - 10 * 60_000, after: null, until: null };
+  };
+  /**
+   * Where the agent's pass over its window stands: the window's start, the last id read when an earlier poll was cut short,
+   * and the time the window ends (`until`, the first pass's start). A resumed pass that finishes moves the start to `until`,
+   * so a long outage with more rows than one pass covers still catches up instead of restarting the same window forever.
+   */
+  const setChatSince = (agent: string, at: number, after: string | null, until: number | null) => q("INSERT INTO chat_cursor (agent, at, after, until) VALUES (?, ?, ?, ?) ON CONFLICT(agent) DO UPDATE SET at = excluded.at, after = excluded.after, until = excluded.until").run(agent, at, after, until);
   /** The wait-park reconcile, once idle.ts has it (it is made after this inbox): a task's own event re-parks a restored wait at
    *  once, so the recovery sweep's tick never gets to see a settled wait in a status it scans. */
   let settleOn: ((issue: Issue) => Promise<unknown>) | undefined;
@@ -604,18 +730,29 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     async poll() {
       try { q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run(); } catch (e) { log("wake poll failed", { step: "close ended wakes", err: (e as Error).message }); }
       const listed = new Set<string>();
+      // A finished chat's comment can be missed with its event (a kernel restart, a lost delivery): every poll re-reads the chats
+      // whose activity is newer than the company's durable cursor, so the scan can reopen and wake them.
+      const polledAt = now();
       for (const agent of polled().keys()) {
+        // The cursor is this agent's own, so a failure below holds only its window: every other agent still advances, and the
+        // chats this one never listed stay inside its next `updatedSince`.
+        let company = companies.get(agent);
+        // The pass over the agent's window: where it started, whether it reached the end, and the last id it fully read. A pass
+        // cut short keeps its start (nothing past it is skipped) and resumes past the ids it did read.
+        const window = chatSince(agent);
+        let complete = false, readTo: string | null = null;
         try {
-          if (!companies.has(agent)) {
+          if (!company) {
             const a = await owner("GET", `/api/agents/${encodeURIComponent(agent)}`);
             if (a.status !== 200 || !a.json?.companyId) throw new Error(`control plane GET agent → ${a.status}`);
-            companies.set(agent, String(a.json.companyId));
+            company = String(a.json.companyId);
+            companies.set(agent, company);
           }
-          const l = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
+          const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
           for (const issue of l.json as Issue[]) listed.add(issue.id);
           for (const issue of l.json as Issue[]) await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
-          const b = await owner("GET", `/api/companies/${encodeURIComponent(companies.get(agent)!)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
+          const b = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
           if (b.status !== 200 || !Array.isArray(b.json)) throw new Error(`control plane GET blocked issues → ${b.status}`);
           for (const issue of b.json as Issue[]) listed.add(issue.id);
           // A blocked task hears its comments too (a sub-task's question to its delegator, which it is blocked on), then is released.
@@ -623,9 +760,64 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
             await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
           }
+          // Paged by id, not offset: after an outage an agent can have more finished tasks than one page, and a concurrent
+          // reopen shifting offset pages would skip the row that slid into the gap. The id cursor is stable under exactly that;
+          // every page is collected before any scan, so this poll's own writes cannot move it either.
+          const finished: Issue[] = [];
+          let afterId: string | undefined = window.after ?? undefined, pageFailed = false;
+          for (let page = 0; page < 25; page++) {
+            const query = new URLSearchParams({ status: "done", limit: "200", assigneeAgentId: agent, updatedSince: iso(window.at), sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) });
+            const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`).catch((e: Error) => (log("wake poll failed", { agent, page, err: e.message }), undefined));
+            if (!d || d.status !== 200 || !Array.isArray(d.json)) { pageFailed = true; break; }
+            const rows = d.json as Issue[];
+            finished.push(...rows);
+            if (rows.length < 200) { complete = true; break; }
+            afterId = rows.at(-1)?.id;
+            if (!afterId) break;
+          }
+          // A page that failed ends the listing, but the pages before it are scanned: the work already read is not thrown away
+          // (and their resume point is kept for the rest).
+          if (pageFailed) log("wake chat window cut short", { agent, company });
+          // A traversal cut short at its page budget, or a chat whose scan failed, is not the whole window. Its start stays, and
+          // a resume point past the rows the pass actually processed lets the next poll go on from there: the page budget never
+          // strands the chats beyond it. A page fetched but never scanned is not passed (`readTo` moves per processed row).
+          let scanned = true;
+          for (const issue of finished) {
+            if (!listed.has(issue.id) && isChat(issue)) {
+              listed.add(issue.id);
+              await scan(issue, { source: "poll" }).catch((e: Error) => {
+                scanned = false;
+                readTo = null; // this chat's comment may be anywhere in the window: reread it whole
+                q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
+                log("wake scan failed", { task: issue.id, err: e.message });
+              });
+            }
+            // The resume point moves one processed row at a time: a row whose scan failed stops it here, so the next pass reads
+            // that row's window again rather than starting past its comment.
+            if (scanned) readTo = issue.id;
+          }
+          if (!complete) log("wake chat window truncated", { agent, company, reads_to: readTo });
+          // A finished pass moves the start to its window's end (`until`): a resumed pass covers its ids to the end, and a reply
+          // that landed while it ran is later than that end, so the next window has it. The one-second overlap keeps a change
+          // that commits at the boundary inside the next window: Paperclip's `updatedSince` is strictly after.
+          if (complete && scanned) setChatSince(agent, (window.until ?? polledAt) - 1000, null, null);
+          else setChatSince(agent, window.at, readTo, window.until ?? polledAt);
         } catch (e) {
+          // Whatever was processed before the failure is not skipped: the window keeps its start, and the resume point covers
+          // only rows already scanned (a failed page adds none).
+          setChatSince(agent, window.at, readTo, window.until ?? polledAt);
           log("wake poll failed", { agent, err: (e as Error).message });
         }
+      }
+      // A reopen the control plane refused, or a finished chat's comment read that failed, waits here until it succeeds, whatever
+      // the rolling window above says: the scan reads its comment again and retries (no wake was filed for it).
+      for (const { task } of q("SELECT task FROM chat_reopen ORDER BY at").all() as { task: string }[]) {
+        try {
+          const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
+          // Gone, or no longer a done chat (the owner cancelled or reopened it himself): there is nothing left to retry.
+          if (r.status === 404 || (r.status === 200 && (String(r.json?.status) !== "done" || !isChat(r.json as Issue)))) q("DELETE FROM chat_reopen WHERE task = ?").run(task);
+          else if (r.status === 200) await scan(r.json as Issue, { source: "poll" });
+        } catch (e) { log("wake scan failed", { task, err: (e as Error).message }); }
       }
       if (settleEach) await settleEach().catch((e: Error) => log("task wait settle failed", { err: e.message }));
       // A parked task (backlog, its own wait armed) is outside OPEN, so the per-agent list above never scans it, and the
