@@ -968,7 +968,9 @@ test("a reply older than a newer close does not reopen the chat again", async ()
   w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
   await w.wakes.scan(seen, { source: "poll" });
   assert.equal(w.issues.chat.status, "done", "the newer turn answered c1: nothing to reopen");
-  assert.deepEqual(w.rows("chat"), [], "and no wake on the closed chat");
+  // The comment is still read for the first time, so it keeps its wake: dispatch surfaces the refusal to the owner rather than
+  // the words going unread.
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"]);
 });
 
 test("a page that fails leaves the pages before it scanned, and a chat it could not scan is read again next pass", async () => {
@@ -1013,6 +1015,22 @@ test("a chat moved to another agent while its reply is scanned leaves the row fo
   assert.equal(w.issues.chat.assigneeAgentId, OTHER);
   assert.deepEqual(w.rows("chat"), [], "no wake for the agent it is no longer assigned to");
   assert.equal(w.db.prepare("SELECT comment FROM wake_tasks WHERE task = 'chat'").get()?.comment ?? null, null, "its comment cursor is not advanced past the reply");
+});
+
+test("a reply that arrived just before the close, never read, still keeps its wake so the owner hears the refusal", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  // The owner's follow-up landed while the run was finishing, and the run never saw it: it predates the close, so it reopens
+  // nothing, but it must still reach dispatch (which tells the owner) rather than being passed by the cursor in silence.
+  w.comment("chat", "c1", { authorUserId: "u1", createdAt: "2026-11-18T10:00:05.000Z" });
+  const closed = "2026-11-18T10:00:06.000Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.scan({ ...w.issues.chat }, { source: "poll" });
+  assert.equal(w.issues.chat.status, "done", "a pre-close word reopens nothing");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "its wake is filed: dispatch surfaces the refusal to the owner");
 });
 
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {

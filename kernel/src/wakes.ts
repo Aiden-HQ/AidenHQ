@@ -396,12 +396,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       log("wake scan deferred: the chat moved to another agent", { task: issue.id, from: agent, to: issue.assigneeAgentId ?? null });
       return;
     }
-    // A chat that stayed closed (the owner cancelled it, or the re-read found it closed) files no wake: admission refuses one.
-    // A chat reopened here files the word that reopened it (everything said after the close) even when first sight put the
-    // comment cursor past it: without that wake the chat would sit in todo with nothing to run it.
-    const staysClosed = chat && closed(issue.status);
+    // A chat reopened here also files the owner's word that reopened it, even when first sight put the comment cursor past
+    // it: without that wake the chat would sit open with nothing to run it. A comment the cursor has not passed is filed as on
+    // any task, whether or not it reopens the chat: on one that stays closed admission refuses the wake, and dispatch tells the
+    // owner rather than passing the words silently.
     for (const c of all) {
-      if (staysClosed || c.deletedAt || ms(c.createdAt) <= (reopenedHere ? finishedAt : boundary) || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
+      if (c.deletedAt || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
+      if (ms(c.createdAt) <= boundary && !(reopenedHere && ownerWord(c) && ms(c.createdAt) > finishedAt)) continue;
       insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
     }
     const status = String(issue.status ?? "");
