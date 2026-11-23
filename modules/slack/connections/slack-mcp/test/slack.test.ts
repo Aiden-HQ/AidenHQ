@@ -13,26 +13,14 @@ describe("slack-mcp draft arguments", () => {
 });
 
 describe("slack-mcp search arguments", () => {
-  it("sends a channel-scoped reaction filter as one query that keeps the scope and the modifier", () => {
-    expect(upstreamArgs("slack_search_public_and_private", { filters: "in:<#C0123456> hasmy::pushpin:" })).toEqual({
-      filters: "in:<#C0123456> hasmy::pushpin:",
-      query: "in:<#C0123456> hasmy::pushpin: has:reaction",
-    });
-    expect(upstreamArgs("slack_search_public", { filters: "has::pushpin: in:<#C0123456>" })).toEqual({
-      filters: "has::pushpin: in:<#C0123456>",
-      query: "has::pushpin: in:<#C0123456> has:reaction",
-    });
-  });
-
-  it("gives a bare reaction filter a term clause, since a modifier alone filters nothing", () => {
-    expect(upstreamArgs("slack_search_public_and_private", { filters: "hasmy::pushpin:" })).toEqual({
-      filters: "hasmy::pushpin:",
-      query: "hasmy::pushpin: has:reaction",
-    });
-    expect(upstreamArgs("slack_search_public", { filters: "has::pushpin:" })).toEqual({
-      filters: "has::pushpin:",
-      query: "has::pushpin: has:reaction",
-    });
+  it("leaves a filters-only reaction search as sent: there is no term clause to fold in, and has:reaction is a modifier too", () => {
+    const bare = { filters: "hasmy::pushpin:" };
+    expect(upstreamArgs("slack_search_public_and_private", bare)).toBe(bare);
+    const anyone = { filters: "has::pushpin:" };
+    expect(upstreamArgs("slack_search_public", anyone)).toBe(anyone);
+    // A filters-only hasmy:: search never reaches the search tool: src/reactions.ts answers it from reactions.list.
+    const scoped = { filters: "in:<#C0123456> hasmy::pushpin:" };
+    expect(upstreamArgs("slack_search_public_and_private", scoped)).toBe(scoped);
   });
 
   it("folds keywords, filters and the natural-language query into the one query, keeping them as sent", () => {
