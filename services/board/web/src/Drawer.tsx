@@ -733,7 +733,8 @@ export function Title({ issue, editable, save }: { issue: IssueView; editable: b
   const commit = () => {
     const t = cancelled.current ? undefined : draft?.trim();
     cancelled.current = false;
-    if (t && t !== issue.title) void save(t).finally(() => setDraft(null));
+    // Once saved, the draft gives way to the task's title, unless the owner has typed on since (a newer draft stays).
+    if (t && t !== issue.title) void save(t).finally(() => setDraft((d) => (d === draft ? null : d)));
     else setDraft(null);
   };
   return (

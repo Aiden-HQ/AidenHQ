@@ -45,6 +45,20 @@ describe("the drawer's title", () => {
     expect(save).toHaveBeenCalledWith("Ship it tomorrow");
   });
 
+  it("keeps a newer edit typed while the earlier one was saving", async () => {
+    let saved!: () => void;
+    const save = vi.fn(() => new Promise<void>((r) => (saved = r)));
+    const { box, show } = await mount(save);
+    box.focus();
+    await type(box, "First");
+    await act(async () => box.blur());
+    box.focus();
+    await type(box, "Second");
+    await act(async () => saved());
+    await show("First");
+    expect(box.value).toBe("Second");
+  });
+
   it("drops the edit on Escape without saving", async () => {
     const save = vi.fn(async () => {});
     const { box } = await mount(save);

@@ -252,7 +252,7 @@ main() {
   genMark "$n" failed "$why" "$log"
   echo "generation $n failed: $why"
   echo "apply timing: total $(apply_secs "$apply_t0")s"
-  revertTo "$n" "$why" "$log"
+  revertTo "$n" "$why" "$log" || return 1
 }
 
 # Units this release no longer has, removed only once the generation is good: an older release's updater ran this apply as
@@ -370,7 +370,8 @@ runnerTemplateMatches() {
 # Generation n failed (marked so already): its whole snapshot put back, then the last known good's product re-applied by a
 # child in --generation mode (it never reverts), on the instance revertInstance makes. Data first, so the older code never
 # starts on data it doesn't know: a module whose data can't be put back stops the revert there, as a rollback refuses
-# (applyGeneration), and the owner's ops/rollback.sh retries it. Returns 1.
+# (applyGeneration), and leaves generation n unsettled, so the next apply retries this same revert (its snapshot, its
+# instance) once the cause is fixed. Returns 1, or 2 when that retry is due.
 revertTo() {
   local n="$1" why="$2" log="$3" lkg snap t base rrc=0 target what
   lkg="$(genLkg)"
@@ -386,8 +387,8 @@ revertTo() {
   for t in ${snap:+"$snap"/*.tar}; do
     [ -f "$t" ] || continue
     if ! genRestore "$(basename "$t" .tar)" "$t"; then
-      echo "apply alert: generation $n failed ($why) and putting $(basename "$t" .tar)'s data back from $t failed, so generation $lkg was not re-applied (its code never starts on data it doesn't know): this host stays on generation $n with that module stopped and the instance checkout at ${target:0:12}; run ops/rollback.sh $lkg from the owner's shell; log $log"
-      return 1
+      echo "apply alert: generation $n failed ($why) and putting $(basename "$t" .tar)'s data back from $t failed, so generation $lkg was not re-applied (its code never starts on data it doesn't know): this host stays on generation $n with that module stopped and the instance checkout at ${target:0:12}; once the cause is fixed, the next apply retries this revert first (ops/apply-config.sh from the owner's shell); log $log"
+      return 2
     fi
     echo "auto-revert: $(basename "$t" .tar)'s data is back to $(genGet "$n" snapshot_at)"
   done
@@ -471,7 +472,7 @@ fs.writeFileSync(process.argv[1], rest.flat().join("\n") + "\n");' "$i/instance.
 # failed health check is. A dead auto-revert is reverted again; a dead rollback is only marked (it was the owner's own
 # act, and the last known good may be what they were leaving).
 recoverDead() {
-  local d n target why
+  local d n target why rc=0
   d="$(genJs unsettled)"; [ -n "$d" ] || return 0
   read -r n target <<< "$d"
   why="$(genGet "$n" reason)"
@@ -482,9 +483,10 @@ recoverDead() {
     return 1
   fi
   echo "generation $n: $why, and no apply is finishing it: reverting"
-  # Recorded once the revert has an outcome: a recovery killed mid-revert is found unsettled again.
-  revertTo "$target" "$why" "$GEN_DIR/apply-$target.log" || :
-  genJs recovered "$n"
+  # Recorded once the revert has an outcome: a recovery killed mid-revert is found unsettled again, and so is one whose data
+  # restore failed (revertTo's 2), for the next apply to retry.
+  revertTo "$target" "$why" "$GEN_DIR/apply-$target.log" || rc=$?
+  [ "$rc" = 2 ] || genJs recovered "$n"
   return 1
 }
 
