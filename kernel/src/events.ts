@@ -85,7 +85,8 @@ export function createEvents(o: {
     CREATE TABLE IF NOT EXISTS event_batches (id TEXT PRIMARY KEY, routine TEXT NOT NULL, sub TEXT NOT NULL, task TEXT, count INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL, sealed_at INTEGER, dispatched_at INTEGER);
     CREATE INDEX IF NOT EXISTS event_queue_batch ON event_queue (batch);
     CREATE INDEX IF NOT EXISTS event_batches_state ON event_batches (state, routine);
-    CREATE INDEX IF NOT EXISTS event_batches_dispatched ON event_batches (state, dispatched_at);
+    CREATE INDEX IF NOT EXISTS event_batches_dispatched ON event_batches (dispatched_at);
+    CREATE INDEX IF NOT EXISTS event_batches_fired ON event_batches (state, dispatched_at);
     CREATE INDEX IF NOT EXISTS event_batches_task ON event_batches (task);`);
   type Batch = { id: string; routine: string; sub: string; task: string | null; count: number; state: string; tries: number; opened_at: number; sealed_at: number | null; dispatched_at: number | null };
   const subs = () => o.grants().routine_events ?? {};
