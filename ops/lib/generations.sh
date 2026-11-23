@@ -185,6 +185,8 @@ genRestore() {
   # shellcheck disable=SC2016 # the script runs in the container
   docker run --rm -i --network none -v "$data/modules:/m" -e M="$m" "$GEN_IMG" sh -euc '
     new="/m/.restore-$M"; old="/m/.replaced-$M"
+    # A restore cut off between its renames left the data only in $old: it goes back in place before anything is removed.
+    if [ ! -e "/m/$M" ] && [ ! -L "/m/$M" ] && [ -e "$old" ]; then mv "$old" "/m/$M"; fi
     rm -rf "$new" "$old"; mkdir "$new"
     tar -C "$new" --numeric-owner -xpf -
     if [ -e "/m/$M" ] || [ -L "/m/$M" ]; then mv "/m/$M" "$old"; fi
