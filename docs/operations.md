@@ -237,6 +237,7 @@ Each step's last record (`<INVOCATION_ID> <rc>`) is also exported to node-export
 `aidenhq_prune_docker_step_rc{step,invocation}` with its write time as
 `aidenhq_prune_docker_step_run_timestamp_seconds{step,invocation}` (`ops/host-metrics.sh`, `prune-docker.prom`), so a failed
 unit's failing step can be found from Prometheus without the journal. A missing or malformed record is absent, never guessed.
+When the prune state directory is absent, no `prune-docker.prom` is written and a previous one is removed.
 
 `scripts/restore.sh <backup>` refuses to run while containers or the kernel are up, and moves existing state aside
 (`.pre-restore-<stamp>/`) rather than deleting it. It leaves an app volume that already exists alone. A new host can be

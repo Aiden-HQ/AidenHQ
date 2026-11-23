@@ -159,12 +159,12 @@ gens="$state/generations.jsonl"
 # visible in Prometheus without the journal. The file is one atomic write per step, so the first line is the run's header;
 # the rows after it are not a label or a value. A step whose record is missing or malformed is skipped, never guessed.
 prune="$state/prune-docker"
-{
-  echo "# HELP aidenhq_prune_docker_step_rc The last recorded exit status of a prune-docker step; labels name the step and the systemd invocation."
-  echo "# TYPE aidenhq_prune_docker_step_rc gauge"
-  echo "# HELP aidenhq_prune_docker_step_run_timestamp_seconds When the prune-docker step last wrote its record (the end of the step), in Unix seconds."
-  echo "# TYPE aidenhq_prune_docker_step_run_timestamp_seconds gauge"
-  if [ -d "$prune" ]; then
+if [ -d "$prune" ]; then
+  {
+    echo "# HELP aidenhq_prune_docker_step_rc The last recorded exit status of a prune-docker step; labels name the step and the systemd invocation."
+    echo "# TYPE aidenhq_prune_docker_step_rc gauge"
+    echo "# HELP aidenhq_prune_docker_step_run_timestamp_seconds When the prune-docker step last wrote its record (the end of the step), in Unix seconds."
+    echo "# TYPE aidenhq_prune_docker_step_run_timestamp_seconds gauge"
     for record in "$prune"/*; do
       [ -f "$record" ] || continue
       case "$record" in *.tmp) continue ;; esac
@@ -182,8 +182,12 @@ prune="$state/prune-docker"
       echo "aidenhq_prune_docker_step_rc{step=\"$step\",invocation=\"$invocation\"} $rc"
       echo "aidenhq_prune_docker_step_run_timestamp_seconds{step=\"$step\",invocation=\"$invocation\"} $stamp"
     done
-  fi
-} | write prune-docker.prom
+  } | write prune-docker.prom
+else
+  # The prune state directory is absent when no prune has run (or the module is off): no records means no file to scrape.
+  # Remove a previous file so a stale step cannot outlive the records it came from.
+  rm -f "$dir/prune-docker.prom"
+fi
 
 # Docker's own disk usage: which consumer is filling `/` (images, containers, build cache, local volumes), so DiskSpaceLow
 # can name it from a query instead of an inference. `docker system df` walks every image, container and volume, which is far

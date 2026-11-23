@@ -6,7 +6,7 @@
 // `docker system df` without serving stale numbers (or failing the metrics timer) when Docker cannot answer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -587,8 +587,15 @@ test("prune-docker.prom carries each step's last recorded status and invocation"
   assert.equal((m.prune.match(/^aidenhq_prune_docker_step_rc\{/gm) ?? []).length, 5);
   // An empty state directory still writes the file (its mtime is what HostMetricsStale reads) with no series.
   const empty = metrics({ dir: mkdtempSync(join(tmpdir(), "prune-prom-empty-")), df: DF });
-  assert.match(empty.prune, /^# TYPE aidenhq_prune_docker_step_rc gauge$/m);
-  assert.doesNotMatch(empty.prune, /^aidenhq_prune_docker_step_rc\{/m);
+  mkdirSync(join(empty.dir, "state", "prune-docker"), { recursive: true });
+  const emptyState = metrics({ dir: empty.dir, df: DF });
+  assert.match(emptyState.prune, /^# TYPE aidenhq_prune_docker_step_rc gauge$/m);
+  assert.doesNotMatch(emptyState.prune, /^aidenhq_prune_docker_step_rc\{/m);
+  // No state directory at all: no file, and a previous file is removed so its stale step is not served.
+  const absent = metrics({ dir: empty.dir, df: DF });
+  rmSync(join(absent.dir, "state", "prune-docker"), { recursive: true, force: true });
+  const absentRun = metrics({ dir: absent.dir, df: DF });
+  assert.equal(absentRun.prune, "", "no prune state directory means no prune-docker.prom");
 });
 
 test("a malformed prune step record is skipped, never guessed", () => {
