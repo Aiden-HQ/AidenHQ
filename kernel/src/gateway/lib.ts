@@ -166,9 +166,10 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
     CREATE TABLE IF NOT EXISTS ci_tokens (hash TEXT PRIMARY KEY, repo TEXT NOT NULL, pr INTEGER NOT NULL, head TEXT, gh_run TEXT NOT NULL, attempt TEXT NOT NULL,
       exp TEXT NOT NULL, at TEXT NOT NULL, UNIQUE (repo, gh_run, attempt));
   `);
-  // A call's kernel process (`<boot id>:<pid>`) and OpenRouter's generation id (the true-up's handle on a cut-off call).
+  // A call's kernel process (`<boot id>:<pid>`), OpenRouter's generation id (the true-up's handle on a cut-off call) and when a
+  // true-up changed it (`changed`: the board's pull reads it; `at` stays the call's time).
   const have = new Set((db.prepare("PRAGMA table_info(calls)").all() as { name: string }[]).map((c) => c.name));
-  for (const c of ["owner", "gen"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
+  for (const c of ["owner", "gen", "changed"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
   return { db, moved: moveLedger(db, legacy) };
 }
 
@@ -402,21 +403,22 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
     // A month's days, on the day index (`day` is YYYY-MM-DD; the ledger keeps 40 days).
     spentMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ?"),
-    // The in-flight part of each (`reserved`), and one call's hold.
-    heldTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL AND status = 'reserved'"),
-    heldAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status = 'reserved'"),
-    heldMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ? AND status = 'reserved'"),
+    // The same without calls in flight (`reserved`): what is spent for good. And one call's hold.
+    settledTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL AND status != 'reserved'"),
+    settledAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'reserved'"),
+    settledMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ? AND status != 'reserved'"),
     holdOf: db.prepare("SELECT cost_usd AS s FROM calls WHERE key = ? AND status = 'reserved'"),
     rehold: db.prepare("UPDATE calls SET cost_usd = ? WHERE key = ? AND status = 'reserved'"),
     spenders: db.prepare("SELECT DISTINCT agent_id FROM calls WHERE day = ? AND agent_id IS NOT NULL"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
     unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
-    since: db.prepare("SELECT * FROM calls WHERE at >= ? AND status != 'reserved' ORDER BY at LIMIT 20000"),
+    // A row changes after its call ends only by a true-up (`changed`), which keeps the call's own time (`at`).
+    since: db.prepare("SELECT * FROM calls WHERE COALESCE(changed, at) >= ? AND status != 'reserved' ORDER BY COALESCE(changed, at) LIMIT 20000"),
     settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ? WHERE key = ? AND status = 'reserved'"),
     inflight: db.prepare("SELECT COUNT(*) AS n FROM calls WHERE status = 'reserved'"),
     gen: db.prepare("UPDATE calls SET gen = ? WHERE key = ? AND status = 'reserved'"),
     cutOff: db.prepare("SELECT key, gen FROM calls WHERE status = 'unsettled' AND gen IS NOT NULL AND at >= ? LIMIT 100"),
-    trueUp: db.prepare("UPDATE calls SET status = 'interrupted', at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
+    trueUp: db.prepare("UPDATE calls SET status = 'interrupted', changed = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
     ciToken: db.prepare("SELECT * FROM ci_tokens WHERE hash = ?"),
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
     ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
@@ -543,14 +545,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
 
   const taskSubject = (who: { issueId: string | null; perpetual: boolean }, t: number) => (who.issueId ? (who.perpetual ? `${who.issueId}:${day(t)}` : who.issueId) : null);
 
-  /** The limits in force for this call at `t`, each with what is spent on it (settled and in flight; `held`: the in-flight
-   *  part): the task's (an agent's call on a task), the install's day and month. */
-  function limits(who: { agentId: string | null; issueId: string | null; perpetual: boolean }, t: number): (Limit & { held: number })[] {
+  /** The limits in force for this call at `t`, each with what is spent on it (settled and in flight; `settled`: without calls
+   *  in flight): the task's (an agent's call on a task), the install's day and month. */
+  function limits(who: { agentId: string | null; issueId: string | null; perpetual: boolean }, t: number): (Limit & { settled: number })[] {
     const set = limitsSet(), d = day(t), m = month(t), task = who.agentId ? taskSubject(who, t) : null;
     return [
-      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(task) as Sum).s, held: (q.heldTask.get(task) as Sum).s }] : []),
-      ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, spent: (q.spentAll.get(d) as Sum).s, held: (q.heldAll.get(d) as Sum).s }] : []),
-      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, spent: (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s, held: (q.heldMonth.get(`${m}-01`, `${m}-31`) as Sum).s }] : []),
+      ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(task) as Sum).s, settled: (q.settledTask.get(task) as Sum).s }] : []),
+      ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, spent: (q.spentAll.get(d) as Sum).s, settled: (q.settledAll.get(d) as Sum).s }] : []),
+      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, spent: (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s, settled: (q.settledMonth.get(`${m}-01`, `${m}-31`) as Sum).s }] : []),
     ];
   }
 
@@ -575,7 +577,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * in the ledger, not counted against it; `extra`: spend not in the ledger yet, counted.
    */
   function room(who: Caller, t: number, inUsd: number, perOut: number, want: number, own = 0, extra = 0): { usd: number; maxOutput: number } | { over: Limit } | { busy: Limit } {
-    const ls = limits(who, t).map(({ held, ...l }) => ({ ...l, spent: l.spent - own + extra, settled: l.spent - held + extra }));
+    const ls = limits(who, t).map((l) => ({ ...l, spent: l.spent - own + extra, settled: l.settled + extra }));
     const strip = ({ settled: _, ...l }: Limit & { settled: number }): Limit => l;
     const over = ls.find((l) => l.settled >= l.cap);
     if (over) return { over: strip(over) };
@@ -989,9 +991,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const t = now(), who = { agentId, issueId: task };
     const all = [...limits({ ...who, perpetual: false }, t), ...limits({ ...who, perpetual: true }, t).filter((o) => o.scope === "task")];
     const over = all.filter((o) => o.spent >= o.cap);
-    // After the caller's transaction (admission's) is over: the notice's row is a write on the same file.
-    if (over.length) setImmediate(() => { for (const o of over) void tell(who, o); });
-    return over;
+    // Only a limit its settled spend reached is told (a limit held by calls in flight may settle below it); after the
+    // caller's transaction (admission's) is over: the notice's row is a write on the same file.
+    const spent = over.filter((o) => o.settled >= o.cap);
+    if (spent.length) setImmediate(() => { for (const o of spent) void tell(who, o); });
+    return over.map(({ settled: _, ...o }) => o);
   };
   /** What a run key (a credential's sha256) has spent; spentBy: the same, by the credential. */
   const spentByKey = (runKey: string) => (q.spentRun.get(runKey) as Sum).s;
