@@ -701,7 +701,7 @@ test("both image prunes skip the computer images, which the browser Dockerfile l
   assert.doesNotMatch(service, /prune-computer-images/);
 });
 
-test("the superseded-image sweep removes labelled images the config no longer names and keeps the current ones", () => {
+test("the superseded-image sweep removes labelled images the config no longer names and keeps the current ones, by ID (digest-referenced and dangling ones included)", () => {
   const dir = mkdtempSync(join(tmpdir(), "prune-computer-images-"));
   mkdirSync(join(dir, "ops"));
   mkdirSync(join(dir, "config"));
@@ -710,8 +710,9 @@ test("the superseded-image sweep removes labelled images the config no longer na
   writeFileSync(join(dir, "config/computers.json"), JSON.stringify({ images: { browser: "aidenhq/computer-browser:new", "agent-base": "aidenhq/computer-agent-base:new" } }));
   writeFileSync(join(dir, "bin/docker"), `#!/bin/sh
 case "$1 $2" in
-  "image ls") case "$*" in *until*) echo "invalid filter 'until'" >&2; exit 1 ;; *label=aidenhq.keep=true*) printf '%s\\n' aidenhq/computer-browser:new aidenhq/computer-browser:current aidenhq/computer-browser:old aidenhq/computer-engineer:old ;; esac ;;
-  "image rm") echo "rm $3" >> "$CALLS" ;;
+  "image inspect") case "$5" in *:new|*:current) echo sha256:cur ;; *) exit 1 ;; esac ;;
+  "image ls") case "$*" in *until*) echo "invalid filter 'until'" >&2; exit 1 ;; *label=aidenhq.keep=true*) printf '%s\\n' sha256:cur sha256:old sha256:old sha256:dangling ;; esac ;;
+  "image rm") echo "rm $4" >> "$CALLS" ;;
 esac
 `);
   chmodSync(join(dir, "bin/docker"), 0o755);
@@ -719,5 +720,5 @@ esac
   writeFileSync(calls, "");
   const r = spawnSync("bash", [join(dir, "ops/prune-computer-images.sh")], { env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`, CALLS: calls }, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(readFileSync(calls, "utf8"), "rm aidenhq/computer-browser:old\nrm aidenhq/computer-engineer:old\n");
+  assert.equal(readFileSync(calls, "utf8"), "rm sha256:dangling\nrm sha256:old\n".repeat(3));
 });
