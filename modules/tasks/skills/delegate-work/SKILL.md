@@ -9,7 +9,7 @@ description: "Covers handing work to an Engineer, the UI/UX Designer or another 
 
 Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them under `engineers`). The task itself carries the full repository (`owner/name`), the branch, each change with how to verify it, and what to publish (`pr`): Engineers can't read other tasks. You read, update and close every other task yourself, from the Engineer's report.
 
-- List each open call you could make yourself with the default the worker takes: `Open call: <question>. Default: <choice>, because <reason>.` The worker proceeds on the default and names it in its report; you correct afterwards. A call only the owner makes is settled before the brief goes out (asking).
+- List each open call you could make yourself with the default the worker takes: `Open call: <question>. Default: <choice>, because <reason>.` The worker proceeds on the default and names it in its report; you correct afterwards. A call only the owner makes is settled before the brief goes out: ask it on your task with `task_wait` `for: owner` and the question (options, your recommendation first).
 - Code work that spans more than one task has one spec file on the target repository's default branch (the product repo: `docs/superpowers/specs/<date>-<topic>-design.md`), merged before the tasks that read it start. Each brief links it and adds only its own part, so every agent works from the same text.
 - State each change once; say what the code already does as what it must keep doing. Leave "only X changes" claims out of a brief that also changes that part (the reviewer rejects the contradiction).
 - Give the files (and lines) and the PR or commit that last changed them; for a restore, the removing commit.
