@@ -62,6 +62,13 @@ free_gb() { df -Pk "$out" | awk 'NR == 2 { printf "%d", $4 / 1048576 }'; }
 # The same room in bytes: the pruning round decides what fits, and rounding a gigabyte either way there can drop an
 # image the disk could hold or keep one it cannot. Only the line's numbers are rounded.
 free_bytes() { df -Pk "$out" | awk 'NR == 2 { printf "%.0f", $4 * 1024 }'; }
+# Free space above the floor on the filesystem Docker writes its own scratch to (`docker info`'s Docker Root Dir, which the
+# classic store stages a save's layers in). A save's bytes and the daemon's staging copy can sit on different volumes from
+# `$out`, so the export is watched against both: whichever is closer to its floor stops it. Empty when the daemon does not
+# answer, and the archive's own filesystem is all that can be judged then.
+free_bytes_at() { # <dir>
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 { printf "%.0f", $4 * 1024 }'
+}
 # A container is this scanner's own only by its label: a name is not proof of ownership, so nothing else's is ever removed.
 scanner_container() { [ "$(docker inspect -f '{{index .Config.Labels "aidenhq.oneoff"}}' "$1" 2>/dev/null || true)" = 1 ]; }
 n=0
@@ -321,7 +328,6 @@ plain_archive_single() { # <tar> <pin>
 # variant. Returns 1 with export_err.
 export_err=""
 export_space=0
-export_floor=0
 # A Docker call whose own writes may not exceed <bytes> (`ulimit -f`, in 512-byte blocks). The daemon's size estimate is
 # not a bound, so an export is capped at the room it was admitted with: the kernel stops the write at the limit instead of
 # letting it take the disk's floor, and the caller sees an ordinary failed save to record. `docker save -o` writes the
@@ -338,33 +344,35 @@ save_hit_cap() { # <rc> <dest> <err> <cap>
   return 1
 }
 save_call() { # <cap bytes, empty for none> <secs> <docker args...>
-  local cap="$1" secs="$2" rc floor_bytes pid; shift 2
+  local cap="$1" secs="$2" rc floor_bytes pid docker_root; shift 2
   if [ -z "$cap" ]; then docker_call "$secs" "$@"; return; fi
   secs="$(deadline_secs "$secs")" || return 124
   floor_bytes=$(( min_free_gb * 1073741824 ))
+  docker_root="$(docker_call 5 info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [ -n "$docker_root" ] && [ -d "$docker_root" ] || docker_root=""
   # The file ceiling bounds the CLI's output, not what the daemon stages in its own temp dir while producing it (the
-  # classic image store copies the layers first). Both count against the same filesystem, so the export is watched too:
-  # if free space falls to the floor while it runs, it is stopped. That protects the reserve even when the estimate and
-  # the ceiling did not see the daemon's copy.
+  # classic image store copies the layers first). Both count against a filesystem, so the export is watched too: if free
+  # space on the archive's filesystem or the daemon's root falls to the floor while it runs, it is stopped. That protects
+  # each reserve even when the estimate and the ceiling did not see the daemon's copy.
   ( ulimit -f "$(( (cap + 1023) / 1024 ))" 2>/dev/null || exit 1
     exec timeout "$secs" docker "$@" ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     sleep 1
-    if [ "$(free_bytes)" -lt "$floor_bytes" ]; then
+    if [ "$(free_bytes)" -lt "$floor_bytes" ] || { [ -n "$docker_root" ] && [ "$(free_bytes_at "$docker_root")" -lt "$floor_bytes" ]; }; then
       kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
-      export_floor=1
       wait "$pid" 2>/dev/null
       return 137
     fi
   done
   wait "$pid"; rc=$?
   [ "$rc" -eq 153 ] || [ "$rc" -eq 152 ] && return 153
+  [ "$rc" -eq 137 ] && return 137
   return "$rc"
 }
 export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
   local pin="$1" ref="$2" dest="$3" plat="${4:-$platform}" cap="${5:-}"
-  export_err=""; export_space=0; export_floor=0
+  export_err=""; export_space=0
   # Re-read the reference on the container's platform before writing: a tag another pull moved, or an index whose
   # platform manifest changed, must not put a different image under this target. A bare platform manifest inside an index
   # is not an image record, so a reference the daemon does not hold plainly is the resolver's pin and the save decides.
@@ -384,7 +392,7 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
     export_err="$(save_call "$cap" 900 image save --platform "$plat" -o "$stage/archive.tar" "$ref" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
       save_hit_cap "$rc" "$stage/archive.tar" "$export_err" "$cap" && export_space=1
-      [ "$export_floor" = 1 ] && export_space=1
+      [ "$rc" -eq 137 ] && export_space=1
       rm -rf "$stage"; return 1
     fi
     mv -f "$stage/archive.tar" "$dest" || { rm -rf "$stage"; export_err="could not move the archive into place"; return 1; }
@@ -396,7 +404,7 @@ export_image() { # <pin manifest> <ref> <dest tar> [platform] [max bytes]
     export_err="$(save_call "$cap" 900 image save -o "$stage/archive.tar" "$ref" 2>&1)"; rc=$?
     if [ "$rc" -ne 0 ]; then
       save_hit_cap "$rc" "$stage/archive.tar" "$export_err" "$cap" && export_space=1
-      [ "$export_floor" = 1 ] && export_space=1
+      [ "$rc" -eq 137 ] && export_space=1
       rm -rf "$stage"; return 1
     fi
     if ! plain_archive_single "$stage/archive.tar" "$pin"; then
@@ -717,7 +725,9 @@ save_wave() { # <wave>
       # (bounded) rather than skipping it on every pass. With nothing written the disk itself is short, and a later wave
       # sees the same free space, so it is a line now. Either way the line names the numbers that decided it.
       why="skipped: the ${sz} GB image's archive outgrew the $(ceil_gb "$cap_bytes") GB above the ${min_free_gb} GB floor (admitted $(ceil_gb "$written") GB of archives, largest archive $top_gb GB)"
-      if [ "$written" -gt 0 ] && defer_to_next_wave "$idx" "$why"; then
+      # A space failure with nothing of this wave written may be another writer's temporary pressure, so it gets the same
+      # one retry the pre-save check does; a second one is the disk's own state and a line.
+      if { [ "$written" -gt 0 ] || ! deferred_before "$idx"; } && defer_to_next_wave "$idx" "$why"; then
         continue
       fi
       fail "image:$key" "$why"

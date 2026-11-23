@@ -1149,23 +1149,23 @@ test("security-sbom: when a wave's real bytes outgrow its room, the smallest arc
   assert.doesNotMatch(out, /skipped:/);
 });
 
-test("security-sbom: an archive whose scan can never fit is dropped before one that can", { skip: NOT_LINUX }, async () => {
-  // 68 GB free, a 30 GB floor: 38 GB of room. The daemon reports a 9 GB image beside a 25 GB one and both saves fit. The
-  // 25 GB image needs 25 GB of workspace beside the 30 GB archive it wrote, 55 GB that this wave can never provide, so it
-  // is a line. The 9 GB image must then be scanned, not crowded out by an archive that can never scan.
-  const { status, out, targets } = await run({ FAKE_FREE_KB: String(68 * 1024 * 1024) }, {
+test("security-sbom: an archive whose scan can never fit is dropped at scan time, after both saves", { skip: NOT_LINUX }, async () => {
+  // 68 GB free, a 30 GB floor: 38 GB of room. The daemon reports 14 GB and 10 GB, so both are admitted (24 GB of archives
+  // plus a 14 GB workspace = 38 GB). The 14 GB image's archive is really 25 GB: 35 GB held leaves 3 GB, so neither scan
+  // fits yet. Both saves must happen first; then the round drops the archive that can never scan (25 GB held plus 14 GB of
+  // workspace is 39 GB, over the whole pool), and the 10 GB image scans in the room that frees.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: String(68 * 1024 * 1024) }, {
     containers: [
       { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
       { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
     ],
     tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
     held: ["sha256:b1", "sha256:b2"],
-    sizes: { "sha256:b1": 20 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
-    saveGrow: { "sha256:b1": 30 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
-    // Another writer takes 4 GB once the first archive is written, so the wave stalls where its saves had fit.
-    takeAfterSave: { "sha256:b1": 4 * 1024 ** 3 },
+    sizes: { "sha256:b1": 14 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 25 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
   });
   assert.equal(status, 0, out);
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, 2, `both archives were saved before pruning:\n${calls.join("\n")}`);
   const small = targets.find((t) => t[0] === "image:big2:local");
   const huge = targets.find((t) => t[0] === "image:big1:local");
   assert.ok(small && huge, targets.map((t) => t.join("\t")).join("\n"));
