@@ -52,8 +52,9 @@ export function imageTags(productDir: string, names: string[]) {
  * looking at apps and the web, and GitHub reads (as every Engineer has).
  */
 const PUBLIC_APPS = new Set(["app_list", "app_status", "app_view", "app_check", "web_view"]);
-/** The tasks bridge's tools that read no other task's text and write only on the job's own task: its file, its finish and its wait. */
-const PUBLIC_TASKS = new Set(["task_file_upload", "task_finish", "task_wait"]);
+/** The tasks bridge's tools that read no other task's text and act only on the job's own task: its file, its finish, its wait
+ * and its approval cards (task_approvals refuses any other task for an Engineer without private_reads). */
+const PUBLIC_TASKS = new Set(["task_file_upload", "task_finish", "task_wait", "task_approvals"]);
 /** Code review's open findings with ids, and its answer to one: it writes only code review's own store. */
 const PUBLIC_CODE_REVIEW = new Set(["code_review_findings", "code_review_resolve"]);
 export const privateGrants = (tools: Record<string, string[]> = {}) =>

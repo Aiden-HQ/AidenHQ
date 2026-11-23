@@ -1295,6 +1295,14 @@ const TOOLS: Record<string, Tool> = {
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "the task the card was filed on, e.g. WOR-45" } }, required: ["issue"], additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async ({ issue }: Args) => {
+      // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task.
+      const me = dirAgents()[cx().caller.agent];
+      if (me?.profile === "engineer" && me.private_reads !== true) {
+        const mine = CURRENT();
+        if (!mine) throw new Error("no current task");
+        const asked = String(issue ?? "").trim();
+        if (asked && asked !== mine && (await api("GET", `/api/issues/${issueRef(asked)}`)).id !== mine) throw new Error("Refused: without private reads you read only the task this run is working on: pass this run's own task.");
+      }
       const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(issue)}`);
       return {
         approvals: approvals.map((a: Json) => ({ id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, ...(a.outcomeText ? { outcomeText: String(a.outcomeText).slice(0, 300) } : {}), createdAt: a.createdAt })),
