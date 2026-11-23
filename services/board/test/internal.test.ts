@@ -151,6 +151,31 @@ describe("internal listener", () => {
     }
   });
 
+  it("an ended merge behind 50 newer cards is still read, by its kind, from the task's history", async () => {
+    // The merge ended long ago; 60 newer apply cards follow it, so the newest-50 read cannot hold it. The kind-filtered
+    // history read must, or a run's check for the merge that landed its PR would find nothing.
+    const ended = card({ id: "k-0000000000000070", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: true, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":5,"head":"${"f".repeat(40)}","sha":"${"1".repeat(40)}"}]`, createdAt: "2026-11-01T10:00:00.000Z", args: { prs: [{ repo: "a/b", number: 5, head: "f".repeat(40) }] } });
+    const newer = Array.from({ length: 60 }, (_, i) => card({ id: `k-00000000000001${String(i).padStart(2, "0")}`, issueId: issue.id, identifier: issue.identifier, action: "apply", tier: 1, state: "used", outcome: "applied", createdAt: `2026-11-2${i % 4}T10:00:00.000Z` }));
+    const records = fakeRecords([ended, ...newer]);
+    const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
+    await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
+    const port9 = (board.address() as AddressInfo).port;
+    try {
+      const out = await new Promise<{ approvals: { id: string; outcomeText?: string }[] }>((resolve, reject) => {
+        request({ host: "127.0.0.1", port: port9, method: "GET", path: `/internal/approvals?issue=${issue.identifier}`, headers: { host: "board:3122", authorization: `Bearer ${TOKEN}`, ...asAgent("engy") } }, (res) => {
+          let text = "";
+          res.on("data", (c) => (text += c));
+          res.on("end", () => resolve(JSON.parse(text)));
+        }).on("error", reject).end();
+      });
+      const mine = out.approvals.find((a) => a.id === "k-0000000000000070")!;
+      expect(mine).toMatchObject({ id: "k-0000000000000070" });
+      expect(mine.outcomeText).toMatch(/^merged-prs: /);
+    } finally {
+      board.close();
+    }
+  });
+
   it("the later snapshot of a card wins: an approval made between the reads is not reported as pending", async () => {
     const pending = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "pending", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
     const approved = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "approved", live: true, wakes: true, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
