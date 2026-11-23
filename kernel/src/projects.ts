@@ -85,9 +85,11 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
 
   /** The repo's project, made on first sight. */
   async function forRepo(company: string, repo: string): Promise<string> {
-    const row = db.prepare("SELECT project FROM project_repos WHERE company = ? AND repo = ?").get(company, repo) as { project: string } | undefined;
-    // A project archived or deleted in Paperclip since is no home: the repo's project is found again.
-    if (row && (await catalog(company)).some((p) => p.id === row.project)) return row.project;
+    const row = db.prepare("SELECT project, product FROM project_repos WHERE company = ? AND repo = ?").get(company, repo) as { project: string; product: number } | undefined;
+    // A repo the map names (or named) follows the map, so a fill during a move lands where the move goes; a project archived or
+    // deleted in Paperclip since is no home: the repo's project is found again.
+    if (row && !row.product && !productOf(repo) && (await catalog(company)).some((p) => p.id === row.project)) return row.project;
+    if (row) return projectFor(company, repo);
     const project = await projectFor(company, repo);
     db.prepare("INSERT OR REPLACE INTO project_repos (company, repo, project, product) VALUES (?, ?, ?, ?)").run(company, repo, project, productOf(repo) ? 1 : 0);
     return project;
@@ -102,28 +104,30 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
     ok(await owner("PATCH", `/api/issues/${enc(issue.id)}`, { projectId: project }), "setting the task's project");
     log("task joined its repo's project", { task: issue.id, repo: key, project });
   });
-  /** Each pending fill, again: done or impossible (the task gone, a name refused) leaves the queue; a transient failure stays. */
-  async function retryPending() {
-    for (const { task, repo } of db.prepare("SELECT task, repo FROM project_pending").all() as { task: string; repo: string }[]) {
-      try { await fill(task, repo); } catch (e) {
-        const err = e as Error & { status?: number };
-        if (err.status !== 404 && !(err instanceof ProjectError)) { log("project fill failed; trying again in a minute", { task, repo, err: err.message }); continue; }
-        log("project fill dropped", { task, repo, err: err.message });
-      }
-      db.prepare("DELETE FROM project_pending WHERE task = ? AND repo = ?").run(task, repo);
+  /** One queued fill tried: done or impossible (the task gone, a name refused) leaves the queue; a transient failure stays. */
+  async function attempt(task: string, repo: string) {
+    try { await fill(task, repo); } catch (e) {
+      const err = e as Error & { status?: number };
+      if (err.status !== 404 && !(err instanceof ProjectError)) return log("project fill failed; trying again in a minute", { task, repo, err: err.message });
+      log("project fill dropped", { task, repo, err: err.message });
     }
+    db.prepare("DELETE FROM project_pending WHERE task = ? AND repo = ?").run(task, repo);
+  }
+  /** The queue, once a minute (sync): at most 100 fills a run. */
+  async function retryPending() {
+    for (const { task, repo } of db.prepare("SELECT task, repo FROM project_pending LIMIT 100").all() as { task: string; repo: string }[]) await attempt(task, repo);
   }
 
   let synced = "";
   let syncing = false;
   const api = {
     serial,
-    /** A PR for `task` on `repo`: queued (kernel.db, so a restart keeps it) and filled now, or by the next minute's retry. */
+    /** A PR for `task` on `repo`: queued (kernel.db, so a restart keeps it) and tried now; the minute's run retries it. */
     touch: async (task: string, repo: string): Promise<void> => {
       const key = repoKey(repo);
       if (!key) return;
       db.prepare("INSERT OR IGNORE INTO project_pending (task, repo) VALUES (?, ?)").run(task, key);
-      await retryPending();
+      await attempt(task, key);
     },
     /** An agent's tag: the project of that name, made when there is none. Call it inside `serial` with the write it is for. */
     named: (company: string, name: string) => byName(company, name, true) as Promise<string>,
