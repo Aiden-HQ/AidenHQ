@@ -67,10 +67,18 @@ const RESOLVED = ["fixed", "false-positive", "accepted-risk", "duplicate"];
 
 /** deepsec's jsonl events (init's --output jsonl, on stdout); other lines are skipped. */
 const events = (stdout: string) => stdout.split("\n").flatMap((l) => { try { const j = l.startsWith("{") ? JSON.parse(l) : undefined; return j && typeof j === "object" ? [j] : []; } catch { return []; } });
-/** What deepsec said about its stop, one line, as data: its last failure, limit or phase-error message, else stderr's last lines. */
+/**
+ * What deepsec said about its stop, one line, as data: its last failure, limit or phase-error message, else stderr's last lines.
+ * A summary of failed batches ("AI processing completed with N failed batch(es)") comes after the reason itself, an earlier
+ * progress or log message that reports an error (a 402 from the gateway): that reason leads.
+ */
 export function said(r: { stdout: string; stderr: string }) {
-  const msg = events(r.stdout).map((e) => (e.type === "failure" || e.type === "limit" ? e.message : e.type === "setup_event" && e.event?.type === "phase-error" ? e.event.message : undefined)).filter((m) => typeof m === "string" && m).at(-1);
-  return String(msg ?? r.stderr.trim().split("\n").slice(-3).join(" ")).replace(/[\x00-\x1f\x7f«»]+/g, " ").trim().slice(0, 200);
+  const ev = events(r.stdout);
+  const msg = ev.map((e) => (e.type === "failure" || e.type === "limit" ? e.message : e.type === "setup_event" && e.event?.type === "phase-error" ? e.event.message : undefined)).filter((m) => typeof m === "string" && m).at(-1);
+  const detail = ev.map((e) => (e.type === "setup_event" && ["progress", "log"].includes(e.event?.type) ? e.event.message : undefined))
+    .filter((m) => typeof m === "string" && /error|\b[45]\d\d\b|cap_reached/i.test(m)).at(-1);
+  const text = msg === undefined ? r.stderr.trim().split("\n").slice(-3).join(" ") : detail && detail !== msg ? `${detail} (${msg})` : msg;
+  return String(text).replace(/[\x00-\x1f\x7f«»]+/g, " ").trim();
 }
 
 type Record_ = { filePath?: string; status?: string; findings?: { severity?: string; title?: string; description?: string; recommendation?: string; lineNumbers?: number[]; revalidation?: { verdict?: string } }[] };
@@ -115,7 +123,7 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
   const gaps: string[] = [];
   const step = async (bin: string, args: string[], cwd: string, ok = [0]) => {
     const r = await run(bin, args, { cwd, env, minutes: left() });
-    if (!ok.includes(r.code ?? -1)) { const s = said(r); return { r, cause: `deepsec ${args[0]}: ${stopped(r, s)}${s ? `; it said «${s}»` : ""}` }; }
+    if (!ok.includes(r.code ?? -1)) { const s = said(r); return { r, cause: `deepsec ${args[0]}: ${stopped(r, s)}${s ? `; it said «${s.slice(0, 200)}»` : ""}` }; }
     return { r, cause: undefined };
   };
 
@@ -153,8 +161,12 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
       "--through", target === "tree" ? "process" : "coverage", ...(max_cost_usd ? ["--max-cost-usd", String(max_cost_usd)] : []), "--no-tui", "--output", "jsonl"], root);
     // Its cap reached (exit 3, a COST_LIMIT_REACHED limit): set up, with what it analysed so far; a gap, and nothing more spent.
     const capped = i.r.code === 3 && events(i.r.stdout).some((e) => e.type === "limit" && e.code === "COST_LIMIT_REACHED");
-    if (i.cause && !capped) throw new Error(i.cause);
+    // Failed after it set up (INFO.md written) on a tree: its processing ran, so what it analysed is kept and the failure is a gap
+    // (none analysed: the failure is the run's). Failed before that: nothing to keep.
+    const setUp = readSmall(join(data, pid, "INFO.md"), 64_000) !== undefined;
+    if (i.cause && !capped && !(target === "tree" && setUp)) throw new Error(i.cause);
     if (capped) gaps.push(`deepsec stopped at its $${max_cost_usd} spend cap`);
+    else if (i.cause) gaps.push(i.cause);
     processed = target === "tree";
     // init ran only because nothing of deepsec's was committed, so every file here is new: none overwrites a committed one. Its
     // lockfile stays out (about 150 KB, too large for the result next to a tree's findings; our scans never install from it).

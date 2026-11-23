@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { deepsec } from "../recipe/deepsec.ts";
+import { deepsec, said } from "../recipe/deepsec.ts";
 import { review } from "../recipe/review.ts";
 
 const A = "a".repeat(40), E = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -35,6 +35,7 @@ case "$cmd" in
         echo '{"filePath":"src/a.js","status":"analyzed","findings":[{"severity":"CRITICAL","title":"SQL injection","description":"d","recommendation":"r","lineNumbers":[2]},{"severity":"LOW","title":"Loose check","description":"d2","recommendation":"r2","lineNumbers":[1]},{"severity":"HIGH","title":"Gone","description":"x","recommendation":"x","lineNumbers":[1],"revalidation":{"verdict":"false-positive"}}]}' > "$DEEPSEC_DATA_ROOT/$pid/files/src/a.js.json"
         echo '{"filePath":"src/b.js","status":"pending","findings":[]}' > "$DEEPSEC_DATA_ROOT/$pid/files/src/b.js.json" ;;
 esac
+[ "$cmd" = initprocess ] && [ -f "${bin}/late" ] && { echo '{"type":"failure","code":"Error","message":"AI processing completed with 1 failed batch(es)"}'; exit 1; }
 [ "$cmd" = initprocess ] && [ -f "${bin}/cap" ] && { echo '{"type":"limit","code":"COST_LIMIT_REACHED","message":"AI investigation reached the $7.00 cost limit"}'; exit 3; }
 exit 0
 `);
@@ -94,6 +95,12 @@ test("deepsec scans when INFO.md is committed and sets up (init) when it isn't; 
     assert.deepEqual([r3.review.covered, r3.review.findings.length, !!r3.setup], [["src/a.js"], 2, true]);
     if (cap) assert.match(r3.review.incomplete, /^deepsec stopped at its \$7 spend cap; deepsec left 1 file unanalysed/);
   }
+  // init failing after it set up and processed part (a later batch failed): what it analysed is kept, the failure a gap.
+  const bin4 = fakeDeepsec();
+  writeFileSync(join(bin4, "late"), "");
+  const r4 = await withEnv({ ...gw, PATH: `${bin4}:${process.env.PATH}` }, () => deepsec({ root: repoRoot(), target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", max_cost_usd: 7, scratch }));
+  assert.deepEqual([r4.review.covered, r4.review.findings.length, !!r4.setup], [["src/a.js"], 2, true]);
+  assert.match(r4.review.incomplete, /^deepsec init: the engine stopped \(exit 1\); it said «AI processing completed with 1 failed batch\(es\)»/);
 });
 
 test("a failed deepsec says why in the run's reason: its own error, from its jsonl on stdout, as data", async () => {
@@ -102,6 +109,12 @@ test("a failed deepsec says why in the run's reason: its own error, from its jso
   const { ws, out } = treeBox({ "src/a.js": "const q = 1;\n" });
   await assert.rejects(withEnv({ ...gw, PATH: `${bin}:${process.env.PATH}` }, () => review({ spec: treeSpec(), ws, out })),
     /^Error: no finder finished: deepsec init: the engine stopped \(exit 1\); it said «Pi assistant error: 401: \{"message":"Missing Authentication header"\}»$/);
+  // Failed batches: the error behind the summary leads, and a 402 is the spend limit.
+  const ev = (event) => JSON.stringify({ type: "setup_event", event });
+  const stdout = [ev({ type: "progress", phase: "process", message: "Batch 2 failed: 402: {\"error\":\"cap_reached\"}" }), ev({ type: "progress", phase: "process", message: "Processing complete" }),
+    JSON.stringify({ type: "failure", code: "Error", message: "AI processing completed with 1 failed batch(es)" })].join("\n");
+  assert.equal(said({ stdout, stderr: "" }), 'Batch 2 failed: 402: {"error":"cap_reached"} (AI processing completed with 1 failed batch(es))');
+  assert.equal(said({ stdout: "", stderr: "a\nboom\n" }), "a boom");
 });
 
 test("repo content never runs with the token or leaks through a link: a committed binary, linked files, a root config", async () => {
