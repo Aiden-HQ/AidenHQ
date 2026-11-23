@@ -35,7 +35,7 @@ test("the daily brief's \"Still open\" close path does not `task_finish` an owne
   const agents = read("modules/chief-of-staff/agents/chief-of-staff/AGENTS.md");
   const line = block(agents, /\*\*Still open:\*\*/);
   assert.doesNotMatch(line, /task_finish/, "the close path names no `task_finish`");
-  assert.match(line, /"close" is `task_cancel` with `issue`, with their reply as the evidence line, and when that is refused a `task_comment` with their reply instead, leaving the task open for them to close — say so/, "close cancels where it can and otherwise comments, saying the task stays for the owner");
+  assert.match(line, /"close" is `task_comment` with their reply as the evidence line \(`task_cancel` is only for work they say to drop, never a task they report done\), and the task stays open for them to close — say so/, "close comments and leaves the task for the owner; cancel is for a drop, never finished work");
   assert.match(line, /"snooze" is `fleet_followup_snooze`/, "snooze is unchanged");
   assert.match(line, /"delegate to X" is `task_delegate`/, "delegate is unchanged");
 });
@@ -48,7 +48,7 @@ test("the task_finish description says an owner-held task the caller created is 
   assert.match(description, /the task this run is working on/, "the run's own task stays finishable");
   assert.match(description, /or another task assigned to you \(a fleet settler: another agent's task waiting in review\)/, "a task assigned to the caller, and the fleet settler's, stay");
   assert.doesNotMatch(description, /another task assigned to you or one you delegated/, "a created task handed to the owner was promised as finishable");
-  assert.match(description, /Not your part of the owner's task: it stays open for their replies, so finish it with `task_handoff` \(whether it is this run's task or one named with `issue`\)/, "the handoff exception is stated for both forms");
+  assert.match(description, /Not your part of the owner's task: it stays open for their replies, so finish it with `task_handoff` as this run's task, or comment on it with `task_comment` when it is a different one named with `issue`/, "the handoff exception is stated for both forms");
   assert.match(description, /A task you created and handed to the owner is the owner's to close/, "an owner-held task is the owner's to close");
   assert.match(description, /`task_finish` with `issue` is refused on it/, "the refusal is stated, not implied");
   assert.match(description, /comment on it with `task_comment` instead/, "the supported move is `task_comment`");
@@ -61,6 +61,6 @@ test("the task_cancel description says the owner's own task is not the agent's t
   const at = tools.indexOf("task_cancel: {");
   assert.notEqual(at, -1, "the tools list has task_cancel");
   const description = /description: "([^"]*)"/.exec(tools.slice(at))?.[1] ?? "";
-  assert.match(description, /Only a task you filed or one assigned to you can be cancelled/, "cancel is for a task the agent filed or holds");
+  assert.match(description, /Only a task you filed or one assigned to you can be cancelled \(a fleet settler: any agent's stale or superseded task\)/, "cancel is for a task the agent filed or holds, with the settler's exception");
   assert.match(description, /a task the owner created and holds themselves is not yours/, "the owner's own task is theirs");
 });
