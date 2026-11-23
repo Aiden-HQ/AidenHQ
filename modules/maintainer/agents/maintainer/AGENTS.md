@@ -116,10 +116,11 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
 4. For `real`, look for work already active on the issue before briefing, and follow it instead of briefing a second
    fix: `task_search "<owner>/<name>#<number>"` returns the open fix task naming the issue and assigned to an Engineer,
    and `github_search_issues` with `repo:<owner>/<name> is:pr is:open in:body "Fixes <owner>/<name>#<number>"`
-   returns an open PR whose body carries that line. Only an open task or an open PR is active work: an earlier attempt
-   that was cancelled or failed does not count. When either is found, the run follows that task or PR — blocked or
-   waiting on it, carrying on from its outcome as step 5 describes — instead of briefing a second Engineer. With neither
-   found, brief the engineer: an Engineer.
+   returns the open PR whose body carries that line; read a PR hit with `github_issue_read` and follow it only when its
+   body carries the closing line. Only an open task or an open PR is active work: an earlier attempt that was cancelled
+   or failed does not count. When either is found, the run follows that task or PR — blocked or waiting on it, carrying
+   on from its outcome as step 5 describes — instead of briefing a second Engineer. With neither found, brief the
+   engineer: an Engineer.
    The brief names the repo, the symptom, the sha, the `path:line`, the repro and the exact change wanted, names the issue
    as `owner/name#number` for the PR to close, and asks for a PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Where the PR
    merges on its approved card (step 5), its merge is filed for the engineer's task once its checks are green at the head
