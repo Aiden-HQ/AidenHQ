@@ -155,6 +155,12 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   g.agents[COS].roles = [];
   writeFileSync(k.grantsFile, JSON.stringify(g));
   await refused("aiden", [{ kind: "profile", text: "# Owner\n" }], /only fleet-admin \(Aiden\) changes the owner profile/);
+  // An untrusted agent's row: refused, whatever its grants say.
+  g.agents[RC].isolation = "untrusted";
+  writeFileSync(k.grantsFile, JSON.stringify(g));
+  await refused("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n\nYou chase reviews, twice a week.\n" }], /an untrusted agent changes nothing about itself/);
+  delete g.agents[RC].isolation;
+  writeFileSync(k.grantsFile, JSON.stringify(g));
   // A run an event routine fired read outside text: its self_change is refused before any branch, even with no batch bound
   // yet (the job's routine is an event subscription); the same agent's run of a plain routine is not refused for it.
   k.records.db.exec("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, routine TEXT)");

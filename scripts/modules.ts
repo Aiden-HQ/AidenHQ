@@ -1156,7 +1156,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       if (!Array.isArray(r.schedules ?? []) || (r.schedules ?? []).length > 1) fail(`routine ${key}: a local routine has at most one schedule`);
       localRoutines.set(r.agent, (localRoutines.get(r.agent) ?? 0) + 1);
       if (localRoutines.get(r.agent)! > 20) fail(`routine ${key}: an agent has at most 20 local routines`);
-      if (r.schedules?.length && (typeof r.schedules[0]?.cron !== "string" || r.schedules[0].cron.trim().split(/\s+/).length !== 5)) fail(`routine ${key}: its schedule needs a cron of five fields (minute hour day month weekday)`);
+      // Five fields, each numbers, ranges, lists, steps or * (and month or weekday names): what Paperclip's schedule takes.
+      const fields = String(r.schedules?.[0]?.cron ?? "").trim().split(/\s+/);
+      if (r.schedules?.length && (fields.length !== 5 || !fields.every((f, i) => (i >= 3 ? /^[\d*,/A-Za-z-]+$/ : /^[\d*,/-]+$/).test(f)))) fail(`routine ${key}: its schedule needs a cron of five fields (minute hour day month weekday)`);
       const minute = String(r.schedules?.[0]?.cron ?? "0").trim().split(/\s+/)[0]!;
       if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);
     }
@@ -1805,9 +1807,9 @@ export function promptEntries(name: string, def: Obj, root: string): Obj[] {
 export function skillEntries(name: string, root: string, check = true): { id: string; file: string; summary: string }[] {
   const dir = join(root, "skills");
   return (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     const file = join(dir, d.name, "SKILL.md");
     if (!check) return { id: `${name}.${d.name}`, file, summary: "" };
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     // A skill is the module's own files: its folder resolves inside the module (jobs get a copy of it).
     if (!realpathSync(join(dir, d.name)).startsWith(realpathSync(root) + sep)) fail(`module ${name}: skill ${d.name}: its folder must be inside the module`);
     const { name: skillName, description, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;

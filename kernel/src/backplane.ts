@@ -667,6 +667,8 @@ export function createBackplane({ idle, facts, whoami, asserter, proxy, cp, boar
         // text (Slack, GitHub): it changes nothing about itself; a task of its own may.
         const routine = (() => { try { return (records?.db.prepare("SELECT routine FROM jobs WHERE id = ?").get(job.job) as { routine: string | null } | undefined)?.routine; } catch { return undefined; } })();
         const evented = Boolean(routine && Object.values((grantsFile().routine_events ?? {}) as Record<string, { key?: string }>).some((s) => s.key === routine)) || Boolean(events?.fired(job.task));
+        // An untrusted agent (it reads outside text by design) changes nothing about itself (compile never grants it either).
+        if (tool === "self_change" && row.isolation === "untrusted") throw fail(403, "forbidden", "an untrusted agent changes nothing about itself");
         if (tool === "self_change" && evented) throw fail(403, "forbidden", "a run fired by events changes nothing about its agent: file the change as a task of your own (task_create), with the evidence, and make it there");
         try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!, { tool, why: b.why })); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }

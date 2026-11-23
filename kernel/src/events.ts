@@ -99,8 +99,6 @@ export function createEvents(o: {
     const tools = o.grants().agents?.[agent]?.tools?.[connection] ?? [];
     return (o.connections()[connection]?.events?.reads ?? []).some((t) => tools.includes(t));
   };
-  /** A fired batch whose bodies are gone (kept a day after it fired). */
-  const dispatchedOld = (b: Batch) => b.count > 0 && now() - (b.dispatched_at ?? 0) > BODY_MS;
   const get = (id: string) => db.prepare("SELECT * FROM event_batches WHERE id = ?").get(id) as Batch | undefined;
   const drop = (b: Batch, why: string) => {
     db.prepare("UPDATE event_batches SET state = 'dropped' WHERE id = ?").run(b.id);
@@ -159,8 +157,11 @@ export function createEvents(o: {
       const own = b && s && bound && subOf(s) === b.sub && s.agent === job.agent && reads(s.agent, s.connection);
       const r = own ? await o.routine(b.routine) : undefined;
       if (b && own && r?.status === "active" && r.assignee === job.agent) {
-        if (b.state === "fired" && dispatchedOld(b)) return { expired: true, count: b.count };
-        if (b.state === "fired") return { count: b.count, events: (db.prepare("SELECT body FROM event_queue WHERE batch = ? AND body IS NOT NULL ORDER BY seq").all(b.id) as { body: string }[]).map((q) => JSON.parse(q.body)) };
+        if (b.state === "fired") {
+          const events = (db.prepare("SELECT body FROM event_queue WHERE batch = ? AND body IS NOT NULL ORDER BY seq").all(b.id) as { body: string }[]).map((q) => JSON.parse(q.body));
+          // Fewer bodies than the batch held: they are gone (kept a day after it fired), never an empty batch.
+          return events.length < b.count ? { expired: true, count: b.count } : { count: b.count, events };
+        }
         if (b.state === "firing" && now() - (b.sealed_at ?? 0) < FIRING_MS) return { pending: true, retry_after_s: PENDING_RETRY_S };
       }
       throw new EventsError(403, "this batch isn't your run's");

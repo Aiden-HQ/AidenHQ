@@ -42,9 +42,11 @@ export function fileContext(files: ChangedFile[]): { list: FileEntry[]; leftOut:
  */
 export function numstat(text: string | null | undefined) {
   return String(text ?? "").split("\n").filter(Boolean).map((l) => {
-    const [add, del, ...path] = l.split("\t");
+    const [add, del, ...rest] = l.split("\t");
+    // Git quotes a path with special characters ("caf\303\251.txt"): read back, as diffPath does for the headers.
+    const raw = rest.join("\t"), path = /^".*"$/.test(raw) ? unquote(raw.slice(1, -1)) : raw;
     // A binary file is counted "-" "-": its path is checked, not its lines.
-    return { path: path.join("\t"), ...(add === "-" ? {} : { add: Number(add), del: Number(del) }) };
+    return { path, ...(add === "-" ? {} : { add: Number(add), del: Number(del) }) };
   });
 }
 
