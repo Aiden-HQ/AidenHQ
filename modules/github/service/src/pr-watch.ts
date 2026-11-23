@@ -579,10 +579,9 @@ export function startPrWatch(o: PrWatchOptions) {
       // The stuck checks whose reporting interval has passed. A check the merge waits on wakes the task once at this head; one
       // that only a matrix job hangs on is logged once, because it holds nothing and must not use up the merge's report.
       const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS);
-      // A rollup with more contexts than one page cannot show whether a check is required, and the merge gate refuses a
-      // truncated rollup: a check it does not list is unknown, not optional.
-      const truncated = !!rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
-      const held = due.filter((w) => truncated || named.some((c) => c.pending && c.name === w.name));
+      // A check the rollup shows as a pending named check holds the merge. A check it cannot show (more contexts than one page)
+      // is not claimed to hold it: the gate's own refusal of a truncated rollup is not fixed by reposting a check run.
+      const held = due.filter((w) => named.some((c) => c.pending && c.name === w.name));
       const optional = due.filter((w) => !held.includes(w));
       if (held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
