@@ -103,3 +103,36 @@ test("task_finish takes `issue` only from an agent that reads private data or is
   parse(await priv.call("task_finish", { issue: "WOR-4", comment: "ok" }));
   assert.equal(priv.writes.at(-1)[1], "kid");
 });
+
+test("task_approvals reads the run's own cards for an Engineer without private data, and any task for one with it", async () => {
+  const asked = [];
+  const approvalBoard = (req, res) => {
+    req.resume();
+    req.on("end", () => {
+      asked.push(new URL(req.url ?? "/", "http://x").searchParams.get("issue"));
+      res.setHeader("content-type", "application/json").end(JSON.stringify({ approvals: [] }));
+    });
+  };
+  const world = async (me) => {
+    const handler = (req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const send = (x) => (res.setHeader("content-type", "application/json"), res.end(JSON.stringify(x)));
+        if ((req.url ?? "") === "/api/agents/me") return send({ id: "me", name: "Kai" });
+        if ((req.url ?? "").startsWith("/api/companies/")) return send({ defaultResponsibleUserId: "owner" });
+        send({});
+      });
+    };
+    return bridge({ handler, board: approvalBoard, agents: { me: { key: "engineer", ...me } }, task: "cur" });
+  };
+  asked.length = 0;
+  const pub = await world({ profile: "engineer" });
+  assert.match(parse(await pub.call("task_approvals", { issue: "WOR-4" })).error, /without private reads/);
+  assert.deepEqual(asked, [], "refused before the board is asked");
+  parse(await pub.call("task_approvals", {}));
+  assert.deepEqual(asked, ["cur"], "no issue: the run's own task");
+  asked.length = 0;
+  const priv = await world({ profile: "engineer", private_reads: true });
+  parse(await priv.call("task_approvals", { issue: "WOR-4" }));
+  assert.deepEqual(asked, ["WOR-4"], "private reads: any task it names");
+});

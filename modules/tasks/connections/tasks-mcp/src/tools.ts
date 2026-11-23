@@ -1291,19 +1291,16 @@ const TOOLS: Record<string, Tool> = {
   },
   task_approvals: {
     description:
-      "Read-only: the approval cards filed on a task (push, PR, merge, apply, deploy) with their state and outcome, newest first. A card lives on the task it was filed on: an Engineer's sub-task, or the task fleet_control ran on; not on the chat above it.",
-    inputSchema: { type: "object", properties: { issue: { type: "string", description: "the task the card was filed on, e.g. WOR-45" } }, required: ["issue"], additionalProperties: false },
+      "Read-only: the approval cards filed on a task (push, PR, merge, apply, deploy) with their state and outcome, newest first. A card lives on the task it was filed on: an Engineer's sub-task, or the task fleet_control ran on; not on the chat above it. An Engineer without private reads reads only its own task's cards.",
+    inputSchema: { type: "object", properties: { issue: { type: "string", description: "the task the card was filed on, e.g. WOR-45; default: the current task" } }, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: async ({ issue }: Args) => {
+      const target = issue ?? CURRENT();
+      if (!target) throw new Error("no current task");
       // An Engineer without private_reads has the public tasks tools only (scripts/computers.ts PUBLIC_TASKS): its own task.
       const me = dirAgents()[cx().caller.agent];
-      if (me?.profile === "engineer" && me.private_reads !== true) {
-        const mine = CURRENT();
-        if (!mine) throw new Error("no current task");
-        const asked = String(issue ?? "").trim();
-        if (asked && asked !== mine && (await api("GET", `/api/issues/${issueRef(asked)}`)).id !== mine) throw new Error("Refused: without private reads you read only the task this run is working on: pass this run's own task.");
-      }
-      const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(issue)}`);
+      if (issue && me?.profile === "engineer" && me.private_reads !== true) throw new Error("Refused: without private reads you read only the task this run is working on: leave out `issue`.");
+      const { approvals } = await boardApi(`/internal/approvals?issue=${issueRef(target)}`);
       return {
         approvals: approvals.map((a: Json) => ({ id: a.id, action: a.action, state: a.state, target: a.target, outcome: a.outcome, ...(a.outcomeText ? { outcomeText: String(a.outcomeText).slice(0, 300) } : {}), createdAt: a.createdAt })),
       };
