@@ -23,7 +23,7 @@ import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, h
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, Refused, holdsRole, requireAgentCaller, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
@@ -374,6 +374,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const ok = (g: { roles?: string[]; tools?: Record<string, string[]> }) => (g.tools?.paperclip_tasks ?? []).includes(tool) && (!role || (g.roles ?? []).includes(role));
     try {
       return await requireAgent(pc, req, ok, `only an agent granted ${tool}${role ? ` with the ${role} role` : ""} may call this`);
+    } catch (err) {
+      throw err instanceof Refused ? new HttpError(403, err.message) : err;
+    }
+  }
+  /** As requireAgentTool, with the caller's claims and the grants entry the check just read fresh (not a module's cached copy). */
+  async function requireAgentToolCaller(req: IncomingMessage, tool: string) {
+    const ok = (g: { tools?: Record<string, string[]> }) => (g.tools?.paperclip_tasks ?? []).includes(tool);
+    try {
+      return await requireAgentCaller(pc, req, ok, `only an agent granted ${tool} may call this`);
     } catch (err) {
       throw err instanceof Refused ? new HttpError(403, err.message) : err;
     }
@@ -1102,11 +1111,16 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       handle: async (_m, _b, url, req) => {
         const issue = url.searchParams.get("issue");
         if (!issue) throw new HttpError(400, "issue=<task>");
-        await requireAgentTool(req, "task_approvals");
+        const { caller, grant } = await requireAgentToolCaller(req, "task_approvals");
         // A lookup that failed is not a task with no cards: the run's check for a merge card must be able to tell them apart.
         const task = await pc.issue(issue).then((i) => i.id, (e: Error) => {
           throw new HttpError(502, `couldn't read ${issue}: ${String(e?.message ?? e).slice(0, 200)}`);
         });
+        // An Engineer without private reads reads only the task its run is working on: the check is against the grants table as
+        // it is now, not a bridge's cached copy, so revoking that access takes effect on the next call.
+        if (grant.profile === "engineer" && grant.private_reads !== true && task !== caller.task) {
+          throw new HttpError(403, "refused: without private reads an Engineer reads only the task its run is working on");
+        }
         // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
         // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". This task's merges are read
         // by kind: the newest page, and every page of the states one can still be in (the reviewer's or owner's wait, and the
@@ -1115,8 +1129,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const mine = (a: Approval) => a.issueId === task || a.identifier === task;
         const [recent, history, live] = await Promise.all([
           cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
-          cardsOf("recent", { task, limit: 1000, tier0: true, strict: true, kinds }),
-          records.allOf("live", kinds),
+          records.allOf("recent", kinds, task),
+          records.allOf("live", kinds, task),
         ]);
         // The reads run side by side, and one card can be in two of them: the record that ended wins, so an ended card's
         // `merged-prs` line is never overwritten by a live snapshot taken a moment before it finished.

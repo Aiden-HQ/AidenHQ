@@ -26,11 +26,11 @@ test("a publish never files a merge: the run checks the task's merge card before
   assert.match(publish, /A publish opens or updates a PR; it never files a merge\./, "a publish only opens or updates the PR");
   assert.match(publish, /A merge exists only as the `github\.merge` card `aidenhq merge` filed on the task/, "the merge is the card's");
   assert.match(publish, /done only when that card's outcome is a `merged-prs` line naming the PR at its head/, "done means the outcome names the PR at its head");
-  assert.match(publish, /before a run ends waiting on a merge check this run's approval cards with `task_approvals` \(no `issue`\): a merge card for this PR/, "the check comes before the wait, with the call the Engineer makes");
+  assert.match(publish, /Before a run ends waiting on a merge, check this run's approval cards with `task_approvals` \(no `issue`\): a merge card for this PR/, "the check comes before the wait, with the call the Engineer makes");
   assert.match(publish, /a merge card for this PR at the head you published that is `live` and whose `wakes` is true wakes the task when it ends, so wait for it and file nothing/, "a live card at the published head that wakes the task is a wait");
-  assert.match(publish, /with such a card but `wakes` false, poll it as below; with no live card at all, first check whether a card's outcome already names this PR at this head/, "a card that wakes nobody is polled, and a landed merge is not filed again");
-  assert.match(publish, /In the product repo and on this server a green PR's merge is normally filed for you/, "only those repos have the merge filed for them");
-  assert.match(publish, /unless the task has several open PRs there, and then the code host wakes the task to merge the one you mean/, "a task with several PRs is woken, not filed for");
+  assert.match(publish, /with such a card but `wakes` false, poll it as below; a card's outcome that already names this PR at this head \(`merged-prs`\) means it has landed/, "a card that wakes nobody is polled, and a landed merge is not filed again");
+  assert.match(publish, /In the product repo, this instance's agents org and a repository on this server, a green PR's merge is normally filed for you: wait for its \*\*Done\*\* notice and file nothing/, "only the watched repos have the merge filed for them");
+  assert.match(publish, /a watched PR the code host woke you about because the task has several open there/, "the watcher's handoff to merge by hand is named");
   assert.match(publish, /A merge the run files itself sends no Done notice where it runs at Tier 0 \(`wakes: false`\)/, "a self-filed Tier 0 merge has no notice to wait for");
   assert.match(publish, /read its state with `task_approvals`, wait, and read it again/, "a still-running merge is followed up to its end by the run");
   assert.match(publish, /A card merges only the head it names: once the PR's head has moved it cannot land it/, "a card is matched by head, not only by PR");

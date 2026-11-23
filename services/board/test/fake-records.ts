@@ -18,8 +18,9 @@ export function fakeRecords(cards: Approval[] = []): Records & { cards: Approval
       .slice(0, limit);
   // The paged live read (records.ts `live`): every approved or running card, whatever its tier, in one page here.
   const live: Records["live"] = async () => cards.filter((a) => a.state === "approved" || a.state === "running");
-  const allOf: Records["allOf"] = async (state, kinds) =>
+  const allOf: Records["allOf"] = async (state, kinds, task) =>
     cards
+      .filter((a) => !task || a.issueId === task || a.identifier === task)
       .filter((a) => (state === "pending" ? a.state === "pending" : state === "approved" ? a.state === "approved" || a.state === "running" : a.state === "pending" || a.state === "approved" || a.state === "running"))
       .filter((a) => !kinds?.length || kinds.some((k) => a.action === k.replace(/^github\./, "") || a.action === k));
   return { cards, settings, list, live, allOf, advisories: async () => [], explain: async () => { throw new Error("no such record"); }, connectionHealth: async () => ({}), connectionOk: async () => {}, validate: async () => ({ ok: true }), settingsChange: async (task, changes, credential) => (settings.push({ task, changes, ...(credential ? { credential } : {}) }), { record: "k-0000000000000001", tier: 1, state: "review" }) };

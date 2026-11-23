@@ -112,9 +112,9 @@ export type Records = {
    * read so far: a caller must not mistake a timeout for "no more live records".
    */
   live(): Promise<Approval[]>;
-  /** Every page of every live state (`pending`, `approved`), optionally one kind, in one order: a card moving between them
-   * mid-read is never missed, and a live card is never behind the page cap, however many records follow it. */
-  allOf(state: "pending" | "approved" | "live", kinds?: string[]): Promise<Approval[]>;
+  /** Every page of a state (`live` is every state a record can still act in), for one task and optionally one kind: a card
+   * moving between states mid-read is never missed, and it is never behind the page cap, however many records follow it. */
+  allOf(state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string): Promise<Approval[]>;
   /** Marketplace advisories open against installed modules (plan unit 4e): Settings > Modules shows them as a banner. [] when unreachable. */
   advisories(): Promise<Advisory[]>;
   /** Every connection's /healthz as the kernel reaches it (the one place connection health is probed). {} when the kernel can't be asked. */
@@ -161,13 +161,13 @@ export function kernelRecords(k: { url: string; token: string } | undefined, log
    * Every page of a state, walked with `after`: a bounded read that must not lose a record behind the page cap. `live` is the
    * kernel's own read of every approved and claimed record, one query, so a card moving between the states mid-read is not missed.
    */
-  const allOf = async (state: "pending" | "approved" | "live", kinds?: string[]): Promise<Approval[]> => {
+  const allOf = async (state: "pending" | "approved" | "live" | "recent", kinds?: string[], task?: string): Promise<Approval[]> => {
     const out: Approval[] = [];
     const seen = new Set<string>();
     let after = "";
     for (let i = 0; i < PAGES_MAX; i++) {
       // The kernel's live list is one read of both states; the page params still apply (its default page is 100).
-      const page = await list(state, { limit: PAGE, tier0: true, strict: true, ...(kinds?.length ? { kinds } : {}), ...(after ? { after } : {}) });
+      const page = await list(state, { limit: PAGE, tier0: true, strict: true, ...(task ? { task } : {}), ...(kinds?.length ? { kinds } : {}), ...(after ? { after } : {}) });
       const fresh = page.filter((a) => !seen.has(a.id));
       for (const a of fresh) seen.add(a.id);
       out.push(...fresh);
