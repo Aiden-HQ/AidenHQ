@@ -24,7 +24,7 @@ const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metri
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 /** A product tree from before this change also has no restoreRunnerTemplate: drop the function and both calls, as the real
- * historical script has neither. */
+ * historical script has neither; from before the kernel-code marker, it also restarts the kernel by hand-written roots. */
 const withoutRunnerRestore = (text) => {
   const start = text.indexOf("restoreRunnerTemplate() {");
   const end = text.indexOf("# Generation n failed (marked so already)", start);
@@ -52,6 +52,9 @@ const out = stage ? "config.next" : "config";
 fs.mkdirSync(out + "/kernel", { recursive: true });
 fs.writeFileSync(out + "/paperclip.yaml", inst + v);
 fs.writeFileSync(out + "/kernel/connections.json", "{}\\n");
+// The kernel's module table: its keys decide what it serves at boot (the GitHub App setup is registered only when the
+// github module is one of them), so a module the instance enables is a kernel startup input.
+fs.writeFileSync(out + "/kernel/modules.json", JSON.stringify({ modules: Object.fromEntries((inst.match(/^modules: (.*)$/m)?.[1] ?? "").split(",").map((m) => m.trim()).filter(Boolean).map((m) => [m, {}])) }) + "\\n");
 fs.writeFileSync(out + "/modules.json", JSON.stringify({ modules: /^modules: (.*)$/m.exec(inst)?.[1] ?? "" }) + "\\n");
 fs.writeFileSync(stage ? "compose.modules.next.yaml" : "compose.modules.yaml",
   "services:\\n" + (inst.includes("monitoring") ? "  monitoring-node-exporter:\\n    image: x\\n" : "")
@@ -69,6 +72,13 @@ if (!stage) fs.appendFileSync(process.env.CALLS, "compile\\n");
   "scripts/host-serve.ts": "",
   "scripts/agent-check.ts": "",
   "scripts/paperclip-setup.ts": `import fs from "node:fs"; fs.appendFileSync(process.env.CALLS, "setup\\n");\n`,
+  // The kernel loads the compiler at startup (kernel/src/settings-change.ts imports scripts/modules.ts): the closure the
+  // apply restarts on is main.ts and what it imports, so a scripts/-only change reaches the running kernel.
+  "kernel/src/main.ts": `import "../../scripts/modules.ts";\n`,
+  "scripts/modules.ts": `export const marker = "modules 1";\n`,
+  // Read by the compiler when it loads (scripts/modules.ts), so the kernel's settings are startup code too, though nothing
+  // imports them.
+  "kernel/settings.json": `{"settings": {}}\n`,
   // The real one imports the kernel's packages: only an installed kernel/node_modules (npm's fake below) lets it run.
   "kernel/src/apply.ts": `import "kernel-dep";
 import { readFileSync } from "node:fs";
@@ -129,7 +139,7 @@ process.exit(spawnSync(cmd, rest.map(map), { stdio: "inherit", env: { ...process
   // instance names is-enabled reports enabled; ctrl/masked the ones it reports masked. `show` is what health() reads on a
   // /healthz timeout; journalctl tails the journal.
   systemctl: `#!/usr/bin/env bash\nprintf 'systemctl %s\\n' "$*" >> "$CALLS"\ncase "$*" in\n  *is-enabled*aidenhq-ci-runner@*)\n    for a in "$@"; do unit="$a"; done\n    if [ -f "$CTRL/masked" ] && grep -qxF -- "$unit" "$CTRL/masked"; then echo masked; exit 1; fi
-    if [ -f "$CTRL/masked-runtime" ] && grep -qxF -- "$unit" "$CTRL/masked-runtime"; then echo masked-runtime; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*aidenhq-apply-recover*) exit 0 ;;\n  *is-enabled*) exit 1 ;;\n  *daemon-reload*)\n    [ -f "$CTRL/runner-reload-fails" ] && grep -q ExecStartPre "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    [ -f "$CTRL/runner-reload-fails-desc" ] && grep -qF -- "$(cat "$CTRL/runner-reload-fails-desc")" "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    [ -f "$CTRL/runner-reload-fails-once-desc" ] && grep -qF -- "$(cat "$CTRL/runner-reload-fails-once-desc")" "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { rm -f "$CTRL/runner-reload-fails-once-desc"; echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    exit 0 ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
+    if [ -f "$CTRL/masked-runtime" ] && grep -qxF -- "$unit" "$CTRL/masked-runtime"; then echo masked-runtime; exit 1; fi\n    [ -f "$CTRL/runners" ] && grep -qxF -- "$unit" "$CTRL/runners"; exit ;;\n  *is-enabled*aidenhq-apply-recover*) exit 0 ;;\n  *is-enabled*) exit 1 ;;\n  *is-active*aidenhq-kernel*)\n    [ -f "$CTRL/kernel-inactive" ] && exit 3\n    exit 0 ;;\n  *daemon-reload*)\n    [ -f "$CTRL/runner-reload-fails" ] && grep -q ExecStartPre "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    [ -f "$CTRL/runner-reload-fails-desc" ] && grep -qF -- "$(cat "$CTRL/runner-reload-fails-desc")" "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    [ -f "$CTRL/runner-reload-fails-once-desc" ] && grep -qF -- "$(cat "$CTRL/runner-reload-fails-once-desc")" "$HOME/.config/systemd/user/aidenhq-ci-runner@.service" 2>/dev/null && { rm -f "$CTRL/runner-reload-fails-once-desc"; echo "Failed to reload daemon: Access denied" >&2; exit 1; }\n    exit 0 ;;\n  *restart*aidenhq-kernel*)\n    n=$(cat "$CTRL/kernel-invocations" 2>/dev/null || echo 0); echo $((n + 1)) > "$CTRL/kernel-invocations" ;;\n  *show*aidenhq-kernel.service*InvocationID*)\n    echo "InvocationID=$(cat "$CTRL/kernel-invocations" 2>/dev/null || echo 0)" ;;\n  *"show aidenhq-kernel.service"*)\n    [ -f "$CTRL/no-unit-state" ] && { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n    [ -f "$CTRL/unit-state-exit" ] && exit "$(cat "$CTRL/unit-state-exit")"\n    printf 'ActiveState=activating\\nResult=exit-code\\nNRestarts=2\\n' ;;\n  *"list-unit-files"*aidenhq-ci-runner@*)\n    case "$*" in *--state=enabled*) ;; *) echo "aidenhq-ci-runner@.service indirect enabled" ;; esac\n    exit 0 ;;\n  *list-unit-files*) exit 0 ;; esac\nexit 0\n`,
   // The user unit dir systemd loads, where enablement links live: HOME is the world's temporary home.\n  "systemd-analyze": `#!/usr/bin/env bash\nprintf 'systemd-analyze %s\\n' "$*" >> "$CALLS"\ncase "$*" in *--user*unit-paths*) echo "$HOME/.config/systemd/user" ;; esac\nexit 0\n`,
   // The kernel's journal, oldest first as journalctl prints it. ctrl/big-journal prefixes enough routine startup lines to
   // push the error line past the reason's size limit; ctrl/stuck-journal ignores SIGTERM, so only the apply's own bound ends
@@ -416,6 +426,9 @@ test("the apply hand-over requires the target to carry the runner helper", () =>
   assert.ok(line.includes("ops/apply-config-work.sh"), "this script is still in it, so its own change hands over");
   const guard = text.split("\n").find((l) => l.includes("git cat-file -e \"$product:ops/lib/ci-runner-enabled.sh\""));
   assert.ok(guard, "and the hand-over is guarded on the target having the helper");
+  // A target whose script predates the kernel marker restarts the kernel by the old roots, missing a compiler-only move:
+  // the hand-over is guarded on the marker too.
+  assert.ok(text.split("\n").some((l) => l.includes("git grep -q kernel-code \"$product\" -- ops/apply-config-work.sh")), "and on the target carrying the marker");
 });
 
 // A pin rollback ("revert the pin and apply") reaches the hand-over with this script still running: the product checked
@@ -1086,6 +1099,9 @@ const reverted = (w) => {
   assert.equal(w.head("prod"), w.p1);
   w.revertedTo(w.p1);
   assert.equal(readFileSync(w.d("prod/data/applied-product"), "utf8").trim(), w.p1);
+  // The revert's own worker starts the kernel on the last known good's code and records that: a marker left by the failed
+  // generation would say its code still runs.
+  assert.ok(readFileSync(w.d("prod/data/kernel-code"), "utf8").trim());
   assert.match(readFileSync(w.d("state/apply-3.log"), "utf8"), /generation 3: the apply died mid-run, and no apply is finishing it: reverting[\s\S]*apply alert: generation 3 failed \(the apply died mid-run\) and was reverted to generation 2/);
   // The revert's own line is finalized by the parent, after it checks the template systemd ends with: an apply killed
   // between the child's health check and that check leaves it pending, so the next recovery reverts again.
@@ -1103,6 +1119,151 @@ test("an apply SIGKILLed mid-compose is reverted to the last known good by the n
   const retry = await w.run("--force");
   assert.equal(retry.status, 0, retry.out);
   assert.deepEqual([w.gens().at(-1).product, w.gens().at(-1).instance, w.gens().at(-1).health], [p2, i2, "good"]);
+});
+
+// A revert restarts the kernel on the code it returns to with the same closure test a normal apply uses, and takes its
+// health verdict after that: the revert's child can be a worker from before the marker (a downgrade, then a failed apply),
+// which restarts only by its old roots and so never replaced a kernel on a compiler-only move. A verdict that child took
+// then describes a kernel that is not the returning generation's, and the revert must not stand on it.
+test("a revert restarts the kernel on the returning generation's code before taking its verdict", () => {
+  const text = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
+  const body = text.slice(text.indexOf("\nrevertTo() {"), text.indexOf("\n# The instance the auto-revert of generation"));
+  const child = body.indexOf('--generation "$lkg"');
+  const current = body.indexOf('kernelCurrent "$kcode" "$ksha"');
+  const restart = body.indexOf('kernelRestart "$ksha" "$kcode"');
+  const verdict = body.indexOf('elif health "$base" "$prev_config"');
+  const good = body.indexOf('genMark "$rev" good');
+  assert.ok(child > 0 && current > child, "the returning generation's kernel is checked after the child's switch");
+  assert.ok(restart > current, "and restarted when the marker does not name it");
+  assert.ok(verdict > restart, "the health verdict is taken after that restart, not from the child's");
+  assert.ok(good > verdict, "and the revert is recorded good only after the verdict");
+});
+
+// The kernel imports the instance compiler at startup, so its restart is keyed on everything it loads in process (the
+// closure of kernel/src/main.ts), not only kernel/ and modules/*/src: a change confined to scripts/ left an old kernel
+// running and refused every apply of a tree the host's own compile read cleanly.
+test("the kernel restarts when a file it loads at startup changed, and only then", async () => {
+  const w = world();
+  const restarts = (from) => (w.calls().slice(from).match(/systemctl --user restart aidenhq-kernel\n/g) ?? []).length;
+
+  // The first apply installs the unit, so it restarts the kernel and records the closure's hash it left running.
+  const first = await w.run();
+  assert.equal(first.status, 0, first.out);
+  const marker = readFileSync(w.d("prod/data/kernel-code"), "utf8").trim();
+  assert.match(marker, /^[0-9a-f]{40}\n\d+$/, "the closure's hash and the kernel's invocation are recorded");
+
+  // A host that predates the recorded hash (no data/kernel-code) restarts it once, exactly as this patch's own apply must.
+  rmSync(w.d("prod/data/kernel-code"));
+  let from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 1, w.calls().slice(from));
+  assert.equal(readFileSync(w.d("prod/data/kernel-code"), "utf8").split("\n")[0], marker.split("\n")[0], "the same code records the same hash");
+
+  // The closure unchanged: the next apply leaves the kernel alone.
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 0, w.calls().slice(from));
+
+  // A product change confined to scripts/ (in the closure, under neither kernel/ nor modules/*/src) restarts it.
+  const p2 = w.commitProduct("2", { "scripts/modules.ts": 'export const marker = "modules 2";\n' });
+  w.commitInstance(p2);
+  assert.equal(git(w.d("pw"), "diff", "--name-only", w.p1, p2), "VERSION\nscripts/modules.ts");
+  assert.equal(git(w.d("pw"), "diff", "--name-only", w.p1, p2, "--", "kernel", ":(glob)modules/*/src/**"), "", "nothing the old hand-written roots watched");
+  from = w.calls().length;
+  const changed = await w.run();
+  assert.equal(changed.status, 0, changed.out);
+  assert.equal(restarts(from), 1, changed.out);
+  assert.match(changed.out, /kernel code changed: restarted/);
+  assert.notEqual(readFileSync(w.d("prod/data/kernel-code"), "utf8").split("\n")[0], marker.split("\n")[0]);
+
+  // A changed unit still restarts it, and a stopped unit still starts it.
+  const p3 = w.commitProduct("3", { "ops/units/aidenhq-kernel.service": "[Unit]\nDescription=kernel v3\n" });
+  w.commitInstance(p3);
+  from = w.calls().length;
+  const unit = await w.run();
+  assert.equal(unit.status, 0, unit.out);
+  assert.equal(restarts(from), 1, unit.out);
+  assert.match(unit.out, /kernel unit installed\/updated/);
+
+  // A kernel started by something else (a reboot, a worker from before this mechanism) has a new systemd invocation even
+  // with the same code: the marker no longer describes the process, so the next apply restarts it.
+  writeFileSync(w.d("ctrl/kernel-invocations"), "99\n");
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 1, w.calls().slice(from));
+  assert.equal(readFileSync(w.d("prod/data/kernel-code"), "utf8").split("\n")[1], "100");
+
+  // A product change outside the closure (a doc only) restarts nothing: the running kernel already loaded this code.
+  const doc = w.commitProduct("2.1", { "README.md": "docs\n" });
+  w.commitInstance(doc);
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 0, w.calls().slice(from));
+
+  // The kernel's settings are read when the compiler loads, without being imported: their change restarts it too.
+  const p4 = w.commitProduct("4", { "kernel/settings.json": '{"settings": {"new_limit": {}}}\n' });
+  w.commitInstance(p4);
+  from = w.calls().length;
+  const settings = await w.run();
+  assert.equal(settings.status, 0, settings.out);
+  assert.equal(restarts(from), 1, settings.out);
+
+  // The host's .env is read by the kernel at boot (kernel/src/env.ts), not tracked, so its content is part of what the
+  // kernel loads: a changed one restarts it, and an unchanged one does not.
+  writeFileSync(w.d("prod/.env"), "# host settings\n");
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 1, w.calls().slice(from));
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 0, w.calls().slice(from));
+  writeFileSync(w.d("prod/.env"), "# host settings\nAIDENHQ_SETTINGS_NOTE=2\n");
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 1, w.calls().slice(from));
+  // The job tuning is read once at kernel startup too (sandboxConfig), so a host-only change to it restarts it as well.
+  mkdirSync(w.d("prod/config"), { recursive: true });
+  writeFileSync(w.d("prod/config/runner.yaml"), "timeout_minutes: 120\n");
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 1, w.calls().slice(from));
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 0, w.calls().slice(from));
+
+  // The one module-table decision made at kernel start is whether the GitHub App setup exists (kernel/src/main.ts reads
+  // `github` once; the rest of the table is watched live). Enabling github restarts it, an unrelated module does not, and
+  // an unchanged table does not.
+  w.commitInstance(p4, "modules: monitoring\n");
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 0, w.calls().slice(from));
+  w.commitInstance(p4, "modules: monitoring, github\n");
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 1, w.calls().slice(from));
+  from = w.calls().length;
+  assert.equal((await w.run("--force")).status, 0);
+  assert.equal(restarts(from), 0, w.calls().slice(from));
+
+  writeFileSync(w.d("ctrl/kernel-inactive"), "");
+  from = w.calls().length;
+  const stopped = await w.run("--force");
+  assert.equal(stopped.status, 0, stopped.out);
+  assert.equal(restarts(from), 1, stopped.out);
+  assert.match(stopped.out, /kernel started/);
+  rmSync(w.d("ctrl/kernel-inactive"));
+
+  // A closure that cannot be listed (here: no kernel/src/main.ts to start from) restarts the kernel rather than skipping
+  // it, so a kernel never keeps code the apply could not read.
+  const p5 = w.commitProduct("5", {}, ["kernel/src/main.ts"]);
+  w.commitInstance(p5);
+  for (let i = 0; i < 2; i++) {
+    from = w.calls().length;
+    const unlisted = await w.run("--force");
+    assert.equal(unlisted.status, 0, unlisted.out);
+    assert.equal(restarts(from), 1, unlisted.out);
+  }
 });
 
 });

@@ -154,7 +154,10 @@ main() {
   # never true on a live host), so hand over only when the target has the helper. Hammering its scripts while it is the
   # running product leaves the newer template in place; the next apply from a product that has the helper fixes it, and
   # because this script itself differs the direct upgrade still hands over (the helper is in the list too).
+  # The kernel marker needs the same guard: a target whose script predates it restarts the kernel by its old roots, which
+  # miss a compiler-only move, so this script keeps the switch (and restarts on the closure) rather than hand over to it.
   if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && git cat-file -e "$product:ops/lib/ci-runner-enabled.sh" 2>/dev/null \
+     && git grep -q kernel-code "$product" -- ops/apply-config-work.sh \
      && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh ops/lib/ci-runner-enabled.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
@@ -398,7 +401,44 @@ revertTo() {
   # template on the units it is about to start. A tree that has the helper installs the same file again in its own switch
   # (cmp makes that a no-op). A restore that fails is a failed revert, not a warning.
   restoreRunnerTemplate "$(genGet "$lkg" product)" || echo "apply alert: the runner template could not be put back for generation $lkg; the revert's own switch gets the next try; log $log" >&2
+  # The compiled config before the revert, for the live agent check after it: only connections the revert newly grants fail.
+  local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
   AIDENHQ_APPLY_BEFORE="$(genGet "$n" product)" AIDENHQ_REVERT_OF="$n" AIDENHQ_REVERT_INSTANCE="$target" AIDENHQ_HEALTH_BASELINE="$base" AIDENHQ_REVERT_VERIFY=1 bash ops/apply-config-work.sh --generation "$lkg" || rrc=$?
+  # The kernel this revert returned to is the returning generation's, decided by the same closure test a normal apply uses,
+  # and its health verdict is taken after that: the child may be a worker from before the marker (a downgrade, then a failed
+  # apply), which restarts only by its old roots and so never replaced a kernel on a compiler-only move. It then judged the
+  # failed generation's kernel, and that verdict says nothing about this one: a child whose health check failed is not a
+  # failed revert until this code is running and healthy. A child whose switch itself failed is left as it is (a restart
+  # cannot make a half-switched host good). The line goes pending first, so an apply that dies between the restart and the
+  # verdict is found unsettled rather than read as a good revert.
+  local kcode="${AIDENHQ_DATA_DIR:-$PWD/data}/kernel-code" ksha rev rechecked="" reason judge=1
+  rev="$(genJs last)"
+  reason="$(genGet "$rev" reason)"
+  # The child's verdict is only replaced where it could have been taken against another generation's kernel: it succeeded,
+  # or it failed its health check. A child whose switch itself failed is left as it is (a healthy kernel does not make a
+  # half-switched host good), and so is one that died before recording a verdict (an empty reason with a nonzero status):
+  # its services were never brought up, so a check that passes only says the old ones still run.
+  case "$reason" in
+    "the switch failed (exit "*) judge=0 ;;
+    "") [ "$rrc" -eq 0 ] || judge=0 ;;
+  esac
+  if [ "$judge" = 1 ] && [ "$(genGet "$rev" revert_of)" = "$n" ] && [ "$(git rev-parse HEAD)" = "$(genGet "$lkg" product)" ]; then
+    ksha="$(kernelInputs | git hash-object --stdin)"
+    if ! kernelCurrent "$kcode" "$ksha"; then
+      genMark "$rev" pending
+      if ! kernelRestart "$ksha" "$kcode"; then
+        echo "apply alert: the kernel could not be restarted on generation $lkg's code; log $log" >&2
+        genMark "$rev" failed "the kernel could not be restarted on the reverted generation's code"
+        rrc=1
+      elif health "$base" "$prev_config"; then
+        # The child's failure reason described a kernel that is no longer running: this verdict replaces it.
+        rrc=0; rechecked="the kernel was restarted on the reverted generation's code and answered every check"
+      else
+        genMark "$rev" failed "$HEALTH_WHY"; rrc=1
+      fi
+    fi
+  fi
+  rm -f "$prev_config"
   # The child records its own generation, and it may be a worker that predates this restore (a pin rollback) or one whose
   # switch reloaded systemd for a unit of its own after this restore's failed reload. So the revert is judged by what systemd
   # has now, not by that attempt: a template that is not the last known good's gets one checked restore here (its file may
@@ -409,12 +449,12 @@ revertTo() {
   fi
   if [ "$rrc" -eq 0 ] && ! runnerTemplateMatches "$(genGet "$lkg" product)"; then
     echo "apply alert: the runner template is still not generation $lkg's; log $log" >&2
-    genMark "$(genJs last)" failed "the runner template could not be put back"
+    genMark "$rev" failed "the runner template could not be put back"
     rrc=1
   fi
   # The revert's own line was left pending for this check: it is good only now, when both its health check passed and the
   # template systemd has is the returning generation's.
-  if [ "$rrc" -eq 0 ]; then genMark "$(genJs last)" good; fi
+  if [ "$rrc" -eq 0 ]; then genMark "$rev" good "$rechecked"; fi
   if [ "$rrc" -eq 0 ]; then
     echo "apply alert: generation $n failed ($why) and was reverted to generation $lkg ($what; the instance's main is unchanged); this host stays there until the instance's main moves; log $log"
   else
@@ -530,7 +570,8 @@ applyGeneration() {
   # ops/lib/ci-runner-enabled.sh has no such file, and sourcing it after the checkout would abort the re-apply rather than
   # restore its runner template (main() sources it the same way, before any checkout).
   . ops/lib/ci-runner-enabled.sh
-  # Restarts are keyed on what changed since `before`: the failed generation's product, so its kernel comes back.
+  # The other restarts are keyed on what changed since `before`: the failed generation's product. (The kernel compares
+  # the closure's hash instead, and a generation re-applied with older code restarts it too.)
   local before="${AIDENHQ_APPLY_BEFORE:-$(git rev-parse HEAD)}"
   local applied="${AIDENHQ_DATA_DIR:-$PWD/data}/applied-product"
   local plan="" mod k at tar
@@ -759,6 +800,66 @@ sameAsStaged() {
 }
 
 # Step 3: the real compile, then today's steps. Runs in a subshell with errexit (main and applyGeneration).
+# What the kernel loads in process: every file it imports at startup (scripts/imports.ts), the compiler included, so a
+# change confined to scripts/ still reaches the running kernel; the settings and schemas the compiler reads when it loads
+# (scripts/modules.ts), which are under kernel/ but not imported; the host's .env and job tuning it reads at startup
+# (kernel/src/env.ts, sandbox-config.ts); and the lockfiles of the packages it runs. A closure that can't be listed, or a
+# file it can't read, prints a value that differs on every call, so the kernel restarts rather than keeps code the apply
+# could not read.
+kernelInputs() {
+  local code
+  code="$(node scripts/imports.ts kernel/src/main.ts)" || { echo "unlisted $(date +%s%N)"; return 0; }
+  [ -n "$code" ] || { echo "unlisted $(date +%s%N)"; return 0; }
+  # sha256sum of the working tree, not git ls-tree of HEAD: materializeModules() may have fetched the module code from
+  # another repository, so it need not be tracked here.
+  # shellcheck disable=SC2086 # repo paths, one word each
+  sha256sum -- $code || { echo "unreadable $(date +%s%N)"; return 0; }
+  # The rest are the product's own tracked files, read from the working tree's HEAD by their blob shas: the kernel settings
+  # and schemas the compiler reads, the launcher the unit runs, and the lockfiles of the packages it runs.
+  git ls-tree -r HEAD -- kernel/settings.json kernel/defaults.json kernel/schemas ops/run-draining.sh scripts/package-lock.json kernel/package-lock.json \
+    || echo "unreadable $(date +%s%N)"
+  # The host's own settings, which the kernel reads when it loads: .env (kernel/src/env.ts: the instance and state dirs, the
+  # secrets dir) and the job tuning (sandboxConfig: AIDENHQ_CONFIG_DIR's runner.yaml, default config/). Neither is tracked,
+  # so both by content; a host without one records that, so its first apply does not restart on every run.
+  local runner="${AIDENHQ_CONFIG_DIR:-config}/runner.yaml"
+  for f in .env "$runner"; do
+    if [ -f "$f" ]; then sha256sum "$f" || echo "unreadable $f $(date +%s%N)"; else echo "no $f"; fi
+  done
+  # One decision the kernel makes from the compiled module table as it starts: whether to serve the GitHub App setup at
+  # all (kernel/src/main.ts reads `github` out of kernel/modules.json once, not through the live watch), so enabling or
+  # disabling that module restarts it. Nothing else in the table is startup input — the rest is read through watched() at
+  # each use — and hashing that one flag keeps an unrelated module's change from cutting the streams in flight.
+  local mods_file="${AIDENHQ_CONFIG_DIR:-config}/kernel/modules.json" gh
+  if [ ! -f "$mods_file" ]; then echo "no modules.json" # nothing compiled yet: a first install, and it restarts anyway
+  elif gh="$(jq -c '{github: (.modules // {} | has("github"))}' "$mods_file" 2>/dev/null)" && [ -n "$gh" ]; then printf '%s\n' "$gh"
+  else echo "unreadable $mods_file $(date +%s%N)"
+  fi
+}
+
+# The systemd invocation a unit is running now. A restart starts a new one, so a marker naming an older invocation is
+# stale whatever code the process was started on (a reboot, an apply that died before writing its marker).
+kernelInvocation() {
+  systemctl --user show aidenhq-kernel.service --property=InvocationID 2>/dev/null | sed -n 's/^InvocationID=//p'
+}
+
+# Restarts the kernel and records the closure's hash ($1) and the invocation it now runs in $2: the next apply skips the
+# restart only when both are unchanged, so a product change outside the closure does not restart it, and one started by
+# anything else (a reboot, a revert's own worker) is restarted rather than trusted.
+kernelRestart() {
+  # Cleared first and written only once systemd accepted the restart, so neither a killed apply nor a refused restart leaves
+  # a hash that says code runs which does not.
+  rm -f "$2"
+  systemctl --user restart aidenhq-kernel || { echo "the kernel could not be restarted" >&2; return 1; }
+  mkdir -p "$(dirname "$2")" && printf '%s\n%s\n' "$1" "$(kernelInvocation)" > "$2"
+}
+
+# Whether the kernel running now is the code of hash $1, started by this mechanism: both what it loaded and systemd's
+# invocation must be the ones the marker recorded.
+kernelCurrent() {
+  [ "$(sed -n 1p "$1" 2>/dev/null)" = "$2" ] && [ -n "$(kernelInvocation)" ] \
+    && [ "$(sed -n 2p "$1" 2>/dev/null)" = "$(kernelInvocation)" ]
+}
+
 switchOver() {
   rm -f config/module-data.json # an older product's compile writes none: no stale data versions on its generation
   node scripts/compile.ts
@@ -768,10 +869,12 @@ switchOver() {
   lap compile
   ops/computer-images.sh # the browser image (always: apps-mcp renders in it) and the computer images an agent names
   lap computer-images
-  # The kernel (every model and tool call passes it): installed and started if missing, restarted only when its own code or
-  # unit changed (a restart cuts the streams in flight; Codex and opencode retry); its own code includes the module code it
-  # loads in process (modules/<m>/src). Before compose and setup point callers at it. Not keyed on a product change, so it
-  # also heals a missing unit. The model gateway's old unit goes (lean-core 2a).
+  # The kernel (every model and tool call passes it): installed and started if missing, restarted only when the code it
+  # loads in process or its unit changed (a restart cuts the streams in flight; Codex and opencode retry). That code is the
+  # import closure of kernel/src/main.ts (kernelInputs), the compiler and the module code included, so a change under
+  # scripts/ reaches it too; a content hash of the closure is kept in the data dir and a mismatch restarts it, on a host
+  # that predates the hash (no marker yet) included. Before compose and setup point callers at it. Not keyed on a product
+  # change, so it also heals a missing unit. The model gateway's old unit goes (lean-core 2a).
   local old="$HOME/.config/systemd/user/aidenhq-gateway.service" kn="$HOME/.config/systemd/user/aidenhq-kernel.service"
   mkdir -p "$(dirname "$kn")"   # a fresh host's first apply runs before ops/setup.sh installs the other units
   if [ -e "$old" ]; then
@@ -810,17 +913,22 @@ switchOver() {
   # memory writes start (resumable: an agent already imported is skipped). A failure stops the apply. Only a product that ships
   # it runs it: a rollback to an older product has no kernel memory store to move into.
   if [ -f ops/memory-move.ts ]; then node ops/memory-move.ts "$data" "$inst"; fi
+  # The closure's content hash (kernelInputs), so a file whose content moved counts even when HEAD's diff cannot be read
+  # (a re-apply of a generation, an unreachable `before`). A host that predates it restarts on its first apply, and the
+  # hand-over and revert paths above keep a marker from a product whose script predates it from skipping that restart.
+  local kcode="$data/kernel-code" ksha
+  ksha="$(kernelInputs | git hash-object --stdin)"
   if ! cmp -s ops/units/aidenhq-kernel.service "$kn"; then
     cp ops/units/aidenhq-kernel.service "$kn"
     systemctl --user daemon-reload
     systemctl --user enable --quiet aidenhq-kernel
-    systemctl --user restart aidenhq-kernel
+    kernelRestart "$ksha" "$kcode"
     echo "kernel unit installed/updated"
   elif ! systemctl --user is-active --quiet aidenhq-kernel; then
-    systemctl --user restart aidenhq-kernel
+    kernelRestart "$ksha" "$kcode"
     echo "kernel started"
-  elif [ "$before" != "$product" ] && ! git diff --quiet "$before" "$product" -- kernel ':(glob)modules/*/src/**' ops/units/aidenhq-kernel.service; then
-    systemctl --user restart aidenhq-kernel
+  elif ! kernelCurrent "$kcode" "$ksha"; then
+    kernelRestart "$ksha" "$kcode"
     echo "kernel code changed: restarted"
   fi
   # The board mounts this mirror's directory read-only, so it must exist before compose starts (a first apply on a fresh host).

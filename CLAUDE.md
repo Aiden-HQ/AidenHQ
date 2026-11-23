@@ -217,8 +217,8 @@ updated, so that rule would re-review every open PR on every merge.
    reads once at start outside compose (a secret, e.g. a rotated token). Each apply prints `apply timing: <phase> <s>s`.
 
 Restarts never interrupt agents: the kernel runs jobs detached (`KillMode=process`, `kernel/src/jobs.ts`) and the next
-kernel adopts them from its job rows in `kernel.db` (pid, events offset); the apply restarts the kernel when its
-code changed. Dispatch, the github code host and the other modules are containers apply recreates when their image changes. See
+kernel adopts them from its job rows in `kernel.db` (pid, events offset); the apply restarts the kernel when the code it
+loads at startup changed. Dispatch, the github code host and the other modules are containers apply recreates when their image changes. See
 [docs/operations.md](docs/operations.md).
 
 Operating an instance: improve the system, don't babysit the agents. When an agent's work goes wrong, fix the source
