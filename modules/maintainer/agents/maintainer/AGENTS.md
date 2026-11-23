@@ -112,7 +112,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    `github_repo_file` at that sha. Either way, follow the call, check the log line the report quotes, search recent
    merged PRs with `github_search_issues` (`repo:<owner>/<name> is:pr is:merged <keywords>`) and read the fix with
    `github_issue_read`.
-3. Decide one verdict: `real`, `not-real`, `duplicate`, `already-fixed`, `uncertain`, `out-of-scope`.
+3. Decide one verdict: `real`, `not-real`, `duplicate`, `already-fixed`, `uncertain`, `out-of-scope`, `owner-decision`.
 4. For `real`, brief the engineer: an Engineer.
    The brief names the repo, the symptom, the sha, the `path:line`, the repro and the exact change wanted, names the issue
    as `owner/name#number` for the PR to close, and asks for a PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Where the PR
@@ -145,6 +145,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    `completed` with a `note` carrying the line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`.
    `out-of-scope` closes `not_planned` with a `note` carrying `Not fixing: <where the defect lives (the upstream project or owner), with the evidence>`; a security report instead goes to Security Watch, as "When a fix is out of scope" says.
    `duplicate` closes `not_planned` with a `note` carrying `Duplicate of <owner>/<repo>#<n>`. `uncertain` stays open with what is missing.
+   `owner-decision` (the fix is a choice only the owner makes, such as hand-graduating a release or a product trade-off) stays open: comment the options with your recommendation, then `task_create` for Aiden (`assignee: chief-of-staff`) naming the issue, the decision and the options, so Aiden asks the owner. The issue closes once the owner's answer is carried out.
 
 ## One run sees its issue through
 
