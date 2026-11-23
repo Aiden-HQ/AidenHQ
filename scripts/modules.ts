@@ -93,6 +93,8 @@ function eventRoutine(key: string, r: Obj, paperclip: Obj) {
   if ((r.schedules ?? []).length) fail(`${at}: an event routine runs on its events, never on a schedule (drop its schedules, an override's included)`);
   const held = paperclip.agents[r.agent]?.enabled_tools?.[e.connection] ?? [];
   if (!ev.reads.some((t: string) => held.includes(t))) fail(`${at}: agent ${r.agent} holds none of ${e.connection}'s ${ev.reads.join(", ")} (it can only subscribe to what it may read)`);
+  // A routine run holds platform authority (admission): one fired by outside text (Slack, GitHub) never does.
+  if ((paperclip.agents[r.agent]?.roles ?? []).includes("platform-engineer")) fail(`${at}: agent ${r.agent} holds platform-engineer; an event routine runs as an agent without it`);
   if (!(paperclip.agents[r.agent]?.enabled_tools?.paperclip_tasks ?? []).includes("routine_events")) fail(`${at}: agent ${r.agent} doesn't hold paperclip_tasks.routine_events, the one way a run reads its batch`);
   r.concurrency = "always_enqueue";
   r.description = `${String(r.description ?? "").trimEnd()}\n\n${EVENT_SUFFIX}`;

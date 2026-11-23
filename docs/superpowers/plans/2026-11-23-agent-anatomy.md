@@ -957,6 +957,7 @@ export function exportModule(name: string, d: { instanceDir: string; sha: string
   - `agents/<k>/AGENTS.md` → `modules/<k>/agents/<k>/AGENTS.md`, with frontmatter stripped after checking that it
     matches the YAML identity;
   - each local agent's `skills:` from Task 12's instance snapshot;
+  - each local routine's schedule as one literal minute (a more-than-hourly one is moved to an hourly cadence first);
   - delete `overrides.routines.*.autonomy`, `overrides.routines.*.status` and any `private_reads`;
   - set `product: <merged sha>`;
   - **keep `agents/*/memory.md`.**

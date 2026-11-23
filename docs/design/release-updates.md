@@ -41,8 +41,8 @@ is `kernel/src/updates.ts`.
   token yields). The planner tiers it like any apply. Only the updater's own filing, while auto-updates are on, whose head is
   exactly the pin its own verification writes for
   this base (`verify`: tag on the distro's main, newer than the current release, the tested stamp, the kernel descending), is the
-  AI reviewer's (Tier 1: the owner's standing authority). Every other release move is the owner's after the
-  reviewer. The autonomy cap limits what agents do, so they don't hold a write the kernel itself requests: with
+  AI reviewer's (Tier 1: the owner's standing authority). Every other release move is an ordinary apply: Tier 1, the AI
+  reviewer's, and the owner's only under autonomy off or after his own veto on the task. The autonomy cap limits what agents do, so they don't hold a write the kernel itself requests: with
   `auto_update` on, a verified release installs on the reviewer's yes with no owner approval (owner, 2026-11-18). The code host
   that owns the instance repo lands it and the kernel's apply executor runs `ops/apply-config.sh` once.
 - **The outcome.** The kernel follows the record: done is installed; anything else (a rejected card, a failed apply) is failed

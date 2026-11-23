@@ -109,7 +109,9 @@ export async function exportModule(name: string, d: ExportDeps): Promise<Export>
   const facts = values(d.memory, 20);
   const profile = values(d.profile.split("\n").map((l) => l.replace(/^\s*(?:[-*>#]+\s*)+/, "")), 20);
   const others = d.catalog.filter((m) => m.tier === "local" && m.name !== name).map((m) => `modules/${m.name}/`);
-  for (const [file, text] of Object.entries(files)) {
+  // Every file's name is scanned too, as its own entry: a name can carry a value its text doesn't.
+  const names = Object.keys(files).join("\n");
+  for (const [file, text] of [...Object.entries(files), ["(file names)", names] as [string, string]]) {
     const low = text.toLowerCase();
     if (secrets.some((s) => text.includes(s))) findings.push({ file, rule: "secret-value", detail: "a vault secret's value" });
     for (const [k] of settings.filter(([, s]) => text.includes(s))) findings.push({ file, rule: "setting-value", detail: `the value of the setting ${k}` });

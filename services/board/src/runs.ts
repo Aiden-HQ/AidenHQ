@@ -117,7 +117,7 @@ export function kernelWork(k: { url: string; token: string }): Work {
   return {
     job: (id) => get(`job=${encodeURIComponent(id)}`),
     task: async (id) => ((await get(`task=${encodeURIComponent(id)}`)) as { jobs: KernelJob[] }).jobs,
-    agent: async (id) => ((await get(`agent=${encodeURIComponent(id)}`)) as { jobs: AgentJob[] }).jobs,
+    agent: async (id) => ((await get(`agent=${encodeURIComponent(id)}&shown=1`)) as { jobs: AgentJob[] }).jobs,
     activity: () => get(""),
     async stop(what, account) {
       const res = await fetch(`${k.url}/v1/stop`, { method: "POST", headers: { authorization: `Bearer ${k.token}`, "content-type": "application/json", "x-aidenhq-account": account }, body: JSON.stringify(what), signal: AbortSignal.timeout(15_000) });

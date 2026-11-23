@@ -318,7 +318,7 @@ function Share({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
         <button className="btn" type="button" disabled={busy || !/^[\w.-]+\/[\w.-]+$/.test(repo.trim()) || !ref.trim()} onClick={preview}>Preview</button>
       </div>
       {error && <span className="st-error" role="alert">{error}</span>}
-      {filed && <Banner action={<a className="btn" href={`#/c/${filed}`}>Open</a>}>Filed as {filed}: it publishes once its card runs, as previewed; its outcome is on that task.</Banner>}
+      {filed && <Banner action={<a className="btn" href={`#/c/${filed}`}>Open</a>}>Filed as {filed}: not published yet. Open it for whether it published.</Banner>}
       {p && (
         <>
           {p.private && <Banner tone="danger">{p.repo} is private: a module is shared to a public repo.</Banner>}

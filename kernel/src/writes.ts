@@ -282,7 +282,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
     // context while it is open (records.ts drops it once closed), and the card keeps what it shows.
-    return { base, filed: { ...base, card: { ...card, reason: (t.cap ? capText(t.cap) : top?.reason)?.slice(0, 300) ?? "" }, tier: t.tier, merit: t.merit, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
+    return { base, filed: { ...base, card: { ...card, reason: [top?.reason, t.cap && capText(t.cap)].filter(Boolean).join("; ").slice(0, 300) }, tier: t.tier, merit: t.merit, rule: t.rule ?? top?.rule ?? null, cap: t.cap ?? null, state: t.state, ...(t.tier > 0 ? { context: { ...plan.review, diff: whole.details } } : {}) } };
   }
 
   /** Plan, tier, card and file. Tier 0 comes back claimed (the caller executes it); `satisfied` comes back done. */
@@ -437,7 +437,8 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const r = records.get(id)!;
     try {
       if (!open) return void records.finish(id, false, "Not run: the task is closed, so a leftover request runs nothing.");
-      if (stale && k?.stale === "fail") return void outcomeOf(id, false, "Not run: what it acts on changed since your preview, so nothing was written. Preview again and save that.");
+      // An owner-only kind is never filed again on its own: only the owner's save files one.
+      if (stale && (k?.stale === "fail" || k?.filer === "owner")) return void outcomeOf(id, false, "Not run: what it acts on changed since your preview, so nothing was written. Preview again and save that.");
       if (stale) {
         records.close(id, "stale", "stale: what it acts on changed since it was approved");
         const next = k ? await file(r.kind, k, r.requester, r.args, r.task, undefined, r.identifier ?? undefined).catch((e: Error) => e) : new Error(`${r.kind} is no longer installed`);

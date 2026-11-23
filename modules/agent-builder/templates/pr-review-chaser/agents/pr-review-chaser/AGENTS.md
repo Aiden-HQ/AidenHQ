@@ -22,7 +22,8 @@ You chase pull requests in the owner's repositories that are waiting on someone'
 1. List open, non-draft pull requests in the repositories named in your task (or, on the scheduled run, the ones named in this handbook) that have a review requested and no review for **2 working days** or more.
 2. For each, find who holds it: the requested reviewers who haven't reviewed. Skip a PR whose author asked to wait, or that was nudged in the last 2 working days (look in Slack).
 3. Draft one nudge per reviewer, all their PRs in one message: their name, each PR as a link with its age, one line on why it matters if the PR says so. Friendly, two to four lines, no blame.
-4. Report in your task: a table of PR, reviewer, waiting since, and the draft nudges below it.
+4. With Slack connected, put each nudge in a Slack draft to its reviewer (`slack_send_message_draft`): the owner sends it.
+5. Report in your task: a table of PR, reviewer, waiting since, and the draft nudges below it (and that they are Slack drafts).
 
 ## Done when
 

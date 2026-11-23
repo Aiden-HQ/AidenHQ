@@ -576,7 +576,8 @@ export function skillSides({ product, fetch, tree }: { product: string; fetch: (
     try {
       await tree(c.base, dir);
       const lists = (): Record<string, string[]> => Object.fromEntries(Object.entries<Dict>(compileTree(product, dir).paperclip.agents).map(([k, a]) => [k, a.skills ?? []]));
-      const before = lists();
+      // A base that doesn't compile counts as no skills: an apply may repair it (the head must compile).
+      const before = (() => { try { return lists(); } catch { return {}; } })();
       for (const f of c.files) {
         const t = Object.hasOwn(c.texts.head, f) ? c.texts.head[f] : undefined;
         if (t === undefined) rmSync(join(dir, f), { force: true });
@@ -585,7 +586,10 @@ export function skillSides({ product, fetch, tree }: { product: string; fetch: (
       const after = lists();
       const folders = new Set(c.files.map((f) => /^modules\/[^/]+\/skills\/[^/]+(?=\/)/.exec(f)?.[0]).filter((d): d is string => !!d && existsSync(join(dir, d))));
       const inFolders = [...folders].flatMap((d) => readdirSync(join(dir, d), { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => `${join(e.parentPath, e.name).slice(dir.length + 1)}`));
-      return { before, after, files: [...new Set([...c.files, ...inFolders])] };
+      // Each local skill an agent starts using, with its text (the reviewer reads what it newly steers).
+      const newly = new Set(Object.entries(after).flatMap(([k, ids]) => ids.filter((id) => !(before[k] ?? []).includes(id))));
+      const enabledTexts = Object.fromEntries([...newly].flatMap((id) => { const [m, n] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)]; const f = join(dir, "modules", m, "skills", n, "SKILL.md"); return existsSync(f) ? [[id, readFileSync(f, "utf8").slice(0, 8000)]] : []; }));
+      return { before, after, files: [...new Set([...c.files, ...inFolders])], enabledTexts };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

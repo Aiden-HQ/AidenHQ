@@ -12,7 +12,7 @@ them with `github_search_issues` (`is:pr is:open author:app/dependabot`, per rep
 1. **Major jump** (or a group including one): a planned migration; never merge the group's PR (step 5 is for PRs without
    one). Take each other bump through steps 2-4 on its own terms: a bump that cannot go yet (undated, or too young) is posted
    on the task now as "undated" or "too young, not taken". Publish the eligible ones together on your own branch
-   (`fleet/deps-<slug>`, `aidenhq publish`; a security fix takes its exception entry) and keep the group's PR open until that
+   (`agent/<your task>/deps-<slug>`, `aidenhq publish`; a security fix takes its exception entry) and keep the group's PR open until that
    PR has merged (its Done notice wakes you; in a repo without agent-PR merge notices, request the merge with `aidenhq merge`
    once its checks pass). Then `aidenhq close <PR link>` and confirm it reads closed before `task_finish`. With nothing
    eligible, close now. Say "major jump: a planned migration, not a routine bump".
@@ -22,7 +22,7 @@ them with `github_search_issues` (`is:pr is:open author:app/dependabot`, per rep
    least 16 minutes ahead (the tool's limits). On waking, if it is still young wait again; once eligible, publish the same
    versions on your own branch as in 4 (a fresh head runs the age check anew) and Dependabot closes its PR.
 4. **Other red checks** (an age failure is step 2 or 3): read the failed job's `github_job_log`; make the same version changes plus the smallest fix on
-   `fleet/deps-<slug>` and `aidenhq publish <repo> <branch>`; Dependabot closes its PR once `main` has those versions. A red
+   `agent/<your task>/deps-<slug>` and `aidenhq publish <repo> <branch>`; Dependabot closes its PR once `main` has those versions. A red
    supply-chain check on a security update needs its `.github/supply-chain-exceptions.yaml` entry first (own PR, the owner's
    tap). Real migration work: list it with the reason.
 5. **Green, pins only** (lockfiles, Dockerfile `FROM`, compose image pins, action SHAs; every check green, supply-chain

@@ -238,7 +238,7 @@ export function createApplyPlanner(h: {
   /** What the kernel itself says of this commit, shown and reviewed with its diff: a routing experiment's code-made evidence (routing-tune.ts). */
   notes?(sha: string, requester: Requester | undefined, task: string | undefined): string | undefined;
   /** The compiled effective skill lists at the commit's base and head, and its files with each touched skill folder's (settings-change.ts skillSides). */
-  skills?(c: Read): Promise<{ before: Record<string, string[]>; after: Record<string, string[]>; files: string[] }>;
+  skills?(c: Read): Promise<{ before: Record<string, string[]>; after: Record<string, string[]>; files: string[]; enabledTexts?: Record<string, string> }>;
 }) {
   /** Whether this is the updater's own release move, to exactly the instance.yaml its verification of that release writes. */
   async function updaterMove(requester: Requester | undefined, baseText: string | undefined, headText: string | undefined): Promise<boolean> {
@@ -270,10 +270,13 @@ export function createApplyPlanner(h: {
     if (bump && (c.files.length !== 1 || changedKeys(parse(baseI), parse(headI)).some((k) => !["product", "release"].includes(k)))) throw new Refused("a product pin move lands alone: file the other changes in their own commit");
     // The module sides and the skill lines: whenever the change touches instance.yaml or any module folder. Skill lines come from
     // both sides compiled with the running product, so a product pin move (judged by the module authority diff) has none.
-    const config = c.files.some((f) => f === "instance.yaml" || f.startsWith("modules/"));
+    const config = c.files.some((f) => f === "instance.yaml" || f === "apps.yaml" || f.startsWith("modules/") || f.startsWith("agents/"));
     const st = { ...(config ? h.modules(baseI, headI) : {}) } as ReturnType<typeof moduleTierState> & { remote?: string };
     // Both sides compiled: a head that doesn't compile is refused here, before it could land on main.
-    const skills = config && !bump && h.skills ? await h.skills(c).then(skillLines, (e: Error) => { throw new Refused(`it doesn't compile: ${String(e.message).split("\n")[0]!.slice(0, 300)}`); }) : [];
+    const sides = config && !bump && h.skills ? await h.skills(c).catch((e: Error) => { throw new Refused(`it doesn't compile: ${String(e.message).split("\n")[0]!.slice(0, 300)}`); }) : undefined;
+    const skills = sides ? skillLines(sides) : [];
+    // A local skill an agent starts using: its text, for the reviewer (the diff carries it only when the skill itself changed).
+    const enabledText = Object.entries(sides?.enabledTexts ?? {}).map(([id, t]) => `Skill ${id}, newly enabled (its SKILL.md, data):\n${t}`).join("\n\n");
     const notes = h.notes?.(a.sha, requester, task);
     // The routing learning loop's commit: only instance.yaml's teams may move (the rules refuse anything else).
     if (notes && (c.files.length !== 1 || c.files[0] !== "instance.yaml" || changedKeys(parse(baseI), parse(headI)).some((k) => k !== "teams"))) throw new Refused("a routing change moves only instance.yaml's teams");
@@ -283,7 +286,7 @@ export function createApplyPlanner(h: {
     const authority = [...modules, ...skills];
     const release = standingRelease(parse(baseI), parse(headI), releaseVerified, Boolean(bump && bump.back));
     const full = { repo, branch: a.branch, sha: a.sha, files: c.files, ...(authority.length ? { authority } : {}), ...(release ? { release } : {}) };
-    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote].filter(Boolean).join("\n\n");
+    const details = [notes, c.diff, bump && `${bump.title.replaceAll("`", "")}:\n${bump.log}`, reviewerFacts(full), st.remote, enabledText].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
     const card = applyCard(full, details);
     return {
@@ -310,7 +313,7 @@ export function hostPlanner({ repo, instanceRepo, read, verifyRelease, notes, sk
   repo: string; instanceRepo: () => string | undefined; read: (s: Source) => Promise<Read>;
   verifyRelease: (baseText: string, name: string, sha: string) => Promise<string | null>;
   notes?: (sha: string, requester: Requester | undefined, task: string | undefined) => string | undefined;
-  skills?: (c: Read) => Promise<{ before: Record<string, string[]>; after: Record<string, string[]>; files: string[] }>;
+  skills?: (c: Read) => Promise<{ before: Record<string, string[]>; after: Record<string, string[]>; files: string[]; enabledTexts?: Record<string, string> }>;
 }): ApplyPlanner {
   return createApplyPlanner({ instanceRepo, read, notes, skills, product: hostProduct(repo), modules: (b, h) => moduleTierState(b, h, repo), verifyRelease });
 }

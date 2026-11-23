@@ -180,5 +180,7 @@ test("an agent's history leaves quiet routine runs out before its limit of 50", 
     ins.run(`j-q${i}`, `tq${i}`, 4_000_000 + i, "done", 4_000_100 + i);
     facts.record({ type: "job.ended", subject: `job:j-q${i}`, version: "ended", task: `tq${i}`, at: new Date(4_000_100 + i).toISOString(), actor: "kernel", source: "live", data: { quiet: true } });
   }
-  assert.deepEqual(work.agent("a9").jobs.map((j) => j.id), ["j-fail"]);
+  assert.deepEqual(work.agent("a9", { shown: true }).jobs.map((j) => j.id), ["j-fail"]);
+  // A detector's read keeps them: a quiet success after failures is a success.
+  assert.equal(work.agent("a9").jobs.length, 50);
 });

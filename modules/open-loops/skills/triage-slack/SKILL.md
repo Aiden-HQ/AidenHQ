@@ -5,7 +5,7 @@ description: "Decides each event of a Slack live-feed batch as nothing, a needs-
 
 # Slack triage
 
-`slack_owner` once gives the owner's Slack ID, `<me>`; unpaired: finish "Slack not paired". `routine_events` with the batch id from the task (`New events: batch …`); none: finish; `expired`: finish saying the batch's events were gone before this run. Each event has `id` (`<channel>:<ts>`), `resource` (the channel), `kind`, `author` (a Slack user ID), `text`, `url` (the permalink) and, on a reply, `thread` (its thread's root ts).
+`slack_owner` once gives the owner's Slack ID, `<me>`; unpaired: finish "Slack not paired". `routine_events` with the batch id from the task (`New events: batch …`); `pending`: call again after `retry_after_s`; none: finish; `expired`: finish saying the batch's events were gone before this run. Each event has `id` (`<channel>:<ts>`), `resource` (the channel), `kind`, `author` (a Slack user ID), `text`, `url` (the permalink) and, on a reply, `thread` (its thread's root ts).
 
 Decide each event on its own text the moment you see it, however recent. Default is nothing.
 

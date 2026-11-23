@@ -246,7 +246,7 @@ export function createFlow(d: FlowDeps) {
     const repos = [...new Set([...(wanted.includes("*") && d.repos ? await d.repos() : []), ...wanted.filter((r) => r !== "*")].map((r) => r.toLowerCase()))];
     // At most EVENT_REPOS a pass, starting where the last pass stopped, so every subscribed repo is read in turn.
     const state = readJson(eventsFile, {});
-    const from = repos.length > EVENT_REPOS ? Number(state["@next"] ?? 0) % repos.length : 0;
+    const from = repos.length ? Number(state["@next"] ?? 0) % repos.length : 0;
     const turn = [...repos.slice(from), ...repos.slice(0, from)].slice(0, EVENT_REPOS);
     lowBudget = "";
     let visited = 0;
@@ -256,7 +256,7 @@ export function createFlow(d: FlowDeps) {
       if (lowBudget) { d.log("events: the pass stops under the API budget", { repo, why: lowBudget }); break; }
     }
     // The next pass starts after the last repo this one read.
-    if (repos.length > EVENT_REPOS) writeJson(eventsFile, { ...readJson(eventsFile, {}), "@next": (from + visited) % repos.length });
+    if (repos.length) writeJson(eventsFile, { ...readJson(eventsFile, {}), "@next": (from + visited) % repos.length });
   }
   /**
    * One repo's new events, oldest first, to the kernel. Page one is a conditional read (its ETag); later pages run back to the
@@ -284,6 +284,8 @@ export function createFlow(d: FlowDeps) {
       writeJson(eventsFile, { ...readJson(eventsFile, {}), [repo]: { cursor: fresh[0] ? String(fresh[0].id) : "0", ...(etag ? { etag } : {}) } });
       return;
     }
+    // A repo started on an empty feed (cursor 0) has no gap: everything read since is new.
+    if (saved.cursor === "0") reached = true;
     const batch = reached ? fresh : fresh.slice(0, 100);
     if (!reached) d.log("events: a gap in the feed; read its newest page only", { repo, cursor: saved.cursor ?? null });
     let cursor = saved.cursor as string | undefined, sent = 0;

@@ -182,7 +182,12 @@ export function createEvents(o: {
           if (!s || !reads(s.agent, s.connection)) { drop(b, "the subscription or its read grant is gone"); continue; }
           if (subOf(s) !== b.sub) { drop(b, "the routine's subscription changed since these events were accepted"); continue; }
           let r: Awaited<ReturnType<typeof o.routine>>;
-          try { r = await o.routine(b.routine); } catch (e) { log("events: routine lookup failed; retried next drain", { routine: b.routine, err: String((e as Error).message).slice(0, 200) }); continue; }
+          try { r = await o.routine(b.routine); } catch (e) {
+            // To the back of the line: one routine whose lookup fails never holds up the batches behind it.
+            if (b.state === "sealed") db.prepare("UPDATE event_batches SET sealed_at = ? WHERE id = ?").run(now(), b.id);
+            log("events: routine lookup failed; retried next drain", { routine: b.routine, err: String((e as Error).message).slice(0, 200) });
+            continue;
+          }
           if (r?.status !== "active" || r.assignee !== s.agent) { drop(b, r ? `the routine is ${r.status}` : "the routine is gone"); continue; }
           if (b.state === "sealed") {
             const since = now() - HOUR;

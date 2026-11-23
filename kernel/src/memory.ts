@@ -9,7 +9,6 @@ import { join } from "node:path";
 export { fillMemory } from "../sdk/src/fence.ts";
 
 export const MEMORY_MAX = 4096, FACT_MAX = 500, SOURCE_MAX = 300, WRITES_PER_JOB = 10;
-const TOMBSTONES = 500;
 export type Line = { date: string; src: string; fact: string };
 export type Imported = { at: string; from: string; lines: number; merged: number; refused: number; dropped: number };
 export type Doc = { facts: Line[]; forgotten: string[]; imported?: Imported };
@@ -24,13 +23,15 @@ const TASK_ID = /^([A-Z][A-Z0-9]{0,9}-\d{1,9}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4
 const SHA = /^[0-9a-f]{7,40}$/;
 
 /** Text shaped like a credential (a vendor token prefix, a private key), the one list memory and a module share check. */
-export const SECRET_SHAPES = /\b(sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|ahq[a-z]?_[A-Za-z0-9]{16,})|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+export const SECRET_SHAPES = /\b(sk-[\w-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|ahq[a-z]?_[A-Za-z0-9_.-]{16,})|-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 /** A memory line with each credential-shaped value blanked (the shapes only: prose like "token budget" stays). */
 const redact = (t: string) => t.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[secret]").replace(new RegExp(SECRET_SHAPES.source, "g"), "[secret]").replace(/:\/\/[^/\s@]+@/g, "://…@")
   .replace(/([?&](?:token|key|secret|password|sig|access_token)=)[^&\s'"]+/gi, "$1…");
 
 /** A fact as compared for duplicates and tombstones: lower case, single spaces, no trailing punctuation. */
 export const norm = (fact: string) => fact.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!;,\s]+$/, "");
+/** A forgotten fact's marker: a short hash of its normal form, kept for good (never expired, so a forget always holds). */
+const mark = (fact: string) => createHash("sha256").update(norm(fact)).digest("hex").slice(0, 16);
 
 const REFUSE: [RegExp, string][] = [
   [/<untrusted-data|untrusted content|<!--|aidenhq:|```|~~~/i, "it carries markup or a fence"],
@@ -79,7 +80,6 @@ export function createMemory(o: { dir: string; now?: () => number }) {
   const digestOf = (d: Doc) => createHash("sha256").update(JSON.stringify(d)).digest("hex");
   const save = (key: string, d: Doc) => {
     if (bytes(d) > MEMORY_MAX) throw new MemoryError(413, `memory is full (${MEMORY_MAX} bytes): compact it with memory_rewrite (merge or drop lines), then note again`);
-    d.forgotten = d.forgotten.slice(-TOMBSTONES);
     mkdirSync(root, { recursive: true });
     const f = fileOf(key), tmp = `${f}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(d), { mode: 0o600 });
@@ -99,7 +99,7 @@ export function createMemory(o: { dir: string; now?: () => number }) {
   const known = (d: Doc, fact: string) => {
     const n = norm(fact);
     if (d.facts.some((l) => norm(l.fact) === n)) throw new MemoryError(409, "that fact is already in memory");
-    if (d.forgotten.includes(n)) throw new MemoryError(409, "that fact was forgotten; it isn't learned again");
+    if (d.forgotten.includes(mark(fact))) throw new MemoryError(409, "that fact was forgotten; it isn't learned again");
   };
 
   return {
@@ -128,7 +128,7 @@ export function createMemory(o: { dir: string; now?: () => number }) {
       if (!gone.length) return { removed: [] as string[] };
       // One fact a call: a match that names several forgets none (a forgotten fact is never learned again).
       if (gone.length > 1) throw new MemoryError(400, `"${String(n.match).slice(0, 60)}" matches ${gone.length} facts: quote more of the one to forget`);
-      spend(n.job, () => save(key, { ...d, facts: d.facts.filter((l) => !gone.includes(l)), forgotten: [...d.forgotten, ...gone.map((l) => norm(l.fact))] }));
+      spend(n.job, () => save(key, { ...d, facts: d.facts.filter((l) => !gone.includes(l)), forgotten: [...d.forgotten, ...gone.map((l) => mark(l.fact))] }));
       return { removed: gone.map(lineOf) };
     },
     rewrite(key: string, r: { facts: Line[]; digest: string; job: string; removeOnly: boolean }) {
@@ -140,12 +140,12 @@ export function createMemory(o: { dir: string; now?: () => number }) {
         const kept = d.facts.find((b) => same(b, raw));
         if (!kept && r.removeOnly) throw new MemoryError(400, "this rewrite only removes lines: every fact must be one already there, unchanged");
         const l = kept ?? checkLine(raw);
-        if (!kept && d.forgotten.includes(norm(l.fact))) throw new MemoryError(409, `"${l.fact.slice(0, 60)}" was forgotten; it isn't learned again`);
+        if (!kept && d.forgotten.includes(mark(l.fact))) throw new MemoryError(409, `"${l.fact.slice(0, 60)}" was forgotten; it isn't learned again`);
         if (next.some((x) => norm(x.fact) === norm(l.fact))) throw new MemoryError(409, `"${l.fact.slice(0, 60)}" is listed twice`);
         next.push(l);
       }
       const removed = d.facts.filter((b) => !next.some((x) => norm(x.fact) === norm(b.fact)));
-      const doc = { ...d, facts: next, forgotten: [...d.forgotten, ...removed.map((l) => norm(l.fact))] };
+      const doc = { ...d, facts: next, forgotten: [...d.forgotten, ...removed.map((l) => mark(l.fact))] };
       spend(r.job, () => save(key, doc));
       return { bytes: bytes(doc) };
     },
@@ -169,7 +169,7 @@ export function createMemory(o: { dir: string; now?: () => number }) {
         const fact = tail ? text.slice(0, tail.index).trim() : text;
         let l: Line;
         try { l = checkLine({ date: /\b(\d{4}-\d{2}-\d{2})\b/.exec(tail?.[1] ?? text)?.[1] ?? today(), src: `migration:${from}`, fact }, { migration: from }); } catch { refused++; continue; }
-        if (facts.some((x) => norm(x.fact) === norm(l.fact)) || d.forgotten.includes(norm(l.fact))) { merged++; continue; }
+        if (facts.some((x) => norm(x.fact) === norm(l.fact)) || d.forgotten.includes(mark(l.fact))) { merged++; continue; }
         facts.push(l);
       }
       facts.sort((a, b) => a.date.localeCompare(b.date));
