@@ -54,8 +54,8 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   // without the buildx plugin fails the first with "unknown flag"), and each is a no-op where the other works. Each goes
   // through the step wrapper so its status is recorded: one failing is expected, both failing is a prune that ran nothing,
   // and the verification has to see that even when the cache under its ceiling would read clean.
-  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -f --max-used-space 20GB"), `buildx cache cap: ${execs.join(" | ")}`);
-  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -f --keep-storage 20GB"), `classic-builder cache cap: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -af --max-used-space 20GB"), `buildx cache cap: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -af --keep-storage 20GB"), `classic-builder cache cap: ${execs.join(" | ")}`);
   // The image and container prunes go through the step wrapper, which records their status for the verification: the `-`
   // keeps a failure from skipping the next step, and the record is how it still fails the unit.
   assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
