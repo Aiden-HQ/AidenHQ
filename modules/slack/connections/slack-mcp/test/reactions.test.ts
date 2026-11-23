@@ -232,7 +232,8 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
     // The same answer in an all-channels scan: the DM is a kind the sign-in has no search scope for, so it is dropped.
     expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
-    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }, { channel: "D1", ts: "2.2" }] });
+    // With the im scope granted it could be shown, but Slack never said what it is: the set is unknown, never guessed in.
+    expect(await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.im"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl: noImScope })).toMatchObject({ ok: false });
     // A transient failure (not a scope answer) leaves the set unknown instead of silently short.
     const flaky = (async (url: string | URL) => {
       const u = new URL(String(url));
@@ -263,6 +264,11 @@ describe("scanMyReactions", () => {
     }) as unknown as typeof fetch;
     const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, now: () => clock, deadlineMs: 90_000 });
     expect(scan).toMatchObject({ ok: false, detail: expect.stringContaining("deadline") });
+  });
+
+  it("does not read a page with no item list as an empty last page", async () => {
+    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "c2"), { ok: true, response_metadata: { next_cursor: "" } }]);
+    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("item list") });
   });
 
   it("carries permalink when the item has one", async () => {

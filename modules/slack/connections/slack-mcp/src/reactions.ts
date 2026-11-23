@@ -314,6 +314,14 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     const kind = r.ok ? channelKind(r.json.channel ?? {}) : r.error === "missing_scope" ? kindFromNeeded(r.needed) : undefined;
     if (!r.ok && !kind) return { detail: r.detail, ...(r.error ? { error: r.error } : {}), ...(r.needed !== undefined ? { needed: r.needed } : {}) };
     if (!kind) return { detail: `Slack didn't say what kind of conversation ${channel} is` };
+    // A kind inferred from a missing permission (not from the channel's own flags) is only used to exclude: a channel that
+    // needed a non-public scope can't be public, and one whose kind's search scope wasn't granted is out of scope anyway.
+    // It is never used to include a channel, since the permission names what the call needed, not what the channel is.
+    if (!r.ok) {
+      const excluded = plan.publicOnly ? kind !== "public" : !(plan.scopes === undefined || plan.scopes.has(SEARCH_SCOPE[kind]));
+      if (excluded) return visibility.set(channel, false), false;
+      return { detail: r.detail, error: r.error, needed: r.needed };
+    }
     const ok = (plan.publicOnly ? kind === "public" : true) && (plan.scopes === undefined ? true : plan.scopes.has(SEARCH_SCOPE[kind]));
     visibility.set(channel, ok);
     return ok;
@@ -339,18 +347,21 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     const r = await get("reactions.list", { full: "true", limit: String(pageSize), ...(cursor ? { cursor } : {}), ...(numbered ? { page: String(numbered) } : {}) });
     if (!r.ok) return r;
     const { json } = r;
-    const items: unknown[] = Array.isArray(json.items) ? json.items : [];
+    // A page without an item list isn't an empty page: it is an answer this scan can't read, so the set is unknown.
+    if (!Array.isArray(json.items)) return { ok: false, detail: "reactions.list answered without an item list" };
+    const items: unknown[] = json.items;
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as Record<string, any>;
       const message = messageOf(item, plan.emoji, signIn.userId);
       if (!message) continue;
+      // Skip what an earlier answer already returned before any metadata lookup: a continuation replays those pages.
+      const key = `${message.channel}\u0000${message.ts}`;
+      if (seen.has(key)) continue;
       if (plan.publicOnly || plan.scopes) {
         const show = await visible(message.channel);
         if (typeof show !== "boolean") return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}) };
         if (!show) continue;
       }
-      const key = `${message.channel}\u0000${message.ts}`;
-      if (seen.has(key)) continue;
       if (full) {
         // The limit was reached on an earlier page and this is the first match after it: there is more to return.
         return { ok: true, messages, nextCursor: encodePosition({ n: pageSize, seen: [...seen], ...scopeKey, ...(position?.from ?? (!position && start) ? { from: position?.from ?? start } : {}) }) };
