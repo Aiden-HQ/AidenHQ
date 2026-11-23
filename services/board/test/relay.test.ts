@@ -127,29 +127,24 @@ describe("/internal/relay", () => {
     expect((await relay({ comment_id: e.id, target: child.identifier })).status).toBe(200);
   });
 
-  it("passes the owner's ask to the Researcher task Aiden handed out for it, and only that ask", async () => {
-    const older = say(chat, "[telegram] send Dana the notes", { createdAt: new Date(Date.now() - 60_000).toISOString() });
-    const ask = say(chat, "[telegram] move my 3pm with Dana to 4 and email her the WOR-9999 notes");
-    // An engineer task in review elsewhere doesn't make the ask ambiguous: the Researcher task was made for this message.
-    const task = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: new Date(Date.now() + 1000).toISOString() });
-    issues.push(task);
-    expect((await relay({ comment_id: older.id, target: task.identifier })).status).toBe(403); // not the newest ask before it
-    const res = await relay({ comment_id: ask.id, target: task.identifier });
+  it("passes the owner's ask to each Researcher task Aiden handed out under the chat, once per task", async () => {
+    // Tasks it names are the ask's subject, even one in review (the engineer task); one message may ask for two things.
+    const ask = say(chat, `[telegram] email Dana a summary of ${eng.identifier}, and cancel Friday's review`);
+    const email = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS });
+    const cancel = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS });
+    issues.push(email, cancel);
+    const res = await relay({ comment_id: ask.id, target: email.identifier });
     expect(res.status).toBe(200);
     expect(res.json).toMatchObject({ relayed: true, to: "Researcher" });
-    // Handed out by another agent, or before the owner wrote: no.
-    const planted = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: SCOUT, createdAt: new Date(Date.now() + 1000).toISOString() });
-    issues.push(planted);
-    const again = say(chat, "[telegram] and cancel Friday's review");
+    expect((await relay({ comment_id: ask.id, target: cancel.identifier })).status).toBe(200);
+    expect((await relay({ comment_id: ask.id, target: email.identifier })).status).toBe(403); // once per task
+    // A Researcher task another agent hung under the chat, or one outside it, takes no words.
+    const planted = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: SCOUT });
+    const outside = make({ assigneeAgentId: RESEARCHER, createdByAgentId: COS });
+    issues.push(planted, outside);
+    const again = say(chat, "[telegram] and move my 3pm");
     expect((await relay({ comment_id: again.id, target: planted.identifier })).status).toBe(403);
-    // A go-ahead for a task waiting on him (the engineer in review) is never a new ask, even when it is the newest message.
-    const go = say(chat, `[telegram] apply ${eng.identifier}`);
-    const next = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: new Date(Date.now() + 2000).toISOString() });
-    issues.push(next);
-    expect((await relay({ comment_id: go.id, target: next.identifier })).status).toBe(403);
-    const early = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: "2026-11-02T10:00:00Z" });
-    issues.push(early);
-    expect((await relay({ comment_id: again.id, target: early.identifier })).status).toBe(403);
+    expect((await relay({ comment_id: again.id, target: outside.identifier })).status).toBe(403);
   });
 
   it("refuses a caller that is not the Chief of Staff", async () => {

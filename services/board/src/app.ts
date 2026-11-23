@@ -1041,11 +1041,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const { comment_id, target } = parse(RelaySchema, body);
           const ctx = await context();
           const chats = (await pc.openIssues()).filter((i) => i.assigneeAgentId === cos.id && (i.labels ?? []).some((l) => l.name === "chat"));
-          let source: { chat: Issue; comment: Comment; all: Comment[] } | undefined;
+          let source: { chat: Issue; comment: Comment } | undefined;
           for (const chat of chats) {
-            const all = await pc.comments(chat.id);
-            const comment = all.find((c) => c.id === comment_id);
-            if (comment) source = { chat, comment, all };
+            const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
+            if (comment) source = { chat, comment };
           }
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
@@ -1073,17 +1072,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const engineerStates = await stateRows(engineers.map((i) => i.id));
           const inReview = engineers.filter((i) => ["card_review", "card_owner", "module_wait"].includes(engineerStates.get(i.id)?.reason ?? "")).map((i) => i.identifier);
           const waiting = [...new Set([...inReview, ...asking.filter((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)?.kind !== "engineer").map((k) => k.identifier)])];
-          // The owner's ask itself, for the Researcher: a task the chat's agent handed out under this chat, whose newest owner
-          // message before it was created is this one (an email or calendar change he asked Aiden for). The task is bound to the
-          // words by when it was made, so task ids in them are the ask's subject ("email Dana about WOR-42"), not a target.
-          const owners = source.all.filter((c) => c.authorType === "user" && c.authorUserId === ctx.me && !c.deletedAt && c.createdAt <= dest.createdAt);
-          const asked = agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me) && owners.reduce<Comment | undefined>((a, c) => (!a || c.createdAt > a.createdAt ? c : a), undefined)?.id === source.comment.id;
-          // Words naming a task that waits on him are a go-ahead for that task, never a new ask.
-          const goAhead = waiting.find((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(words));
-          if (asked && goAhead) throw new Refused(`refused: the owner's words name ${goAhead}, which waits on him: relay them there`);
+          // The owner's ask for the Researcher (an email or calendar change he asked Aiden for): a task the chat's agent handed
+          // out under this chat. Aiden names the task, so his words go there as they are (task ids in them are the ask's
+          // subject), once per task: one message may ask for several things. An answer to a question it is asking stays bound
+          // like any answer (the target check, once per message).
+          const asked = !ask && agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me);
           if (!asked) assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
-          // Once per message, whatever the target: reserved before posting, released if the post fails.
-          const key = `relayed:${comment_id}`;
+          // Once per message, whatever the target (per task for an ask): reserved before posting, released if the post fails.
+          const key = asked ? `relayed:${comment_id}:${dest.id}` : `relayed:${comment_id}`;
           if (store.meta(key)) throw new Refused("refused: that message was already relayed");
           store.setMeta(key, new Date().toISOString());
           const from: DeliveredFrom = { identifier: source.chat.identifier, commentId: source.comment.id, note: `Written in chat on ${source.chat.identifier}.` };
