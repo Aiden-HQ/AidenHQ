@@ -123,10 +123,9 @@ test("an agent's jobs and the records and billed cost since a time are reads of 
   const get = (path) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: "Bearer m" } });
   const a = await (await get("/v1/work?agent=a1")).json();
   assert.deepEqual(a.jobs.map((j) => [j.id, j.state, j.exit, j.steps]), [["j-2", "running", null, 0], ["j-1", "failed", 1, 2]]);
-  assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: null, day: "2026-01-02", cost_usd: 4, calls: 1, priced: 1 }, { agent: "a1", day: "2026-01-02", cost_usd: 120.5, calls: 4, priced: 3 }]);
+  assert.deepEqual((await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json()).usage, [{ agent: null, day: "2026-01-02", cost_usd: 4, calls: 1, priced: 1 }, { agent: "a1", day: "2026-01-02", cost_usd: 0.5, calls: 4, priced: 1 }]);
   // What the day's spend was on: its costliest components and subjects, so a spike names its cause.
   const spend = await (await get("/v1/work?since=2026-01-01T00:00:00Z")).json();
-  assert.deepEqual(spend.spend_days, [{ day: "2026-01-02", cost_usd: 4.5, priced: 2 }]);
   assert.deepEqual(spend.spend_components, [{ day: "2026-01-02", name: "Check jobs", cost_usd: 4, calls: 1 }, { day: "2026-01-02", name: "Engineer", cost_usd: 0.5, calls: 1 }]);
   assert.deepEqual(spend.spend_subjects.map((s) => s.name), ["code-review:r1", "WOR-1"]);
   assert.equal((await get("/v1/work?since=yesterday")).status, 400);

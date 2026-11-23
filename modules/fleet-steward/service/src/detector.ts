@@ -35,7 +35,7 @@ export function failingScopes(rows: FailingScope[]): { key: string; reason: stri
 }
 
 type SpendTop = { day: string; name: string; cost_usd: number; calls: number };
-type SpendRead = { spend_days?: { day: string; cost_usd: number; priced: number }[]; spend_components?: SpendTop[]; spend_subjects?: SpendTop[] };
+type SpendRead = { usage?: { day: string; cost_usd: number; priced: number }[]; spend_components?: SpendTop[]; spend_subjects?: SpendTop[] };
 const SPEND_FACTOR = 2; // a day's billed spend over this many times the average of the 7 days before it
 const SPEND_BASELINE_DAYS = 3; // priced days (of those 7) a baseline needs: a new install has none and stays silent
 const SPEND_FLOOR_USD = 10; // below this a doubling is noise, not spend
@@ -49,7 +49,7 @@ const SPEND_FLOOR_USD = 10; // below this a doubling is noise, not spend
 export function spendSpike(r: SpendRead, t: number): Incident[] {
   const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
   const byDay = new Map<string, number>();
-  for (const u of r.spend_days ?? []) if (u.priced > 0 && u.cost_usd > 0) byDay.set(u.day, u.cost_usd);
+  for (const u of r.usage ?? []) if (u.priced > 0 && u.cost_usd > 0) byDay.set(u.day, (byDay.get(u.day) ?? 0) + u.cost_usd); // per agent and day: summed
   let worst: { day: string; spent: number; avg: number; n: number } | undefined;
   for (const day of [dayOf(t - DAY_MS), dayOf(t)]) {
     const from = dayOf(Date.parse(day) - 7 * DAY_MS);
