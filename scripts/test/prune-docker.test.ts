@@ -58,7 +58,7 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -af --keep-storage 20GB"), `classic-builder cache cap: ${execs.join(" | ")}`);
   // The image and container prunes go through the step wrapper, which records their status for the verification: the `-`
   // keeps a failure from skipping the next step, and the record is how it still fails the unit.
-  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h"), `48h image retention kept: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h --filter label!=aidenhq.keep=true"), `48h image retention kept: ${execs.join(" | ")}`);
   // The container step records its own status: a listing that failed while the daemon was unreachable can recover before
   // the verification's re-listing, and its fresh listing would then read as a clean scan, so its status has to be kept.
   assert.ok(execs.some((e) => e === "-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh"), `one-off reclaim: ${execs.join(" | ")}`);
@@ -139,7 +139,7 @@ test("the apply-time prunes are independent too, and keep the same retention", (
   for (const l of lines) assert.match(l, /^\s*timeout -k \S+ \d+m /, `soft-only deadline on apply-time prune: ${l}`);
   assert.ok(lines.some((l) => /docker builder prune -f --max-used-space 20GB\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /docker builder prune -f --keep-storage 20GB\b/.test(l)), lines.join("\n"));
-  assert.ok(lines.some((l) => /docker image prune -af --filter until=48h\b/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /docker image prune -af --filter until=48h --filter label!=aidenhq\.keep=true\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /bash ops\/prune-docker-containers\.sh\b/.test(l)), lines.join("\n"));
   assert.doesNotMatch(apply, /^\s*docker (system|volume) prune.*--volumes/m);
 });
@@ -686,4 +686,14 @@ test("docker system df timing out reports the breakdown as unknown and does not 
   const m = metrics({ timeout: true, df: `case "$*" in *"system df"*) sleep 30 ;; *) exit 0 ;; esac` });
   assert.match(m.body, UNKNOWN);
   assert.doesNotMatch(m.body, /_size_bytes \d/m, m.body);
+});
+
+test("both image prunes skip the computer images, which the browser Dockerfile labels and every other computer image inherits", () => {
+  const keep = "--filter label!=aidenhq.keep=true";
+  for (const [name, text] of [["unit", service], ["apply", apply]]) {
+    const prunes = text.split("\n").filter((l) => /docker image prune/.test(l) && !/^\s*#/.test(l));
+    assert.ok(prunes.length >= 1, `${name}: no image prune`);
+    for (const l of prunes) assert.ok(l.includes(keep), `${name}: image prune without the keep filter: ${l}`);
+  }
+  assert.match(readFileSync(join(repo, "services/computer/images/browser/Dockerfile"), "utf8"), /^LABEL aidenhq\.keep=true$/m);
 });
