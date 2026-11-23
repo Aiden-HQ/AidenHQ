@@ -32,7 +32,8 @@ test("task-replies' done/not-needed bullet leaves an owner-held task for the own
 
 test("each task the reply run holds has its own close path", () => {
   const bullet = block(read("modules/chief-of-staff/skills/task-replies/SKILL.md"), /\*\*Done or not needed:\*\*/);
-  assert.match(bullet, /A task assigned to this agent finishes with `task_finish` and that task\'s `issue` — except its part of the owner's task, which goes back with `task_handoff`; a child of one of its tasks takes `task_comment` and stays open/, "an assigned task is finished, an owner part handed off, a child commented (task-scope.ts scopeOf)");
+  assert.match(bullet, /A task assigned to this agent finishes with `task_finish` and that task's `issue` — except its part of the owner's task, which goes back with `task_handoff` \(on the run's own task it also records the owner wait; a part the run task only names gets no wait, so say in the run summary that it is theirs to close\)/, "the run's own part is handed back, and a part that gets no wait is reported as the owner's to close");
+  assert.match(bullet, /A child of one of its tasks takes `task_comment` and stays open/, "a child of a task the agent holds is in its write scope (task-scope.ts scopeOf)");
   assert.match(bullet, /Finishing the run task itself is step 4's, after every reply/, "the run task is finished once, after every reply");
 });
 
@@ -40,8 +41,8 @@ test("the daily brief's \"Still open\" close path does not `task_finish` an owne
   const agents = read("modules/chief-of-staff/agents/chief-of-staff/AGENTS.md");
   const line = block(agents, /\*\*Still open:\*\*/);
   assert.doesNotMatch(line, /task_finish/, "the close path names no `task_finish`");
-  assert.match(line, /"close" is `task_comment` with their reply as the evidence line, telling them the task stays for them to close on the board — say so, and if the comment is refused tell them in the reply/, "close comments, says the task is theirs to close, and a refused comment is said in the reply");
-  assert.match(line, /"drop it" is `task_cancel` with `issue` on a task this agent filed, and a `task_comment` when that is refused/, "a drop cancels where it may and comments when it may not");
+  assert.match(line, /"close" is `task_cancel` with `issue`, their reply as the evidence comment, and when that is refused \(a task the agent did not file is not its to cancel\) `task_comment` with their reply as the evidence line, telling them the task stays for them to close on the board/, "close cancels a task the agent filed, answers a refused cancel with a comment naming the task as the owner's, and covers a todo filed by someone else");
+  assert.match(line, /"drop it" takes those same two paths/, "a drop takes the same cancel-then-comment path");
   assert.match(line, /"snooze 7d \/ close on the board \/ delegate" \(closing is the owner's own act\)/, "the offered options say closing is the owner's own act");
   assert.match(line, /"snooze" is `fleet_followup_snooze`/, "snooze is unchanged");
   assert.match(line, /"delegate to X" is `task_delegate`/, "delegate is unchanged");
