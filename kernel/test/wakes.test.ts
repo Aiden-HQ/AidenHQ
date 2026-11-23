@@ -62,6 +62,8 @@ function world() {
       if (body.blockedByIssueIds) i.blockedBy = i.blockedBy.filter((x) => body.blockedByIssueIds.includes(x.id));
       if (body.status) Object.assign(i, { status: body.status, updatedAt: iso(clock), ...(i.statusVersion ? { statusVersion: i.statusVersion + 1 } : {}) });
       if (fail.cancelAfterPatch?.[m[1]]) { delete fail.cancelAfterPatch[m[1]]; Object.assign(i, { status: "cancelled", cancelledAt: iso(clock) }); }
+      // An owner's reassignment landing with the reopen (`fail.reassignOnPatch`): a status-only PATCH keeps it.
+      if (fail.reassignOnPatch?.[m[1]]) { Object.assign(i, { assigneeAgentId: fail.reassignOnPatch[m[1]], assigneeUserId: null }); delete fail.reassignOnPatch[m[1]]; }
       if (body.comment) (comments[i.id] ??= []).push({ id: `c-p${(comments[i.id] ?? []).length}`, body: body.comment, authorAgentId: null, createdAt: iso(clock) });
       return { status: 200, json: i };
     }
@@ -991,6 +993,26 @@ test("a page that fails leaves the pages before it scanned, and a chat it could 
   delete w.fail.donePages;
   await w.wakes.poll();
   assert.equal(w.issues["chat-204"].status, "todo", "a later pass reaches it");
+});
+
+test("a chat moved to another agent while its reply is scanned leaves the row for that agent, not a refused wake", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  // The scan's snapshot names AGENT, while the control plane already holds the reply on OTHER's chat (finished), then reopened.
+  const closed = "2026-11-18T10:00:02.500Z";
+  const snapshot = { ...w.issues.chat };
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  // The owner moves it to OTHER right before the reopen: the PATCH keeps the new assignee.
+  w.fail.reassignOnPatch = { chat: OTHER };
+  await w.wakes.scan(snapshot, { source: "poll" });
+  assert.equal(w.issues.chat.status, "todo", "it was reopened");
+  assert.equal(w.issues.chat.assigneeAgentId, OTHER);
+  assert.deepEqual(w.rows("chat"), [], "no wake for the agent it is no longer assigned to");
+  assert.equal(w.db.prepare("SELECT comment FROM wake_tasks WHERE task = 'chat'").get()?.comment ?? null, null, "its comment cursor is not advanced past the reply");
 });
 
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {

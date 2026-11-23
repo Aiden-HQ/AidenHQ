@@ -331,8 +331,11 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (r2.status === 200 && r2.json && typeof r2.json === "object") issue = { ...issue, ...(r2.json as Issue) };
       else log("wake chat status re-read failed", { task: issue.id, status: r2.status });
     }
+    // A comment written after the task's last status change, as the facts saw it: a done status fact the fresh read still
+    // reports was recorded when that close was seen, so a reply said after it is newer than the close, whatever clock wrote it.
     const lastStatus = lastFacts(issue.id).get("task.status_changed");
-    const finishedAt = String(issue.status ?? "") === "done" ? Math.max(ms(issue.completedAt ?? undefined), lastStatus?.data.to === "done" ? ms(lastStatus.at) : 0) : 0;
+    const changedAt = ms(lastStatus?.at);
+    const finishedAt = String(issue.status ?? "") === "done" ? Math.max(ms(issue.completedAt ?? undefined), lastStatus?.data.to === "done" ? changedAt : 0) : 0;
     let reopenedHere = false;
     // What a finished chat's pending reopen (chat_reopen) needs: a word still there to act on.
     const chatWord = String(issue.status ?? "") === "done" && chat && ownerWordAfter(finishedAt);
@@ -350,7 +353,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         return;
       }
       if (String(fresh.json?.status) !== "done") { issue = { ...issue, ...(fresh.json as Issue) }; q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id); }
-      else if (!ownerWordAfter(Math.max(finishedAt, ms((fresh.json as Issue).completedAt ?? undefined)))) {
+      else if (!ownerWordAfter(Math.max(finishedAt, ms((fresh.json as Issue).completedAt ?? undefined), lastStatus?.data.to === "done" ? changedAt : 0))) {
         // The chat closed again after this word: the read is from before that, and the word it carries was already answered by
         // the newer turn. Reopening on it would put the chat in todo with nothing to run, so it stays closed.
         issue = { ...issue, ...(fresh.json as Issue) };
@@ -385,6 +388,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         taskFacts(issue, source, actor);
         reopenedHere = true;
       }
+    }
+    // The fresh read or the reopen's answer may name another assignee than the one this scan is for (the owner moved the chat
+    // while its reply was read). A wake filed for the old one is refused `task-not-assigned`, and the comment cursor below would
+    // pass the reply for nobody: leave the row as it was, and the new assignee's own event or the next poll scans it.
+    if (chat && reopenedHere && (issue.assigneeAgentId ?? null) !== agent) {
+      log("wake scan deferred: the chat moved to another agent", { task: issue.id, from: agent, to: issue.assigneeAgentId ?? null });
+      return;
     }
     // A chat that stayed closed (the owner cancelled it, or the re-read found it closed) files no wake: admission refuses one.
     // A chat reopened here files the word that reopened it (everything said after the close) even when first sight put the
@@ -760,7 +770,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
               await scan(issue, { source: "poll" }).catch((e: Error) => {
                 scanned = false;
                 readTo = null; // this chat's comment may be anywhere in the window: reread it whole
-                q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task, at) DO UPDATE SET at = excluded.at").run(issue.id, now());
+                q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
                 log("wake scan failed", { task: issue.id, err: e.message });
               });
             }
