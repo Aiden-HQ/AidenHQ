@@ -119,17 +119,17 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
   }
 
   /** The change squashed onto the default branch as one commit, a compare-and-swap on its ref; refused on a conflict. */
-  function land(repo: string, n: number, head: string, checked?: { base: string; main: string }) {
+  function land(repo: string, n: number, head: string, checkedBase?: string) {
     return locked(repo, async () => {
       const c = await readChange(repo, n);
       if (c.state !== "open") throw fail(409, `${changeUrl(repo, n)} is ${c.state}`);
       const moved = headMoved(changeUrl(repo, n), c.head, head);
       if (moved) throw fail(409, moved);
       if (!c.base) throw fail(409, `${changeUrl(repo, n)} shares no history with its default branch`);
-      // Both the base the checks ran from and the destination commit they ran against: refused, never landed, when either moved.
-      // Main can advance without changing the merge base (another change landed on a path this one doesn't touch), which is still
-      // a tree nobody checked together; the run asks again and its checks run against what it would now merge onto.
-      if (checked !== undefined && (checked.base !== c.base || checked.main !== c.main)) throw fail(409, `${changeUrl(repo, n)}: ${defaultBranch(repo)} moved while its checks ran, so they no longer cover the commit it would merge onto; ask for the merge again`);
+      // The base the checks ran against: the default branch moved under them, so the merge base is another one nobody checked.
+      // Refused, never landed. A base that moved changes `c.base`, so the sweep's own `prior` check files the merge again at the
+      // new base; a destination that moved without the base changing is left to the compare-and-swap below.
+      if (checkedBase !== undefined && checkedBase !== c.base) throw fail(409, `${changeUrl(repo, n)}: the default branch moved while its checks ran, so their base is no longer the one it would merge onto; asking for the merge again`);
       const def = await defaultBranch(repo);
       const tree = await g(repo, ["merge-tree", "--write-tree", `--merge-base=${c.base}`, c.main, head]).catch((e: { code?: number }) => (e.code === 1 ? "" : Promise.reject(e)));
       if (!tree) throw fail(409, `${changeUrl(repo, n)} conflicts with ${def} as it is now: rebase it and publish again`);
@@ -312,7 +312,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
             // A batch that landed some of its PRs before one refused still reports them as merged: the evidence line comes first,
             // as the success text's does, so a run reading the outcome knows which heads did land.
             if (why) return { ok: false, text: `${evidence()}${changeUrl(p.repo, c.n)}: nothing merged${done.length ? ` after ${done.join(", ")}` : ""}; its checks on ${String(p.head).slice(0, 12)} ${why}` };
-            const sha = await land(p.repo, c.n, p.head, { base: c.base, main: c.main });
+            const sha = await land(p.repo, c.n, p.head, c.base);
             fact({ type: "pr.merged", subject: subject(p.repo, c.n), version: p.head, at: new Date().toISOString(), task: (c.meta.task as string | undefined) ?? null, data: { sha, head: p.head } });
             void churnLocal(p.repo).catch(() => {}); // churn never delays or fails a merge
             merged.push({ repo: p.repo, number: c.n, head: p.head, sha });
