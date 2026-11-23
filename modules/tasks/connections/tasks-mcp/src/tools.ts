@@ -1948,7 +1948,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_finish: {
-    description: "Mark a task done, with a summary comment: the task this run is working on, or another task assigned to you (a fleet settler: another agent's task waiting in review). A task you created and handed to the owner is the owner's to close: `task_finish` with `issue` is refused on it (only this job's own task, or one its agent holds, can be finished here); comment on it with `task_comment` instead.",
+    description: "Mark a task done, with a summary comment: the task this run is working on (unless it is your part of the owner's task: that stays open for their replies, so finish it with `task_handoff`), or another task assigned to you (a fleet settler: another agent's task waiting in review). A task you created and handed to the owner is the owner's to close: `task_finish` with `issue` is refused on it (only this job's own task, or one its agent holds, is finished); comment on it with `task_comment` instead.",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you (a fleet settler: another agent's task waiting in review), not one you created and the owner holds; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
@@ -1986,7 +1986,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_cancel: {
-    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: any agent's stale or superseded task). A task the owner created themselves is not yours to cancel; only a task you filed, or one assigned to you, is. Your part of the user's task stays open for their replies: finish it with task_handoff.",
+    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: any agent's stale or superseded task). A task the owner created themselves is not yours to cancel: cancel only one you filed or one assigned to you (a fleet settler, one an agent filed). Your part of the user's task stays open for their replies: finish it with task_handoff.",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you or one you delegated; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
