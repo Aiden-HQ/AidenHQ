@@ -155,11 +155,15 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (headRuns) {
       const head = open.find((p) => p.headRefOid === headRuns[1]);
       const nodes = head?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-      return { status: 200, body: { check_runs: nodes.filter((n) => n.__typename === "CheckRun").map((n) => ({ id: n.databaseId, name: n.name, status: n.status, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/${n.checkSuite?.workflowRun?.databaseId ?? 500}/job/${n.databaseId}` })) } };
+      return { status: 200, body: { check_runs: nodes.filter((n) => n.__typename === "CheckRun").map((n) => ({ id: n.databaseId, name: n.name, status: n.status, app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/${n.checkSuite?.workflowRun?.databaseId ?? 500}/job/${n.databaseId}` })) } };
     }
     if (path.startsWith("/repos/acme/app/compare/")) return { status: 200, body: { behind_by: behind } };
     if (method === "POST" && /^\/repos\/acme\/app\/actions\/jobs\/\d+\/rerun$/.test(path)) return { status: jobRerun(), body: {} };
-    if (path.startsWith("/repos/acme/app/actions/jobs/")) return { status: 200, body: { steps, status: "completed", completed_at: new Date(Date.now() - 10 * 60_000).toISOString(), ...job } };
+    if (path.startsWith("/repos/acme/app/actions/jobs/")) {
+      const id = Number(path.split("/").at(-1));
+      const holder = open.find((p) => (p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).some((n) => n.databaseId === id));
+      return { status: 200, body: { steps, status: "completed", completed_at: new Date(Date.now() - 10 * 60_000).toISOString(), head_sha: holder?.headRefOid, check_run_url: `https://api.github.com/repos/acme/app/check-runs/${id}`, ...job } };
+    }
     if (path.endsWith("/update-branch")) {
       const m = updateByMethod?.[body?.update_method];
       if (m?.throw) throw new Error(`The operation was aborted due to timeout`);
@@ -312,7 +316,7 @@ test("a re-run GitHub kept refusing is reported after the interval, and an unans
     const head = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/)?.[1];
     if (head) {
       const nodes = open.find((p) => p.headRefOid === head)?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-      return { status: 200, body: { check_runs: nodes.map((n) => ({ id: n.databaseId, name: n.name, status: n.status, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${n.databaseId}` })) } };
+      return { status: 200, body: { check_runs: nodes.map((n) => ({ id: n.databaseId, name: n.name, status: n.status, app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${n.databaseId}` })) } };
     }
     if (path.startsWith("/repos/acme/app/actions/jobs/")) throw new Error("The operation was aborted due to timeout");
     return { status: 200, body: {} };
@@ -327,6 +331,16 @@ test("a re-run GitHub kept refusing is reported after the interval, and an unans
   await real.tick();
   assert.deepEqual(merges.map((m) => m.number), [47], "the Actions timeout on the older PR does not stop the newer green PR's merge");
   assert.match(String(rows().reran?.["https://github.com/acme/app/pull/48:h48:77"]), /^retry:/, "an unanswered call backs off and is asked again later, not lost");
+});
+
+test("a wedged check's re-run that never answers is reported after the interval, not lost", async (t) => {
+  const c = await rig(t, { jobRerun: () => { throw new Error("The operation was aborted due to timeout"); } });
+  const key = "https://github.com/acme/app/pull/50:h50:500:image-changes";
+  c.set([c.agentPr(50, stuckPr(50))]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { [key]: { job: 77, at: new Date(Date.now() - 21 * 60_000).toISOString() } } } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "an unanswered re-run still counts towards the report");
+  assert.match(c.woke[0].text, /the request to re-run the job was refused/);
 });
 
 test("a check re-run GitHub refused is asked again rather than recorded as handled", async (t) => {

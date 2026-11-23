@@ -234,14 +234,14 @@ export function startPrWatch(o: PrWatchOptions) {
     /**
      * A check run GitHub never gave a conclusion, while its Actions job has finished: re-run that job, so GitHub reposts the
      * check run and the merge gate is no longer held by it. Once per check per head, with the refusal backoff `neverStarted`
-     * uses (a refused re-run is asked again after five minutes, never counted as handled). Not on a cross-repository PR.
+     * uses (a refused or unanswered re-run is asked again after five minutes, never counted as handled). Not on a
+     * cross-repository PR.
      *
-     * The job is resolved from the head's check runs over REST, not from the rollup's `databaseId`: the GraphQL schema declares
-     * that as a 32-bit Int while an Actions job id is far larger today, and REST carries the full id in `details_url`.
-     *
-     * A re-run gives its job a new id, so the record is keyed by the check's suite and name at the head: a replacement that
-     * wedges again is the same stuck check, not a new one, and is not re-run (nor its report deadline restarted) forever. The
-     * first ask's time is kept across refusals too, and a job that is still queued or running is never reported as wedged.
+     * The check run is matched to its REST entry (which carries the full Actions job id in `details_url`, with the app and the
+     * job's own `check_run_url` and `head_sha` proving it belongs here) by its suite and its start, so a superseded attempt
+     * with the same name is never mistaken for the current one: the rollup's `databaseId` is a 32-bit GraphQL Int and no
+     * longer holds a job id. The bookkeeping is keyed by the check's suite and name at the head, so a re-run's replacement is
+     * the same stuck check rather than a new one, and the first ask's time is kept across refusals.
      */
     async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
@@ -254,11 +254,18 @@ export function startPrWatch(o: PrWatchOptions) {
       try { listed = await gh("GET", `/repos/${repo}/commits/${pr.headRefOid}/check-runs?filter=all&per_page=100`); }
       catch (e) { log("wedged check runs' read failed", { pr: pr.url, head: pr.headRefOid, err: String((e as Error).message).slice(0, 200) }); return []; }
       if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) return [];
-      const names = new Set(stuck.map((n: Json) => String(n.name ?? "")));
+      const runs: Json[] = listed.body.check_runs;
+      // The REST entry of each stuck check run: GitHub Actions, the same suite and the same start (the rollup and REST carry
+      // it). A name shared by several live entries is ambiguous and is left alone.
+      const current = stuck.map((n: Json) => {
+        const same = runs.filter((c: Json) => c.app?.slug === "github-actions" && String(c.name ?? "") === String(n.name ?? "") && c.check_suite?.id === n.checkSuite?.workflowRun?.databaseId && (n.startedAt ? c.started_at === n.startedAt : true));
+        if (same.length > 1) log("wedged check run could not be told apart", { pr: pr.url, head: pr.headRefOid, check: String(n.name ?? "").slice(0, 100) });
+        return same.length === 1 ? same[0] : undefined;
+      }).filter(Boolean) as Json[];
       const out: { at: number; accepted: boolean }[] = [];
-      for (const c of listed.body.check_runs.filter((c: Json) => c.status !== "completed" && names.has(String(c.name ?? "")))) {
+      for (const c of current) {
+        const named = `${url}:${pr.headRefOid}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
         const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
-        const named = `${url}:${pr.headRefOid}:${String(c.check_suite?.id ?? c.id)}:${String(c.name ?? "")}`;
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head: pr.headRefOid, check: String(c.name ?? "").slice(0, 100) }); continue; }
         const key = `${url}:${pr.headRefOid}:${jobId}`;
         const seen: { job: number; at: string; accepted?: boolean } | undefined = state.wedged[named];
@@ -270,11 +277,14 @@ export function startPrWatch(o: PrWatchOptions) {
           log("wedged check run's job read failed", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
           state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
+          if (seen) out.push({ at: Date.parse(seen.at), accepted: false });
           continue;
         }
+        // Only a job that itself finished, on this head, for this very check run can leave it wedged: a replacement still
+        // queued or running is not stuck, and a details URL can never point another job here.
+        if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== pr.headRefOid || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
-        // Only a job that itself finished can leave its check run wedged: a replacement still queued or running is not stuck.
-        if (job.status >= 300 || job.body?.status !== "completed" || !Number.isFinite(completedAt)) continue;
+        if (!Number.isFinite(completedAt)) continue;
         // A re-run GitHub took for this check: a replacement that wedges again is not re-run a second time. Neither is the
         // first ask moved, so the report still goes out once the interval since it has passed.
         if (seen?.accepted) { out.push({ at: Date.parse(seen.at), accepted: true }); continue; }
@@ -284,8 +294,7 @@ export function startPrWatch(o: PrWatchOptions) {
           continue;
         }
         if (Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a freshly finished job's check run can lag
-        // Only a re-run GitHub took is recorded as done: a refusal backs off and is asked again instead of leaving the head
-        // marked as handled with its check run still wedged.
+        // Recorded before the request, so one that never answers is still reported after the interval rather than lost.
         state.wedged[named] ??= { job: Number(jobId), at: new Date().toISOString() };
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
@@ -293,6 +302,7 @@ export function startPrWatch(o: PrWatchOptions) {
           log("wedged check run's re-run failed to send", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
           state.reran[key] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
           save();
+          out.push({ at: Date.parse(state.wedged[named].at), accepted: false });
           continue;
         }
         log(r.status < 300 ? "wedged check run's job re-run" : "wedged check run's re-run refused", { pr: pr.url, head: pr.headRefOid, job: jobId, status: r.status });
