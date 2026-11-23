@@ -26,7 +26,11 @@ security fix (step 4).
    --before=<7 days ago>`, global `npm i -g name@1.2.3`); `pip install name==1.2.3`; images `image:tag@sha256:…`; Actions by
    commit SHA with the tag in a comment; apt `name=version`. Install scripts come from a pinned package, never `curl … | sh`.
    Workspace dev tools (`npm i -D`, `npx`, `pip install --user`) follow the same rule; commit only what the repo keeps using.
-3. State the release date of any image or action you bump in the PR.
+3. State the release date of any image or action you bump in the PR. For an image, a release date is not a digest-bound
+   date: a tag can be re-pushed after its release, so the release still shows the old date. A date is digest-bound only when
+   the registry reports it for that digest (a ghcr image: the Packages API); when it cannot be read — a token with no access
+   to another org's package, say — do not approximate it from the release or the tag. Such an image is adopted through an
+   entry in `.github/supply-chain-exceptions.yaml` instead.
 4. A newer version is allowed only for a security fix: the script returns it with the advisory (the lowest fixing
    release). List it in `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in
    the same PR as the pin. An app repo's CI runs the checker from its base commit, so until its default branch carries the
