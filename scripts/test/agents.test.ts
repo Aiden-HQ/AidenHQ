@@ -127,6 +127,7 @@ test("event routines compile and the lints hold", () => {
   refuses(ev({ ...slack, filter: { bot: "no" } }), /event\.filter\.bot is true or false/);
   refuses(ev({ ...slack, connection: ["slack"] }), /event\.connection is a connection's name/);
   refuses({ "x-r": { title: "R", agent: "x", description: "Go.", schedules: [{ cron: "0 9 * *", label: "x" }] } }, /a cron of five fields/);
+  refuses({ "x-r": { title: "R", agent: "x", description: "Go.", schedules: [{ cron: "0 99 * * *", label: "x" }] } }, /a cron of five fields/);
   refuses({ "x-r": { title: "Repeats: DEMO-1", agent: "x", description: "Go.", schedules: [{ cron: "0 9 * * *", label: "x" }] } }, /"Repeats: " is the board's/);
   refuses(ev(slack), /doesn't hold paperclip_tasks\.routine_events/, { connections: { slack: "read", paperclip_tasks: ["task_current"] }, profile: "engineer" });
   refuses(Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`x-w${i}`, { title: `W${i}`, agent: "x", description: "Go.", event: slack }])), /an agent has at most 20 local routines/);
