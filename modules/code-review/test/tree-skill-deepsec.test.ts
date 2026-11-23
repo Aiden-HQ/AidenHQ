@@ -115,11 +115,12 @@ test("a failed deepsec says why in the run's reason: its own error, from its jso
     ev({ type: "progress", phase: "process", message: "Processing stopped: quota/credits exhausted (0 analyses, 1 batch(es) failed before stop)" }),
     JSON.stringify({ type: "failure", code: "Error", message: "AI processing completed with 1 failed batch(es)" })].join("\n");
   assert.equal(said({ stdout, stderr: "" }), 'Batch 2/3 failed: 402: {"error":"cap_reached"} (0 in flight, 3/3 done) (AI processing completed with 1 failed batch(es))');
-  // A specific terminal error stays as it is; a scan's or process's human output gives its batch error; else stderr, else stdout.
+  // A specific terminal error stays as it is; a scan's or process's human output gives stderr and its batch error, both; else stdout.
   assert.equal(said({ stdout: [ev({ type: "progress", message: "Batch 1/2 failed: 402" }), JSON.stringify({ type: "failure", message: "Pi assistant error: 401" })].join("\n"), stderr: "" }), "Pi assistant error: 401");
   assert.equal(said({ stdout: "\x1b[1mBatch 1/4\x1b[0m: Batch 1/4 failed: 402 cap_reached (0 in flight)\nProcessing complete\n", stderr: "" }), "Batch 1/4 failed: 402 cap_reached (0 in flight)");
   assert.equal(said({ stdout: "", stderr: "a\nboom\n" }), "a boom");
-  assert.equal(said({ stdout: "Batch 1/2 failed: timeout (0 in flight, 1/2 done)\n", stderr: "Error: 402 cap_reached\n" }), "Error: 402 cap_reached");
+  assert.equal(said({ stdout: "Batch 1/2 failed: timeout (0 in flight, 1/2 done)\n", stderr: "Error: 402 cap_reached\n" }), "Error: 402 cap_reached | Batch 1/2 failed: timeout (0 in flight, 1/2 done)");
+  assert.equal(said({ stdout: "Batch 1/2 failed: 402 cap_reached\n", stderr: "(node) Warning: x\n" }), "(node) Warning: x | Batch 1/2 failed: 402 cap_reached");
   assert.equal(said({ stdout: "Error: no project\n", stderr: "" }), "Error: no project");
 });
 

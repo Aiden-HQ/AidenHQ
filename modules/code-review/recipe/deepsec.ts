@@ -72,7 +72,8 @@ const BATCH = /Batch \d+\/\d+ failed: .*/;
 /**
  * What deepsec said about its stop, one line, as data. init (jsonl): its last failure, limit or phase-error message; when that only
  * counts failed batches ("AI processing completed with N failed batch(es)"), the last batch's own error leads (a gateway 402).
- * The other steps (human output): stderr's last lines (why it stopped), else the last failed batch's error on stdout, else stdout's last lines.
+ * The other steps (human output): stderr's last lines and the last failed batch's error on stdout, both (either may be the
+ * reason: a warning on stderr, a 402 in a batch), else stdout's last lines.
  */
 export function said(r: { stdout: string; stderr: string }) {
   const ev = events(r.stdout);
@@ -80,7 +81,7 @@ export function said(r: { stdout: string; stderr: string }) {
   const lines = r.stdout.split("\n").map((l) => { try { const j = l.startsWith("{") ? JSON.parse(l) : undefined; return j ? String(j.event?.message ?? j.message ?? "") : l; } catch { return l; } });
   const batch = lines.map((l) => BATCH.exec(l.replace(/\x1b\[[0-9;]*m/g, ""))?.[0]).filter(Boolean).at(-1);
   const tail = (t: string) => t.trim().split("\n").slice(-3).join(" ");
-  const text = msg !== undefined ? (batch && /failed batch/i.test(msg) ? `${batch} (${msg})` : msg) : tail(r.stderr) || batch || tail(r.stdout.replace(/\x1b\[[0-9;]*m/g, ""));
+  const text = msg !== undefined ? (batch && /failed batch/i.test(msg) ? `${batch} (${msg})` : msg) : [tail(r.stderr), batch].filter(Boolean).join(" | ") || tail(r.stdout.replace(/\x1b\[[0-9;]*m/g, ""));
   return String(text).replace(/[\x00-\x1f\x7f«»]+/g, " ").trim();
 }
 
