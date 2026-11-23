@@ -197,7 +197,7 @@ export function kernelPoster(kernel: KernelClient, log: (m: string, f?: Record<s
       // (`addressed`, `guidance`) that no post renders, so what is sent is picked, never what is left after stripping.
       const { fixed } = p.review;
       const review = { ...Object.fromEntries(REVIEW_FIELDS.filter((k) => k in p.review).map((k) => [k, p.review[k]])), repo: t.repo, pr: t.number, head: t.head };
-      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 200), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
+      const args = { repo: t.repo, pr: t.number, head: t.head, run: p.run, review, resolve: (fixed ?? []).filter((id) => typeof id === "string").slice(0, 100), gated: !!p.gated, own: (p.own ?? []).slice(0, 1000) };
       return filed(async () => (await kernel.call("POST", "/v1/writes", { kind: POST_KIND, args: withoutInstanceDetails(args), task: await taskOf(t.repo, t.number, t.once ? p.run : undefined) })) as { id: string; state: string });
     },
     async status(s: Status) {

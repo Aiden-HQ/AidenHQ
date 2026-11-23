@@ -1793,11 +1793,13 @@ export function createEngine(d: EngineDeps) {
     // Each mandatory reviewer that reviewed the head (reviewers()) has a run there that is done (whole or partial: a partial review
     // is still a review, a carried one too) or failed past its retries; queued or running ones wait. None yet: the next poll starts it.
     const latest = gateRuns(cfg, repo, n, head);
-    // A mandatory recheck-only run (`aiden recheck`, a claim's recheck) still going holds the merge too: it may reopen a closed finding.
-    const busy = [...latest, ...all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck_only = 1", repo, n, head)].filter((r, i, a) => (r.status === "queued" || r.status === "running") && a.findIndex((x) => x.id === r.id) === i);
+    // A mandatory recheck-only run (`aiden recheck`, a claim's recheck) is no review of the head, but while it runs or its first post is
+    // pending it holds the merge too: it may reopen a closed finding.
+    const held = [...latest, ...all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND recheck_only = 1", repo, n, head)].filter((r, i, a) => a.findIndex((x) => x.id === r.id) === i);
+    const busy = held.filter((r) => r.status === "queued" || r.status === "running");
     // A review whose first post is still being decided: its findings gate once they have threads, so the merge waits for it. A
     // post refused once (filed again in the background) holds nothing: its findings are pending, never blocking.
-    const posting = latest.filter((r) => r.status === "done" && r.posted === "pending" && !r.post_tries);
+    const posting = held.filter((r) => r.status === "done" && r.posted === "pending" && !r.post_tries);
     if (!latest.length) reasons.push({ code: "not_started", text: `the review of ${head.slice(0, 7)} hasn't started`, unblock: "it starts by itself within a minute or two" });
     else if (latest.some((r) => (r.status === "queued" || r.status === "running" || r.status === "failed") && SPEND_LIMIT.test(r.why ?? ""))) reasons.push({ code: "spend_limit", text: `install spend limit reached: the mandatory review of ${head.slice(0, 7)} can't run (${String(latest.find((r) => SPEND_LIMIT.test(r.why ?? ""))!.why).slice(0, 200)})`, unblock: "the owner raises spend_day_usd or spend_month_usd in Settings, or the limit resets; a failed review then runs again on `aiden review`" });
     else if (busy.length) reasons.push({ code: "running", text: `the mandatory review of ${head.slice(0, 7)} is ${busy.some((r) => r.status === "running") ? "running" : "queued"}`, unblock: "it resumes by itself when the review finishes" });
