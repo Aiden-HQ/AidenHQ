@@ -1074,10 +1074,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const inReview = engineers.filter((i) => ["card_review", "card_owner", "module_wait"].includes(engineerStates.get(i.id)?.reason ?? "")).map((i) => i.identifier);
           const waiting = [...new Set([...inReview, ...asking.filter((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)?.kind !== "engineer").map((k) => k.identifier)])];
           // The owner's ask itself, for the Researcher: a task the chat's agent handed out under this chat, whose newest owner
-          // message before it was created is this one (an email or calendar change he asked Aiden for). Its words bind to it.
+          // message before it was created is this one (an email or calendar change he asked Aiden for). The task is bound to the
+          // words by when it was made, so task ids in them are the ask's subject ("email Dana about WOR-42"), not a target.
           const owners = source.all.filter((c) => c.authorType === "user" && c.authorUserId === ctx.me && !c.deletedAt && c.createdAt <= dest.createdAt);
           const asked = agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me) && owners.reduce<Comment | undefined>((a, c) => (!a || c.createdAt > a.createdAt ? c : a), undefined)?.id === source.comment.id;
-          assertMeantTask(words, dest.identifier, asked ? [dest.identifier] : waiting, ctx.prefix);
+          if (!asked) assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
           // Once per message, whatever the target: reserved before posting, released if the post fails.
           const key = `relayed:${comment_id}`;
           if (store.meta(key)) throw new Refused("refused: that message was already relayed");

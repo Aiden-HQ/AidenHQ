@@ -129,7 +129,7 @@ describe("/internal/relay", () => {
 
   it("passes the owner's ask to the Researcher task Aiden handed out for it, and only that ask", async () => {
     const older = say(chat, "[telegram] send Dana the notes", { createdAt: new Date(Date.now() - 60_000).toISOString() });
-    const ask = say(chat, "[telegram] move my 3pm with Dana to 4");
+    const ask = say(chat, "[telegram] move my 3pm with Dana to 4 and email her the WOR-2 notes");
     // An engineer task in review elsewhere doesn't make the ask ambiguous: the Researcher task was made for this message.
     const task = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: new Date(Date.now() + 1000).toISOString() });
     issues.push(task);
