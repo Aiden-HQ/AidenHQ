@@ -145,6 +145,7 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
       return r.changes > 0;
     });
     if (opened) log("wake", { key, task, cause });
+    return opened;
   };
   /**
    * A routine run's dropped wake comes back: dispatch drops a 4xx for good (the pre-#790 403 on the routine read), and without a
@@ -400,10 +401,11 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // it: without that wake the chat would sit open with nothing to run it. A comment the cursor has not passed is filed as on
     // any task, whether or not it reopens the chat: on one that stays closed admission refuses the wake, and dispatch tells the
     // owner rather than passing the words silently.
+    let commentFiled = false;
     for (const c of all) {
       if (c.deletedAt || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
       if (ms(c.createdAt) <= boundary && !(reopenedHere && ownerWord(c) && ms(c.createdAt) > finishedAt)) continue;
-      insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
+      commentFiled = insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown") || commentFiled;
     }
     const status = String(issue.status ?? "");
     // Handed to this agent since the scan last saw the task (from the owner, say, while nobody polled it): a wake, even if an
@@ -414,8 +416,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // status wake filed for one of those moves would start a second job beside the one the wait's wake starts. The wait's own
     // wake is the only thing that dispatches it.
     const armedWait = Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND state = 'open' AND key LIKE 'wait:%'").get(issue.id));
-    // The reopen above files the owner's comment's wake: no second status wake for the move itself.
-    const fileable = !armedWait && !reopenedHere && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
+    // The reopen above files the owner's comment's wake: no second status wake for the move itself. A chat whose comment wake
+    // this scan filed is the same case seen from another scan (a concurrent one reopened it): the comment carries the run.
+    const fileable = !armedWait && !reopenedHere && !(chat && commentFiled) && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
     // A move made while a job runs is filed once that job ends: until then the cursor keeps what it last saw (`deferred`).
     const deferred = fileable && Boolean(liveJob(issue.id));
     if (fileable && !deferred) {
@@ -782,7 +785,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           if (!complete) log("wake chat window truncated", { agent, company, reads_to: readTo });
           // A pass resumed past an earlier truncation finishes with the cursor still at the original window's start (its resume
           // point cleared): a reply to an id the earlier pages passed, said while this pass ran, is inside the next window too.
-          if (complete && scanned) setChatSince(agent, window.after ? window.at : polledAt, null);
+          // The new start overlaps by a second: Paperclip's `updatedSince` is strictly after, and a change that commits inside
+          // the second this pass read it must not fall on the wrong side of the boundary.
+          if (complete && scanned) setChatSince(agent, window.after ? window.at : polledAt - 1000, null);
           else setChatSince(agent, window.at, readTo);
         } catch (e) {
           // Whatever was processed before the failure is not skipped: the window keeps its start, and the resume point covers

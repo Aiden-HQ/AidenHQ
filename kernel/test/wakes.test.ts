@@ -1033,6 +1033,21 @@ test("a reply that arrived just before the close, never read, still keeps its wa
   assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "its wake is filed: dispatch surfaces the refusal to the owner");
 });
 
+test("a scan that sees a chat already reopened by a concurrent one files no second status wake", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  w.tick(5000);
+  // Another scan reopened the chat and filed the reply's wake; this one's snapshot is older (done) and sees it open.
+  const closed = "2026-11-18T10:00:02.500Z";
+  const snapshot = { ...w.issues.chat, status: "done", updatedAt: closed, completedAt: closed, statusVersion: 2 };
+  w.issues.chat.status = "todo";
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  await w.wakes.scan(snapshot, { source: "poll" });
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "one wake for the reply, no second status wake");
+});
+
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {
   const w = world();
   w.issue("t1", { status: "in_progress", labels: [{ name: "chat" }] });
