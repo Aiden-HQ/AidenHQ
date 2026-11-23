@@ -42,6 +42,8 @@ export interface Approval {
   /** Why the claimed record is still running (its executor's, from the kernel): null once it leaves `claimed`. */
   wait: string | null;
   createdAt: string;
+  /** The kernel's `updated_at`: two snapshots of one card are reconciled by which the kernel wrote later, never by state name. */
+  updatedAt: string;
   replaced: boolean;
   panel: boolean;
   reviewFirst: "final" | "owner" | null;
@@ -94,7 +96,7 @@ export function recordApproval(r: KernelRecord): Approval {
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner"].includes(r.state), live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner"].includes(r.state), live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
   };
 }
 

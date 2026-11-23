@@ -135,10 +135,16 @@ const approvalView = (approval: Approval) => {
   const { args: _args, ...a } = approval;
   return { ...a, ...(a.wait !== null ? { wait: shownWait(a.wait) } : {}) };
 };
-/** How far a snapshot has got: an ended record first (its outcome is the evidence), then in flight (running, then approved,
- * then still waiting on the reviewer or owner). `auto` is a Tier 0 record's audit word both while queued and once it ended, so
- * liveness decides before the state name does. */
-const progress = (a: Approval) => (!a.live ? 3 : a.state === "pending" ? 0 : a.state === "approved" || a.state === "auto" ? 1 : 2);
+/**
+ * Which snapshot of one card to keep when two reads returned it. The kernel's own `updated_at` decides, because a state is not
+ * one-way: `hold()` moves an approved card back to `owner` when its cap no longer holds, and a Tier 0 record's `auto` is its
+ * word both while queued and once it ended. A record whose stamp would not parse loses to one that has it.
+ */
+const newer = (a: Approval, b: Approval) => {
+  const ta = Date.parse(a.updatedAt), tb = Date.parse(b.updatedAt);
+  if (Number.isNaN(ta)) return false;
+  return Number.isNaN(tb) || ta > tb;
+};
 /** A merge kind's action: the kernel's own kinds (`github.merge`, `codehost-local.merge`) and the board's short `merge`.
  * A card of any other kind says only what the board's own view says, whatever its args hold. */
 const isMergeKind = (action: string) => action === "merge" || action.endsWith(".merge");
@@ -1149,7 +1155,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const byId = new Map<string, Approval>();
         for (const a of [...recent, ...history, ...live.filter(mine)]) {
           const seen = byId.get(a.id);
-          if (!seen || progress(a) > progress(seen)) byId.set(a.id, a);
+          if (!seen || newer(a, seen)) byId.set(a.id, a);
         }
         const shown = [...byId.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
         return { approvals: shown.map(mergeView) };

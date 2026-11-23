@@ -177,8 +177,8 @@ describe("internal listener", () => {
   });
 
   it("the later snapshot of a card wins: an approval made between the reads is not reported as pending", async () => {
-    const pending = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "pending", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
-    const approved = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "approved", live: true, wakes: true, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
+    const pending = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "pending", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", updatedAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
+    const approved = card({ id: "k-0000000000000050", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "approved", live: true, wakes: true, createdAt: "2026-11-10T09:00:00.000Z", updatedAt: "2026-11-10T09:05:00.000Z", args: { prs: [{ repo: "a/b", number: 3, head: "c".repeat(40) }] } });
     const inner = fakeRecords([pending]);
     // The reviewer approved it after the newest-cards read, which still returns the pending snapshot.
     const records: typeof inner = { ...inner, allOf: async (state, kinds, task) => (state === "live" ? [approved] : inner.allOf(state, kinds, task)) };
@@ -200,8 +200,8 @@ describe("internal listener", () => {
   });
 
   it("a Tier 0 merge that finished between the reads reports its end, not the running snapshot", async () => {
-    const running = card({ id: "k-0000000000000060", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "running", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 4, head: "d".repeat(40) }] } });
-    const ended = card({ id: "k-0000000000000060", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "auto", live: false, wakes: false, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":4,"head":"${"d".repeat(40)}","sha":"${"e".repeat(40)}"}]`, createdAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 4, head: "d".repeat(40) }] } });
+    const running = card({ id: "k-0000000000000060", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "running", live: true, wakes: false, createdAt: "2026-11-10T09:00:00.000Z", updatedAt: "2026-11-10T09:00:00.000Z", args: { prs: [{ repo: "a/b", number: 4, head: "d".repeat(40) }] } });
+    const ended = card({ id: "k-0000000000000060", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "auto", live: false, wakes: false, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":4,"head":"${"d".repeat(40)}","sha":"${"e".repeat(40)}"}]`, createdAt: "2026-11-10T09:00:00.000Z", updatedAt: "2026-11-10T09:05:00.000Z", args: { prs: [{ repo: "a/b", number: 4, head: "d".repeat(40) }] } });
     const inner = fakeRecords([ended]);
     const records: typeof inner = { ...inner, allOf: async (state, kinds, task) => (state === "live" ? [running] : inner.allOf(state, kinds, task)) };
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
@@ -279,8 +279,8 @@ describe("internal listener", () => {
   });
 
   it("an ended merge card's outcome wins over a live snapshot of the same card", async () => {
-    const liveCard = card({ id: "k-0000000000000010", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "running", live: true, wakes: true, createdAt: "2026-11-10T10:00:00.000Z", args: { prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] } });
-    const ended = card({ id: "k-0000000000000010", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: true, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":1,"head":"${"a".repeat(40)}","sha":"${"b".repeat(40)}"}]`, createdAt: "2026-11-10T10:00:00.000Z", args: { prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] } });
+    const liveCard = card({ id: "k-0000000000000010", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "running", live: true, wakes: true, createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:00:00.000Z", args: { prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] } });
+    const ended = card({ id: "k-0000000000000010", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: true, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":1,"head":"${"a".repeat(40)}","sha":"${"b".repeat(40)}"}]`, createdAt: "2026-11-10T10:00:00.000Z", updatedAt: "2026-11-10T10:05:00.000Z", args: { prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] } });
     const inner = fakeRecords([ended]);
     // The live read ran a moment before the merge finished and still returns the live snapshot of the same card.
     const records: typeof inner = { ...inner, allOf: async (state, kinds, task) => (state === "live" ? [liveCard] : inner.allOf(state, kinds, task)) };
