@@ -32,8 +32,11 @@ const UNREACHABLE = /channel_not_found|not_in_channel|is_archived|access_denied/
 const REACTION_FILTER = /^has(my)?::([^:\s]+):$/;
 // A token that opens like a reaction filter: matched strictly, or reported, never silently passed through.
 const REACTION_PREFIX = /^has(my)?::/;
-// A whitespace-delimited token that is a search modifier rather than a term clause.
-const MODIFIER = /^(?:in|from|to|with|creator|is|has|hasmy|before|after|on|during|type|content_type):/;
+// A negated reaction filter (`-hasmy::emoji:`): an exclusion this path can't compute, and one the search can't match.
+const NEGATED_REACTION = /^-has(my)?::/;
+// A whitespace-delimited token that is a search modifier rather than a term clause. Slack's `-in:`/`-from:`/… are the
+// same modifiers negated, and a modifier still has no term clause to act on.
+const MODIFIER = /^-?(?:in|from|to|with|creator|is|has|hasmy|before|after|on|during|type|content_type):/;
 
 /** One message carrying the reaction, in the search tool's per-message shape. */
 export interface ReactionMessage {
@@ -60,6 +63,8 @@ export type ChannelKind = "public" | "private" | "im" | "mpim";
 export const SEARCH_SCOPE: Record<ChannelKind, string> = { public: "search:read.public", private: "search:read.private", im: "search:read.im", mpim: "search:read.mpim" };
 
 const text = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+/** A date bound as Slack accepts it: a string, or a Unix timestamp sent as a number (which `text` would drop). */
+const boundText = (v: unknown): string => (typeof v === "number" && Number.isFinite(v) ? String(v) : text(v));
 /** `filters` as the tool documents it (a string); an array is accepted too, as some clients send one. */
 const filterText = (v: unknown): string => (typeof v === "string" ? v : Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").join(" ") : "").trim();
 
@@ -92,6 +97,9 @@ export function planReactionSearch(name: string, args: Record<string, unknown>):
   if (!source) return { kind: "pass" };
 
   const tokens = source.split(/\s+/).filter(Boolean);
+  // An exclusion can't be turned into the set reactions.list lists, and upstream it matches nothing: say so.
+  const negated = tokens.filter((t) => NEGATED_REACTION.test(t));
+  if (negated.length) return { kind: "unsupported", filter: negated.join(" "), reason: `${negated.join(" ")} is an excluded reaction, which reactions.list can't subtract from the set` };
   const reactions = tokens.filter((t) => REACTION_PREFIX.test(t));
   if (!reactions.length) return { kind: "pass" };
   if (reactions.length > 1) return { kind: "unsupported", filter: reactions.join(" "), reason: "more than one reaction filter cannot be answered as one set" };
@@ -102,8 +110,8 @@ export function planReactionSearch(name: string, args: Record<string, unknown>):
   const extra = tokens.filter((t) => t !== only);
   if (extra.length) return { kind: "unsupported", filter: source, reason: `${only} combined with ${extra.join(" ")} is a scoped search, not a filters-only reaction set` };
   // A bound outside the filter text would narrow the set in a way reactions.list can't repeat: answer it, don't widen it.
-  const bounds = ["after", "before"].filter((k) => text(args[k]));
-  if (bounds.length) return { kind: "unsupported", filter: only, reason: `${only} with ${bounds.map((k) => `${k}:${text(args[k])}`).join(" ")} is a date-scoped search` };
+  const bounds = ["after", "before"].filter((k) => boundText(args[k]));
+  if (bounds.length) return { kind: "unsupported", filter: only, reason: `${only} with ${bounds.map((k) => `${k}:${boundText(args[k])}`).join(" ")} is a date-scoped search` };
   // A channel-type scope (im,mpim,public,private) narrows the set in a way this path can't reproduce: answer it.
   const channelTypes = filterText(args.channel_types);
   if (channelTypes) return { kind: "unsupported", filter: only, reason: `${only} with channel_types:${channelTypes} is a channel-type-scoped search` };

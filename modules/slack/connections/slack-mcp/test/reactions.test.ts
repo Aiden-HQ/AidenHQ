@@ -91,6 +91,12 @@ describe("planReactionSearch", () => {
     expect(planReactionSearch("slack_search_public", { filters: ["hasmy::pushpin:", "in:<#C1>"] })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", after: "2026-11-01" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", before: "2026-11-01" })).toMatchObject({ kind: "unsupported" });
+    // A Unix timestamp sent as a number is a bound too; it must not be dropped and answered as the whole set.
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", after: 1761955200 })).toMatchObject({ kind: "unsupported" });
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", before: 1761955200 })).toMatchObject({ kind: "unsupported" });
+    // A negated modifier in a modifier-only query has no term clause either, and an excluded reaction isn't computable.
+    expect(planReactionSearch("slack_search_public", { query: "hasmy::pushpin: -in:<#C1>" })).toMatchObject({ kind: "unsupported" });
+    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin: -hasmy::eyes:" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "files" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public_and_private", { filters: "hasmy::pushpin:", channel_types: "im,mpim" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "messages" })).toMatchObject({ kind: "mine" });
