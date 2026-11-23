@@ -69,6 +69,13 @@ describe("planReactionSearch", () => {
     expect(planReactionSearch("slack_search_public", { query: "in:<#C1> hasmy::pushpin:" })).toMatchObject({ kind: "unsupported" });
   });
 
+  it("passes a modifiers-only query and filters that carry no reaction filter straight through", () => {
+    expect(planReactionSearch("slack_search_public", { query: "in:<#C1>", filters: "after:2026-11-08" })).toEqual({ kind: "pass" });
+    expect(planReactionSearch("slack_search_public", { query: "has:pin", filters: "in:<#C1>" })).toEqual({ kind: "pass" });
+    // Two modifier sets that both name a reaction can't be reconciled into one set.
+    expect(planReactionSearch("slack_search_public", { query: "hasmy::pushpin:", filters: "in:<#C1>" })).toMatchObject({ kind: "unsupported" });
+  });
+
   it("names the unsupported filter for has::, an extra modifier, or more than one reaction filter", () => {
     expect(planReactionSearch("slack_search_public", { filters: "has::pushpin:" })).toMatchObject({ kind: "unsupported", filter: "has::pushpin:" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin: in:<#C1>" })).toMatchObject({ kind: "unsupported", filter: "hasmy::pushpin: in:<#C1>" });
@@ -274,7 +281,7 @@ describe("interception through the proxy", () => {
       instructions: "test",
       stateDir: dir,
       hooks: { args: (name, args) => upstreamArgs(name, args) },
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", reads: new Set(["slack_search_public", "slack_search_public_and_private"]), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async (n) => n.startsWith("slack_search_public"), serviceKey: "svc", readKey: "rd", caller: async (r) => { if (r.headers["x-aidenhq-caller"] !== "ok") throw new Error("no caller assertion"); }, fetchImpl: slack }),
     });
     base = await listen(proxy);
   });
@@ -308,6 +315,26 @@ describe("interception through the proxy", () => {
     expect(refused.body.result).toMatchObject({ isError: true });
     expect(payload(refused.body)).toMatchObject({ error: "refused", set: "unknown" });
     expect(seen).toEqual([]);
+  });
+
+  it("refuses on /mcp/read where the proxy would not serve the tool", async () => {
+    const strict = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      readKey: "rd",
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", servedRead: async () => false, readKey: "rd", caller: async () => ({}) }),
+    });
+    const strictBase = await listen(strict);
+    const res = await fetch(`${strictBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(body.result).toMatchObject({ isError: true });
+    expect(payload(body)).toMatchObject({ error: "refused" });
+    strict.close();
   });
 
   it("returns an explicit unsupported error for has:: and for hasmy:: with an extra modifier, never an empty page", async () => {
