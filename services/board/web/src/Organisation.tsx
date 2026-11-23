@@ -10,6 +10,16 @@ import "./setup-flow.css";
 const list = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
 
 /**
+ * The organisation a picker starts on. A setup page (`bare`, for its `module`) starts on the organisation applied to that module,
+ * else the saved or email-suggested one only if it has an app for the module (the dropdown lists no other); never a hidden id.
+ */
+function initialPick(d: Organisations, module: string | undefined, bare: boolean | undefined): string | null {
+  if (!bare || !module) return d.chosen ?? d.suggested;
+  const offers = (id: string | null | undefined) => (d.organisations.find((o) => o.id === id)?.connections.includes(module) ? id! : null);
+  return offers(d.applied?.[module]) ?? offers(d.chosen) ?? offers(d.suggested);
+}
+
+/**
  * `onContinue` (the wizard): one primary Continue that applies the picked organisation, or moves on with None, and always shows
  * the choice. Otherwise (Settings) a chosen organisation collapses to a line with Change. `bare` (inside a setup flow's way, for its
  * `module`): a dropdown of the organisations and its button, applying only that module's client, with no card or None.
@@ -21,8 +31,8 @@ export function OrganisationPicker({ onApplied, onContinue, compact, bare, modul
   const [problem, setProblem] = useState("");
   const [editing, setEditing] = useState(false);
   useEffect(() => {
-    api.organisations().then((d) => (setData(d), setPick(d.chosen ?? d.suggested)), () => setData(null));
-  }, []);
+    api.organisations().then((d) => (setData(d), setPick(initialPick(d, module, bare))), () => setData(null));
+  }, [module, bare]);
   if (data === undefined) return null;
   if (!data?.organisations.length) {
     return onContinue ? (
