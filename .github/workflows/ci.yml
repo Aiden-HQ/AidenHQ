@@ -95,16 +95,17 @@ jobs:
           grep -qxE 'scripts|kernel|kernel/sdk' <<< "$dirs" && { (cd kernel && npm ci --silent) & pids+=($!); }
           grep -qxE 'kernel/sdk|fixtures/twin' <<< "$dirs" && { (cd kernel/sdk && npm ci --silent) & pids+=($!); }
           for p in "${pids[@]}"; do wait "$p" || exit 1; done
-          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has but the
-          # runner no longer does was removed at runtime (an install's lifecycle script can do it), which is a suite that
-          # vanished, not one that did not run: fail the shard rather than let it pass.
+          bash .github/ci/run-suites.sh "$list"
+          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has as a tree
+          # but the workspace no longer does was removed at runtime (an install's lifecycle script can do it, before launch or
+          # while another suite runs), which is a suite that vanished, not one that did not run: fail the shard. Checked after
+          # the run so a deletion during it is caught too.
           while IFS=$'\t' read -r name dir _; do
             if [ -n "$dir" ] && [ ! -d "$dir" ] && [ "$(git cat-file -t "HEAD:$dir" 2>/dev/null)" = tree ]; then
               echo "::error::$name: $dir is in the tested commit but gone at runtime"
               exit 1
             fi
           done < "$list"
-          bash .github/ci/run-suites.sh "$list"
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
   # whose paths a change touches, e.g. the kernel for the modules that import it), in the shards checks' `shards` step plans.
@@ -144,16 +145,17 @@ jobs:
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
           echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
-          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has but the
-          # runner no longer does was removed at runtime (an install's lifecycle script can do it), which is a suite that
-          # vanished, not one that did not run: fail the shard rather than let it pass.
+          bash .github/ci/run-suites.sh "$list"
+          # run-suites.sh treats a missing directory as `gone:` and exits 0. A directory the tested commit still has as a tree
+          # but the workspace no longer does was removed at runtime (an install's lifecycle script can do it, before launch or
+          # while another suite runs), which is a suite that vanished, not one that did not run: fail the shard. Checked after
+          # the run so a deletion during it is caught too.
           while IFS=$'\t' read -r name dir _; do
             if [ -n "$dir" ] && [ ! -d "$dir" ] && [ "$(git cat-file -t "HEAD:$dir" 2>/dev/null)" = tree ]; then
               echo "::error::$name: $dir is in the tested commit but gone at runtime"
               exit 1
             fi
           done < "$list"
-          bash .github/ci/run-suites.sh "$list"
 
   # One GitHub check per suite a shard's plan ran, on the PR head: the `checks` job's plan says which suites (its map comes
   # from the tested tree, `.github/ci/select.ts`), and the shard's own Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
