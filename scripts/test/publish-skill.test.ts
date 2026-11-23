@@ -31,7 +31,7 @@ test("a publish never files a merge: the run checks the task's merge card before
   assert.match(publish, /In the product repo or a repository on this server the merge is filed for you/, "only the repos the watch covers file the merge themselves");
   assert.match(publish, /wait for its \*\*Done\*\* notice and file nothing/, "a watched repo's Done notice is waited for, not filed for");
   assert.match(publish, /Everywhere else, call `aidenhq merge <PR link> <head sha>` before waiting/, "elsewhere the Engineer files the merge first");
-  assert.match(publish, /one that comes back done has merged and leaves nothing to wait for/, "a synchronous merge is an end, not a wait");
+  assert.match(publish, /one that ends with a `merged-prs` line naming the PR has merged and leaves nothing to wait for/, "a synchronous merge is an end, not a wait");
   assert.match(publish, /outside this instance's agents org and `maintainer_repos` cannot be merged by the fleet/, "a repo the fleet can't merge is reported open, not waited on");
   assert.match(publish, /`codehost-local\.merge` for a repository on this server/, "the kind is named for both code hosts");
   assert.doesNotMatch(publish, /with no merge card the PR is only open/, "the unconditional filing sentence is gone");
