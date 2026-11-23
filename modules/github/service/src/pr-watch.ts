@@ -70,6 +70,9 @@ const WEDGED_GRACE_MS = 3 * 60_000;
 /** How long after a re-run was asked a check run still not completed is reported to its task: the merge gate waits on it, so a
  * still-stuck head is reported rather than waited on silently. */
 const WEDGED_REPORT_MS = 20 * 60_000;
+/** Actions job reads one pass may spend on the recovery paths. Each unfinished check costs one read, serially, at a 30-second
+ * timeout, so an older PR with many of them would otherwise hold a newer PR's merge for minutes; the rest wait for the next tick. */
+const PROBES_PER_PASS = 10;
 /** Red rounds on one PR before its task stops being woken for them and its asker is told (the CI breaker). */
 const BREAKER_ROUNDS = 3;
 /** Review-findings wakes per pass (oldest PR first): the replies post as the owner's login, and a burst trips GitHub's secondary rate limit. */
@@ -118,6 +121,7 @@ export function startPrWatch(o: PrWatchOptions) {
   const stateFile = join(o.cacheDir, "pr-watch.json");
   let findingsWakes = 0; // review-findings wakes sent in this pass
   let gateDown = false;  // code review answered unreachable in this pass: no more verdict calls until the next
+  let probes = 0;        // Actions job reads this pass's recovery paths have spent (PROBES_PER_PASS)
   async function kernel(method: string, path: string, body: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => ({}));
@@ -147,7 +151,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.pinged ??= {};     // `<pr url>:<main oid>` -> when
     state.reded ??= {};      // PR url -> the head whose red checks woke its task
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<repo>:<head>:<job id>` -> a wedged check run's job (the job is the repository's)
-    state.wedged ??= {};     // `<pr url>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's re-run ask, and whether GitHub took it
+    state.wedged ??= {};     // `<repo>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's re-run ask, and whether GitHub took it (the job is the repository's, so a second PR at the head shares the ask)
     state.wedgedTold ??= {}; // `<pr url>:merge` and `<pr url>:optional` -> the head whose wedged check the task was told about
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
@@ -201,17 +205,52 @@ export function startPrWatch(o: PrWatchOptions) {
         return status !== undefined && status < 500 ? "wake" : "failed";
       }
     }
-    /** Re-run the failed jobs of red checks whose jobs never started, once per head. True when the red checks are all of that kind. */
+    /** The head's latest check runs from REST, every page: `runs` and whether GitHub's own `total_count` was all read (a
+     * partly read list never stands in for the head's). Null when the read itself failed. */
+    async function latestRuns(head: string): Promise<{ runs: Json[]; complete: boolean } | null> {
+      const runs: Json[] = [];
+      let total = 0;
+      try {
+        for (let page = 1; page <= 5; page++) {
+          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${head}/check-runs?filter=latest&per_page=100&page=${page}`);
+          if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) return null;
+          runs.push(...listed.body.check_runs);
+          total = Number(listed.body.total_count ?? 0);
+          if (runs.length >= total || listed.body.check_runs.length < 100) break;
+        }
+      } catch { return null; }
+      return { runs, complete: !total || runs.length >= total };
+    }
+    /** The REST check run a rollup node names: REST's `node_id` is the rollup's `id`, its numeric `id` the rollup's `databaseId`. */
+    const runOf = (runs: Json[], n: Json) => runs.find((c: Json) => (n.id ? c.node_id === n.id : Number(c.id) === Number(n.databaseId)));
+    /** The full Actions job id a check run's `details_url` names: the rollup's 32-bit `databaseId` no longer holds one. */
+    const jobIdOf = (run: Json) => String(run.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
+    /** One Actions job read, charged to this pass's budget: undefined once the budget is spent, so the check waits for the
+     * next tick instead of holding the scan (and every later PR's merge) on one PR's unfinished jobs. */
+    async function probeJob(id: string): Promise<{ status: number; body: any } | undefined> {
+      if (probes >= PROBES_PER_PASS) return undefined;
+      probes++;
+      return gh("GET", `/repos/${repo}/actions/jobs/${id}`);
+    }
+    /** Re-run the failed jobs of red checks whose jobs never started, once per head. True when the red checks are all of that kind
+     * (or when the pass could not read them yet: the next tick asks again). */
     async function neverStarted(pr: Json): Promise<boolean> {
       const rollup = rollupOf(pr);
       const red = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" ? n.status === "COMPLETED" && n.conclusion === "FAILURE" && n.name !== DESIGN_REVIEW_CHECK : ["FAILURE", "ERROR"].includes(n.state) && n.context !== CODE_REVIEW_STATUS);
       if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return false;
       const own = red.filter((n: Json) => n.name !== GATE_CHECK); // the aggregate only rolls the others up
+      const listed = await latestRuns(pr.headRefOid);
+      if (!listed || !listed.complete) return false; // an unread list cannot say a job never started: the red-head rules decide
       const unstarted: Json[] = [];
       for (const n of own.length ? own : red) {
-        if (n.__typename !== "CheckRun" || !n.databaseId) return false;
-        const job = await gh("GET", `/repos/${repo}/actions/jobs/${n.databaseId}`);
+        if (n.__typename !== "CheckRun") return false;
+        const run = runOf(listed.runs, n);
+        const jobId = run && jobIdOf(run);
+        if (!jobId) return false; // no Actions job in REST's own answer: not this rule's
+        const job = await probeJob(jobId);
+        if (!job) return false; // this pass's budget is spent: no step is judged now, and the next tick decides
         if (job.status >= 300 || !Array.isArray(job.body?.steps) || job.body.steps.length) return false; // a step ran: it judged the commit
+        if (job.body.head_sha !== pr.headRefOid || !String(job.body.check_run_url ?? "").endsWith(`/check-runs/${run.id}`)) return false;
         unstarted.push(n);
       }
       const key = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
@@ -238,36 +277,28 @@ export function startPrWatch(o: PrWatchOptions) {
      *
      * The check runs come from REST's own list of the head's latest ones (its `details_url` carries the full Actions job id,
      * which the rollup's 32-bit `databaseId` does not), and a job counts only when its own `head_sha` and `check_run_url` name
-     * that check run. A re-run gives its job a new id, so what was asked is kept by the check's suite and name at the head:
-     * the replacement of a re-run GitHub took is not re-run again.
+     * that check run. A re-run gives its job a new id, so what was asked is kept by the repository, head, suite and check name:
+     * the replacement of a re-run GitHub took is not re-run again, and a second PR at the same head sees the ask.
      *
-     * Returns the checks GitHub has asked about at this head with when their re-run was first asked and whether it took it,
-     * for the report: a check still wedged after the interval is no longer waited on silently.
+     * Returns the checks GitHub has asked about at this head with the check run's own node id, when their re-run was first asked
+     * and whether it took it, for the report: a check still wedged after the interval is no longer waited on silently.
      */
-    async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean; name: string; key: string }[]> {
+    async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean; name: string; nodeId: string | undefined; key: string }[]> {
       if (pr.isCrossRepository !== false) return [];
       const url = pr.url.toLowerCase(), head = pr.headRefOid;
       // A head whose rollup is wholly finished costs no request: there is nothing to recover. Only when every context is here.
       const rollup = rollupOf(pr);
       if (!rollup?.contexts?.pageInfo?.hasNextPage && (rollup?.contexts?.nodes ?? []).every((n: Json) => n.__typename !== "CheckRun" || n.status === "COMPLETED")) return [];
-      const runs: Json[] = [];
-      let total = 0;
-      try {
-        for (let page = 1; page <= 5; page++) {
-          const listed: { status: number; body: any } = await gh("GET", `/repos/${repo}/commits/${head}/check-runs?filter=latest&per_page=100&page=${page}`);
-          if (listed.status >= 300 || !Array.isArray(listed.body?.check_runs)) break;
-          runs.push(...listed.body.check_runs);
-          total = Number(listed.body.total_count ?? 0);
-          if (runs.length >= total || listed.body.check_runs.length < 100) break;
-        }
-      } catch (e) { log("wedged check runs' read failed", { pr: pr.url, head, err: String((e as Error).message).slice(0, 200) }); return []; }
-      if (total && runs.length < total) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length, total });
-      const out: { at: number; accepted: boolean; name: string; key: string }[] = [];
+      const listed = await latestRuns(head);
+      if (!listed) { log("wedged check runs' read failed", { pr: pr.url, head }); return []; }
+      const { runs } = listed;
+      if (!listed.complete) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length });
+      const out: { at: number; accepted: boolean; name: string; nodeId: string | undefined; key: string }[] = [];
       // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix.
       for (const c of runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed")) {
-        const name = `${url}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
+        const name = `${repo.toLowerCase()}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
         const asked: { at: string; accepted: boolean; job: number } | undefined = state.wedged[name];
-        const jobId = String(c.details_url ?? "").match(/\/job\/(\d+)(?:[?#].*)?$/)?.[1];
+        const jobId = jobIdOf(c);
         if (!jobId) { log("wedged check run without an Actions job", { pr: pr.url, head, check: String(c.name ?? "").slice(0, 100) }); continue; }
         // A refused or unanswered read backs off before anything else, so an Actions outage is not hit on every tick. Nothing
         // is reported while it backs off either: a report needs the job read that shows it finished, which the tick past the
@@ -275,8 +306,8 @@ export function startPrWatch(o: PrWatchOptions) {
         const prior: string | undefined = state.reran[`${repo.toLowerCase()}:${head}:${jobId}`];
         if (prior?.startsWith("retry:") && Date.parse(prior.slice(6)) > Date.now()) continue;
         // The Actions calls are this rule's alone: a timeout here must not stop the scan's other PRs (their merges and wakes).
-        let job: { status: number; body: any };
-        try { job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`); }
+        let job: { status: number; body: any } | undefined;
+        try { job = await probeJob(jobId); }
         catch (e) {
           log("wedged check run's job read failed", { pr: pr.url, head, job: jobId, err: String((e as Error).message).slice(0, 200) });
           // A sibling PR at this head may already have had the re-run taken: a failed read never undoes that.
@@ -284,6 +315,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           continue;
         }
+        if (!job) continue; // this pass's budget is spent: the check is probed on the next tick, nothing is recorded for it
         // Only a job that itself finished, on this head, for this very check run can leave it wedged: one still queued or
         // running is not stuck, and a details URL never points another head's or check's job here.
         // A rate limit or an outage on the read backs off like an unanswered one: GitHub is not asked again on every tick.
@@ -295,17 +327,18 @@ export function startPrWatch(o: PrWatchOptions) {
         if (job.status >= 300 || job.body?.status !== "completed" || job.body?.head_sha !== head || !String(job.body?.check_run_url ?? "").endsWith(`/check-runs/${c.id}`)) continue;
         const completedAt = Date.parse(job.body?.completed_at ?? "");
         if (!Number.isFinite(completedAt) || Date.now() - completedAt < WEDGED_GRACE_MS) continue; // a fresh job's check run can lag
+        const nodeId = c.node_id ? String(c.node_id) : undefined;
         // A re-run this head took for this very job, or for the job it replaced (a later attempt), or a re-run a sibling PR
         // at this head asked for, is not asked again. A job of another attempt-1 lineage that merely shares the display name
         // is a check of its own and gets its own ask.
         const replaced = !!asked?.accepted && !!job.body && Number(job.body.run_attempt ?? 1) > 1;
         if ((asked?.accepted && (Number(asked.job) === Number(jobId) || replaced)) || (prior && !prior.startsWith("retry:"))) {
           const at = prior && !prior.startsWith("retry:") ? Date.parse(prior) : Date.parse(asked?.at ?? "");
-          out.push({ at, accepted: true, name: String(c.name ?? ""), key: name });
+          out.push({ at, accepted: true, name: String(c.name ?? ""), nodeId, key: name });
           continue;
         }
         const tell = () => {
-          const now = { at: Date.parse(state.wedged[name].at), accepted: state.wedged[name].accepted, name: String(c.name ?? ""), key: name };
+          const now = { at: Date.parse(state.wedged[name].at), accepted: state.wedged[name].accepted, name: String(c.name ?? ""), nodeId, key: name };
           const i = out.findIndex((o) => o.key === now.key);
           if (i >= 0) out[i] = now; else out.push(now);
         };
@@ -579,10 +612,15 @@ export function startPrWatch(o: PrWatchOptions) {
       // The stuck checks whose reporting interval has passed. A check the merge waits on wakes the task once at this head; one
       // that only a matrix job hangs on is logged once, because it holds nothing and must not use up the merge's report.
       const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS);
-      // A check the rollup shows as a pending named check holds the merge, but only on a complete rollup: the gate refuses a
-      // truncated one before reading any check, so a re-run cannot clear that and the wake must not claim it would.
+      // A wedged check holds the merge when the rollup shows its very check run (by node id, never by display name: an old
+      // wedged check that shares a name with a newer, normally running one holds nothing) as a pending named check. Only on a
+      // complete rollup: the gate refuses a truncated one before reading any check, so a re-run cannot clear that. And only
+      // while no named check is red: merge-gate.ts fails a red head before it considers pending ones, so the existing
+      // red-head rules own that head and a "the gate is held, leave it alone" wake would be wrong.
       const complete = !rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
-      const held = complete ? due.filter((w) => named.some((c) => c.pending && c.name === w.name)) : [];
+      const red = named.some((c) => !c.ok && !c.pending);
+      const pendingIds = new Set(runs.filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED" && n.name && n.name !== DESIGN_REVIEW_CHECK && n.name !== CODE_REVIEW_STATUS).map((n: Json) => String(n.id)));
+      const held = complete && !red ? due.filter((w) => !!w.nodeId && pendingIds.has(w.nodeId)) : [];
       const optional = due.filter((w) => !held.includes(w));
       if (held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
@@ -712,6 +750,7 @@ export function startPrWatch(o: PrWatchOptions) {
     let open = 0;
     findingsWakes = 0;
     gateDown = false;
+    probes = 0;
     if (o.connected && !o.connected()) return open;
     for (const { repo, duties } of o.repos) {
       try { open += await scan(repo, duties, all); }

@@ -135,7 +135,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204 } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -154,6 +154,8 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     // REST check runs for a head, as GitHub lists them: the full Actions job id is carried in details_url.
     const headRuns = path.match(/^\/repos\/acme\/app\/commits\/([^/?]+)\/check-runs/);
     if (headRuns) {
+      // The tests that need REST and the rollup to disagree (an old wedged run the rollup no longer lists) name the runs.
+      if (restRuns) { const runs = restRuns(headRuns[1]); return { status: 200, body: { total_count: runs.length, check_runs: runs } }; }
       const head = open.find((p) => p.headRefOid === headRuns[1]);
       const nodes = head?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
       const runs = nodes.filter((n) => n.__typename === "CheckRun").map((n) => ({ id: n.databaseId, node_id: n.id, name: n.name, status: String(n.status ?? "").toLowerCase(), app: { slug: "github-actions" }, started_at: n.startedAt, check_suite: { id: n.checkSuite?.workflowRun?.databaseId ?? 500 }, details_url: `https://github.com/acme/app/actions/runs/${n.checkSuite?.workflowRun?.databaseId ?? 500}/job/${n.databaseId}` }));
@@ -276,7 +278,7 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
   const c = await rig(t);
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   c.set([c.agentPr(44, stuckPr(44))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/44:h44:500:image-changes": { at: asked, accepted: true, job: 77 } } } }));
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h44:500:image-changes": { at: asked, accepted: true, job: 77 } } } }));
   await c.watch.tick(); await c.watch.tick();
   assert.equal(c.woke.length, 1, "told once at this head");
   assert.equal(c.woke[0].task, "ACME-44");
@@ -293,14 +295,14 @@ test("a refused re-run is reported after the interval, and a check job still run
   // A refused re-run keeps the first ask's clock, so the check is reported rather than retried unseen.
   const c = await rig(t, { jobRerun: () => 502 });
   c.set([c.agentPr(46, stuckPr(46))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/46:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false, job: 77 } } } }));
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false, job: 77 } } } }));
   await c.watch.tick();
   assert.equal(c.woke.length, 1);
   assert.match(c.woke[0].text, /the request to re-run the job was refused/);
   // A replacement job still queued or running is not stuck: nothing is reported for it.
   const running = await rig(t, { job: { status: "in_progress", completed_at: null } });
   running.set([running.agentPr(49, stuckPr(49))]);
-  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "https://github.com/acme/app/pull/49:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true, job: 77 } } } }));
+  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true, job: 77 } } } }));
   await running.watch.tick();
   assert.equal(running.woke.length, 0, "a re-run still running is not a stuck check");
 });
@@ -746,4 +748,73 @@ test("a green PR waiting on open review findings wakes its task once per head, 3
   text = `code review: ${"y".repeat(5000)}`;
   await changing.watch.tick();
   assert.ok(changing.woke[2].text.length <= 2000 && /code_review_resolve.*posted for you\. Nothing else\.$/s.test(changing.woke[2].text), "long findings are cut, never the instructions");
+});
+
+// The rollup's CheckRun `id` is the check run's GraphQL node id; REST's `node_id` is the same value. A wedged check is the
+// merge's when the rollup shows that very check run pending, never a newer check run that merely shares its display name.
+test("a wedged check is matched to the rollup by node id, so a same-named newer check does not wake the task", async (t) => {
+  const rollup = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_new", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, {
+    // REST still lists the old run as unfinished; the rollup now holds the newer one under the same display name.
+    restRuns: (head) => [{ id: 77, node_id: "CR_old", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/77` }],
+  });
+  c.set([c.agentPr(50, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h50:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h50:77": asked },
+  } }));
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.filter((w) => /merge gate is held/.test(w.text)).length, 0, "the newer check run is not the wedged one");
+  assert.equal(c.woke.length, 0);
+});
+
+test("a red named check beats a wedged pending one: no wake claims the merge gate is held", async (t) => {
+  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, {
+    restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/77` }],
+  });
+  c.set([c.agentPr(51, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h51:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h51:77": asked },
+  } }));
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.filter((w) => /merge gate is held/.test(w.text)).length, 0, "a red head is the red-head rules' to wake, not the wedge report's");
+  assert.equal(c.woke.length, 0, "the report waits: merge-gate.ts fails the red head before it reads any pending check");
+});
+
+test("two PRs at one head share one accepted re-run ask", async (t) => {
+  // PR 52 asks for job 77's re-run and GitHub takes it; GitHub then posts the replacement as job 78 (attempt 2), still
+  // wedged. PR 53 at the same head must see the shared ask, not re-run the replacement again.
+  let replacement = false;
+  const c = await rig(t, {
+    restRuns: (head) => {
+      const id = replacement ? 78 : 77;
+      return [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${id}` }];
+    },
+  });
+  c.set([c.agentPr(52, { ...stuckPr(52, 77), headRefOid: "h70" }), c.agentPr(53, { ...stuckPr(53, 77), headRefOid: "h70" })]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "one ask for the head, not one per PR");
+  replacement = true;
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/78/rerun").length, 0, "the replacement job is not re-run by the second PR");
+});
+
+// A pass spends at most PROBES_PER_PASS Actions job reads on the recovery paths: later PRs are still scanned this tick.
+test("recovery probes are bounded per pass, so a PR with many unfinished checks does not hold the next PR's merge", async (t) => {
+  const many = (n) => ({ state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: n }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `job-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } });
+  const c = await rig(t);
+  // The first PR (oldest) has 12 unfinished checks; the second is green and must still have its merge filed this tick.
+  c.set([c.agentPr(54, { commits: { nodes: [{ commit: { statusCheckRollup: many(12) } }] }, headRefOid: "h54" }), c.agentPr(55)]);
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "ten probes, then the rest wait for the next tick");
+  assert.equal(c.merges.length, 1, "the green PR's merge is still filed in the same pass");
 });
