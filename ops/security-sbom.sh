@@ -619,11 +619,17 @@ save_wave() { # <wave>
     # nothing that moves after this lock is released can change it. The scan only re-opens archives.
     archive="$archives/$((archive_seq += 1)).tar"
     if export_image "$pin" "$ref" "$archive" "$plat"; then
-      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx"
-      # The workspace the next save must leave is the one this archive really takes, not the daemon's estimate of it: a
-      # save can be larger than the image it holds, and reserving the estimate could admit a save whose scan then never
-      # fits beside the archives already written.
+      # The archive is measured, not estimated: a save can be larger than the image it holds, and the bytes it really
+      # took are what the rest of the wave and the pass's day-end budget have to live with. A save that overshot the
+      # floor (the estimate was not a bound) is deleted at once, so the space reserved for the host is never held by an
+      # archive this pass cannot scan; the image is a line with the size, never a silent overspend.
       szb="$(stat -c %s "$archive" 2>/dev/null || echo "$szb")"
+      if [ "$(free_bytes)" -lt "$floor_bytes" ]; then
+        rm -f "$archive"
+        fail "image:$key" "docker save: the ${sz} GB image's archive left the disk under the ${min_free_gb} GB floor; not scanned"
+        continue
+      fi
+      plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx"
       written=$(( written + szb )); [ "$szb" -gt "$written_big" ] && written_big="$szb"
     else
       fail "image:$key" "docker save: ${export_err:-failed}"

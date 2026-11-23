@@ -970,6 +970,24 @@ test("security-sbom: an apply that takes the lock between waves leaves those ima
   assert.equal(calls.filter((c) => c.startsWith("save ")).length, scanned.length);
 });
 
+test("security-sbom: a save that overshoots its estimate is deleted rather than left under the floor", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor. The daemon reports 5 GB, but the save really writes 15 GB and takes the disk under the
+  // floor. The archive must be deleted at once and the image recorded as a line: holding it would keep the host's reserve
+  // spent on an archive this pass cannot scan, and the next save's check would then see a disk under the floor.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(40 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" }],
+    tags: { "big1:local": "sha256:b1" },
+    held: ["sha256:b1"],
+    sizes: { "sha256:b1": 5 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 15 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(row[1], "-", "the overshooting save is not scanned");
+  assert.match(row[2], /left the disk under the 30 GB floor/);
+});
+
 test("security-sbom: a save that no longer fits beside its wave's archives is deferred, then scanned", { skip: NOT_LINUX }, async () => {
   // 60 GB free, a 30 GB floor: 30 GB of room. The daemon reports 7 GB and 9 GB, so one wave admits both (16 GB of
   // archives plus a 9 GB workspace = 25 GB). The 7 GB image's archive is really 14 GB: after it is written only 16 GB are
