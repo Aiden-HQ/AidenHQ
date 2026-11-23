@@ -27,7 +27,7 @@ function setup(row, over = {}) {
       comment: async () => calls.push(["comment"]), block: async () => {}, children: async () => over.children ?? [],
     },
     log: () => {}, state,
-    gather: async () => (over.gather ? over.gather() : { facts: [], version: over.version ?? "v1", ...(over.awaiting ? { awaiting: over.awaiting } : {}), ...(over.missing ? { missing: true } : {}) }), grade: async () => ({ outcome: over.outcome ?? row, model: "m", criteria: [] }),
+    gather: async (...a) => (over.gather ? over.gather(...a) : { facts: [], version: over.version ?? "v1", ...(over.awaiting ? { awaiting: over.awaiting } : {}), ...(over.missing ? { missing: true } : {}) }), grade: async () => ({ outcome: over.outcome ?? row, model: "m", criteria: [] }),
     escalationFor: over.escalationFor ?? (async () => over.esc ?? {}), presentNow: over.presentNow ?? presentNow, gradeNote: (_g, _r, outcome, o) => (outcome === "ungraded" ? `ungraded: ${o?.reason}` : "note"), template: () => [], gradeDeps: over.gradeDeps ?? (() => ({})),
     tellParent: async (_i, kind, text) => { if (failing.tell-- > 0) throw err(); calls.push(["tell", kind]); tells.push(text); return true; },
     recordsOn: async () => [], graderAsk: () => undefined, stripHidden: (x) => x, graderSpeaks: () => false, rubricHash: () => "rubric", graderMarker: "<!-- aidenhq:grader -->",
@@ -55,11 +55,11 @@ it("a versionless close is stale once the deliverable is present, even when its 
 
 it("a presence check that can't answer leaves a versionless close waiting, never counts as absent", async () => {
     // The real presentNow: the apps registry read fails (app: undefined), which is "unknown", never "no deliverable". The close
-    // stays owed and is retried; once the registry answers with no such app it lands ungraded as before.
+    // stays owed and is retried; once the registry answers with no such app it lands ungraded as before. The row is fresh: a
+    // versionless close is queued now, and its own day bounds the wait for the presence answer.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, calls, failing } = setup("satisfied", over);
@@ -76,17 +76,16 @@ it("an unreadable presence check is waited out for a day and then closes ungrade
     // absent either: after the day a grade waits, the close lands ungraded with the reason naming the unreadable lookup.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, calls, notes, failing, state } = setup("satisfied", over);
     failing.done = 0;
     await loop.runGrades();
     assert.deepEqual(calls, [], "the first pass waits");
-    // The wait started a day and a bit ago: the same unreadable answer now ends it.
+    // The close's own day is spent: the same unreadable answer now ends it.
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades();
     assert.deepEqual(calls, [["setStatus", "done"], ["tell", "done"]], "an answer that never comes does not hold the close forever");
@@ -101,8 +100,7 @@ it("an unreadable-deliverable close rewrites the queued parent notice to say ung
     // must not be told as the same thing.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, tells, notes, failing, state } = setup("satisfied", over);
@@ -110,7 +108,7 @@ it("an unreadable-deliverable close rewrites the queued parent notice to say ung
     await loop.runGrades();
     assert.equal(tells.length, 0, "the wait tells nobody");
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades();
     assert.match(String(notes.at(-1)), /could not be read just now/, "the close says it was unreadable");
@@ -123,16 +121,15 @@ it("a title that contains 'Its result is on' never moves the parent's pointer", 
     // the very phrase a parser would split on, which would send the parent to the wrong task.
     let down = true;
     const over = {
-      id: "t-app", title: "Verify the deployment. Its result is on TASK-99", identifier: "TASK-42",
+      id: "t-app", title: "Verify the deployment. Its result is on TASK-99", identifier: "TASK-42", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true,
       outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, tells, failing, state } = setup("satisfied", over);
     failing.done = 0;
     await loop.runGrades();
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades();
     // The title itself carries that phrase, so it shows up in the notice as the title does; the pointer at the end must be the
@@ -145,15 +142,14 @@ it("the revised parent notice is saved before the close, so a lost answer still 
     // must read the ungraded notice from the owed row already, not the "graded against its rubric" one queued with the close.
     let down = true;
     const over = {
-      id: "t-app", outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
-      gather: () => ({ facts: [], awaiting: "roadmap-keeper: could not be read just now" }),
+      id: "t-app", updatedAt: new Date(Date.now() - 11 * 60_000).toISOString(), missing: true, outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
       gradeDeps: () => ({ app: async () => (down ? undefined : null) }),
     };
     const { loop, tells, failing, state } = setup("satisfied", over);
     failing.done = 1; // the close lands on the server, but the answer is lost
     await loop.runGrades();
     const owed = JSON.parse(state.get("owed:t-app"));
-    owed[0].unreadSince = new Date(Date.now() - 25 * 60 * 60_000).toISOString();
+    owed[0].closeDeadline = new Date(Date.now() - 60_000).toISOString();
     state.set("owed:t-app", JSON.stringify(owed));
     await loop.runGrades(); // the close is filed; its answer is lost, so the row stays owed
     assert.equal(tells.length, 0, "the close did not report success");
@@ -216,5 +212,205 @@ it("a confirmed merged PR makes a versionless close stale even when another PR's
   assert.ok(errors.every(([, b]) => b.version !== "" || b.reason !== "gaveUp"), "and never the gave-up close on the unreadable one");
   assert.ok(!errors.some(([, b]) => String(b.reason ?? "").includes("could not be read")), "no unreadable-close reason is written");
 });
+});
+});
+
+describe("grade loop: the day a grade may wait is a hard bound", () => {
+const long = (h) => new Date(Date.now() - h * 60 * 60_000).toISOString();
+
+it("a busy signal that never clears does not suppress the day: the task closes done, ungraded", async () => {
+  // The jobs table can hold a `running` row with no process behind it, so busy() can stay true forever. The day is the one
+  // bound that holds whatever the evidence says: past it the row takes the existing fail-open close.
+  const { loop, calls, notes, tells, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => ({ awaiting: "the agent is still working on it", busy: true }),
+    escalationFor: async () => ({ reason: "still waiting for its evidence a day after it was finished: the agent is still working on it" }),
+  });
+  failing.done = 0;
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "busy no longer defers the day");
+  assert.match(String(notes.at(-1)), /^ungraded: still waiting for its evidence a day after it was finished/, "the note says why, ungraded");
+  assert.match(String(tells.at(-1)), /is done, ungraded: still waiting for its evidence a day after it was finished/);
+});
+
+it("a gather() that throws before the deadline is retried, never closed", async () => {
+  // A deterministic throw is not evidence that evidence is coming: before the day it only logs and retries (runGrades' own
+  // catch), leaving the row for the next pass.
+  const { loop, calls } = setup("satisfied", {
+    updatedAt: long(1), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+  });
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "nothing closes before the day");
+});
+
+it("a gather() that throws past the day takes the same fail-open close, naming the throw", async () => {
+  const { loop, calls, notes, tells, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+  });
+  failing.done = 0;
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "a throw past the day closes like any other wait");
+  assert.match(String(notes.at(-1)), /^ungraded: gathering its evidence failed a day after it was finished: the PR read threw/);
+  assert.match(String(tells.at(-1)), /is done, ungraded: gathering its evidence failed/);
+});
+
+it("a day-bound close is not undone by the busy signal it outlived when its close is replayed", async () => {
+  // The close PATCH fails (502) and is retried on the next pass. Its replay must not re-gather the evidence and read the same
+  // busy as "still moving": that would send the row back to waiting and let the stuck signal suppress the bound again.
+  const { loop, calls, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => ({ awaiting: "the agent is still working on it", busy: true }),
+    escalationFor: async () => ({ reason: "still waiting for its evidence a day after it was finished" }),
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay lands the close, not a return to waiting");
+});
+
+it("a gather() that keeps throwing past the day does not keep its close owed forever", async () => {
+  // The close is decided at the day bound from the throw; the same throw on every replay must not re-raise and hold the row.
+  const { loop, calls, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay lands it, the throw notwithstanding");
+});
+
+
+it("a day-bound close reopens when the replay reads a new version, never closing over landable work", async () => {
+  // The first pass closed at the day bound while gather() threw. Its PATCH was lost, and by the replay the read works and holds
+  // a version: that is a deliverable which appeared since, and it is graded rather than closed ungraded on the stale close.
+  let throwing = true;
+  const { loop, calls, posts, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { if (throwing) throw new Error("the PR read threw"); return { facts: [], version: "acme/app#7" }; },
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  throwing = false;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the recovered version makes the close stale, not a close ungraded");
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "sent back to grading");
+});
+
+
+it("a deliverable the day-bound close already reported present does not reopen it on replay", async () => {
+  // An app is deployed but the live page its rubric needs never renders: gather() has no version and the presence check finds
+  // the app. The close says its evidence never settled. Replaying it must not read the same finding as "it appeared since"
+  // and park the row awaiting evidence again, which would restart the day and never end the wait.
+  const { loop, calls, notes, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "", deliverable: { kind: "app", ref: "roadmap-keeper" },
+    gather: () => ({ facts: [], awaiting: "roadmap-keeper: its live page never rendered" }),
+    escalationFor: async () => ({ hold: true, present: true, facts: ["app roadmap-keeper: deployed c0ffee"] }),
+    presentNow: async () => ({ present: true, facts: ["app roadmap-keeper: deployed c0ffee"] }),
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "the first close's answer was lost: it stays owed");
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay closes instead of reopening");
+  assert.match(String(notes.at(-1)), /^ungraded: its deliverable is there/, "the note says what the close found");
+});
+
+it("a stuck busy signal at the day does not hide evidence that is there: the pass reads past it", async () => {
+  // A job row stuck `running` makes busy() true forever, and gather() returns on it before reading the PR. Past the day the loop
+  // asks gather through a deps whose busy() is empty, so the evidence that is there is read rather than the task closed over a
+  // PR the grader never looked at.
+  const asked = [];
+  const { loop } = setup("satisfied", {
+    updatedAt: long(25), outcome: "satisfied", deliverable: { kind: "pr", ref: "acme/app#7" },
+    gather: (deliverable, deps) => { asked.push(deps.busy()); return { facts: [], version: "acme/app#7@abc" }; },
+    gradeDeps: () => ({ busy: () => "the agent is still working on it" }),
+  });
+  await loop.runGrades();
+  assert.ok(asked.length > 0 && asked.every((b) => b === ""), "past the day every read (pass and close replay) is past the stuck signal");
+});
+
+it("a fresh row keeps the busy signal in the read, so it still waits", async () => {
+  const asked = [];
+  const { loop } = setup("satisfied", {
+    updatedAt: long(1), outcome: "satisfied", deliverable: { kind: "pr", ref: "acme/app#7" },
+    gather: (deliverable, deps) => { asked.push(deps.busy()); return { awaiting: "the agent is still working on it", busy: true }; },
+    gradeDeps: () => ({ busy: () => "the agent is still working on it" }),
+  });
+  await loop.runGrades();
+  assert.deepEqual(asked, ["the agent is still working on it"], "before the day the signal is still what gather sees");
+});
+
+it("a day-bound close keeps its recorded gather failure when the presence lookup is unreadable", async () => {
+  // The close says its evidence could not be gathered (the throw). Its replay meets an unreadable presence lookup: it must land on
+  // the recorded reason, not replace it with a vaguer "could not be read".
+  const { loop, calls, notes, failing } = setup("satisfied", {
+    updatedAt: long(25), outcome: "cannot_judge", version: "",
+    gather: () => { throw new Error("the PR read threw"); },
+    escalationFor: async () => ({ hold: true, present: false, facts: [] }),
+    presentNow: async () => ({ present: false, unknown: true, facts: [] }),
+  });
+  failing.done = 1;
+  await loop.runGrades();
+  await loop.runGrades();
+  assert.deepEqual(calls.filter((c) => c[0] === "setStatus"), [["setStatus", "done"]], "the replay lands");
+  assert.match(String(notes.at(-1)), /gathering its evidence failed a day after it was finished: the PR read threw/, "the recorded throw, not a lookup's words");
+});
+
+it("a close queued before closes carried a deadline gets one, so its replay is still bounded", async () => {
+  // Seed a close as an older release queued it (no closeDeadline), with an unreadable presence lookup behind it.
+  const { loop, calls, failing, state } = setup("satisfied", { id: "t-legacy", deliverable: { kind: "app", ref: "roadmap-keeper" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: false, unknown: true, facts: [] }) });
+  failing.done = 0;
+  state.set("owed:t-legacy", JSON.stringify([{ do: "done", note: "note", ungraded: true, version: "", status: "in_review", round: 1, deliverable: { kind: "app", ref: "roadmap-keeper" }, rubric: [], filing: "rubric" }]));
+  await loop.runGrades();
+  const owed = JSON.parse(state.get("owed:t-legacy") || "[]");
+  assert.equal(typeof owed[0]?.closeDeadline, "string", "a legacy close is stamped with a deadline");
+  assert.deepEqual(calls, [], "a fresh stamp does not let the unreadable close land at once");
+  assert.equal(JSON.parse(state.get("owed:t-legacy"))[0].closeDeadline, owed[0].closeDeadline, "the stamp is saved, not recomputed each pass");
+});
+it("a legacy close already decided at the day bound is stamped expired, never given a fresh day", async () => {
+  // A close from the intermediate release carries `dayBound` and no deadline. Stamping it now + a day would give a close that
+  // already spent its bound another 24 hours; it must land on its first replay instead.
+  const { loop, calls, notes, failing, state } = setup("satisfied", {
+    id: "t-daybound", deliverable: { kind: "app", ref: "roadmap-keeper" },
+    gather: () => { throw new Error("the registry read threw"); },
+    presentNow: async () => ({ present: false, facts: [] }),
+  });
+  failing.done = 0;
+  state.set("owed:t-daybound", JSON.stringify([{ do: "done", note: "ungraded: its deliverable is there but its evidence never settled", ungraded: true, dayBound: true, version: "", status: "in_review", round: 1, deliverable: { kind: "app", ref: "roadmap-keeper" }, rubric: [], filing: "rubric" }]));
+  await loop.runGrades();
+  const owed = JSON.parse(state.get("owed:t-daybound") || "[]");
+  assert.equal(owed.length, 0, "the close landed on its first replay, not after another day");
+  assert.deepEqual(calls, [["setStatus", "done"]], "a dayBound legacy close closes now");
+  assert.match(String(notes.at(-1)), /ungraded/, "still ungraded");
+});
+
+it("a legacy close that already confirmed its deliverable is not reopened by the replay", async () => {
+  // Before closes carried `sawPresent`, the confirmed finding was kept as `sawPresentFacts`. A close that recorded the
+  // deliverable was there has already compared it: the replay must not read it as one that appeared since and park the row
+  // awaiting evidence again, restarting the day.
+  const { loop, calls, posts, failing, state } = setup("satisfied", { id: "t-saw", deliverable: { kind: "pr", ref: "acme/app#7" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: true, facts: ["pr acme/app#7 is merged"] }) });
+  failing.done = 0;
+  state.set("owed:t-saw", JSON.stringify([{ do: "done", note: "ungraded: its deliverable is there but its evidence never settled", ungraded: true, sawPresentFacts: ["pr acme/app#7 is merged"], closeDeadline: new Date(Date.now() - 60_000).toISOString(), version: "", status: "in_review", round: 1, deliverable: { kind: "pr", ref: "acme/app#7" }, rubric: [], filing: "rubric" }]));
+  await loop.runGrades();
+  assert.deepEqual(calls, [["setStatus", "done"]], "the recorded presence does not reopen the close");
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 0, "the row is not parked awaiting evidence again");
+});
+
+it("a busy signal on a fresh row still waits, as before", async () => {
+  const { loop, calls, notes, posts } = setup("satisfied", {
+    updatedAt: long(1), outcome: "cannot_judge", version: "",
+    gather: () => ({ awaiting: "the agent is still working on it", busy: true }),
+    escalationFor: async () => ({ reason: "not reached" }),
+  });
+  await loop.runGrades();
+  assert.deepEqual(calls, [], "a fresh busy row is not closed");
+  assert.equal(notes.length, 0);
+  assert.equal(posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "it is parked awaiting evidence");
 });
 });
