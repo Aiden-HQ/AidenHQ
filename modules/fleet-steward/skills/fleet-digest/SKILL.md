@@ -21,4 +21,9 @@ description: "Works the day's deep-look log lines, gives every owner interruptio
 4. One `notify` (`kind: digest`): what tripped and was done, open items, rules filed, open product-bug issues, fixes waiting on a
    pin bump, anything waiting on the owner but a card, and the day's interruptions (counted, needless ones with their repair).
    Quiet: "Fleet quiet: nothing tripped".
+   Each item listed as waiting on the owner is checked first: its task or detector key against live state (a generation, an
+   ingest run, the host) and against "Owner decisions". One that is already done or that a decision settles is left out and
+   settled the way `fleet-check` settles verified work: the evidence goes on its task (finished where you may close it), an
+   agent waiting on the owner for that answer is left untouched and handed to the chief of staff (the evidence and its task
+   id in the handoff) to answer from the decision or the live evidence, and a skipped source's open key goes through `fleet-check`'s source triage.
 5. Log `digest sent`; `task_finish`.
