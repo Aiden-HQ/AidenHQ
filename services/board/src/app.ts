@@ -1078,6 +1078,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           // words by when it was made, so task ids in them are the ask's subject ("email Dana about WOR-42"), not a target.
           const owners = source.all.filter((c) => c.authorType === "user" && c.authorUserId === ctx.me && !c.deletedAt && c.createdAt <= dest.createdAt);
           const asked = agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me) && owners.reduce<Comment | undefined>((a, c) => (!a || c.createdAt > a.createdAt ? c : a), undefined)?.id === source.comment.id;
+          // Words naming a task that waits on him are a go-ahead for that task, never a new ask.
+          const goAhead = waiting.find((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(words));
+          if (asked && goAhead) throw new Refused(`refused: the owner's words name ${goAhead}, which waits on him: relay them there`);
           if (!asked) assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
           // Once per message, whatever the target: reserved before posting, released if the post fails.
           const key = `relayed:${comment_id}`;

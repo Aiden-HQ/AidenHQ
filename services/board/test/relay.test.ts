@@ -129,7 +129,7 @@ describe("/internal/relay", () => {
 
   it("passes the owner's ask to the Researcher task Aiden handed out for it, and only that ask", async () => {
     const older = say(chat, "[telegram] send Dana the notes", { createdAt: new Date(Date.now() - 60_000).toISOString() });
-    const ask = say(chat, "[telegram] move my 3pm with Dana to 4 and email her the WOR-2 notes");
+    const ask = say(chat, "[telegram] move my 3pm with Dana to 4 and email her the WOR-9999 notes");
     // An engineer task in review elsewhere doesn't make the ask ambiguous: the Researcher task was made for this message.
     const task = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: new Date(Date.now() + 1000).toISOString() });
     issues.push(task);
@@ -142,6 +142,11 @@ describe("/internal/relay", () => {
     issues.push(planted);
     const again = say(chat, "[telegram] and cancel Friday's review");
     expect((await relay({ comment_id: again.id, target: planted.identifier })).status).toBe(403);
+    // A go-ahead for a task waiting on him (the engineer in review) is never a new ask, even when it is the newest message.
+    const go = say(chat, `[telegram] apply ${eng.identifier}`);
+    const next = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: new Date(Date.now() + 2000).toISOString() });
+    issues.push(next);
+    expect((await relay({ comment_id: go.id, target: next.identifier })).status).toBe(403);
     const early = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS, createdAt: "2026-11-02T10:00:00Z" });
     issues.push(early);
     expect((await relay({ comment_id: again.id, target: early.identifier })).status).toBe(403);
