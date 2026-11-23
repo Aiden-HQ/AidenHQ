@@ -153,6 +153,7 @@ export function startPrWatch(o: PrWatchOptions) {
     state.reran ??= {};      // `<pr url>:<head>` -> when its never-started checks were re-run; `<repo>:<head>:<job id>` -> a wedged check run's job (the job is the repository's)
     state.wedged ??= {};     // `<repo>:<head>:<suite>:<check>` -> { at, accepted, job }: its wedged check's re-run ask, and whether GitHub took it (the job is the repository's, so a second PR at the head shares the ask)
     state.wedgedTold ??= {}; // `<pr url>:merge` and `<pr url>:optional` -> the head whose wedged check the task was told about
+    state.wedgedAt ??= {};   // `<repo>:<head>` -> the check a pass's probe budget ran out at, so the next pass starts there
     state.policyRan ??= {};  // `<pr url>:<head>:<sha256(title)>` -> when its red policy was re-run for that title
     state.abandoned ??= {};  // PR url -> when it was closed for its cancelled task
     state.headAt ??= {};     // PR url -> { head, at }: when this head was first seen
@@ -248,7 +249,8 @@ export function startPrWatch(o: PrWatchOptions) {
         const jobId = run && jobIdOf(run);
         if (!jobId) return false; // no Actions job in REST's own answer: not this rule's
         const job = await probeJob(jobId);
-        if (!job) return false; // this pass's budget is spent: no step is judged now, and the next tick decides
+        if (!job) return true; // this pass's budget is spent: nothing is known about the job, so the red-head rules must
+        // not wake the task for what may be an environment failure; the next tick reads it.
         if (job.status >= 300 || !Array.isArray(job.body?.steps) || job.body.steps.length) return false; // a step ran: it judged the commit
         if (job.body.head_sha !== pr.headRefOid || !String(job.body.check_run_url ?? "").endsWith(`/check-runs/${run.id}`)) return false;
         unstarted.push(n);
@@ -295,7 +297,13 @@ export function startPrWatch(o: PrWatchOptions) {
       if (!listed.complete) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length });
       const out: { at: number; accepted: boolean; name: string; nodeId: string | undefined; key: string }[] = [];
       // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix.
-      for (const c of runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed")) {
+      const candidates = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed");
+      // Where the last pass stopped when its budget ran out, so the checks it never reached are the first probed this pass
+      // instead of a head's first few unfinished checks spending every pass's budget.
+      const cursorKey = `${repo.toLowerCase()}:${head}`;
+      const start = candidates.length ? Number(state.wedgedAt[cursorKey] ?? 0) % candidates.length : 0;
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[(start + i) % candidates.length];
         const name = `${repo.toLowerCase()}:${head}:${String(c.check_suite?.id)}:${String(c.name ?? "")}`;
         const asked: { at: string; accepted: boolean; job: number } | undefined = state.wedged[name];
         const jobId = jobIdOf(c);
@@ -315,7 +323,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           continue;
         }
-        if (!job) continue; // this pass's budget is spent: the check is probed on the next tick, nothing is recorded for it
+        if (!job) { state.wedgedAt[cursorKey] = (start + i) % candidates.length; save(); break; } // budget spent: the next pass starts here
         // Only a job that itself finished, on this head, for this very check run can leave it wedged: one still queued or
         // running is not stuck, and a details URL never points another head's or check's job here.
         // A rate limit or an outage on the read backs off like an unanswered one: GitHub is not asked again on every tick.
