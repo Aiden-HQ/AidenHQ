@@ -27,5 +27,9 @@ test("a publish never files a merge: the run checks the task's merge card before
   assert.match(publish, /A merge exists only as the `github\.merge` card `aidenhq merge` filed on the task/, "the merge is the card's");
   assert.match(publish, /done only when that card's outcome is a `merged-prs` line naming the PR at its head/, "done means the outcome names the PR at its head");
   assert.match(publish, /Before a run ends waiting on a merge, check the task's approvals for that card/, "the check comes before the wait");
-  assert.match(publish, /with no merge card the PR is only open and nothing will wake the task — file the merge, then wait/, "no card: file it, then wait");
+  assert.match(publish, /Your task's own PR in a watched repo \(the product repo and the agents org\) merges without you/, "a watched repo's own PR merges without the Engineer");
+  assert.match(publish, /once its checks are green at the head you published, the code host files that merge and its Done notice arrives on the task/, "the code host files it and the Done notice wakes the task");
+  assert.match(publish, /In a repo the watch does not merge for you \(a maintained repo elsewhere\), or when a notice on the task asks, file the merge, then wait/, "only an unwatched repo or a notice has the Engineer file it");
+  assert.match(publish, /`codehost-local\.merge` on a repo on this server/, "the kind is named for both code hosts");
+  assert.doesNotMatch(publish, /nothing will wake the task/, "the paragraph never claims nothing will wake the task");
 });
