@@ -6,6 +6,7 @@
 // Librarian's extraction, already validated when it published (owners and names in them are model-written text, never ids).
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { shortHash } from "./util/ids.js";
 import type { Logger } from "./util/log.js";
 import { capText, type SourceStore, tableDdl, type Table } from "./source-store.js";
 import type { Vault } from "./vault/vault.js";
@@ -60,13 +61,19 @@ export interface MeetingsSource {
   vault: Pick<Vault, "exists" | "read">;
 }
 
+// Each action carries its task key: the owner and wording, hashed (the key Intake files its task under, stable across note edits).
+function withKey(a: unknown) {
+  const { owner, action } = a as { owner?: string | null; action?: string };
+  return { ...(a as object), key: shortHash(`${(owner ?? "").toLowerCase()}|${(action ?? "").toLowerCase().replace(/\s+/g, " ").trim()}`) };
+}
+
 function row(m: MeetingRow, note: string | null) {
   const attendees = (JSON.parse(m.attendees_json || "[]") as { name?: string; email?: string }[]).filter((a) => a.email || a.name);
   const x = m.extraction_json ? (JSON.parse(m.extraction_json) as { summary?: string; actions?: unknown[] }) : {};
   const meta = {
     meeting_id: m.id, calendar_event_id: m.calendar_event_id, title: m.title, start_at: m.start_at, end_at: m.end_at, timezone: m.timezone,
     attendee_emails: attendees.map((a) => a.email?.toLowerCase()).filter(Boolean), attendee_names: attendees.map((a) => a.name || a.email),
-    summary: x.summary ?? null, actions: x.actions ?? [], note_path: m.canonical_note_path, calendar_link: m.html_link,
+    summary: x.summary ?? null, actions: (x.actions ?? []).map(withKey), note_path: m.canonical_note_path, calendar_link: m.html_link,
   };
   // Gone from the vault: a tombstone that keeps the last stored text.
   if (note == null) return { ...meta, deleted: true };
