@@ -31,7 +31,9 @@ export async function run(cmd: string, args: string[], o: { cwd: string; env: Re
   child.on("exit", () => { if (aborted || timedOut) { child.stdout.destroy(); child.stderr.destroy(); } });
   const code = await new Promise<number | null>((ok) => { child.on("close", ok); child.on("error", () => ok(null)); });
   clearTimeout(timer);
-  return { code, stdout, stderr, timedOut, aborted };
+  if (o.watch && !aborted && line) aborted = o.watch(line); // a last line with no newline
+  // An aborted run never counts as finished, whatever its exit.
+  return { code: aborted ? null : code, stdout, stderr, timedOut, aborted };
 }
 export const stopped = (r: { code: number | null; stderr: string; timedOut: boolean; aborted?: string }, said = "") =>
   r.aborted ?? (r.timedOut ? "timed out" : /\b402\b|cap_reached/i.test(said + r.stderr) ? "the install's spend limit was reached" : `the engine stopped (exit ${r.code})`);

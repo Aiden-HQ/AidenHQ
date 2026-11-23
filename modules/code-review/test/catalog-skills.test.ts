@@ -4,11 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCatalog } from "../recipe/catalog.ts";
-import { comboProblem, parseSkill, resolveSkills, runEngine, shellGuard, skillOutcome } from "../recipe/engines.ts";
+import { claudeJail, comboProblem, parseSkill, resolveSkills, runEngine, shellGuard, skillOutcome } from "../recipe/engines.ts";
 
 const catalog = loadCatalog(readFileSync(new URL("../service/src/catalog.json", import.meta.url), "utf8"));
 const skillOptions = catalog.filter((o) => o.kind === "skill");
@@ -154,6 +154,9 @@ case "$2" in
 esac
 `);
   chmodSync(join(bin, "claude"), 0o755);
+  // The jail the recipe starts claude in (claudeJail): here it only runs the command after its options.
+  writeFileSync(join(bin, "bwrap"), '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n');
+  chmodSync(join(bin, "bwrap"), 0o755);
   const run = async (skills: { skill: string; args: string; uncommitted?: boolean }[]) => {
     const path = process.env.PATH;
     process.env.PATH = `${bin}:${path}`;
@@ -208,7 +211,7 @@ test("the restated skill list is read in order and must cover every skill", () =
   assert.equal(skillOutcome({ ...r, message: "```json\n" + ran(true, true) + "\n```" }, ["/p:one", "/p:two"]).read, true);
 });
 
-test("Claude Code runs with its own sandbox off: the box is the boundary, and gVisor refuses the sandbox's network namespace", async () => {
+test("Claude Code runs with its own sandbox off (gVisor refuses its network namespace), in the recipe's jail instead", async () => {
   const f = fakeRun({ restate: ran(true) });
   assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
   assert.deepEqual(f.settings(), { sandbox: { enabled: false } });
@@ -218,19 +221,23 @@ test("a run whose shell can't run ends at once, never spending the review", asyn
   const t0 = Date.now();
   const f = fakeRun({ restate: ran(true), dead: "Exit code 1\nbwrap: loopback: Failed RTM_NEWADDR: No child processes" });
   const r = await f.run([{ skill: "/p:one", args: "" }, { skill: "/p:two", args: "" }]);
-  assert.match(String(r.cause), /the shell can't run commands \(Exit code 1\nbwrap: loopback/);
+  assert.match(String(r.cause), /the shell can't run commands \(bwrap: loopback/);
   assert.equal(r.read, false);
   assert.equal(f.turns().length, 1, "no later skill or restate turn");
   assert.ok(Date.now() - t0 < 15_000, "killed, not waited out");
 });
 
-test("the shell guard: a known dead shell, or the first five commands failing, ends the run; one that worked disarms it", () => {
+test("the shell guard: a known dead shell, or the first commands failing with one same error, ends the run; one that worked disarms it", () => {
   const g = shellGuard();
-  assert.equal(g(false, "grep: no match"), undefined);
+  assert.equal(g(false, "Exit code 1\ngrep: a: No such file"), undefined);
   assert.match(String(g(false, "bwrap: Creating new namespace failed")), /can't run commands/);
-  const five = shellGuard();
-  for (let i = 0; i < 4; i++) assert.equal(five(false, "exit 1"), undefined);
-  assert.match(String(five(false, "exit 1")), /the first 5 shell commands all failed/);
+  // Commands that ran and failed quietly (grep with no match) or differently are a skill's business.
+  const quiet = shellGuard();
+  for (let i = 0; i < 9; i++) assert.equal(quiet(false, i % 2 ? "Exit code 1" : `Exit code 2\nrg: f${i}: not found`), undefined);
+  const same = shellGuard();
+  assert.equal(same(false, "Exit code 126\nsh: permission denied"), undefined);
+  assert.equal(same(false, "Exit code 126\nsh: permission denied"), undefined);
+  assert.match(String(same(false, "Exit code 126\nsh: permission denied")), /first 3 commands all failed with the same error \(sh: permission denied\)/);
   const worked = shellGuard();
   assert.equal(worked(true, "ok"), undefined);
   for (let i = 0; i < 9; i++) assert.equal(worked(false, "bwrap: x"), undefined);
@@ -239,8 +246,9 @@ test("the shell guard: a known dead shell, or the first five commands failing, e
 // The real Claude Code binary (where it is installed: the engineer image, a developer's machine) with the recipe's own settings,
 // against a stub model that asks for one Bash command: the command runs and its output comes back (2026-11-23: inside the box
 // Claude Code's sandbox failed every command with "bwrap: loopback").
-const claudeBin = (() => { try { return execFileSync("sh", ["-c", "command -v claude"], { encoding: "utf8" }).trim(); } catch { return ""; } })();
-test("a Claude Code run's shell executes a command", { skip: !claudeBin && "claude isn't installed here" }, async () => {
+// It runs where claude is installed and bubblewrap can start the recipe's jail (the engineer image under gVisor; not macOS).
+const jailed = (() => { try { execFileSync("sh", ["-c", "command -v claude"]); execFileSync("bwrap", [...claudeJail([tmpdir()]), "true"]); return true; } catch { return false; } })();
+test("a Claude Code run's shell executes a command, in the recipe's jail: read-only but its own directory", { skip: !jailed && "claude or a working bwrap isn't here" }, async () => {
   const { createServer } = await import("node:http");
   const server = createServer((req, res) => {
     let body = "";
@@ -251,7 +259,7 @@ test("a Claude Code run's shell executes a command", { skip: !claudeBin && "clau
       const result = Array.isArray(last) ? last.find((c: { type?: string }) => c.type === "tool_result") : undefined;
       const block = !j.tools?.length ? { type: "text", text: "ok" }
         : result ? { type: "text", text: `RESULT ${JSON.stringify(result.content)} error=${result.is_error === true}` }
-        : { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "echo shell-$((6*7)) > out.txt && cat out.txt", description: "probe" } };
+        : { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: `echo shell-$((6*7)) > out.txt && cat out.txt && touch ${JSON.stringify(join(repo, "planted"))} || echo read-only`, description: "probe" } };
       const stop = block.type === "tool_use" ? "tool_use" : "end_turn";
       const msg = { id: "msg_1", type: "message", role: "assistant", model: j.model, content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } };
       if (!j.stream) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ...msg, content: [block], stop_reason: stop })); return; }
@@ -266,16 +274,17 @@ test("a Claude Code run's shell executes a command", { skip: !claudeBin && "clau
       res.end();
     });
   });
+  const repo = mkdtempSync(join(tmpdir(), "cr-shell-"));
+  execFileSync("git", ["init", "-q", repo]);
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
   const saved = { base: process.env.OPENROUTER_BASE_URL, key: process.env.OPENROUTER_API_KEY };
   Object.assign(process.env, { OPENROUTER_BASE_URL: url, OPENROUTER_API_KEY: "test-token" });
   try {
-    const repo = mkdtempSync(join(tmpdir(), "cr-shell-"));
-    execFileSync("git", ["init", "-q", repo]);
     const r = await runEngine("claude-code", { prompt: "run the probe", instructions: "x", model: "m/m", effort: "low", root: repo, base: "HEAD", minutes: 2, scratch: mkdtempSync(join(tmpdir(), "cr-scratch-")) });
     assert.equal(r.cause, undefined);
-    assert.match(r.message, /RESULT .*shell-42.* error=false/);
+    assert.match(r.message, /RESULT .*shell-42.*read-only.* error=false/);
+    assert.equal(existsSync(join(repo, "planted")), false, "the checkout under review is read-only to its shell");
   } finally {
     for (const [k, v] of [["OPENROUTER_BASE_URL", saved.base], ["OPENROUTER_API_KEY", saved.key]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v;
     server.close();

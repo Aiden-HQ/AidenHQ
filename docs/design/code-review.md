@@ -63,21 +63,21 @@ whole repo, or `false` to leave out a skill that only reviews a change, like Tra
 | `deepsec` | Vercel's scanner on its pi backend through the gateway: `init` when nothing is under `.deepsec/` (the allowlisted files but the lockfile come back as `setup`), then `scan`, `process` and `revalidate` (a tree) or `process --diff <base>` (a change); CRITICAL/HIGH/HIGH_BUG important, the rest nits | recheck by codex on the same model | its own read-only agent on the box's checkout, run from a scratch workspace with our config (the repo's deepsec config and matchers are never loaded as code; only its INFO.md, as text); state in the run's scratch (`DEEPSEC_DATA_ROOT`), the run's token only in `OPENROUTER_API_KEY`, install scripts off |
 
 **One access policy for every reviewer** (owner, 2026-11-21: the same settings across all reviewers, no special case per
-engine). An engine that runs commands gets a shell that reads the repo and the system, with the network open. The shell
-inherits no credential (codex's `shell_environment_policy` inherits nothing but PATH; Claude Code's
-`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). **The box is the isolation boundary**: a throwaway gVisor container per run, holding no
-credential but the run's capped token, its checkout a copy, nothing of it kept after the run. codex and codex-native also run
-their shell in codex's own sandbox, a read-only permission profile with the network on (`default_permissions`; no network
-namespace, which gVisor can't set up), so their shell writes nowhere. **Claude Code's own sandbox is off**
-(`sandbox.enabled: false` in the run's user settings): on Linux it always gives Bash a network namespace, and gVisor refuses
-its loopback (`bwrap: loopback: Failed RTM_NEWADDR`), so with it on every shell command failed and the skills that need a
-shell reviewed nothing (2026-11-23, a repo review of AidenHQ: ce-code-review, the Cloudflare audit, Trail of Bits and the
-architecture skill). Its Bash, allowed by `--allowedTools`, can write the run's checkout and scratch, its session files among
-them; that buys a command nothing it couldn't already do through the model it steers, and the token it could reach is the one
-any command can already read from the engine's process. Every engine's output is mapped by code (`review.ts`: the schema,
-placement, verification), never trusted as written.
-A run whose shell can't run at all ends at once (`engines.ts` `shellGuard`: the shell's own sandbox error, or its first five
-commands all failing before one works) instead of spending the review: Trail of Bits spent $5.84 on a dead shell.
+engine). An engine that runs commands gets a shell that reads the repo and the system and runs read-only commands, with the
+network open; it writes nowhere but the engine's own per-run directories (codex: nowhere; Claude Code: its run directory, a
+skill's throwaway checkout and a private /tmp), so the checkout, the recipe and the result stay as the review reads them. The
+shell inherits no credential (codex's `shell_environment_policy` inherits nothing but PATH; Claude Code's
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`). Verdicts and results come only from channels the shell can't write: the engine's stdout
+stream, or its session files outside the writable area (codex-native's review). codex and codex-native get it from codex's own
+sandbox, a read-only permission profile with the network on (`default_permissions`; no network namespace, which gVisor can't set
+up). **Claude Code's own sandbox is off** (`sandbox.enabled: false` in the run's user settings): on Linux it always gives Bash a
+network namespace, and gVisor refuses its loopback (`bwrap: loopback: Failed RTM_NEWADDR`), so with it on every shell command
+failed and the skills that need a shell reviewed nothing (2026-11-23, a repo review of AidenHQ: ce-code-review, the Cloudflare
+audit, Trail of Bits and the architecture skill). Instead the recipe starts the whole `claude` process in its own bubblewrap jail
+(`engines.ts` `claudeJail`): everything read-only but the run's directories, its own pid namespace, no network namespace. Bash is
+allowed by `--allowedTools`.
+A run whose shell can't run at all ends at once (`engines.ts` `shellGuard`: the shell's own sandbox error, or its first three
+commands failing with one same error before any works) instead of spending the review: Trail of Bits spent $5.84 on a dead shell.
 Nothing of the repo is loaded as config: project docs, skills' instructions, hooks, plugins, apps, memories and exec rules off,
 the project never trusted. The run's token (the check's own `check` token, time-limited) is the box's only
 secret; a command can still read it from the engine's process, which the owner accepted, and every engine's output has it and

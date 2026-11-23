@@ -7,9 +7,9 @@ combos, each an engine (Codex, Claude Code or Codegenie), a model and an effort,
 its own GitHub review, a write the AI reviewer approves. Every run keeps its engine, model, effort, billed cost, tokens,
 duration and findings (with their later outcome) in the module's SQLite, read through `GET /reviews` and `code_review_runs`.
 
-The box is the isolation boundary (a throwaway gVisor container with no credential but the run's capped token), so Claude
-Code runs with its own sandbox off: gVisor can't give that sandbox its network namespace, and with it on every shell command
-failed. Codex keeps its read-only sandbox, which works there. Why, and what that allows: `docs/design/code-review.md`.
+Claude Code runs with its own sandbox off, because gVisor can't give that sandbox its network namespace and with it on every shell
+command failed. The recipe jails the whole `claude` process instead (read-only but its own run directories). Codex keeps its
+read-only sandbox, which works there. Why: `docs/design/code-review.md`.
 
 ## Connect
 

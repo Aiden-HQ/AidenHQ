@@ -7,10 +7,12 @@
 // reads the repo and the system, with the network open, and inherits no credential (codex: shell_environment_policy; Claude
 // Code: its subprocess env scrub). Every result is scrubbed of the token and key-shaped text (review.ts scrub). The box is the
 // isolation boundary: a throwaway gVisor container with no credential but the run's capped token, which a command can read from
-// the engine's process anyway (docs/design/code-review.md). codex and codex-native also run their shell in codex's own sandbox
-// (a read-only permission profile with the network on: no network namespace, which gVisor can't set up). Claude Code runs its
-// Bash unsandboxed: its sandbox always gives Bash a network namespace, which gVisor refuses ("bwrap: loopback: Failed
-// RTM_NEWADDR"), so with it on every command failed (2026-11-23). Its shell can write the run's checkout and scratch.
+// the engine's process anyway (docs/design/code-review.md). The shell writes nowhere but the engine's own per-run directories,
+// so the checkout, the recipe and the result stay as the review reads them. codex and codex-native get that from codex's own
+// sandbox (a read-only permission profile with the network on: no network namespace, which gVisor can't set up). Claude Code's
+// own sandbox is off: it always gives Bash a network namespace, which gVisor refuses ("bwrap: loopback: Failed RTM_NEWADDR"),
+// so with it on every command failed (2026-11-23). Instead the whole claude process runs in our jail (claudeJail: bubblewrap,
+// read-only but its run directory, its skill checkout and a private /tmp, its own pid namespace, no network namespace).
 // A run whose shell can't run at all ends at once (shellGuard), never spending a whole review on a dead shell.
 //
 // codex: our prompts through `codex exec` from an empty cwd, the repo tools (review-tools.ts) as its MCP server and the shell.
@@ -270,19 +272,23 @@ const gateway = () => String(process.env.OPENROUTER_BASE_URL || "").replace(/\/$
 
 /** What a shell says when it can't run any command: its sandbox failed to start (bubblewrap's own errors, or a harness's word for it). */
 const DEAD_SHELL = /\bbwrap: |Failed RTM_NEWADDR|sandbox (?:failed|is unavailable|could not start|is required)/i;
-/** How many failed commands in a row, before any has worked, end the run: a shell that never works spends the review for nothing. */
-const FIRST_FAILS = 5;
+/** How many of the first commands failing with the same output end the run: a shell that answers everything with one error. */
+const SAME_FAILS = 3;
 /**
  * One run's shell watch, fed each shell command's outcome (in order, across the run's turns): the reason to end the run now, or
- * undefined. A command that worked disarms it (later failures are a skill's own business: a grep with no match exits 1).
+ * undefined. It ends a run whose shell can't start a command: its sandbox's own error, or the first commands all failing with one
+ * same, non-empty output. Failures that differ are commands that ran (a grep with no match exits 1, quietly); a command that
+ * worked disarms it.
  */
 export function shellGuard() {
-  let worked = false, failed = 0;
+  let worked = false, same = 0, last = "";
   return (ok: boolean, output: string): string | undefined => {
     if (worked || (ok && (worked = true))) return undefined;
-    const text = output.trim().slice(0, 200);
-    if (DEAD_SHELL.test(output)) return `the shell can't run commands (${text})`;
-    if (++failed >= FIRST_FAILS) return `the first ${FIRST_FAILS} shell commands all failed (the last: ${text})`;
+    const text = output.replace(/^\s*Exit code \d+\s*/, "").trim(); // Claude Code's prefix to a failed command's output
+    if (DEAD_SHELL.test(text)) return `the shell can't run commands (${text.slice(0, 200)})`;
+    same = text && text === last ? same + 1 : 1;
+    last = text;
+    if (text && same >= SAME_FAILS) return `the shell's first ${SAME_FAILS} commands all failed with the same error (${text.slice(0, 200)})`;
     return undefined;
   };
 }
@@ -335,8 +341,14 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   return { message: last.done ? message : "", read: calls.some((c) => c.tool === "diff"), calls, cause: last.done ? undefined : stopped(last.r, last.said) };
 }
 
-/** The user settings of every Claude Code run (its only settings: --setting-sources user). */
+/** The user settings of every Claude Code run (its only settings: --setting-sources user): its own sandbox off (claudeJail instead). */
 export const CLAUDE_SETTINGS = { sandbox: { enabled: false } };
+/**
+ * The bubblewrap arguments a claude run starts under: everything read-only but `writable` (its run directory, a skill's checkout)
+ * and a private /tmp, its own pid namespace (the recipe's processes out of sight), the network as the box has it.
+ */
+export const claudeJail = (writable: string[]) => ["--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp",
+  ...writable.flatMap((d) => ["--bind", d, d]), "--"];
 
 /** How Claude Code says a tool's output didn't come back whole: persisted to a file with a preview shown, at the start of the
  * result (never a word inside the diff itself). */
@@ -356,7 +368,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
   const home = join(tmp, "home"), cwd = sk?.cwd ?? join(tmp, "cwd");
   mkdirSync(home);
   mkdirSync(cwd, { recursive: true });
-  // Claude Code's own sandbox off: the box is the boundary, and gVisor can't give that sandbox its network namespace (the access
+  // Claude Code's own sandbox off (gVisor can't give it its network namespace); the run is jailed instead (claudeJail, the access
   // policy above). Bash is allowed by --allowedTools.
   mkdirSync(join(home, ".claude"));
   linkSkills(sk, join(home, ".claude", "skills"));
@@ -393,7 +405,7 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     return undefined;
   };
   const turn = async (task: string, resume?: string) => {
-    const r = await run("claude", ["-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes, watch });
+    const r = await run("bwrap", [...claudeJail([tmp, ...(sk?.cwd ? [sk.cwd] : [])]), "claude", "-p", task, ...base_args, ...(resume ? ["--resume", resume] : [])], { cwd, env, minutes, watch });
     const events: ClaudeEvent[] = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).filter(Boolean);
     // Claude Code's own review reads the diff with its shell too (`git diff`): a read that came back whole (no error, not cut
     // short by Claude Code's output limit) counts like the repo tools' diff.
