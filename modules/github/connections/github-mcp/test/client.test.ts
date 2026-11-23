@@ -576,3 +576,53 @@ it("a GraphQL refusal's warning stays while refusals keep coming and expires two
   await t.sleep(60 * 60_000);
   expect(a.status().problems).toHaveLength(1);
 });
+
+// A success that names an org is the owner's fix already made: the org is reported so the kernel clears its sso/restricted need.
+it("reports the org on a successful owner call that names one, and only then", async () => {
+  const seen: string[] = [];
+  let answerWith = () => answer(200, { login: "owner", data: {} });
+  const access = createAccess({ auth: auth(), onOrgOk: (org) => void seen.push(org), fetchImpl: async (u) => answerWith() });
+  await access.rest("GET", "/orgs/Acme/repos");
+  await access.rest("GET", "/repos/acme/api/issues/1");
+  await access.rest("GET", "/search/issues?q=org%3AAcme%20is%3Aissue");
+  await access.rest("GET", "/search/issues?q=user%3Aacme%20is%3Aissue");
+  await access.rest("GET", "/search/issues?q=org%3Aacme%20org%3Aother%20is%3Aissue");
+  await access.rest("GET", "/user");
+  expect(seen).toEqual(["Acme", "acme", "Acme", "acme", "acme", "other"]);
+  seen.length = 0;
+
+  // A 304 (a conditional read that found nothing new) is a success too.
+  answerWith = () => new Response(null, { status: 304 });
+  await access.rest("GET", "/orgs/Acme/repos", undefined, { etag: "W/\"x\"" });
+  expect(seen).toEqual(["Acme"]);
+  seen.length = 0;
+
+  // A failed call reports nothing (no need to clear, and nothing succeeded).
+  answerWith = () => answer(403, { message: "Resource not accessible by integration" });
+  await access.rest("GET", "/orgs/Acme/repos").catch(() => {});
+  expect(seen).toEqual([]);
+
+  // An App's call is another identity: its success says nothing about the owner's sign-in.
+  answerWith = () => answer(200, {});
+  const as = { key: "app:1", token: async () => "ghs_app" };
+  await access.rest("GET", "/orgs/Acme/repos", undefined, { as });
+  expect(seen).toEqual([]);
+});
+
+it("reports variables.org on a GraphQL answer without errors, never one with errors or no org", async () => {
+  const seen: string[] = [];
+  let body: unknown = { data: { organization: { projectsV2: { nodes: [] } } } };
+  const access = createAccess({ auth: auth(), onOrgOk: (org) => void seen.push(org), fetchImpl: async () => answer(200, body) });
+  await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" });
+  expect(seen).toEqual(["acme"]);
+  body = { data: {}, errors: [{ message: "Something went wrong" }] };
+  await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" });
+  expect(seen, "a GraphQL answer with errors is not a success").toEqual(["acme"]);
+  body = { data: {} };
+  await access.graphql("query { viewer { login } }", {});
+  expect(seen).toEqual(["acme"]);
+  // The App's answer is not the owner's.
+  body = { data: {} };
+  await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" }, { as: { key: "app:1", token: async () => "ghs_app" } });
+  expect(seen).toEqual(["acme"]);
+});

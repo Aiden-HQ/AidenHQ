@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GitHubNeed } from "../src/client.js";
-import { needQueue, reportNeed } from "../src/module-caller.js";
+import { needQueue, reportNeed, reportOrgOk } from "../src/module-caller.js";
 
 // The kernel at /v1/connections/need as a fake: each answer is one queued reply, and the last one repeats.
 const replies = (list: (Response | "hang" | Error)[]) => {
@@ -212,5 +212,25 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     await q.flush();
     expect(q.pending(), "an org restriction is not fixed by reconnecting").toBe(1);
     expect(k.seen.at(-1)!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
+  });
+});
+
+describe("a successful owner call to an org", () => {
+  it("is reported as that org's clear, fire-and-forget, and never throws into the call it reports", async () => {
+    const seen: { url: string; authorization?: string; body: unknown }[] = [];
+    const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ url: String(input), authorization: (init?.headers as Record<string, string> | undefined)?.authorization, body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response(JSON.stringify({ woken: 0 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    reportOrgOk("http://kernel", "the-key", "github", "Acme", log, fetcher);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual([{ url: "http://kernel/v1/connections/ok", authorization: "Bearer the-key", body: { connection: "github", org: "Acme" } }]);
+    // A refused or failed report is logged, never thrown.
+    const said: string[] = [];
+    const warns = { warn: (_o: object, m: string) => void said.push(m) };
+    reportOrgOk("http://kernel", "k", "github", "acme", warns, (async () => new Response("no", { status: 400 })) as unknown as typeof fetch);
+    reportOrgOk("http://kernel", "k", "github", "acme", warns, (async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(said).toEqual(["the kernel refused a connection success report", "a connection success report failed"]);
   });
 });

@@ -188,6 +188,8 @@ export function createAccess(o: {
   env?: Record<string, string | undefined>;
   /** Each content-creating write, by identity (how much of the owner's limit code review's App takes off it). */
   log?: (msg: string, f: Record<string, unknown>) => void;
+  /** A successful call by the owner that named an org (REST, search or GraphQL): the org's need is the owner's fix made. */
+  onOrgOk?: (org: string) => void;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
@@ -208,6 +210,20 @@ export function createAccess(o: {
   let me: { login: string; name: string; email: string; for: string } | undefined;
 
   const connected = () => o.auth.signedIn() && o.auth.status().state !== "expired";
+
+  /** The orgs a successful owner call named: a REST `/orgs/<org>` or `/repos/<org>` path, or a search's `org:`/`user:` qualifiers. */
+  const restOrgs = (path: string): string[] => {
+    const one = ownerOf(path);
+    if (one) return [one];
+    if (!/^\/search\/issues(?:[?#]|$)/.test(path)) return [];
+    const q = new URL(path, API).searchParams.get("q") ?? "";
+    return [...q.matchAll(/\b(?:org|user):([A-Za-z0-9-]+)/gi)].map((m) => m[1]!);
+  };
+  const orgOk = (orgs: string[]) => {
+    for (const org of orgs) {
+      try { o.onOrgOk?.(org); } catch { /* a report never breaks the call it reports */ }
+    }
+  };
 
   async function token(): Promise<string> {
     if (!o.auth.signedIn()) fail({ cause: "not_connected" });
@@ -402,6 +418,8 @@ export function createAccess(o: {
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
     if (res.ok && /^\/orgs\/([^/]+)/.test(path) && problems.get(ownerOf(path)!.toLowerCase())?.at === undefined) problems.delete(ownerOf(path)!.toLowerCase());
+    // A 304 is a conditional read that succeeded: the org answered, so its need is cleared too.
+    if (res.ok || res.status === 304) orgOk(restOrgs(path));
     return { status: res.status, body: parsed, headers: res.headers };
   }
 
@@ -436,6 +454,7 @@ export function createAccess(o: {
         if (fatal) fail(need, now());
         problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
       }
+      if (org && !(Array.isArray(body?.errors) && body.errors.length)) orgOk([org]);
       return body;
     },
     async identity() {

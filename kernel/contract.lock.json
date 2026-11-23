@@ -131,6 +131,7 @@
     "route POST /v1/codehost/:op": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/connections/:module/ok": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/connections/need": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/connections/ok": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/events": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/facts": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/health/probe": {"state":"experimental","fp":"auth=health-key"},

@@ -8,7 +8,7 @@ import { createConnectionState } from "../src/connection-state.ts";
 const H = 3600_000, DAY = 24 * H, LASTED = 11 * 60_000;
 const OWNER_COMMENT = { body: "please read my inbox", authorUserId: "u1", createdAt: "2026-11-20T09:00:00Z" };
 
-function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}) {
+function world(issues: Record<string, Record<string, unknown>>, comments: Record<string, unknown[]> = {}, conns: Record<string, { module: string }> = { google: { module: "google" }, github: { module: "github" }, slack: { module: "slack" }, slack_live: { module: "slack" } }) {
   let clock = Date.parse("2026-11-20T10:00:00Z");
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT)");
@@ -30,7 +30,7 @@ function world(issues: Record<string, Record<string, unknown>>, comments: Record
     comments: async (id) => (comments[id] ?? []) as never,
     agentName: async () => (state.onAgentName?.(), "Aiden"),
     label: (m) => m[0]!.toUpperCase() + m.slice(1),
-    connections: () => ({ google: { module: "google" }, github: { module: "github" }, slack: { module: "slack" }, slack_live: { module: "slack" } }) as never,
+    connections: () => conns as never,
     grants: () => ({ a1: { tools: { google: ["gmail_search"], github: ["x"], slack: ["x"], slack_live: ["x"] } } }),
     boardUrl: () => "http://board.example",
     now: () => clock,
@@ -335,6 +335,51 @@ test("a partial cause waits a day and is not listed down; a success clears only 
   assert.equal(w.s.down("github"), false);
   assert.equal(w.s.ok("github", true), 0);
   assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get()!.n, 1, "a success leaves the partial need");
+});
+
+test("ok(connection, {org}) clears that org's sso and restricted rows and wakes their waiters, nothing else", async () => {
+  // Each owner-asked task gets its own wait: a task waits once per connection, on the need it met last.
+  const roots = {
+    a: { id: "a", identifier: "WOR-11", title: "Read acme", assigneeAgentId: "cos", createdByUserId: "u1" },
+    b: { id: "b", identifier: "WOR-12", title: "Read acme's board", assigneeAgentId: "cos", createdByUserId: "u1" },
+    c: { id: "c", identifier: "WOR-13", title: "Read other", assigneeAgentId: "cos", createdByUserId: "u1" },
+    d: { id: "d", identifier: "WOR-14", title: "Read orgs", assigneeAgentId: "cos", createdByUserId: "u1" },
+    e: { id: "e", identifier: "WOR-15", title: "Read github", assigneeAgentId: "cos", createdByUserId: "u1" },
+    f: { id: "f", identifier: "WOR-16", title: "Read github again", assigneeAgentId: "cos", createdByUserId: "u1" },
+  };
+  const w = world(roots, Object.fromEntries(Object.keys(roots).map((k) => [k, [OWNER_COMMENT]])));
+  await w.s.hit(w.who("a"), "github", { cause: "restricted", org: "acme", detail: "" });
+  await w.s.hit(w.who("b"), "github", { cause: "sso", org: "Acme", detail: "" });
+  await w.s.hit(w.who("c"), "github", { cause: "restricted", org: "other", detail: "" });
+  await w.s.hit(w.who("d"), "github", { cause: "scope", scope: "read:org", detail: "" });
+  await w.s.hit(w.who("e"), "github", { cause: "not_connected", detail: "" });
+  await w.s.hit(w.who("f"), "github", { cause: "expired", detail: "" });
+  // acme answered: its sso (stored with another casing) and restricted rows and waits go, and both waiters wake.
+  assert.equal(w.s.ok("github", { org: "ACME" }), 2);
+  assert.deepEqual(w.opened.map((o) => [o.task, o.cause, o.replaces]).sort(), [["a", "connected", "wait:a:"], ["b", "connected", "wait:b:"]]);
+  assert.deepEqual(w.db.prepare("SELECT key FROM connection_state ORDER BY key").all().map((r) => r.key), [
+    "github:expired",
+    "github:not_connected",
+    "github:restricted:other",
+    "github:scope:read:org",
+  ]);
+  assert.deepEqual(w.db.prepare("SELECT task, need FROM connection_waits ORDER BY task").all().map((r) => ({ ...r })), [
+    { task: "c", need: "github:restricted:other" },
+    { task: "d", need: "github:scope:read:org" },
+    { task: "e", need: "github:not_connected" },
+    { task: "f", need: "github:expired" },
+  ]);
+  assert.equal(w.s.ok("github", { org: "acme" }), 0, "nothing left to clear for it");
+});
+
+test("an org clear keys its rows by the connection, not the module (github_official and github share a module)", async () => {
+  const w = world(ownerChain(), { w1: [OWNER_COMMENT] }, { github: { module: "github" }, github_official: { module: "github" } });
+  await w.s.hit(w.who("w3"), "github_official", { cause: "restricted", org: "acme", detail: "" });
+  await w.s.hit(w.who("w2"), "github", { cause: "restricted", org: "acme", detail: "" });
+  // github_official answered for acme: only its own row clears, though github is the same module's connection.
+  assert.equal(w.s.ok("github_official", { org: "acme" }), 1);
+  assert.deepEqual(w.db.prepare("SELECT key FROM connection_state").all().map((r) => r.key), ["github:restricted:acme"]);
+  assert.deepEqual(w.opened.map((o) => o.task), ["w3"]);
 });
 
 // A codehost op's need (kernel/src/codehost.ts recordNeed) arrives as a module, not a run: no task chain, so it is background

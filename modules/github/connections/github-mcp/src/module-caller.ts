@@ -55,6 +55,17 @@ export async function reportNeed(kernelUrl: string, key: string, err: unknown, l
   return postNeed(kernelUrl, key, bodyOf(err), log, fetcher, timeoutMs);
 }
 
+/**
+ * A call by the owner to `org` succeeded, so the org's sso/restricted need is the owner's fix already made: told to the kernel as
+ * POST /v1/connections/ok. Fire-and-forget: a lost report is harmless (the next successful call, or the sync 15 minutes later,
+ * reports again), so a failure is logged and never thrown into the GitHub call.
+ */
+export function reportOrgOk(kernelUrl: string, key: string, connection: "github", org: string, log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000): void {
+  void fetcher(new URL("/v1/connections/ok", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection, org }), signal: AbortSignal.timeout(timeoutMs) })
+    .then((r) => { if (!r.ok) log.warn({ status: r.status, org }, "the kernel refused a connection success report"); })
+    .catch((e: Error) => log.warn({ err: e.message, org }, "a connection success report failed"));
+}
+
 /** How long a reply waits for the kernel to take a need: the route answers within its 1 s even when the kernel is slow. */
 const NEED_WAIT_MS = 1_000;
 const PENDING_MAX = 20;
