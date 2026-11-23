@@ -443,7 +443,7 @@ export function createEngine(d: EngineDeps) {
   /** A PR's on_push rounds: its pushed heads with an automatic push batch whose runs all finished (done or failed), one with a
    * review stored (posted or not). A batch with a run still going or superseded never counts, nor a carried run or an `aiden review`. */
   const pushRounds = (repo: string, n: number) => one<{ c: number }>(`SELECT COUNT(DISTINCT r.head) c FROM runs r JOIN reviews v ON v.run = r.id WHERE r.repo = ? AND r.number = ? AND r.kind = 'auto' AND r.moment = 'push' AND r.status IN ('done', 'failed')
-    AND NOT EXISTS (SELECT 1 FROM runs q WHERE q.batch = r.batch AND q.status NOT IN ('done', 'failed'))`, repo, n)!.c;
+    AND NOT EXISTS (SELECT 1 FROM runs q WHERE q.repo = r.repo AND q.number = r.number AND q.batch = r.batch AND q.status NOT IN ('done', 'failed'))`, repo, n)!.c;
   /** The PR has had the push reviews its repo's push_rounds allows: later heads get no on_push run. */
   const capped = (cfg: Repo, n: number) => cfg.push_rounds !== null && pushRounds(cfg.repo, n) >= cfg.push_rounds;
   /** openOnly for one PR: its repo has no mandatory on_push, or the PR's push rounds are used up; either way its later heads are
