@@ -128,8 +128,7 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
       const err = e as Error & { status?: number };
       if (err.status !== 404 && !(err instanceof ProjectError)) {
         // To the back of the queue, so a run of failing fills never starves the ones behind them.
-        db.prepare("DELETE FROM project_pending WHERE task = ? AND repo = ?").run(task, repo);
-        db.prepare("INSERT INTO project_pending (task, repo) VALUES (?, ?)").run(task, repo);
+        db.prepare("INSERT OR REPLACE INTO project_pending (task, repo) VALUES (?, ?)").run(task, repo);
         return log("project fill failed; trying again in a minute", { task, repo, err: err.message });
       }
       log("project fill dropped", { task, repo, err: err.message });
