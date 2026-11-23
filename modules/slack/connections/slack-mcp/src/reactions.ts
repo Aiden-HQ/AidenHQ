@@ -342,9 +342,6 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   // Cursor pagination is the modern shape (and the only one without Slack's 100-page ceiling): ask for it first, with
   // `limit` as the page size, and fall back to `count`+`page` only when Slack answers numbered pages instead.
   let numbered: number | undefined;
-  // The size Slack actually used for its numbered pages: its first answer may apply its own default rather than the
-  // `limit` we sent, so page 2 has to continue at the observed size or it would skip the items in between.
-  let numberedSize: number | undefined;
   // The upstream page size is the caller's `limit` when that is larger than the default (so a big ask reads fewer pages),
   // and never smaller than the default: a small result limit must not turn one scan into hundreds of one-item requests.
   // It is fixed for the whole walk and carried in every continuation, so page boundaries don't move.
@@ -362,8 +359,9 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
   for (let page = 0; page < maxPages; page++) {
     if (cursor) cursors.add(cursor);
     // The page-size parameter follows the shape: `limit` with a cursor, `count` with a numbered page (Slack's two
-    // paginations take different names for it).
-    const paging: Record<string, string> = numbered !== undefined ? { count: String(numberedSize ?? pageSize), page: String(numbered) } : { limit: String(pageSize), ...(cursor ? { cursor } : {}) };
+    // paginations take different names for it). `count` rides along on the first request too, so a numbered answer
+    // starts at the size we chose and every later page keeps the same boundaries rather than Slack's default.
+    const paging: Record<string, string> = numbered !== undefined ? { count: String(pageSize), page: String(numbered) } : { limit: String(pageSize), count: String(pageSize), ...(cursor ? { cursor } : {}) };
     const r = await get("reactions.list", { full: "true", ...paging });
     // A later page failing after the caller's limit was already met must not throw away matches this answer holds: the
     // set read so far is real, and the continuation says it isn't complete. With nothing new to hand back, though, the
@@ -382,7 +380,12 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
       if (seen.has(key)) continue;
       if (plan.publicOnly || plan.scopes) {
         const show = await visible(message.channel);
-        if (typeof show !== "boolean") return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}) };
+        if (typeof show !== "boolean") {
+          // Once the requested page is full, a lookup that fails on the lookahead must not discard matches already found:
+          // hand them back with a continuation, which re-checks this channel when the caller resumes.
+          if (full) return { ok: true, messages, nextCursor: continuation() };
+          return { ok: false, detail: `couldn't tell what ${message.channel} is (${show.detail})`, ...(show.error ? { error: show.error } : {}), ...(show.needed !== undefined ? { needed: show.needed } : {}) };
+        }
         if (!show) continue;
       }
       if (full) {
@@ -411,13 +414,8 @@ export async function scanMyReactions(plan: { emoji: string; publicOnly?: boolea
     // No cursor: Slack's other shape is numbered pages. More of them is not the end of the set.
     const pages = Number(json.paging?.pages), current = Number(json.paging?.page);
     if (Number.isFinite(pages) && pages > current) {
-      if (numbered === undefined) {
-        // Switch to numbered pages at the size this answer actually used (`paging.count`, else `per_page`), never at
-        // the cursor-shaped `limit` we sent, which Slack may not have applied.
-        const used = Number(json.paging?.count ?? json.paging?.per_page);
-        numberedSize = Number.isFinite(used) && used > 0 ? Math.min(MAX_LIMIT, Math.floor(used)) : undefined;
-        numbered = Number.isFinite(current) ? current + 1 : 2;
-      } else numbered++;
+      if (numbered === undefined) numbered = Number.isFinite(current) ? current + 1 : 2;
+      else numbered++;
       continue;
     }
     return { ok: true, messages, nextCursor: null };

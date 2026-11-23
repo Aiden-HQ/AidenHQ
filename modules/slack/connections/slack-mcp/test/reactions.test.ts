@@ -257,19 +257,18 @@ describe("scanMyReactions", () => {
     expect(asked).toEqual(["", "2"]);
   });
 
-  it("continues numbered pages at the size Slack actually used, not the cursor-shaped limit it ignored", async () => {
+  it("sends the page size from the first request, so numbered pages keep one set of boundaries", async () => {
     const counts: string[] = [];
     const numbered = (async (url: string | URL) => {
       const u = new URL(String(url));
       counts.push(u.searchParams.get("count") ?? "");
       const n = Number(u.searchParams.get("page") ?? "1");
-      // Slack answers page 1 at its own 50-item size although the request carried limit=200: page 2 must use 50, or
-      // items 51-200 are skipped.
-      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 50, total: 100, page: n, pages: 2 } });
+      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 500, total: 1000, page: n, pages: 2 } });
     }) as unknown as typeof fetch;
     const scan = await scanMyReactions({ emoji: "pushpin", limit: 500 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered });
     expect(scan).toMatchObject({ ok: true, nextCursor: null, messages: [{ ts: "1.0" }, { ts: "2.0" }] });
-    expect(counts).toEqual(["", "50"]);
+    // The first request carries `count` too: a numbered answer can't start at Slack's default and then shift.
+    expect(counts).toEqual(["500", "500"]);
   });
 
   it("stops at its deadline with what it has, so it never outlives the caller", async () => {
@@ -357,6 +356,21 @@ describe("scanMyReactions", () => {
     n = 0;
     const failed = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: (async () => new Response("down", { status: 503 })) as unknown as typeof fetch });
     expect(failed).toMatchObject({ ok: false });
+  });
+
+  it("keeps a verified match when a later channel lookup fails during the lookahead", async () => {
+    // C1 is verified public and returned (limit 1). The lookahead then checks C2, whose conversations.info answers 503:
+    // the verified match is real, so it is returned with a continuation, not thrown away for the failure.
+    const fetchImpl = (async (url: string | URL) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith("/conversations.info")) {
+        if (u.searchParams.get("channel") === "C2") return new Response("down", { status: 503 });
+        return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
+      }
+      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
+    }) as unknown as typeof fetch;
+    const scan = await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]), limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
   });
 
   it("stops at the answer's size budget and hands back a continuation, rather than one oversized answer", async () => {
