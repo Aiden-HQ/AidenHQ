@@ -183,8 +183,8 @@ describe("internal listener", () => {
     const liveCard = card({ id: "k-0000000000000010", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "running", live: true, wakes: true, createdAt: "2026-11-10T10:00:00.000Z", args: { prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] } });
     const ended = card({ id: "k-0000000000000010", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "used", live: false, wakes: true, outcome: "applied", outcomeText: `merged-prs: [{"repo":"a/b","number":1,"head":"${"a".repeat(40)}","sha":"${"b".repeat(40)}"}]`, createdAt: "2026-11-10T10:00:00.000Z", args: { prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] } });
     const inner = fakeRecords([ended]);
-    // The `approved` read ran a moment before the merge finished and still returns the live snapshot of the same card.
-    const records: typeof inner = { ...inner, allOf: async (state, kinds) => (state === "approved" ? [liveCard] : inner.allOf(state, kinds)) };
+    // The live read ran a moment before the merge finished and still returns the live snapshot of the same card.
+    const records: typeof inner = { ...inner, allOf: async (state, kinds, task) => (state === "live" ? [liveCard] : inner.allOf(state, kinds, task)) };
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
     await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
     const port4 = (board.address() as AddressInfo).port;
