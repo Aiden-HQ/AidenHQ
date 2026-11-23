@@ -112,6 +112,12 @@ export function codeReviewOwns(r: Pick<Rec, "kind" | "targets">, { mode = "all",
   return repos.length > 0 && repos.every((repo) => repo && (mode === "none" || (mode === "unless_code_review_mandatory" && mandatory.includes(repo))));
 }
 
+/** A plan's `paths` ([{repo, files: [{path}]}], code host plans) as `repo:path` strings, kept on the record for task search. */
+function planPaths(p: unknown): string[] | null {
+  const out = (Array.isArray(p) ? p : []).flatMap((x: { repo?: unknown; files?: { path?: unknown }[] }) => (Array.isArray(x?.files) ? x.files : []).filter((f) => typeof f?.path === "string").map((f) => `${String(x.repo ?? "")}:${f.path}`));
+  return out.length ? out.slice(0, 500) : null;
+}
+
 export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), reviewCode = () => ({}), checks = () => ({}), filedChecks = {}, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
@@ -271,7 +277,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // Cut for storage only with code's note: an open record's card is shown whole from its context (backplane GET /v1/writes).
     const card = { ...whole, details: whole.details.length > DETAILS_MAX ? `${whole.details.slice(0, DETAILS_MAX)}\n[${whole.details.length - DETAILS_MAX} characters not shown here: the card shows the whole diff while it is open]` : whole.details };
     // A job's record names its workspace (its task's identifier, from the job's row): where the code host reads its commits.
-    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}) };
+    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}), paths: planPaths(plan.paths) };
     if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     // The reason and rule shown: the strictest raise, the plan's on a tie.

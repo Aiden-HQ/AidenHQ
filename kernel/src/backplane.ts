@@ -79,6 +79,9 @@
 //                              | clone {repo}: a repository its dispatcher's clone grant covers as a git bundle (its default
 //                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
+//   POST /v1/search/tasks      (the board's key) {q, closed_before?, after?, limit?, keyword?}: task search (search.ts) -> {hits, done,
+//                              next, semantic}: ranked hits with their card fields, those closed before `closed_before` paged
+//                              newest first (`after`: the last page's `next`); `semantic: false`: keyword hits only
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/connections/:module/ok  (the board's key) a sign-in or setup flow of that module finished: its down state clears and
 //                              the tasks waiting on it wake -> {woken} (connection-state.ts); 404 for a module with no connection
@@ -124,6 +127,7 @@ import { fail } from "./proxy.ts";
 import { logTasks } from "./task-scope.ts";
 import type { Records, Requester, State } from "./records.ts";
 import type { BoardApi } from "./board-api.ts";
+import type { Search } from "./search.ts";
 import type { Work } from "./work.ts";
 import { BY, type By, type Flow } from "./flow.ts";
 import type { TaskStateRead } from "./task-state-read.ts";
@@ -216,6 +220,7 @@ export const ROUTES = [
   { method: "POST", path: "/v1/jobtools/:cmd", auth: "job" },
   { method: "POST", path: "/v1/checkout", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
+  { method: "POST", path: "/v1/search/tasks", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
   { method: "POST", path: "/v1/connections/:module/ok", auth: "board" },
   { method: "POST", path: "/v1/connections/need", auth: "module" },
@@ -301,7 +306,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, search, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -379,6 +384,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   events?: Events;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
   boardApi?: BoardApi;
+  /** Task search (search.ts): the board's query, and Paperclip's events marking a task to rebuild. */
+  search?: Search;
 }) {
   /** The calling module (its own token), or 401. */
   const moduleOf = async (req: IncomingMessage) => {
@@ -622,6 +629,23 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         }
         case "GET /v1/connections/health": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { probes: connectionHealth ? await connectionHealth() : {} });
         case "GET /v1/advisories": if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required"); return send(res, 200, { advisories: advisories() });
+        case "POST /v1/search/tasks": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!search) throw fail(503, "unavailable", "task search is off");
+          const b = await json(req, 10_000);
+          if (typeof b.q !== "string" || !b.q.trim() || b.q.length > 500) throw fail(400, "bad_request", "send {q}: 1 to 500 characters");
+          // `closed_before` (ISO): matches closed before it come back as a `done` page, `after` the `next` of the last page.
+          const before = b.closed_before === undefined ? undefined : String(b.closed_before);
+          if (before !== undefined && !Number.isFinite(Date.parse(before))) throw fail(400, "bad_request", "closed_before is an ISO instant");
+          const after = typeof b.after === "string" && /^[^|]{1,40}\|[\w-]{1,100}$/.test(b.after) ? (b.after.split("|") as [string, string]) : undefined;
+          if (b.after !== undefined && !after) throw fail(400, "bad_request", "after is a page's `next`");
+          try {
+            const r = await search.search(b.q.trim(), { ...(before ? { closedBefore: new Date(before).toISOString() } : {}), ...(after ? { after } : {}), ...(Number.isInteger(b.limit) ? { limit: b.limit } : {}), ...(b.keyword === true ? { keyword: true } : {}) });
+            return send(res, 200, { ...r, next: r.next ? r.next.join("|") : null });
+          } catch (e) {
+            throw fail((e as { status?: number }).status ?? 503, "unavailable", `task search is unavailable: ${String((e as Error).message).slice(0, 200)}`);
+          }
+        }
         case "POST /v1/stop": {
           // The owner's Stop, from the board's signed-in admin: the running jobs of a task or an agent end `cancelled`, the task stays open with one fixed note.
           if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
@@ -784,7 +808,10 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         if (hit.path === "/v1/wakes/events") {
           if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
           if (!keyIs(req, eventsKey())) throw fail(401, "unauthorized", "the events plugin's key is required");
-          return send(res, 200, await wakes.event(await json(req)));
+          const b = await json(req);
+          // Any change to a task (a title or description edit makes no fact) rebuilds its search row.
+          if (typeof b.issueId === "string") search?.mark(b.issueId);
+          return send(res, 200, await wakes.event(b));
         }
         const w = await moduleOf(req);
         if (hit.path === "/v1/wakes") {

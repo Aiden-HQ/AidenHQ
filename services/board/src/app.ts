@@ -28,6 +28,7 @@ import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import type { AuthorKind, Flow } from "./flow.js";
+import { searchView, type TaskSearch } from "./search.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe } from "./settings.js";
@@ -123,6 +124,8 @@ export interface AppOptions {
   taskStates?: TaskStates;
   /** The kernel's flow reads (flow.ts): the Flow page. Without it, the page is empty. */
   flow?: Flow;
+  /** The kernel's task search (search.ts): the Tasks page's search field. Without it, a search answers 503. */
+  search?: TaskSearch;
   /**
    * Board sign-in (kernel-auth.ts, docs/design/access.md): every route on "lan" needs a ready admin's board session, handed off
    * by the kernel. Required there (or the `session` stub).
@@ -166,6 +169,8 @@ const mergeView = (a: Approval) => {
 const HISTORY_PAGES = 20;
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = 48 * 3_600_000;
+/** Older closed search hits per page (the Done lane asks for more while the owner's filters keep too few). */
+const SEARCH_DONE_PAGE = 50;
 /** How long a board read waits for the parents outside its inventory (Agent work's "part of" links). */
 const PARENTS_MS = 1_500;
 const WORKWEEK: Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
@@ -1773,6 +1778,26 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const agentId = issue.assigneeAgentId ? undefined : chatAgent(issue);
         await pc.updateIssue(issue.id, { status: "todo", labelIds, ...(agentId ? { assigneeAgentId: agentId, assigneeUserId: null } : {}) });
         return issueView(issue.id);
+      },
+    },
+    // The Tasks page's search (search.ts, docs/design/task-search.md): the kernel's ranked hits as ids, and the closed ones the
+    // 48-hour inventory doesn't hold as Done cards. A failure is a 503: the page then shows every task, with its note.
+    {
+      method: "GET",
+      path: /^\/api\/search$/,
+      handle: async (_m, _b, url) => {
+        const q = (url.searchParams.get("q") ?? "").trim();
+        if (!q || q.length > 500) throw new HttpError(400, "send ?q= (1 to 500 characters)");
+        const after = url.searchParams.get("after") ?? undefined;
+        if (after !== undefined && after.length > 200) throw new HttpError(400, "bad after");
+        if (!opts.search) throw new HttpError(503, "task search is off");
+        // A later page keeps the first page's mode (`keyword=1`: it was keyword only), so its cursor never skips a meaning hit.
+        const page = { closedBefore: new Date(Date.now() - RECENT_MS).toISOString(), limit: SEARCH_DONE_PAGE, ...(after ? { after } : {}), ...(url.searchParams.get("keyword") === "1" ? { keyword: true } : {}) };
+        const [answer, ctx] = await Promise.all([
+          opts.search.search(q, page).catch((e: Error) => { log.warn({ err: String(e.message).slice(0, 200) }, "task search failed"); throw new HttpError(503, "task search is unavailable"); }),
+          context(),
+        ]);
+        return searchView(answer, { labels: ctx.labels, assignees: ctx.assignees, logs: logTasks() });
       },
     },
     // The Flow page (flow.ts): the period's bottlenecks, DORA and idle items in one read; one item's waterfall; the code host's history import.

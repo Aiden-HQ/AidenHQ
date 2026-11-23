@@ -14,6 +14,7 @@ import { GoogleAuth } from "./google.js";
 import { Paperclip } from "./paperclip.js";
 import { kernelRecords } from "./records.js";
 import { kernelFlow } from "./flow.js";
+import { kernelSearch } from "./search.js";
 import { cachedActivity, kernelWork, liveRunsOf } from "./runs.js";
 import { weekdayOf } from "./dates.js";
 import { convertLegacyRecurring, reapRecurring } from "./recurring.js";
@@ -39,6 +40,8 @@ const work = kernelWork({ url: kernelUrl, token: cfg.gateway.token });
 const taskStates = kernelStates({ url: kernelUrl, token: cfg.gateway.token });
 // The Flow page's reads (the kernel's /v1/flow).
 const flow = kernelFlow({ url: kernelUrl, token: cfg.gateway.token });
+// The Tasks page's search (the kernel's /v1/search/tasks).
+const search = kernelSearch({ url: kernelUrl, token: cfg.gateway.token });
 
 /** Every minute: Tomorrow → Today at the start of a workday, then any scheduled moves that are due, on top. */
 function rollover() {
@@ -79,7 +82,7 @@ const signIns = cfg.signIns.map(({ url, token, ...s }) => ({ ...s, auth: new Mcp
 const accounts = createKernelAuth({ kernel: { url: kernelUrl, token: cfg.gateway.token }, adminUrl: cfg.accounts.adminUrl, log });
 // The code-review module's API, through the kernel (module.yaml providers.board).
 const reviews = createReviews({ kernel: cfg.gateway && { url: kernelUrl, token: cfg.gateway.token } });
-const common = { grading, reviews, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, taskStates, flow, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
+const common = { grading, reviews, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));

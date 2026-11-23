@@ -155,6 +155,7 @@
     "route POST /v1/routines/cancel": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/routines/pause": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/routing/:op": {"state":"experimental","fp":"auth=module+assertion"},
+    "route POST /v1/search/tasks": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/settings/agent": {"state":"experimental","fp":"auth=module+assertion"},
     "route POST /v1/settings/change": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/stop": {"state":"experimental","fp":"auth=board"},

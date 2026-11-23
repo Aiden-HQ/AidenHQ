@@ -1,8 +1,8 @@
 // The Tasks page's filters, as one pure function over the cards both layouts draw: filters AND, values within one OR. Every
 // value is a stable id (an agent, label or project id; "me" and "none" for You and Unassigned / no project); a value whose
-// thing is gone matches nothing. The lane is the kernel's (state.lane): a card with no reported state is Idle.
+// thing is gone matches nothing. The lane is the kernel's (state.lane): a card with no reported state is Idle. The text is the
+// kernel's task search (search.ts): a card matches when the search hit it (identifiers included: a typed prefix matches).
 import type { Card, Filters, Lane, WorkCard } from "./types";
-import { matches } from "./util";
 
 export const LANES: readonly Lane[] = ["needs_you", "working", "waiting", "blocked", "idle", "done"];
 export const LANE_NAMES: Record<Lane, string> = { needs_you: "Needs you", working: "Working", waiting: "Waiting", blocked: "Blocked", idle: "Idle", done: "Done" };
@@ -26,7 +26,10 @@ function since(updated: NonNullable<Filters["updated"]>, now: number): number {
   return now - (updated === "7d" ? 7 : 30) * 864e5;
 }
 
-export function cardMatches(c: Card | WorkCard, f: Filters, now = Date.now()): boolean {
+/** The text term: the search hit the card. `hits` undefined: no answer to apply yet, so the text hides nothing (the cards stay). */
+const textMatches = (c: Card, text: string, hits: ReadonlySet<string> | undefined) => !text.trim() || !hits || hits.has(c.id);
+
+export function cardMatches(c: Card | WorkCard, f: Filters, now = Date.now(), hits?: ReadonlySet<string>): boolean {
   const any = <T,>(vals: T[] | undefined, test: (v: T) => boolean) => !vals?.length || vals.some(test);
   return (
     any(f.agent, (a) => (a === "none" ? c.assignee === null : c.assignee === a || crewOf(c).includes(a))) &&
@@ -35,11 +38,11 @@ export function cardMatches(c: Card | WorkCard, f: Filters, now = Date.now()): b
     any(f.priority, (p) => c.priority === p) &&
     any(f.project, (p) => (p === "none" ? c.projectId === null : c.projectId === p)) &&
     (!f.updated || Date.parse(c.activityAt) >= since(f.updated, now)) &&
-    matches(c, f.text ?? "")
+    textMatches(c, f.text ?? "", hits)
   );
 }
 
-export const applyFilters = <T extends Card>(cards: T[], f: Filters, now = Date.now()): T[] => (isEmpty(f) ? cards : cards.filter((c) => cardMatches(c, f, now)));
+export const applyFilters = <T extends Card>(cards: T[], f: Filters, hits?: ReadonlySet<string>, now = Date.now()): T[] => (isEmpty(f) ? cards : cards.filter((c) => cardMatches(c, f, now, hits)));
 
 /** How many chips are set (text excluded: it is the search field). */
 export const chipCount = (f: Filters) => FILTER_KEYS.filter((k) => (k === "updated" ? !!f.updated : !!f[k]?.length)).length;

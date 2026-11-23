@@ -66,6 +66,14 @@
     "default": 1000,
     "doc": "The install's spend limit on every model call, USD per calendar month (UTC). Past it every call is refused and the owner is told once. Raising it is the owner's."
   },
+  "search_summaries": {
+    "default": "off",
+    "values": [
+      "on",
+      "off"
+    ],
+    "doc": "Task search (docs/design/task-search.md): \"on\" has a cheap model (~deepseek/deepseek-flash-latest, through the gateway) write a 2-3 sentence summary and 5-8 tags for each task whose content changed, which keyword and meaning search then read too. Search works fully without them."
+  },
   "task_usd": {
     "default": 20,
     "doc": "The most an agent's model calls on one task may spend, USD (a chat or routine task: per UTC day). Past it the task's calls are refused and whoever asked for the task is told. Raising it is the owner's."
