@@ -64,7 +64,7 @@ warehouse, no search), and one owner keeps the index, the worker, the query and 
 counter and sets `due` 20 s out, keeping an earlier one, so a burst of events costs one rebuild and an edit pulls a backed-off
 retry forward. Marks come from: every fact with a task (a cursor over
 `GET /v1/facts`, kept beside the queue), the company's 50 most recently updated issues read every 15 s, each newer than its
-row (title and description edits make no fact), and reconcile. A worker takes due rows a few at a time, live changes before reconcile's backfill (a task changed
+row (title and description edits make no fact), and reconcile. A worker keeps 8 rebuilds in flight (a free slot takes the next due row at once, so one slow rebuild holds back only itself), live changes before reconcile's backfill (a task changed
 meanwhile turns live); a row is removed only if its `gen` is still the one it rebuilt (`DELETE … WHERE task = ? AND gen = ?`).
 While the warehouse can't hold the rows (down, or no pgvector yet) the queue waits untouched.
 
@@ -120,7 +120,7 @@ status, routine runs included), with three separate rules:
 
 Warehouse module setting `search_summaries` (`on` or `off`, default `off`: quiet start). On, each rebuild whose content changed asks
 `~deepseek/deepseek-flash-latest` (ZDR, through the gateway, the source writers' key) for a 2–3 sentence summary and 5–8 tags,
-the task text fenced as data. They join the document, so both keyword and meaning search use them.
+the task text fenced as data (reasoning off and room for the JSON: a cut-off answer, `finish_reason: length`, is a failed summary that comes back). They join the document, so both keyword and meaning search use them.
 
 ## Warehouse
 
