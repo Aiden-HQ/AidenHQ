@@ -694,10 +694,11 @@ test("both image prunes skip the computer images, which the browser Dockerfile l
     const prunes = text.split("\n").filter((l) => /docker image prune/.test(l) && !/^\s*#/.test(l));
     assert.ok(prunes.length >= 1, `${name}: no image prune`);
     for (const l of prunes) assert.ok(l.includes(keep), `${name}: image prune without the keep filter: ${l}`);
-    // Labelled images are never pruned, so superseded ones are removed by their own bounded step.
-    assert.match(text, /^\s*(ExecStart=-\/usr\/bin\/timeout 5m \/usr\/bin\/env |timeout -k 30s 5m )bash (\$\{AIDENHQ_DIR\}\/)?ops\/prune-computer-images\.sh( \|\| true)?$/m, `${name}: superseded-image sweep`);
   }
   assert.match(readFileSync(join(repo, "services/computer/images/browser/Dockerfile"), "utf8"), /^LABEL aidenhq\.keep=true$/m);
+  // Labelled images are never pruned, so an apply removes the superseded ones itself, once its generation is good.
+  assert.match(apply, /retireUnits\n(    #[^\n]*\n)*    timeout -k 30s 5m bash ops\/prune-computer-images\.sh \|\| true/);
+  assert.doesNotMatch(service, /prune-computer-images/);
 });
 
 test("the superseded-image sweep removes labelled images the config no longer names and keeps the current ones", () => {
@@ -709,7 +710,7 @@ test("the superseded-image sweep removes labelled images the config no longer na
   writeFileSync(join(dir, "config/computers.json"), JSON.stringify({ images: { browser: "aidenhq/computer-browser:new", "agent-base": "aidenhq/computer-agent-base:new" } }));
   writeFileSync(join(dir, "bin/docker"), `#!/bin/sh
 case "$1 $2" in
-  "image ls") case "$*" in *label=aidenhq.keep=true*) printf '%s\\n' aidenhq/computer-browser:new aidenhq/computer-browser:current aidenhq/computer-browser:old aidenhq/computer-engineer:old ;; esac ;;
+  "image ls") case "$*" in *until*) echo "invalid filter 'until'" >&2; exit 1 ;; *label=aidenhq.keep=true*) printf '%s\\n' aidenhq/computer-browser:new aidenhq/computer-browser:current aidenhq/computer-browser:old aidenhq/computer-engineer:old ;; esac ;;
   "image rm") echo "rm $3" >> "$CALLS" ;;
 esac
 `);
