@@ -30,8 +30,8 @@ security fix (step 4).
    date: a tag can be re-pushed after its release, so the release still shows the old date. A date is digest-bound only when
    the registry reports it for that digest (a ghcr image: the Packages API); when it cannot be read — a token with no access
    to another org's package, say — do not approximate it from the release or the tag. Such an image is adopted through an
-   eligible entry in `.github/supply-chain-exceptions.yaml` instead: a security advisory for that version, or an
-   owner-approved entry with `expires` at most 14 days out, for that exact digest.
+   eligible entry in `.github/supply-chain-exceptions.yaml` instead: an advisory for that version, or `owner: approved`
+   with `expires` at most 14 days out and that exact digest.
 4. A newer version is allowed only for a security fix: the script returns it with the advisory (the lowest fixing
    release). List it in `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in
    the same PR as the pin. An app repo's CI runs the checker from its base commit, so until its default branch carries the
