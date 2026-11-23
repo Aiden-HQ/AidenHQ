@@ -70,8 +70,8 @@ export function parseRecords(o: any): CrmRecord[] {
   return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {}, ...(template ? { url: template.replace("{id}", String(r.id)) } : {}) }));
 }
 
-/** One page of records modified at or after `sinceMs`, oldest first. */
-export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number): Promise<CrmRecord[]> {
+/** One page of records modified at or after `sinceMs`, oldest first, with HubSpot's `total` for the whole search (null when it gave none). */
+export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number): Promise<{ records: CrmRecord[]; total: number | null }> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,
@@ -82,7 +82,7 @@ export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: num
     }),
     "search_crm_objects",
   );
-  return parseRecords(o);
+  return { records: parseRecords(o), total: Number.isInteger(o?.total) && o.total >= 0 ? o.total : null };
 }
 
 /**

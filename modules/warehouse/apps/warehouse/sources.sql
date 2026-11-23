@@ -73,8 +73,12 @@ ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS commit text;
 -- A non-error marker for a scope that was not a normal pass (e.g. security's "retired": a target no longer in the
 -- inventory whose replacement was scanned cleanly). status is null for a normal pass; error stays the failure signal.
 ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS status text;
+-- A completed scope's reliable count (SourceStore.run): total = what the source reported for it, fetched = distinct records the
+-- pass read. Null when the pass stopped early, resumed mid-scope or the API gives no total.
+ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS total integer;
+ALTER TABLE src_meta.ingest_run ADD COLUMN IF NOT EXISTS fetched integer;
 CREATE INDEX IF NOT EXISTS ingest_run_source ON src_meta.ingest_run (source, finished_at DESC);
-COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, hubspot, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed, commit for a repo target (the checkout''s git HEAD, so the row says which tree the pass read), status for a non-error marker (e.g. retired).';
+COMMENT ON TABLE src_meta.ingest_run IS 'One row per ingest pass of a source writer: source (slack, github, jira, hubspot, meetings, docs, security, app-auditor), scope (what it covered), rows written with a difference, error when it failed, commit for a repo target (the checkout''s git HEAD, so the row says which tree the pass read), status for a non-error marker (e.g. retired), total and fetched for a completed scope whose API gave a reliable count (fetched below total = records missed).';
 GRANT INSERT ON src_meta.ingest_run TO writers;
 GRANT USAGE ON SEQUENCE src_meta.ingest_run_id_seq TO writers;
 GRANT SELECT ON src_meta.ingest_run TO agents_open;
