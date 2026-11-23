@@ -36,7 +36,7 @@ function world() {
       if (body.status && fail.moves > 0) return (fail.moves--, { status: 500, json: {} }); // a status write that times out
       if (body.status && i.blockedBy?.some((x) => x.status !== "done")) return { status: 409, json: {} }; // a cancelled blocker still refuses
       if (body.blockedByIssueIds) i.blockedBy = i.blockedBy.filter((x) => body.blockedByIssueIds.includes(x.id));
-      if (body.status) Object.assign(i, { status: body.status, updatedAt: iso(clock) });
+      if (body.status) Object.assign(i, { status: body.status, updatedAt: iso(clock), ...(i.statusVersion ? { statusVersion: i.statusVersion + 1 } : {}) });
       if (body.comment) (comments[i.id] ??= []).push({ id: `c-p${(comments[i.id] ?? []).length}`, body: body.comment, authorAgentId: null, createdAt: iso(clock) });
       return { status: 200, json: i };
     }
@@ -645,6 +645,47 @@ test("handed to the owner is recorded as owner, and observing a change doesn't s
   await w.wakes.event({ issueId: "t1" });
   assert.equal(w.rows("t1").length, 1);
   assert.equal(of("t1", "task.assignee_changed").length, 3);
+});
+
+test("an owner comment on a done chat reopens it to todo, its agent kept, before its wake is filed", async () => {
+  const w = world();
+  w.issue("chat", { status: "todo", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  const closed = "2026-11-18T10:00:01.500Z";
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 2, updatedAt: closed, completedAt: closed });
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.issues.chat.status, "done");
+  w.wakes.claim("dispatch"); // the first-sight wake is spent
+  w.db.prepare("DELETE FROM wakes WHERE task = 'chat'").run();
+  // Every route's comment lands here: the task's own thread, an agent or tool, never only the board chat or a channel.
+  w.tick(2000);
+  w.comment("chat", "c1", { authorUserId: "u1" });
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.issues.chat.status, "todo", "reopened before its wake is filed");
+  assert.equal(w.issues.chat.assigneeAgentId, AGENT, "its agent is kept");
+  assert.deepEqual(w.rows("chat"), ["comment:c1 open"], "one wake for the owner's word, none for the reopen itself");
+  // The reopen is recorded before the wake it lets start: task state sees the chat open when its run begins.
+  const facts = w.facts.forTask("chat");
+  const reopened = facts.filter((f) => f.type === "task.status_changed").find((f) => f.data.to === "todo" && f.seq > 2);
+  const opened = facts.find((f) => f.subject === "wake:comment:c1" && f.type === "wake.opened");
+  assert.ok(reopened && opened && reopened.seq < opened.seq, "reopened before its wake is filed");
+  // A word said before the close (an older one an unrelated event resurfaced) reopens nothing.
+  w.tick(10_000);
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 4, updatedAt: w.issues.chat.updatedAt, completedAt: w.issues.chat.updatedAt });
+  w.comment("chat", "c-old", { authorUserId: "u1", createdAt: iso(Date.parse(w.issues.chat.updatedAt) - 60_000) });
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.issues.chat.status, "done", "said before the close");
+  // An agent's own comment reopens nothing, and a cancelled chat stays closed.
+  Object.assign(w.issues.chat, { status: "done", statusVersion: 5 });
+  w.comment("chat", "c2", { authorAgentId: OTHER });
+  await w.wakes.event({ issueId: "chat" });
+  assert.equal(w.issues.chat.status, "done", "not the owner's word");
+  w.issue("chat2", { status: "cancelled", labels: [{ name: "chat" }] });
+  await w.wakes.poll();
+  w.tick();
+  w.comment("chat2", "c3", { authorUserId: "u1" });
+  await w.wakes.event({ issueId: "chat2" });
+  assert.equal(w.issues.chat2.status, "cancelled", "a cancelled chat is not reopened");
 });
 
 test("an owner comment is task.commented at its own time; a chat is marked at creation", async () => {

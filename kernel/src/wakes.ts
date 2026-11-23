@@ -214,6 +214,13 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   const lastFacts = (task: string) => facts?.latest(`task:${task}`, TASK_FACTS) ?? new Map<string, FactRow>();
   /** A task's chat flag: its newest task.labeled, else its created fact's (undefined for a created fact older than the flag). */
   const chatOf = (last: Map<string, FactRow>) => { const c = last.get("task.labeled")?.data.chat ?? last.get("task.created")?.data.chat; return typeof c === "boolean" ? c : undefined; };
+  /** A chat: the `chat` label when the read has labels, else the chat flag its facts recorded. */
+  const isChat = (issue: Issue) => (Array.isArray(issue.labels) ? issue.labels.some((l) => l.name === "chat") : chatOf(lastFacts(issue.id)) === true);
+  /**
+   * The owner's own word on a task: a person's comment, never an agent's, a kernel notice, a wake notice or a bridge's relay
+   * (all posted under the owner's key but not said by them).
+   */
+  const ownerWord = (c: Comment) => !c.authorAgentId && Boolean(c.authorUserId) && !/<!-- aidenhq(:|-(wake|for-others|notice|approval))/.test(c.body ?? "");
   /**
    * The issue as its facts need it: a list row may lack the description a first fact reads (a module's markers) or the labels a
    * chat flag reads, so a task with no created fact, or one whose chat flag nobody recorded, is read once whole.
@@ -304,6 +311,23 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (c.deletedAt || /<!-- aidenhq(:(job|op)=|-kernel-notice:)/.test(c.body ?? "")) continue;
       fact({ type: "task.commented", subject: `task:${issue.id}`, version: String(c.id), at: iso(ms(c.createdAt) || now()), actor: c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown", task: issue.id, source, data: { kind: "comment" } });
     }
+    // An owner's word on a finished chat reopens it before its wake is filed: admission refuses a wake on a done task, and a
+    // comment through any route but the board's chat composer or a channel never reopened it. Only a word said after the close
+    // counts (so an unrelated event on a long-done chat reopens nothing), and a cancelled chat stays closed.
+    const lastStatus = lastFacts(issue.id).get("task.status_changed");
+    const finishedAt = String(issue.status ?? "") === "done" ? Math.max(ms(issue.completedAt ?? undefined), lastStatus?.data.to === "done" ? ms(lastStatus.at) : 0) : 0;
+    let reopenedHere = false;
+    if (String(issue.status ?? "") === "done" && isChat(issue) && all.some((c) => !c.deletedAt && ms(c.createdAt) > finishedAt && ownerWord(c))) {
+      const p = await owner("PATCH", `/api/issues/${encodeURIComponent(issue.id)}`, { status: "todo" });
+      if (p.status >= 300) log("wake chat reopen failed", { task: issue.id, status: p.status });
+      else {
+        // Recorded before the wake it lets start: task state reads the chat open when its run begins. The status is the one the
+        // reopened task has now, from the control plane's answer or the move this scan just made.
+        const moved = { ...issue, status: "todo", updatedAt: iso(now()) };
+        taskFacts(moved, source, actor);
+        reopenedHere = true;
+      }
+    }
     for (const c of all) {
       if (c.deletedAt || ms(c.createdAt) <= boundary || c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")) continue;
       insert(`comment:${c.id}`, issue.id, agent, "comment", ms(c.createdAt) || now(), null, c.authorAgentId ? `agent:${keyOf(c.authorAgentId)}` : c.authorUserId ? `account:${c.authorUserId}` : "unknown");
@@ -317,7 +341,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // status wake filed for one of those moves would start a second job beside the one the wait's wake starts. The wait's own
     // wake is the only thing that dispatches it.
     const armedWait = Boolean(q("SELECT 1 FROM wakes WHERE task = ? AND state = 'open' AND key LIKE 'wait:%'").get(issue.id));
-    const fileable = !armedWait && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
+    // The reopen above files the owner's comment's wake: no second status wake for the move itself.
+    const fileable = !armedWait && !reopenedHere && (status === "todo" || (handed && status === "in_progress")) && (reopened || moved);
     // A move made while a job runs is filed once that job ends: until then the cursor keeps what it last saw (`deferred`).
     const deferred = fileable && Boolean(liveJob(issue.id));
     if (fileable && !deferred) {

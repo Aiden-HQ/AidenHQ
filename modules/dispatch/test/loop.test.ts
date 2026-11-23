@@ -227,6 +227,27 @@ test("a wake the kernel refuses is dropped; a transient failure keeps it; a job 
   assert.match(k.notified[0].text, /reply for WOR-1 was dropped/);
 });
 
+test("a task-closed refusal on a wake is never dropped silently: the owner is told, once, and the wake goes", async () => {
+  const comments = [{ id: "c1", authorType: "user", body: "One more thing.", createdAt: "2026-11-18T10:00:00Z" }];
+  const k = fake({ task: { id: "t1", identifier: "WOR-5", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
+  k.kernel.start = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
+  k.inbox.push(wake("comment:c1", "comment"));
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "dropped only after it was surfaced");
+  assert.deepEqual(k.notes.map((n) => n.wake), ["comment:c1"], "the refusal is said on the task, where the owner reads it");
+  assert.match(k.notes[0].body, /This wake was not started/);
+  assert.match(k.notes[0].body, /task-closed/);
+  assert.match(k.notes[0].body, /The task is closed, so nothing was started for it; its message stays on the task\./);
+  // The notice not landing (its post fails, and the owner's fallback too): the wake is kept for its lease, never dropped silently.
+  comments.push({ id: "c2", authorType: "user", body: "And another.", createdAt: "2026-11-18T10:01:00Z" });
+  k.inbox.push(wake("comment:c2", "comment"));
+  k.kernel.note = async () => { throw new KernelError(409, "no task"); };
+  k.kernel.notify = async () => { throw new KernelError(502, "upstream"); };
+  await k.dispatch.tick();
+  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "kept for its lease");
+  assert.equal(k.inbox.length, 0, "claimed");
+});
+
 test("a run its machinery ended (lost, or killed by a signal) comes back as a resumed run; a run's own error doesn't", async () => {
   const comments = [];
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
