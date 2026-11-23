@@ -141,6 +141,16 @@ it("pages the live read: the kernel's page limit is not the whole set, so an old
   }
 });
 
+it("a strict read with no kernel configured fails, instead of reporting that a task has no cards", async () => {
+  // The approvals check a run makes before it waits or files a merge is `strict`: a board with no kernel records client must not
+  // answer "no cards", which the rule would read as "nothing will wake the task".
+  const records = kernelRecords(undefined);
+  await expect(records.list("recent", { tier0: true, strict: true })).rejects.toThrow(/not configured/);
+  await expect(records.allOf("live", undefined, "issue-3")).rejects.toThrow(/not configured/);
+  // An ordinary board view keeps its empty answer: a page never fails on a missing kernel.
+  expect(await records.list("recent")).toEqual([]);
+});
+
 it("a failed live page is not the end of pagination: it throws, and the Approvals list keeps its last complete read", async () => {
   // `list()` answers [] for a timeout or an HTTP error. If `live()` took that as a short last page it would return the records
   // read so far, dropping an old blocked merge off Approvals with no sign anything went wrong. A failing page must throw instead.
