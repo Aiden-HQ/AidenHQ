@@ -88,7 +88,12 @@ export function createProjects({ db, owner, products = () => ({}), log = () => {
     const row = db.prepare("SELECT project, product FROM project_repos WHERE company = ? AND repo = ?").get(company, repo) as { project: string; product: number } | undefined;
     // A repo the map names (or named) follows the map, so a fill during a move lands where the move goes; a project archived or
     // deleted in Paperclip since is no home: the repo's project is found again.
-    if (row && !row.product && !productOf(repo) && (await catalog(company)).some((p) => p.id === row.project)) return row.project;
+    if (row && !row.product && !productOf(repo)) {
+      const own = (await catalog(company)).find((p) => p.id === row.project);
+      // Its own project, unless a product has taken that name: then it goes where sync is moving it (named in full).
+      if (own && !Object.keys(products()).some((n) => n.trim().toLowerCase() === own.name.trim().toLowerCase())) return row.project;
+      if (own) return projectFor(company, repo);
+    }
     // A repo the map names follows it here; its row moves with its tasks in sync, never ahead of them.
     if (row && (row.product || productOf(repo))) return projectFor(company, repo);
     // New, or its own project archived since: found (or made) again and remembered.
