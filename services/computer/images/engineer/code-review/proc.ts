@@ -10,7 +10,13 @@ import { join } from "node:path";
 export async function run(cmd: string, args: string[], o: { cwd: string; env: Record<string, string>; minutes?: string | number; input?: string; watch?: (line: string) => string | undefined }) {
   // Its own process group, so a kill takes the commands it started too (one still holding stdout would keep the run open).
   const child = spawn(cmd, args, { cwd: o.cwd, env: o.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
-  const kill = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); } };
+  // A killed run (aborted, or out of time) ends now: its group killed and its pipes closed, so nothing that outlived it (a helper
+  // in another group, or the engine already gone) can hold them open.
+  const kill = () => {
+    try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+    child.stdout.destroy();
+    child.stderr.destroy();
+  };
   child.stdin.on("error", () => {}); // a child that exits without reading its input
   child.stdin.end(o.input); // none: closed at once, as /dev/null would be
   let stdout = "", stderr = "", timedOut = false, aborted: string | undefined, line = "";
@@ -27,8 +33,6 @@ export async function run(cmd: string, args: string[], o: { cwd: string; env: Re
   });
   child.stderr.on("data", (d: string) => { stderr += d; if (stderr.length > 1e6) stderr = stderr.slice(-5e5); });
   const timer = setTimeout(() => { timedOut = true; kill(); }, Number(o.minutes ?? 20) * 60_000);
-  // A killed run ends when the child does: a command that outlived it can't hold its pipes open.
-  child.on("exit", () => { if (aborted || timedOut) { child.stdout.destroy(); child.stderr.destroy(); } });
   const code = await new Promise<number | null>((ok) => { child.on("close", ok); child.on("error", () => ok(null)); });
   clearTimeout(timer);
   if (o.watch && !aborted && line) aborted = o.watch(line); // a last line with no newline
