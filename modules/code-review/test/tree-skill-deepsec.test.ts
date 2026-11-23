@@ -81,6 +81,7 @@ test("deepsec scans when INFO.md is committed and sets up (init) when it isn't; 
   assert.match(cmds2[1], new RegExp(`^process .*--diff ${baseSha}$`));
   assert.equal(cmds2.length, 2);
   assert.ok(r2.setup);
+  assert.ok(r2.setup[".deepsec/.gitignore"], "the generated .gitignore is part of the setup");
   assert.equal(r2.review.incomplete, undefined);
 
   // A tree with no .deepsec: init runs through process under the cap, then only revalidate. At the cap (exit 3): its findings and

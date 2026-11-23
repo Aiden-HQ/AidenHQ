@@ -26,7 +26,7 @@ export const STATUS_KIND = "code-review.status";
 export const REPLY_KIND = "code-review.reply";
 /** The only files a deepsec setup PR may hold: what deepsec means to be committed (recipe/deepsec.ts setupPath; module.yaml
  * codehost.setup lists the same paths). */
-export const SETUP_PATH = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
+export const SETUP_PATH = /^\.deepsec\/(\.gitignore|deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
 /** A dedupe key as a wake's `id`: the kernel takes `[\w.-]{1,80}` and keys the row by it, so a resend is the same wake. */
@@ -367,7 +367,7 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
       // The code host waits five minutes for the approval, then answers 202 { pending }: asking again finds the same open record.
       let r: Response, j: Record<string, unknown>;
       for (let i = 0; ; i++) {
-        r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY, task: String(t.id) });
+        r = await op("setup", { ...b, title: "chore: set up deepsec", body: SETUP_BODY, task: String(t.id) });
         j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
         if (r.status !== 202 || j.pending !== true) break;
         if (i >= 5) throw new Error(`the deepsec setup PR is still waiting for its approval (write ${String(j.write)})`);

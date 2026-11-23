@@ -22,7 +22,7 @@ codehost:
   # the default branch's head; github files and reviews its own Tier 1 write for it. Only these paths.
   setup:
     repos: [ "*/*" ]
-    paths: [ .deepsec/deepsec.config.ts, .deepsec/generated-matchers.ts, .deepsec/package.json, .deepsec/package-lock.json, .deepsec/pnpm-lock.yaml, .deepsec/yarn.lock, ".deepsec/data/*/INFO.md" ]
+    paths: [ .deepsec/.gitignore, .deepsec/deepsec.config.ts, .deepsec/generated-matchers.ts, .deepsec/package.json, .deepsec/package-lock.json, .deepsec/pnpm-lock.yaml, .deepsec/yarn.lock, ".deepsec/data/*/INFO.md" ]
 # The review run: a credential-free check job per PR head (kernel/src/checkjobs.ts), the recipe in recipe/. The state service asks
 # POST /v1/checks {repo, head, run: code-review, spec} (service/src/adapters.ts checkSpec): base is the merge base (a full review's
 # incremental_from is that base too), the combo (engine, model, effort) with the repo's ignore globs and max_nits in combo, previous

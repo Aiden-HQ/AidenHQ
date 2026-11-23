@@ -57,19 +57,17 @@ test("a finished default-branch read is never reused for a new ask of the head; 
   assert.equal((await w.engine.catalogFor({ repo: REPO, commit: sha("2") })).sha, sha("2"));
 });
 
-test("the commit is resolved once at start: the default branch moving mid-run changes nothing; tools then each model option run in sequence", async () => {
+test("the commit is resolved once at start: the default branch moving mid-run changes nothing; the tools check and each model option all start at once", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.lint", "sec.gitleaks", "sec.cloudflare"] });
   assert.equal(b.sha, sha("1"));
   await w.tick();
-  assert.equal(w.started.length, 1); // the tools run alone first
+  assert.equal(w.started.length, 2); // every check starts together, each in its own box
   assert.deepEqual([w.started[0].profile, Object.keys(w.started[0].tools), w.started[0].target, w.started[0].head], ["code-review-tools", ["maint.lint", "sec.gitleaks"], "tree", sha("1")]);
   w.heads.HEAD = sha("2");
-  w.finish(0, { findings: [w.finding("k1", { option: "maint.lint", severity: "nit" })] });
-  await w.tick();
-  assert.equal(w.started.length, 2);
   assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].combo.harness, w.started[1].combo.skills, w.started[1].option, w.started[1].lens, w.started[1].head],
     ["code-review", "skill:sec.cloudflare", "claude-code", [{ skill: "cloudflare/security-audit-skill:security-audit", args: "{base}..HEAD" }], "sec.cloudflare", "security", sha("1")]);
+  w.finish(0, { findings: [w.finding("k1", { option: "maint.lint", severity: "nit" })] });
   w.finish(1, {}, 1.5);
   await w.tick();
   const [batch] = w.engine.batches({});
@@ -275,11 +273,11 @@ test("an option gone from the catalog while queued fails that run, and the repor
   const w = world();
   const [a, b] = await Promise.all([w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] }), w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] })]);
   assert.equal(a.batch, b.batch);
-  await w.tick();
   const i = CATALOG.findIndex((o) => o.id === "sec.cloudflare"), gone = CATALOG.splice(i, 1);
   try {
+    await w.tick();
     w.finish(0);
-    await w.tick(); await w.tick();
+    await w.tick();
   } finally { CATALOG.splice(i, 0, ...gone); }
   assert.match(w.db.prepare("SELECT why FROM runs WHERE option = 'sec.cloudflare'").get().why, /isn't in the option catalog/);
   assert.equal(w.engine.batches({})[0].status, "done");

@@ -18,8 +18,8 @@
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason, never silent.
 //
 // A repo review (a batch whose target is a tree: a whole repo at one commit, resolved once when it is asked for) runs on the same
-// lifecycle: its catalog options as runs of one batch, in sequence: the tools check (the selected tool options together,
-// token-free) first, then each model option as its own check. Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
+// lifecycle: its catalog options as runs of one batch, all started at once: the tools check (the selected tool options together,
+// token-free) and each model option, each its own check in its own box. Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
 // Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
@@ -1537,8 +1537,7 @@ export function createEngine(d: EngineDeps) {
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
-      // A repo review's options run one at a time, in order: each is its own check (metered by the gateway like any run).
-      if (r.target === "tree" && one("SELECT 1 FROM runs WHERE batch = ? AND id != ? AND (status = 'running' OR (status = 'queued' AND rowid < (SELECT rowid FROM runs WHERE id = ?)))", r.batch, r.id, r.id)) continue;
+      // A repo review's options start together: each is its own check in its own box (metered by the gateway like any run).
       const started = admit(r);
       if (started) await startRun(started);
       else if (r.target === "tree") await batchEnded(r.batch);
