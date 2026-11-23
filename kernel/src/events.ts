@@ -15,7 +15,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Connection, Grant } from "./identity.ts";
 
 /** `thread`: the conversation an event replies in (a Slack reply's thread root ts), when it is a reply. */
-export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string; thread?: string };
+export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string; thread?: string; truncated?: boolean };
 export type Filter = { kind?: string | string[]; author?: string | string[]; label?: string | string[]; contains?: string[]; bot?: boolean };
 export type Subscription = { key: string; agent: string; connection: string; resource: string; filter: Filter };
 export type GrantsTable = { agents?: Record<string, Grant>; routine_events?: Record<string, Subscription> };
@@ -51,12 +51,12 @@ function envelope(e: unknown): SourceEvent | string {
   const o = (e && typeof e === "object" && !Array.isArray(e) ? e : {}) as Record<string, unknown>;
   if (!str(o.connection, 100) || !str(o.resource, 200) || !str(o.id, 200) || !str(o.kind, 100)) return "connection, resource, id and kind are short strings";
   if (!opt(o.author, 200) || !opt(o.url, 500) || !opt(o.thread, 200) || (o.text !== undefined && typeof o.text !== "string")) return "author, url, thread and text are strings";
-  if (o.bot !== undefined && typeof o.bot !== "boolean") return "bot is true or false";
+  if ((o.bot !== undefined && typeof o.bot !== "boolean") || (o.truncated !== undefined && typeof o.truncated !== "boolean")) return "bot and truncated are true or false";
   if (o.labels !== undefined && (!Array.isArray(o.labels) || o.labels.length > LABELS_MAX || o.labels.some((l) => !str(l, 100)))) return `labels are at most ${LABELS_MAX} short strings`;
   return {
     connection: o.connection as string, resource: o.resource as string, id: o.id as string, kind: o.kind as string,
     ...(o.author !== undefined ? { author: o.author as string } : {}), ...(o.text !== undefined ? { text: (o.text as string).slice(0, TEXT_MAX) } : {}),
-    ...(o.labels !== undefined ? { labels: o.labels as string[] } : {}), ...(o.bot !== undefined ? { bot: o.bot as boolean } : {}), ...(o.url !== undefined ? { url: o.url as string } : {}), ...(o.thread !== undefined ? { thread: o.thread as string } : {}),
+    ...(o.labels !== undefined ? { labels: o.labels as string[] } : {}), ...(o.bot !== undefined ? { bot: o.bot as boolean } : {}), ...(o.url !== undefined ? { url: o.url as string } : {}), ...(o.thread !== undefined ? { thread: o.thread as string } : {}), ...(o.text !== undefined && (o.truncated === true || (o.text as string).length > TEXT_MAX) ? { truncated: true } : {}),
   };
 }
 

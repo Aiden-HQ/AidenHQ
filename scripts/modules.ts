@@ -1162,7 +1162,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const fields = String(r.schedules?.[0]?.cron ?? "").trim().split(/\s+/);
       // Each number inside its field's range (minute 0-59, hour 0-23, day 1-31, month 1-12, weekday 0-7; a step any positive number).
       const RANGES = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]] as const;
-      const inRange = (f: string, i: number) => f.split(",").every((part) => { const [span, step] = part.split("/"); return (step === undefined || (/^\d+$/.test(step) && Number(step) > 0)) && (span === "*" || (span ?? "").split("-").every((n) => /^[A-Za-z]{3}$/.test(n) ? i >= 3 : /^\d+$/.test(n) && Number(n) >= RANGES[i]![0] && Number(n) <= RANGES[i]![1])); });
+      const inRange = (f: string, i: number) => f.split(",").every((part) => { const [span, step] = part.split("/"); return (step === undefined || (/^\d+$/.test(step) && Number(step) > 0)) && (span === "*" || ((span ?? "").split("-").length <= 2 && (span ?? "").split("-").every((n) => /^[A-Za-z]{3}$/.test(n) ? i >= 3 : /^\d+$/.test(n) && Number(n) >= RANGES[i]![0] && Number(n) <= RANGES[i]![1]))); });
       if (r.schedules?.length && (fields.length !== 5 || !fields.every((f, i) => (i >= 3 ? /^[\d*,/A-Za-z-]+$/ : /^[\d*,/-]+$/).test(f) && inRange(f, i)))) fail(`routine ${key}: its schedule needs a cron of five fields (minute hour day month weekday), each in range`);
       const minute = String(r.schedules?.[0]?.cron ?? "0").trim().split(/\s+/)[0]!;
       if (!/^([0-9]|[1-5][0-9])$/.test(minute)) fail(`routine ${key}: a local routine runs at most hourly: its cron minute is one number 0-59 (got ${minute})`);

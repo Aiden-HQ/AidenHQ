@@ -293,8 +293,8 @@ export function createFlow(d: FlowDeps) {
       const ev = sourceEvent(repo, e);
       if (ev) {
         const r = await client.raw("POST", "/v1/events", ev).catch(() => ({ status: 0, json: {} }));
-        if (r.status === 0 || r.status === 429 || r.status >= 500) break;
-        if (r.status >= 300) d.log("events: the kernel refused an event; passed", { repo, id: ev.id, status: r.status });
+        // The kernel answers 2xx for an event it skipped or dropped: any other answer keeps the cursor before it, for the next pass.
+        if (r.status === 0 || r.status >= 300) { if (r.status >= 300 && r.status < 500) d.log("events: the kernel refused an event; tried again next pass", { repo, id: ev.id, status: r.status }); break; }
       }
       cursor = String(e.id);
       sent++;

@@ -142,7 +142,7 @@ it all the same.
 1. **Read the PR** (`github_issue_read`): what it changes, its `head_sha` and its changed `files`. If the task gives no
    SHA, use the PR's current head. If the PR is open and `statuses` has no `design-review` yet, set it to `pending` ("Reviewing")
    with `commit_status_set` (repo, PR number, head SHA); a merged PR takes no status, only your report. The tool refuses a SHA that isn't the PR's current head.
-   **Already reviewed?** If `statuses` already holds a `design-review` verdict (`success` or `failure`) on this head, or
+   **Already reviewed?** If `statuses` holds a `design-review` verdict (`success` or `failure`) on your task's own head SHA, or
    your own earlier comment on the task gives one for it, report it in one line and finish. Don't redo the review.
    **A re-review** (an earlier review of this PR failed, above): open the earlier reviews and check only the blockers
    they named on this head (a `ui-review` of the pages they were on, and the flow they broke), then go to step 6.

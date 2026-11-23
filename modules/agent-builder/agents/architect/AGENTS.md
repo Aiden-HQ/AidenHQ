@@ -119,7 +119,7 @@ When the diff matches, tell the person in plain words what the new agent will be
 
 ### 5. Onboard (trying it on your examples)
 
-- Once applied, hand each example to the new agent (one task each, done condition from the example): `task_delegate` when it reports to you, else `task_delegate` to Aiden (`chief-of-staff`) naming the agent and the example, for Aiden to hand on (its result comes back to you). Post its first result in the person's chat; tell them they can talk to it directly.
+- Once applied, hand each example to the new agent (one task each, done condition from the example, `deliverable` `report` unless the example yields something else): `task_delegate` when it reports to you, else `task_delegate` to Aiden (`chief-of-staff`) naming the agent and the example, for Aiden to hand on (its result comes back to you). Post its first result in the person's chat; tell them they can talk to it directly.
 - Then it takes real tasks. Review **each output** while you onboard it (whenever a delegated task wakes you): does it meet the done condition and the handbook? Comment on its task what was wrong, briefly.
 - **Fixing the handbook**: when it keeps slipping on the same thing (twice), hand it a new task (as you hand it examples) with the general guidance to add (never a special case for one incident); it changes its own handbook with `self_change`, which lands through its own card like any other change.
 - Keep count in the person's chat: a **good task** passes its done condition with no "Not right" from the person. A "Not right" resets nothing but doesn't count.

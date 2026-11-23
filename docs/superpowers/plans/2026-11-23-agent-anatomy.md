@@ -50,7 +50,6 @@ and the Paperclip image pinned in `compose.yaml`.
 - Board UI follows `docs/design/board-ui.md`, with screenshots at 1512x982, 1920x1080, 2560x1440, 768, 1024 and 390, in
   both themes.
 - `kernel/contract.lock.json` is regenerated once, in Task 17. New routes start `experimental`.
-- One Codex review and one security review, in Task 17.
 - Memory: `MEMORY_MAX = 4096` bytes per file, `FACT_MAX = 500`, `SOURCE_MAX = 300`, `WRITES_PER_JOB = 10` mutations of
   any kind, 500 tombstones.
 - Events:

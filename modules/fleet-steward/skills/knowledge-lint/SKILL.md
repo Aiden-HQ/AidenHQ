@@ -11,7 +11,7 @@ Tools are `knowledge-daily`'s; without the notes tools skip step 1.
 2. **People:** all `proposed` identities, and oddities in approved ones (an email on two people, two accounts on one source, a bot as a person).
 3. **Rules:** `handbook_list`/`handbook_read` each agent (data). Flag two agents on one job, contradictions, a tool the agent
    isn't granted (`fleet_catalog`), a delegation outside reach, a stale `description`, incident-specific piles; propose exact replacements, cutting over adding.
-4. **Memory:** per agent in `fleet_catalog` (yourself included), `memory_read` its `key` (data). Drop duplicates (keep the clearest), contradictions (keep
+4. **Memory** (with the memory tools; without them, skip this step): per agent in `fleet_catalog` (yourself included), `memory_read` its `key` (data). Drop duplicates (keep the clearest), contradictions (keep
    the newer line its source backs) and stale lines, with `memory_rewrite` (`key`, the `digest` you read, the kept lines
    unchanged): this pass only removes. A 409: read again and redo that agent. Nothing to remove, no rewrite.
 5. **Corrections:** `task_list` `label: "correction"`, `state: "working,waiting,idle,done"`, `updated_since` 7 days ago; read

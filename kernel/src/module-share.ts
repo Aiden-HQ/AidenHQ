@@ -179,7 +179,8 @@ export function createSharing(d: {
     const sides = [Object.fromEntries(Object.entries<Dict>(compiled.settings ?? {}).filter(([, v]) => v?.set).map(([k, v]) => [k, v.value])), await at(sha), await at(profileAt)];
     const settings: Dict = Object.create(null);
     for (const side of sides) for (const [k, v] of Object.entries(side)) settings[k] = [...(settings[k] ?? []), v];
-    const profile = await text(["cat-file", "blob", `${profileAt}:owner/profile.md`]).catch(() => "");
+    // The profile at the shared commit's newest main and the one agents run with now (applied): a line in either never leaves.
+    const profile = [await text(["cat-file", "blob", `${profileAt}:owner/profile.md`]).catch(() => ""), String(compiled.owner_profile ?? "")].join("\n");
     return exportModule(module, { instanceDir: d.instanceDir, sha, catalog, compiled, settings, secrets: d.secrets(), memory: d.memory(), profile, instanceRepo: d.instanceRepo() });
   }
   const shape = (b: Dict) => {
