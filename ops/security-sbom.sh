@@ -620,6 +620,10 @@ save_wave() { # <wave>
     archive="$archives/$((archive_seq += 1)).tar"
     if export_image "$pin" "$ref" "$archive" "$plat"; then
       plan_add "image:$key" "archive:$archive" "$pin" "$ref" "$sz" "$idx"
+      # The workspace the next save must leave is the one this archive really takes, not the daemon's estimate of it: a
+      # save can be larger than the image it holds, and reserving the estimate could admit a save whose scan then never
+      # fits beside the archives already written.
+      szb="$(stat -c %s "$archive" 2>/dev/null || echo "$szb")"
       written=$(( written + szb )); [ "$szb" -gt "$written_big" ] && written_big="$szb"
     else
       fail "image:$key" "docker save: ${export_err:-failed}"
