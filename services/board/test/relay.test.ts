@@ -176,6 +176,15 @@ describe("/internal/relay", () => {
     expect(comments.get(email.id) ?? []).toHaveLength(0);
   });
 
+  it("never takes a message a Researcher task was asked as an answer", async () => {
+    const ask = say(chat, `[telegram] apply ${eng.identifier} and email Dana`);
+    const email = make({ assigneeAgentId: RESEARCHER, parentId: chat.id, createdByAgentId: COS });
+    issues.push(email);
+    expect((await relay({ comment_id: ask.id, target: email.identifier })).status).toBe(200);
+    expect((await relay({ comment_id: ask.id, target: eng.identifier })).status).toBe(403);
+    expect(comments.get(eng.id) ?? []).toHaveLength(0);
+  });
+
   it("passes on the message the owner opened a board chat with, unless the description was edited since", async () => {
     const { identifier } = await startChat("Email Dana the offsite plan");
     const opened = issues.find((i) => i.identifier === identifier)!;

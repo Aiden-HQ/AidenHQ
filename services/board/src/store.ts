@@ -201,6 +201,10 @@ export class Store {
     return (this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
   }
 
+  hasMetaPrefix(prefix: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM meta WHERE substr(key, 1, ?) = ? LIMIT 1").get(prefix.length, prefix);
+  }
+
   setMeta(key: string, value: string): void {
     this.db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
   }
