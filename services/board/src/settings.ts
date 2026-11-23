@@ -253,7 +253,7 @@ export interface ConnectionRow {
   setup: string | null;
   probe: Probe | null;
   signIn: SignIn | null;
-  google?: { accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[]; error?: string; client_type?: "desktop" | "web" } | null;
+  google?: { accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[]; error?: string; client?: boolean } | null;
 }
 
 export interface SignIn {
@@ -273,7 +273,7 @@ export function connectionsView(input: {
   catalog: CatalogEntry[];
   probes: Record<string, Probe>;
   signIns: Record<string, SignIn | null | undefined>;
-  google: { accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[]; error?: string; client_type?: "desktop" | "web" } | null | undefined;
+  google: { accounts: { email: string; primary: boolean; state: string; since: string; detail?: string }[]; error?: string; client?: boolean } | null | undefined;
   sources: { source: string; last_ok: string | null; failing: boolean }[] | null;
 }) {
   const c = input.compiled ?? {};

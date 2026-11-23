@@ -2,7 +2,8 @@
 //   node web/dev/mock-api.ts & npm run dev:web     (vite proxies /api to :3120)
 // Neutral sample data only. Writes answer ok and change nothing. GET /__mock?welcome=1|0 shows or hides the first-run wizard;
 // GET /__mock?empty=1 empties every list (empty states); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
-// answers task search with keyword hits only, or fails it (its degraded notes).
+// answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
+// ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`.
 import { createServer } from "node:http";
 
 const port = Number(process.env.PORT ?? 3120);
@@ -22,7 +23,7 @@ const MODEL_CATALOG = ([
   ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
   ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
 ] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, out: o, tools: !!tools, reasoning: !!reasoning }));
-const mock = { welcome: false, empty: false, slow: 0, search: "ok" };
+const mock = { welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
@@ -266,10 +267,26 @@ const explanation = (id: string) => ({
 });
 
 const welcome = () => ({ finished: !mock.welcome, modelReady: true, recoveryKeyWaiting: mock.welcome, wizard: ["google", "telegram"] });
+const googleFlow = () => ({
+  module: "google", order: 40, title: "Google", why: "Aiden reads your calendar, Drive and Gmail (read-only) to brief you and follow up.", effort: "about 5 minutes, in the Google Cloud console",
+  secrets: ["google_client_id", "google_client_secret"], connect_url: "/google/connect",
+  console_scopes: ["https://www.googleapis.com/auth/calendar.events.readonly", "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/gmail.readonly"],
+  steps: "AidenHQ needs **one Google app per Workspace**: the app is what Google shows when you approve access. Pick the way that fits you; only its steps show.",
+  ways: [
+    { id: "organisation", title: "Use your organisation's app", detail: "Your organisation already runs one. Pick it from the list and there is nothing to make.", effort: "about a minute", organisation: true },
+    { id: "colleague", title: "A colleague already made one", detail: "Ask them for the Client ID and Client secret, then enter them here.", effort: "about a minute", paste: true, steps: "1. Ask your colleague for the app's **Client ID** and **Client secret** (a **Desktop app** client).\n2. Enter both under **Paste the details**, then press **Connect**." },
+    { id: "create", title: "Create one", detail: "A Google Workspace address. About 5 minutes in the Google Cloud console.", paste: true, steps: "1. [Create a project](https://console.cloud.google.com/projectcreate) named `AidenHQ`.\n2. On [Data access](https://console.cloud.google.com/auth/scopes) add these scopes:\n   {scopes}\n3. Create a **Desktop app** client and enter its ID and secret under **Paste the details**." },
+    { id: "personal", title: "Personal Gmail", detail: "A gmail.com address. One extra step so sign-in does not expire every 7 days.", paste: true, domains: ["gmail.com", "googlemail.com"], steps: "1. As Create one, with audience **External**.\n2. On [Audience](https://console.cloud.google.com/auth/audience) press **Publish app**.\n3. Google then shows **Google hasn't verified this app**: press **Advanced**, then **Go to AidenHQ (unsafe)**." },
+  ],
+  fields: [
+    { secret: "google_client_id", label: "Google client ID", pattern: "^[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com$", help: "Ends in .apps.googleusercontent.com." },
+    { secret: "google_client_secret", label: "Google client secret", pattern: "^GOCSPX-[A-Za-z0-9_-]{20,60}$", help: "Starts with GOCSPX-." },
+  ],
+});
 const flows = () => ({
   board_url: "https://board.example.com", named: true,
   flows: [
-    { module: "google", order: 1, title: "Connect Google", why: "So agents can read your calendar and draft email.", effort: "2 minutes", wizard: true, steps: "1. Click **Connect**.\n2. Pick your account and allow access.", signin: "google", present: {}, signedIn: false, paired: false, done: false, dismissed: false },
+    { ...googleFlow(), present: { google_client_id: false, google_client_secret: false }, signedIn: false, paired: false, done: false, dismissed: false },
     { module: "telegram", order: 2, title: "Talk to Aiden on Telegram", why: "Reach Aiden from your phone and approve with one tap.", effort: "3 minutes", wizard: true, steps: "1. Open @BotFather and create a bot.\n2. Paste its token below.", fields: [{ secret: "telegram_bot_token", label: "Bot token", pattern: "^\\d+:[\\w-]+$" }], present: { telegram_bot_token: false }, signedIn: false, paired: false, done: false, dismissed: false },
   ],
 });
@@ -341,11 +358,11 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/model-catalog": return [200, { models: MODEL_CATALOG }];
     case "/api/reviews/available": return [200, { repos: [{ repo: "acme/payments", private: true }, { repo: "acme/web", private: true }, { repo: "acme/docs", private: false }] }];
     case "/api/reviews/catalog": return [200, catalog()];
-    case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true }, googleConnect: true, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];
+    case "/api/session": return [200, { mode: "lan", account: { id: "u1", email: mock.email, name: "Alex", role: "admin", owner: true }, signInConnect: true, adminUrl: "http://127.0.0.1:3120" }];
     case "/api/board": return [200, board()];
     case "/api/search": return search(url.searchParams.get("q") ?? "", url.searchParams.get("after"));
     case "/api/welcome": return [200, welcome()];
-    case "/api/organisations": return [200, { organisations: [], suggested: null, chosen: null }];
+    case "/api/organisations": return [200, mock.org ? { organisations: [{ id: "example", name: "Example Inc", domains: ["example.com"], connections: ["google", "github"] }], suggested: mock.email.endsWith("@example.com") ? "example" : null, chosen: null, applied: {} } : { organisations: [], suggested: null, chosen: null, applied: {} }];
     case "/api/setup-flows": return [200, flows()];
     case "/api/chats": return [200, { chats: chatRows(), agents: [{ key: "aiden", name: "Aiden", front: true }, ...roster.slice(1).map((a) => ({ key: a.key, name: a.name }))] }];
     case "/api/lane": return [200, { agents: [] }];
@@ -417,7 +434,8 @@ function route(method: string, url: URL): [number, unknown] {
 createServer((req, res) => {
   const url = new URL(req.url!, "http://x");
   if (url.pathname === "/__mock") {
-    for (const k of ["welcome", "empty"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
+    for (const k of ["welcome", "empty", "org"] as const) if (url.searchParams.has(k)) mock[k] = url.searchParams.get(k) === "1";
+    if (url.searchParams.has("email")) mock.email = url.searchParams.get("email") ?? mock.email;
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
     if (url.searchParams.has("search")) mock.search = url.searchParams.get("search") ?? "ok";
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(mock));

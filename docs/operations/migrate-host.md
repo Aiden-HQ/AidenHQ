@@ -376,8 +376,8 @@ On the new host:
 ## 7. Move the tailnet names
 
 The tailnet stays the same; only nodes change. Moving the name keeps every URL that embeds it working: Paperclip's
-public URL, the board's address on your devices, Google's OAuth redirect (`https://<board host>/google/callback`), the
-Telegram task links and the app links people have.
+public URL, the board's address on your devices, the Telegram
+task links and the app links people have.
 
 1. On the old host:
 

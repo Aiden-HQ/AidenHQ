@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
 import { HttpStatusError, SignInRequired, api, type AdvancedFlowView, type SetupChoice, type SetupFlowView } from "./api";
+import { OrganisationPicker } from "./Organisation";
 import { ConnectButton } from "./Connect";
 import { forgetFlows } from "./SetupButton";
 import { useEvents } from "./events";
@@ -75,19 +76,38 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
   // The organisation the owner chose fills this module's client: its app-making steps are done, unless the owner wants their own.
   const [org, setOrg] = useState<string | null>(null);
   const [ownApp, setOwnApp] = useState(false);
+  // A flow with ways: the organisation way is offered only where the catalog lists an organisation for this module, and the way
+  // the owner's email suggests (their organisation, or an address domain a way names) is open from the start.
+  const [orgListed, setOrgListed] = useState(false);
+  const [suggested, setSuggested] = useState<string | null>(null);
+  const [wayId, setWayId] = useState<string | null>(null);
+  const allWays = flow.ways;
   useEffect(() => {
-    api.organisations().then((o) => {
-      const c = o.organisations.find((x) => x.id === o.chosen);
-      setOrg(c?.connections.includes(flow.module) ? c.name : null);
-    }, () => setOrg(null));
-  }, [flow.module]);
+    void Promise.all([api.organisations().catch(() => null), allWays ? api.session().catch(() => null) : null]).then(([o, s]) => {
+      const mine = o?.organisations.filter((x) => x.connections.includes(flow.module)) ?? [];
+      // Whose app this module's client is now: the organisation applied to it, not the global pick (a pasted client clears it).
+      setOrg(mine.find((x) => x.id === o?.applied[flow.module])?.name ?? null);
+      setOrgListed(mine.length > 0);
+      const domain = s?.account?.email.split("@")[1]?.toLowerCase();
+      const pick = (mine.some((x) => x.id === o?.suggested) ? allWays?.find((w) => w.organisation)?.id : undefined) ?? allWays?.find((w) => domain && w.domains?.includes(domain))?.id ?? null;
+      setSuggested(pick);
+      setWayId((cur) => cur ?? pick);
+    });
+  }, [flow.module, allWays]);
+  const ways = allWays?.filter((w) => !w.organisation || orgListed);
+  const way = ways?.find((w) => w.id === wayId);
   const viaOrg = org !== null && !ownApp && fields.length > 0 && secretsDone;
+  const fill = (text: string) =>
+    text
+      .split("{board_url}").join(board.url)
+      .split("{redirect_url}").join(flow.redirect_url ?? "")
+      .split("{scopes}").join((flow.console_scopes ?? []).map((s) => `\`${s}\``).join("\n   "));
   const later = (
     <button className="btn" onClick={() => api.setupDismiss(flow.module).then(onDone, fail)}>
       Skip this step
     </button>
   );
-  const head = <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={flow.effort} admin={flow.admin} />} />;
+  const head = <PageHeader title={flow.title} sub={flow.why} status={viaOrg ? <Effort effort="about a minute" /> : <Effort effort={way?.effort ?? flow.effort} admin={flow.admin} />} />;
 
   const connect = flow.signin ? `/${flow.signin}/connect` : flow.connect_url;
   let n = 1;
@@ -103,9 +123,33 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
               Use my own app instead
             </button>
           </Step>
+        ) : ways ? (
+          <Step n={n++} title="Choose one" state="open">
+            <Steps text={fill(flow.steps)} />
+            <div className="setup-options" role="radiogroup" aria-label="How to get it">
+              {ways.map((w) => (
+                <label key={w.id} className={`setup-option${w.id === wayId ? " on" : ""}`}>
+                  <input type="radio" name={`${flow.module}-way`} checked={w.id === wayId} onChange={() => setWayId(w.id)} />
+                  <span>
+                    <strong>
+                      {w.title}
+                      {w.id === suggested && <em className="org-match">Matches your email</em>}
+                    </strong>
+                    <small>{w.detail}</small>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {way && (
+              <div className="setup-way" key={way.id}>
+                {way.organisation && <OrganisationPicker bare module={flow.module} onApplied={() => void reload()} />}
+                {way.steps && <Steps text={fill(way.steps)} />}
+              </div>
+            )}
+          </Step>
         ) : (
           <Step n={n++} title="Instructions" state="open">
-            <Steps text={flow.steps.split("{board_url}").join(board.url).split("{redirect_url}").join(flow.redirect_url ?? "")} />
+            <Steps text={fill(flow.steps)} />
             {flow.console_url && (
               <a className="btn" href={flow.console_url} target="_blank" rel="noreferrer">
                 Open {flow.title} ↗
@@ -119,7 +163,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
               <Choose flow={flow} choose={flow.choose} picked={picked} reload={reload} fail={fail} />
             </Step>
           )}
-          {fields.length > 0 && !viaOrg && (
+          {fields.length > 0 && !viaOrg && (ways ? way?.paste : true) && (
             <Step n={n++} title="Paste the details" state={secretsDone ? "done" : "open"}>
               <SecretFields module={flow.module} fields={fields} present={flow.present} done={secretsDone} elsewhere={flow.done} reload={reload} fail={fail} onSaved={setSavedRestart} />
             </Step>
@@ -138,7 +182,7 @@ function FlowBody({ flow, change, board, reload, onDone, onSignIn }: { flow: Set
                   <a className="btn primary" href={connect}>Connect {flow.title}</a>
                 )
               ) : (
-                <p className="setup-hint">{picked ? "Save the details above first; then connect here and allow access." : "Choose above first; then connect here and allow access."}</p>
+                <p className="setup-hint">{!picked ? "Choose above first; then connect here and allow access." : ways && !way?.paste ? (way ? "Finish the step on the left first; then connect here and allow access." : "Choose one of the options first; then connect here and allow access.") : "Save the details above first; then connect here and allow access."}</p>
               )}
             </Step>
           )}

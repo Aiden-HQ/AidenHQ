@@ -24,17 +24,15 @@ describe("reconnect routes", () => {
   const base = { paperclip: {} as Paperclip, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", google, session };
   const local = createApp({ ...base, allowedHosts: ["localhost:3121", "127.0.0.1:3121", "board.example.ts.net"], mode: "lan" });
   const lan = createApp({ ...base, allowedHosts: ["aidenhq.local"], mode: "lan", lan: { url: "http://aidenhq.local" } });
-  // A person's VM (ops/setup.sh): the board at its https tailnet address, behind tailscale serve.
-  const tailnet = createApp({ ...base, allowedHosts: ["alice.tail1234.ts.net"], mode: "lan", lan: { url: "https://alice.tail1234.ts.net", googleConnect: true } });
   let localBase = "";
   let lanBase = "";
   beforeAll(async () => {
-    for (const s of [local, lan, tailnet]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    for (const s of [local, lan]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
     localBase = `http://127.0.0.1:${(local.address() as AddressInfo).port}`;
     lanBase = `http://127.0.0.1:${(lan.address() as AddressInfo).port}`;
   });
   afterAll(() => {
-    for (const s of [local, lan, tailnet]) s.close();
+    for (const s of [local, lan]) s.close();
   });
   const get = async (url: string, host: string, owner = true) => {
     const { request } = await import("node:http");
@@ -49,9 +47,12 @@ describe("reconnect routes", () => {
     });
   };
 
-  it("refuses away from the laptop's loopback address", async () => {
-    expect((await get(`${localBase}/google/connect?account=me%40work.com`, "board.example.ts.net")).status).toBe(403);
-    expect((await get(`${lanBase}/google/connect?account=me%40work.com`, "aidenhq.local")).status).toBe(403);
+  it("away from the laptop's loopback address, Connect opens the dialog that takes the pasted address; with go it starts at Google", async () => {
+    const away = await get(`${lanBase}/google/connect?account=me%40work.com`, "aidenhq.local");
+    expect(away).toMatchObject({ status: 302, location: "/#/settings/connections?connect=google_workspace&account=me%40work.com" });
+    const go = await get(`${lanBase}/google/connect?go=1`, "aidenhq.local");
+    expect(go.location).toContain("accounts.google.com");
+    expect(seen.at(-1)).toMatchObject({ path: "/auth/start", body: { redirect_uri: "http://localhost:3121/google/callback" } });
     expect((await get(`${localBase}/google/connect`, "evil.example")).status).toBe(403);
   });
 

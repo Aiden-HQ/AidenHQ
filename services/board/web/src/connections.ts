@@ -44,8 +44,8 @@ export interface SignIn {
 export interface GoogleState {
   accounts: { email: string; primary: boolean; state: string; since: string; detail?: string; missing?: string[] }[];
   error?: string;
-  /** A Desktop client returns only to loopback: its Connect is pasted back (GoogleConnect in Connect.tsx). */
-  client_type?: "desktop" | "web";
+  /** Whether a Google app (OAuth client) is set up; false sends the owner to its setup. */
+  client?: boolean;
 }
 export interface ConnectionRow {
   name: string;
@@ -84,12 +84,6 @@ export interface Verdict {
   hint?: string;
 }
 
-/**
- * Why a Google Reconnect isn't offered here: the instance's Google client is a Web client, which Google sends back only to
- * the board's https address. A Desktop client (an organisation's, or one made in the Google setup) signs in from anywhere.
- */
-export const GOOGLE_WEB_HINT = "This Google client can only sign in from the board's https address. Switch to a Desktop client (pick your organisation, or Google's setup in Settings → Connections) and Reconnect works from here.";
-
 /** What a built-in connection is for, in the owner's words (it runs inside each agent run: nothing to check). */
 const BUILT_IN: Record<string, string> = { paperclip_tasks: "How agents read and update their tasks, delegate, and ask for approvals." };
 
@@ -102,20 +96,20 @@ const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 
  * One row's status. `canConnect`: this browser can start that sign-in (at the board's https address, or on the host's
  * loopback address; the board says which, per sign-in kind).
  */
-export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boolean; google: boolean }): Verdict {
-  const connect = (label: string, href: string, can: boolean): Pick<Verdict, "action" | "hint"> => (can ? { action: { label, href } } : { hint: GOOGLE_WEB_HINT });
+export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boolean }): Verdict {
+  const connect = (label: string, href: string, can = true): Pick<Verdict, "action"> => (can ? { action: { label, href } } : {});
 
   // Google: each account's own sign-in comes first; the service's health after.
   if (row.google) {
     const g = row.google;
-    // A Desktop client signs in from any address (pasted back); a Web client only on the board's https address or loopback.
-    canConnect = { ...canConnect, google: canConnect.google || g.client_type === "desktop" };
-    if (!g.accounts.length) return { status: "signed_out", reason: g.error ? `No Google account connected (${g.error}).` : "No Google account connected.", ...connect("Connect Google", "/google/connect", canConnect.google) };
+    // No Google app yet (one per Workspace): setting one up comes first; Connect would fail without a client.
+    if (!g.accounts.length && g.client === false) return { status: "not_configured", reason: "Google needs an app first: one per Workspace." };
+    if (!g.accounts.length) return { status: "signed_out", reason: g.error ? `No Google account connected (${g.error}).` : "No Google account connected.", ...connect("Connect Google", "/google/connect") };
     const expired = g.accounts.filter((a) => a.state === "expired" || a.state === "error");
-    if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`, canConnect.google) };
+    if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`) };
     // Connected before Google writes: reads work; one reconnect grants calendar changes and Gmail drafts, sends and labels.
     const short = g.accounts.filter((a) => a.missing?.length);
-    if (short.length) return { status: "signed_out", reason: `${short.map((a) => a.email).join(", ")} needs new access: reconnect once so agents can change your calendar and send email (each change reviewed first).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(short[0]!.email)}`, canConnect.google) };
+    if (short.length) return { status: "signed_out", reason: `${short.map((a) => a.email).join(", ")} needs new access: reconnect once so agents can change your calendar and send email (each change reviewed first).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(short[0]!.email)}`) };
   }
 
   // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): its Connect asks for any per-install value first (its
@@ -146,5 +140,5 @@ export function sourceStatus(s: SourceRow): Verdict {
 }
 
 /** Whether anything on the Connections page needs the owner (the gear's dot). */
-export const needsAttention = (d: ConnectionsData, can: { signIn: boolean; google: boolean }) =>
+export const needsAttention = (d: ConnectionsData, can: { signIn: boolean }) =>
   d.connections.some((r) => ["signed_out", "error"].includes(connectionStatus(r, can).status)) || d.sources.some((s) => sourceStatus(s).status === "error");

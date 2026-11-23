@@ -5,12 +5,14 @@ requires:
   - board # its guided setup
 # Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
 contributes:
-  # Your own Google client (a Desktop app), pasted on the board (#/setup/google). Connect Google is the board's own route
-  # (/google/connect), not a board.signins entry, so the flow names it as `connect_url`; the board shows its button and marks
-  # the flow done once an account is connected. A Desktop client takes a loopback redirect only: Connect runs on the board's
-  # loopback address, or the person pastes the redirected address back. The board's address never matters, so this works
-  # on a bare-IP board too. An organisation that runs an Internal client lists it in the catalog instead
-  # (modules/marketplace.json organisations): its client ID and secret fill the two fields, and these steps are skipped.
+  # AidenHQ needs one Google app (a Desktop-app OAuth client) per Workspace, pasted on the board (#/setup/google): the owner uses
+  # their organisation's (modules/marketplace.json organisations: its client ID and secret fill the two fields), takes a colleague's,
+  # or creates one (Workspace, or a personal Gmail with its own steps). Connect Google is the board's own route (/google/connect),
+  # not a board.signins entry, so the flow names it as `connect_url`; the board shows its button and marks the flow done once an
+  # account is connected. A Desktop client takes a loopback redirect only: Connect runs on the board's loopback address, or the
+  # person pastes the redirected address back. The board's address never matters, so this works on a bare-IP board too.
+  # `console_scopes` is the one place the scopes the steps ask for are listed (keep it equal to SCOPES in
+  # connections/google-workspace-mcp/src/google.ts).
   board.setup_flows:
     - order: 40
       wizard: false
@@ -18,24 +20,55 @@ contributes:
       why: "Aiden reads your calendar, Drive and Gmail to brief you and follow up, and agents can change your calendar and send email as you, each change reviewed first."
       effort: "about 5 minutes, in the Google Cloud console"
       secrets: [google_client_id, google_client_secret]
-      console_url: https://console.cloud.google.com/auth/clients/create
       connect_url: /google/connect
+      console_scopes:
+        - https://www.googleapis.com/auth/calendar.events
+        - https://www.googleapis.com/auth/drive.readonly
+        - https://www.googleapis.com/auth/gmail.modify
       steps: |
-        **Before you start: which kind of Google account?**
-        - **Google Workspace (a company address): choose Internal.** Only people in your organisation can sign in, Google needs no review and sign-ins never expire. Your Workspace admin may need to allow it.
-        - **Personal Gmail: choose External.** The app stays in *Testing*: only the test users you add can sign in, and **Google ends each sign-in after 7 days**, so you would reconnect weekly. Press **Publish app** on the Audience page to move it to *In production* and stop that. Google then shows an "unverified app" warning, which you accept once (Advanced, Go to app); you do not need to submit it for verification for your own use.
-
-        1. [Create a project](https://console.cloud.google.com/projectcreate) (any name, for example `AidenHQ`).
-        2. Turn on three APIs, pressing Enable on each: [Calendar](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com), [Drive](https://console.cloud.google.com/apis/library/drive.googleapis.com), [Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
-        3. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) and press **Get started**. App name `AidenHQ`, your email as support email. Audience: **Internal** or **External** (above). Your email again as contact, accept the policy, **Create**.
-        4. On [Data access](https://console.cloud.google.com/auth/scopes) press **Add or remove scopes**, paste these three (one per line) into *Manually add scopes*, **Add to table**, **Update**, **Save**:
-        `https://www.googleapis.com/auth/calendar.events`
-        `https://www.googleapis.com/auth/drive.readonly`
-        `https://www.googleapis.com/auth/gmail.modify`
-        5. External only: on [Audience](https://console.cloud.google.com/auth/audience) add your own address under **Test users**, then press **Publish app** to avoid the 7-day expiry.
-        6. Open [Clients](https://console.cloud.google.com/auth/clients/create) and create a client of type **Desktop app** (not Web application; it needs no redirect address).
-        7. Copy the **Client ID** and **Client secret** it shows, paste them below and save.
-        8. Press **Connect** and approve access. If the browser then shows a page that does not load, that is expected: copy its address and paste it back on the board.
+        AidenHQ needs **one Google app per Workspace**: the app is what Google shows when you approve access. Pick the way that fits you; only its steps show.
+      ways:
+        - id: organisation
+          title: Use your organisation's app
+          detail: "Your organisation already runs one. Pick it from the list and there is nothing to make."
+          effort: about a minute
+          organisation: true
+        - id: colleague
+          title: A colleague already made one
+          detail: "Ask them for the Client ID and Client secret, then enter them here."
+          effort: about a minute
+          paste: true
+          steps: |
+            1. Ask your colleague (or your Workspace admin) for the Google app's **Client ID** and **Client secret**. They find both in the [Google Cloud console, Clients](https://console.cloud.google.com/auth/clients): open the client and copy them.
+            2. The client's type must be **Desktop app**.
+            3. Enter both under **Paste the details**, then press **Connect**.
+        - id: create
+          title: Create one
+          detail: "A Google Workspace address (you@company.com). About 5 minutes in the Google Cloud console."
+          paste: true
+          steps: |
+            1. [Create a project](https://console.cloud.google.com/projectcreate) named `AidenHQ`, then **Create**.
+            2. Turn on three APIs, pressing **Enable** on each: [Calendar](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com), [Drive](https://console.cloud.google.com/apis/library/drive.googleapis.com), [Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
+            3. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) and press **Get started**. App name `AidenHQ`, your email as the support email. Audience: **Internal** (only your organisation can sign in, Google needs no review, sign-ins never expire; your Workspace admin may need to allow it). Your email again as the contact, accept the policy, **Create**.
+            4. On [Data access](https://console.cloud.google.com/auth/scopes) press **Add or remove scopes**, paste these into *Manually add scopes* (one per line), then **Add to table**, **Update**, **Save**:
+               {scopes}
+            5. Open [Clients](https://console.cloud.google.com/auth/clients/create): type **Desktop app**, name `AidenHQ`, **Create**.
+            6. Copy the **Client ID** and **Client secret** it shows and enter them under **Paste the details**, then press **Connect**.
+        - id: personal
+          title: Personal Gmail
+          detail: "A gmail.com address. One extra step so sign-in does not expire every 7 days."
+          paste: true
+          domains: [gmail.com, googlemail.com]
+          steps: |
+            1. [Create a project](https://console.cloud.google.com/projectcreate) named `AidenHQ`, then **Create**.
+            2. Turn on three APIs, pressing **Enable** on each: [Calendar](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com), [Drive](https://console.cloud.google.com/apis/library/drive.googleapis.com), [Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
+            3. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) and press **Get started**. App name `AidenHQ`, your Gmail address as the support email. Audience: **External**. Your address again as the contact, accept the policy, **Create**.
+            4. On [Data access](https://console.cloud.google.com/auth/scopes) press **Add or remove scopes**, paste these into *Manually add scopes* (one per line), then **Add to table**, **Update**, **Save**:
+               {scopes}
+            5. On [Audience](https://console.cloud.google.com/auth/audience) add your Gmail address under **Test users**, then press **Publish app** and confirm. Publishing keeps your sign-in from expiring every 7 days. You do not need to submit the app for verification.
+            6. Open [Clients](https://console.cloud.google.com/auth/clients/create): type **Desktop app**, name `AidenHQ`, **Create**.
+            7. Copy the **Client ID** and **Client secret** it shows and enter them under **Paste the details**, then press **Connect**.
+            8. Google then shows **Google hasn't verified this app**. That is expected for your own app: press **Advanced**, then **Go to AidenHQ (unsafe)**, and allow access. You see this once.
   warehouse.sources:
     - schema: src_docs
       about: "src_docs.docs (Drive metadata + a cheap summary: a pointer, never evidence; read the doc live before acting) / changes"
@@ -44,7 +77,7 @@ contributes:
         - { name: changes, time: observed_at, project: scope }
 connections:
   google_workspace:
-    setup: "Follow the steps at #/setup/google on the board (a Desktop-app client), then press Connect Google (from the board's loopback address, http://127.0.0.1:3121, or paste the redirected address back). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
+    setup: "Follow the steps at #/setup/google on the board (one Desktop-app client per Workspace), then press Connect Google (from the board's loopback address, http://127.0.0.1:3121, or paste the redirected address back). By hand: `scripts/google-auth.sh <client.json>` once per account (`--email`, `--primary`)."
     guide: "Google Drive, Docs, Calendar and Gmail directly: a document's full current text, events, threads; and, when granted, calendar changes and Gmail drafts, sends and labels as the owner. Glean finds Drive documents faster; read them here when you need the exact current text."
     url: http://google-workspace-mcp:8081/mcp
     auth: google_service_key
@@ -98,8 +131,6 @@ services:
         MCP_TOKEN_FILE: ${secrets.google_service_key}
         # The board's sign-in endpoints: state per account, and reconnecting an expired one.
         GOOGLE_AUTH_TOKEN_FILE: ${secrets.google_auth_token}
-        # The board's https address: Connect there returns there (ops/setup.sh sets BOARD_LAN_URL).
-        BOARD_URL: "${BOARD_LAN_URL:-}"
         CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
         # Shared sources (src_docs): its warehouse login, and the model credential for doc summaries.
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_docs_password}

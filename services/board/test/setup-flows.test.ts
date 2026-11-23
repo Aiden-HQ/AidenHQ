@@ -63,7 +63,7 @@ describe("setup flows", () => {
     kernel = await fakeKernel();
     const accounts = createKernelAuth({ kernel: { url: kernel.url, token: BOARD_KEY }, adminUrl: "http://localhost:3120" });
     const paperclip = new Paperclip("http://paperclip", "00000000-0000-4000-8000-000000000001", "k", (async () => new Response("[]")) as unknown as typeof fetch);
-    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan", lan: { url: "https://192.0.2.10", googleConnect: true }, google, signIns: [
+    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121"], mode: "lan", lan: { url: "https://192.0.2.10" }, google, signIns: [
         { id: "working", label: "Working", connect: "/working/connect", callback: "/working/callback", missing: "m", stopped: "s", fields: [], auth: { status: async () => ({ state: "ok" }), scopes: async () => undefined, offers: async () => false } as never },
         { id: "site", label: "Site", connect: "/site/connect", callback: "/site/callback", missing: "m", stopped: "s", fields: [{ secret: "site_url", label: "Site address", pattern: "^https://.+$" }], auth: { status: async () => ({ state: "missing", configured: false }), scopes: async () => undefined, offers: async () => false } as never },
         ...["plain", "hub"].map((id) => ({ id, label: id, connect: `/${id}/connect`, callback: `/${id}/callback`, missing: "m", stopped: "s", fields: [], auth: { status: async () => ({ state: "missing" }), scopes: async () => null, offers: async () => false, start: async () => ({ url: `https://${id}.example.com/authorize` }), finish: async () => {} } as never })),
@@ -135,7 +135,7 @@ describe("setup flows", () => {
     googleOk = false;
   });
 
-  it("{board_url} is where the connect path sends the sign-in back, and a bare-IP board still shows Google's steps", async () => {
+  it("{board_url} is the board's own address, and a bare-IP board still shows Google's steps and Connect", async () => {
     const r = (await admin("GET", "/api/setup-flows")).json;
     expect(r.board_url).toBe("https://192.0.2.10");
     expect(r.named).toBeUndefined();
@@ -143,7 +143,7 @@ describe("setup flows", () => {
     expect(docs).toMatchObject({ connect_url: "/google/connect", steps: expect.stringContaining("callback") });
     expect(docs.needs_name).toBeUndefined();
     expect((await admin("GET", "/google/connect")).status).toBe(302);
-    expect(googleStarts.at(-1)).toBe(`${r.board_url}/google/callback`);
+    expect(googleStarts.at(-1)).toBe("http://localhost:3121/google/callback"); // a Desktop client returns to loopback, never the board's address
   });
 
   it("Connect opens the setup flow while its secrets are missing, then signs in", async () => {

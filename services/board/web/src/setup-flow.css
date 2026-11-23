@@ -36,6 +36,7 @@
 .setup-option span { display: grid; gap: 3px; }
 .setup-option strong { font-size: var(--text-body); }
 .setup-option small { font-size: var(--text-sm); color: var(--muted); line-height: 1.5; }
+.setup-way { display: grid; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
 .setup-hint { margin: 0; font-size: var(--text-sm); color: var(--muted); }
 .setup-card > .btn { justify-self: start; }
 .setup-help, .setup-bad { font-size: var(--text-xs); font-weight: 400; }
@@ -119,6 +120,7 @@
 
 /* Your organisation (Organisation.tsx), on Settings > Connections and in the wizard. */
 
+.org-bare { display: grid; gap: 12px; }
 .org-head { display: grid; gap: 4px; }
 .org-head h2 { margin: 0; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; }
 .org-head p { margin: 0; font-size: var(--text-base); color: var(--muted); }
