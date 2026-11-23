@@ -1,6 +1,6 @@
-// Tool output to raw findings: one SARIF reader (gitleaks, osv-scanner, govulncheck, zizmor, ruff, fallow, …) and a small
-// adapter each for the tools with their own format (knip, jscpd, vulture, scc) and for plain `path:line:col: message` lines
-// (oxlint, squawk). A raw finding is what review.ts `clean` takes; tools.ts places it, tags its option and lens and caps
+// Tool output to raw findings: one SARIF reader (govulncheck, ruff, fallow, …) and a small
+// adapter each for the tools with their own format (knip, vulture, scc) and for plain `path:line:col: message` lines
+// (squawk). A raw finding is what review.ts `clean` takes; tools.ts places it, tags its option and lens and caps
 // it. Every adapter throws on output that isn't its format (that is a failed tool, never a clean one).
 import type { Option } from "./catalog.ts";
 
@@ -72,16 +72,6 @@ export function readKnip(text: string): Raw[] {
   return out;
 }
 
-/** jscpd's JSON report: { duplicates: [{ lines, tokens, fragment, firstFile, secondFile }] }; one finding per clone, at its first place. */
-export function readJscpd(text: string, root: string): Raw[] {
-  const doc = JSON.parse(text);
-  if (!doc || !Array.isArray(doc.duplicates)) throw new Error("not jscpd's JSON: no duplicates");
-  return doc.duplicates.map((d: any) => {
-    const [a, b] = [d?.firstFile ?? {}, d?.secondFile ?? {}];
-    return { severity: "nit" as const, path: relPath(a.name, root), line: num(a.start), ...(Number.isInteger(a.end) ? { end_line: a.end } : {}), title: cut(`Duplicated block of ${d?.lines} lines`, 120), why: `The same ${d?.lines} lines (${d?.tokens} tokens) appear in ${relPath(b.name, root)} at lines ${b.start}-${b.end}.`, evidence: cut(d?.fragment, 600), fix_brief: "Extract the shared code into one function or module and call it from both places." };
-  });
-}
-
 /** vulture's lines: `path:line: unused function 'name' (60% confidence)`, `, 4 lines` inside the brackets with sort_by_size.
  * Empty output is no findings; output with no such line isn't vulture's. */
 export function readVulture(text: string): Raw[] {
@@ -106,7 +96,7 @@ export function readScc(text: string): Raw[] {
   }));
 }
 
-/** `path:line:col: message` lines (gcc style; oxlint -f unix, squawk --reporter gcc). `warning:`, `note:` or
+/** `path:line:col: message` lines (gcc style; squawk --reporter gcc). `warning:`, `note:` or
  * a trailing `[Warning/…]` makes a nit; anything else is important. Lines of other shapes beside them are ignored (a summary, a
  * message's own lines); empty output is no findings, output with none of these lines isn't the format. */
 export function readLines(text: string): Raw[] {
@@ -123,6 +113,6 @@ export function readLines(text: string): Raw[] {
 
 /** A tool's stdout read as its option says. Throws when it isn't that format. */
 export function adapt(o: { output: Exclude<Option["output"], "findings">; severity?: "nit" }, text: string, root: string): Raw[] {
-  const raw = o.output === "sarif" ? readSarif(text, root, o.severity) : o.output === "knip" ? readKnip(text) : o.output === "jscpd" ? readJscpd(text, root) : o.output === "vulture" ? readVulture(text) : o.output === "scc" ? readScc(text) : readLines(text);
+  const raw = o.output === "sarif" ? readSarif(text, root, o.severity) : o.output === "knip" ? readKnip(text) : o.output === "vulture" ? readVulture(text) : o.output === "scc" ? readScc(text) : readLines(text);
   return o.severity === "nit" ? raw.map((f) => ({ ...f, severity: "nit" as const })) : raw;
 }

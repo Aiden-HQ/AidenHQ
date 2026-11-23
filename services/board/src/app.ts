@@ -1096,8 +1096,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           if (!asked) assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
           // Once per message, whatever the target (per task for an ask): reserved before posting, released if the post fails.
           // Every delivery also marks its own task, so a message reaches a task at most once whichever path it took.
+          // A message is an ask or an answer, never both: an answer refuses one any task already took (the per-task markers), an ask
+          // refuses one already delivered whole (also what older relays recorded) and writes only its own task's, so one message
+          // may still ask several tasks.
           const keys = [`relayed:${comment_id}:${dest.id}`, ...(asked ? [] : [`relayed:${comment_id}`])];
-          if (keys.some((k) => store.meta(k))) throw new Refused("refused: that message was already relayed");
+          const taken = [...keys, `relayed:${comment_id}`].some((k) => store.meta(k)) || (!asked && store.hasMetaPrefix(`relayed:${comment_id}:`));
+          if (taken) throw new Refused("refused: that message was already relayed");
           for (const k of keys) store.setMeta(k, new Date().toISOString());
           const from: DeliveredFrom = { identifier: source.chat.identifier, commentId: source.comment.id, note: `Written in chat on ${source.chat.identifier}.` };
           let posted: Comment;
