@@ -264,7 +264,7 @@ export function skillOutcome(r: EngineResult, names: string[], idle = new Set<nu
 
 /** Our restate step after a skill run (or Claude Code's own review): its findings in our shape and, after skills, whether each ran. */
 const restate = (prompt: string, sk?: Skill) => `Now restate every finding of that ${sk ? "run" : "review"} in this shape (and any problem you confirm while checking them). Check each one's line in the file at the head with the repo tools first.${sk?.cut !== undefined ? `
-The run was stopped at its time limit during ${sk.invocations[sk.cut]!.split(" ")[0]}: restate what it found until then, without continuing it.` : ""}${sk ? `
+The run was stopped at its time limit during ${sk.invocations[sk.cut]!.split(" ")[0]}: restate what it found until then, without continuing it. That skill "ran" (and is "partial") if it reviewed any code before it was stopped.` : ""}${sk ? `
 Also add "skills" to the JSON: one entry per command run above, in this order: ${sk.invocations.map((v) => v.split(" ")[0]).join(", ")}. Each is {"skill": "<the command>", "ran": true, "partial": false, "why": ""} when it reviewed all the code it was given and finished; "ran": true, "partial": true with a one-line "why" naming what it left out when it reviewed only part of the code it was given or cut its own workflow short (a sampled pass, steps or verifiers not run); or "ran": false with a one-line "why" when it reviewed no code: it stopped or failed, was skipped, asked a question, found no code or change to review, or reported a failed or skipped status.` : ""}
 ${prompt}`;
 
