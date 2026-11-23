@@ -88,8 +88,9 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       const usage = rows("SELECT agent_id AS agent, day, COALESCE(SUM(cost_usd), 0) AS cost_usd, COUNT(*) AS calls, COUNT(cost_usd) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day", from, to);
       // What the spend was on, per day: the five costliest components and subjects (a check run's `code-review:<run>`, a task) of each day,
       // so a spike names its cause (the Fleet Steward's spend check reads them with the totals above).
-      // Settled calls only: a `reserved` call's amount is an estimate and an `unsettled` one the gateway's fail-closed hold, not spend.
-      const settled = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL";
+      // Confirmed spend only: a `reserved` call's amount is an estimate, an `unsettled` one the gateway's fail-closed hold, and a call
+      // that settled with no tokens seen (a stream cut or gone quiet, `upstream_aborted`) was closed at its reservation. A billed call has tokens.
+      const settled = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL AND (input > 0 OR cached > 0 OR output > 0)";
       const spend_days = rows(`SELECT day, SUM(cost_usd) AS cost_usd, COUNT(*) AS priced FROM calls WHERE at >= ? AND at < ? AND ${settled} GROUP BY day ORDER BY day`, from, to);
       const top = (col: string) => rows(`SELECT day, name, cost_usd, calls FROM (SELECT day, ${col} AS name, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls, ROW_NUMBER() OVER (PARTITION BY day ORDER BY SUM(cost_usd) DESC) AS n FROM calls WHERE at >= ? AND at < ? AND ${settled} AND ${col} IS NOT NULL GROUP BY day, ${col}) WHERE n <= 5 ORDER BY day, cost_usd DESC`, from, to);
       return { records: recs, usage, spend_days, spend_components: top("component"), spend_subjects: top("task_subject") };

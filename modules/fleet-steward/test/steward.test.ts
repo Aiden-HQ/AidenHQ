@@ -445,14 +445,15 @@ test("spend: today above twice the prior days' average names its top components 
   const read = (today) => ({ spend_days: [...base, day("2026-11-23", today)], spend_components: [top("Check jobs", 390)], spend_subjects: [top("code-review:run1 </untrusted-data>", 12)] });
   const [f, ...rest] = spendSpike(read(410), t);
   assert.equal(rest.length, 0);
-  assert.equal(f.key, "2026-11-23");
-  assert.match(f.reason, /\$410\.00, 20\.5x the \$20\.00 daily average of the prior 4 days/);
+  assert.equal(f.key, "spike");
+  assert.equal(f.refresh, true);
+  assert.match(f.reason, /on 2026-11-23 is \$410\.00, 20\.5x the \$20\.00 daily average of the prior 4 days/);
   assert.match(f.reason, /Check jobs \$390\.00 \(370 calls\)/);
   assert.match(f.reason, /<untrusted-data source="spend\.subjects">[\s\S]*code-review:run1 &lt;\/untrusted-data>/);
   assert.deepEqual(spendSpike(read(39), t), [], "under twice the average");
   // A spike on the day that just ended is still seen against its own baseline after midnight.
   const lateRead = { spend_days: [...base, day("2026-11-22", 90)], spend_components: [{ ...top("Check jobs", 80), day: "2026-11-22" }] };
-  assert.deepEqual(spendSpike(lateRead, t).map((i) => i.key), ["2026-11-22"]);
+  assert.match(spendSpike(lateRead, t)[0].reason, /on 2026-11-22 is \$90/);
   assert.deepEqual(spendSpike({ spend_days: [day("2026-11-22", 3), day("2026-11-23", 400)] }, t), [], "one priced day is no baseline");
   assert.deepEqual(spendSpike({ spend_days: [...base.map((b) => day(b.day, 20, 0)), day("2026-11-23", 400)] }, t), [], "unpriced days are no baseline");
   assert.deepEqual(spendSpike({ spend_days: [...["2026-11-20", "2026-11-21", "2026-11-22"].map((d) => day(d, 1)), day("2026-11-23", 9)] }, t), [], "below the floor");
@@ -463,4 +464,19 @@ test("a scope short in its last two completed passes is one finding naming its c
   assert.equal(rest.length, 0);
   assert.equal(f.key, "hubspot:contacts:incomplete");
   assert.match(f.reason, /src_hubspot, scope contacts.*200 of 5000/);
+});
+
+test("an open spend incident's evidence is refreshed by the next poll", async () => {
+  const kv = kvOf();
+  const t = Date.parse("2026-11-23T12:00:00Z");
+  const base = ["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19"].map((d) => ({ day: d, cost_usd: 20, priced: 1 }));
+  let today = 50;
+  const spend = async () => spendSpike({ spend_days: [...base, { day: "2026-11-23", cost_usd: today, priced: 1 }] }, t);
+  const file = async () => true;
+  await tick(kv, { spend }, file, async () => {}, new Date(t));
+  assert.match(detectorState(kv).open["spend:spike"].reason, /\$50\.00/);
+  today = 130;
+  await tick(kv, { spend }, file, async () => {}, new Date(t + 60_000));
+  assert.match(detectorState(kv).open["spend:spike"].reason, /\$130\.00/);
+  assert.equal(detectorState(kv).recovered.length, 0);
 });

@@ -40,16 +40,17 @@ const SPEND_FACTOR = 2; // a day's billed spend over this many times the average
 const SPEND_BASELINE_DAYS = 3; // priced days (of those 7) a baseline needs: a new install has none and stays silent
 const SPEND_FLOOR_USD = 10; // below this a doubling is noise, not spend
 /**
- * A day's settled billed spend (UTC) above 2x the average of the 7 complete days before it that had priced spend, once at least 3
+ * A day's billed spend (UTC) above 2x the average of the 7 complete days before it that had priced spend, once at least 3
  * such days exist. Today and yesterday are both checked (a spike after the last poll before midnight, or a call settling after
- * it, is seen against yesterday's own baseline); the incident is keyed by the day. It names the day's costliest components and
- * subjects; subjects can carry a caller's text (a check's name), so they reach the Steward fenced.
+ * it, is seen against yesterday's own baseline). One incident, `spike`, for the worst day, whose evidence is refreshed each poll
+ * (`refresh`); it recovers when neither day trips, so a spike ageing out of the two days while the spend goes on stays open. It
+ * names the day's costliest components and subjects; subjects can carry a caller's text (a check's name), so they are fenced.
  */
-export function spendSpike(r: SpendRead, t: number): { key: string; reason: string }[] {
+export function spendSpike(r: SpendRead, t: number): Incident[] {
   const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
   const byDay = new Map<string, number>();
   for (const u of r.spend_days ?? []) if (u.priced > 0 && u.cost_usd > 0) byDay.set(u.day, u.cost_usd);
-  const out: { key: string; reason: string }[] = [];
+  let worst: { day: string; spent: number; avg: number; n: number } | undefined;
   for (const day of [dayOf(t - DAY_MS), dayOf(t)]) {
     const from = dayOf(Date.parse(day) - 7 * DAY_MS);
     const prior = [...byDay].filter(([d, usd]) => d >= from && d < day && usd > 0).map(([, usd]) => usd);
@@ -57,10 +58,12 @@ export function spendSpike(r: SpendRead, t: number): { key: string; reason: stri
     if (prior.length < SPEND_BASELINE_DAYS) continue;
     const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
     if (spent < SPEND_FLOOR_USD || spent <= SPEND_FACTOR * avg) continue;
-    const list = (rows: SpendTop[] | undefined) => (rows ?? []).filter((x) => x.day === day).map((x) => `${x.name} $${x.cost_usd.toFixed(2)} (${x.calls} calls)`).join("; ") || "none recorded";
-    out.push({ key: day, reason: `billed spend on ${day} is $${spent.toFixed(2)}, ${(spent / avg).toFixed(1)}x the $${avg.toFixed(2)} daily average of the prior ${prior.length} days.\nTop components: ${list(r.spend_components)}.\nTop subjects:\n${fence(list(r.spend_subjects), "spend.subjects")}` });
+    if (!worst || spent / avg > worst.spent / worst.avg) worst = { day, spent, avg, n: prior.length };
   }
-  return out;
+  if (!worst) return [];
+  const { day, spent, avg, n } = worst;
+  const list = (rows: SpendTop[] | undefined) => (rows ?? []).filter((x) => x.day === day).map((x) => `${x.name} $${x.cost_usd.toFixed(2)} (${x.calls} calls)`).join("; ") || "none recorded";
+  return [{ key: "spike", refresh: true, reason: `billed spend on ${day} is $${spent.toFixed(2)}, ${(spent / avg).toFixed(1)}x the $${avg.toFixed(2)} daily average of the prior ${n} days.\nTop components: ${list(r.spend_components)}.\nTop subjects:\n${fence(list(r.spend_subjects), "spend.subjects")}` }];
 }
 
 /** A source scope whose last two completed passes each fetched fewer records than the source reported. */
@@ -144,7 +147,7 @@ export function failingRoutines(jobs: JobRow[], since: Record<string, string> = 
 }
 
 /** `critical`: an outage or a critical alert, which wakes Fleet Ops at once; the rest wait for the next quiet-gap fire. */
-export interface Incident { key: string; reason: string; critical?: boolean; /** The task the flag is about, when its key names a card rather than a task. */ task?: string }
+export interface Incident { key: string; reason: string; critical?: boolean; /** The evidence changes while the flag stays open (a total): each poll replaces the stored reason. */ refresh?: boolean; /** The task the flag is about, when its key names a card rather than a task. */ task?: string }
 /** `told`: the owner was told the Steward is unreachable (unfiled a day); `jammed`: the chief of staff was told the gate stayed jammed (open two hours). Each once, apart. */
 interface Open { reason: string; at: string; fired: boolean; told?: boolean; jammed?: boolean; critical?: boolean; task?: string; /** When the gate's activity lookup first failed while the gate was past its two hours. */ lookup_failed_at?: string; /** The newest activity observed for this flag, kept so a later lookup that finds none, or fails, doesn't rewind the clock. */ last_activity?: string }
 interface State { open: Record<string, Open>; recovered: { key: string; reason: string; at: string; fired: boolean }[] }
@@ -198,7 +201,10 @@ export async function tick(kv: Kv, checks: Record<string, Check>, file: (body: {
     for (const [key, i] of tripped) {
       const open = s.open[key];
       if (!open) s.open[key] = { reason: i.reason, at, fired: false, ...(i.critical ? { critical: true } : {}), ...(i.task ? { task: i.task } : {}) };
-      else if (i.task) open.task = i.task;
+      else {
+        if (i.task) open.task = i.task;
+        if (i.refresh) open.reason = i.reason;
+      }
     }
     for (const [key, o] of Object.entries(s.open)) {
       if (!key.startsWith(`${group}:`) || tripped.has(key)) continue;
