@@ -687,7 +687,6 @@ export function App() {
   // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
   const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
   const local = ["localhost", "127.0.0.1"].includes(location.hostname); // a tunnel to 3121: the loopback sign-ins work
-  const googleConnect = local || !!session?.googleConnect;
   const signInConnect = local || !!session?.signInConnect;
   const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && (board.signIns ?? []).map((s) => s.status).every((c) => !c || !c.configured || c.state !== "expired");
   const openCard = (c: Card) => {
@@ -814,7 +813,7 @@ export function App() {
       {onBoard && !work && <AttentionStrip onSignIn={signInNeeded} />}
 
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
-      <GoogleBanner google={board.google} canReconnect={googleConnect} />
+      <GoogleBanner google={board.google} />
       <SignInBanners board={board} canConnect={signInConnect} />
 
       {onBoard && work && board.incomplete && <Banner tone="warn">Showing the newest 2,000 tasks.</Banner>}
@@ -831,9 +830,9 @@ export function App() {
 
       {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
       {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} card={route.kind === "view" && route.view === "approvals" ? route.card : undefined} />}
-      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} />}
-      {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
-      {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect, google: googleConnect }} /></Suspense>}
+      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} />}
+      {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
+      {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
       {view === "reviews" && <Suspense fallback={<PageLoading />}><ReviewsView onSignIn={signInNeeded} /></Suspense>}

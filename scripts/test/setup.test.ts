@@ -40,7 +40,6 @@ test("dry run prints the plan and no secrets", () => {
     "write /home/alice/aidenhq-instance/apps.yaml", // instance.yaml's heredoc ends where it should
     "ops/apply-config.sh",
     "tailscale serve --bg --https=443 http://127.0.0.1:3121",
-    "https://alice.tail1234.ts.net/google/callback",
   ]) assert.ok(out.includes(want), `missing: ${want}\n${out}`);
   for (const secret of ["mgmt-SECRET-123", "gsecret-456"]) assert.ok(!out.includes(secret), `printed a secret: ${secret}`);
 });

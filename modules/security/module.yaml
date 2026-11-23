@@ -91,8 +91,8 @@ routines:
     agent: red-teamer
     description: |
       Today is {{date}}. Follow "Weekly rolling pass" in your handbook: the next targets in rotation, under the rules
-      of engagement; findings with a proof of concept, each filed as a finding task (task_create), with notify (kind alert) for a high or
-      critical one. Then close this task with counts.
+      of engagement; findings with a proof of concept, each filed as a finding task (task_create), with a fix task, and the owner
+      alerted only for an owner-only decision as "Reporting a finding" in the handbook says. Then close this task with counts.
     concurrency: skip_if_active
     schedules:
       - { cron: "0 14 * * 3", timezone: "${settings.timezone}", label: "Wednesday" }

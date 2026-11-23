@@ -34,7 +34,7 @@ describe("simple connections", () => {
     const accounts = createKernelAuth({ kernel: { url: kernel.url, token: BOARD_KEY }, adminUrl: "http://localhost:3120" });
     const paperclip = new Paperclip("http://paperclip", "00000000-0000-4000-8000-000000000001", "k", (async () => new Response("[]")) as unknown as typeof fetch);
     const pair = (async () => Response.json({ paired: false })) as unknown as typeof fetch;
-    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121", "lan.example.com:3121"], mode: "lan", lan: { url: "https://aiden.example.com", googleConnect: false },
+    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121", "lan.example.com:3121"], mode: "lan", lan: { url: "https://aiden.example.com" },
       signIns: [
         { id: "chat", label: "Chat", connect: "/chat/connect", callback: "/chat/callback", mode: "device", missing: "m", stopped: "s", fields: [], auth: chat as never },
         { id: "team", label: "Team", connect: "/team/connect", callback: "/team/callback", httpsOnly: true, missing: "m", stopped: "s", fields: [], auth: { ...chat, status: async () => ({ state: "missing", configured: true }) } as never },

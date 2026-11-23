@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
@@ -60,6 +60,9 @@ import { CreateViewSchema, UpdateViewSchema, ViewSpecSchema, type View } from ".
 import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSettled, type LineageRow } from "./lineage.js";
 
 /** One module sign-in (board.signins), with its proxy client. */
+/** The board's record of a chat's opening message (store meta key prefix + the chat's id). */
+const CHAT_OPENING = "chat-opening:";
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
@@ -88,8 +91,7 @@ export interface AppOptions {
   fetch?: typeof fetch;
   /** The kernel's admin listener (AIDENHQ_ADMIN_URL): sign-in. */
   adminUrl?: string;
-  /** googleConnect: Google's Connect from the board's https address `url` (a Web-app OAuth client, ops/setup.sh). */
-  lan?: { url: string; googleConnect?: boolean };
+  lan?: { url: string };
   internalToken?: string;
   /** The fast chat lane: its agents and their chat tasks, from the grants table; without it the lane routes answer empty. */
   lane?: LaneOptions;
@@ -817,6 +819,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    * the wait's), with the options of the agent's newest reply that offered some. Only work the chat's own agent or the owner put
    * under it counts: another agent can't hang a task under his chat to collect his words.
    */
+  /** A board chat's opening message, as the board recorded it when the owner started the chat: a comment of his, id = the chat's id. */
+  const openingOf = (chat: Issue, me: string): Comment | undefined => {
+    const raw = store.meta(`${CHAT_OPENING}${chat.id}`);
+    if (!raw) return undefined;
+    const { sha, length, createdAt } = JSON.parse(raw) as { sha: string; length: number; createdAt: string };
+    const description = String(chat.description ?? "");
+    if (sha256(description) !== sha) throw new Refused("refused: the chat's opening message was edited since the owner wrote it; ask the owner again");
+    return { id: chat.id, body: description.slice(0, length), authorType: "user", authorUserId: me, createdAt } as Comment;
+  };
   const handedOutBy = (chat: Issue, k: Issue, me: string) =>
     k.parentId === chat.id && (k.createdByAgentId ? k.createdByAgentId === chatAgent(chat) : k.createdByUserId === me);
   async function asksOf(chat: Issue, kids: Issue[], states: Map<string, ShownState>, ctx: Awaited<ReturnType<typeof context>>) {
@@ -1033,7 +1044,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
-      // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's task. The agent picks the
+      // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's or the Researcher's task. The agent picks the
       // comment and the task, never the words; it lands as the owner's own comment with the delivered-from marker, so the runner acts on it.
       method: "POST",
       path: /^\/internal\/relay$/,
@@ -1042,11 +1053,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const { comment_id, target } = parse(RelaySchema, body);
           const ctx = await context();
           const chats = (await pc.openIssues()).filter((i) => i.assigneeAgentId === cos.id && (i.labels ?? []).some((l) => l.name === "chat"));
-          let source: { chat: Issue; comment: Comment } | undefined;
-          for (const chat of chats) {
-            const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
-            if (comment) source = { chat, comment };
-          }
+          // The chat's own id names its opening message; any other id, a comment on one of the chats.
+          const opened = chats.find((c) => c.id === comment_id);
+          const opening = opened && openingOf(opened, ctx.me);
+          let source: { chat: Issue; comment: Comment } | undefined = opened && opening ? { chat: opened, comment: opening } : undefined;
+          if (!opened)
+            for (const chat of chats) {
+              const comment = (await pc.comments(chat.id)).find((c) => c.id === comment_id);
+              if (comment) source = { chat, comment };
+            }
           if (!source) throw new Refused("refused: that comment is not on your open `chat` task");
           const words = relayableWords(source.comment, ctx.me);
           if (!REF.test(target)) throw new Refused("refused: target must be a task identifier");
@@ -1066,24 +1081,30 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
             if (!askedAt) throw new Refused("refused: the kernel has no open question on that task; answer on the task");
             if (source.comment.createdAt <= askedAt) throw new Refused("refused: that message was written before the agent asked; ask the owner again");
           }
-          if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's task, or a task handed out from this chat whose agent is asking the owner");
+          if (!ask && !["engineer", "assistant"].includes(agent.kind)) throw new Refused("refused: target must be an engineer's or the Researcher's task, or a task handed out from this chat whose agent is asking the owner");
           // One set of tasks that could take the owner's words: whenever more than one could, the words must name the target.
           // Engineer tasks that could take the owner's words: those with their review or checks under way (the kernel's state).
           const engineers = (await pc.openIssues()).filter((i) => ctx.assignees.some((a) => a.key === i.assigneeAgentId && a.kind === "engineer"));
           const engineerStates = await stateRows(engineers.map((i) => i.id));
           const inReview = engineers.filter((i) => ["card_review", "card_owner", "module_wait"].includes(engineerStates.get(i.id)?.reason ?? "")).map((i) => i.identifier);
           const waiting = [...new Set([...inReview, ...asking.filter((k) => ctx.assignees.find((a) => a.key === k.assigneeAgentId)?.kind !== "engineer").map((k) => k.identifier)])];
-          assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
-          // Once per message, whatever the target: reserved before posting, released if the post fails.
-          const key = `relayed:${comment_id}`;
-          if (store.meta(key)) throw new Refused("refused: that message was already relayed");
-          store.setMeta(key, new Date().toISOString());
+          // The owner's ask for the Researcher (an email or calendar change he asked Aiden for): a task the chat's agent handed
+          // out under this chat. Aiden names the task, so his words go there as they are (task ids in them are the ask's
+          // subject), once per task: one message may ask for several things. An answer to a question it is asking stays bound
+          // like any answer (the target check, once per message).
+          const asked = !ask && agent.kind === "assistant" && handedOutBy(source.chat, dest, ctx.me);
+          if (!asked) assertMeantTask(words, dest.identifier, waiting, ctx.prefix);
+          // Once per message, whatever the target (per task for an ask): reserved before posting, released if the post fails.
+          // Every delivery also marks its own task, so a message reaches a task at most once whichever path it took.
+          const keys = [`relayed:${comment_id}:${dest.id}`, ...(asked ? [] : [`relayed:${comment_id}`])];
+          if (keys.some((k) => store.meta(k))) throw new Refused("refused: that message was already relayed");
+          for (const k of keys) store.setMeta(k, new Date().toISOString());
           const from: DeliveredFrom = { identifier: source.chat.identifier, commentId: source.comment.id, note: `Written in chat on ${source.chat.identifier}.` };
           let posted: Comment;
           try {
             posted = await pc.addComment(dest.id, `${deliveredText(words, from)}\n\n${fromMarker(from)}\n${RELAY_MARKER}`);
           } catch (err) {
-            store.delMeta(key);
+            for (const k of keys) store.delMeta(k);
             throw err;
           }
           log.info({ chat: source.chat.identifier, task: dest.identifier }, "chat message relayed");
@@ -1223,9 +1244,6 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   // Where OAuth sign-ins start on a board without an https address: the loopback board, through an SSH tunnel (docs/setup.md).
   const TUNNEL = "http://localhost:3121 through ssh -N -L 3121:127.0.0.1:3121 <you>@<host> from your laptop";
-  const googleViaBoard = mode === "lan" && !!opts.lan?.googleConnect && !!opts.lan.url.startsWith("https://");
-  /** Where the board's sign-ins return for a request to `host`: its https address when Connect runs there, else the request's own. */
-  const signInOrigin = (host: string) => (googleViaBoard ? opts.lan!.url : `http://${host}`);
   /**
    * Where a module sign-in (board.signins) started at `host` returns: the loopback address it came from (a tunnel), or the
    * board's https address (BOARD_LAN_URL) when the request reached the board by that name. Undefined anywhere else: plain
@@ -1748,7 +1766,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         const title = input.text.split("\n")[0]!.replace(/^@\S+\s*/, "").slice(0, 80) || "New chat";
-        const issue = await pc.createIssue({ title, description: `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
+        const description = `${note ? `${input.text}\n\n${note}` : input.text}\n\n${chatAgentMarker(agent.id)}`;
+        const issue = await pc.createIssue({ title, description, status: "todo", assigneeAgentId: agent.id, labelIds: [label.id] });
+        // The owner's own opening message (a request: the setup wizard's welcome chat has none), so Aiden can pass it on like his
+        // later messages (/internal/relay, comment_id = the chat's own id). The board keeps only a digest of the description
+        // as created, never the text: an agent's edit to the description no longer matches, so it is never passed on.
+        if (req) store.setMeta(`${CHAT_OPENING}${issue.id}`, JSON.stringify({ sha: sha256(description), length: input.text.length, createdAt: new Date().toISOString() }));
         log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
         return { identifier: issue.identifier };
       },
@@ -2297,7 +2320,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     scopeChoice: async (id) => Boolean(await (opts.signIns ?? []).find((x) => x.id === id)?.auth.offers()),
     signInMode: (id) => (opts.signIns ?? []).find((x) => x.id === id)?.mode ?? "redirect",
     connected: connectionSignedIn,
-    boardUrl: signInOrigin,
+    boardUrl: (host) => httpsBoard?.origin ?? `http://${host}`,
     redirectUrl: (signin, host) => {
       const s = (opts.signIns ?? []).find((x) => x.id === signin);
       return s && `${redirectOrigin(s, host) ?? httpsBoard?.origin ?? SIGNIN_LOOPBACK}${s.callback}`;
@@ -2373,7 +2396,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const who = await accounts.sessionOf(req);
     if (path === "/api/session" && req.method === "GET") {
       const account = who ? { id: who.account.id, email: who.account.email, name: who.account.name, role: who.account.role, owner: who.account.owner } : null;
-      send(res, 200, JSON.stringify({ mode, account, googleConnect: googleViaBoard, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
+      send(res, 200, JSON.stringify({ mode, account, signInConnect: true, adminUrl: opts.adminUrl ?? null }), "application/json");
       return true;
     }
     if (!who) throw new HttpError(401, "sign in");
@@ -2447,23 +2470,20 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   /**
    * Connect a Google account, or reconnect an expired one: /google/connect sends the browser to Google's
-   * consent screen, Google sends it back to /google/callback, and google-workspace-mcp stores the token. On the
-   * laptop's loopback address (a Desktop-app client), or at the board's https address (BOARD_LAN_URL, registered as a
-   * redirect on a Web-app client: the company OAuth app, ops/setup.sh). The callback needs no session (a cookie isn't sent
-   * on Google's cross-site redirect): its single-use state, minted for the owner's session, is the proof.
+   * consent screen, Google sends it back to the loopback address (the client is a Desktop app) at /google/callback, and
+   * google-workspace-mcp stores the token. A browser that isn't on the board's host pastes the address it ends on into the
+   * Connect dialog. The callback needs no session (a cookie isn't sent on Google's cross-site redirect): its single-use
+   * state, minted for the owner's session, is the proof.
    */
   async function handleGoogle(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.google) throw new HttpError(404, "Google sign-in isn't set up on the board (no google_auth_token)");
-    // A Desktop client returns only to loopback: the sign-in ends on the board's loopback address, pasted back on its Connect
-    // dialog unless a tunnel brings it here. A Web client returns to the board's https address (or the loopback board).
-    const desktop = (await opts.google.status())?.client_type === "desktop";
-    if (!desktop && !googleViaBoard && !loopbackPort(req.headers.host)) throw new HttpError(403, `connect Google from ${TUNNEL}`);
-    const callback = desktop ? `${SIGNIN_LOOPBACK}/google/callback` : `${signInOrigin(String(req.headers.host).toLowerCase())}/google/callback`;
+    // The sign-in ends on the board's loopback address, pasted back on the Connect dialog unless a tunnel brings it here.
+    const callback = `${SIGNIN_LOOPBACK}/google/callback`;
     try {
       if (url.pathname === "/google/connect") {
         const account = url.searchParams.get("account") || undefined;
         // From a link (a banner, an old page): the Connect dialog, which opens this again (`go`) and takes the pasted address.
-        if (desktop && !url.searchParams.has("go") && !loopbackPort(req.headers.host)) {
+        if (!url.searchParams.has("go") && loopbackPort(req.headers.host) !== Number(new URL(SIGNIN_LOOPBACK).port)) {
           res.writeHead(302, { ...SECURITY_HEADERS, location: `/#/settings/connections?connect=google_workspace${account ? `&account=${encodeURIComponent(account)}` : ""}`, "cache-control": "no-store" }).end();
           return;
         }

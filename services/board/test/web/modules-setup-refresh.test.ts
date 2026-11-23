@@ -90,7 +90,7 @@ const renderModules = async () => {
   const el = document.createElement("div");
   document.body.appendChild(el);
   root = createRoot(el);
-  await act(async () => root!.render(createElement(ModulesView, { onSignIn: () => {}, can: { signIn: true, google: true } })));
+  await act(async () => root!.render(createElement(ModulesView, { onSignIn: () => {}, can: { signIn: true } })));
   await settle();
   return el;
 };

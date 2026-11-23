@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { loadAccounts } from "../src/accounts.js";
 import { SCOPES } from "../src/google.js";
 import { Reconnect } from "../src/reconnect.js";
 
@@ -86,6 +87,12 @@ describe("reconnect from the board", () => {
     expect([...copy.matchAll(/"([^"]+)"/g)].map((m) => m[1])).toEqual(SCOPES);
   });
 
+  it("the setup page's console_scopes (module.yaml) list the same scopes", () => {
+    const yaml = readFileSync(join(import.meta.dirname, "../../../module.yaml"), "utf8");
+    const listed = /console_scopes:\n((?:\s+- \S+\n)+)/.exec(yaml)![1]!;
+    expect([...listed.matchAll(/- (\S+)/g)].map((m) => m[1])).toEqual(SCOPES);
+  });
+
   it("spends each state once, and expires it", async () => {
     const path = credsFile();
     const r = new Reconnect(path, google("me@work.com").impl);
@@ -95,5 +102,25 @@ describe("reconnect from the board", () => {
     const quick = new Reconnect(path, google("me@work.com").impl, -1);
     await expect(quick.finish(stateOf(quick.start("me@work.com", redirect).url), "c")).rejects.toThrow(/expired/);
     await expect(r.finish("made-up-state-value", "c")).rejects.toThrow(/expired or was already used/);
+  });
+
+  it("keeps connected accounts on the client that issued their tokens when another client is pasted", async () => {
+    const path = credsFile();
+    const dir = mkdtempSync(join(tmpdir(), "gpaste-"));
+    writeFileSync(join(dir, "id"), "pasted-id");
+    writeFileSync(join(dir, "secret"), "pasted-secret");
+    process.env.GOOGLE_CLIENT_ID_FILE = join(dir, "id");
+    process.env.GOOGLE_CLIENT_SECRET_FILE = join(dir, "secret");
+    try {
+      const r = new Reconnect(path, google("me@new.io").impl);
+      await r.finish(stateOf(r.start(undefined, redirect).url), "c");
+      expect(JSON.parse(readFileSync(path, "utf8")).accounts["me@new.io"]).toMatchObject({ client_id: "pasted-id", client_secret: "pasted-secret" });
+      // A client pasted later leaves that account on the one it signed in with.
+      writeFileSync(join(dir, "id"), "pasted-later");
+      expect(loadAccounts(path).accounts.get("me@new.io")).toMatchObject({ client_id: "pasted-id", client_secret: "pasted-secret" });
+    } finally {
+      delete process.env.GOOGLE_CLIENT_ID_FILE;
+      delete process.env.GOOGLE_CLIENT_SECRET_FILE;
+    }
   });
 });

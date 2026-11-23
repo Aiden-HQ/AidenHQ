@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { AccountError, type AccountSession, type KernelAuth } from "./kernel-auth.js";
+import { appliedKey } from "./organisations.js";
 import type { Store } from "./store.js";
 
 /** A pair code's life when the channel doesn't say: the 15 minutes every pairing module keeps. */
@@ -18,6 +19,10 @@ export interface SetupFlowPoint {
   effort: string;
   wizard?: boolean;
   steps: string;
+  /** The scopes `{scopes}` in the steps stands for. */
+  console_scopes?: string[];
+  /** Alternative ways to get the paste fields' values: the page shows the picked one's steps (modules/board/schemas/setup_flows.json). */
+  ways?: { id: string; title: string; detail: string; effort?: string; steps?: string; organisation?: boolean; paste?: boolean; domains?: string[] }[];
   secrets?: string[];
   /** Each secret's paste field (compile fills it from the secret's `setup:`): the board shows the label and help and checks the pattern. */
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
@@ -353,6 +358,7 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
         const { secret, value } = parsed.data;
         if (!f.secrets?.includes(secret) && !f.advanced?.secrets?.includes(secret)) throw new AccountError(400, "not one of this flow's secrets");
         const saved = await d.accounts.call<{ ok: boolean; restarted?: string[] }>("save_secret", who, { module: f.module, secret, value });
+        d.store.delMeta(appliedKey(f.module)); // a pasted client is the owner's own, not an organisation's
         // The kernel recreates those services after answering; remember it briefly, so the page (and a reload) can wait for
         // them instead of treating the module's own "not ready" answer as a failure. Saves go out together (one POST per
         // field), so a save that restarts nothing must not clear a marker another save just set: only an expired one goes.

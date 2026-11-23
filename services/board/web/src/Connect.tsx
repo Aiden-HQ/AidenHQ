@@ -18,7 +18,7 @@ export interface Connectable {
   signIn: Pick<SignIn, "state" | "offer" | "fields" | "mode"> | null;
 }
 
-export type Can = { signIn: boolean; google: boolean };
+export type Can = { signIn: boolean };
 
 /** Each module's sign-in waiting for a Connect (as Settings > Connections has it), refetched when a sign-in lands. */
 export function useConnectNeeded(can: Can): Map<string, { c: Connectable; word: string }> {
@@ -37,7 +37,7 @@ export function useConnectNeeded(can: Can): Map<string, { c: Connectable; word: 
       () => {},
     );
   useEvents(["connections"], load);
-  useEffect(() => void load(), [can.signIn, can.google]);
+  useEffect(() => void load(), [can.signIn]);
   return needed;
 }
 

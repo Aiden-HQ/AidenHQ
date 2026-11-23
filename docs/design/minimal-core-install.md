@@ -361,19 +361,13 @@ touches `tier.ts`, so U5 needs the paid reviewer eval at 100%.
 
 ### 4.5 What does not work on a bare IP
 
-- **Google Connect from the board** (`BOARD_GOOGLE_CONNECT`, redirect `$BOARD_URL/google/callback`, `app.ts:2364`).
-  - Google documents that web-client redirect URIs can't be raw IPs (localhost excepted). This is not yet verified
-    against a live client: U4's live test registers one.
-  - Without the web flow, the board's code already falls back to `http://<loopback host>/google/callback` on the local
-    listener, which means an SSH tunnel to 3120.
-  - Setup defaults to `MODULES=google` and `BOARD_GOOGLE_CONNECT=1`, so **the default mode breaks the default module's
-    one-click connect**. In public IP mode setup leaves `BOARD_GOOGLE_CONNECT` off and the board shows the tunnel
-    command. A domain or Tailscale restores the web flow.
+- **Google Connect from the board** needs nothing from the board's address: the client is a Desktop app, which Google sends
+  back only to `http://localhost:3121/google/callback`. On the board's own host that completes at once; from another browser
+  the person pastes the address the tab ends on into the Connect dialog. It works the same in every mode.
 - **Glean, Grafana, ClickHouse and Jira sign-ins** (`app.ts:2394-2425`) already work only on the local listener through
   a tunnel (`mode !== "local"` gives 403). This is unchanged in every mode, but in public mode it is the owner's only
   reason to open a tunnel; the board says so.
-- **A mode switch changes the board's URL.** Registered OAuth redirects (Google's web client) and any saved links break.
-  The switch card lists the redirect to add for the new URL.
+- **A mode switch changes the board's URL.** Saved links break. (Google's Desktop client has no redirect to move.)
 - **GitHub** is one device sign-in on the board (a code typed at github.com): it needs no inbound port or redirect, so it
   works the same in every mode (#1065 deleted the old setup helper on port 8765).
 - **Module UIs on their own port** (lean-core §2.3) can't be safe on one IP, because cookies ignore ports. They need a
