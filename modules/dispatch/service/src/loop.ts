@@ -84,13 +84,15 @@ const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || 
 /**
  * A refusal that says the wake is stale: its task has another or no assignee, or it is gone (a 404 that isn't a missing job).
  * Nobody needs to act (the new assignee has its own wake), so such a wake is dropped with a log line and no notice.
- * `task-closed` is not one: a closed task can hold a message nobody acted on (an owner's word on a finished chat), so that
- * refusal is said to the owner rather than dropped (see the tick below).
+ * `task-closed` on a comment's wake is not one: the kernel files a comment wake on a closed task only for the owner's own word,
+ * which nobody acted on, so that refusal is said to the owner (see the tick below). Any other wake on a closed task (a timed
+ * wait that came due after its task finished, a status move) has nothing left to do, and is stale.
  */
 const STALE = new Set(["task-not-assigned"]);
 // A stale-looking refusal may be a reassignment still landing: tried this many times, then dropped.
 const STALE_TRIES = 3;
-const stale = (e: KernelError) => STALE.has(e.body?.type ?? "") || (e.status === 404 && e.body?.type !== "no-job");
+const stale = (e: KernelError, w: Wake) =>
+  STALE.has(e.body?.type ?? "") || (e.status === 404 && e.body?.type !== "no-job") || (e.body?.type === "task-closed" && !w.key.startsWith("comment:"));
 
 /** The kernel's refusal type and words, kept in the sentence so a reader sees what stopped it, not `idle · orphaned`. */
 const refusalWords = (e: KernelError) => {
@@ -367,12 +369,12 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           if (!permanent(e)) return log("wake failed", { wake: w.key, err: e.message });
           // Kept until the drop is confirmed: a wake that comes back on its lease neither restarts the tries nor says its piece twice.
           const had = refusals.get(w.key) ?? { tries: 0, noticed: false, next: 0 };
-          const next = { tries: had.tries + 1, noticed: had.noticed, next: clears(e) && !stale(e) ? now() + retryIn(had.tries + 1) : 0 };
+          const next = { tries: had.tries + 1, noticed: had.noticed, next: clears(e) && !stale(e, w) ? now() + retryIn(had.tries + 1) : 0 };
           refusals.set(w.key, next);
           const dropped = () => kernel.drop(w.key, e.message).then(() => true, (err: Error) => (log("wake refused: its drop failed, kept for its lease", { wake: w.key, task: w.task, err: err.message }), false));
           const gone = async () => (await dropped()) && (refusals.delete(w.key), log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), true);
-          if (clears(e) && (!stale(e) || next.tries < STALE_TRIES)) return log("wake refused: retried later", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, retry_in_s: retryIn(next.tries) / 1000, err: e.message.slice(0, 200) });
-          if (stale(e)) return void (await gone(), log("wake stale: dropped without a notice", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status }));
+          if (clears(e) && (!stale(e, w) || next.tries < STALE_TRIES)) return log("wake refused: retried later", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, retry_in_s: retryIn(next.tries) / 1000, err: e.message.slice(0, 200) });
+          if (stale(e, w)) return void (await gone(), log("wake stale: dropped without a notice", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status }));
           // The word goes out before the row — every dropped wake, including one another run answers or that left this dispatcher's
           // hands (the notice says which). The task's notice first, else the owner's. Neither landed: keep the row for its lease.
           // One that already said its piece (an earlier drop that failed) says nothing more and only retries the drop.
