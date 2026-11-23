@@ -247,8 +247,9 @@ export function startPrWatch(o: PrWatchOptions) {
     async function wedgedAfterJob(pr: Json): Promise<{ at: number; accepted: boolean }[]> {
       if (pr.isCrossRepository !== false) return [];
       const url = pr.url.toLowerCase(), head = pr.headRefOid;
-      // A head whose rollup is wholly finished costs no request: there is nothing to recover.
-      if ((rollupOf(pr)?.contexts?.nodes ?? []).every((n: Json) => n.__typename !== "CheckRun" || n.status === "COMPLETED")) return [];
+      // A head whose rollup is wholly finished costs no request: there is nothing to recover. Only when every context is here.
+      const rollup = rollupOf(pr);
+      if (!rollup?.contexts?.pageInfo?.hasNextPage && (rollup?.contexts?.nodes ?? []).every((n: Json) => n.__typename !== "CheckRun" || n.status === "COMPLETED")) return [];
       const runs: Json[] = [];
       let total = 0;
       try {
