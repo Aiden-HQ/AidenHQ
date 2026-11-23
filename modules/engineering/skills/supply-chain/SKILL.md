@@ -29,12 +29,11 @@ security fix (step 4).
 3. State the release date of any image or action you bump in the PR. An image's release date is not digest-bound: a tag
    can be re-pushed after its release, so the release still shows the old date. A date is digest-bound only when the
    registry reports it for that digest (a ghcr image: the Packages API). When it cannot be read — a token with no access to
-   another org's package, say — do not approximate it from the release or the tag; the image is adopted through a security
-   fix's advisory (step 4), or an `owner: approved` entry for that exact digest in `.github/supply-chain-exceptions.yaml`
-   with `expires` at most 14 days out and a release of code already running elsewhere that waiting would block. That
-   approval stands in for the age check CI cannot run: CI reads exceptions only after it has a date and lets an undatable
-   pin through with a warning, so never read a green check as proof of the image's age, and never record the approval
-   yourself.
+   another org's package, say — do not approximate it from the release or the tag: the image is adopted through an entry in
+   `.github/supply-chain-exceptions.yaml` that meets the conditions in that file's own header (step 4's advisory, or the
+   owner's unexpired approval of that exact digest for a release waiting would block). Such an entry records the owner's
+   decision, not the age: CI reads exceptions only after it has a date, so never read a green check as proof of the
+   image's age.
 4. A newer version is allowed only for a security fix: the script returns it with the advisory (the lowest fixing
    release). List it in `.github/supply-chain-exceptions.yaml` (`ecosystem`, `package`, `version`, `advisory`, `reason`) in
    the same PR as the pin. An app repo's CI runs the checker from its base commit, so until its default branch carries the
