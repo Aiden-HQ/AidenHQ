@@ -68,7 +68,9 @@ const servedTool = async (readOnly: boolean, name: string): Promise<{ served: bo
     // have been its own transient failure, and only a second empty one is a real answer that the tool isn't a read.
     const again = await post("/mcp/read", key, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     const reads = Array.isArray(again?.result?.tools) ? (again.result.tools as { name?: unknown; annotations?: unknown }[]) : undefined;
-    if (!reads) return { served: false, confirmed: false };
+    // An empty list again is still ambiguous (it can be this probe's own outage), so it stays unconfirmed: a retry is
+    // safe, while claiming "not a read" for a tool the read endpoint may serve is not.
+    if (!reads?.length || !reads.some(live)) return { served: false, confirmed: false };
     return { served: reads.some((t) => String(t?.name ?? "") === name && live(t)), confirmed: true };
   }
   if (!tools.length || !tools.some(live)) return { served: false, confirmed: false };
