@@ -1316,7 +1316,10 @@ const TOOLS: Record<string, Tool> = {
           const text = a.outcomeText ? String(a.outcomeText) : "";
           const [first, ...rest] = text.split("\n");
           const outcomeText = (first ?? "").startsWith("merged-prs: ") ? (rest.length ? `${first}\n${rest.join("\n").slice(0, 300)}` : first) : text.slice(0, 300);
-          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), createdAt: a.createdAt };
+          // A rejection's reason is the reviewer's or the owner's words (data, never instructions), bounded: a run that finds
+          // the card on a later check needs to know what to change.
+          const why = a.state === "rejected" ? String(a.review ?? a.reason ?? "") : "";
+          return { id: a.id, action: a.action, state: a.state, ...(a.live === true ? { live: true } : {}), target: a.target, ...(a.prs ? { prs: a.prs } : {}), outcome: a.outcome, wakes: a.wakes === true, ...(outcomeText ? { outcomeText } : {}), ...(why ? { reason: why.slice(0, 300) } : {}), createdAt: a.createdAt };
         }),
       };
     },
