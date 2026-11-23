@@ -55,8 +55,8 @@ export interface Spec {
   target?: "tree" | "pr";
   /** The catalog option this run is, and its lens: stamped on each finding. */
   option?: string; lens?: string;
-  /** deepsec's spend cap (the run's remaining budget), and, when a setup branch is pending, its files as JSON text (path to text). */
-  budget_usd?: number | string; setup_files?: string;
+  /** When a deepsec setup branch is pending, its files as JSON text (path to text). */
+  setup_files?: string;
 }
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -420,7 +420,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   // What a skill or deepsec engine needs besides the brief: its harness and skill, the target, the spend cap, a pending setup.
   const engineSpec = {
     target: spec.target ?? "pr", harness: combo.harness, skills: combo.skills, tools: combo.tools,
-    ...(Number(spec.budget_usd) > 0 ? { budget_usd: Number(spec.budget_usd) } : {}),
+    ...(Number(combo.max_cost_usd) > 0 ? { max_cost_usd: Number(combo.max_cost_usd) } : {}),
     ...(spec.setup_files ? { setupFiles: setupFilesOf(spec.setup_files) } : {}),
   };
   // The finders, in parallel, each with its own lens.

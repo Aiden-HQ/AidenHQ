@@ -2,7 +2,7 @@
 // from (github-mcp's internal read, as this module), what runs a review (the kernel's credential-free check job, lane E's recipe)
 // and what posts it (the github module's poster, lane P's). main.ts wires the real ones; the tests use fakes.
 /** A run's engine, model and effort. */
-export type ComboRef = { engine: string; model: string; effort: string; /** a skill option's, from the catalog */ harness?: string; skills?: { skill: string; args: string; also?: string[]; uncommitted?: boolean; tree?: string | false }[]; tools?: string[] };
+export type ComboRef = { engine: string; model: string; effort: string; /** a skill option's, from the catalog */ harness?: string; skills?: { skill: string; args: string; also?: string[]; uncommitted?: boolean; tree?: string | false }[]; tools?: string[]; /** an engine option's own spend cap (deepsec), from the catalog */ max_cost_usd?: number };
 
 /** The review recipe's output and the poster's input (the shared contract, version 1). */
 export type Finding = {

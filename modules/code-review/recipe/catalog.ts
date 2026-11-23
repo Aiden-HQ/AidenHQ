@@ -26,7 +26,7 @@ export type Mode = (typeof MODES)[number];
 export interface Option {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: (typeof KINDS)[number];
   source: { repo: string; version: string; licence: string };
-  run: { cmd?: string; exits?: number[]; harness?: string; skills?: SkillRef[]; tools?: string[]; engine?: string };
+  run: { cmd?: string; exits?: number[]; harness?: string; skills?: SkillRef[]; tools?: string[]; engine?: string; max_cost_usd?: number };
   when: string[]; output: (typeof OUTPUTS)[number]; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; severity?: "nit"; name?: string; description?: string; needs?: string;
 }
 
@@ -56,6 +56,7 @@ export function loadCatalog(source: string): Option[] {
     // A whole-repo review (one_off) runs each skill's `tree` contract: one that only reviews a change (tree false) is left out there.
     if (o.kind === "skill" && o.modes.includes("one_off") && run.skills.every((x: SkillRef) => x.tree === false)) bad(id, "a one_off skill option has a skill that runs on a whole repo (tree isn't false)");
     if (run.exits !== undefined && (o.kind !== "tool" || !Array.isArray(run.exits) || !run.exits.length || run.exits.some((c: unknown) => !Number.isInteger(c) || (c as number) < 0 || (c as number) > 255))) bad(id, "exits is a tool's list of exit codes");
+    if (run.max_cost_usd !== undefined && (o.kind !== "engine" || !(typeof run.max_cost_usd === "number" && run.max_cost_usd > 0))) bad(id, "max_cost_usd is an engine's spend cap in dollars");
     if (o.runs_code === true && o.kind !== "tool") bad(id, "only a tool option runs repo code (runs_code)");
     if (typeof o.runs_code !== "boolean" || !["free", "low", "high"].includes(o.cost)) bad(id, "runs_code is a boolean and cost is free, low or high");
     if (o.severity !== undefined && o.severity !== "nit") bad(id, "severity is nit or absent");
