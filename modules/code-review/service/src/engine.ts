@@ -1363,6 +1363,12 @@ export function createEngine(d: EngineDeps) {
         const runs = queue(p, cfg.on_open.length ? cfg.on_open : REPO_DEFAULTS.on_open, "command", { full: cmd.full, focus: row.focus, moment: "open" });
         return void a("queued", { run: runs[0]!.id, combo: comboOf(runs[0]!) });
       }
+      case "recheck": {
+        // Every answered and gating open finding is checked again at this head, now (no review, no new findings).
+        const combo = cfg.on_open.find((c) => c.mandatory) ?? cfg.on_open[0] ?? REPO_DEFAULTS.on_open[0]!;
+        const runs = queue(p, [{ ...combo, effort: "low" }], "command", { moment: "push", recheckOnly: true });
+        return void a("queued", { run: runs[0]!.id, combo: comboOf(runs[0]!) });
+      }
       case "always":
       case "stop":
         run("UPDATE prs SET mode = ? WHERE repo = ? AND number = ?", cmd.cmd, p.repo, p.number);

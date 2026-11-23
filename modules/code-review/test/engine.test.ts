@@ -1919,6 +1919,18 @@ test("a gated repo with no mandatory on_push: a push needs no review of its own,
   assert.deepEqual([w.statuses.at(-1).head, w.statuses.at(-1).reason], [sha("4"), "pass"]);
 });
 
+test("`aiden recheck` queues one recheck-only run at the PR's current head, from someone with write access", async () => {
+  assert.deepEqual(parseCommand("aiden recheck"), { cmd: "recheck" });
+  assert.equal(parseCommand("aiden recheck now"), undefined);
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] });
+  await opened(w, 2, sha("2"));
+  w.finish(0); await w.tick();
+  w.later(1000);
+  w.say(2, "alice", "aiden recheck");
+  await w.tick();
+  assert.deepEqual(w.started.slice(1).map((s) => [s.head, label(s), s.combo?.recheck_only ?? s.recheck_only]), [[sha("2"), "codex/low", true]]);
+});
+
 test("no mandatory on_push: a mandatory opening run a push superseded is run again at the newest head; `always` adds no gate", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [CLAUDE, MUST], on_push: [] }] });
   await opened(w, 2, sha("2"));

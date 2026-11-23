@@ -107,6 +107,7 @@ that starts "aiden review is ..." is no command), never a later line, a quote, a
 | Comment | Effect |
 |---|---|
 | `aiden review [full]` | one review now with the repo's `on_open` combos (`full` is not incremental) |
+| `aiden recheck` | one recheck-only run at the current head: every answered finding and every gating open one is checked again, each judged on its own (no new findings) |
 | `aiden review always` / `stop` | review every push / stop automatic reviews and drop queued ones (on a gated repo the mandatory combos still review each push: anyone posting as the owner can write a command) |
 | `aiden review focus: <text>` | a focus handed to the reviewers as data (300 characters) |
 | `aiden review status` / `help` | the last run's phase, combo, findings and cost / the command list |
