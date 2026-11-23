@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
-import { createSearch, type Issue, type Models } from "../src/search.ts";
+import { createSearch, gatewayModels, type Issue, type Models } from "../src/search.ts";
 
-async function setup({ issues, failEmbed = () => false, listFails = () => false, recent = () => [], summarize }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; recent?: () => Issue[]; summarize?: () => Models["summarize"] }) {
+async function setup({ issues, failEmbed = () => false, listFails = () => false, hang = () => false, recent = () => [], summarize, slowEmbed, reconcileTimeoutMs }: { issues: Map<string, Issue>; failEmbed?: (texts: string[]) => boolean; listFails?: (offset: number) => boolean; hang?: () => boolean; reconcileTimeoutMs?: number; recent?: () => Issue[]; summarize?: () => Models["summarize"]; slowEmbed?: () => Promise<void> }) {
   const pg = new PGlite({ extensions: { vector } });
   await pg.exec("CREATE EXTENSION vector; CREATE SCHEMA src_meta; CREATE SEQUENCE src_meta.seq; CREATE SCHEMA src_tasks;");
   const db = new DatabaseSync(":memory:");
@@ -18,15 +18,15 @@ async function setup({ issues, failEmbed = () => false, listFails = () => false,
   const axis = (s: string) => [/review|critique/i.test(s) ? 1 : 0, /kernel|scheduler/i.test(s) ? 1 : 0, 0.05];
   const models: Models = {
     model: "acme/embed-1", threshold: 0.8,
-    embed: async (texts) => { embeds.push(texts); if (failEmbed(texts)) throw new Error("upstream down"); return texts.map(axis); },
+    embed: async (texts) => { embeds.push(texts); await slowEmbed?.(); if (failEmbed(texts)) throw new Error("upstream down"); return texts.map(axis); },
   };
   const search = createSearch({
-    db, facts: async () => ({ facts: [], tail: 0 }), sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => ({ ...models, ...(summarize?.() ? { summarize: summarize() } : {}) }), now: () => t,
+    db, facts: async () => ({ facts: [], tail: 0 }), sql: () => pg as never, migrate: (ddl) => pg.exec(ddl).then(() => undefined), models: () => ({ ...models, ...(summarize?.() ? { summarize: summarize() } : {}) }), now: () => t, reconcileTimeoutMs,
     cp: {
       company: async () => "co-1",
       issue: async (id) => issues.get(id) ?? null,
       comments: async () => [],
-      list: async (_c, offset, limit) => { if (listFails(offset)) throw new Error("control plane 502"); return [...issues.values()].slice(offset, offset + limit); },
+      list: async (_c, offset, limit) => { if (hang()) return new Promise<Issue[]>(() => {}); if (listFails(offset)) throw new Error("control plane 502"); return [...issues.values()].slice(offset, offset + limit); },
       recent: async () => recent(),
     },
     local: async () => ({ prs: [], paths: [], final: "" }), agentName: async () => null, projectName: async () => null,
@@ -204,4 +204,47 @@ test("a failed summary comes back for it, and turning summaries off redoes the s
   assert.equal((await search.reconcile()).marked, 1);
   await drain();
   assert.equal(await summary(), null);
+});
+
+test("the backfill runs rebuilds in parallel, bounded, live changes first, each at its own generation", async () => {
+  const issues = new Map(Array.from({ length: 40 }, (_, i) => [`t-${100 + i}`, issue(`t-${100 + i}`, `Backfill item ${i}`)] as const));
+  let flying = 0, peak = 0;
+  const { pg, search, advance } = await setup({ issues, slowEmbed: async () => { peak = Math.max(peak, ++flying); await new Promise((r) => setTimeout(r, 5)); flying--; } });
+  assert.equal((await search.reconcile()).marked, 40);
+  issues.set("t-200", issue("t-200", "Live edit"));
+  search.mark("t-200");
+  advance(60_000);
+  assert.equal(await search.tick(), 41);
+  assert.ok(peak > 1 && peak <= 8, `in flight at once: ${peak}`);
+  const rows = (await pg.query<{ task_id: string; gen: number }>("SELECT task_id, gen FROM src_tasks.task_search ORDER BY gen")).rows;
+  assert.equal(rows.length, 41);
+  assert.equal(new Set(rows.map((r) => r.gen)).size, 41, "one generation per task");
+  assert.equal(search.pending(), 0);
+});
+
+test("a summary the model cut off is a failure, and the request leaves it room and no reasoning", async () => {
+  const bodies: any[] = [];
+  const real = globalThis.fetch;
+  let finish = "length";
+  globalThis.fetch = (async (_u: unknown, init: { body: string }) => {
+    bodies.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ choices: [{ finish_reason: finish, message: { content: finish === "length" ? '{"summary": "Cut o' : '{"summary":"Done.","tags":["a"]}' } }] }));
+  }) as never;
+  try {
+    const m = gatewayModels({ url: "http://gw", token: () => "k", model: "acme/embed-1", threshold: 0.8, summaries: () => true })();
+    await assert.rejects(m.summarize!("task text"), /cut off/);
+    finish = "stop";
+    assert.deepEqual(await m.summarize!("task text"), { summary: "Done.", tags: ["a"] });
+    assert.deepEqual(bodies[0].reasoning, { enabled: false });
+    assert.ok(bodies[0].max_tokens >= 1000);
+  } finally { globalThis.fetch = real; }
+});
+
+test("a reconcile pass that hangs is abandoned at its deadline and the next cycle runs it again", async () => {
+  const issues = new Map([["t-300", issue("t-300", "Hung listing")]]);
+  let hung = true;
+  const { search } = await setup({ issues, hang: () => hung, reconcileTimeoutMs: 50 });
+  await assert.rejects(search.reconcileDue(), /timed out/);
+  hung = false;
+  assert.deepEqual(await search.reconcileDue(), { listed: 1, marked: 1, complete: true });
 });
