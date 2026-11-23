@@ -85,7 +85,7 @@ prompt, typed tiered writes, and the old path deleted in the same PR.
     with its role.
   - The Steward resumes only its own pauses (`fleet_pauses` in kernel.db). A target found running again drops the row.
   - The detector no longer pauses anything: a failing routine is an incident, and each open Steward pause is a
-    `paused:<target>` incident (`GET /v1/work?pauses=1`) until it is resumed.
+    `routine:paused:<target>` incident (`GET /v1/work?pauses=1`) until it is resumed.
 - **`task_rebind`** (tasks) moves a graded task's deliverable on the grader's own path (`POST /grades/rebind`). The rubric
   is kept, the kind stays, and the row is graded again at once. The grading service checks role `fleet-settle` from the
   signed caller assertion.
@@ -110,8 +110,8 @@ whose pause, which repo) or a release-safety refusal, so each enforces from day 
 ### 5. Detector outcome checks (PR B)
 
 - Spend: today's billed spend over 2x the prior 7 complete UTC days' average, once a priced baseline exists, with the top
-  components and subjects (`spend:<day>`).
-- Completeness: a source writer's own total checked against what it fetched (`<source>:<scope>:incomplete`).
+  components and subjects (`spend:spike`).
+- Completeness: a source writer's own total checked against what it fetched (`source:<source>:<scope>:incomplete`).
 - Graduation stall: the distro files its failure issue after 24 hours (PR C), and the Maintainer settles it with
   `github_release_graduate`.
 

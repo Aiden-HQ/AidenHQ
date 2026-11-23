@@ -153,7 +153,7 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine whose last three kernel jobs all
   hard-failed (`failed` or `timeout`, counted from the jobs' `routine` in `GET /v1/work?agent=`) is an incident: the Steward
   decides whether to pause it (`fleet_operate`, the kernel's `kernel.fleet_op`, AI-reviewed) and fixes its cause. A pause the
-  Steward made stays an incident (`paused:<target>`, from `GET /v1/work?pauses=1`) until the Steward resumes it; it resumes
+  Steward made stays an incident (`routine:paused:<target>`, from `GET /v1/work?pauses=1`) until the Steward resumes it; it resumes
   only its own pauses, and a resume starts a fresh count. Setup keeps a paused routine paused across applies. The `missed` group raises an active routine whose next schedule fire (`nextRunAt`, read with
   kernel.cp-read) is over 15 minutes overdue: Paperclip's scheduler has stopped.
 

@@ -66,8 +66,8 @@ An incident is yours until it is resolved live:
 2. File the repair at its source (a task for the Engineer, an app's owner, the Maintainer) with the evidence and a done
    condition, and follow it: its PR merged, the pin bump or the updater's deploy live (`fleet_generation_status` shows a
    `good` generation carrying it), and the original symptom checked again on the live system.
-3. Resume what you paused once its cause is fixed: you resume only your own pauses (`paused:<target>` stays an incident
-   until you do). A pause the owner or the chief of staff made stays theirs.
+3. Resume what you paused once its cause is fixed: you resume only your own pauses (each stays an incident,
+   `routine:paused:<target>`, until you do). A pause the owner or the chief of staff made stays theirs.
 4. Close with one log line: what broke, what restored it, the repair and the live check.
 
 ## Settling verified work
@@ -90,11 +90,11 @@ An incident is yours until it is resolved live:
   to a same-team agent (`fleet_catalog`), else the Engineer.
 - `run:<agent>:repeat:<task>`: transient: one `task_route`; repeating: `stop_run`, then a product bug. Timeout or spend
   raises are the owner's.
-- `<routine id>` (its last 3 runs failed): find the cause; while it keeps failing or wasting spend, `pause_routine` it, then
+- `routine:<id>` (its last 3 runs failed): find the cause; while it keeps failing or wasting spend, `pause_routine` it, then
   route the fix like a failing agent and resume it once fixed. Failing across the fleet (a credits or key refusal): the
   cause is shared, so fix that. `missed:<id>:<schedule>`: many missed fires is a product bug.
-- `paused:<target>`: your own pause, open until you resume it once its cause is fixed.
-- `spend:<YYYY-MM-DD>` (a day's settled spend over twice the prior 7 days' average; the reason names the top components and
+- `routine:paused:<target>`: your own pause, open until you resume it once its cause is fixed.
+- `spend:spike` (a day's billed spend over twice the prior days' average; the reason names the day, the top components and
   subjects): attribute it; act only on a real waste source (a looping run: `stop_run`, `pause_routine`), else log it.
 - `grade:<task>` over a day: product bug, slug `grader-stall`.
 - `unstarted:<task>`: `task_route` (no `to`), or to another team member; leave it while `queue:<agent>` is open.
@@ -116,7 +116,7 @@ An incident is yours until it is resolved live:
   app's state first (healthy again: finish), then wake or re-brief the DevOps Engineer with `task_route` on its incident task,
   or delegate. Flapping or still open after its run: own it as "Owning an incident" says. `quality:<app>:<check>`:
   `task_create` once to the app's owner (else the DevOps Engineer), same marker, done when the check passes.
-- Source down: `src_meta.ingest_run`; "not connected", "sign in" is the owner's. Otherwise one Fleet issues comment `ingest · src_<source> · stale`. A flag keyed `<source>:<scope>` (one scope failing a day while the rest work): same handling, comment key `ingest · src_<source> · <scope> · failing`. `<source>:<scope>:incomplete` (its last two complete passes fetched fewer rows than its own total): route a writer fix to the source module's owner.
+- Source down: `src_meta.ingest_run`; "not connected", "sign in" is the owner's. Otherwise one Fleet issues comment `ingest · src_<source> · stale`. A flag keyed `<source>:<scope>` (one scope failing a day while the rest work): same handling, comment key `ingest · src_<source> · <scope> · failing`. `source:<source>:<scope>:incomplete` (its last two complete passes fetched fewer rows than its own total): route a writer fix to the source module's owner.
 - `alert:…` and a component down: name the rule and container, never the label text; `query_prometheus` with a `grafana`
   grant; restore service (`restart_service`) when it is a module service, and route the repair to the Engineer (host), an
   app owner or a product bug.
