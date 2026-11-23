@@ -73,7 +73,7 @@ describe("internal listener", () => {
     // card exists, and nothing would wake the task.
     // The merge card is older than 60 newer routine cards on the same task: the read still returns it.
     const inner = fakeRecords([
-      card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "running", wait: "code review: 1 important finding open", createdAt: "2026-11-10T10:00:00.000Z" }),
+      card({ id: "k-0000000000000001", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 0, state: "running", live: true, wait: "code review: 1 important finding open", createdAt: "2026-11-10T10:00:00.000Z", args: { prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] } }),
       card({ id: "k-0000000000000002", issueId: "another-task", identifier: "PEN-9", action: "merge", tier: 0, state: "pending" }),
       // One still waiting on the reviewer or owner, also older than the newer routine cards: it is a card to wait on too.
       card({ id: "k-0000000000000003", issueId: issue.id, identifier: issue.identifier, action: "merge", tier: 1, state: "pending", createdAt: "2026-11-10T09:00:00.000Z" }),
@@ -88,6 +88,7 @@ describe("internal listener", () => {
         const all = await inner.list(state, { ...o, limit: 1000 });
         return all.slice().sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, o.limit ?? 100);
       },
+      allOf: (state, k) => inner.allOf(state, k),
     };
     const board = createApp({ paperclip: pc, store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["board:3122"], staticDir: "/nonexistent", timezone: "UTC", mode: "internal", internalToken: TOKEN, gatewayKey: "d".repeat(40), records });
     await new Promise<void>((r) => board.listen(0, "127.0.0.1", r));
@@ -108,6 +109,7 @@ describe("internal listener", () => {
     try {
       const mine = (await (await get(issue.identifier)).json()) as { approvals: { id: string }[] };
       expect(mine.approvals.map((a) => a.id)).toEqual(expect.arrayContaining(["k-0000000000000001", "k-0000000000000003"]));
+      expect(mine.approvals.find((a) => a.id === "k-0000000000000001")).toMatchObject({ live: true, prs: [{ repo: "a/b", number: 1, head: "a".repeat(40) }] });
       expect(seen.some((o) => o.tier0 === true && o.strict === true && o.kinds?.includes("github.merge"))).toBe(true);
       // Another task's card is never in this task's read, whatever its tier.
       const other = (await (await get("PEN-9")).json()) as { approvals: { id: string }[] };

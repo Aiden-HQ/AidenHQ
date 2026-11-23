@@ -1109,16 +1109,18 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         });
         // `tier0`: a merge the fleet files for a green PR is Tier 0 in the agents org, and the run's check for the card that
         // wakes it must see it. `strict`: a kernel that didn't answer must not read as "no cards". This task's merges are read
-        // by kind, past the page cap, so neither newer writes of other kinds nor a full page of ended merges can hide the one
-        // the run waits on or the `merged-prs` line that answers it.
+        // by kind: the newest page, and every page of the states one can still be in (the reviewer's or owner's wait, and the
+        // approved or claimed run), so neither newer writes nor a full page of ended merges can hide the card that matters.
         const kinds = ["github.merge", "codehost-local.merge"];
-        const [recent, merges, waiting] = await Promise.all([
+        const mine = (a: Approval) => a.issueId === task || a.identifier === task;
+        const [recent, history, running, waiting] = await Promise.all([
           cardsOf("recent", { task, limit: 50, tier0: true, strict: true }),
           cardsOf("recent", { task, limit: 1000, tier0: true, strict: true, kinds }),
-          cardsOf("pending", { task, limit: 1000, strict: true, kinds }),
+          records.allOf("approved", kinds),
+          records.allOf("pending", kinds),
         ]);
-        const shown = [...new Map([...recent, ...merges, ...waiting].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-        return { approvals: shown.map(approvalView) };
+        const shown = [...new Map([...recent, ...history, ...running.filter(mine), ...waiting.filter(mine)].map((a) => [a.id, a])).values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+        return { approvals: shown.map(mergeView) };
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.
