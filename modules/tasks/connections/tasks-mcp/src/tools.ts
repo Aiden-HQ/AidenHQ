@@ -814,8 +814,12 @@ const DESC_MAX = 8000;
 function mergedEvidence(said: string): string | undefined {
   let v: unknown;
   try { v = JSON.parse(said); } catch { return undefined; }
-  const ok = Array.isArray(v) && v.every((p) => p && typeof p.repo === "string" && Number.isInteger(p.number) && typeof p.head === "string");
-  return ok ? said : undefined;
+  const SLUG = /^[\w.-]+\/[\w.-]+$/, SHA = /^[0-9a-f]{40}$/;
+  const ok = Array.isArray(v) && v.every((p: Json) => p && typeof p.repo === "string" && SLUG.test(p.repo) && Number.isInteger(p.number) && p.number > 0 && typeof p.head === "string" && SHA.test(p.head) && (p.sha === undefined || (typeof p.sha === "string" && SHA.test(p.sha))));
+  if (!ok) return undefined;
+  // Reserialize only the validated fields: the record's own text is not returned, so no extra key or prose in a binding's
+  // strings can ride out of the fence as if it were structured evidence.
+  return JSON.stringify((v as { repo: string; number: number; head: string; sha?: string }[]).map(({ repo, number, head, sha }) => ({ repo, number, head, ...(sha === undefined ? {} : { sha }) })));
 }
 /** Text inside a fence, with no `<` or `>`: a one-pass tag strip can rebuild a closing tag from a nested one, so every angle
  * bracket goes, and the content can never end the fence it is in. */
