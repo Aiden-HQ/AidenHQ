@@ -135,9 +135,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // most, whatever else it waits on"). What the replay does read is still compared: a new version, or a deliverable the
           // close found absent that is there now, sends it back to grading.
           // A close queued before closes carried their deadline: give it one now, counted from the wait it already spent
-          // (`unreadSince`, when it had one) so an upgrade cannot stretch a 23-hour wait to 47. The same single bound applies.
+          // (`unreadSince`, when it had one) so an upgrade cannot stretch a 23-hour wait to 47. A close an earlier release
+          // already decided at the day bound (`dayBound`) has spent its day: it is stamped expired, never granted a fresh one.
+          // The same single bound applies.
           if (typeof s.closeDeadline !== "string") {
-            const since = typeof s.unreadSince === "string" ? Date.parse(s.unreadSince) : Date.now();
+            const since = typeof s.unreadSince === "string" ? Date.parse(s.unreadSince) : s.dayBound ? Date.now() - GRADE_WAIT_MS : Date.now();
             s.closeDeadline = new Date(since + GRADE_WAIT_MS).toISOString();
             steps[0] = s;
             state.set(`owed:${task}`, JSON.stringify(steps));
@@ -174,8 +176,11 @@ export function createGradeLoop({ api, pc, log, state, gather, grade, escalation
           // Confirmed presence first: one recorded PR merged is proof the close is stale even when another PR's lookup failed
           // (`present` and `unknown` are both true then), so the row goes back to grading instead of waiting on the uncertain one.
           // A deliverable the close already found there is not one that appeared since: compare the confirmed finding, never the
-          // lookup's words, so a reworded or partly unreadable answer cannot reopen it for another day.
-          const present = Boolean(presence?.present) && !s.sawPresent;
+          // lookup's words, so a reworded or partly unreadable answer cannot reopen it for another day. A close queued before it
+          // carried `sawPresent` recorded the same confirmation as `sawPresentFacts`: the same facts are not a new finding, while
+          // one that differs (a later deploy) is work the close never saw.
+          const legacySame = Array.isArray(s.sawPresentFacts) && Boolean(presence?.present) && JSON.stringify(presence?.facts) === JSON.stringify(s.sawPresentFacts);
+          const present = Boolean(presence?.present) && !s.sawPresent && !legacySame;
           // A version the replay read and that differs is a new deliverable; a deliverable it confirms is gone is not the one graded
           // either. Before the day any answer over a versioned close is compared as before (an unread one holds the close); past it
           // only a read that proves a change reopens, or an unavailable lookup would keep the close owed past its bound.

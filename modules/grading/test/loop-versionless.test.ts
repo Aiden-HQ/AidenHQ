@@ -373,6 +373,45 @@ it("a close queued before closes carried a deadline gets one, so its replay is s
   assert.deepEqual(calls, [], "a fresh stamp does not let the unreadable close land at once");
   assert.equal(JSON.parse(state.get("owed:t-legacy"))[0].closeDeadline, owed[0].closeDeadline, "the stamp is saved, not recomputed each pass");
 });
+it("a legacy close already decided at the day bound is stamped expired, never given a fresh day", async () => {
+  // A close from the intermediate release carries `dayBound` and no deadline. Stamping it now + a day would give a close that
+  // already spent its bound another 24 hours; it must land on its first replay instead.
+  const { loop, calls, notes, failing, state } = setup("satisfied", {
+    id: "t-daybound", deliverable: { kind: "app", ref: "roadmap-keeper" },
+    gather: () => { throw new Error("the registry read threw"); },
+    presentNow: async () => ({ present: false, facts: [] }),
+  });
+  failing.done = 0;
+  state.set("owed:t-daybound", JSON.stringify([{ do: "done", note: "ungraded: its deliverable is there but its evidence never settled", ungraded: true, dayBound: true, version: "", status: "in_review", round: 1, deliverable: { kind: "app", ref: "roadmap-keeper" }, rubric: [], filing: "rubric" }]));
+  await loop.runGrades();
+  const owed = JSON.parse(state.get("owed:t-daybound") || "[]");
+  assert.equal(owed.length, 0, "the close landed on its first replay, not after another day");
+  assert.deepEqual(calls, [["setStatus", "done"]], "a dayBound legacy close closes now");
+  assert.match(String(notes.at(-1)), /ungraded/, "still ungraded");
+});
+
+it("a legacy close that already confirmed its deliverable is not reopened on the same finding", async () => {
+  // Before closes carried `sawPresent`, the confirmed finding was kept as `sawPresentFacts`. The same facts on the replay are
+  // the deliverable the close already reported, not one that appeared since; a different finding is work it never saw.
+  const facts = ["pr acme/app#7 merged"];
+  const { loop, calls, posts, failing, state } = setup("satisfied", { id: "t-saw", deliverable: { kind: "pr", ref: "acme/app#7" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: true, facts }) });
+  failing.done = 0;
+  const queued = () => JSON.stringify([{ do: "done", note: "the queued note", ungraded: true, sawPresentFacts: facts, closeDeadline: new Date(Date.now() - 60_000).toISOString(), version: "", status: "in_review", round: 1, deliverable: { kind: "pr", ref: "acme/app#7" }, rubric: [], filing: "rubric" }]);
+  state.set("owed:t-saw", queued());
+  await loop.runGrades();
+  assert.deepEqual(calls, [["setStatus", "done"]], "the same confirmed finding does not reopen the close");
+
+  state.set("owed:t-saw", queued());
+  calls.length = 0;
+  posts.length = 0;
+  const seen = setup("satisfied", { id: "t-saw2", deliverable: { kind: "pr", ref: "acme/app#7" }, gather: () => ({ facts: [] }), presentNow: async () => ({ present: true, facts: ["pr acme/app#7 merged", "pr acme/app#8 merged"] }) });
+  seen.failing.done = 0;
+  seen.state.set("owed:t-saw2", JSON.stringify([{ do: "done", note: "the queued note", ungraded: true, sawPresentFacts: facts, closeDeadline: new Date(Date.now() - 60_000).toISOString(), version: "", status: "in_review", round: 1, deliverable: { kind: "pr", ref: "acme/app#7" }, rubric: [], filing: "rubric" }]));
+  await seen.loop.runGrades();
+  assert.deepEqual(seen.calls, [], "a different confirmed finding is a deliverable the close never saw");
+  assert.equal(seen.posts.filter(([p, b]) => /verdict/.test(p) && b?.outcome === "awaiting_evidence").length, 1, "it goes back to grading");
+});
+
 it("a busy signal on a fresh row still waits, as before", async () => {
   const { loop, calls, notes, posts } = setup("satisfied", {
     updatedAt: long(1), outcome: "cannot_judge", version: "",
