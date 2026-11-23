@@ -79,7 +79,7 @@ test("a job writes on its own task and the tasks it created, as its agent throug
   const before = plugin.length;
   r = await act("ada", "POST", "/api/issues/WOR-2/comments", { body: "Do it my way." });
   assert.equal(r.status, 403);
-  assert.match(r.json.error.message, /WOR-2 isn't yours to change: ask its assignee \(bo\) or the chief of staff/);
+  assert.match(r.json.error.message, /WOR-2 isn't yours to change: ask its assignee \(bo\) or the Fleet Steward/);
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-2", { status: "cancelled" })).status, 403);
   assert.equal(plugin.length, before);
   // A child it creates, delegated (bo is in its delegate_to): created by the agent under its task, once however often the
