@@ -31,13 +31,13 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 200,
-      "pattern": "^[\\w./-]+$"
+      "pattern": "^[^\\s~^:?*\\[\\\\]+$"
     },
     "to": {
       "type": "string",
       "minLength": 1,
       "maxLength": 200,
-      "pattern": "^[\\w./-]+$"
+      "pattern": "^[^\\s~^:?*\\[\\\\]+$"
     }
   }
 }

@@ -57,7 +57,7 @@ export type Kept = Adoption & {
   seen?: { head: string; at: string };
   /** A stack: the open PR whose head branch (`branch`) is this PR's base, as last seen; and the retarget filed once it merged. */
   stack?: { number: number; branch: string };
-  retarget?: { head: string; record: string };
+  retarget?: { head: string; record: string; updated?: boolean };
   /** A task's PR: the cancelled task it was noted as left open for (a successor's cancellation is noted in its turn). */
   kept?: string;
   /** The head whose wedged check run its owner was told about. */

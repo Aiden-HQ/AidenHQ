@@ -147,9 +147,17 @@ export function adoptedPass(o: AdoptedOptions) {
    * head; GitHub does it itself only when the merged branch is deleted). True when it was asked this pass.
    */
   const retargeted = async (a: Kept, view: PrView, to: string): Promise<boolean> => {
-    if (a.retarget?.head === view.head) return false;
+    if (a.retarget?.head === view.head) {
+      // Filed at this head: a record that ended without it (a refusal, a veto) holds the PR with its reason.
+      const r = await o.kernel.call("GET", `/v1/writes/${a.retarget.record}`).catch(() => undefined);
+      if (!r || !["failed", "rejected", "stale"].includes(String(r.state))) return false;
+      // round()'s own hold: bound to this head, its owner told (a task's asker, a member's report and assignment).
+      await round(rounds, view, { do: "stall", why: `the retarget onto \`${to}\` ended ${r.state}: ${String(r.outcome?.text ?? r.reason ?? "").slice(0, 200)}` });
+      return true;
+    }
     const under = await o.gh("GET", `/repos/${view.repo}/pulls/${a.stack!.number}`);
-    if (under.status >= 300 || !under.body?.merged_at) return false;
+    // Only a parent merged into the default branch moves its child there; one merged elsewhere leaves the child waiting.
+    if (under.status >= 300 || !under.body?.merged_at || under.body?.base?.ref !== to) return false;
     const holder = a.task || a.holder ? undefined : await recordTask(o.kernel, view, a);
     if (holder) a = { ...a, holder };
     const r = await o.kernel.call("POST", "/v1/writes", { kind: "github.retarget", task: a.task ?? a.holder, args: { repo: view.repo, number: view.number, head: view.head, generation: a.generation, base: view.base, to } });
@@ -183,13 +191,24 @@ export function adoptedPass(o: AdoptedOptions) {
       }
       const recovery = await ctx.recover?.();
       a = o.state.get(repo, pr.number) as Kept;
+      // A stack: it waits on the PR whose branch is its base (decide says so); once that PR merged, it is retargeted onto the
+      // default branch, brought up to date with it, and then takes the normal path (checks, review, merge). Down a chain too.
+      // The relation is kept whatever holds the PR, so a parent that merged meanwhile is still known.
+      if (ctx.stackedOn && (a.stack?.number !== ctx.stackedOn.number || a.stack.branch !== view.base)) { a = { ...a, stack: { number: ctx.stackedOn.number, branch: view.base } }; o.state.put(a); }
       // A stalled hold is round()'s to clear on a new head; any other hold, or a pause, only retries a report that failed.
       const resumes = a.hold?.kind === "stalled" && !!a.counters && a.counters.head !== view.head;
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
-      // A stack: it waits on the PR whose branch is its base (decide says so); once that PR merged, it is retargeted onto the
-      // default branch and then takes the normal path (the base merged in by the repair, checks, review, merge). Down a chain too.
-      if (ctx.stackedOn && (a.stack?.number !== ctx.stackedOn.number || a.stack.branch !== view.base)) { a = { ...a, stack: { number: ctx.stackedOn.number, branch: view.base } }; o.state.put(a); }
-      if (!ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
+      // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
+      const stopped = view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a!.assigned ?? []).includes(x));
+      if (!stopped && !ctx.stackedOn && a.stack && a.stack.branch === view.base && view.base !== main.name && await retargeted(a, view, main.name)) return;
+      // Just retargeted: its base is merged in first (a new head that code review reviews whole); nothing moves on the old head.
+      if (!stopped && a.retarget?.head === view.head && view.base === main.name) {
+        if (a.retarget.updated) return;
+        try { await rounds.updateBranch(repo, view.number, view.head); }
+        catch (e) { await round(rounds, view, { do: "stall", why: `GitHub refused to bring \`${main.name}\` into it after its retarget: ${String((e as Error).message).slice(0, 200)}` }); return; }
+        o.state.put({ ...a, retarget: { ...a.retarget, updated: true } });
+        return;
+      }
       const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}) });
       // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
       if (v.do === "fix_ci" && recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });

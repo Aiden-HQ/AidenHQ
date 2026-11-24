@@ -1145,8 +1145,10 @@ test("a stack A←B: B waits on #A; once A merges, B is retargeted onto main and
     res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
   });
   t.after(() => kernel.s.close());
+  const updated = [];
   const gh = async (method, path) => {
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path.endsWith("/update-branch")) { updated.push(path); return { status: 202, body: {} }; }
     if (path === "/repos/acme/app/pulls/1") return { status: 200, body: { state: "closed", merged_at: "2026-11-25T10:00:00Z", html_url: "https://github.com/acme/app/pull/1", head: { sha: "h1" }, base: { ref: "main" }, user: { login: "aidenhq", type: "Bot" } } };
     return { status: 200, body: {} };
   };
@@ -1170,5 +1172,10 @@ test("a stack A←B: B waits on #A; once A merges, B is retargeted onto main and
   assert.equal(of("github.retarget", 2).length, 1, "once per head");
   open = [{ ...B, baseRefName: "main" }]; // retargeted
   await watch.tick();
-  assert.deepEqual(of("github.merge", 2).map((w) => w.args.prs[0].base), ["main"], "then the normal path: merged into main");
+  assert.deepEqual([updated, of("github.merge", 2).length], [["/repos/acme/app/pulls/2/update-branch"], 0], "main is merged in first: never merged on the old diff");
+  await watch.tick(); // GitHub took the update but the head hasn't moved yet
+  assert.deepEqual([updated.length, of("github.merge", 2).length], [1, 0], "nothing moves on the old head, and the update isn't asked twice");
+  open = [{ ...B, baseRefName: "main", headRefOid: "h2b" }]; // the updated head, reviewed whole
+  await watch.tick();
+  assert.deepEqual(of("github.merge", 2).map((w) => [w.args.prs[0].base, w.args.prs[0].head]), [["main", "h2b"]], "then the normal path: merged into main");
 });
