@@ -13,6 +13,8 @@ test("the default rules: size, author, sensitive paths, repo class", () => {
   assert.equal(tier([f("src/a.ts", 3)], { author: "bot" }), "standard");
   assert.equal(tier([f(".github/workflows/ci.yml", 1)]), "sensitive");
   assert.equal(tier([f("src/auth/login.ts", 1)]), "sensitive");
+  assert.equal(tier([f("src/Auth/Login.ts", 1)]), "sensitive", "the common capitalised form");
+  assert.equal(tier([f(".github/.release.yml", 1)]), "sensitive", "a dot-file under a sensitive folder");
   assert.equal(tier([f("src/b.ts", 1, "src/session.ts")]), "sensitive", "a rename's old path counts");
   // A lockfile is sensitive, unless a bot's PR changes only manifests and lockfiles (Dependabot).
   assert.equal(tier([f("src/a.ts", 2), f("package-lock.json", 400)]), "sensitive");

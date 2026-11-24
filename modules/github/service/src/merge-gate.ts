@@ -38,7 +38,7 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
     defaultBranchRef { name }
     squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed
     pullRequest(number: $number) {
-      id number title body url state isDraft reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName
+      id number title body url state isDraft reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName authorAssociation
       mergedAt mergedBy { login } mergeCommit { oid message }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       latestOpinionatedReviews(first: 30) { nodes { state } }
