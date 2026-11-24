@@ -194,7 +194,7 @@ test("a rerun reviews only the areas with a changed file and shows the rest as u
   assert.deepEqual(again.ran, ["a02"], "only the changed area is reviewed again");
   assert.equal(started[2].unseen, undefined, "a first review has nothing to focus on");
   assert.deepEqual(started.at(-1).unseen, { files: ["web/c.tsx"], changed: 1, more: 0 }, "the rerun's focus is the files changed since they were last read, then the never-read ones");
-  assert.match(unseenFocus(JSON.stringify(started.at(-1).unseen)), /\(1 changed since .*then 0 never reviewed\).*context:\nweb\/c\.tsx$/);
+  assert.match(unseenFocus(JSON.stringify(started.at(-1).unseen)), /\(1 changed since .*then 0 never reviewed\).*context\.\nweb\/c\.tsx$/);
   const md = engine.report(again.b.batch);
   assert.match(md, /cor\.review: ran \(1 of 1 areas reviewed, 1 unchanged since 1111111 \(2026-11-24\)\)/);
   assert.match(md, /bug in svc\/a\.ts/, "the unchanged area's open finding stays");

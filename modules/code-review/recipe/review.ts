@@ -117,7 +117,15 @@ export function unseenFocus(raw: string | undefined) {
   const files = Array.isArray(u.files) ? u.files.filter((f): f is string => typeof f === "string") : [];
   if (!files.length) return "";
   const changed = Number.isInteger(u.changed) ? Math.min(Number(u.changed), files.length) : 0, more = Number.isInteger(u.more) ? Number(u.more) : 0;
-  return `Earlier reviews already covered the rest of this area. Read these files of it first, each one in full, in this order (${changed} changed since they were last reviewed, then ${files.length - changed} never reviewed${more ? `; ${more} more are left off this list` : ""}); the other files are context:\n${files.join("\n")}`;
+  return `Read these files of this area first, each one in full, in this order (${changed} changed since they were last reviewed, then ${files.length - changed} never reviewed). ${more ? `${more} more such files are left off this list and still need review after them; every other file was covered by earlier reviews and is context.` : "Every other file of the area was covered by earlier reviews and is context."}\n${files.join("\n")}`;
+}
+
+/** The files with a rerun's unseen ones first (the engines that submit files in turn under one deadline reach them before the rest). */
+export function priority(files: string[], raw: string | undefined) {
+  let u: { files?: unknown } = {};
+  try { u = JSON.parse(raw || "{}"); } catch { /* none */ }
+  const first = new Set(Array.isArray(u.files) ? u.files : []);
+  return first.size ? [...files.filter((p) => first.has(p)), ...files.filter((p) => !first.has(p))] : files;
 }
 
 /** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. `paths`: the only
@@ -470,7 +478,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const finderMinutes = combo.engine === "deepsec" ? Math.max(1, CHECK_MINUTES - RESERVE_MINUTES - (Date.now() - started) / 60_000) : minutes;
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes: finderMinutes, scratch, own: true, files: reviewed, left: [...out_], ...engineSpec })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes: finderMinutes, scratch, own: true, files: priority(reviewed, tree ? spec.unseen : undefined), left: [...out_], ...engineSpec })
     .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
   // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
   const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });
