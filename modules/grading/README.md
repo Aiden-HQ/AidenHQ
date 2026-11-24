@@ -5,7 +5,7 @@
 Graded done: a delegated task's deliverable closes only once the grader finds it meeting its rubric; only a criterion
 the grader shows unmet sends it back to its agent. Fail open: a third rejected version, a grader that can't judge, or
 evidence still missing a day after a close closes it done, ungraded, and its delegator hears why. Nothing waits on you. The standard criteria per
-deliverable kind are `rubrics/<kind>.md`. It also holds the finish check every move to done passes and the routes the
+deliverable kind are `service/rubrics/<kind>.md`. It also holds the finish check every move to done passes and the routes the
 board reads.
 
 ## Connect

@@ -752,16 +752,27 @@ export class MeetingService {
     if (!meeting) throw new UserFacingError(`No published meeting for calendar event ${input.calendar_event_id}`, "not_found");
     const marker = meetingMarker(meeting.calendar_event_id);
     const changed: { path: string; replacements: number }[] = [];
-    const count = (hay: string) => hay.split(find).length - 1;
+    // A correction rewrites human prose only: never frontmatter, HTML comments (the meeting marker), URLs or a wiki link's
+    // destination (the file is not renamed); a link's `|alias` is prose.
+    const walk = (hay: string, on: (t: string) => string): string => {
+      const fm = /^---\n[\s\S]*?\n---\n/.exec(hay)?.[0] ?? "";
+      return fm + hay.slice(fm.length).split(/(<!--[\s\S]*?-->|https?:\/\/(?:[^\s()\]>]|\([^\s()]*\))+|\[\[[^\]|\n]*(?=\||\]\])\|?)/).map((p, k) => (k % 2 ? p : on(p))).join("");
+    };
+    const count = (hay: string) => { let c = 0; walk(hay, (t) => { c += t.split(find).length - 1; return t; }); return c; };
+    const fix = (hay: string) => walk(hay, (t) => t.split(find).join(replace));
 
     if (meeting.canonical_note_path && this.vault.exists(meeting.canonical_note_path)) {
       let n = 0;
+      // The stored hash marks the generated version: advance it only if the content actually edited (the committing
+      // attempt's) was ours, so owner edits are still seen (kept_user_edits) by the next transcript revision.
+      let ours = false;
       const snap = this.vault.editNote(meeting.canonical_note_path, (content) => {
+        ours = sha256(content) === meeting.canonical_note_hash;
         n = count(content);
-        return content.split(find).join(replace);
+        return fix(content);
       });
       if (snap) {
-        this.setCanonical(meeting.id, snap.path, snap.version);
+        if (ours) this.setCanonical(meeting.id, snap.path, snap.version);
         changed.push({ path: snap.path, replacements: n });
       }
     }
@@ -781,13 +792,27 @@ export class MeetingService {
         const end = m ? m.index + 1 : content.length;
         const region = content.slice(start, end);
         n = count(region);
-        return content.slice(0, start) + region.split(find).join(replace) + content.slice(end);
+        return content.slice(0, start) + fix(region) + content.slice(end);
       });
       if (snap) changed.push({ path: snap.path, replacements: n });
     }
-    // Keep the stored extraction consistent so a later re-publish keeps the correction.
-    if (meeting.extraction_json?.includes(find)) {
-      this.db.prepare("UPDATE meetings SET extraction_json = ?, updated_at = ? WHERE id = ?").run(meeting.extraction_json.split(find).join(replace), nowIso(), meeting.id);
+    // Keep the stored extraction consistent so a later re-publish keeps the correction: only its free-text fields, matched on
+    // the decoded values (ids, kinds, dates and keys stay as they are).
+    if (meeting.extraction_json) {
+      const x = JSON.parse(meeting.extraction_json) as Extraction;
+      const text = (v: string | null | undefined) => (typeof v === "string" ? fix(v) : v);
+      const next: Extraction = {
+        ...x,
+        summary: fix(x.summary),
+        decisions: x.decisions.map((d) => ({ ...d, text: fix(d.text) })),
+        actions: x.actions.map((a) => ({ ...a, owner: text(a.owner) ?? null, action: fix(a.action), ...(a.source_quote === undefined ? {} : { source_quote: fix(a.source_quote) }) })),
+        open_questions: x.open_questions.map(fix),
+        context: x.context.map(fix),
+        people: x.people.map(fix),
+        topics: x.topics.map(fix),
+      };
+      const json = JSON.stringify(next);
+      if (json !== JSON.stringify(x)) this.db.prepare("UPDATE meetings SET extraction_json = ?, updated_at = ? WHERE id = ?").run(json, nowIso(), meeting.id);
     }
     if (!changed.length) throw new UserFacingError(`"${find}" was not found in the notes AidenHQ wrote for this meeting`, "not_found");
     this.log.info({ tool: "meeting_note_correct", event_id: meeting.calendar_event_id, notes: changed.map((c) => c.path) }, "meeting notes corrected");
