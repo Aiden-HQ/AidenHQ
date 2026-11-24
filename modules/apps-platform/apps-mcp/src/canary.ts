@@ -176,19 +176,20 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       } catch {}
     }
     // No POST answered with a reference the page shows: the intake is that one only when there is exactly one non-notify POST
-    // (the form's own save). With several, none can be told apart, so the answer stays unknown rather than picking one.
-    // No body named a reference: the last POST before notify is the intake, by the page's own order. Its own answer is the
-    // first hop when it redirected, never the redirect target's 200; a request that never answered is no answer at all.
+    // (the form's own save). With several, none can be told apart, so the answer stays unknown rather than picking one. Its
+    // own answer is the first hop when it redirected, never the redirect target's 200; a request that never answered is none.
     const last = intakeAnswer ?? (intake.length === 1 ? intake[0] : null);
     const intakeStatus = last ? (last.hop ?? last.status) : null;
     if (!reference) reference = (shown.match(/(?:reference|ref(?:erence)?\s*(?:id|no\.?)?)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,80})/i) || [])[1] || null;
     let png;
     if (await within(ab("screenshot", "/tmp/canary.png"), 8000, null)) png = readFileSync("/tmp/canary.png").toString("base64");
-    // fired is the gate answering 204 itself: a service worker's own 204 means the request never left the page.
-    const notifyState = !notify ? "not-fired" : notify.synthetic ? "unknown" : notify.status === 204 ? "fired" : notify.status ? "not-fired" : "unknown";
+    // fired is the gate answering the notify POST itself with 204: a redirect's target's 204 is not the gate taking it, and a
+    // service worker's response never left the page at all.
+    const notifyStatus = notify && !notify.synthetic ? (notify.hop ?? notify.status) : null;
+    const notifyState = notifyStatus === 204 ? "fired" : notifyStatus ? "not-fired" : notify ? "unknown" : "not-fired";
     out({
       status: intakeStatus ?? 0, finalUrl, pageTitle, notify: notifyState,
-      notifyStatus: notify ? notify.status : null, reference, submittedAt: new Date(submittedAt).toISOString(), png,
+      notifyStatus, reference, submittedAt: new Date(submittedAt).toISOString(), png,
     });
   } catch (e) {
     out({ error: line(e) });
