@@ -264,7 +264,7 @@ test("plan: an adopted PR's merge is refused when the generation is stale or shi
 
 test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
   const H = "a".repeat(40);
-  const run = async (adopted, plain = false, taskStatus = "in_progress", classic = 404) => {
+  const run = async (adopted, plain = false, taskStatus = "in_progress", classic = 404, runs = []) => {
     const calls = [];
     const gh = async (method, path) => {
       calls.push(`${method} ${path}`);
@@ -273,7 +273,7 @@ test("an adoption's direct merge: no checks and none required merges at its boun
         mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: plain ? { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] } } : null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
       } } } } };
       if (path.includes("/rules/branches/")) return { status: 200, body: [] };
-      if (path.includes("/check-runs")) return { status: 200, body: { check_runs: [] } };
+      if (path.includes("/check-runs")) return { status: 200, body: { check_runs: runs } };
       if (path.endsWith("/statuses") || path.includes("/statuses?")) return { status: 200, body: [] };
       if (path.endsWith("/required_status_checks")) return { status: classic, body: {} };
       if (method === "PUT") return { status: 200, body: { sha: "c".repeat(40) } };
@@ -310,6 +310,10 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   const unread = await run(true, false, "in_progress", 403);
   assert.equal(unread.calls.filter((c) => c.startsWith("PUT")).length, 0, unread.calls.join("\n"));
   assert.equal(unread.outcomes.length, 0, "waiting, not settled");
+  // The advisory design review alone is no CI: still waiting, never merged on it.
+  const design = await run(true, false, "in_progress", 403, [{ name: "design-review", status: "completed", conclusion: "success" }]);
+  assert.equal(design.calls.filter((c) => c.startsWith("PUT")).length, 0, design.calls.join("\n"));
+  assert.equal(design.outcomes.length, 0, "waiting, not settled");
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {

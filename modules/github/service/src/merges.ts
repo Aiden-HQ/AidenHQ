@@ -191,7 +191,7 @@ export function createMerges(d: {
     return requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body);
   }
   /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts but the
-   * advisory design review; with none reported yet there is nothing to judge, so the caller waits. */
+   * advisory design review; with none of those reported yet (the design review alone included) the caller waits. */
   const fallbackRequired = (checks: { name: string }[]) => [...new Set(checks.map((c) => c.name).filter((n) => n !== DESIGN_REVIEW_CHECK))];
   async function mergePut(repo: string, number: number, sha: string, method: string, body: string, token: string): Promise<string> {
     // A squash or merge commit is the owner's, signed by the queue that made it (the rebase method keeps the PR's own commits).
@@ -278,8 +278,9 @@ export function createMerges(d: {
       // Only the checks the rules require are judged, and none required counts as green (a merge outside ship needs a check on
       // the head); when the rules can't be read (403), every check on the head is judged instead.
       const rules = open ? await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? "")) : [];
-      if (open && !rules && !checks.length) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
-      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required: rules ?? fallbackRequired(checks), checks } : undefined;
+      const required = rules ?? fallbackRequired(checks);
+      if (open && !rules && !required.length) return wait("no checks have reported on its head yet, and the branch's rules can't be read");
+      const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required, checks } : undefined;
       const v = decide(data, p.head, ship);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
       const pull = data.repository.pullRequest;
@@ -606,8 +607,8 @@ export function createMerges(d: {
       const g = await d.reviewGate(repo, number, head);
       const checks = await allChecks(repo, head);
       const rules = await requiredOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
-      if (!rules && !checks.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false };
       const required = rules ?? fallbackRequired(checks);
+      if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false };
       const v = decide(data, head, { queue: false, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
       return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY" };
