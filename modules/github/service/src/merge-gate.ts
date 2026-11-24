@@ -41,6 +41,9 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
       mergedAt mergedBy { login } mergeCommit { oid message }
       files(first: 100) { pageInfo { hasNextPage } nodes { path } }
       latestOpinionatedReviews(first: 30) { nodes { state } }
+      reviews(last: 100) { nodes { state commit { oid } author { login } } }
+      reviewRequests(first: 30) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } }
+      isInMergeQueue mergeQueueEntry { headCommit { oid } }
       commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state description } } } } } } }
       baseRef { compare(headRef: $pullRef) { behindBy } target { oid ... on Commit { statusCheckRollup { state contexts(first: 100) { nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
     }
@@ -122,32 +125,67 @@ export function mergeMethod(repo: Json) {
   return undefined;
 }
 
+/** What to do next with a PR. The merge queue's records use `merge`, `done`, `wait` and `fail`; the rest are ship's. */
+export type Action = "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "enqueue" | "merge" | "done" | "stall" | "fail";
 /**
- * What to do with one PR of an approved record, from `data` (PR_QUERY's answer, withGate applied) and the record's bound `head`:
- * { do: "merge" | "done" | "wait" | "fail", why }. Before a "merge", merges.ts still asks code review's gate.
- * Only our own repos (agents org, product) reach it, so the record is the review. The design review is advisory: it never
+ * Ship's view of an adopted PR, which only ship knows:
+ * - `queue`: its branch merges through the merge queue (mergePath);
+ * - `approve`: ship may post the App's approval now (its `approve` setting and code review's pass for this head: ship's call,
+ *   lane D2's verdict carry-over and fresh-review rule included);
+ * - `review`: an approval on the head is needed though GitHub doesn't ask for one (code review gates the repo);
+ * - `findings`: code review's open important findings on the head;
+ * - `required`: the check names the target branch's rules require (requiredChecks): only those are judged, and none required is green;
+ * - `checks`: every check on the head, every page.
+ */
+export type ShipContext = { queue: boolean; approve: boolean; review?: boolean; findings?: boolean; required: string[]; checks: NamedCheck[] };
+
+/**
+ * The one readiness rule: what to do with one PR from `data` (PR_QUERY's answer, withGate applied) and its bound `head`.
+ * Without `ship` it is the merge queue's for an approved record: { do: "merge" | "done" | "wait" | "fail", why }, and before a
+ * "merge" merges.ts still asks code review's gate; only our own repos (agents org, product) and maintained ones reach it, so
+ * the record is the review. With `ship` (an adopted PR) it never fails what a round can move: a conflict is a repair, red is a
+ * fix, a missing review is a wait; it judges only the required checks, and needs an approval on the head only where GitHub or
+ * code review asks for one. A PR on a non-default base stalls for ship (unsupported). The design review is advisory: it never
  * holds a merge.
  */
-export function decide(data: Json, head: string) {
+export function decide(data: Json, head: string, ship?: ShipContext): { do: Action; why?: string } {
   const pr = data?.repository?.pullRequest;
   if (!pr) return { do: "fail", why: "not found on GitHub" };
   if (pr.state === "MERGED") return pr.headRefOid === head ? { do: "done", why: "already merged" } : { do: "fail", why: `merged by someone else at \`${String(pr.headRefOid).slice(0, 12)}\`, not the approved head` };
   if (pr.state !== "OPEN") return { do: "fail", why: "closed" };
   const def = data.repository.defaultBranchRef?.name;
-  if (!def || pr.baseRefName !== def) return { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
+  if (!def || pr.baseRefName !== def) return ship ? { do: "stall", why: `non-default base unsupported (\`${pr.baseRefName}\`)` } : { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch \`${def}\`: retarget it and ask for its merge again` };
   if (pr.headRefOid !== head) return { do: "fail", why: `its head moved since the merge was approved (now \`${String(pr.headRefOid).slice(0, 12)}\`): for an agent's PR the queue files its merge again at the new head once its checks are green, so there is nothing to do; any other PR needs a new merge request` };
   const states = (pr.latestOpinionatedReviews?.nodes ?? []).map((r: Json) => r.state);
-  if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: "fail", why: "changes are requested on it" };
-  if (pr.isDraft) return { do: "fail", why: "it is a draft" };
-  const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
-  if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
-  const named = namedChecks(rollup);
-  if (!named.length) return { do: "wait", why: "no checks on its head yet" };
-  // Check names are set by whoever can push to the repo: counted, never quoted.
-  const red = named.filter((c) => !c.ok && !c.pending);
-  if (red.length) return { do: "fail", why: `${red.length} check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)` };
-  if (named.some((c) => c.pending)) return { do: "wait", why: `${named.filter((c) => c.pending).length} check(s) still running on its head` };
-  if (skippedImageScan(pr)) return { do: "fail", why: "it changes an image but its image-scan check was skipped" };
+  if (pr.reviewDecision === "CHANGES_REQUESTED" || states.includes("CHANGES_REQUESTED")) return { do: ship ? "fix_review" : "fail", why: "changes are requested on it" };
+  if (pr.isDraft) return { do: ship ? "wait" : "fail", why: "it is a draft" };
+  if (ship && pr.isInMergeQueue) return { do: "wait", why: "in the merge queue" };
+  // A conflict or a branch behind comes first for ship: checks on a conflicted PR may never run until it is repaired.
+  if (ship && (pr.mergeStateStatus === "DIRTY" || pr.mergeStateStatus === "BEHIND")) return { do: "repair", why: pr.mergeStateStatus === "DIRTY" ? `it conflicts with \`${def}\`` : `it is behind \`${def}\`` };
+  if (ship) {
+    // Only the checks the rules require: an optional red check doesn't hold the PR, and a required one not reported yet is running.
+    // A name may report more than once (a check run and a status): the worst of them counts.
+    const judged = ship.required.map((name) => {
+      const all = ship.checks.filter((c) => c.name === name);
+      return all.find((c) => !(c.ok ?? c.success) && !c.pending) ?? all.find((c) => c.pending) ?? all[0] ?? { name, pending: true };
+    });
+    const red = judged.filter((c) => !(c.ok ?? c.success) && !c.pending);
+    if (red.length) return { do: "fix_ci", why: `${red.length} required check(s) failed on its head` };
+    if (judged.some((c) => c.pending)) return { do: "wait", why: `${judged.filter((c) => c.pending).length} required check(s) still running on its head` };
+  } else {
+    const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+    if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
+    const named = namedChecks(rollup);
+    if (!named.length) return { do: "wait", why: "no checks on its head yet" };
+    // Check names are set by whoever can push to the repo: counted, never quoted.
+    const red = named.filter((c) => !c.ok && !c.pending);
+    if (red.length) return { do: "fail", why: `${red.length} check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)` };
+    if (named.some((c) => c.pending)) return { do: "wait", why: `${named.filter((c) => c.pending).length} check(s) still running on its head` };
+  }
+  if (skippedImageScan(pr)) return { do: ship ? "fix_ci" : "fail", why: "it changes an image but its image-scan check was skipped" };
+  if (ship?.findings) return { do: "fix_review", why: "code review has open findings on its head" };
+  // An approval is needed only where GitHub asks for a review or code review gates the repo; elsewhere the trusted hand-off is enough.
+  if (ship && (pr.reviewDecision === "REVIEW_REQUIRED" || ship.review) && !approvedAt(pr, head)) return ship.approve ? { do: "approve", why: "ready, and no approval on its head yet" } : { do: "wait", why: reviewWait(pr) };
   switch (pr.mergeStateStatus) {
     case "CLEAN":
     case "HAS_HOOKS":
@@ -159,15 +197,47 @@ export function decide(data: Json, head: string) {
       const behind = pr.baseRef?.compare?.behindBy !== 0;
       if (behind && base === "pending") return { do: "wait", why: `CI is running on \`${def}\` at \`${tip}\`` };
       if (behind && base === "red") return { do: "wait", why: `\`${def}\` is red at \`${tip}\`: merged once it is green again` };
-      return { do: "merge" };
+      return ship ? { do: ship.queue ? "enqueue" : "merge", why: "ready" } : { do: "merge" };
     }
     case "DIRTY":
       return { do: "fail", why: `it conflicts with \`${def}\`: rebase it and ask for its merge again` };
     case "BEHIND":
       return { do: "fail", why: `it is behind \`${def}\`: rebase it and ask for its merge again` };
     case "BLOCKED":
-      return { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
+      // With the head's approval in, a code owner (or another required review) is what GitHub still waits for.
+      // Any other rule (conversations to resolve, signed commits, a deployment) is one ship doesn't handle: a visible stall.
+      return ship ? (pr.reviewDecision === "REVIEW_REQUIRED" ? { do: "wait", why: reviewWait(pr) } : { do: "stall", why: "blocked by a branch rule ship doesn't handle" }) : { do: "fail", why: "GitHub won't merge it (blocked by a branch rule)" };
     default:
       return { do: "wait", why: "GitHub is still working out whether it can merge" };
   }
+}
+
+/**
+ * The merge path from the branch's rules (GET /repos/{r}/rules/branches/{b}: every ruleset that applies to it): the merge queue
+ * when one requires it, else the direct merge.
+ */
+export function mergePath(rules: unknown): "queue" | "direct" {
+  return Array.isArray(rules) && rules.some((r: Json) => r?.type === "merge_queue") ? "queue" : "direct";
+}
+
+/**
+ * The checks the target branch requires: the rulesets' (the rules read above) plus classic branch protection's
+ * (GET /repos/{r}/branches/{b}/protection/required_status_checks; a 404 is none), by name. An empty list is a confirmed answer.
+ */
+export function requiredChecks(rules: unknown, classic?: Json): string[] {
+  const named = new Set<string>();
+  for (const r of Array.isArray(rules) ? rules : []) if (r?.type === "required_status_checks") for (const c of r.parameters?.required_status_checks ?? []) named.add(String(c.context));
+  for (const c of classic?.contexts ?? []) named.add(String(c));
+  for (const c of classic?.checks ?? []) named.add(String(c.context));
+  return [...named];
+}
+
+/** Whether a person's or the App's approval stands on exactly this head (a dismissed one, or one of an older head, doesn't). */
+export const approvedAt = (pr: Json, head: string) => (pr?.reviews?.nodes ?? []).some((r: Json) => r?.state === "APPROVED" && r.commit?.oid === head);
+
+/** The review GitHub still asks for: the code owner team or person it requested as owner, else a plain required review. */
+function reviewWait(pr: Json) {
+  const owner = (pr?.reviewRequests?.nodes ?? []).find((r: Json) => r?.asCodeOwner)?.requestedReviewer;
+  const who = owner?.combinedSlug ?? owner?.login;
+  return who ? `waiting on code owner @${who}` : "waiting for required review";
 }

@@ -19,7 +19,9 @@ import { inOrg } from "./git-auth.ts";
 // github-mcp's built entry (the image builds it beside this tree): it starts both connections and hands back the owner's access.
 import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
-import { createService } from "./service.ts";
+import { createService, reviewerOf, shipAdoptions } from "./service.ts";
+import { gitHubApp } from "../../connections/github-mcp/dist/src/github-app.js";
+import { join } from "node:path";
 import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
 import { startAppMigration } from "./migrate.ts";
@@ -51,6 +53,10 @@ const handle = createService({
   productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo),
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   reviewGate,
+  // The ship module's adoptions, only while it is on (compiled): absent, every write naming an adoption is refused.
+  ...(env.GITHUB_SHIP === "1" ? { ship: shipAdoptions({ url: "http://ship:8101", key: () => key }) } : {}),
+  // The reviewer identity is the owner's one GitHub App (the one code review posts as), where it is installed.
+  reviewer: reviewerOf(gitHubApp({ dir: join(env.GITHUB_STATE_DIR ?? "/state", "github-app") })),
   log,
 });
 log("starting", { connected: access.connected(), tasks: Boolean(env.TASKS_DIR), fleetOrg });

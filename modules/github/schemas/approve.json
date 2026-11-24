@@ -1,0 +1,36 @@
+{
+  "title": "github.approve: the reviewer App's approval of this adopted PR at exactly this head, for this adoption.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo",
+    "number",
+    "head",
+    "generation",
+    "base"
+  ],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "pattern": "^[\\w.-]+/[\\w.-]+$"
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[\\w./-]+$"
+    }
+  }
+}

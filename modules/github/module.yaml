@@ -299,6 +299,10 @@ services:
         # review's pass for its head, asked at code-review:8098 (whose service joins this module's network) with this module's
         # own token, which code review checks with the kernel.
         GITHUB_REVIEW_GATED: "${settings.code_review_gated}"
+        # `1` while the ship module is on (compile derives it): writes for an adopted PR (a leased push, approve, enqueue, an
+        # adoption's merge) are checked against ship's GET /v1/generation at ship:8101 with this module's own token. Empty:
+        # every such write is refused.
+        GITHUB_SHIP: "${settings.ship_enabled}"
 # The board's Connect/Reconnect for GitHub: its sign-in token, only while this module is on.
 board_env:
   GITHUB_AUTH_TOKEN_FILE: ${secrets.github_auth_token}
@@ -317,9 +321,14 @@ writes:
   # platform check on them (writes.ts).
   push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
   pr: { args: schemas/pr.json, floor: 0, card: *card }
-  merge: { args: schemas/merge.json, floor: 0, card: *card }
+  merge: { args: schemas/merge.json, floor: 0, filed_by: [ ship ], card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
+  # approve and enqueue: the ship module's effects on one adopted PR, each bound to its head, target and generation (plan.ts
+  # refuses any other filer and any mismatch). An adoption's records carry `generation` (and `attempt` for enqueue and merge) in
+  # their args, so a new try at the same head is a new record.
+  approve: { args: schemas/approve.json, floor: 0, filed_by: [ ship ], card: *card }
+  enqueue: { args: schemas/enqueue.json, floor: 0, filed_by: [ ship ], card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
   # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).
   setup: { args: schemas/setup.json, floor: 1, card: *card }
