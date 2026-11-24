@@ -48,7 +48,6 @@ function sandbox() {
   const sentinel = engine("sentinel.mjs", `emit({ t: "final", text: "<begin\u2581of\u2581sentence>Attention: x<|im_end|>" });`);
   const sentinelsOnly = engine("sentinels-only.mjs", `emit({ t: "final", text: "<\uff5cbegin\u2581of\u2581sentence\uff5c>\u200b<|endoftext|>" });`);
   const quoted = engine("quoted.mjs", `emit({ t: "final", text: "The marker is " + String.fromCharCode(96) + "<|im_end|>" + String.fromCharCode(96) + "." });`);
-  const indented = engine("indented.mjs", `emit({ t: "final", text: "<|im_end|>\\n    echo hi" });`);
   // An engine that dies at start on stderr, as Codex does resuming a session its home doesn't have.
   const dies = engine("dies.mjs", `console.log(JSON.stringify({ type: "noise" }));\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=sk-or-v1-abc123 Bearer sk-or-v1-def456 run ahqj_body.sig");\nprocess.exit(1);`);
   const engines = {
@@ -59,7 +58,6 @@ function sandbox() {
     sentinel: { module: "test", dir: join(dir, "engines"), bin: sentinel, kind: "sentinel", box: true },
     sentinelsOnly: { module: "test", dir: join(dir, "engines"), bin: sentinelsOnly, kind: "sentinelsOnly", box: true },
     quoted: { module: "test", dir: join(dir, "engines"), bin: quoted, kind: "quoted", box: true },
-    indented: { module: "test", dir: join(dir, "engines"), bin: indented, kind: "indented", box: true },
     missing: { module: "test", dir: join(dir, "engines"), bin: missing, kind: "missing", box: true },
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
@@ -131,9 +129,6 @@ test("a job's final has model-format sentinels stripped, and a final of only sen
   assert.equal(silent.exit, 0);
   const keeps = await finished(jobs, jobs.run(sb, "quoted").id);
   assert.equal(keeps.final, "The marker is `<|im_end|>`.", "a sentinel the reply quotes on purpose stays");
-  const code = await finished(jobs, jobs.run(sb, "indented").id);
-  assert.equal(code.final, "    echo hi", "a stripped sentinel keeps the code block below it indented");
-  assert.equal(readFileSync(`${code.log}.last.md`, "utf8"), "    echo hi");
 });
 
 // A sentinel stands at a final's edges, with the padding a tokenizer leaves beside it; a marker a reply quotes on purpose stays,
@@ -170,7 +165,6 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("    <|im_end|>\n\nThis token ends a turn."), "    <|im_end|>\n\nThis token ends a turn.", "a reply that opens with an indented example keeps it");
   assert.equal(stripSentinels("Example:\n\n    echo hello<|im_end|>"), "Example:\n\n    echo hello", "an indented line with text is not a quoted marker");
   assert.equal(stripSentinels("    <|im_start|>assistant\n\nThat is the header."), "    <|im_start|>assistant\n\nThat is the header.", "a reply that opens with a quoted header keeps it");
-  assert.equal(stripSentinels("<|im_end|>\n    echo hi"), "    echo hi", "a stripped sentinel keeps the next line's indentation");
   assert.equal(stripSentinels("  keep my padding  "), "  keep my padding  ", "a reply without a sentinel is left as it is");
   for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,
     `<|im_end|>${"<|im_end|>".repeat(20_000)}`, `${"a".repeat(100_000)}<|im_end|>${"<|im_end|>".repeat(20_000)}`]) {

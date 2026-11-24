@@ -163,12 +163,6 @@ const quoted = (text: string, at: number, lineStart: number) => {
   const prefix = text.slice(lineStart, at);
   return prefix.includes(">") || /^(?:\t| {4})/.test(prefix);
 };
-/** Where the reply's own text starts: past the padding a removed sentinel left, but not past a line's indentation. */
-const bodyStart = (text: string, from: number, to: number) => {
-  const at = skipStart(text, from, to);
-  const nl = text.lastIndexOf("\n", at - 1);
-  return nl >= from ? nl + 1 : at;
-};
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
   const starts = [0];
@@ -215,10 +209,9 @@ export function stripSentinels(text: string): string {
       to = end - hit.length;
     }
   }
-  // A reply of nothing but padding is no reply; anything else keeps its own text as the model wrote it, its first line's
-  // indentation included (a code block a stripped sentinel sat above), so the body starts at that line rather than past it.
+  // A reply of nothing but padding is no reply; anything else is its own text, and a removed sentinel takes the padding beside it.
   if (from === 0 && to === text.length) return skipStart(text, 0, to) === to ? "" : text;
-  return text.slice(bodyStart(text, from, to), skipEnd(text, from, to));
+  return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
 }
 export function firstError(logPath: string): string {
   let head = "";
@@ -510,7 +503,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const end = () => {
       const status = exitStatus(exitFile);
       const code = status === "" ? null : Number(status);
-      let lastMessage = stripSentinels(String(final ?? ""));
+      let lastMessage = stripSentinels(String(final ?? "")).trim();
       const startError = code === 127 && `couldn't start ${r.engine}: ENOENT`;
       if (!lastMessage && startError) {
         appendFileSync(logPath, `# ${startError}\n`);
