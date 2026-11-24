@@ -6,6 +6,9 @@
 //   ambiguous: what discovery couldn't settle (the Engineer proposes the command with ship_configure; the setting wins from then on)
 export const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
+// The `github.repair` request's limits (modules/github/schemas/repair.json, plan).
+const MAX_GLOBS = 200, MAX_GLOB_LEN = 300, MAX_COMMANDS = 20;
+
 export type Discovered = { globs: string[]; commands: { dir: string; cmd: string }[]; ambiguous: string[] };
 
 const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
@@ -17,7 +20,8 @@ const GEN_RUN = /\b(make\s+(generate|gen|codegen)\b|(npm|pnpm|yarn)\s+(run\s+)?(
 
 /** `files`: path → text, from the target branch (`.gitattributes`, `.github/workflows/*`, Makefiles, package.json, go files, …). */
 export function discover(files: Record<string, string>): Discovered {
-  const globs = new Set<string>();
+  // The lockfiles first: they stay when the list is capped below.
+  const globs = new Set<string>(LOCKFILES.map((l) => `**/${l}`));
   const ambiguous: string[] = [];
   for (const [path, text] of Object.entries(files)) {
     if (base(path) === ".gitattributes") {
@@ -32,7 +36,6 @@ export function discover(files: Record<string, string>): Discovered {
     }
     if (HEADER.test(text.split("\n", 5).join("\n"))) globs.add(path);
   }
-  for (const l of LOCKFILES) globs.add(`**/${l}`);
 
   const byDir = new Map<string, string>();
   const put = (dir: string, cmd: string) => { if (!byDir.has(dir)) byDir.set(dir, cmd); };
@@ -63,7 +66,14 @@ export function discover(files: Record<string, string>): Discovered {
     while (dir !== "." && !(`${dir}/go.mod` in files)) dir = dirOf(dir);
     put(dir, "go generate ./...");
   }
-  return { globs: [...globs], commands: [...byDir].map(([dir, cmd]) => ({ dir, cmd })), ambiguous };
+  // The repair request takes at most MAX_GLOBS paths of MAX_GLOB_LEN characters and MAX_COMMANDS commands: past that the rest is
+  // left out and said, loudly (the owner or the Engineer sets `generated` with wider globs), never a request that fails every pass.
+  const fit = [...globs].filter((g) => g.length <= MAX_GLOB_LEN);
+  const kept = fit.slice(0, MAX_GLOBS);
+  if (kept.length < globs.size) ambiguous.push(`${globs.size - kept.length} generated path(s) are left out of the repair (its request holds ${MAX_GLOBS} paths of up to ${MAX_GLOB_LEN} characters): set \`generated.globs\` with wider globs`);
+  const commands = [...byDir].map(([dir, cmd]) => ({ dir, cmd }));
+  if (commands.length > MAX_COMMANDS) ambiguous.push(`${commands.length - MAX_COMMANDS} generate command(s) are left out of the repair (its request holds ${MAX_COMMANDS}): set \`generated.command\``);
+  return { globs: kept, commands: commands.slice(0, MAX_COMMANDS), ambiguous };
 }
 
 /**

@@ -95,3 +95,25 @@ test("a CI re-run with no push (fix_ci, wait, fix_ci at one head) wakes the task
   for (let i = 0; i < 3; i++) await pass.open("acme/app", main, pr, new Set([9]));
   assert.equal(wakes.length, 1);
 });
+
+test("a report that failed to post is posted again on the next pass", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  state.put({ repo: "acme/app", number: 10, generation: 1, trigger: { kind: "label", event: "e10", actor: "maria", at: "2026-11-24T09:00:00Z", head: "a".repeat(40) }, task: "T10", hold: null });
+  let fail = true;
+  const posted = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: {} }), state, kernel: { call: async () => ({}) },
+    settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "wait", why: "CI is running" }),
+    effects: { comment: async (_r, _n, body) => { if (fail) throw new Error("502"); posted.push(body); return 7; }, askReview: async () => {} },
+  });
+  const pr = { number: 10, url: "https://github.com/acme/app/pull/10", headRefOid: "a".repeat(40), baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } };
+  const main = { name: "main", rollup: { contexts: { nodes: [] } } };
+  await pass.open("acme/app", main, pr, new Set([10]));
+  assert.equal(posted.length, 0);
+  fail = false;
+  await pass.open("acme/app", main, pr, new Set([10]));
+  assert.equal(posted.length, 1);
+  assert.equal(state.get("acme/app", 10).reportStale, undefined);
+  assert.equal(state.get("acme/app", 10).report, 7);
+});

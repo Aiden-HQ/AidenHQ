@@ -54,6 +54,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const s = d.settings(pr.repo);
   let a = d.state.get(pr.repo, pr.number) as Kept | undefined;
   if (!a || !s) return "nothing";
+  // A report that failed last pass is posted again first.
+  if (a.reportStale) await report(d, a, pr, a.reportStale);
+  a = d.state.get(pr.repo, pr.number) as Kept;
   // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
   // Landed: a hand-off's task ends with it (a fleet PR's task is its opener's), whatever else holds the PR.
   if (pr.state === "merged" && v.do === "done") {
@@ -232,9 +235,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
 async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts) {
   try {
     const id = await d.comment(pr.repo, pr.number, renderReport(a, pr, f), a.report);
-    const kept: Kept = { ...a, report: id };
-    if (id !== a.report) d.state.put(kept);
+    if (id !== a.report || a.reportStale) { const { reportStale: _, ...kept } = a; d.state.put({ ...kept, report: id }); }
   } catch (e) {
     d.log("report failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
+    d.state.put({ ...a, reportStale: f });
   }
 }
