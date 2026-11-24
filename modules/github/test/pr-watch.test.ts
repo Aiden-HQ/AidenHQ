@@ -1038,3 +1038,17 @@ test("a conflicting head gets no leave-it-alone wedge wake", async (t) => {
   await c.watch.tick();
   assert.ok(!c.woke.some((w) => /Leave the head alone/.test(w.text ?? "")), "a conflicted head has a move to make: never leave-it-alone");
 });
+
+// self-review: an unreadable check-runs listing leaves the classification pending, so no red-head wake for a failure CI may
+// never have run. The next tick reads it and re-runs the job.
+test("a failed listing defers the red-head wake instead of fixing a failure CI may not have run", async (t) => {
+  let broken = true;
+  const c = await rig(t, { steps: [], restRuns: () => { if (broken) throw new Error("The operation was aborted due to timeout"); return [{ id: 77, node_id: `CR_77`, name: "test", status: "completed", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" }]; } });
+  c.set([c.agentPr(77, redPr(77))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "an unread list is not proof the failure is the code's");
+  broken = false;
+  await c.watch.tick();
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the next pass judges it and re-runs the never-started job");
+  assert.equal(c.woke.length, 0, "still no wake: the job never started");
+});

@@ -77,9 +77,11 @@ const PROBES_PER_PASS = 10;
 /** How long one recovery probe may wait out the owner's rate limit before it is deferred to the next tick: the pass reads
  * several checks in sequence, so a probe that would sleep out a quota window must not hold the PRs after it. */
 const PROBE_DEADLINE_MS = 5_000;
-/** The write side of the same bound: a recovery re-run that would wait out a quota window is deferred to the next tick, not
- * slept on inline (the same reason as a probe's: every later PR's merge waits behind this serial scan). */
-const RECOVERY_WRITE_DEADLINE_MS = 5_000;
+/** The write side of the same bound. A write must still see a whole attempt through inside its budget (the client's 30 s
+ * attempt timeout), so the deadline is that plus the wait this pass will tolerate: a quota that clears within five seconds is
+ * waited out, and a longer one refuses at once and is deferred to the next tick rather than slept on inline (every later PR's
+ * merge waits behind this serial scan). */
+const RECOVERY_WRITE_DEADLINE_MS = PROBE_DEADLINE_MS + 30_000;
 /** Actions job reads of a PR's budget kept free for the never-started path, so the wedged scan of still-running jobs cannot
  * spend them all and leave a failed job that never started unjudged (which would be woken as if it had run). */
 const NEVER_STARTED_RESERVE = 2;
@@ -258,14 +260,16 @@ export function startPrWatch(o: PrWatchOptions) {
       }
     }
     /** Re-run the failed jobs of red checks whose jobs never started, once per head. True when the red checks are all of that kind
-     * (or when the pass could not read them yet: the next tick asks again). */
-    async function neverStarted(pr: Json): Promise<boolean> {
+     * (or when the pass could not read them yet: the next tick asks again), false when a step ran so the failure is the code's,
+     * and `"unknown"` when the head could not be judged at all (the listing failed): the red-head rules then wait a tick rather
+     * than wake a task to fix a failure CI never ran. */
+    async function neverStarted(pr: Json): Promise<boolean | "unknown"> {
       const rollup = rollupOf(pr);
       const red = (rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun" ? n.status === "COMPLETED" && n.conclusion === "FAILURE" && n.name !== DESIGN_REVIEW_CHECK : ["FAILURE", "ERROR"].includes(n.state) && n.context !== CODE_REVIEW_STATUS);
       if (!red.length || rollup?.contexts?.pageInfo?.hasNextPage) return false;
       const own = red.filter((n: Json) => n.name !== GATE_CHECK); // the aggregate only rolls the others up
       const listed = await latestRuns(pr.headRefOid);
-      if (!listed || !listed.complete) return false; // an unread list cannot say a job never started: the red-head rules decide
+      if (!listed || !listed.complete) return "unknown"; // an unread list cannot say a job never started: the next tick judges it
       const unstarted: Json[] = [];
       const checks = own.length ? own : red;
       // Every one of the head's checks must be judged before a re-run is asked (a partly judged head would re-run a job whose
@@ -655,7 +659,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const opener = opened[url];
       // `neverStarted`'s answer for this head, asked once a pass: it spends Actions reads and re-runs jobs, so the mixed-state
       // report below and the red-head rules further down share one call rather than each probing the same jobs.
-      let envRed: boolean | undefined;
+      let envRed: boolean | "unknown" | undefined;
       // Only an agent's own PR is re-run (an outside author's failure is nobody's here), so only its head is probed for it.
       const redsAreEnvironment = async () => (envRed ??= pr.mergeable === "MERGEABLE" && !!opener && opener.branch === pr.headRefName ? await neverStarted(pr) : false);
       // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
@@ -732,7 +736,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && redNow.length && state.reded[url] !== pr.headRefOid && !state.breaker[url]?.told && !(await redsAreEnvironment())) {
+      } else if (optional.length && redNow.length && state.reded[url] !== pr.headRefOid && !state.breaker[url]?.told && (await redsAreEnvironment()) === false) {
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
         // other rule wakes for it while a named check is still pending. Tell the task the failure once at this head. A red whose
         // job never started is the environment's (`redsAreEnvironment`): re-running it is the fix, never a push, so no wake.
@@ -809,8 +813,10 @@ export function startPrWatch(o: PrWatchOptions) {
         if (w === "sent") log("merge requested", { pr: pr.url, task: opener.task, head: pr.headRefOid });
         continue;
       }
-      // Red checks whose jobs never started are the environment's: re-run once at this head, never a rebase or a wake.
-      if (pr.mergeable === "MERGEABLE" && await redsAreEnvironment()) continue;
+      // Red checks whose jobs never started are the environment's: re-run once at this head, never a rebase or a wake. A head
+      // whose listing could not be read is judged next tick, not woken on a failure CI may never have run.
+      const env = await redsAreEnvironment();
+      if (pr.mergeable === "MERGEABLE" && (env || env === "unknown")) continue;
       const why = rebaseReason(pr, main.rollup);
       if (why === "conflict" || why === "red") {
         const key = `${url}:${main.oid}`;

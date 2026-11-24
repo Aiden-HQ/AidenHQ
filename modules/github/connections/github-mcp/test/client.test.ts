@@ -667,3 +667,24 @@ it("reports variables.org on a GraphQL answer without errors, never one with err
   await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" }, { as: { key: "app:1", token: async () => "ghs_app" } });
   expect(seen).toEqual(["acme"]);
 });
+
+it("a background write's caller deadline still leaves room for a whole attempt, and one that does not refuses before sending", async () => {
+  let clock = 1_000_000;
+  const sent: string[] = [];
+  const access = createAccess({
+    auth: auth(),
+    now: () => clock,
+    sleep: async (ms) => void (clock += ms),
+    fetchImpl: async (u) => {
+      sent.push(new URL(String(u)).pathname);
+      return answer(201, {});
+    },
+  });
+  // 35 s: five seconds of tolerated wait plus the 30 s a write's attempt may take, so the POST goes out.
+  const ok = await access.rest("POST", "/repos/acme/api/actions/jobs/1/rerun", {}, { background: true, deadline: clock + 35_000 });
+  expect(ok.status).toBe(201);
+  // 5 s cannot see an attempt through: the client refuses it before it is sent, so a caller's tight bound never sends unsent work.
+  const err = await access.rest("POST", "/repos/acme/api/actions/jobs/1/rerun", {}, { background: true, deadline: clock + 5_000 }).catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(sent).toEqual(["/repos/acme/api/actions/jobs/1/rerun"]);
+});
