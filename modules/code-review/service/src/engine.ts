@@ -1612,8 +1612,9 @@ export function createEngine(d: EngineDeps) {
   function opening(c: Repo, p: PullRequest, policy: string, at: number): boolean {
     const must = c.on_open.filter((x) => x.mandatory);
     // A tier whose opening reviewers are all advice: its opening batch runs once when the run of heads starts, and holds nothing.
+    // Any run queued under the policy since (a push batch that replaced it too) means it was asked for: never queued again.
     if (!must.length) {
-      if (!c.on_open.length || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND policy = ? AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' AND created >= ?", p.repo, p.number, policy, at)) return false;
+      if (!c.on_open.length || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND policy = ? AND kind != 'oneoff' AND created >= ?", p.repo, p.number, policy, at)) return false;
       trigger(c, p, "open", true);
       return true;
     }
