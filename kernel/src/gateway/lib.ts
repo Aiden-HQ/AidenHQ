@@ -175,7 +175,52 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
   const have = new Set((db.prepare("PRAGMA table_info(calls)").all() as { name: string }[]).map((c) => c.name));
   for (const c of ["owner", "gen", "changed"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
   db.exec("DROP INDEX IF EXISTS calls_changed; CREATE INDEX IF NOT EXISTS calls_pull ON calls (COALESCE(changed, at), key)");
+  // A count per day of the writes that left a call final (any status but `reserved` or `unsettled`, which never changes again),
+  // kept by the database for every connection and process (a draining peer kernel's too): monthSpend's cache of the closed days'
+  // final calls is good while their counts are unchanged.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS calls_final (day TEXT PRIMARY KEY, n INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS calls_open ON calls (day) WHERE status IN ('reserved', 'unsettled');
+    CREATE TRIGGER IF NOT EXISTS calls_final_add AFTER INSERT ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
+      INSERT INTO calls_final (day, n) VALUES (NEW.day, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1; END;
+    CREATE TRIGGER IF NOT EXISTS calls_final_set AFTER UPDATE ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
+      INSERT INTO calls_final (day, n) VALUES (NEW.day, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1; END;
+  `);
   return { db, moved: moveLedger(db, legacy) };
+}
+
+/**
+ * Month `m`'s spend (`spent`: every call; `settled`: without holds that may still shrink, as limits() counts them), exact and
+ * cheap: the closed days' final calls (days before today; a final call never changes, and the ledger keeps 40 days, so none
+ * leaves the month) are summed once and kept while their calls_final counts stand; calls not yet final (few: on calls_open, a partial
+ * index) and today's are read each time. `open`: cut-off calls closed at or after it may still be trued up.
+ */
+export function monthSpend(db: DatabaseSync, now: () => number) {
+  const FINAL = "status NOT IN ('reserved', 'unsettled')";
+  const q = {
+    count: db.prepare("SELECT COALESCE(SUM(n), 0) AS n FROM calls_final WHERE day >= ? AND day < ?"),
+    final: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day < ? AND ${FINAL}`),
+    finalDay: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND ${FINAL}`),
+    open: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS spent, COALESCE(SUM(CASE WHEN status = 'unsettled' AND (gen IS NULL OR at < ?) THEN cost_usd END), 0) AS settled FROM calls INDEXED BY calls_open WHERE status IN ('reserved', 'unsettled') AND day >= ? AND day <= ?"),
+  };
+  let kept: { key: string; s: number } | undefined;
+  // Whole nano-dollars, so the parts' float sum meets a cap exactly where one SUM would.
+  const usd = (n: number) => Math.round(n * 1e9) / 1e9;
+  const read = (m: string, open: string) => {
+    const today = day(now()), from = `${m}-01`, until = month(now()) === m ? today : `${m}-32`;
+    // The count is read before the sum: a write between them only costs one more sum next time.
+    const key = `${from}|${until}|${(q.count.get(from, until) as { n: number }).n}`;
+    if (kept?.key !== key) kept = { key, s: (q.final.get(from, until) as Sum).s };
+    const live = q.open.get(open, from, `${m}-31`) as { spent: number; settled: number };
+    const todays = until === today ? (q.finalDay.get(today) as Sum).s : 0;
+    return { spent: usd(kept.s + todays + live.spent), settled: usd(kept.s + todays + live.settled) };
+  };
+  // One snapshot: limits() reads inside its reservation's transaction; the spend summary gets its own.
+  return (m: string, open: string): { spent: number; settled: number } => {
+    if (db.isTransaction) return read(m, open);
+    db.exec("BEGIN");
+    try { return read(m, open); } finally { db.exec("COMMIT"); }
+  };
 }
 
 /**
@@ -406,13 +451,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     spentTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL"),
     spentDay: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE agent_id = ? AND day = ?"),
     spentAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ?"),
-    // A month's days, on the day index (`day` is YYYY-MM-DD; the ledger keeps 40 days).
-    spentMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ?"),
     // The same without holds that may still shrink: calls in flight (`reserved`) and cut-off ones a true-up may still settle
     // (`unsettled` with a generation id, inside TRUE_UP_MS of their close): what is spent for good. And one call's hold.
     settledTask: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE task_subject = ? AND agent_id IS NOT NULL AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
     settledAll: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day = ? AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
-    settledMonth: db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ? AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)"),
     holdOf: db.prepare("SELECT cost_usd AS s FROM calls WHERE key = ? AND status = 'reserved'"),
     rehold: db.prepare("UPDATE calls SET cost_usd = ? WHERE key = ? AND status = 'reserved'"),
     spenders: db.prepare("SELECT DISTINCT agent_id FROM calls WHERE day = ? AND agent_id IS NOT NULL"),
@@ -433,9 +475,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     // A cap refusal's ledger row: its key is `cap:<run key>:<scope>:<subject>:<cap>`.
     refusedRun: db.prepare("SELECT key, rowid AS n FROM calls WHERE run_key = ? AND status = 'cap_reached' ORDER BY rowid"),
   };
+  const spentMonth = monthSpend(db, now);
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
     db.prepare("DELETE FROM calls WHERE at < ?").run(cut);
+    db.prepare("DELETE FROM calls_final WHERE day < ?").run(cut.slice(0, 10));
     db.prepare("DELETE FROM filed WHERE at < ?").run(cut);
     db.prepare("DELETE FROM runs WHERE at < ?").run(new Date(now() - 7 * DAY_MS).toISOString());
     db.prepare("DELETE FROM ci_tokens WHERE exp < ?").run(new Date(now() - 2 * DAY_MS).toISOString());
@@ -560,7 +604,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     return [
       ...(set.task && task ? [{ scope: "task" as const, subject: task, cap: set.task, spent: (q.spentTask.get(task) as Sum).s, settled: (q.settledTask.get(task, open) as Sum).s }] : []),
       ...(set.day ? [{ scope: "day" as const, subject: d, cap: set.day, spent: (q.spentAll.get(d) as Sum).s, settled: (q.settledAll.get(d, open) as Sum).s }] : []),
-      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, spent: (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s, settled: (q.settledMonth.get(`${m}-01`, `${m}-31`, open) as Sum).s }] : []),
+      ...(set.month ? [{ scope: "month" as const, subject: m, cap: set.month, ...spentMonth(m, open) }] : []),
     ];
   }
 
@@ -980,7 +1024,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         const t = now(), today = day(t), r4 = (n: number) => Math.round(n * 1e4) / 1e4, set = limitsSet();
         const ids = new Set([...Object.keys(grants()), ...(q.spenders.all(today) as { agent_id: string }[]).map((r) => r.agent_id)]);
         const agents = [...ids].map((agent_id) => ({ agent_id, spent: r4((q.spentDay.get(agent_id, today) as Sum).s) })).sort((a, b) => b.spent - a.spent);
-        const m = month(t), monthSpent = (q.spentMonth.get(`${m}-01`, `${m}-31`) as Sum).s;
+        const m = month(t), monthSpent = spentMonth(m, new Date(t - TRUE_UP_MS).toISOString()).spent;
         return send(res, 200, { day: today, month: m, install: { day: { spent: r4((q.spentAll.get(today) as Sum).s), cap: set.day }, month: { spent: r4(monthSpent), cap: set.month } }, agents });
       }
       if (req.method === "GET" && path === "/v1/models/catalog") {
