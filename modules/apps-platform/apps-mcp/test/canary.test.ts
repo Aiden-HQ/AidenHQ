@@ -115,6 +115,9 @@ describe("app_page_canary", () => {
     // The submit control is the one in the form that owns the filled field, not the first submit-like button on the page.
     expect(script).toContain("a.closest && a.closest('form')");
     expect(script).toContain("data-aidenhq-canary-submit");
+    // The intake is the POST before notify that carries the reference, not whatever the page posts last.
+    expect(script).toContain("x.at <= notify.at");
+    expect(script).toContain("intakeAnswer ?? intake.at(-1)");
     expect(script).toContain("intake.some((x) => x.status == null)");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);
