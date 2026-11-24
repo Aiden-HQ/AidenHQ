@@ -166,6 +166,8 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("Example:\n\n    echo hello<|im_end|>"), "Example:\n\n    echo hello", "an indented line with text is not a quoted marker");
   assert.equal(stripSentinels("Done.<|im_start|>\nmodel"), "Done.<|im_start|>\nmodel", "a role on the next line is the reply's own word");
   assert.equal(stripSentinels("    <|im_end|>Attention: x"), "Attention: x", "an indented marker beside reply text is still a leak");
+  assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|>", "a quoted example stays when a leak follows it");
+  assert.equal(stripSentinels("<|im_end|>\n    echo hi"), "    echo hi", "a stripped sentinel keeps the next line's indentation");
   assert.equal(stripSentinels("    <|im_start|>assistant\n\nThat is the header."), "    <|im_start|>assistant\n\nThat is the header.", "a reply that opens with a quoted header keeps it");
   assert.equal(stripSentinels("  keep my padding  "), "  keep my padding  ", "a reply without a sentinel is left as it is");
   for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,

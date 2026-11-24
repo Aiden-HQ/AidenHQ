@@ -164,13 +164,14 @@ const beforeHeader = (text: string, from: number, to: number) => {
  * A line's prefix is capped at QUOTE_PREFIX, so a long line costs the same as a short one.
  */
 const QUOTE_PREFIX = 256;
-const quoted = (text: string, from: number, to: number, lineStart: number, lineEnd: number) => {
+const quoted = (text: string, from: number, to: number, lineStart: number, lineEnd: number, limit = text.length) => {
   if (from - lineStart > QUOTE_PREFIX) return false;
   const prefix = text.slice(lineStart, from);
   if (!/^[ \t>]*$/.test(prefix) || !(prefix.includes(">") || /^(?:\t| {4})/.test(prefix))) return false;
+  const end = Math.min(lineEnd, limit);
   let i = to;
-  while (i < lineEnd && PAD.test(text[i]!)) i++;
-  return i === lineEnd;
+  while (i < end && PAD.test(text[i]!)) i++;
+  return i === end;
 };
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
@@ -201,25 +202,29 @@ export function stripSentinels(text: string): string {
     const reach = after ?? hit?.length;
     if (reach === undefined) break;
     // A reply that opens by showing a marker or header on a quoted line ("    <|im_end|>") is text, not a leak.
-    if (quoted(text, at, at + reach, ...leadLine(at))) break;
+    if (quoted(text, at, at + reach, ...leadLine(at), to)) break;
     from = at + reach;
   }
   // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
   for (;;) {
     const head = beforeHeader(text, from, to);
     // A header and role a quoted line shows ("> <|im_start|>assistant") are the reply's example, not a leak.
-    if (head !== undefined && !quoted(text, head, skipEnd(text, from, to), ...tailLine(head))) to = head;
+    if (head !== undefined && !quoted(text, head, skipEnd(text, from, to), ...tailLine(head), to)) to = head;
     else {
       const end = skipEnd(text, from, to);
       const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length)
-        && text[end - s.length - 1] !== "\\" && !quoted(text, end - s.length, end, ...tailLine(end - s.length)));
+        && text[end - s.length - 1] !== "\\" && !quoted(text, end - s.length, end, ...tailLine(end - s.length), to));
       if (!hit) break;
       to = end - hit.length;
     }
   }
-  // A reply of nothing but padding is no reply; anything else is its own text, and a removed sentinel takes the padding beside it.
-  if (from === 0 && to === text.length) return skipStart(text, 0, to) === to ? "" : text;
-  return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
+  // A reply of nothing but padding is no reply. Anything else is its own text: a reply no sentinel touched keeps every
+  // character as the model wrote it, and one a sentinel opened keeps its first line's indentation (a code block it sat above).
+  const start = skipStart(text, from, to), end = skipEnd(text, from, to);
+  if (start >= end) return "";
+  if (from === 0 && to === text.length) return text;
+  const nl = text.lastIndexOf("\n", start - 1);
+  return text.slice(nl >= from ? nl + 1 : start, end);
 }
 export function firstError(logPath: string): string {
   let head = "";
@@ -511,7 +516,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const end = () => {
       const status = exitStatus(exitFile);
       const code = status === "" ? null : Number(status);
-      let lastMessage = stripSentinels(String(final ?? "")).trim();
+      let lastMessage = stripSentinels(String(final ?? ""));
       const startError = code === 127 && `couldn't start ${r.engine}: ENOENT`;
       if (!lastMessage && startError) {
         appendFileSync(logPath, `# ${startError}\n`);
