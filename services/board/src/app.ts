@@ -1809,12 +1809,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // The kernel not answering is "unavailable" (the strict reads throw; the page keeps its last good response), never an empty list.
         // A page of the live read that fails (the kernel restarting) is not "no live records": it fails the read, and the page keeps its
         // last complete response (marked stale) rather than publishing a short list that would drop an old blocked merge off the cards.
-        const [cards, all, live] = await Promise.all([
+        // Every undecided card (owner or reviewer) is read apart too, page by page: an old one must not fall off behind newer records.
+        const [cards, all, live, undecided] = await Promise.all([
           cardsOf("recent", { limit: 100, strict: true }),
           cardsOf("recent", { limit: 100, tier0: true, strict: true }),
           records.live().then((rows) => Promise.all(rows.map(named))),
+          records.allOf("pending").then((rows) => Promise.all(rows.map(named))),
         ]);
-        const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
+        const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state)), ...undecided];
         const seen = new Set(cards.map((c) => c.id));
         const rest = held.filter((a) => !seen.has(a.id) && (seen.add(a.id), true));
         return { approvals: [...cards, ...rest].map((a) => shownApproval(names, a)) };

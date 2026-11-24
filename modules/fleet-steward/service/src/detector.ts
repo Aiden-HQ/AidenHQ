@@ -437,8 +437,13 @@ export function pingPong(jobs: JobRow[], t: number): { task: string; agents: str
   const out: { task: string; agents: string[]; n: number }[] = [];
   for (const [task, list] of by) {
     const runs = list.sort((a, b) => a.started_at!.localeCompare(b.started_at!));
-    const agents = [...new Set(runs.map((j) => j.agent))];
-    if (agents.length === 2 && runs.length >= PING_PONG.n && runs.every((j, i) => i === 0 || j.agent !== runs[i - 1]!.agent)) out.push({ task, agents, n: runs.length });
+    // The latest alternating stretch (an earlier retry on one agent doesn't hide it).
+    let from = runs.length - 1;
+    if (from > 0 && runs[from - 1]!.agent !== runs[from]!.agent) from--;
+    while (from > 0 && runs[from - 1]!.agent !== runs[from]!.agent && runs[from - 1]!.agent === runs[from + 1]!.agent) from--;
+    const latest = runs.slice(from);
+    const agents = [...new Set(latest.map((j) => j.agent))];
+    if (agents.length === 2 && latest.length >= PING_PONG.n) out.push({ task, agents, n: latest.length });
   }
   return out;
 }
@@ -844,11 +849,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
       const t = now();
       const out: Incident[] = [];
       const live = lookup();
-      for (const a of await agents()) {
-        for (const p of pingPong(await jobsOf(a.id), t)) {
-          const task = await live(p.task);
-          if (task && !out.some((o) => o.key === slug(task))) out.push({ key: slug(task), reason: `task ${task}: ${p.n} runs in 12 hours alternated between two agents (${p.agents.map(slug).join(", ")})` });
-        }
+      const jobs = (await Promise.all((await agents()).map((a) => jobsOf(a.id)))).flat();
+      for (const p of pingPong(jobs, t)) {
+        const task = await live(p.task);
+        if (task && !out.some((o) => o.key === slug(task))) out.push({ key: slug(task), reason: `task ${task}: ${p.n} runs in 12 hours alternated between two agents (${p.agents.map(slug).join(", ")})` });
       }
       return out;
     },

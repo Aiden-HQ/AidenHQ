@@ -51,11 +51,14 @@ const REMOVED = "[code removed a line here that imitates a label or an author's 
  * format (a line that is neither a label nor quoted under one): the review then goes on without the comments, never unmarked.
  */
 export function markComments(text: string): string | undefined {
-  const list: { label: string; author: string; mark: string; lines: string[] }[] = [];
+  const list: { label: string; author: string; mark: string; lines: string[]; note: string[] }[] = [];
+  let inNote = false;
   for (const line of text.split("\n")) {
     const m = LABEL_LINE.exec(line);
-    if (m) list.push({ label: line, author: m[1]!, mark: `[${m[1]}${m[2] ? ` ${m[2]}` : ""}]`, lines: [] });
-    else if (/^>( |$)/.test(line) && list.length) list.at(-1)!.lines.push(IMITATION.test(line.replace(/^> ?/, "")) ? REMOVED : line.replace(/^> ?/, ""));
+    if (m) { list.push({ label: line, author: m[1]!, mark: `[${m[1]}${m[2] ? ` ${m[2]}` : ""}]`, lines: [], note: [] }); inNote = false; }
+    else if (/^>( |$)/.test(line) && list.length) (inNote ? list.at(-1)!.note : list.at(-1)!.lines).push(IMITATION.test(line.replace(/^> ?/, "")) ? REMOVED : line.replace(/^> ?/, ""));
+    // The kernel's own note under an owner's short answer read against an agent's form (review-loop.ts): unquoted, but code's, and an author's text can't begin it (its lines are all quoted).
+    else if (line.startsWith("(code matched these letters") && list.length) { list.at(-1)!.note.push(line); inNote = true; }
     else if (line !== "") return undefined;
   }
   const out: string[] = [];
@@ -63,7 +66,9 @@ export function markComments(text: string): string | undefined {
   let size = 0;
   for (const c of list.reverse()) {
     const kept = c.lines.length > COMMENT_LINES ? [...c.lines.slice(0, COMMENT_LINES), `[… ${c.lines.length - COMMENT_LINES} more lines omitted by code …]`] : c.lines;
-    const one = `${c.label}\n${kept.map((l) => `${c.mark} ${l}`.trimEnd()).join("\n")}`;
+    // The note quotes the agent's form, so it carries its own mark: those words are the agent's, not the author's.
+    const note = c.note.map((l) => `[code, quoting the agent's form] ${l}`.trimEnd());
+    const one = `${c.label}\n${[...kept.map((l) => `${c.mark} ${l}`.trimEnd()), ...note].join("\n")}`;
     if ((size += one.length + 2) > MAX_COMMENTS - 200) break;
     out.unshift(one);
     shown.push(c.author);

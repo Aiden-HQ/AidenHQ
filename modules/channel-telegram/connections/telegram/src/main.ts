@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import pino from "pino";
-import { sendBatch, sendOutcomes, syncCards, type DecideSetting } from "./approvals.js";
+import { applyButtons, sendBatch, sendOutcomes, syncCards, type DecideSetting } from "./approvals.js";
 import { makeChat, startTelegramPoll } from "./chat.js";
 import { quickCommand } from "./commands.js";
 import { kernelClient } from "./kernel.js";
@@ -133,10 +133,14 @@ else {
     fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }), signal: AbortSignal.timeout(15_000) });
   void startTelegramPoll(cfg, store, chat, log, {
     start: (u) => handleStart(u, pairing, store, sendTo, log),
-    command: async (text) => (text.startsWith("/") ? quickCommand(text, (_m, p) => kernel.read(p), await chat.company(), kernel.openTasks) : null),
+    command: async (text) => {
+      if (!text.startsWith("/")) return null;
+      const r = await quickCommand(text, (_m, p) => kernel.read(p), await chat.company(), kernel.openTasks);
+      return r?.applyTo ? { ...r, markup: await applyButtons(kernel, store, r.applyTo, decideSetting).catch(() => undefined) } : r;
+    },
     // null: the voice module is off (the owner is told how to turn it on).
     transcribe: async (fileId: string) => ((await voiceOn(whisperUrl)) ? transcribe(cfg.telegramToken, whisperUrl, fileId) : null),
-    reply: (r) => postTelegram(cfg, r.text, buttonsMarkup(store, r.actions ?? [])),
+    reply: (r) => postTelegram(cfg, r.text, r.markup ?? buttonsMarkup(store, r.actions ?? [])),
     stop: chat.stop,
     approvals: { kernel, setting: decideSetting },
   });

@@ -7,6 +7,10 @@ export type OpenState = () => Promise<{ tasks: { identifier: string | null; kind
 export interface QuickReply {
   text: string;
   actions?: string[];
+  /** Task identifiers whose pending card the owner may approve from a button (made by main.ts from the kernel's cards). */
+  applyTo?: string[];
+  /** Ready-made buttons (set by main.ts). */
+  markup?: unknown;
 }
 
 export const COMMANDS = [
@@ -33,7 +37,7 @@ export async function quickCommand(text: string, api: Api, company: string, open
       const rows = list.slice(0, 15).map((t) => line({ identifier: t.identifier, title: titles.get(t.identifier) }));
       return {
         text: `**Waiting on you (${list.length}):**\n${rows.join("\n")}${list.length > 15 ? `\n…and ${list.length - 15} more` : ""}`,
-        actions: list.slice(0, 4).map((t) => `Apply ${t.identifier}`),
+        applyTo: list.slice(0, 4).map((t) => t.identifier!),
       };
     }
     case "status": {

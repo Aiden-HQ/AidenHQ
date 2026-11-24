@@ -81,5 +81,5 @@ export function fromTelegramCallback(update: unknown, ownerChatId: string, store
   const label = store.getKv(key);
   if (!label) return null;
   store.setKv(key, "");
-  return { message: { source: "telegram", text: label }, chatId, messageId: Number(msg.message_id), label };
+  return { message: { source: "telegram", text: label, ...(msg.message_id ? { replyTo: String(msg.message_id) } : {}) }, chatId, messageId: Number(msg.message_id), label };
 }

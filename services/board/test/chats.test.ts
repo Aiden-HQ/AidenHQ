@@ -22,12 +22,13 @@ describe("replyActions", () => {
 });
 
 describe("askedQuestions", () => {
-  it("finds the options of the task's own agent's newest reply that offered some; another agent's reply is never one", () => {
+  it("finds the options of the task's own agent's newest reply, only if it offered some; another agent's reply is never one", () => {
     const c = (id: string, o: Record<string, unknown>) => ({ id, body: "", authorType: "agent", authorAgentId: "a1", authorUserId: null, createdAt: id, ...o });
     const ask = c("1", { body: `Which exception? ${REPLY_MARKER} <!-- aidenhq-questions:[{"question":"Which?","options":["Source build","Wait upstream"]}] -->` });
     const note = c("2", { body: `Still waiting on your call. ${REPLY_MARKER}` });
-    expect(askedQuestions([ask, note], "a1")?.id).toBe("1");
-    expect(askedQuestions([ask, note], "a2")).toBeUndefined();
+    expect(askedQuestions([ask], "a1")?.id).toBe("1");
+    expect(askedQuestions([ask, note], "a1")).toBeUndefined(); // a newer reply of its own retires the form
+    expect(askedQuestions([ask], "a2")).toBeUndefined();
   });
 });
 

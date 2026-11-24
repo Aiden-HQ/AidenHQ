@@ -70,20 +70,32 @@ export function diffPath(l: string): string | undefined {
   return (/^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l))?.[1];
 }
 
-/** The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. */
+/**
+ * The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. `retype`:
+ * the record adds a file whose path the record before it deleted (git's two records for a file-type change, symlink to file).
+ */
 export function diffFiles(diff: string | null | undefined) {
-  const out: { path: string; add: number; del: number }[] = [];
+  const out: { path: string; add: number; del: number; removed: boolean; retype: boolean; oldN: number; newN: number }[] = [];
   let hunk = false;
   for (const l of String(diff ?? "").split("\n")) {
     const path = diffPath(l);
+    const cur = out.at(-1);
     if (path !== undefined) {
-      out.push({ path, add: 0, del: 0 });
+      out.push({ path, add: 0, del: 0, removed: false, retype: false, oldN: 0, newN: 0 });
       hunk = false;
-    } else if (l.startsWith("@@")) hunk = true;
-    else if (hunk && out.length && l.startsWith("+")) out.at(-1)!.add++;
-    else if (hunk && out.length && l.startsWith("-")) out.at(-1)!.del++;
+    } else if (!cur) continue;
+    else if (l.startsWith("@@")) {
+      hunk = true;
+      const h = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(l);
+      if (h) { cur.oldN += h[1] === undefined ? 1 : Number(h[1]); cur.newN += h[2] === undefined ? 1 : Number(h[2]); }
+    }
+    else if (hunk && l.startsWith("+")) cur.add++;
+    else if (hunk && l.startsWith("-")) cur.del++;
+    else if (!hunk && l.startsWith("deleted file mode")) cur.removed = true;
+    else if (!hunk && l.startsWith("new file mode")) { const prev = out.at(-2); cur.retype = Boolean(prev?.removed && prev.path === cur.path); }
   }
-  return out;
+  // `whole`: the hunks' own line counts match the lines present (a patch cut short is not whole).
+  return out.map(({ path, add, del, retype, oldN, newN }) => ({ path, add, del, retype, whole: add === newN && del === oldN && (add > 0 || del > 0) }));
 }
 
 /**
@@ -93,7 +105,18 @@ export function diffFiles(diff: string | null | undefined) {
 export function sameChanges(changed: { path: string; add?: number; del?: number }[], diff: string) {
   const key = (f: { path: string; add?: number; del?: number }) => (f.add === undefined ? f.path : `${f.path} (+${f.add} -${f.del})`);
   const binary = new Set(changed.filter((f) => f.add === undefined).map((f) => f.path));
-  const want = changed.map(key).sort(), got = diffFiles(diff).map((f) => (binary.has(f.path) ? f.path : key(f))).sort();
+  const want = changed.map(key).sort();
+  // A file-type change is two records in the diff and one numstat line, whose counts are the content's difference (not the sum
+  // of the records'): a whole delete + whole add of a path numstat lists once is that line. Records of one path from separate diffs have two lines.
+  const once = (p: string) => changed.filter((f) => f.path === p).length === 1;
+  const records = diffFiles(diff);
+  // The pair is checked against the patch itself (a whole delete of the old content, a whole add of the new), not numstat's counts.
+  const pair = (i: number) => records[i]!.whole && records[i]!.add === 0 && records[i + 1]?.retype && records[i + 1]!.whole && records[i + 1]!.del === 0 && once(records[i]!.path);
+  const got = records.flatMap((f, i) => {
+    if (f.retype && i > 0 && pair(i - 1)) return [];
+    if (pair(i)) return [key(changed.find((c) => c.path === f.path)!)];
+    return [binary.has(f.path) ? f.path : key(f)];
+  }).sort();
   const left = [...got];
   const missing = want.filter((k: string) => { const i = left.indexOf(k); return i < 0 || (left.splice(i, 1), false); });
   return [...missing.map((k: string) => `in the change, not the diff: ${k}`), ...left.map((k: string) => `in the diff, not the change: ${k}`)];

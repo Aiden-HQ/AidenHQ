@@ -32,7 +32,7 @@ const olderTier0Live = { ...tier0Live, id: "k-00000000000000b4", wait: "waiting 
 const kernel = createServer((req, res) => {
   seen.push(`${req.headers.authorization} ${req.url}`);
   const liveRead = [live, olderLive, tier0Live, olderTier0Live];
-  const records = req.url!.includes("state=approved") ? liveRead : req.url!.includes("tier0=1") ? [ran, tier0Live, record, live] : [record, live];
+  const records = req.url!.includes("state=pending") ? [record] : req.url!.includes("state=approved") ? liveRead : req.url!.includes("tier0=1") ? [ran, tier0Live, record, live] : [record, live];
   res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ records }));
 });
 let app: ReturnType<typeof createApp>;
@@ -54,7 +54,7 @@ it("shows the kernel's records read from /v1/writes, and Tier 0 runs after the f
   expect(json.error).toBeUndefined();
   // The live read names `tier0=1`: a Tier 0 record in flight is a running card too, and no tier filter may hide it. It is also
   // paged (`live`, below): a short first page is the whole set, so no `after` follows it.
-  expect(seen.sort()).toEqual([`Bearer ${KEY} /v1/writes?state=approved&limit=1000&tier0=1`, `Bearer ${KEY} /v1/writes?state=recent&limit=100`, `Bearer ${KEY} /v1/writes?state=recent&limit=100&tier0=1`]);
+  expect(seen.sort()).toEqual([`Bearer ${KEY} /v1/writes?state=approved&limit=1000&tier0=1`, `Bearer ${KEY} /v1/writes?state=pending&limit=1000&tier0=1`, `Bearer ${KEY} /v1/writes?state=recent&limit=100`, `Bearer ${KEY} /v1/writes?state=recent&limit=100&tier0=1`]);
   expect(json.approvals).toEqual([
     expect.objectContaining({ id: record.id, action: "deploy_app", state: "pending", tier: 2, sentence: "Deploy crm", digest: record.digest }),
     // A claimed record is live, never a consumed `used` card, and carries its wait reason.
