@@ -100,14 +100,23 @@ Every read is REST and conditional. Each kind of event has exactly one source re
 1. **Open PRs** (snapshot). `GET /repos/:r/pulls?state=open&per_page=100`, every page. The snapshot holds number, head sha,
    base sha and ref, draft, title and labels.
 2. **Issues and PRs updated since the cursor** (cursor). `GET /repos/:r/issues?state=all&sort=updated&direction=asc&since=<cursor>&per_page=100`.
-   - A non-PR number above the highest seen is `issues.opened`.
+   - A non-PR item created after the repo's baseline and within the last 2 days is `issues.opened`. This list is ordered
+     by update, not number, so "new" is decided by `created_at`, never by a highest-seen number. The reader keeps the ids
+     it sent as `issues.opened` or `*.created` for 2 days, saved with its state, and skips one it reads again.
    - The cursor is the newest `updated_at` read. Items at exactly the cursor time are re-read, and their ids dedupe.
 3. **Issue events.** `GET /repos/:r/issues/events?per_page=100`. GitHub serves this list newest first, with no `since`, so
    pages are read back to the newest event id already sent. Labels, issue closes and reopens come from here, each with its
    actor. More than 10 pages back is the one place a busy interval could lose events: the pass sends what it read and
    records the loss (§7). At this instance's volume (a few events a minute) that cannot happen, so it fails loudly.
-4. **Conversation comments** (cursor). `GET /repos/:r/issues/comments?sort=created&direction=asc&since=<cursor>&per_page=100`.
-5. **Review comments** (inline and thread replies; cursor). `GET /repos/:r/pulls/comments?sort=created&direction=asc&since=<cursor>&per_page=100`.
+4. **Conversation comments** (cursor). `GET /repos/:r/issues/comments?sort=updated&direction=asc&since=<cursor>&per_page=100`.
+5. **Review comments** (inline and thread replies; cursor). `GET /repos/:r/pulls/comments?sort=updated&direction=asc&since=<cursor>&per_page=100`.
+
+   Both are sorted by update, the field `since` filters on, so the cursor marks exactly what was read. As for issues, a
+   comment is `*.created` when it was created after the baseline and within the last 2 days and its id isn't among those
+   already sent; an edit emits nothing.
+
+   A pass that starts with a cursor more than 2 days old (the reader was down that long) is recorded as a loss (§7), so a
+   creation that ages past the window during catch-up is loud, never silently dropped.
 6. **The default branch.** `GET /repos/:r/branches/:default`. Its head joins the heads below.
 
 **Heads** (snapshots). These are each open PR's head and the default branch's head. Each is read every pass while unsettled
@@ -129,6 +138,7 @@ read that depends on it changes and the spec is amended. Nothing switches at run
 - An authenticated `304` doesn't count against the primary limit.
 - Each page of a list has its own stable ETag.
 - `since` on `issues`, `issues/comments` and `pulls/comments` returns every item created or edited after it.
+- `sort=updated&direction=asc` is honoured on `issues/comments` and `pulls/comments`.
 - `check-runs?filter=all` lists re-runs.
 - `statuses` lists carry an id per status.
 
@@ -163,12 +173,14 @@ the PR then moves to C:
   isn't the connection's owner. A resend can't help. The event is dropped and logged, and the pass is recorded with that
   error (§7) so the Fleet Steward sees it.
 
-**State.**
-- A repo read for the first time records its snapshots and emits nothing: a subscription starts from now, as `eventsRepo`
-  does.
-- A repo whose state was lost (the file missing or unreadable while the kernel still has events from this connection) does
-  the same and also emits `github.resync` for that repo. Every subscriber treats `resync` as a bootstrap of that repo (§4).
-- In both cases the pass is recorded with "baseline", so a lost state file is visible, never silent.
+**State.** A baseline is a repo's first read with no saved state: it records the snapshots and emits nothing but
+`github.resync` for that repo. Every subscriber treats `resync` as a bootstrap of that repo (§4), and that bootstrap runs
+after the baseline, so nothing that happened before it is lost. This one rule covers both cases:
+- a repo read for the first time (newly watched, or the reader's first start);
+- a repo whose state was lost (the file missing or unreadable).
+
+A first read is an ordinary pass. A lost state file (missing or unreadable while the kernel still has events from this
+connection) is recorded as "baseline", a loss (§7), so it is visible, never silent.
 
 ### Cadence
 
@@ -225,11 +237,11 @@ Everything a consumer keys on is in `data`.
 | Kind | Source | `id` | `data` (besides `number`) | `text` |
 | --- | --- | --- | --- | --- |
 | `pull_request.opened` | open PRs: a new number | `<repo>#<n>:opened` | `head`, `base`, `base_ref`, `head_ref`, `draft`, `fork`, `author_kind` | title, blank line, body |
-| `pull_request.synchronize` | open PRs: the head changed | `<repo>#<n>:head:<gen>.<k>` | `head`, `before`, `base` | none |
-| `pull_request.ready_for_review` / `.converted_to_draft` | open PRs: `draft` flipped | `<repo>#<n>:draft:<gen>.<k>` | `head` | none |
+| `pull_request.synchronize` | open PRs: the head changed | `<repo>#<n>:head:<gen>.<k>` | `head`, `before`, `base` | the title |
+| `pull_request.ready_for_review` / `.converted_to_draft` | open PRs: `draft` flipped | `<repo>#<n>:draft:<gen>.<k>` | `head` | the title |
 | `pull_request.edited` | open PRs: the title changed | `<repo>#<n>:title:<gen>.<k>` | `head` | the title |
-| `pull_request.closed` | open PRs: the number left; one `GET /pulls/:n` | `<repo>#<n>:closed:<closed_at>` | `head`, `merged`, `merge_sha` | none |
-| `pull_request.reopened` | open PRs: a closed number is back | `<repo>#<n>:reopened:<gen>.<k>` | `head` | none |
+| `pull_request.closed` | open PRs: the number left; one `GET /pulls/:n` | `<repo>#<n>:closed:<closed_at>` | `head`, `merged`, `merge_sha` | the title |
+| `pull_request.reopened` | open PRs: a closed number is back | `<repo>#<n>:reopened:<gen>.<k>` | `head` | the title |
 | `issues.opened` | new issues (non-PR) | `<repo>#<n>:opened` | `author_kind`, `created_at`, `labels` | title, blank line, body |
 | `issues.labeled` / `.unlabeled`, `pull_request.labeled` / `.unlabeled` | issue events | `ev:<event id>` | `label`, `actor` | none |
 | `issues.closed` / `.reopened` | issue events (non-PR) | `ev:<event id>` | `actor`, `state_reason` | none |
@@ -237,11 +249,15 @@ Everything a consumer keys on is in `data`.
 | `pull_request_review_comment.created` | review comments | `review_comment:<id>` | `in_reply_to`, `author_kind` | the comment |
 | `pull_request_review.submitted` | reviews | `review:<id>` | `state`, `head` (`commit_id`) | none |
 | `check_run.completed` | check runs of a head | `check:<check run id>` | `head`, `name`, `conclusion`, `prs` (open PR numbers on that head), `branch` (default branch only) | none |
-| `status` | statuses of a head | `status:<status id>` | `head`, `context`, `state`, `prs` | none |
+| `status` | statuses of a head | `status:<status id>` | `head`, `context`, `state`, `prs`, `branch` (default branch only) | none |
 | `push` | the default branch moved | `<repo>:push:<gen>.<k>` | `ref`, `before`, `after` | none |
-| `github.resync` | the reader's state was lost (§1) | `<repo>:resync:<time>` | none | none |
+| `github.resync` | a baseline: first read or lost state (§1) | `<repo>:resync:<time>` | none | none |
 
 **Field rules:**
+- **The PR record.** Every `pull_request.*` event from the open-PR snapshot (all but `labeled` / `unlabeled`) carries the PR's whole record from the snapshot in `data` (`head`, `base`,
+  `base_ref`, `head_ref`, `draft`, `fork`, `author_kind`) beside its own fields (`before`, `merged`, `merge_sha`), and its
+  title in `text` (with the body on `opened`). A consumer never has to merge partial events to know a PR's fork or draft
+  state; the table lists only each kind's own fields.
 - **`author_kind`.** It uses the rule `flow.ts` `kindOf` already applies (`agent`, `owner`, `outside`), computed once here so
   consumers stop re-deriving it.
 - **`author`.** The login.
@@ -318,7 +334,8 @@ module configured for one repo never reads another repo's text.
 
 **Special answers:**
 - With no `after`, the answer is `{ events: [], next: <current max seq> }`: the watermark a fresh consumer starts from.
-- `gap: true` means `after` is older than the oldest row kept.
+- `gap: true` means retention deleted rows newer than `after`. Retention records the highest seq it has deleted
+  (`pruned_through`, one row beside the log); `gap` is `after < pruned_through`. An empty or young log never reports a gap.
 
 **The committed cursor.** A consumer sends `after` = the last seq it **committed**, never one it has only read. The kernel
 records `(module, connection, after, at)` in `event_readers`, so a handler that keeps crashing shows as a cursor that never
@@ -331,6 +348,10 @@ moves (§7).
 - The kernel keeps each id once.
 - A consumer commits its cursor only after its handlers' effects are committed, so a crash redelivers. Each handler is
   idempotent (§4).
+
+**A handler that can't succeed.** A transient failure (GitHub or the kernel briefly down) throws, and the redelivery is
+the retry. A handler that fails every time is a bug: its cursor stops, `feedLag` names the module within 10 minutes (§7),
+and once the bug is fixed the cursor resumes with nothing skipped. There is no skip or dead-letter path.
 
 **Latency.** A consumer reads the log every 5 s. That is a local call, with no GitHub cost. It adds at most 5 s to the
 reader's 15–60 s.
@@ -355,8 +376,8 @@ Every consumer gets the same five pieces:
   its compiled subscription and its own settings beside its cursor. A start whose digest changed bootstraps only the repos
   the change touched (added, or with changed gate settings), then resumes from the cursor.
 
-The reader silently baselines a newly watched repo. That needs no event, because the consumer's own bootstrap reads that
-repo directly.
+A newly watched repo's baseline emits `github.resync` (§1), so a consumer's own bootstrap of it is followed by one more
+after the baseline. Both are idempotent, and anything opened in between is caught.
 
 Events that overlap a bootstrap read are handled idempotently. This is catch-up, not a second path: the timers are deleted.
 
@@ -381,24 +402,30 @@ These run in the same process as the reader, so they take its events in-process,
 **The design review sweep.**
 - Runs `sweep()` for a task when its PR gets `synchronize` or `closed`, or a `status` for the `design-review` context.
 - Its `readPr` becomes the reader's snapshot of that PR.
-- `startDesignReviewSweep`'s timer is deleted.
+- On `github.resync` it sweeps every open design-review task of that repo, reading each one's PR once, so a close or verdict
+  missed while state was lost is still settled.
+- `startDesignReviewSweep`'s timer stays, kernel-only: it retries closes the kernel didn't take (no answer, `5xx`), from the
+  reason already in the task's row. It no longer reads GitHub.
 
 **The release train.**
-- Its GitHub inputs move to the reader's events: `push` on the instance repo (then one read of `instance.yaml`), and `push`,
-  `check_run.completed` or `status` on the product repo's default branch (tip and green come from the reader's snapshot of
-  that head).
-- Its other work stays on its 1-minute timer, because it reads only the kernel: following a filed bump's record and sweeping
-  its own task family.
+- Its GitHub inputs move to the reader's events: `push` on the instance repo (then one read of `instance.yaml`, kept in
+  memory and read once at start), and `push`, `check_run.completed` or `status` on the product repo's default branch (tip and green come from the
+  reader's snapshot of that head).
+- `step()` stays on its 1-minute timer, over those cached inputs: `trainStep` still runs every minute, so a window that
+  expires with no GitHub change still files its bump. Following a filed bump's record and sweeping its own task family stay
+  there too. The timer reads only the kernel and the cache, never GitHub.
 
 ### The Maintainer (lane 2)
 
 **Subscribes to** `issues.opened`, `issues.labeled`, `issues.closed` and `github.resync`, plus the PR kinds for
 `contributor_prs` until #1680 moves that pass to ship.
 
-**Handlers.**
+**Handlers.** Each runs only for a duty that repo has on, as today: the fix label needs `issues`; `agent-build` and
+`feature-request` need `features`. Other labels and duties are committed with no effect.
 - **A fix label or `agent-build` on `issues.labeled`.** One trust read for that issue: github-mcp's existing
   `latestOrError`, which reads the label timeline and the actor's role. If trusted, the task is filed as today under source
-  `maintainer-issue:<repo>#<n>`, so the kernel keeps one task per issue.
+  `maintainer-issue:<repo>#<n>`, so the kernel keeps one task per issue. If the read answers `error` (GitHub failed), the
+  handler throws and the batch is redelivered; only a definite answer of untrusted commits the event with no task.
 - **`feature-request` on `issues.labeled`.** The same trust read, then the issue joins the `featured` set.
 - **`issues.opened`** whose `author_kind` isn't `agent` and that carries none of the three labels. It goes through
   `triageRepo`'s per-author limit, then the triage task is filed (`maintainer-triage:<repo>#<n>`).
@@ -407,9 +434,12 @@ These run in the same process as the reader, so they take its events in-process,
 
 **Bootstrap.** For each maintained repo, per duty it has on, the existing `repoSince(repo, undefined, label)`:
 - the fix label for `issues`;
-- `agent-build` for `features`.
+- `agent-build` and `feature-request` for `features`. Trusted open `feature-request` issues rebuild `featured`, so the
+  author-cap exemption survives a first start, a gap or a resync.
 
-`repoSince` reads every page and refuses incomplete coverage; `issueList` silently stops after 10 pages. Each open, trusted, labelled issue is
+`repoSince` reads every page and refuses incomplete coverage; `issueList` silently stops after 10 pages. A `repoSince`
+answer with `skipped` entries (a timeline read failed) makes the bootstrap throw, so the event that started it is
+redelivered and the bootstrap retried; it never commits over an unread issue. Each open, trusted, labelled issue is
 filed under its source key, and the kernel dedupes. So labelled issues are reconciled from the start, as today. Unlabelled
 triage starts at the watermark, as `untriaged` does today: issues already open are the daily triage's.
 
@@ -430,8 +460,9 @@ triage starts at the watermark, as `untriaged` does today: issues already open a
 - `github.resync`.
 
 **Handlers.** These are the bodies of today's `poll(cfg)` and `claims(cfg)` in `engine.ts`:
-- **opened, synchronize, ready, reopened.** `upsertPr` from `data` and `text` (the title and body, as stored today). Then the
-  same `trigger` and `missing` decisions, keyed on `(repo, number, head)`.
+- **opened, synchronize, ready, reopened.** `upsertPr` from the event's full PR record in `data` (fork, draft, head, base)
+  and the title in `text`; the stored body is replaced only by `opened`, which carries it. Then the same `trigger` and
+  `missing` decisions, keyed on `(repo, number, head)`.
 - **converted_to_draft.** Updates the row.
 - **closed.** `data.merged` decides the findings' outcome (`open_at_merge` or `open_at_close`). Queued runs are skipped, and
   `close_due` is set; that replaces the extra `GET /pulls/:n`. `closeTasks` runs on the fast tick for every `close_due` row.
@@ -473,8 +504,11 @@ The `prs`, `comments` and `threads` routes stay, for the bootstrap and the per-P
 - **Per PR.** Each PR named in one read of the log, by `number` or by a head's `prs`, is evaluated once. The evaluation is
   today's per-PR body of `scan()`, with its GraphQL read narrowed from the repo's open list to that one PR. Mergeability and
   the rollup stay GraphQL.
+- **Mergeability `UNKNOWN`.** GitHub computes it lazily and sends no event when it settles. An evaluation that reads
+  `UNKNOWN` sets a one-PR deadline 1 minute out and evaluates that PR again, up to 5 times; still unknown after that is
+  logged.
 - **The default branch moves or its CI changes.** A `push` to the default branch, or a `check_run.completed` / `status`
-  whose `branch` is the default, evaluates the repo's open fleet PRs once. The "red while behind a green main" decision depends
+  whose `branch` is the default (both carry it), evaluates the repo's open fleet PRs once. The "red while behind a green main" decision depends
   on main's CI as well as its head.
 - **Task state.** Every minute ship asks the kernel for the state of its open PRs' tasks. That is a kernel read, not a GitHub
   one, and today's scan already does it (`pr-watch.ts:759–763`). A PR whose task was cancelled, or is done, is evaluated even
@@ -494,7 +528,8 @@ The `prs`, `comments` and `threads` routes stay, for the bootstrap and the per-P
 | Close a done task's unmerged PR after 30 min | a one-PR deadline set by the task-state read |
 | Review-findings wake | on `status` (`aidenhq/review`) for the head |
 | Half-hour ask cooldown | a one-PR deadline at the cooldown's end, so a wake it held back is asked again |
-| Contributor-PR nudge and close (`stale_days`) | a one-PR deadline at last activity + `stale_days`; activity = any event on the PR |
+| Mergeability `UNKNOWN` | a one-PR deadline, 1 min, at most 5 times (above) |
+| Contributor-PR nudge and close (`stale_days`) | a one-PR deadline at the time today's `prDue` gives: `last_author_activity` + `stale_days` for the nudge, then the nudge's time + `stale_days` for the close, both doubled for drafts. Activity is the author's own, not checks. At each deadline ship reads that one PR, recomputes `last_author_activity` as today, acts only if it is still stale, and always sets the next deadline from `prDue` |
 | Adopted PRs' rounds (`adopted.ts`) | the same events; the round runs on its PR's evaluation |
 | Flow observation | the reader (above) |
 
@@ -582,7 +617,8 @@ For example, 10 heads, 30 comments, 20 labels or closes and 5 PRs opened or clos
 | The `github` process restarts | The state file is written whole, and passes resume from it. The outbox is sent first. |
 | The state file is lost | Baseline, plus `github.resync` per repo. Consumers bootstrap. Recorded "baseline". |
 | A consumer down or crashing mid-batch | Its committed cursor didn't move, so the batch is redelivered. Idempotent on keys it already has: code review's `(repo, number, head)` runs and `seen`; ship's per-head state (`greened`, `reded`, `pinged`); the Maintainer's task sources; routines' `UNIQUE(routine, id)`. |
-| A consumer behind by over 3 days | `gap: true`, then a bootstrap. |
+| A consumer behind by over 3 days | `gap: true` (rows newer than its cursor were pruned), then a bootstrap. |
+| A handler that fails on every delivery | The cursor stops; `feedLag` names the module. Fixed at the bug, never skipped. |
 | A cursor list longer than 10 pages in one pass | The pass goes on from the saved cursor next time. Nothing is lost. |
 | Over 10 pages of new issue events in one pass | The pass sends what it read and is recorded as a loss ("gap"). Fails loudly. |
 | A flip that reverses inside one interval (draft → ready → draft) | Not seen. The object ends where it started. |
@@ -599,8 +635,8 @@ This reuses what the Steward already reads: `src_meta.ingest_run`, through apps-
 **Reader passes.**
 - The reader records one `ingest_run` per repo every 5 minutes, through github-mcp's `SourceStore.run` (same process). The
   source is `github_feed` and the scope `repo:<owner/name>`.
-- **A run is a loss** if any pass in its window lost something: an issue-events gap, a "baseline" or an event refused for
-  good. A loss is recorded failed with that reason, even when later passes in the same window succeeded. A loss outranks
+- **A run is a loss** if any pass in its window lost something: an issue-events gap, a "baseline" (a lost state file, not a
+  repo's first read) or an event refused for good. A loss is recorded failed with that reason, even when later passes in the same window succeeded. A loss outranks
   ok.
 - **Otherwise a run is ok** if any pass completed, or it carries GitHub's last error.
 - **`rows`** is the number of events sent.
@@ -661,13 +697,13 @@ of its own left.
 | `modules/github/service/src/flow.ts` | `sourceEvent`, `EVENT_REPOS`, `eventsPass`, `eventsRepo`, `/cache/events.json`; `issuesRepo`, `/cache/issues.json`; the backfill and issue and events calls in `churnPass` (churn moves to the scheduler) |
 | `modules/github/connections/github-mcp/src/sources.ts` | `startSync`'s own `setTimeout` loop (`syncOrg` and `retireOrg` stay, scheduled by the reader) |
 | `modules/github/test/events-poll.test.ts` | the whole file |
-| `modules/github/service/src/design-review.ts` | `startDesignReviewSweep`'s timer (`sweep` runs on events) |
+| `modules/github/service/src/design-review.ts` | the GitHub read in `startDesignReviewSweep`'s timer (`sweep` runs on events; the timer only retries kernel closes) |
 | `modules/github/service/src/train.ts` | the GitHub reads in `step` (`github.text` of `instance.yaml` and `github.tip` every minute); the kernel-only follow and sweep keep their timer |
 | `modules/github/module.yaml` | the `events` comment "polled from each subscribed repo's events feed on the code host's churn pass"; `kinds` grows to §2's list |
 | `modules/code-review/service/src/main.ts` | the GitHub `setInterval`, `CODE_REVIEW_POLL_SECONDS`, `wantGithub` |
 | `modules/code-review/service/src/engine.ts` | the timer-driven calls of `poll` and `claims` in `tickWork` |
 | `modules/maintainer/service/src/watcher.ts`, `modules/maintainer/module.yaml` | the timer, the three cursors, `maintainer_poll_minutes`, `MAINTAINER_POLL_MINUTES` |
-| `modules/github/connections/github-mcp/src/maintainer.ts` | `issuesSince`, `repoSince`, `untriaged`, `recentFeatureRequests` and their route |
+| `modules/github/connections/github-mcp/src/maintainer.ts` | `issuesSince`, `untriaged`, `recentFeatureRequests` and the cursor form of their route (`repoSince` stays for the bootstrap) |
 | `modules/github/service/src/pr-watch.ts` → `modules/ship/service/src/loop.ts` | the `next()` timer, `EVERY_MS`, `IDLE_MAX_MS`, the per-minute full scan, Flow observation |
 | `modules/ship/service/src/contributor.ts` (#1680) | the hourly `PR_EVERY` gate |
 | `modules/github/service/src/ship-routes.ts` (#1680) | the `flow` route |
