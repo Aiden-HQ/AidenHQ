@@ -8,7 +8,7 @@
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
 //   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
 //                                context); `pr` and `main` are the list read's node and default branch (OPEN_PRS_QUERY), so the
-//                                PR isn't read again
+//                                PR isn't read again; `stackedOn`: the open PR whose branch is its base
 //   GET  /internal/ship/openers  -> pr-tasks.json: which task opened each PR
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withBranch } from "./branch-lock.ts";
@@ -66,7 +66,7 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
 const FLOW = ["opened", "pushed", "merged", "closed", "checksStarted", "checksCompleted", "authored"] as const;
 
 export function shipRoutes(o: {
-  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json } }) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
+  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
   allowed: (repo: string) => boolean;
   /** Whether a bearer is the ship module's own token (undefined: the kernel couldn't say now). */
@@ -104,7 +104,9 @@ export function shipRoutes(o: {
         const v = b.body?.variables ?? {};
         const read = method === "POST" && path === "/graphql";
         // No `.` or `..` segment (raw or percent-encoded) and no other escape: a path that normalises elsewhere is never sent.
-        const dotted = String(path).split("?")[0]!.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(String(path));
+        // The query may carry an encoded slash (a `head=owner:feat/x` filter): it never changes which path GitHub serves.
+        const bare = String(path).split("?")[0]!;
+        const dotted = bare.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(bare) || /%(2e|5c)/i.test(String(path).slice(bare.length));
         const call = dotted ? undefined : CALLS.find(([m, re]) => m === method && re.test(String(path)));
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
         if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
@@ -117,7 +119,7 @@ export function shipRoutes(o: {
         }
         // `expectTask` is the route's own re-check of ownership, never GitHub's: it is stripped before the call goes out.
         const { expectTask, ...sent } = read ? {} : (b.body ?? {});
-        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : sent;
+        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body === undefined ? undefined : sent;
         // A close or a branch delete runs under this service's per-branch lock (branch-lock.ts), the one the publish holds around its
         // push and its ownership write. A cleanup in the gap between them would otherwise close or delete what a successor just pushed.
         const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);
@@ -160,7 +162,7 @@ export function shipRoutes(o: {
       if (op === "decision" && o.decision) {
         const repo = String(b.repo);
         if (!o.allowed(repo)) return send(res, 403, { error: `ship may not read ${repo.slice(0, 200)}` }), true;
-        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup } } : undefined;
+        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup }, ...(Number.isInteger(b.stackedOn) && b.stackedOn > 0 ? { stackedOn: b.stackedOn } : {}) } : undefined;
         return send(res, 200, await o.decision(repo, Number(b.number), String(b.head), view)), true;
       }
       return send(res, 404, { error: "no such operation" }), true;

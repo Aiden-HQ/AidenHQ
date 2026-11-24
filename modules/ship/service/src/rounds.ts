@@ -113,6 +113,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
 
   const c = a.counters && a.counters.head === pr.head ? a.counters : { ...(a.counters ?? { rounds: 0, ci: 0, review: 0, red: {} }), head: pr.head, wakes: 0, acted: [] };
   a = { ...a, counters: c };
+  // A head whose required checks are green (it is ready, or waits only on review) ends a run of red heads: the CI caps count again.
+  if (["merge", "approve"].includes(v.do) && (c.ci || Object.keys(c.red).length)) { c.ci = 0; c.red = {}; }
   const caps = s.caps;
   const over = (n: number, cap: number | null) => cap !== null && n >= cap;
   // A conflict's repair needs the generated paths: the repo's setting, else discovery on the target branch (actions.ts). Discovery

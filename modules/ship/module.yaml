@@ -9,7 +9,7 @@ license: MIT
 # one typed settings change filed as the calling job; a change that loosens anything is the owner's, made from the Fleet page
 # (the Fleet page).
 requires:
-  - github # the covered repos' reads (/internal/ship/*) and the effects ship files (github.merge, approve, enqueue, repair)
+  - github # the covered repos' reads (/internal/ship/*) and the effects ship files (github.merge, approve, enqueue, repair, retarget)
   - code-review # a new repo is added to settings.code_review with the others (the Fleet page's Add repo)
   - board # contributes.board.pages
 contributes:

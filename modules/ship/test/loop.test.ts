@@ -20,12 +20,12 @@ import { decide } from "../../github/service/src/merge-gate.ts";
 const prTasks = (dir) => join(dir, "pr-tasks.json");
 const notePrTask = (dir, url, v) => writeFileSync(prTasks(dir), JSON.stringify({ ...(existsSync(prTasks(dir)) ? JSON.parse(readFileSync(prTasks(dir), "utf8")) : {}), [url.toLowerCase()]: v }));
 /** github's decision from ship's list node (merges.ts decision), every named check required, code review's verdict as given. */
-const decisionOf = (reviewGate) => async (repo, number, head, { pr, main }) => {
+const decisionOf = (reviewGate) => async (repo, number, head, { pr, main, stackedOn }) => {
   const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
   const checks = namedChecks(rollup);
   const data = { repository: { defaultBranchRef: { name: main.name }, pullRequest: { ...pr, state: "OPEN", baseRefName: pr.baseRefName ?? main.name, reviews: { nodes: [] }, baseRef: { compare: { behindBy: 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } } } } };
   const g = reviewGate ? await reviewGate(repo, number, head) : undefined;
-  const v = decide(data, head, { queue: false, approve: false, verdict: g, required: checks.map((c) => c.name), checks });
+  const v = decide(data, head, { queue: false, approve: false, verdict: g, required: checks.map((c) => c.name), checks, ...(stackedOn ? { stackedOn } : {}) });
   return { ...v, failing: checks.filter((c) => !c.ok && !c.pending).map((c) => c.name), dirty: pr.mergeStateStatus === "DIRTY", ...(g && g.findingsKey ? { findingsKey: g.findingsKey } : {}) };
 };
 /** Task-owned adoptions whose heads were first seen at `at` (a done task's PR closes once its head is half an hour old). */
@@ -1132,4 +1132,90 @@ test("an accepted re-run is remembered per run, so a refused sibling run's retry
   writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify(db));
   await c.watch.tick();
   assert.deepEqual([posts(500), posts(600)], [1, 2], "the accepted run is never posted again; the refused one is retried");
+});
+
+test("a stack A←B: B waits on #A; once A merges, B is retargeted onto main and then merged", async (t) => {
+  let open = [];
+  const writes = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/writes") { writes.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: `w${writes.length}`, state: "claimed" })); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify({ state: "claimed" }));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
+  });
+  t.after(() => kernel.s.close());
+  const updated = [];
+  const gh = async (method, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path.endsWith("/update-branch")) { updated.push(path); return { status: 202, body: {} }; }
+    if (path === "/repos/acme/app/pulls/1") return { status: 200, body: { state: "closed", merged_at: "2026-11-25T10:00:00Z", html_url: "https://github.com/acme/app/pull/1", head: { sha: "h1" }, base: { ref: "main" }, user: { login: "aidenhq", type: "Bot" } } };
+    return { status: 200, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
+  t.after(() => watch.stop());
+  const agent = { author: { __typename: "Bot", login: "aidenhq" } };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
+  const A = pr(1, { ...agent, headRefName: "bA" }), B = pr(2, { ...agent, headRefName: "bB", baseRefName: "bA" });
+  const of = (kind, n) => writes.filter((w) => w.kind === kind && (w.args.number ?? w.args.prs?.[0]?.number) === n);
+
+  open = [B, A];
+  await watch.tick();
+  assert.equal(of("github.merge", 1).length, 1, "A, on main, merges");
+  assert.equal(writes.filter((w) => (w.args.number ?? w.args.prs?.[0]?.number) === 2).length, 0, "B waits on #1");
+  open = [B]; // A merged
+  await watch.tick();
+  assert.deepEqual(of("github.retarget", 2).map((w) => [w.task, w.args.base, w.args.to, w.args.head]), [["ACME-2", "bA", "main", "h2"]], "B goes onto main once");
+  await watch.tick();
+  assert.equal(of("github.retarget", 2).length, 1, "once per head");
+  open = [{ ...B, baseRefName: "main" }]; // retargeted
+  await watch.tick();
+  assert.deepEqual([updated, of("github.merge", 2).length], [["/repos/acme/app/pulls/2/update-branch"], 0], "main is merged in first: never merged on the old diff");
+  await watch.tick(); // GitHub took the update but the head hasn't moved yet
+  assert.deepEqual([updated.length, of("github.merge", 2).length], [1, 0], "nothing moves on the old head, and the update isn't asked twice");
+  open = [{ ...B, baseRefName: "main", headRefOid: "h2b" }]; // the updated head, reviewed whole
+  await watch.tick();
+  assert.deepEqual(of("github.merge", 2).map((w) => [w.args.prs[0].base, w.args.prs[0].head]), [["main", "h2b"]], "then the normal path: merged into main");
+});
+
+test("a stack GitHub retargeted itself (the parent's branch deleted) still brings main in first; a conflict there goes to the repair", async (t) => {
+  let open = [], update = 202;
+  const writes = [], updated = [];
+  const kernel = await listen(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    if (req.url === "/v1/writes") { writes.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: `w${writes.length}`, state: "claimed" })); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify({ state: "claimed" }));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
+  });
+  t.after(() => kernel.s.close());
+  const gh = async (method, path) => {
+    if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
+    if (path.endsWith("/update-branch")) { updated.push(path); return { status: update, body: update === 422 ? { message: "merge conflict between base and head" } : {} }; }
+    if (path.includes("/git/trees/")) return { status: 200, body: { tree: [] } };
+    return { status: 200, body: {} };
+  };
+  const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh });
+  t.after(() => watch.stop());
+  const agent = { author: { __typename: "Bot", login: "aidenhq" } };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/1", { task: "ACME-1", branch: "bA" });
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/2", { task: "ACME-2", branch: "bB" });
+  const A = pr(1, { ...agent, headRefName: "bA", checks: "PENDING" }), B = pr(2, { ...agent, headRefName: "bB", baseRefName: "bA" });
+  open = [B, A];
+  await watch.tick();
+  open = [{ ...B, baseRefName: "main" }]; // A merged, its branch deleted: GitHub moved B itself
+  await watch.tick();
+  assert.deepEqual([updated, writes.filter((w) => w.kind === "github.retarget").length, writes.filter((w) => w.kind === "github.merge").length], [["/repos/acme/app/pulls/2/update-branch"], 0, 0], "main brought in first, never merged on the old head");
+  // The same with a conflict: GitHub refuses the update, and the repair makes the new head.
+  const c = { ...B, number: 3, url: "https://github.com/acme/app/pull/3", headRefName: "bC", headRefOid: "h3" };
+  notePrTask(cacheDir, "https://github.com/acme/app/pull/3", { task: "ACME-3", branch: "bC" });
+  open = [c, A];
+  await watch.tick();
+  update = 422;
+  open = [{ ...c, baseRefName: "main", mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }];
+  await watch.tick();
+  assert.equal(writes.filter((w) => w.kind === "github.repair" && w.args.number === 3).length, 1, "the conflict goes to ship's repair, not a hold");
 });
