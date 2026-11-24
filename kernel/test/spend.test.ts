@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
-import { createGateway, openLedger, ownerOf } from "../src/gateway/lib.ts";
+import { createGateway, monthSpend, openLedger, ownerOf } from "../src/gateway/lib.ts";
 import { mintToken } from "../src/gateway/token.ts";
 import { modelsList } from "./models-list.ts";
 
@@ -257,4 +257,40 @@ test("prices come from OpenRouter's models list: a new model runs and is recorde
   clock += 3600_000;
   assert.equal((await call("acme/nope")).status, 403);
   assert.equal((await call("~acme/brand-new-latest")).status, 200);
+});
+
+test("the month's spend from the closed days' cache equals a full sum, across another connection's writes and a day rollover", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "spend-month-")), "kernel.db");
+  const { db } = openLedger(file);
+  const peer = new DatabaseSync(file); // a draining peer kernel's connection: its writes reach the cache through calls_final
+  let clock = Date.parse("2026-11-16T10:00:00Z");
+  const spend = monthSpend(db, () => clock);
+  const add = (key, day, status, usd, at = `${day}T12:00:00.000Z`, gen = null) => peer.prepare("INSERT INTO calls (key, at, day, run_key, kind, component, model, cost_usd, status, gen) VALUES (?, ?, ?, 'r', 'agent', 'c', 'm', ?, ?, ?)").run(key, at, day, usd, status, gen);
+  add("a", "2026-11-10", "ok", 1);
+  add("b", "2026-11-15", "reserved", 2);
+  add("c", "2026-11-14", "unsettled", 4, "2026-11-16T09:50:00.000Z", "g1"); // closed inside the true-up window
+  add("d", "2026-11-13", "unsettled", 8, "2026-11-16T08:00:00.000Z", "g2"); // outside it
+  add("e", "2026-11-16", "ok", 16);
+  add("f", "2026-11-16", "reserved", 32);
+  add("g", "2026-10-31", "ok", 64);
+  const check = (m) => {
+    const open = new Date(clock - 30 * 60_000).toISOString();
+    const spent = db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ?").get(`${m}-01`, `${m}-31`).s;
+    const settled = db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM calls WHERE day >= ? AND day <= ? AND status != 'reserved' AND NOT (status = 'unsettled' AND gen IS NOT NULL AND at >= ?)").get(`${m}-01`, `${m}-31`, open).s;
+    const got = spend(m, open);
+    assert.ok(Math.abs(got.spent - spent) < 1e-9 && Math.abs(got.settled - settled) < 1e-9, `${m}: ${JSON.stringify(got)} vs ${spent}/${settled}`);
+  };
+  check("2026-11");
+  peer.prepare("UPDATE calls SET status = 'ok', cost_usd = 1.5, at = ? WHERE key = 'b' AND status = 'reserved'").run("2026-11-16T10:00:00.000Z"); // settled after its day
+  check("2026-11");
+  peer.prepare("UPDATE calls SET status = 'interrupted', cost_usd = 0.5, changed = ? WHERE key = 'd' AND status = 'unsettled'").run("2026-11-16T10:00:00.000Z"); // trued up
+  check("2026-11");
+  add("h", "2026-11-12", "stream_error", 0.25); // a final row written late on a closed day
+  check("2026-11");
+  clock = Date.parse("2026-11-17T00:05:00Z"); // today's rows become a closed day's
+  check("2026-11");
+  add("i", "2026-11-30", "ok", 128);
+  clock = Date.parse("2026-12-01T00:05:00Z"); // a call that started last month is still checked against last month
+  check("2026-11");
+  check("2026-12");
 });

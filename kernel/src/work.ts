@@ -27,6 +27,9 @@ import type { Records } from "./records.ts";
 
 /** Job duration buckets, seconds: a quick reply to a two-hour build. */
 const BUCKETS = [60, 300, 900, 1800, 3600, 7200, Infinity];
+/** The columns job() reads, and enough of a job's final words for its first line (cut to 200). */
+const JOB_COLS = "id, agent, task, engine, state, at, ended, session, saw";
+const FINAL_HEAD = "substr(final, 1, 400) AS final";
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
 export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
@@ -151,11 +154,12 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       };
     },
     activity() {
-      const running = rows("SELECT * FROM jobs WHERE state = 'running' ORDER BY at DESC LIMIT 50").map(job);
+      // Only the columns each list uses (a job's final, progress and usage can be large); job() reads JOB_COLS.
+      const running = rows(`SELECT ${JOB_COLS} FROM jobs WHERE state = 'running' ORDER BY at DESC LIMIT 50`).map(job);
       // The board reads its last-run column, finished sessions and failure counts from these: each carries the first line of how it failed.
-      const recent = rows("SELECT * FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 200").map((r) => ({ ...job(r), error: r.state === "failed" || r.state === "lost" || r.state === "timeout" ? String(r.final || r.state).split("\n")[0]!.slice(0, 200) : null }));
+      const recent = rows(`SELECT ${JOB_COLS}, ${FINAL_HEAD} FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 200`).map((r) => ({ ...job(r), error: r.state === "failed" || r.state === "lost" || r.state === "timeout" ? String(r.final || r.state).split("\n")[0]!.slice(0, 200) : null }));
       const latest = new Map<string, string>();
-      for (const r of rows("SELECT * FROM jobs ORDER BY at DESC LIMIT 1000")) if (!latest.has(r.task)) latest.set(r.task, r.state);
+      for (const r of rows("SELECT task, state FROM jobs ORDER BY at DESC LIMIT 1000")) if (!latest.has(r.task)) latest.set(r.task, r.state);
       // Per agent, for the board's Agents page: work that can start now (a due open wake or an admitted job), the agents whose last 3
       // ended jobs all failed or were lost (with the latest one's first error line), and the waits an agent parked for later (an open
       // wake not yet due: its count, earliest `until` and cause).
@@ -167,7 +171,7 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
         return { agent, n: mine.length, until: iso(mine[0]!.until)!, cause: String(mine[0]!.cause ?? "").replace(/^wait:\s*/, "").slice(0, 160) };
       });
       const ends = new Map<string, Record<string, any>[]>();
-      for (const r of rows("SELECT agent, state, final FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 2000")) ends.set(r.agent, [...(ends.get(r.agent) ?? []), r].slice(0, 3));
+      for (const r of rows(`SELECT agent, state, ${FINAL_HEAD} FROM jobs WHERE state NOT IN ('admitted', 'running') ORDER BY ended DESC LIMIT 2000`)) ends.set(r.agent, [...(ends.get(r.agent) ?? []), r].slice(0, 3));
       const failing = [...ends].filter(([, l]) => l.length === 3 && l.every((r) => r.state === "failed" || r.state === "lost")).map(([agent, l]) => ({ agent, error: String(l[0]!.final || l[0]!.state).split("\n")[0]!.slice(0, 200) }));
       // Dispatch health (the Fleet Steward's stall check): the wakes that could start now (open and due, or claimed with the lease
       // expired and no job) of an agent with no live job (an agent already working has its queue held by max_parallel, which is not a
