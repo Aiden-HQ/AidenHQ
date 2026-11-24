@@ -180,3 +180,30 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
 
 /** Whether this build's settings let the listener bind at all (both the test user and its address). */
 export const testListenerOn = (c: GateConfig) => Boolean(c.test_user && c.test_listener);
+
+/**
+ * Keeps the listener in step with the compiled config: bound exactly while settings.edge.test_user and its address are both
+ * set. The gate's config is re-read on every change, so a settings-only apply that turns the test user on binds it then (no
+ * restart needed), and one that turns it off closes it. With no test user nothing is ever bound.
+ */
+export function createTestListenerReconciler({ config, log = (o) => console.log(JSON.stringify(o)) }: { config: () => GateConfig; log?: (o: Record<string, unknown>) => void }) {
+  let server: Server | undefined;
+  let at = "";
+  const reconcile = () => {
+    const c = config();
+    const want = testListenerOn(c) ? c.test_listener! : undefined;
+    const key = want ? `${want.address}:${want.port}` : "";
+    if (key === at) return;
+    if (server) {
+      server.close();
+      server = undefined;
+      log({ msg: "test listener closed", address: at });
+    }
+    at = key;
+    if (!want) return;
+    server = createTestListener({ config, log });
+    server.listen(want.port, want.address, () => log({ msg: "test listener listening", address: want.address, port: want.port }));
+    server.on("error", (e) => log({ msg: "test listener failed", err: (e as Error).message }));
+  };
+  return { reconcile, current: () => server };
+}

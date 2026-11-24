@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGate } from "../gate.ts";
 import { createIdentity } from "../../starter/aidenhq-identity.mjs";
-import { CANARY_BASE, CANARY_COOKIE, createTestListener, testListenerOn } from "../test-listener.ts";
+import { CANARY_BASE, CANARY_COOKIE, createTestListener, createTestListenerReconciler, testListenerOn } from "../test-listener.ts";
 import { ensureIdentityKeys } from "../../../../scripts/identity.ts";
 
 const secrets = mkdtempSync(join(tmpdir(), "test-listener-"));
@@ -111,6 +111,31 @@ test("with no settings.edge.test_user the capability is inert: nothing binds, an
     assert.equal(r.body.trim(), "not found");
     assert.equal(appSeen.length, 0);
   } finally { l.close(); l.closeAllConnections?.(); }
+});
+
+test("a settings-only apply binds the listener when the test user appears and closes it when it goes, with no restart", async () => {
+  let now: any = { ...cfg, test_user: undefined, test_listener: undefined };
+  const rec = createTestListenerReconciler({ config: () => now, log: () => {} });
+  const closed = (s: any) => new Promise<void>((ok) => { s.close(() => ok()); s.closeAllConnections?.(); });
+  rec.reconcile();
+  assert.equal(rec.current(), undefined); // no setting: nothing bound at all
+  now = { ...cfg, test_listener: { address: "127.0.0.1", port: 0 } };
+  rec.reconcile();
+  const bound = rec.current()!;
+  await new Promise<void>((ok) => (bound.listening ? ok() : bound.once("listening", () => ok())));
+  const port = (bound.address() as any).port;
+  assert.ok(port > 0);
+  try {
+    // The same setting re-read is a no-op: one listener, not a second bind.
+    rec.reconcile();
+    assert.equal(rec.current(), bound);
+    // The setting removed: the listener closes in place, and the port is dead.
+    now = { ...cfg, test_user: undefined, test_listener: undefined };
+    rec.reconcile();
+    assert.equal(rec.current(), undefined);
+    await new Promise((ok) => setTimeout(ok, 50));
+    await assert.rejects(hit(port, `roadmap.${CANARY_BASE}`, "/"));
+  } finally { await closed(bound).catch(() => undefined); }
 });
 
 test("an unauthenticated browser gets 401 and no page; the front-door header and an anonymous request get nothing", async () => {

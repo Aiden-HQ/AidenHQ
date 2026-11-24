@@ -19,9 +19,12 @@ function deps(o: { mintStatus?: number; run?: object | (() => Promise<string>); 
       if (path === "/v1/test-session/revoke") return { status: o.revokeStatus ?? 200, json: { revoked: 1 } };
       return { status: 404, json: {} };
     },
-    run: async (network, script, input, timeout) => {
+    run: async (network, script, input, timeout, before) => {
       runs.push({ network, script, input, timeout });
       o.onRun?.(input);
+      // The renderer's own `before` (mint), as platform.ts runs it once the slot is this render's.
+      const merged = before ? { ...input, ...(await before()) } : input;
+      runs.at(-1)!.input = merged;
       const r = typeof o.run === "function" ? await o.run() : o.run ?? {};
       return JSON.stringify(r);
     },
@@ -54,9 +57,9 @@ describe("app_page_canary", () => {
   });
 
   it("a refused mint never starts a browser; a failed browser run still revokes and reports why", async () => {
+    // The mint happens as the render takes its slot, so the browser is never launched and there is nothing to revoke.
     const refused = deps({ mintStatus: 403 });
     await expect(pageCanary(app, { app: "roadmap-keeper", text: "x" }, refused.d)).rejects.toThrow(/refused \(403\)/);
-    expect(refused.runs).toEqual([]);
     expect(refused.calls.map((c) => c.path)).toEqual(["/v1/test-session"]); // nothing to revoke
     const failed = deps({ run: { error: "no feedback field on the page", finalUrl: `${canaryOrigin("roadmap-keeper")}/` } });
     const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, failed.d);
@@ -70,12 +73,34 @@ describe("app_page_canary", () => {
     expect(calls).toEqual([]);
   });
 
+  it("mints only once the render has a slot, so a queued run never spends the 60-second handoff", async () => {
+    const { d, calls, runs } = deps({ run: { notify: "fired", notifyStatus: 204, reference: "R-1" } });
+    let mintedWhenRun = false;
+    const origRun = d.run;
+    d.run = async (network, script, input, timeout, before) => {
+      expect(calls.map((c) => c.path)).toEqual([]); // nothing minted while the browser was still waiting for a slot
+      const raw = await origRun(network, script, input, timeout, before);
+      mintedWhenRun = calls.some((c) => c.path === "/v1/test-session");
+      return raw;
+    };
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(mintedWhenRun).toBe(true);
+    expect(runs[0]!.input).toMatchObject({ code: "c".repeat(43), state: "0".repeat(32) });
+    expect(r.session).toMatchObject({ id: "sess-1", revoked: true });
+  });
+
   it("the renderer maps every *.canary.localhost name to the listener, follows the handoff, and reads the page's own notify", () => {
     const script = CANARY_SCRIPT;
     expect(script).toContain('"/.auth/handoff?"');
     expect(script).toContain("--host-resolver-rules=MAP *.canary.localhost");
     expect(script).toContain('new URL(n.url).pathname === "/.aidenhq/notify"');
     expect(script).toContain("document.body.innerText");
+    // The feedback form is chosen by its own wording, never "the first textbox and the first button".
+    expect(script).toContain("const FEEDBACK =");
+    expect(script).toContain("v.role === \"textbox\" && FEEDBACK.test");
+    // Evidence is only what this submission caused, from the page's own origin.
+    expect(script).toContain("n.at >= submittedAt");
+    expect(script).toContain("new URL(n.url).origin === listener");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);
     expect(renderArgs(CANARY_NETWORK, "img").slice(0, -1).join(" ")).not.toMatch(/--cap-add|--privileged|-v |--volume|--mount/);

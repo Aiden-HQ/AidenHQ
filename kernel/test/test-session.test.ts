@@ -14,7 +14,7 @@ const TASK = "00000000-0000-4000-8000-0000000000a1";
 const AGENT = "00000000-0000-4000-8000-00000000red1";
 
 /** A store with a fake Better Auth session table: createSession writes `session`, deleteSession removes it. */
-function store(o: { now?: () => number; testUser?: () => { email: string; apps: string[] } | undefined; tasks?: Record<string, any>; logs?: any[] } = {}) {
+function store(o: { now?: () => number; testUser?: () => { email: string; apps: string[] } | undefined; tasks?: Record<string, any>; task?: (id: string) => Promise<any>; logs?: any[] } = {}) {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE session (id TEXT PRIMARY KEY, token TEXT NOT NULL)");
   const made = new Map<string, string>(), deleted: string[] = [];
@@ -34,7 +34,7 @@ function store(o: { now?: () => number; testUser?: () => { email: string; apps: 
     testAccount: async (email) => ({ id: "user_test", email }),
     testUser: o.testUser ?? (() => ({ email: EMAIL, apps: [APP] })),
     appHost: (app) => (app === APP ? HOST : undefined),
-    task: async (id) => tasks[id],
+    task: o.task ?? (async (id) => tasks[id]),
     log,
     ...(o.now ? { now: o.now } : {}),
   });
@@ -155,6 +155,31 @@ test("revoke ends the session now (the tool's after-run call), and the sweep end
   // The task reopened: a new session mints; the setting going away is the other test's.
   st.tasks[TASK] = { ...st.tasks[TASK], status: "in_progress" };
   assert.equal((await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP })).app, APP);
+});
+
+test("a session signs in as the account it was minted for: a changed setting email ends it, and a failed task read does not", async () => {
+  let setting: { email: string; apps: string[] } | undefined = { email: EMAIL, apps: [APP] };
+  let read: "ok" | "down" = "ok";
+  const st = store({
+    testUser: () => setting,
+    task: async (id) => {
+      if (read === "down") throw Object.assign(new Error("control plane GET task → 503"), { status: 503 });
+      return { id, identifier: "WOR-11495", status: "in_progress", assigneeAgentId: AGENT };
+    },
+  });
+  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
+  // A brief control-plane failure refuses this check but must not end the session: the page's next asset gets in.
+  read = "down";
+  assert.equal(await st.s.check({ cookie, host: HOST }), null);
+  assert.equal(st.s.auditRows().some((r) => r.event === "test_session_revoked"), false);
+  assert.equal(await st.s.sweep(), 0);
+  read = "ok";
+  assert.equal((await st.s.check({ cookie, host: HOST }))?.email, EMAIL);
+  // The setting's email changing never hands the old cookie to the new address.
+  setting = { email: "someone-else@aidenhq.test", apps: [APP] };
+  assert.equal(await st.s.check({ cookie, host: HOST }), null);
+  assert.ok(st.s.auditRows().some((r) => r.event === "test_session_revoked" && r.reason === "setting-removed"));
 });
 
 test("a removed setting ends live sessions, and nothing logs a cookie, token or handoff code", async () => {

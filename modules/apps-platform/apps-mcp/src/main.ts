@@ -263,7 +263,7 @@ const http = createServer(async (req, res) => {
         try { json = text ? JSON.parse(text) : null; } catch { json = { error: text.slice(0, 300) }; }
         return { status: r.status, json };
       },
-      run: (network, script, input, timeout) => p.canaryRun(network, script, input, timeout),
+      run: (network, script, input, timeout, before) => p.canaryRun(network, script, input, timeout, before),
       log: (o) => log.info(o, "app_page_canary"),
     });
     const server = buildServer(p, caller, repo, reconcile, board, canary);

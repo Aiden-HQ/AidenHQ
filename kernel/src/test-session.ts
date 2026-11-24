@@ -53,14 +53,14 @@ export class TestSessionError extends Error {
 }
 
 export type TestSession = { id: string; app: string; host: string; expires: string };
-type Row = { id: string; agent_key: string; agent_id: string; task: string; identifier: string | null; app: string; host: string; expires: number; revoked: number };
+type Row = { id: string; agent_key: string; agent_id: string; task: string; identifier: string | null; app: string; host: string; email: string; expires: number; revoked: number };
 
 export function createTestSessions(d: TestSessionsDeps) {
   const now = d.now ?? Date.now;
   const iso = (n: number) => new Date(n).toISOString();
   d.db.exec(`CREATE TABLE IF NOT EXISTS test_account (email TEXT PRIMARY KEY, user_id TEXT NOT NULL, at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS test_session (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, agent_key TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', task TEXT NOT NULL,
-      identifier TEXT, app TEXT NOT NULL, host TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL);
+      identifier TEXT, app TEXT NOT NULL, host TEXT NOT NULL, email TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS test_session_task ON test_session (task, revoked);
     CREATE TABLE IF NOT EXISTS test_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, event TEXT NOT NULL, agent_key TEXT NOT NULL,
       task TEXT NOT NULL, app TEXT NOT NULL, session_id TEXT NOT NULL, expires TEXT NOT NULL, reason TEXT)`);
@@ -89,7 +89,7 @@ export function createTestSessions(d: TestSessionsDeps) {
     );
   }
 
-  const byId = (id: string) => d.db.prepare("SELECT id, agent_key, task, identifier, app, host, expires, revoked FROM test_session WHERE id = ?").get(id) as Row | undefined;
+  const byId = (id: string) => d.db.prepare("SELECT id, agent_key, task, identifier, app, host, email, expires, revoked FROM test_session WHERE id = ?").get(id) as Row | undefined;
   const live = (r: { expires: number; revoked: number } | undefined) => Boolean(r && !r.revoked && r.expires > now());
 
   /** Ends one session here and in Better Auth; `reason` lands in the audit row. */
@@ -145,8 +145,8 @@ export function createTestSessions(d: TestSessionsDeps) {
       const s = await d.createSession(who.id, TEST_SESSION_TTL_MS, `aidenhq-test-session:${input.agentKey}`);
       // The session names the task by its control-plane id (the sweep re-reads it by that) and keeps its identifier for the audit.
       const task = String(t.id ?? input.task), identifier = typeof t.identifier === "string" ? t.identifier : null;
-      d.db.prepare("INSERT INTO test_session (id, token_hash, agent_key, agent_id, task, identifier, app, host, expires, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-        s.id, sha(s.token), input.agentKey, input.agentId, task, identifier, app, host, expiresAt, now(),
+      d.db.prepare("INSERT INTO test_session (id, token_hash, agent_key, agent_id, task, identifier, app, host, email, expires, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+        s.id, sha(s.token), input.agentKey, input.agentId, task, identifier, app, host, who.email, expiresAt, now(),
       );
       const state = randomBytes(16).toString("hex");
       sweepCodes();
@@ -176,22 +176,26 @@ export function createTestSessions(d: TestSessionsDeps) {
     async check(input: { cookie: string; host: string }): Promise<{ email: string; app: string; expires: string; role: "member" } | null> {
       const token = String(input.cookie ?? "").split(".")[0] ?? "";
       if (!token) return null;
-      const r = d.db.prepare("SELECT id, agent_key, agent_id, task, identifier, app, host, expires, revoked FROM test_session WHERE token_hash = ?").get(sha(token)) as Row | undefined;
+      const r = d.db.prepare("SELECT id, agent_key, agent_id, task, identifier, app, host, email, expires, revoked FROM test_session WHERE token_hash = ?").get(sha(token)) as Row | undefined;
       if (!r || !live(r)) return null;
       // A live session presented under another app's host is a different refusal from no session at all: the listener answers
       // 404 (there is no page there for this session) rather than 401 (which would tell it to sign in again).
       if (r.host !== String(input.host ?? "").toLowerCase()) throw new TestSessionError(409, "that session is for another app");
       const setting = d.testUser();
-      if (!setting || !setting.apps.includes(r.app)) {
+      // The session signs in as the account it was minted for: a changed settings.edge.test_user.email ends it rather than
+      // authenticating the old cookie as the new address.
+      if (!setting || !setting.apps.includes(r.app) || setting.email !== r.email) {
         await end(r.id, "setting-removed");
         return null;
       }
-      const t = await d.task(r.task).catch(() => undefined);
+      // A task read that fails (Paperclip briefly unreachable) is not a closure: refuse this check, keep the session.
+      const t = await d.task(r.task).catch(() => null);
+      if (t === null) return null;
       if (!t || ["done", "cancelled"].includes(String(t.status)) || t.assigneeAgentId !== r.agent_id) {
         await end(r.id, "task-closed");
         return null;
       }
-      return { email: setting.email, app: r.app, expires: iso(r.expires), role: "member" };
+      return { email: r.email, app: r.app, expires: iso(r.expires), role: "member" };
     },
 
     /** Revoke one session (the tool after its run), or every session on a task (the sweep). */
@@ -206,7 +210,7 @@ export function createTestSessions(d: TestSessionsDeps) {
 
     /** Ends every session whose task closed, lost its assignee, or left the setting (the kernel's minute sweep). */
     async sweep(): Promise<number> {
-      const rows = d.db.prepare("SELECT id, agent_id, task, app, expires FROM test_session WHERE revoked = 0").all() as { id: string; agent_id: string; task: string; app: string; expires: number }[];
+      const rows = d.db.prepare("SELECT id, agent_id, task, app, email, expires FROM test_session WHERE revoked = 0").all() as { id: string; agent_id: string; task: string; app: string; email: string; expires: number }[];
       const setting = d.testUser();
       let n = 0;
       for (const r of rows) {
@@ -214,11 +218,13 @@ export function createTestSessions(d: TestSessionsDeps) {
           if (await end(r.id, "expired")) n++;
           continue;
         }
-        if (!setting || !setting.apps.includes(r.app)) {
+        if (!setting || !setting.apps.includes(r.app) || setting.email !== r.email) {
           if (await end(r.id, "setting-removed")) n++;
           continue;
         }
-        const t = await d.task(r.task).catch(() => undefined);
+        // A lookup that failed says nothing about the task: leave the session for the next pass.
+        const t = await d.task(r.task).catch(() => null);
+        if (t === null) continue;
         if (!t || ["done", "cancelled"].includes(String(t.status)) || t.assigneeAgentId !== r.agent_id) {
           if (await end(r.id, "task-closed")) n++;
         }

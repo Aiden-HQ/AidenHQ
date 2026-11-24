@@ -245,10 +245,12 @@ export async function openAccounts(o: AccountsOptions) {
       const disabled = Boolean(u.banned) && (!u.banExpires || new Date(u.banExpires).getTime() > Date.now());
       return { role: u.role === "admin" ? "admin" : "user", disabled };
     },
-    // The test user's own membership (test-session.ts): a member of the apps settings.edge.test_user names, never admin.
+    // The test user's own membership (test-session.ts): a member of the apps settings.edge.test_user names, never admin. Only
+    // the account the kernel itself made is one: an existing account named in the setting keeps its own role, and a session
+    // that names it is never minted (test-session.ts refuses an existing email).
     testMember: (app, email) => {
       const t = o.gate?.()?.test;
-      return Boolean(t && t.email === email && t.apps.includes(app));
+      return Boolean(t && t.email === email && t.apps.includes(app) && testSessions.isTestAccount(email));
     },
     ...(o.manifest ? { manifest: o.manifest } : {}),
     exported: changed,

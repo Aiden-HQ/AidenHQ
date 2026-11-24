@@ -23,8 +23,9 @@ export const CANARY_TIMEOUT_MS = 60_000;
 export type CanaryDeps = {
   /** POST /v1/test-session{,/:op} with this module's own token and the caller's in-flight assertion. */
   kernel: (path: string, body: unknown) => Promise<{ status: number; json: any }>;
-  /** Runs the renderer script on a docker network (platform.ts renderWith): its stdout. */
-  run: (network: string, script: string, input: object, timeout: number) => Promise<string>;
+  /** Runs the renderer script on a docker network (platform.ts renderWith): its stdout. `before` runs once the render's
+   * slot is this call's, so a one-time code is minted as the browser starts rather than while it waits in the queue. */
+  run: (network: string, script: string, input: object, timeout: number, before?: () => Promise<object>) => Promise<string>;
   log?: (o: Record<string, unknown>) => void;
 };
 
@@ -76,7 +77,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const { sessionId } = await dt.send("Target.attachToTarget", { targetId, flatten: true });
     for (const d of ["Network", "Page"]) await dt.send(d + ".enable", {}, sessionId);
     // Every request the page itself makes, with its answer's status: the canary's own evidence, not a re-request.
-    dt.on["Network.requestWillBeSent"] = (p) => NET.push({ id: p.requestId, url: p.request.url, method: p.request.method, status: null });
+    dt.on["Network.requestWillBeSent"] = (p) => NET.push({ id: p.requestId, url: p.request.url, method: p.request.method, status: null, at: Date.now() });
     dt.on["Network.responseReceived"] = (p) => { const x = NET.find((n) => n.id === p.requestId); if (x) x.status = p.response.status; };
     await ab("set", "viewport", String(r.width || 1280), "900");
     // The handoff sets the listener's host-only cookie, then lands on the app's own page.
@@ -96,23 +97,31 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       await new Promise((ok) => setTimeout(ok, 1200));
       refs = await tree();
     }
-    const box = Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0];
-    const button = Object.entries(refs).find(([, v]) => v.role === "button" && /send|submit|feedback|share|post/i.test(v.name || ""))?.[0]
-      || Object.entries(refs).find(([, v]) => v.role === "button")?.[0];
+    // The feedback form, unambiguously: a field whose own wording is about feedback, beside a button that sends it. A
+    // settings page's display-name box and "Save" button is not one, and the canary never types into it.
+    const FEEDBACK = /feedback|intake|suggest|idea|comment|message|what would you|tell us/i;
+    const box = Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0]
+      || (Object.values(refs).filter((v) => v.role === "textbox").length === 1 && Object.values(refs).some((v) => v.role === "button" && FEEDBACK.test(v.name || ""))
+        ? Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0] : undefined);
     if (!box) return out({ error: "no feedback field on the page", finalUrl: landed, pageTitle: title });
+    const button = Object.entries(refs).find(([, v]) => v.role === "button" && /send|submit|share|post|feedback/i.test(v.name || ""))?.[0];
+    // Nothing was submitted yet: evidence is only what this action causes.
+    const submittedAt = Date.now();
     await ab("fill", "@" + box, r.text);
     if (button) await ab("click", "@" + button);
     else await ab("press", "Enter");
-    // The page's own notify (and its intake call) happen in its click handler: wait for them, bounded.
+    // The page's own notify (and its intake call) happen in its click handler: wait for them, bounded, from the submission.
+    const notifyOf = () => NET.find((n) => n.at >= submittedAt && n.method === "POST" && new URL(n.url).origin === listener && new URL(n.url).pathname === "/.aidenhq/notify");
+    let notify = notifyOf();
     const t0 = Date.now();
-    let notify = NET.find((n) => n.method === "POST" && new URL(n.url).pathname === "/.aidenhq/notify");
-    while (!notify && Date.now() - t0 < 15000) { await new Promise((ok) => setTimeout(ok, 250)); notify = NET.find((n) => n.method === "POST" && new URL(n.url).pathname === "/.aidenhq/notify"); }
+    while (!notify && Date.now() - t0 < 15000) { await new Promise((ok) => setTimeout(ok, 250)); notify = notifyOf(); }
     await new Promise((ok) => setTimeout(ok, 1200)); // the notify's own answer, and the page's "thanks" render
     const finalUrl = (await within(ab("get", "url"), 3000, {})).url || landed;
     const pageTitle = (await within(ab("get", "title"), 3000, {})).title || title;
-    // The reference: the app's own intake response body (a same-origin POST other than notify), else the text the page shows.
+    // The reference: the app's own intake response body (a same-origin POST other than notify, from this submission), else
+    // the text the page shows.
     let reference = null;
-    for (const n of NET.filter((x) => x.method === "POST" && new URL(x.url).pathname !== "/.aidenhq/notify" && x.id).slice(-4)) {
+    for (const n of NET.filter((x) => x.at >= submittedAt && x.method === "POST" && new URL(x.url).origin === listener && new URL(x.url).pathname !== "/.aidenhq/notify" && x.id).slice(-4)) {
       try {
         const b = await dt.send("Network.getResponseBody", { requestId: n.id }, sessionId);
         const body = String(b.body || "");
@@ -127,7 +136,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     if (await within(ab("screenshot", "/tmp/canary.png"), 8000, null)) png = readFileSync("/tmp/canary.png").toString("base64");
     out({
       status: 200, finalUrl, pageTitle, notify: notify ? (notify.status === 204 ? "fired" : notify.status ? "not-fired" : "unknown") : "not-fired",
-      notifyStatus: notify ? notify.status : null, reference, submittedAt: new Date().toISOString(), png,
+      notifyStatus: notify ? notify.status : null, reference, submittedAt: new Date(submittedAt).toISOString(), png,
     });
   } catch (e) {
     out({ error: line(e) });
@@ -140,17 +149,25 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
   const log = d.log ?? (() => {});
   const base: CanaryResult = { ok: false, status: 0, finalUrl: "", pageTitle: "", notify: "not-fired", notifyStatus: null, reference: null, submittedAt: new Date().toISOString(), session: { id: "", expires: "", revoked: false } };
   if (!app.share?.host) throw new Error(`${app.name} isn't a shared app (no share.host): it has no test listener to reach`);
-  const minted = await d.kernel("/v1/test-session", { app: app.name });
-  if (minted.status !== 200) throw new Error(`the test session was refused (${minted.status}): ${String(minted.json?.error?.message ?? minted.json?.error ?? "no reason")}`);
-  const m = minted.json as { id: string; app: string; host: string; expires: string; code: string; state: string };
-  const session = { id: m.id, expires: m.expires, revoked: false };
+  const listener = canaryOrigin(app.name);
+  const input = { listener, listenerAddress: CANARY_LISTENER_ADDRESS, path: startPath(req), text: req.text.slice(0, 4000), width: req.width ?? 1280 };
+  // The session is minted once the render has a slot (the handoff code lives 60 s, so a queued render must not spend it),
+  // and it is the only thing the browser gets beyond the page's own address.
+  let session: CanaryResult["session"] | undefined;
+  let m: { id: string; app: string; host: string; expires: string; code: string; state: string } | undefined;
+  const mint = async () => {
+    const minted = await d.kernel("/v1/test-session", { app: app.name });
+    if (minted.status !== 200) throw new Error(`the test session was refused (${minted.status}): ${String(minted.json?.error?.message ?? minted.json?.error ?? "no reason")}`);
+    m = minted.json as typeof m;
+    session = { id: m!.id, expires: m!.expires, revoked: false };
+    return { code: m!.code, state: m!.state };
+  };
   try {
-    const listener = canaryOrigin(app.name);
-    const raw = await d.run(CANARY_NETWORK, CANARY_SCRIPT, { listener, listenerAddress: CANARY_LISTENER_ADDRESS, code: m.code, state: m.state, path: startPath(req), text: req.text.slice(0, 4000), width: req.width ?? 1280 }, CANARY_TIMEOUT_MS);
+    const raw = await d.run(CANARY_NETWORK, CANARY_SCRIPT, input, CANARY_TIMEOUT_MS, mint);
     const r = JSON.parse(raw) as { error?: string; status?: number; finalUrl?: string; pageTitle?: string; notify?: CanaryResult["notify"]; notifyStatus?: number | null; reference?: string | null; submittedAt?: string; png?: string };
     if (r.error) {
       // A failed run still carries whatever the browser proved before it stopped (never the code or the cookie).
-      return { ...base, ...(r.finalUrl ? { finalUrl: r.finalUrl } : {}), ...(r.pageTitle ? { pageTitle: r.pageTitle } : {}), session, error: r.error };
+      return { ...base, ...(r.finalUrl ? { finalUrl: r.finalUrl } : {}), ...(r.pageTitle ? { pageTitle: r.pageTitle } : {}), session: session ?? base.session, error: r.error };
     }
     return {
       ...base,
@@ -163,13 +180,15 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
       reference: r.reference ?? null,
       submittedAt: r.submittedAt ?? base.submittedAt,
       ...(r.png ? { screenshot: r.png } : {}),
-      session,
+      session: session ?? base.session,
     };
   } finally {
-    // Revoke: the session must not outlive the run, whatever happened above.
-    const rev = await d.kernel("/v1/test-session/revoke", { sessionId: m.id }).catch(() => ({ status: 0, json: null }));
-    session.revoked = rev.status === 200;
-    if (!session.revoked) log({ msg: "test session revoke failed", app: app.name, status: rev.status });
+    // Revoke: the session must not outlive the run, whatever happened above (a refused mint has none to revoke).
+    if (m) {
+      const rev = await d.kernel("/v1/test-session/revoke", { sessionId: m.id }).catch(() => ({ status: 0, json: null }));
+      session!.revoked = rev.status === 200;
+      if (!session!.revoked) log({ msg: "test session revoke failed", app: app.name, status: rev.status });
+    }
   }
 }
 

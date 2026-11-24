@@ -98,7 +98,7 @@ const http = require("node:http");
 const seen = [];
 const app = http.createServer((req, res) => {
   seen.push({ method: req.method, url: req.url, cookie: req.headers.cookie || "" });
-  if (req.url === "/.auth/handoff") {
+  if (String(req.url).split("?")[0] === "/.auth/handoff") {
     res.writeHead(302, { location: "/intake", "set-cookie": ["__Host-aidenhq-canary.session=tok.sig; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=900"] });
     return res.end();
   }
