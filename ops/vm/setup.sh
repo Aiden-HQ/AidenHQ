@@ -215,9 +215,12 @@ install -m 0755 "$src/computer-net.sh" /usr/local/sbin/aidenhq-computer-net
 install -m 0644 "$src/../units/aidenhq-computer-net.service" /etc/systemd/system/aidenhq-computer-net.service
 # The CI runners' network (modules/ci): the same rule with no host port open.
 install -m 0644 "$src/../units/aidenhq-ci-net.service" /etc/systemd/system/aidenhq-ci-net.service
+# The test-user canary's browser network (modules/apps-platform, app_page_canary): only the gate's test listener (10.231.6.1:3132).
+install -m 0755 "$src/canary-net.sh" /usr/local/sbin/aidenhq-canary-net
+install -m 0644 "$src/../units/aidenhq-canary-net.service" /etc/systemd/system/aidenhq-canary-net.service
 systemctl daemon-reload
-systemctl enable aidenhq-computer-net aidenhq-ci-net
-systemctl restart aidenhq-computer-net aidenhq-ci-net
+systemctl enable aidenhq-computer-net aidenhq-ci-net aidenhq-canary-net
+systemctl restart aidenhq-computer-net aidenhq-ci-net aidenhq-canary-net
 
 # The public interface's firewall (ops/vm/public-fw.sh): on a host with a public address, only SSH and what the exposure
 # mode needs get in on that interface; loopback, the tailnet and Docker's bridges are untouched. Fail closed: the public

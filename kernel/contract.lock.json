@@ -166,6 +166,8 @@
     "route POST /v1/tasks": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/tasks/:task/close": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/tasks/:task/comment": {"state":"experimental","fp":"auth=module"},
+    "route POST /v1/test-session": {"state":"experimental","fp":"auth=module+assertion"},
+    "route POST /v1/test-session/:op": {"state":"experimental","fp":"auth=module+assertion"},
     "route POST /v1/validate": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/views/:module/mcp": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/wait": {"state":"experimental","fp":"auth=module+assertion"},

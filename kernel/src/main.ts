@@ -748,7 +748,7 @@ const sharing = createSharing({
   file: (args, task, owner) => writes.fileKernel("github.publish_module", { args, task, requester: SETTINGS, owner }),
 });
 const answers = createAnswers({ db: records.db, states: taskStates });
-const backplane = createBackplane({ projects, answers, idle, memory, sharing, boardApi: moduleBoardApi, views: createViews({ connections, asserter, resolver, secret }), facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, events, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, precheck, repoBundle: (module: string, repo: string, head?: string) => codehost.ask(module, "bundle", { repo, ref: head ?? "HEAD" }), advisories: advisories.list, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret(OPERATOR_KEY), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ sawn: (id) => jobs.sawn(id), projects, appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, observe: wakes.observe, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, ownerFiled: (id) => void records.db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, 'owner')").run(id) }) as never });
+const backplane = createBackplane({ projects, answers, idle, memory, sharing, boardApi: moduleBoardApi, views: createViews({ connections, asserter, resolver, secret }), facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, events, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, precheck, repoBundle: (module: string, repo: string, head?: string) => codehost.ask(module, "bundle", { repo, ref: head ?? "HEAD" }), advisories: advisories.list, testSessions: () => accounts?.test, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret(OPERATOR_KEY), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ sawn: (id) => jobs.sawn(id), projects, appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, observe: wakes.observe, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, ownerFiled: (id) => void records.db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, 'owner')").run(id) }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };
@@ -789,6 +789,16 @@ const accounts = await import("./accounts.ts").then((a) => a.openAccounts({
   notify: toOwner("done"), manifest,
   wake: webhookWake(path.join(env("AIDENHQ_SECRETS_DIR", ""), "app_request_webhook_url"), path.join(env("AIDENHQ_SECRETS_DIR", ""), "app_request_webhook_secret"), accountLog, controlUrl),
   feedbackWake: routineWake(ownerApi, accountLog),
+  // The canary sessions' task read: a task as the control plane has it now, for the mint's and check's own assignment test.
+  task: async (id: string) => {
+    // A task gone (404) is closed; any other failed read throws, so a control-plane blip never reads as "closed" and never
+    // ends a live test session (test-session.ts keeps it on a failed lookup).
+    const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(id)}`);
+    if (r.status === 404) return undefined;
+    if (r.status !== 200) throw new Error(`control plane GET task ${id} → ${r.status}`);
+    const i = r.json as { id?: string; identifier?: string; status?: string; assigneeAgentId?: string | null };
+    return typeof i?.id === "string" ? { id: i.id, identifier: i.identifier ?? null, status: i.status, assigneeAgentId: i.assigneeAgentId ?? null } : undefined;
+  },
   log: accountLog,
 }))
   .catch((e: Error) => (log("accounts off", { err: e.message }), undefined));
@@ -797,6 +807,8 @@ if (accounts) {
   // refresh, undelivered request wakes and a failed write retry on the same beat.
   void accounts.syncGate();
   every(() => void accounts.syncGate(), 60_000);
+  // A test-user session ends with its task (and never outlives the setting): the sweep reads each open task once a minute.
+  every(() => void accounts.test.sweep().catch((e: Error) => log("test session sweep failed", { err: e.message })), 60_000);
 }
 // The board's origins are the module UI origins a session may be handed to (/auth/handoff).
 const uiOrigins = () => Object.fromEntries(boardOrigins.map((o) => [o, "board"]));

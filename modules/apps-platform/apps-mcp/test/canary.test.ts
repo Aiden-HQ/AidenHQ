@@ -1,0 +1,190 @@
+// app_page_canary (canary.ts): mint → one-shot browser on the canary network → the page's own POST /.aidenhq/notify → revoke.
+// The browser and kernel are fakes here, so the whole contract runs in CI; the real Chrome, the real test listener and a real
+// page run in render.e2e.test.ts (AIDENHQ_BROWSER_E2E=1).
+import assert from "node:assert/strict";
+import { describe, expect, it } from "vitest";
+import { CANARY_NETWORK, WEB_NETWORK, renderArgs } from "../src/view.js";
+import { CANARY_BASE, CANARY_LISTENER_ADDRESS, CANARY_PORT, CANARY_SCRIPT, canaryContent, canaryOrigin, pageCanary, type CanaryDeps } from "../src/canary.js";
+import { parseApp } from "../src/registry.js";
+
+const app = parseApp({ name: "roadmap-keeper", repo: "example-org/roadmap-keeper", owner: "app-maintainer", description: "d", port: 4100, share: { host: "roadmap.example.com", aud: "aud-roadmap-0001" } });
+
+/** A kernel that mints one session and records every call; `run` is the browser's answer. */
+function deps(o: { mintStatus?: number; run?: object | (() => Promise<string>); onRun?: (input: any) => void; revokeStatus?: number } = {}) {
+  const calls: { path: string; body: any }[] = [];
+  const runs: { network: string; script: string; input: any; timeout: number }[] = [];
+  const d: CanaryDeps = {
+    kernel: async (path, body) => {
+      calls.push({ path, body });
+      if (path === "/v1/test-session") return o.mintStatus && o.mintStatus !== 200 ? { status: o.mintStatus, json: { error: { message: "refused" } } } : { status: 200, json: { id: "sess-1", app: "roadmap-keeper", host: "roadmap.example.com", expires: new Date(Date.now() + 900_000).toISOString(), code: "c".repeat(43), state: "0".repeat(32) } };
+      if (path === "/v1/test-session/revoke") return { status: o.revokeStatus ?? 200, json: { revoked: 1 } };
+      return { status: 404, json: {} };
+    },
+    run: async (network, script, input, timeout, before) => {
+      runs.push({ network, script, input, timeout });
+      o.onRun?.(input);
+      // The renderer's own `before` (mint), as platform.ts runs it once the slot is this render's.
+      const merged = before ? { ...input, ...(await before()) } : input;
+      runs.at(-1)!.input = merged;
+      const r = typeof o.run === "function" ? await o.run() : o.run ?? {};
+      return JSON.stringify(r);
+    },
+  };
+  return { d, calls, runs };
+}
+
+describe("app_page_canary", () => {
+  it("mints for the app, runs the page on the canary network, and returns notify: fired with the reference and screenshot", async () => {
+    const { d, calls, runs } = deps({ run: { status: 200, intake: true, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap Keeper", notify: "fired", notifyStatus: 204, reference: "TEST-RT-2026-11-24-1", submittedAt: "2026-11-24T09:00:00.000Z", png: "iVBORw0KGgo=" } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "TEST-RT-2026-11-24-1 canary", path: "/intake" }, d);
+    expect(r).toMatchObject({ ok: true, status: 200, notify: "fired", notifyStatus: 204, reference: "TEST-RT-2026-11-24-1", screenshot: "iVBORw0KGgo=", session: { id: "sess-1", revoked: true } });
+    // The session was minted for this app only, and revoked by id after the run.
+    expect(calls.map((c) => [c.path, c.body])).toEqual([["/v1/test-session", { app: "roadmap-keeper" }], ["/v1/test-session/revoke", { sessionId: "sess-1" }]]);
+    // The browser ran on the canary network, at the listener's host for this app, with the handoff's code and the text.
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.network).toBe(CANARY_NETWORK);
+    expect(runs[0]!.input).toMatchObject({ listener: `http://roadmap-keeper.${CANARY_BASE}:${CANARY_PORT}`, listenerAddress: CANARY_LISTENER_ADDRESS, code: "c".repeat(43), state: "0".repeat(32), path: "/intake", text: "TEST-RT-2026-11-24-1 canary" });
+    // The tool's answer carries the screenshot as its own content part.
+    const content = canaryContent(r);
+    expect(content.content).toHaveLength(2);
+    expect(content.content[1]).toEqual({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" });
+  });
+
+  it("a page that fired notify but never showed a reference is not a successful submission", async () => {
+    // A same-origin analytics POST answering 200 is not the intake: without a reference the page itself displays, nothing
+    // proves the feedback was saved, so the canary reports it unverified rather than ok.
+    const { d } = deps({ run: { status: 200, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(r).toMatchObject({ ok: false, status: 200, notify: "fired", notifyStatus: 204, reference: null, session: { revoked: true } });
+  });
+
+  it("a reference the page showed before the click is never proof this submission saved", async () => {
+    // The page already says "Reference ABC-123"; a regression posts only analytics and still calls notify. No intake POST can
+    // be named, so the canary stays unverified even though the old reference is on screen.
+    const { d } = deps({ run: { status: 200, intake: false, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(r).toMatchObject({ ok: false, notify: "fired", notifyStatus: 204, session: { revoked: true } });
+  });
+
+  it("an intake the app refused is not a successful submission, even when the page still fires notify", async () => {
+    const { d } = deps({ run: { status: 500, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(r).toMatchObject({ ok: false, status: 500, notify: "fired", notifyStatus: 204, session: { revoked: true } });
+  });
+
+  it("a page that never posts notify is not-fired, and the session is still revoked", async () => {
+    const { d, calls } = deps({ run: { status: 200, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "not-fired", notifyStatus: null, reference: null } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(r).toMatchObject({ ok: false, notify: "not-fired", notifyStatus: null, session: { revoked: true } });
+    expect(calls.at(-1)).toEqual({ path: "/v1/test-session/revoke", body: { sessionId: "sess-1" } });
+  });
+
+  it("a refused mint never starts a browser; a failed browser run still revokes and reports why", async () => {
+    // The mint happens as the render takes its slot, so the browser is never launched and there is nothing to revoke.
+    const refused = deps({ mintStatus: 403 });
+    await expect(pageCanary(app, { app: "roadmap-keeper", text: "x" }, refused.d)).rejects.toThrow(/refused \(403\)/);
+    expect(refused.calls.map((c) => c.path)).toEqual(["/v1/test-session"]); // nothing to revoke
+    const failed = deps({ run: { error: "no feedback field on the page", finalUrl: `${canaryOrigin("roadmap-keeper")}/` } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, failed.d);
+    expect(r).toMatchObject({ ok: false, error: "no feedback field on the page", session: { revoked: true } });
+    expect(failed.calls.at(-1)).toEqual({ path: "/v1/test-session/revoke", body: { sessionId: "sess-1" } });
+  });
+
+  it("an app that isn't shared has no test listener: refused before any session", async () => {
+    const { d, calls } = deps();
+    await expect(pageCanary(parseApp({ name: "notes", repo: "example-org/notes", owner: "a", description: "d" }), { app: "notes", text: "x" }, d)).rejects.toThrow(/isn't a shared app/);
+    expect(calls).toEqual([]);
+  });
+
+  it("mints only once the render has a slot, so a queued run never spends the 60-second handoff", async () => {
+    const { d, calls, runs } = deps({ run: { notify: "fired", notifyStatus: 204, reference: "R-1" } });
+    let mintedWhenRun = false;
+    const origRun = d.run;
+    d.run = async (network, script, input, timeout, before) => {
+      expect(calls.map((c) => c.path)).toEqual([]); // nothing minted while the browser was still waiting for a slot
+      const raw = await origRun(network, script, input, timeout, before);
+      mintedWhenRun = calls.some((c) => c.path === "/v1/test-session");
+      return raw;
+    };
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(mintedWhenRun).toBe(true);
+    expect(runs[0]!.input).toMatchObject({ code: "c".repeat(43), state: "0".repeat(32) });
+    expect(r.session).toMatchObject({ id: "sess-1", revoked: true });
+  });
+
+  it("the renderer maps every *.canary.localhost name to the listener, follows the handoff, and reads the page's own notify", () => {
+    const script = CANARY_SCRIPT;
+    // The renderer is a JavaScript program built by string concatenation: a stray semicolon or an unescaped quote would
+    // break apps-mcp only at run time, where no typecheck sees it. It must parse.
+    assert.doesNotThrow(() => new Function(script));
+    expect(script).toContain('"/.auth/handoff?"');
+    expect(script).toContain("--host-resolver-rules=MAP *.canary.localhost");
+    expect(script).toContain('new URL(n.url).pathname === "/.aidenhq/notify"');
+    expect(script).toContain("document.body.innerText");
+    // The feedback form is chosen by its own wording, never "the first textbox and the first button".
+    // Only a reference from the intake POST's own answer counts for ok; one printed by the page is reported, not proven.
+    expect(script).toContain("const proven = Boolean(intakeAnswer);");
+    expect(script).toContain("intake: proven");
+    expect(script).toContain("const FEEDBACK =");
+    // "message" and bare "comment" are not feedback wording: a chat composer must never be taken for the intake.
+    expect(script).not.toMatch(/const FEEDBACK = \/[^/]*message/);
+    expect(script).toContain("v.role === \"textbox\" && FEEDBACK.test");
+    // Evidence is only what this submission caused, from the page's own origin.
+    expect(script).toContain("n.at >= submittedAt");
+    expect(script).toContain("new URL(n.url).origin === listener");
+    // The app's own intake answer is the reported status; a 5xx is not a success, and a redirect's own hop answers the POST.
+    expect(script).toContain("const intakeStatus =");
+    expect(script).toContain("last.hop ?? last.status");
+    expect(script).toContain("p.redirectResponse");
+    expect(script).toContain("status: intakeStatus ?? 0");
+    // The submit control is the one in the form that owns the filled field, not the first submit-like button on the page.
+    expect(script).toContain("a.closest && a.closest('form')");
+    expect(script).toContain("data-aidenhq-canary-submit");
+    // An explicit submit wins, a native input[type=submit] included; a type=button "Discard draft" is never clicked, and a form
+    // with no identifiable control stops instead of clicking something else on the page.
+    expect(script).toContain("input[type=submit], input[type=image]");
+    expect(script).toContain("(b.type || 'submit') === 'submit'");
+    expect(script).toContain("no submit control in the feedback form");
+    // Several explicit submit controls with no single send-like one: stop, never click the first (a Preview before a Save).
+    expect(script).toContain("const named = explicit.filter((x) => sendish.test(word(x)) && !draftish(word(x)));");
+    expect(script).toContain("named.length === 1 ? named[0]");
+    // A "Preview feedback" button is not a send: the form's subject word is not part of what names its submit.
+    expect(script).toContain('const sendish = /send|submit|share|post|publish/i;');
+    // A draft/preview action is never the send, alone or as the form's only explicit submit.
+    expect(script).toContain('const draftish = (w) => /draft|preview|discard|cancel/i.test(w) || /(^|[^a-z])back([^a-z]|$)/i.test(w);');
+    // Nor is a lone "Preview feedback" a send: the form's real send may be on the next screen.
+    expect(script).toContain("named.length === 0 && explicit.length === 1 && sendish.test(word(explicit[0])) && !draftish(word(explicit[0]))");
+    // A "Save draft" type=button is not a submit control, even as the form's only button.
+    expect(script).not.toContain("els.length === 1 && sendish");
+    // The landing page's own feedback link is followed even when it has a search box: a feedback field is what ends the walk.
+    expect(script).toContain("for (let i = 0; i < 3 && !box; i++)");
+    expect(script).toContain("box = feedbackField(refs)");
+    // A page's lone textbox is not the feedback form: only a field worded as feedback is filled.
+    expect(script).toContain("v.role === \"textbox\" && FEEDBACK.test([v.name, v.description]");
+    // Evidence starts at the click: a POST a fill triggered is never read as the submission's intake.
+    expect(script.indexOf("const submittedAt = Date.now();")).toBeLessThan(script.indexOf('await ab("click", "[data-aidenhq-canary-submit]")'));
+    // The handoff's code and state never come back in a URL or an error the tool returns.
+    expect(script).toContain("const scrub =");
+    expect(script).toContain("finalUrl: scrub(finalUrl)");
+    // The intake is the POST before notify that carries the reference, not whatever the page posts last.
+    expect(script).toContain("x.at <= notify.at");
+    expect(script).toContain("intakeAnswer ?? (intake.length === 1 ? intake[0] : null)");
+    // Service workers are bypassed: the gate's own answer is what the canary sees, never a cached or synthesized one.
+    expect(script).toContain("Network.setBypassServiceWorker");
+    expect(script).toContain("notify && !notify.synthetic ? (notify.hop ?? notify.status) : null");
+    // The notify's own answer is waited for, and it is the POST's first hop.
+    expect(script).toContain("notify.status == null && Date.now() - tn < 10000");
+    // The intake is the POST whose reference the page shows, not any POST with an id.
+    // A whole token only: a body's id 42 is not shown by "142" or "4200" the page prints for something else.
+    expect(script).toContain("shows(shown, v) && !shows(beforeShown, v)");
+    expect(script).toContain("t.replace(/[.:]+$/, '')");
+    expect(script).toContain("intake.some((x) => x.status == null)");
+    // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
+    expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);
+    // No DNS that could leave the host from the canary bridge (the listener's name comes from Chrome's resolver rule).
+    expect(renderArgs(CANARY_NETWORK, "img")).toContain("--dns");
+    expect(renderArgs(CANARY_NETWORK, "img")[renderArgs(CANARY_NETWORK, "img").indexOf("--dns") + 1]).toBe("127.0.0.1");
+    expect(renderArgs(WEB_NETWORK, "img")).not.toContain("--dns");
+    expect(renderArgs(CANARY_NETWORK, "img").slice(0, -1).join(" ")).not.toMatch(/--cap-add|--privileged|-v |--volume|--mount/);
+  });
+});
