@@ -928,7 +928,8 @@ export function createEngine(d: EngineDeps) {
     if (!b?.plan || !b.blobs || r.profile !== "code-review" || !o || o.scope === "repo") return;
     const blobs = JSON.parse(b.blobs) as Record<string, string>, read = review.coverage?.reviewed ?? [];
     const files = filesOf(JSON.parse(b.plan) as Plan, blobs, r.area);
-    const covered = read.length ? files.filter((p) => read.includes(p)) : (review as { coverage_note?: string }).coverage_note ? files : [];
+    const covered = read.length ? files.filter((p) => read.includes(p)) : (review as { coverage_note?: string }).coverage_note && !review.coverage?.incomplete ? files : [];
+    for (const p of vanished(r.repo, r.option!, blobs, filesOf(JSON.parse(b.plan) as Plan, blobs, r.area), r.area === null)) run("DELETE FROM area_seen WHERE repo = ? AND option = ? AND path = ?", r.repo, r.option, p);
     for (const p of covered) if (blobs[p]) run("INSERT OR REPLACE INTO area_seen (repo, option, path, blob, run, sha, at) VALUES (?, ?, ?, ?, ?, ?, ?)", r.repo, r.option, p, blobs[p], r.id, r.head, iso());
   }
 
@@ -969,7 +970,7 @@ export function createEngine(d: EngineDeps) {
         const areas = o.scope === "map" || one ? [null] : plan.areas.filter((a) => !o.stack || a.tags.includes(o.stack)).map((a) => a.id);
         if (!areas.length) addTree(b, engine, c.model, c.effort, o.id, "code-review", null, { status: "skipped", why: `${NO_CODE}${o.stack} code in any of the ${plan.areas.length} areas` });
         for (const a of areas) {
-          const same = b.full ? undefined : unchanged(b.repo, o.id, filesOf(plan, blobs, a), blobs);
+          const same = b.full ? undefined : unchanged(b.repo, o.id, filesOf(plan, blobs, a), blobs, a === null);
           addTree(b, engine, c.model, c.effort, o.id, "code-review", a, same && { status: "skipped", why: `unchanged since ${same.sha.slice(0, 7)} (${same.at.slice(0, 10)})` }, same && JSON.stringify(same));
         }
       }
@@ -980,14 +981,22 @@ export function createEngine(d: EngineDeps) {
     const a = area ? plan.areas.find((x) => x.id === area) : undefined;
     return a ? Object.entries(a.files).flatMap(([d, names]) => names.map((n) => (d ? `${d}/${n}` : n))) : Object.keys(blobs);
   };
-  /** The files' last review by this option when none has changed (every file seen at its blob sha now): where it was, and the findings
-   * of the runs that read them, for the files only. Else undefined: the area is reviewed. */
-  function unchanged(repo: string, option: string, files: string[], blobs: Record<string, string>) {
+  /** Files this option has seen that the commit no longer has, within the files' scope: the whole repo, or an area (a deleted file in one of the area's folders). */
+  function vanished(repo: string, option: string, blobs: Record<string, string>, files: string[], whole: boolean) {
+    const dirs = new Set(files.map((p) => p.slice(0, Math.max(0, p.lastIndexOf("/")))));
+    return all<{ path: string }>("SELECT path FROM area_seen WHERE repo = ? AND option = ?", repo, option).map((x) => x.path).filter((p) => !(p in blobs) && (whole || dirs.has(p.slice(0, Math.max(0, p.lastIndexOf("/"))))));
+  }
+  /** The files' last review by this option when none has changed (every file seen at its blob sha now, none of the area's folders lost a file): where
+   * it was, and the findings of the runs that read them, each for its own files only. Else undefined: the area is reviewed. */
+  function unchanged(repo: string, option: string, files: string[], blobs: Record<string, string>, whole: boolean) {
     const seen = new Map(all<{ path: string; blob: string; run: string; sha: string; at: string }>("SELECT path, blob, run, sha, at FROM area_seen WHERE repo = ? AND option = ?", repo, option).map((x) => [x.path, x]));
     const rows = files.map((p) => seen.get(p));
-    if (!files.length || rows.some((x, k) => !x || x.blob !== blobs[files[k]!])) return undefined;
-    const set = new Set(files), last = rows.reduce((a, x) => (x!.at > a.at ? x! : a), rows[0]!);
-    const findings = [...new Set(rows.map((x) => x!.run))].flatMap((id) => { const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id); return v ? (JSON.parse(v.json) as Review).findings.filter((f) => set.has(f.path)) : []; });
+    if (!files.length || rows.some((x, k) => !x || x.blob !== blobs[files[k]!]) || vanished(repo, option, blobs, files, whole).length) return undefined;
+    const last = rows.reduce((a, x) => (x!.at > a.at ? x! : a), rows[0]!);
+    const findings = [...new Set(rows.map((x) => x!.run))].flatMap((id) => {
+      const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id), mine = new Set(rows.filter((x) => x!.run === id).map((x) => x!.path)), from = rows.find((x) => x!.run === id)!.sha;
+      return v ? (JSON.parse(v.json) as Review).findings.filter((f) => mine.has(f.path)).map((f) => ({ ...f, from })) : [];
+    });
     return { sha: last.sha, at: last.at, findings };
   }
   /** One run of a repo review: queued, or ended at once (`end`: skipped or failed, with why). */
@@ -2082,6 +2091,8 @@ export function createEngine(d: EngineDeps) {
       if (!r) return undefined;
       const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id);
       const findings = all<{ id: string; severity: string; path: string; line: number; title: string; outcome: string | null }>("SELECT id, severity, path, line, title, outcome FROM findings WHERE run = ? ORDER BY rowid", id).map((f) => ({ ...f }));
+      // An area skipped as unchanged shows the findings of the review it carries them from.
+      if (r.carried) findings.push(...(JSON.parse(r.carried) as { findings: Finding[] }).findings.map((f) => ({ id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title, outcome: null })));
       // On a gated repo, the PR's merge verdict at its current head and its open gating findings (what the owner may dismiss).
       const cfg = repoCfg(r.repo), p = prRow(r.repo, r.number);
       const gate = cfg && gated(cfg) && p?.open ? { ...verdict(r.repo, r.number, p.head), head: p.head, open: openGating(r.repo, r.number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title })) } : null;

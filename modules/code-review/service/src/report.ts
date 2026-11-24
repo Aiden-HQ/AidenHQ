@@ -89,7 +89,7 @@ export function coverageOf(runs: ReportRun[]): Coverage {
 export function findingsOf(b: Pick<ReportBatch, "runs" | "lensOf">): Shown[] {
   return b.runs.flatMap((r) => (r.status === "done" && r.review ? r.review.findings : r.unchanged ? r.unchanged.findings : []).map((f) => {
     const option = f.option ?? r.option;
-    return { ...f, option, lens: f.lens ?? r.lens ?? b.lensOf(option), ...(r.unchanged ? { carried: r.unchanged.sha.slice(0, 7) } : {}) };
+    return { ...f, option, lens: f.lens ?? r.lens ?? b.lensOf(option), ...(r.unchanged ? { carried: String((f as { from?: unknown }).from ?? r.unchanged.sha).slice(0, 7) } : {}) };
   }));
 }
 
@@ -99,9 +99,11 @@ export function display(findings: Shown[]) {
   const groups: Group[] = [];
   for (const f of [...findings].sort((a, b) => a.lens.localeCompare(b.lens) || a.path.localeCompare(b.path) || a.line - b.line)) {
     const end = Math.max(f.line, f.end_line ?? f.line);
-    const g = groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && x.items[0]!.title.toLowerCase() === f.title.toLowerCase() && x.carried === f.carried && f.line <= x.end && end >= x.line);
+    const g = groups.find((x) => x.lens === f.lens && x.path === f.path && x.severity === f.severity && x.items[0]!.title.toLowerCase() === f.title.toLowerCase() && f.line <= x.end && end >= x.line);
     if (!g) { groups.push({ lens: f.lens, path: f.path, line: f.line, end, severity: f.severity, items: [f], options: [f.option], carried: f.carried }); continue; }
     g.items.push(f);
+    // A finding some option found afresh is no longer only carried over.
+    if (!f.carried) g.carried = undefined;
     g.end = Math.max(g.end, end);
     if (!g.options.includes(f.option)) g.options.push(f.option);
   }
