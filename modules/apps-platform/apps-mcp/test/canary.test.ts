@@ -144,6 +144,8 @@ describe("app_page_canary", () => {
     // Several explicit submit controls with no single send-like one: stop, never click the first (a Preview before a Save).
     expect(script).toContain("const named = explicit.filter((x) => sendish.test(word(x)));");
     expect(script).toContain("named.length === 1 ? named[0]");
+    // A "Preview feedback" button is not a send: the form's subject word is not part of what names its submit.
+    expect(script).toContain('const sendish = /send|submit|share|post|save|publish/i;');
     // The landing page's own feedback link is followed even when it has a search box: a feedback field is what ends the walk.
     expect(script).toContain("for (let i = 0; i < 3 && !box; i++)");
     expect(script).toContain("box = feedbackField(refs)");

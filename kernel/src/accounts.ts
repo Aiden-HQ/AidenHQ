@@ -303,6 +303,15 @@ export async function openAccounts(o: AccountsOptions) {
       // refused rather than adopted, so the test user can never be the owner or an admin).
       const found = await ctx.internalAdapter.findUserByEmail(email);
       if (found) throw new AccountError(409, "that email is already an account: settings.edge.test_user.email must be its own");
+      // Access and header-JWT people have no Better Auth row: only the gate's accounts map knows them. The listener signs the
+      // test user with the same email and subject, so a shared email would open that person's own records in the canary.
+      if (o.gateAccountsFile) {
+        let gate: { accounts?: { email?: string }[]; apps?: Record<string, { roles?: Record<string, string> }> } | undefined;
+        try { gate = existsSync(o.gateAccountsFile) ? JSON.parse(readFileSync(o.gateAccountsFile, "utf8")) : undefined; } catch { gate = undefined; }
+        const dup = Boolean(gate?.accounts?.some((a) => String(a.email ?? "").toLowerCase() === email)) ||
+          Object.values(gate?.apps ?? {}).some((a) => Object.keys(a?.roles ?? {}).some((e) => e.toLowerCase() === email));
+        if (dup) throw new AccountError(409, "that email already belongs to a person on a shared app: settings.edge.test_user.email must be its own");
+      }
       const user = await ctx.internalAdapter.createUser({ email, name: "AidenHQ test user", emailVerified: true, role: "user", owner: false }, { method: "admin" });
       // No credential at all: no password row, so no sign-in form, reset link or MCP consent can ever use this account. The
       // only way in is a minted test session, and only the gate's test listener accepts one.

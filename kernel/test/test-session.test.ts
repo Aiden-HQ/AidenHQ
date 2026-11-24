@@ -130,7 +130,10 @@ test("check: only a live session for this host and app; expiry, revocation, a cl
   assert.deepEqual((await st.s.check({ cookie, host: HOST }))?.role, "member");
   // The wrong host is its own refusal (the listener answers 404 for another app's session), never "no session".
   await refused(st.s.check({ cookie, host: "other.example.com" }), 409, /another app/);
-  assert.equal(await st.s.check({ cookie: `${cookie.slice(0, 5)}x${cookie.slice(6)}`, host: HOST }), null); // not this session
+  // A changed character, never the same one it already had (a random token holds an x now and then).
+  const at = cookie.indexOf(".") > 5 ? 5 : 2;
+  const tampered = `${cookie.slice(0, at)}${cookie[at] === "x" ? "y" : "x"}${cookie.slice(at + 1)}`;
+  assert.equal(await st.s.check({ cookie: tampered, host: HOST }), null); // not this session
   assert.equal(await st.s.check({ cookie: "", host: HOST }), null);
   // Expired: 15 minutes later it's over, and the sweep ends it with an audit row.
   clock += 15 * 60_000 + 1;

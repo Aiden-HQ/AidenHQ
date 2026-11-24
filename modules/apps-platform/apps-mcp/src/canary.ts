@@ -147,7 +147,8 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       "const els = [...f.querySelectorAll('button, input[type=submit], input[type=image]')];" +
       "const explicit = els.filter((b) => (b.tagName === 'INPUT' ? /^(submit|image)$/i.test(b.type) : (b.type || 'submit') === 'submit'));" +
       "const word = (b) => (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '';" +
-      "const sendish = /send|submit|share|post|feedback/i;" +
+      // "feedback" is the form's own subject, not its send: a "Preview feedback" button must not be taken for "Save feedback".
+      "const sendish = /send|submit|share|post|save|publish/i;" +
       // Never guess between several explicit controls: two submit buttons with different actions (Preview, Save) are a form
       // whose send nobody can name, so the canary stops instead of clicking the first one and submitting the wrong thing.
       "const named = explicit.filter((x) => sendish.test(word(x)));" +
