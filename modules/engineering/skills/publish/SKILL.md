@@ -13,9 +13,10 @@ description: "Publishes a branch with `aidenhq publish`: self-review, PR title a
    ```
 
    - Exit 0, clean: publish.
-   - Exit 1, important findings: judge each against the code. Fix the real ones, rerun the affected tests, commit and run
-     it again. Publish when it is clean, or when each one left is wrong: put those in the PR body with the reason and
-     `file:line`.
+   - Exit 1, important findings: judge each against the code. Fix the real ones within the task's scope, rerun the
+     affected tests, commit and run it once more. Publish at that head whatever the second run says: list each finding
+     still open in the PR body with your judgment and `file:line`, for the PR's own review. Two runs per publish: each
+     run turns up new findings, so a third round widens the change instead of finishing it.
    - Exit 2, incomplete: when it names a setup step (clone, switch, commit), do it and run again. When the review
      itself could not finish, judge any findings as for exit 1 and publish with the outcome and its cause.
 
