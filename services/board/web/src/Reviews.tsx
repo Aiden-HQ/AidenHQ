@@ -841,6 +841,8 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   const [commit, setCommit] = useState("");
   const [pinning, setPinning] = useState(false);
   const [combos, setCombos] = useState<Combo[]>(() => defaultCombos(config, "").slice(0, 1));
+  // The owner picked a model here: it runs every model check. Untouched, each check runs its own default.
+  const [override, setOverride] = useState(false);
   const [options, setOptions] = useState<CatalogOption[] | null>(null);
   const [sha, setSha] = useState("");
   const [ticked, setTicked] = useState<Set<string>>(new Set());
@@ -897,7 +899,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   const efforts = Object.values(engines).map((x) => x.efforts).reduce((a, b) => a.filter((x) => b.includes(x)));
   // A check's cost on the chosen model comes from what it cost before (the service's `past`); none yet: no number.
   const effort = c ? efforts.includes(c.effort) ? c.effort : "medium" : "medium";
-  const guess = (o: CatalogOption) => (c ? estimate(o.past, c.model, effort, models ?? []) : null);
+  const guess = (o: CatalogOption) => (override ? (c ? estimate(o.past, c.model, effort, models ?? []) : null) : o.model ? estimate(o.past, o.model, o.effort ?? "medium", models ?? []) : c ? estimate(o.past, c.model, "medium", models ?? []) : null);
   const known = paid.filter((o) => guess(o) !== null);
   const total = known.reduce((n, o) => n + guess(o)!, 0);
   const e = c ? engines[c.engine] : undefined;
@@ -906,7 +908,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
     setBusy(true);
     setErr("");
     try {
-      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen.map((o) => o.id), combo: { model: c.model, effort: efforts.includes(c.effort) ? c.effort : "medium" } });
+      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen.map((o) => o.id), ...(override ? { combo: { model: c.model, effort: efforts.includes(c.effort) ? c.effort : "medium" } } : {}) });
       location.hash = `#/reviews/b/${encodeURIComponent(r.batch)}`;
     } catch (x) {
       setErr((x as Error).message);
@@ -919,7 +921,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
       {err && <Banner tone="danger">{err}</Banner>}
       <Card className="rv-form">
         <div className="rv-split">
-          <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setRepo(r))} autoFocus />
+          <RepoPicker repo={repo} onPick={(r) => ((edited.current = false), setTicked(new Set()), setCombos(defaultCombos(config, r).slice(0, 1)), setOverride(false), setRepo(r))} autoFocus />
           <div className="ui-field">
             <span className="ui-field-label">Commit</span>
             {pinning ? (
@@ -991,11 +993,11 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
             <span className="ui-field-label">Model for the checks that call one</span>
             {c && e && (
               <div className="rv-model-row">
-                <ModelPicker label="Review model" value={c.model} catalog={models} recommended={e.models} accepts={e.accepts} onOpen={refreshModels} onChange={(m) => setCombos([{ ...c, model: m }])} />
-                <Select aria-label="Effort" value={efforts.includes(c.effort) ? c.effort : "medium"} options={efforts.map((x) => [x, x] as const)} onChange={(x) => setCombos([{ ...c, effort: x }])} />
+                <ModelPicker label="Review model" value={c.model} catalog={models} recommended={e.models} accepts={e.accepts} onOpen={refreshModels} onChange={(m) => (setOverride(true), setCombos([{ ...c, model: m }]))} />
+                <Select aria-label="Effort" value={efforts.includes(c.effort) ? c.effort : "medium"} options={efforts.map((x) => [x, x] as const)} onChange={(x) => (setOverride(true), setCombos([{ ...c, effort: x }]))} />
               </div>
             )}
-            <span className="ui-field-help">Free checks don't use it. Effort is how hard the model thinks.</span>
+            <span className="ui-field-help">{override ? "Runs every check that calls a model. " : "Untouched, each check runs its own default model; pick one to run them all on it. "}Free checks don't use it. Effort is how hard the model thinks.</span>
           </div>
         </div>
       </Card>

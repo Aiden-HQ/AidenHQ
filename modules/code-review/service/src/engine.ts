@@ -1939,7 +1939,7 @@ export function createEngine(d: EngineDeps) {
         past.set(r.option, [...(past.get(r.option) ?? []), { model: r.model, effort: r.effort, n: r.n, usd: r.usd }]);
       }
       // Every option, the ones that can't run here with why (the board lists them last, greyed).
-      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
+      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(o.model ? { model: o.model } : {}), ...(o.effort ? { effort: o.effort } : {}), ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
     },
     /**
      * A repo review: `target` { repo, commit? } (no commit: the default branch's head, resolved once now and kept), its options
@@ -1968,6 +1968,8 @@ export function createEngine(d: EngineDeps) {
         const effort = comboFor(o).effort as string;
         if (!efforts.includes(effort)) throw new RequestError(`${o.id} takes an effort of ${efforts.join(", ")}, not ${effort}`);
       }
+      // What the batch runs, per model option: what a duplicate ask is looked up by, whether the combo was given or defaulted.
+      const resolved = Object.fromEntries(picked.filter((o) => o.kind !== "tool").map((o) => [o.id, comboFor(o)]));
       const asBatch = (batch: string) => ({ batch, repo, sha: tree.sha, options: ids, runs: all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", batch).map((r) => view(r)) });
       const id = `b-${randomBytes(6).toString("hex")}`;
       const author = String(b.author ?? "").toLowerCase().slice(0, 100);
@@ -1977,9 +1979,9 @@ export function createEngine(d: EngineDeps) {
       const made = tx(() => {
         // The same review asked again while it runs (a request the board gave up on, asked once more) is that review, never a second
         // one: looked for in the same step as the insert, after every await above.
-        const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(asked));
+        const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(resolved));
         if (same) return same.id;
-        run("INSERT INTO batches (id, repo, sha, options, combo, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(asked), now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
+        run("INSERT INTO batches (id, repo, sha, options, combo, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(resolved), now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
         const add = (engine: string, model: string, effort: string, option: string, profile: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, full, due, created, author, batch, target, option, profile)
           VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'oneoff', 'queued', 1, ?, ?, ?, ?, 'tree', ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, repo, tree.sha, tree.sha, engine, model, effort, now(), now(), author, id, option, profile);
         // The tools first (free), then each model option in the catalog's order.
