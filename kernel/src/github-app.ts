@@ -13,7 +13,8 @@ export const ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 /**
  * The App's manifest: public (any org may install it on the repos code review watches), no webhook, and only what a review's
  * writes need: pull requests (the review, its comments, the summary, resolving threads, the acknowledgement on the PR's
- * conversation) and commit statuses (`aidenhq/review`).
+ * conversation) and commit statuses (`aidenhq/review`), plus contents (write): the repo-narrowed, one-hour installation tokens a
+ * session box's `git push` uses (kernel/src/jobtools.ts gitToken). An install made before `contents` was asked must accept it on GitHub.
  */
 export function manifest(name: string, redirect: string) {
   return {
@@ -22,7 +23,7 @@ export function manifest(name: string, redirect: string) {
     hook_attributes: { url: "https://example.invalid", active: false },
     redirect_url: redirect,
     public: true,
-    default_permissions: { pull_requests: "write", statuses: "write", metadata: "read" },
+    default_permissions: { pull_requests: "write", statuses: "write", contents: "write", metadata: "read" },
     default_events: [],
   };
 }

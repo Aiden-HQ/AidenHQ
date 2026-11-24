@@ -5,10 +5,10 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 [ -f config/computers.json ] || { echo "config/computers.json missing: run node scripts/compile.ts" >&2; exit 1; }
-declare -A parent=([agent-base]=browser [engineer]=agent-base)
+declare -A parent=([agent-base]=browser [engineer]=agent-base [session]=engineer)
 # A release's prebuilt images (computers.json `pull`: tag -> digest) are pulled all at once and tagged as the build would be.
 pulled=()
-for name in browser agent-base engineer; do
+for name in browser agent-base engineer session; do
   tag="$(jq -r --arg n "$name" '.images[$n] // empty' config/computers.json)"
   ref="$(jq -r --arg t "$tag" '.pull[$t] // empty' config/computers.json)"
   [ -n "$tag" ] && [ -n "$ref" ] || continue
@@ -17,7 +17,7 @@ for name in browser agent-base engineer; do
   { docker pull --quiet "$ref" >/dev/null && docker tag "$ref" "$tag"; } & pulled+=($!)
 done
 for pid in ${pulled[@]+"${pulled[@]}"}; do wait "$pid" || { echo "a computer image failed to pull" >&2; exit 1; }; done
-for name in browser agent-base engineer; do
+for name in browser agent-base engineer session; do
   tag="$(jq -r --arg n "$name" '.images[$n] // empty' config/computers.json)"
   [ -n "$tag" ] || continue
   if docker image inspect "$tag" >/dev/null 2>&1; then continue; fi

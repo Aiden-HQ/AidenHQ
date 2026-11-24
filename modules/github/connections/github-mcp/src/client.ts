@@ -236,7 +236,7 @@ export function createAccess(o: {
 
   async function token(): Promise<string> {
     if (!o.auth.signedIn()) fail({ cause: "not_connected" });
-    if (o.auth.status().state === "expired") fail({ cause: "expired" });
+    if (o.auth.status().state === "expired") fail({ cause: "expired" }); // the sign-in heals itself when GitHub answers the token again
     const t = String((await o.auth.headers()).authorization ?? "").replace(/^Bearer\s+/i, "");
     if (!t) fail({ cause: "not_connected" });
     return t;
@@ -439,7 +439,19 @@ export function createAccess(o: {
     try { parsed = text ? JSON.parse(text) : {}; } catch { /* a non-JSON answer (a diff, a log) stays text */ }
     // Another identity's token GitHub refused (revoked, or the installation changed): once more with a new token.
     if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
-    const need = classify(p, path, res, parsed, Boolean(as));
+    // The owner's 401 is a refusal only when GitHub refuses the token itself: a stray 401 (another resource, a blip) is an answer.
+    let stray = false;
+    if (!as && res.status === 401) {
+      if (o.auth.refused && !(await o.auth.refused())) {
+        stray = true;
+        o.log?.("github 401 on a token GitHub still accepts; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
+      } else if (!retried) {
+        // A token that ran out: refresh once and send again; a refused refresh is the proof the owner has to reconnect.
+        try { await o.auth.refresh(); } catch (err) { o.log?.("github token refresh failed", { err: String((err as Error).message).slice(0, 200) }); }
+        return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
+      }
+    }
+    const need = classify(p, path, res, parsed, Boolean(as) || stray);
     if (need?.cause === "rate_limited") need.by = "github";
     if (need?.cause === "expired") o.auth.mark("expired", "GitHub refused the token (401)");
     if (need) fail(need);

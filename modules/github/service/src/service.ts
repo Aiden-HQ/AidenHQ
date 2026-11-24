@@ -75,6 +75,8 @@ export type Options = {
   /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
    * here with the owner's token and never answering it; unset: those ops answer 404. */
   ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
+  /** The owner's one GitHub App, for the `app_token` op (ops.ts). */
+  app?: OpsContext["app"];
   /** github_fleet_org: where the fleet's repos live on GitHub ("" while unset). */
   fleetOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): where the fleet merges and closes outside the agents org and the product repo. */
@@ -1278,6 +1280,11 @@ export function createService(o: Options) {
     ship: o.ship,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     taskStatus: async (task) => String(((await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`)) as { status?: unknown })?.status ?? "") || null,
+    // A task's id from its identifier: the kernel's work read resolves it by its jobs, which carry the id.
+    taskIdOf: async (identifier) => {
+      const r = await kernel("GET", `/v1/work?task=${encodeURIComponent(identifier)}`) as { jobs?: { task?: unknown }[] };
+      return String(r?.jobs?.[0]?.task ?? "") || undefined;
+    },
     // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
     identifierOf: async (record) => {
       // A record that is gone (404) has no identifier to find; any other failure is transient (the kernel restarting), and the
@@ -1441,7 +1448,7 @@ export function createService(o: Options) {
       if (!o.ops) throw fail(404, "no such operation");
       return o.ops(req, res, {
         access, cacheDir: o.cacheDir, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
-        initBare, ours,
+        initBare, ours, app: o.app,
       });
     }
     const b = await body(req);
@@ -1657,7 +1664,7 @@ export function createService(o: Options) {
         const b = await body(req, ap[1] === "write" ? 1_000_000 : 100_000);
         return send(res, 200, ap[1] === "read" ? await applyRead(b) : ap[1] === "land" ? await applyLand(b) : await applyWrite(b));
       }
-      const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|setup|runner_token)$/.exec(String(req.url ?? ""));
+      const m = /^\/ops\/(snapshot|bundle|fetch|head|read|comment|commit|setup|runner_token|app_token)$/.exec(String(req.url ?? ""));
       if (m?.[1] === "setup" && req.method === "POST") {
         if (!keyed(req)) throw fail(401, "the kernel only");
         // The kernel's own cap on an op's body (backplane.ts json: 1 MB), so whatever the kernel forwards fits.

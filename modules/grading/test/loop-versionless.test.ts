@@ -18,7 +18,7 @@ function setup(row, over = {}) {
   const loop = createGradeLoop({
     // The store's own hash: an amended rubric's hash is not the one a queued verdict names, which is how a stale revision move is
     // told from a live one. Here the rubric never changes, so the hash is a stable stand-in.
-    api: { get: async (p: string) => (p === "/internal/grades" ? { grades: rows.filter((r) => r.state === "pending"), resubmitted: [] } : { state: g.state, round: g.round }), post: async (path, body) => { posts.push([path, body]); g.state = row; return { state: row, round: g.round, attempts: 1, failures: 0 }; } },
+    api: { get: async (p: string) => (p === "/internal/grades" ? { grades: rows.filter((r) => r.state === "pending"), resubmitted: [] } : { state: g.state, round: g.round }), post: async (path, body) => { posts.push([path, body]); g.state = row; return { state: row, round: g.round, attempts: 1, failures: 0, applied: true }; } },
     pc: {
       // A test can move the task behind the loop's back (over.status): the close's answer was lost, but its PATCH landed.
       issue: async () => ({ id: g.issueId, identifier: over.identifier ?? "T-1", title: over.title ?? "x", status: over.status ?? status, parentId: "p" }),

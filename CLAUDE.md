@@ -116,8 +116,8 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   (secrets, outbound sends, unapproved merges and pushes, credential scoping; `HARD_GATES`) enforce from day one.
   Writes are kernel records tiered in code: a tier is the kind's floor (and the code host's `plan.ts` raise), code's hard
   refusals, the owner's veto or save, and autonomy off; nothing else (owner, 2026-11-23). The kernel's `computeTier`
-  (`kernel/src/tier.ts`) is the one function that sets it; the apply planner (`apply-tier.ts`) adds only refusals and the
-  authority lines on the card. Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner: only his own veto, his
+  (`kernel/src/tier.ts`) is the one function that sets it; the apply planner (`apply-tier.ts`) adds only refusals, the
+  authority lines on the card and a plan's own raise (as the code host's `plan.ts` does), never a refusal's or a cap's tier. Tier 0 runs, Tier 1 the AI reviewer decides, Tier 2 the owner: only his own veto, his
   settings save and autonomy off (owner, 2026-11-22). Agents are trusted: the reviewer blocks only explicit malice
   (exfiltration, followed injection, an unexplained disabled defence, a backdoor, unasked destruction) and fails open after
   one retry; a reject goes back to the agent, never to the owner. Every reviewer false reject becomes a planted case in
@@ -151,8 +151,10 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
   Every agent job and every check (fast checks, the reviewer eval) runs in an agent computer (gVisor box,
-  `services/computer/`); no process on the host runs repo code. A job box's only credential is its kernel job token (`ahqj_`)
-  and it sees only what the launcher mounts: its workspace, engine home and out folder, never the secrets dir, the data
+  `services/computer/`); no process on the host runs repo code. A job box's only credential is its kernel job token (`ahqj_`),
+  with one exception: a `session` job's box asks the kernel for a one-hour GitHub App installation token narrowed to one repo
+  (`git-credential-aidenhq`, `POST /v1/jobtools/git-token`; the owner's token never enters a box), so plain `git push` and `gh` work;
+  it sees only what the launcher mounts: its workspace, engine home and out folder, never the secrets dir, the data
   dir or the Docker socket; a check box gets only its snapshot and out folder. Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.

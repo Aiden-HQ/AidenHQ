@@ -77,6 +77,9 @@ export function createMerges(d: {
   flow?: Flow;
   /** The task that opened a PR (pr-tasks.json, pr-tasks.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
   taskOf?: (repo: string, n: number) => string | null;
+  /** A task's id from its identifier (WOR-12), as the kernel's work read resolves it (by its jobs): a module's record (ship's)
+   * names its task by id only, and pr-tasks.json keys a PR's owner by the identifier. */
+  taskIdOf?: (identifier: string) => Promise<string | undefined>;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
   identifierOf?: (record: string) => Promise<string | undefined>;
   /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
@@ -393,6 +396,12 @@ export function createMerges(d: {
         // The PR itself may have changed owners since the card was filed (a done task handed it to a successor): pr-tasks.json's
         // current row is the authority, and a row naming another task ends this card rather than merging the successor's PR.
         const now = d.taskOf?.(p.repo, p.number);
+        // A record a module filed (ship's) names its task by id: the row's identifier is resolved to its task's id once, and kept.
+        if (now && now !== q.task && !q.taskIdentifier && d.taskIdOf) {
+          const id = await d.taskIdOf(now).catch((e: Error) => { log("merge queue: task id not read (retrying)", { pr: p.url, task: now, err: says(e).slice(0, 300) }); return null; });
+          if (id === null) return wait("task-status");
+          if (id === q.task) { q.taskIdentifier = now; save(); }
+        }
         if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
