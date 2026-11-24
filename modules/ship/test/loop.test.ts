@@ -149,7 +149,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [422, { message: "refused" }], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -157,6 +157,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (req.url === "/v1/wakes" && wakeFails-- > 0) return res.writeHead(503).end("{}");
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
     if (req.url === "/v1/writes") { merges.push(JSON.parse(body)); const [status, answer] = merge(); return res.writeHead(status).end(JSON.stringify(answer)); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify(record()));
     res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus, records } : {}));
   });
   t.after(() => kernel.s.close());
@@ -530,13 +531,21 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
 });
 
 test("a green agent PR is adopted and its merge filed by ship on its task, once per head; a refused filing wakes the task", async (t) => {
-  const c = await rig(t, { merge: () => [200, { id: "r1", tier: 0, state: "claimed" }] });
+  let landed = { id: "r1", state: "claimed" };
+  const c = await rig(t, { merge: () => [200, { id: "r1", tier: 0, state: "claimed" }], record: () => landed });
   c.set([c.agentPr(3)]);
   await c.watch.tick(); await c.watch.tick();
   assert.deepEqual(c.merges, [{ kind: "github.merge", task: "ACME-3", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }], generation: 1, attempt: 1 } }], "filed once at this head");
   assert.equal(c.woke.length, 0, "no agent turn between green and the merge");
   const adopted = openState(join(c.cacheDir, "state.json")).get("acme/app", 3);
   assert.deepEqual([adopted.generation, adopted.task, adopted.trigger.kind, adopted.hold], [1, "ACME-3", "fleet", null], "adopted at first sight, on its task");
+  // A Tier 0 merge's outcome reaches its task once (the kernel tells only a reviewed record's).
+  landed = { id: "r1", state: "done", outcome: { ok: true, text: "Merged https://github.com/acme/app/pull/3." } };
+  c.set([]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 1);
+  assert.equal(c.woke[0].task, "ACME-3");
+  assert.match(c.woke[0].text, /^\*\*Done\*\* \(merge r1, github\.merge of https:\/\/github\.com\/acme\/app\/pull\/3/);
   const merging = await rig(t, { records: [{ kind: "github.merge", state: "review", args: { prs: [{ repo: "acme/app", number: 4, head: "h4" }] } }] });
   merging.set([merging.agentPr(4)]);
   await merging.watch.tick(); await merging.watch.tick();
