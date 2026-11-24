@@ -104,7 +104,9 @@ export function shipRoutes(o: {
         const v = b.body?.variables ?? {};
         const read = method === "POST" && path === "/graphql";
         // No `.` or `..` segment (raw or percent-encoded) and no other escape: a path that normalises elsewhere is never sent.
-        const dotted = String(path).split("?")[0]!.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(String(path));
+        // The query may carry an encoded slash (a `head=owner:feat/x` filter): it never changes which path GitHub serves.
+        const bare = String(path).split("?")[0]!;
+        const dotted = bare.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(bare) || /%(2e|5c)/i.test(String(path).slice(bare.length));
         const call = dotted ? undefined : CALLS.find(([m, re]) => m === method && re.test(String(path)));
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
         if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
@@ -117,7 +119,7 @@ export function shipRoutes(o: {
         }
         // `expectTask` is the route's own re-check of ownership, never GitHub's: it is stripped before the call goes out.
         const { expectTask, ...sent } = read ? {} : (b.body ?? {});
-        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : sent;
+        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body === undefined ? undefined : sent;
         // A close or a branch delete runs under this service's per-branch lock (branch-lock.ts), the one the publish holds around its
         // push and its ownership write. A cleanup in the gap between them would otherwise close or delete what a successor just pushed.
         const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);
