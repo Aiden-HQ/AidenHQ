@@ -442,12 +442,18 @@ export function createAccess(o: {
     // The owner's 401 is a refusal only when GitHub refuses the token itself: a stray 401 (another resource, a blip) is an answer.
     let stray = false;
     if (!as && res.status === 401) {
+      // Another call already replaced the token this one was sent with: its 401 is the old token's, so send again with the new one.
+      const current = String((await o.auth.headers().catch(() => ({}) as Record<string, string>)).authorization ?? "").replace(/^Bearer\s+/i, "");
+      if (current && current !== t && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
       if (o.auth.refused && !(await o.auth.refused())) {
         stray = true;
         o.log?.("github 401 on a token GitHub still accepts; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
       } else if (!retried) {
-        // A token that ran out: refresh once and send again; a refused refresh is the proof the owner has to reconnect.
-        try { await o.auth.refresh(); } catch (err) { o.log?.("github token refresh failed", { err: String((err as Error).message).slice(0, 200) }); }
+        // A token that ran out: refresh once and send again. A refusal marks the sign-in expired inside the refresh; any other
+        // failure (the token endpoint's 5xx) is passed on as it is, so the next call tries again and nothing is marked.
+        try { await o.auth.refresh(); } catch (err) {
+          if (o.auth.status().state !== "expired") throw err;
+        }
         return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
       }
     }
