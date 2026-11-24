@@ -204,6 +204,9 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
   // smaller total describes only that window and must not replace it.
   const resumed = from.afterId !== undefined; // this pass began inside a bulk-edit time, not at its own start
   let firstWindow = !resumed;
+  // Only the first newer time window of a resumed pass describes the whole range it re-read: the windows after it cover a
+  // narrower slice (from a later `since`) and must not replace that range's total.
+  let newerWindowFirst = resumed;
   for (;;) {
     if (afterId === undefined) {
       const droppedBefore = state.dropped;
@@ -230,15 +233,16 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         }
         answered = true;
         ({ records: page, total, returned } = answer);
-        // The total comes from the answer the first page is accepted with: a retried page's earlier total may count a record
-        // HubSpot has since archived, and would report the pass as short forever.
+        state.dropped = droppedBefore + (returned - page.length);
+        if (total !== null) gapTotal = total;
+        // The count comes from the answer the page is accepted with — a retry reporting a smaller total may count a record
+        // HubSpot has since archived — but a retry that omits it keeps the count its predecessor gave: a full replacement page
+        // must not erase a shortfall the earlier page measured.
         // Only a pass that began at the search's start has a whole-search total to compare (a resumed one counts from the
         // middle, per the ingest-run contract). A resumed pass's newer time range is compared on its own: the first newer
         // window's total covers the range, and `state.windowRead` collects the ids every newer window read.
-        if (firstWindow) state.total = total;
-        else if (state.windowRead && state.windowTotal === undefined && total !== null) state.windowTotal = total;
-        state.dropped = droppedBefore + (returned - page.length);
-        if (total !== null) gapTotal = total;
+        if (firstWindow) state.total = gapTotal;
+        else if (state.windowRead && newerWindowFirst && gapTotal !== null) state.windowTotal = gapTotal;
         // A retry that omits its total can't disprove the gap the page before it showed: the last total it gave is used.
         gap = shortOf(returned, gapTotal);
         // Recorded before the retry, so a retry that throws or runs out of budget still leaves the gap (and the cursor) as it
@@ -271,6 +275,7 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       // A gap this window resolved on retry is no longer a gap (an earlier one's counts stay).
       if (!gap) state.partial = partialBefore;
       firstWindow = false;
+      newerWindowFirst = false;
       if (returned < SEARCH_LIMIT) return void (state.ended = true);
       if (last > since) {
         since = last;

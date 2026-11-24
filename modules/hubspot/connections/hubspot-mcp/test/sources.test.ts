@@ -306,3 +306,51 @@ it("a short page that fills out on retry is read whole in the same pass", async 
   expect(pass.complete).toEqual({ total: 150, fetched: 150 });
   expect(scopes.get("contacts")).toEqual({ baselined: true, cursor: new Date(Date.parse(T) - 10 * 60_000).toISOString() }); // caught up, with the overlap
 });
+
+it("a retry that omits its total keeps the short page's count, so a held cursor is not released", async () => {
+  const T = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const first = Array.from({ length: 100 }, (_, i) => contact(i + 1, T));
+  const full = Array.from({ length: 200 }, (_, i) => contact(i + 1, T));
+  let calls = 0;
+  // The first answer says 250 matched but serves 100; the retry serves a full 200-row page and gives no total at all; the
+  // next page (past the only time in the burst) is empty, also without a count. 250 exist, only 200 are indexed.
+  const start = NOW - 30 * 86_400_000;
+  const call = async (_: string, args: Record<string, any>) => {
+    const since = Number(args.filterGroups[0].filters[0].value);
+    calls++;
+    if (since > start) return json({ results: [], offset: 0 }); // the page after the burst: empty, no total
+    return calls === 1 ? answer(first, first.length, 250) : json({ results: full, offset: 0 });
+  };
+  const { store, writes } = fakeStore();
+  const pass = {} as any;
+  await withRetries(() => syncObject(store, call, "contacts", opts({ pass })));
+  expect(calls).toBe(3);
+  expect(new Set(writes.map((w) => w.row.contact_id)).size).toBe(200);
+  expect(pass.complete).toEqual({ total: 250, fetched: 200 }); // the count is not wiped by the retry's silence
+  // 200 of 250 read: the cursor stays where the pass began instead of moving past the 50 that are unindexed.
+  expect((await store.scope("contacts")).cursor).toBe(new Date(NOW - 30 * 86_400_000).toISOString());
+});
+
+it("a resumed pass takes its newer range's total from the retry that resolved the short page", async () => {
+  const TIE = "2026-09-01T04:00:00.000Z";
+  const NEW = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const { store, scopes } = fakeStore();
+  scopes.set("contacts", { baselined: true, cursor: `${TIE}#1` });
+  let newer = 0;
+  const call = async (_: string, args: Record<string, any>) => {
+    const since = Number(args.filterGroups[0].filters[0].value);
+    if (args.filterGroups[0].filters[0].operator === "EQ") return answer([contact(2, TIE)], 1, 1); // the resumed tie is whole
+    if (since > Date.parse(NEW)) return json({ results: [], offset: 0 });
+    // The range first reports two matches but serves one; the retry reports one and serves it: a record archived between the
+    // attempts, not a gap. Its accepted count is the range's total, so the range is read whole and the cursor moves on.
+    newer++;
+    return newer === 1 ? answer([contact(10, NEW)], 1, 2) : answer([contact(10, NEW)], 1, 1);
+  };
+  const pass = {} as any;
+  await withRetries(() => syncObject(store, call, "contacts", opts({ pass })));
+  expect(newer).toBe(2);
+  expect(scopes.get("contacts")?.cursor).toBe(new Date(Date.parse(NEW) - 10 * 60_000).toISOString()); // caught up, no id checkpoint
+  expect(pass.complete).toBeUndefined(); // a resumed pass never reports a whole-search comparison
+});
