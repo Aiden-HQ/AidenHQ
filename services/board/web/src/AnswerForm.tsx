@@ -57,7 +57,7 @@ export function AnswerForm({ questions, onAnswer, autoFocus, askedAbove }: { que
             value={own[n]}
             autoFocus={autoFocus && !q.options.length && n === 0}
             onChange={(e) => setOwn((p) => p.map((x, i) => (i === n ? e.target.value : x)))}
-            onKeyDown={(e) => e.key === "Enter" && ready && (one ? submit(reply(0)) : send())}
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && ready && (one ? submit(reply(0)) : send())}
           />
         </fieldset>
       ))}

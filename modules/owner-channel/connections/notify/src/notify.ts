@@ -193,14 +193,14 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     if (digested) queueDigest(d.store, { agent: found?.agentName ?? caller?.name ?? "agent", ...(a.task ? { task: a.task } : {}), text, source: who?.key ?? "kernel", kind, ...(onChat ? { told: true } : {}) }, now);
     // The owner is typing in this chat on the board: the reply stays there (the board notifies them).
     const boardOnly = found?.ownerVia === "board" || digested || muted;
-    // The chief of staff's question on its own task files its owner wait, before it goes (the kernel refuses any other task; that
-    // is no failure): a one-tap answer is bound to that wait. A wait that failed is returned: the task would read orphaned and
-    // be woken to ask again.
+    // The chief of staff's question on its own task files its owner wait (the kernel refuses any other task; that is no failure).
+    // It is filed before a channel send, which a one-tap answer is bound to; a question that stays on the board (or goes to the
+    // digest) files it only once it is on the chat. A wait that failed is returned: the task would read orphaned and be woken
+    // to ask again.
     let waitError: string | undefined;
-    if (kind === "decision" && found && caller?.roles?.includes(CHIEF) && d.wait) {
-      const question = [text, ...(a.questions ?? []).map((q) => q.question)].join("\n");
-      since = (await d.wait(found.issueId, caller.assertion, question).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); return undefined; }))?.since;
-    }
+    const chief = kind === "decision" && found && caller?.roles?.includes(CHIEF) && d.wait;
+    const fileWait = async () => (await d.wait!(found!.issueId, caller!.assertion, [text, ...(a.questions ?? []).map((q) => q.question)].join("\n")).catch((e: Error) => { waitError = String(e.message ?? e).slice(0, 200); return undefined; }))?.since;
+    if (chief && !boardOnly) since = await fileWait();
     const only = a.questions?.length === 1 ? a.questions[0]! : undefined;
     const answer = since && only && !only.multi && only.options.length >= 2 && only.options.length <= 4 && !a.actions?.length ? { options: only.options, since } : undefined;
     let out: "sent" | "down" | "off" | "board" = "board";
@@ -216,6 +216,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     if (ok) d.store.setKv(dedupe, String(now));
     // Reached the owner (a channel took it, or it is on their chat) (a digest item is told when its digest goes); a message still waiting for a channel is written by the retry that delivers it.
     if (out === "sent" || onChat) d.store.told(told, now);
+    if (chief && boardOnly && ok) await fileWait();
     const failed = waitError ? { wait_error: `the question went out, but its wait wasn't recorded (${waitError}): call task_wait for: owner with the question so the task isn't woken as idle.` } : {};
     const chat = onChat ? { onChat: true as const } : {};
     // Sent only when a channel took it, its chat holds it or the digest will carry it; waiting for a channel is never "sent".

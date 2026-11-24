@@ -64,7 +64,7 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
                 <time title={new Date(ask.waitSince).toLocaleString()}>{ago(ask.waitSince)}</time>
               </div>
               <AnswerForm
-                key={ask.waitSince}
+                key={`${ask.waitSince}:${ask.questions.length}`}
                 questions={ask.questions}
                 askedAbove
                 onAnswer={(text) => api.answer(i.identifier, text, ask.waitSince).then(() => (void q.reload(), moveOn(i.identifier)))}

@@ -27,6 +27,7 @@ export interface ChatMessage {
   forward?: { from: string; date: string };
   voice?: boolean; // transcribed from a voice note: words may be misheard
   replyTo?: string; // Telegram: the id of the message this one replies to
+  task?: string; // delivered to exactly this task (an answer bound to its wait), whatever replyTo maps to
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -138,7 +139,7 @@ export function makeChat(cfg: ChatConfig, store: Store, kernel: Pick<Kernel, "ow
     return (agentCache = { at: Date.now(), list: await kernel.read(`/api/companies/${await companyId()}/agents`) }).list;
   };
   const deliver = async (m: ChatMessage): Promise<void> => {
-    const route = m.source === "telegram" && !m.forward ? routeOwnerMessage(m.text, m.replyTo ? { chatId: cfg.telegramChatId, messageId: m.replyTo } : undefined, store, await agents()) : ({ kind: "aiden" } as const);
+    const route = m.task ? ({ kind: "reply", issueId: m.task } as const) : m.source === "telegram" && !m.forward ? routeOwnerMessage(m.text, m.replyTo ? { chatId: cfg.telegramChatId, messageId: m.replyTo } : undefined, store, await agents()) : ({ kind: "aiden" } as const);
     const body = { sender: "owner", text: m.text, ...(m.voice ? { voice: true as const } : {}), ...(m.forward ? { forward: m.forward } : {}) };
     if (route.kind === "reply") {
       // The chat's recorded agent takes it back if nobody holds it now (the kernel reassigns only an unassigned chat).
@@ -178,16 +179,18 @@ export interface TelegramExtras {
 }
 
 /**
- * A press on an answer button: claimed at the kernel first (once per wait: false when it was answered already or the question
- * was replaced, and nothing is delivered). A claim or delivery that fails gives the claim and the button back and rethrows, so
- * the update is retried.
+ * A press on an answer button: claimed at the kernel first. "sent": delivered to the claimed task. "stale": the question is no
+ * longer the open one (nothing delivered, the button retires). "taken": another answer holds the claim now (nothing delivered,
+ * the button comes back: that answer may still fail). A claim or delivery that fails gives the claim and the button back and
+ * rethrows, so the update is retried.
  */
-export async function pressAnswer(a: AnswerPress, kernel: Pick<Kernel, "claimAnswer" | "releaseAnswer">, store: Store, deliver: (m: ChatMessage) => Promise<void>): Promise<boolean> {
+export async function pressAnswer(a: AnswerPress, kernel: Pick<Kernel, "claimAnswer" | "releaseAnswer">, store: Store, deliver: (m: ChatMessage) => Promise<void>): Promise<"sent" | "stale" | "taken"> {
   const undo = () => store.setKv(`ans:${a.data}`, a.stored);
   const claimed = await kernel.claimAnswer(a.task, a.since).catch((err) => (undo(), Promise.reject(err)));
-  if (claimed !== "ok") return false;
-  await deliver(a.message).catch(async (err) => { await kernel.releaseAnswer(a.task, a.since).catch(() => {}); undo(); throw err; });
-  return true;
+  if (claimed === "taken") undo();
+  if (claimed !== "ok") return claimed;
+  await deliver({ ...a.message, task: a.task }).catch(async (err) => { await kernel.releaseAnswer(a.task, a.since).catch(() => {}); undo(); throw err; });
+  return "sent";
 }
 
 export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: (m: ChatMessage) => Promise<void>, log: Logger, extras?: TelegramExtras): Promise<void> {
@@ -263,8 +266,8 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
         let said = press ? `Sent: ${press.label}` : undefined;
         if (answer) {
           const claimed = await pressAnswer(answer, extras!.approvals!.kernel, store, deliver);
-          await tg("editMessageReplyMarkup", { chat_id: answer.chatId, message_id: answer.messageId, reply_markup: { inline_keyboard: [[{ text: claimed ? `✓ ${answer.label}` : "Already answered", callback_data: "done" }]] } });
-          said = claimed ? `Sent: ${answer.label}` : "Already answered, or the question changed.";
+          if (claimed !== "taken") await tg("editMessageReplyMarkup", { chat_id: answer.chatId, message_id: answer.messageId, reply_markup: { inline_keyboard: [[{ text: claimed === "sent" ? `✓ ${answer.label}` : "Already answered", callback_data: "done" }]] } });
+          said = claimed === "sent" ? `Sent: ${answer.label}` : claimed === "stale" ? "Already answered, or the question changed." : "Another answer is being sent; try again in a moment.";
         }
         const cbId = (u as { callback_query?: { id?: string } }).callback_query?.id;
         if (cbId) await tg("answerCallbackQuery", { callback_query_id: cbId, ...(said ? { text: said } : {}) });

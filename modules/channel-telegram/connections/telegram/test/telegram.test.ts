@@ -35,11 +35,13 @@ describe("one-tap answers", () => {
   it("delivers on a claim and posts nothing when it was answered or the question changed", async () => {
     const deliver = vi.fn(async () => {});
     const claim = (r: "ok" | "stale" | "taken") => ({ claimAnswer: async () => r, releaseAnswer: vi.fn(async () => {}) });
-    expect(await pressAnswer(setup().press, claim("taken"), openStore(":memory:"), deliver)).toBe(false);
-    expect(await pressAnswer(setup().press, claim("stale"), openStore(":memory:"), deliver)).toBe(false);
+    expect(await pressAnswer(setup().press, claim("stale"), openStore(":memory:"), deliver)).toBe("stale");
+    const held = setup();
+    expect(await pressAnswer(held.press, claim("taken"), held.store, deliver)).toBe("taken");
+    expect(held.store.getKv(`ans:${held.press.data}`)).toBe(held.press.stored); // the button works again
     expect(deliver).not.toHaveBeenCalled();
-    expect(await pressAnswer(setup().press, claim("ok"), openStore(":memory:"), deliver)).toBe(true);
-    expect(deliver).toHaveBeenCalledWith({ source: "telegram", text: "Publish", replyTo: "7" });
+    expect(await pressAnswer(setup().press, claim("ok"), openStore(":memory:"), deliver)).toBe("sent");
+    expect(deliver).toHaveBeenCalledWith({ source: "telegram", text: "Publish", replyTo: "7", task: "t-1" });
   });
   it("gives the claim and the button back when the delivery fails", async () => {
     const { store, press } = setup();

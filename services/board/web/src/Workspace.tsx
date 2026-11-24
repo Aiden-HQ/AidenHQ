@@ -1378,7 +1378,7 @@ function AskView({ q, crew, prefix, go, answered, toast }: { q: Ask; crew: Assig
       <div className="bubble">
         <Markdown text={q.text} prefix={prefix} className="md" />
       </div>
-      <AnswerForm key={q.waitSince} questions={q.questions} onAnswer={answer} />
+      <AnswerForm key={`${q.waitSince}:${q.questions.length}`} questions={q.questions} onAnswer={answer} />
     </div>
   );
 }
