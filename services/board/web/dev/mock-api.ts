@@ -446,7 +446,7 @@ function route(method: string, url: URL): [number, unknown] {
   if ((x = m(/^\/api\/issues\/([^/]+)$/))) {
     const ref = decodeURIComponent(x![1]!);
     // A crew part of WOR-790: the Engineer's issue, opened from that task's agent tab.
-    if (ref === "WOR-791") return [200, { ...card(791, "Add CSV export"), parent: { identifier: "WOR-790", title: "Ship the invoices app's export" }, assignee: "engineer", editable: true, labelIds: [], replyTarget: "The Engineer reads replies here and continues the coding job.", scheduled: null, recurring: null, comments: [], files: [], crew: [], grade: { state: "none", rubric: [] }, milestones: [] }];
+    if (ref === "WOR-791") return [200, { ...card(791, "Add CSV export"), parent: { identifier: "WOR-790", title: "Ship the invoices app's export" }, assignee: "engineer", editable: true, labelIds: [], replyTarget: "The Engineer reads replies here and continues the coding job.", scheduled: null, recurring: null, comments: [], files: [], crew: [], grade: gradeFor("WOR-790"), milestones: [] }];
     const c = Object.values(board().buckets).flat().find((k) => k.identifier === ref || k.id === ref) ?? card(790, "Ship the invoices app's export");
     const crew = (c as { crew?: { agent: string }[] }).crew ?? [];
     const onTask = board().assignees.find((a) => a.key === crew[0]?.agent);
