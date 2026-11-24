@@ -39,6 +39,10 @@ export type Kept = Adoption & {
   merge?: { head: string; attempt: number; record: string };
   /** The repair filed for a head (github's `repair`, ship's check job), and whether its leftovers have woken the Engineer. */
   repair?: { head: string; record: string; woke?: boolean };
+  /** The App's approval filed for a head (github's `approve`): its record and attempt, and why it ended without one (no App). */
+  approve?: { head: string; attempt: number; record: string; why?: string };
+  /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
+  asked?: string;
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };
