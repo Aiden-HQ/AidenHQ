@@ -96,7 +96,7 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 
 ## Modules
 
-Modules declare (`board.signins`, `board.setup_flows`, `board.pages`, `providers.board`, settings) and both the board and the
+Modules declare (`board.signins`, `board.setup_flows`, `board.pages`, `providers.board` (the warehouse's search), settings) and both the board and the
 owner's MCP drive the declarations: a Connect on Settings, Connections, a setup sheet and wizard step
 ([guided-setup.md](guided-setup.md)), a page in the Fleet sidebar, a setting with its help. How a module is built:
 [modules/AGENTS.md](../../modules/AGENTS.md).
@@ -111,7 +111,7 @@ contributes:
     - id: ship                      # its address, #/fleet/ship; unique
       title: Ship
       icon: rocket                  # one of the icons modules/board/schemas/pages.json lists
-      order: 10                     # after Agents, Apps, Modules and Reviews, ascending
+      order: 10                     # after Agents, Apps and Modules, ascending
       connection: ship              # one of this module's own connections
       view: ui://ship/page          # served by it (resources/read, text/html;profile=mcp-app)
       tools: [ship_config, ship_configure]   # what the view calls: read or write tools of that connection, named <module>_…
@@ -144,7 +144,7 @@ contributes:
 - **A view's job:** the module's state and its feature settings, empty states that say how to connect. The example
   (`web/dev/example-view.html`, the mock API's Notes page) is the starting point: no build step, about 100 lines.
 
-Reviews is still native board code reading `providers.board`; moving it to a view is the follow-up.
+Code review's Reviews page is a module view too (`modules/code-review/service/src/page.html`, order 5: tabs Reviews, Repos and Insights, a run's findings with the owner's Dismiss, a repo's settings through `code_review_configure`'s proposal). Every module page has this one path; a `#/reviews/…` link opens it.
 
 ## Working on the UI without an instance
 

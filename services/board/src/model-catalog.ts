@@ -75,29 +75,6 @@ export const priceText = (m: CatalogModel) => {
 /** "400k", "1M". */
 export const contextText = (n: number) => (n >= 1e6 ? `${Number((n / 1e6).toFixed(1))}M` : `${Math.round(n / 1e3)}k`);
 
-/** One kind of past run of an option: the average cost of `n` finished runs on a model at an effort (the service's `past`). */
-export interface Past { model: string; effort: string; n: number; usd: number }
-/**
- * What an option would cost on `model` at `effort`, from what it cost before (null: no history to go on, so no number). Past runs at
- * the same effort count (any effort when none match); a run on another model is scaled by the two models' price ratio (input plus
- * output price per million, from the catalog). A model the catalog doesn't price can't be scaled from or to.
- */
-export function estimate(past: Past[] | undefined, model: string, effort: string, catalog: CatalogModel[]): number | null {
-  const weight = (id: string) => { const m = catalog.find((x) => x.id === id); return m && m.in + m.out > 0 ? m.in + m.out : null; };
-  const same = past?.filter((p) => p.effort === effort);
-  const use = same?.length ? same : past ?? [];
-  const mine = weight(model);
-  let sum = 0, n = 0;
-  for (const p of use) {
-    const theirs = weight(p.model);
-    const scale = p.model === model ? 1 : mine !== null && theirs !== null ? mine / theirs : null;
-    if (scale !== null) { sum += p.usd * scale * p.n; n += p.n; }
-  }
-  return n ? sum / n : null;
-}
-/** Dollars as the form shows them: "$0.40", "<$0.01", "$12". */
-export const costText = (usd: number) => (usd < 0.005 ? "<$0.01" : usd < 10 ? `$${usd.toFixed(2)}` : `$${Math.round(usd)}`);
-
 /**
  * A router engine stores its models with a prefix (openrouter/z-ai/glm-5.3) where the catalog lists z-ai/glm-5.3: the prefix is
  * whatever the stored model carries before its vendor/name, and the picker adds it back to a pick.

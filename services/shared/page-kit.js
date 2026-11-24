@@ -24,6 +24,44 @@ const inOrder = (fn) => (queue = queue.then(fn, fn));
 const proposed = (r) => say(`Changes are proposed; Save in the bar above applies them. ${(r.changes ?? []).join("; ")}.`);
 const setSwitch = (b, on) => b.setAttribute("aria-checked", String(!!on));
 const toggle = (on, label, fn) => { const b = h("button", { className: "sw", role: "switch", ariaLabel: label }); setSwitch(b, on); b.addEventListener("click", fn); return b; };
+// A link: the frame can't navigate, so a click asks the host (ui/open-link) to open it in a new tab. Only http(s) addresses are links; any other is plain text.
+const link = (url, text) => {
+  if (!/^https?:\/\//i.test(String(url ?? ""))) return h("span", { textContent: text ?? String(url ?? "") });
+  const a = h("a", { href: url, textContent: text ?? url, className: "lnk", rel: "noopener noreferrer" });
+  const open = (e) => { e.preventDefault(); send("ui/open-link", { url }).catch((err) => say(err.message, true)); };
+  a.addEventListener("click", open); a.addEventListener("auxclick", open);
+  return a;
+};
+// A small safe markdown: headings, lists, fenced code, bold, italics, `code` and [text](http…) links. Built from text nodes only, so nothing in the source is ever HTML; a table or quote is shown as preformatted text.
+const mdInline = (text) => {
+  const out = [], re = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*\s][^*]*)\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let i = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > i) out.push(text.slice(i, m.index));
+    out.push(m[1] !== undefined ? h("code", { textContent: m[1] }) : m[2] !== undefined ? h("b", { textContent: m[2] }) : m[3] !== undefined ? h("i", { textContent: m[3] }) : link(m[5], m[4]));
+    i = re.lastIndex;
+  }
+  if (i < text.length) out.push(text.slice(i));
+  return out;
+};
+const md = (src) => {
+  const root = h("div", { className: "md" }), lines = String(src ?? "").replace(/\r/g, "").split("\n");
+  let para = [], list = null, i = 0;
+  const flush = () => { if (para.length) root.append(h("p", {}, ...mdInline(para.join(" ")))); para = []; list = null; };
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) { flush(); const code = []; for (i++; i < lines.length && !/^```/.test(lines[i]); i++) code.push(lines[i]); i++; root.append(h("pre", { textContent: code.join("\n") })); continue; }
+    const hd = /^(#{1,6})\s+(.*)$/.exec(l), li = /^(\s*)([-*]|\d+\.)\s+(.*)$/.exec(l);
+    if (hd) { flush(); root.append(h(`h${Math.min(6, hd[1].length + 2)}`, {}, ...mdInline(hd[2]))); }
+    else if (li) { const kind = /\d/.test(li[2]) ? "ol" : "ul"; if (!list || list.kind !== kind) { para.length && flush(); list = { kind, el: h(kind, {}) }; root.append(list.el); } list.el.append(h("li", { style: li[1].length ? `margin-left:${Math.min(6, li[1].length / 2) * 14}px` : "" }, ...mdInline(li[3]))); }
+    else if (/^\s*\|/.test(l) || /^>/.test(l)) { flush(); const rows = []; for (; i < lines.length && (/^\s*\|/.test(lines[i]) || /^>/.test(lines[i])); i++) rows.push(lines[i]); root.append(h("pre", { textContent: rows.join("\n") })); continue; }
+    else if (!l.trim()) flush();
+    else { list = null; para.push(l.trim()); }
+    i++;
+  }
+  flush();
+  return root;
+};
 // The help "?" next to a label: help(label, text, { options: { value: meaning }, current, note }) returns the label with its button. One shared
 // tooltip (role=tooltip) opens on hover, on keyboard focus and on tap (a tap pins it; tap again, Escape or a tap elsewhere closes it), and is
 // placed by the button inside the frame, so no card clips it. Call closeHelp() when a render replaces the buttons.
@@ -85,10 +123,10 @@ const editor = (k) => {
 // One labelled field of a drawer: help label, editor, then a meta line (default, overridden mark, reset).
 const fld = (label, text, more, ed, ...meta) => h("div", { className: "fld" }, h("div", { className: "fl" }, help(label, text, more)), ed, h("div", { className: "meta" }, ...meta.filter((m) => m)));
 const linkBtn = (text, fn) => { const b = h("button", { type: "button", className: "link", textContent: text }); b.addEventListener("click", fn); return b; };
-// Handshake with the host, then the page's own first load.
+// Handshake with the host, then the page's own first load. The host context says where the page was opened (hostContext.route: the part of the address after the page's own).
 const start = async (name, load) => {
   const init = await send("ui/initialize", { appInfo: { name, version: "1" }, appCapabilities: {}, protocolVersion: "2026-01-26" });
   theme(init.hostContext);
   notify("ui/notifications/initialized", {});
-  load();
+  load(init.hostContext);
 };

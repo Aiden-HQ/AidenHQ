@@ -22,7 +22,7 @@ Rules that bind (owner and design):
 | Check job `code-review` (`recipe/`) | The review run itself: credential-free box, read-only repo tools, a model token (`check_jobs:` in `module.yaml`, 45 min timeout) |
 | Poster (`modules/github/connections/github-mcp/src/review-post.ts`, `review-render.ts`) | Turns findings into GitHub text; code, never the model |
 | Reviewer Manager agent (`agents/reviewer-manager/`) | Conversation only: sets up and edits config when the owner asks Aiden, starts one-off reviews, answers `aiden` questions on reviews. Holds no code tools and no delegation |
-| Board Reviews page (`services/board/web/src/Reviews.tsx`, `services/board/src/reviews.ts`) | Tabs Reviews, Repos, Insights |
+| Reviews page (`service/src/page.html`, a module view: `board.pages` in `module.yaml`, docs/design/board-ui.md "Modules") | Tabs Reviews, Repos, Insights; reads and acts through the module's own `code_review_*` tools on the owner's calls |
 
 ## Config (`settings.code_review`, schema in `module.yaml`, validated in `service/src/config.ts`)
 
@@ -42,7 +42,7 @@ code_review:
 ```
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
-claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service, the board and the compile all say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, served at `GET /engines`) offers a
+claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service and the compile say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, returned by `code_review_overview`) offers a
 short model list per engine (the board picker's "Recommended" group) and what the engine can run (`accepts`: one provider's
 models, or models that call tools), which filters the picker's full list: every text model of OpenRouter's catalog, read from the
 kernel gateway's own hourly list (`GET /v1/models/catalog`). Only a listed id is pickable; the gateway refuses one OpenRouter doesn't price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
@@ -319,7 +319,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
 - **Fail closed where it counts.** A mandatory run is never skipped, reviews a fork's PR by itself, and `aiden review stop`
   never stops it (anyone posting as the owner can write a command).
 - **Owner.** The Reviews page shows each gated PR's verdict and reasons on its review, with a Dismiss (and a reason) per open
-  gating finding: the owner's signed-in session, through the board's key. Turning a reviewer mandatory is the Reviewer Manager's
+  gating finding: the owner's own call of `code_review_dismiss` from the page (an agent's is refused; it answers with `code_review_resolve`). Turning a reviewer mandatory is the Reviewer Manager's
   to do (it only adds a gate); turning one off, removing its combo or removing a gated repo is the owner's (`owner:` rules;
   an entry removed holds its default, kernel/src/apply-tier.ts).
 
@@ -337,9 +337,8 @@ Every run is `review.started` / `review.ended` facts on its PR (stage `review`, 
 tab shows reviews per day, cost per repo, findings by severity, the share of findings later resolved because fixed, and skips.
 Only the install's spend limit bounds reviews (no per-author or per-repo review limits): past it a run's model calls get 402 from the gateway. A run's cost is its billed `cost_usd` (the kernel's `billed_usd` on `GET /v1/checks/:id` while it runs).
 
-The requester of a one-off review hears its outcome. A one-off ask (`POST /reviews`, or the Reviewer Manager's
-`code_review_run`) records its asker — the agent and task from the kernel's signed caller on the request, never a body field, and
-the board's own calls carry none — and the runs that request was answered with. Once each of those runs has settled the asker
+The requester of a one-off review hears its outcome. A one-off ask (`code_review_run`, from the Reviewer Manager or the owner's page) records its asker — the agent and task from the kernel's signed caller on the request, never a body field, and
+the owner's own calls carry none — and the runs that request was answered with. Once each of those runs has settled the asker
 gets one summary, never one message per run: the PR, how many runs posted, were refused, were held by the install's spend limit or
 failed, and the one action that fixes it (the Grant link for `restricted`, the spend limit's reset, or a re-run). With a task it is
 a wake notice on that task (its agent hears it and can act); an ask with no task (the board's) goes to the owner as one alert, and so
@@ -363,14 +362,16 @@ never the box's say), `tokens_in`, `tokens_cached`, `tokens_out` (the gateway le
 result by the kernel), `duration_ms` and its findings counts; `findings` (keyed by run and finding id) has each finding's
 severity, place, title, why and evidence and its `outcome`: `fixed` (a later run's recheck found it gone), `dismissed`, `open_at_merge` or
 `open_at_close` (still open when the PR closed; a closed PR is read once to tell which), else null. A thread an author resolves
-by hand isn't read back. Both are read through `GET /reviews` and `GET /reviews/:id` (and `code_review_runs`); there is no
+by hand isn't read back. Both are read through `code_review_overview` and `code_review_run_detail` (and `code_review_runs`); there is no
 analytics page.
 
 ## Setting it up and using it (the Reviews page)
 
-Empty state: "Get a review on every pull request." with Connect GitHub when GitHub is not connected. Watch a repo (a picker,
-then one screen with the defaults: each moment's combos as rows of engine, model and effort, added and removed) or paste a PR
-link for a one-off review (the same picker, prefilled with the repo's `on_open` combos; Review again on a review does the same).
-Reviews: open and recent runs per repo (PR, combo, findings by severity, cost, tokens, duration, status), each opening its
-findings, with their outcomes, and links to the GitHub comments.
-Repos: per-repo spend today. Titles and findings are shown as plain text, never as links.
+A module view (docs/design/board-ui.md "Modules"), so it sits in the Fleet sidebar from `module.yaml`'s `board.pages` and reaches the
+module only through its own tools. Reviews: open and recent runs per repo (PR, combo, findings by severity, cost, status) and whole-repo
+reviews, each opening its findings with their outcomes, a gated PR's merge gate with the owner's Dismiss, and (for a repo review) its
+report. Repos: each watched repo's combos and settings edited in place, with today's spend; an edit is the owner's own call of
+`code_review_configure`, which only proposes: the board shows the change and files it on his Save. Insights: the numbers above. Review a
+PR (paste its link; reviewers default to the repo's `on_open` combos, Review again on a review does the same) and Review a repo (pick the
+checks) start one-off reviews. The frame has no navigation, so GitHub and Primer addresses are shown as text; titles, findings and
+reports are shown as plain text, never as links or markup.

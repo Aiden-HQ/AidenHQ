@@ -15,7 +15,7 @@ import { readConfig } from "./config.ts";
 import { createEngine } from "./engine.ts";
 import { deepsecStore } from "./deepsec-store.ts";
 import { configTools } from "./config-tool.ts";
-import { createMcp, serveMcp } from "./mcp.ts";
+import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { isModule } from "./module-caller.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 
@@ -72,29 +72,19 @@ setTimeout(() => void tick(true), 5_000);
 // executor@1 for code-review.post, .notice and .status: the kernel calls it with this module's service key, read fresh per request.
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";
 const executor = reviewExecutor(githubReview(github, token), (id) => engine.binding(id));
-// A POST /reviews that carries the kernel's signed caller (the Reviewer Manager's tool, through the MCP connection below) says
-// whose task hears the batch's summary; the board's own calls send no assertion and the owner hears it instead. Never a body field.
-const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE), (auth, module) => isModule(kernelUrl, auth, module), async (req) => {
-  if (!req.headers["x-aidenhq-caller"]) return undefined;
-  try {
-    const c = await verifyCaller(req, jwks, "code-review");
-    return { requester: c.name || c.agent || "an agent", ...(c.task && /^[A-Za-z0-9_-]{1,100}$/.test(c.task) ? { task: c.task } : {}) };
-  } catch (e) {
-    log("reviews: a caller assertion the service can't verify; the batch's summary goes to the owner", { err: String((e as Error).message).slice(0, 200) });
-    return undefined;
-  }
-});
+const api = handler(engine, (auth, module) => isModule(kernelUrl, auth, module));
 // The Reviewer Manager's tools on the module's connection (code_review): its setting as instance.yaml holds it, and its changes
 // filed as the calling job (its assertion goes along).
 const raw = () => { try { const v = JSON.parse(env.CODE_REVIEW_SETTINGS || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
-const mcp = serveMcp(createMcp(configTools({
+const mcp = serveMcp(createMcp("code-review", configTools({
   raw, repos: () => engine.repos(), runs: (q) => engine.runs(q), oneoff: (b, asker) => engine.oneoff(b, asker), resolve: (b) => engine.resolve(b), findings: (r, n) => engine.openFindings(r, n), repoReview: (b) => engine.repoReview(b),
+  batches: (q) => engine.batches(q), detail: (id) => engine.run(id) ?? (() => { throw new Error(`no review ${id}`); })(), report: (b) => engine.report(b), catalog: (q) => engine.catalogFor(q), available: (q) => engine.available(q), dismiss: (b) => engine.dismiss(b),
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
     return r.json;
   },
-})), () => file(env.CODE_REVIEW_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "code-review")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
+}), [{ uri: "ui://code-review/page", html: pageHtml(new URL("./", import.meta.url)) }]), () => file(env.CODE_REVIEW_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "code-review")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 // One executor handler (its once-per-id map must live across requests), made anew only when the service key changes.
 let serving: { key: string; handle: ReturnType<typeof serveExecutor> } | undefined;
