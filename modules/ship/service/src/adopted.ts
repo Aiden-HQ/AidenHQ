@@ -60,7 +60,7 @@ export function adoptedPass(o: AdoptedOptions) {
    */
   const front = (repo: string, number: number, open: Set<number>) => {
     const order = (o.state.all() as Kept[])
-      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold)
+      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && !a.hold && !a.kept)
       .sort((x, y) => String(x.trigger.at ?? "").localeCompare(String(y.trigger.at ?? "")) || x.number - y.number);
     return order[0]?.number === number;
   };
@@ -116,9 +116,14 @@ export function adoptedPass(o: AdoptedOptions) {
       o.log("cancelled task's PR left open", { pr: view.url, task });
       return true;
     }
-    const merging = (work.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => String(p.repo).toLowerCase() === view.repo.toLowerCase() && p.number === view.number));
+    // A task that resumed takes its PR back into the merge order.
+    if (a.kept) { const { kept: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
+    // A merge or an enqueue of it in flight, or the PR in GitHub's merge queue: nothing is retired under it.
+    const ours = (r: Json) => (r.args?.prs ?? [r.args ?? {}]).some((p: Json) => String(p.repo).toLowerCase() === view.repo.toLowerCase() && p.number === view.number);
+    const merging = pr.isInMergeQueue === true || (work.records ?? []).some((r: Json) => ["github.merge", "github.enqueue"].includes(r.kind) && ["review", "owner", "approved", "claimed"].includes(r.state) && ours(r));
     if (a.seen?.head !== view.head) { a = { ...a, seen: { head: view.head, at: new Date().toISOString() } }; o.state.put(a); }
-    const why = merging ? undefined
+    // Only a known task status retires a PR (a read without one says nothing about cancellation).
+    const why = merging || !work.status ? undefined
       : newer ? `Closing: superseded by ${newer}, the newer PR ${task} published for the same task.`
       : work.status === "done" && Date.now() - Date.parse(a.seen!.at) >= HALF_HOUR ? `Closing: its task ${task} is done; its change landed elsewhere or isn't needed.` : undefined;
     if (!why) return false;
@@ -142,15 +147,16 @@ export function adoptedPass(o: AdoptedOptions) {
     begin() { roles.clear(); },
     /**
      * One open PR: intake, then a round once adopted. `ctx.opener`: the task the code host opened it for (its identifier);
-     * `ctx.newer`: a newer open PR of that same task; `ctx.recovery`: its CI recoveries' answer this pass.
+     * `ctx.newer`: a newer open PR of that same task; `ctx.recover`: its CI recoveries (ci-recover.ts), run once its task's
+     * lifecycle has kept it (a PR about to be closed or left for a successor spends no CI).
      */
-    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; recovery?: Recovery } = {}) {
+    async open(repo: string, main: { name: string; oid?: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number]), ctx: { opener?: string; newer?: string; recover?: () => Promise<Recovery> } = {}) {
       const view = viewOf(repo, main.name, pr);
       // The task as the kernel keeps it, read once a pass: its id names the adoption's task, its state the PR's lifecycle.
       const work = ctx.opener ? await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(ctx.opener)}`).catch((e: Error) => (o.log("task read failed", { pr: view.url, err: String(e.message).slice(0, 200) }), undefined)) : undefined;
       const taskId = ctx.opener && work ? String(work.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? ctx.opener) : undefined;
       let a = await intake(handoff, view, taskId) as Kept | undefined;
-      if (!a) return;
+      if (!a) { await ctx.recover?.(); return; }
       if (a.owner?.kind === "task") {
         // Closed by ship (a stop): nothing more until a successor publishes to it.
         if (a.hold?.kind === "stopped") return;
@@ -160,17 +166,18 @@ export function adoptedPass(o: AdoptedOptions) {
         const w = await o.kernel.call("GET", `/v1/work?task=${encodeURIComponent(a.task)}`).catch(() => undefined);
         if (w?.status === "cancelled") { handBack(o.state, repo, pr.number, "its task was cancelled"); return; }
       }
+      const recovery = await ctx.recover?.();
       a = o.state.get(repo, pr.number) as Kept;
       // A stalled hold is round()'s to clear on a new head; any other hold, or a pause, only retries a report that failed.
       const resumes = a.hold?.kind === "stalled" && !!a.counters && a.counters.head !== view.head;
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
       const v = await o.decision(repo, pr.number, view.head, { pr, main });
       // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
-      if (v.do === "fix_ci" && ctx.recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });
+      if (v.do === "fix_ci" && recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });
       // A check run still pending well after its job finished and was re-run: no push fixes it, so its owner is told once per head.
-      if (ctx.recovery?.wedgedDue && v.do === "wait" && /still running on its head/.test(v.why ?? "") && a.wedgedTold !== view.head) {
-        const how = ctx.recovery.wedgedDue === "accepted" ? "after its Actions job completed and the job had been re-run" : "after its Actions job completed, and the request to re-run the job was refused";
-        await tell(rounds, a, view, `${view.url}'s check run is still \`in_progress\` at \`${view.head}\` ${how}, and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${view.url}\` names it.`);
+      if (recovery?.wedgedDue && v.do === "wait" && /still running on its head/.test(v.why ?? "") && a.wedgedTold !== view.head) {
+        const how = recovery.wedgedDue === "accepted" ? "after its Actions job completed and the job had been re-run" : "after its Actions job completed, and the request to re-run the job was refused";
+        await tell(rounds, a, view, `${view.url}'s check run is still \`in_progress\` at \`${view.head}\` ${how}, and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${view.url}\` names it.`, `wedged.${view.head.slice(0, 12)}`);
         o.log("wedged check run reported", { pr: view.url, head: view.head });
         a = { ...a, wedgedTold: view.head };
         o.state.put(a);
@@ -203,7 +210,8 @@ export function adoptedPass(o: AdoptedOptions) {
           continue;
         }
         const view: PrView = { repo, number: a.number, url: String(r.body.html_url), head: String(r.body.head?.sha), base: String(r.body.base?.ref), defaultBranch, author: String(r.body.user?.login ?? ""), authorBot: r.body.user?.type !== "User", fork: false, canModify: false, draft: false, state: "merged", labels: [], assignees: [], events: [] };
-        await round(rounds, view, { do: "done" });
+        // One PR's notice that didn't land never holds the others: it is retried next pass.
+        await round(rounds, view, { do: "done" }).catch((e) => o.log("landed round failed", { pr: view.url, err: String((e as Error).message).slice(0, 200) }));
       }
     },
   };

@@ -124,6 +124,8 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string): Promise
     was = { ...was, task, owner: { kind: "task", task }, ...(was.hold?.kind === "stopped" ? { hold: null } : {}) };
     d.state.put(was);
   }
+  // A task's PR stays its task's: a member's label or comment hands over nothing (github merges it only for that task).
+  if (was?.owner?.kind === "task") return was;
   const { trigger, handback } = await newest(d, pr, was ? { at: was.trigger.at, event: was.trigger.event } : undefined);
   if (trigger) {
     // `handoff: none` is the fleet's own PRs only; otherwise a member's trigger adopts any PR, a fork included.

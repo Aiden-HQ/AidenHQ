@@ -412,9 +412,12 @@ test("a check re-run GitHub refused is asked again rather than recorded as handl
 test("a red PR behind a green base is updated by GitHub once at its head before any wake; a refused update falls to the fix", async (t) => {
   const c = await rig(t, { behind: 2 });
   c.set([c.agentPr(5, redPr(5))]);
-  await c.watch.tick(); await c.watch.tick();
+  await c.watch.tick();
   assert.equal(c.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/5/update-branch")).length, 1);
-  assert.equal(c.woke.length, 0);
+  assert.equal(c.woke.length, 0, "the update first");
+  await c.watch.tick();
+  assert.equal(c.gh.filter((g) => g.startsWith("PUT /repos/acme/app/pulls/5/update-branch")).length, 1, "once per head");
+  assert.equal(c.woke.length, 1, "the head never moved and is still red: the fix is asked for");
   const d = await rig(t, { behind: 2, update: 422 });
   d.set([d.agentPr(6, redPr(6))]);
   await d.watch.tick(); await d.watch.tick();
