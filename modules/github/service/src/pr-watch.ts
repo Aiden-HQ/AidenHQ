@@ -77,6 +77,9 @@ const PROBES_PER_PASS = 10;
 /** How long one recovery probe may wait out the owner's rate limit before it is deferred to the next tick: the pass reads
  * several checks in sequence, so a probe that would sleep out a quota window must not hold the PRs after it. */
 const PROBE_DEADLINE_MS = 5_000;
+/** The write side of the same bound: a recovery re-run that would wait out a quota window is deferred to the next tick, not
+ * slept on inline (the same reason as a probe's: every later PR's merge waits behind this serial scan). */
+const RECOVERY_WRITE_DEADLINE_MS = 5_000;
 /** Actions job reads of a PR's budget kept free for the never-started path, so the wedged scan of still-running jobs cannot
  * spend them all and leave a failed job that never started unjudged (which would be woken as if it had run). */
 const NEVER_STARTED_RESERVE = 2;
@@ -315,7 +318,7 @@ export function startPrWatch(o: PrWatchOptions) {
         // A re-run that cannot be sent (a timeout, a quota refusal) is this head's problem: backing off and asking again is
         // the fix, never aborting the repo's scan and skipping a later PR's merge for the tick.
         let r: { status: number };
-        try { r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}); }
+        try { r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, { deadline: Date.now() + RECOVERY_WRITE_DEADLINE_MS }); }
         catch (e) {
           log("never-started re-run failed to send", { pr: pr.url, head: pr.headRefOid, run, err: String((e as Error).message).slice(0, 200) });
           refused = true;
@@ -414,7 +417,7 @@ export function startPrWatch(o: PrWatchOptions) {
         // The first ask starts the report's clock and is not moved by a refusal.
         state.wedged[name] ??= { at: new Date().toISOString(), accepted: false, job: Number(jobId) };
         let r: { status: number };
-        try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}); }
+        try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}, { deadline: Date.now() + RECOVERY_WRITE_DEADLINE_MS }); }
         catch (e) {
           log("wedged check run's re-run failed to send", { pr: pr.url, head, job: jobId, err: String((e as Error).message).slice(0, 200) });
           state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
@@ -709,7 +712,10 @@ export function startPrWatch(o: PrWatchOptions) {
       // makes it "fail" before it reads any pending one, so that head is the red-head rules' to wake, never this report's. Only a
       // complete rollup: the gate refuses a truncated one before reading any check, so a re-run cannot clear that.
       const pendingIds = new Set(runs.filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED" && n.name && n.name !== DESIGN_REVIEW_CHECK && n.name !== CODE_REVIEW_STATUS).map((n: Json) => String(n.id)));
-      const holdsPending = gate.do === "wait" && !rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
+      // A conflicting or behind head is not held by a pending check: `decide()` reads the checks first, but the rebase rules
+      // own such a head, and a "leave the head alone" wake beside their "rebase it" would contradict them.
+      const movable = pr.mergeStateStatus !== "DIRTY" && pr.mergeStateStatus !== "BEHIND";
+      const holdsPending = movable && gate.do === "wait" && !rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
       const held = holdsPending ? due.filter((w) => !!w.nodeId && pendingIds.has(w.nodeId)) : [];
       const optional = due.filter((w) => !held.includes(w));
       const redNow = named.filter((c) => !c.ok && !c.pending).map((c) => c.name);
@@ -726,17 +732,17 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && redNow.length && state.wedgedTold[`${url}:red`] !== pr.headRefOid && !(await redsAreEnvironment())) {
+      } else if (optional.length && redNow.length && state.reded[url] !== pr.headRefOid && !state.breaker[url]?.told && !(await redsAreEnvironment())) {
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
         // other rule wakes for it while a named check is still pending. Tell the task the failure once at this head. A red whose
         // job never started is the environment's (`redsAreEnvironment`): re-running it is the fix, never a push, so no wake.
+        // The red-head rules' own markers (`state.reded`, the breaker) guard it, so a head already told about a failure, or one
+        // whose breaker tripped, is never told a second time by this path.
         const w = opener && opener.branch === pr.headRefName
           ? await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\` while another check is still \`in_progress\`; \`gh pr checks ${pr.url}\` lists them. Fix the failure on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says. Nothing else.`)
           : "sent";
         if (w !== "failed") {
-          // Not the log-only marker below: a head that later goes red was never told about a failure, so its wake must not be
-          // suppressed by a wedge line that only went to the log.
-          state.wedgedTold[`${url}:red`] = pr.headRefOid;
+          state.reded[url] = pr.headRefOid;
           save();
           log("red check beside a wedged one reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }

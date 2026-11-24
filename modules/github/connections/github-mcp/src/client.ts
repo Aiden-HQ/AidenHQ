@@ -90,9 +90,11 @@ export type Identity = {
   /** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
 type CallOpts = {
   background?: boolean; accept?: string; as?: Identity; etag?: string;
-  /** Reads only: the latest this call may spend waiting out a rate limit. Past it the wait refuses at once as a typed
-   * rate_limited need instead of sleeping until the reset, which is what a background scan wants for a read it can retry.
-   * It bounds the wait, not the request: a read that starts at the deadline still gets its own attempt timeout. */
+  /** The latest this call may spend waiting out a rate limit (a read) or waiting out a quota before its write is retried.
+   * Past it the call refuses at once as a typed rate_limited need instead of sleeping until the reset, which is what a
+   * background scan wants for work it can defer to its next pass. On a read it bounds the wait, not the request: a read that
+   * starts at the deadline still gets its own attempt timeout. A write that cannot see its attempt through inside it fails
+   * (a write must never land after its caller was told it failed). */
   deadline?: number;
 };
 
@@ -328,8 +330,9 @@ export function createAccess(o: {
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
-    // the patience it always had and waits a limit out, inside the queue like every other write.
-    const deadline = background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS;
+    // the patience it always had and waits a limit out, inside the queue like every other write — unless its caller gave one
+    // (a recovery write that must not hold the scan), which bounds that wait the same way a tool's budget does.
+    const deadline = readDeadline ?? (background ? undefined : invocation.getStore()?.deadline ?? now() + WRITE_BUDGET_MS);
     return queued(p, deadline, () => paced(p, deadline, () => attempt(p, method, path, body, resource, background, accept, deadline, as)));
   }
 

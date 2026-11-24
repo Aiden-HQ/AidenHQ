@@ -1025,3 +1025,16 @@ test("a never-started re-run whose POST throws does not skip the repo's other PR
   const saved = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
   assert.match(saved.reran["https://github.com/acme/app/pull/74:h74"], /^retry:/, "the failed request backs off rather than counting as handled");
 });
+
+// self-review: a conflicting head is the rebase rules' to move, so the wedge report never tells its task to leave it alone.
+test("a conflicting head gets no leave-it-alone wedge wake", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  c.set([c.agentPr(76, { ...stuckPr(76), mergeStateStatus: "DIRTY" })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h76:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h76:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(!c.woke.some((w) => /Leave the head alone/.test(w.text ?? "")), "a conflicted head has a move to make: never leave-it-alone");
+});
