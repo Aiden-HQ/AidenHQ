@@ -421,7 +421,8 @@ export function createEngine(d: EngineDeps) {
       if (kind !== "auto") {
         // The same ask is the same run only when it asks the same question: a different focus (or none) is its own run, so a
         // one-off asked with a focus never reuses a queued run of another ask and drop that ask's focus.
-        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null);
+        // …and under the same review policy and its run of heads: a run under an older ignore list or tier is another question.
+        const same = one<{ id: string }>("SELECT id FROM runs WHERE repo = ? AND number = ? AND head = ? AND engine = ? AND model = ? AND effort = ? AND kind = ? AND full = ? AND focus IS ? AND policy IS ? AND created >= ? AND status IN ('queued', 'running')", p.repo, p.number, p.head, c.engine, c.model, c.effort, kind, o.full ? 1 : 0, o.focus ?? null, at?.policy ?? null, at && Number.isFinite(at.at) ? at.at : 0);
         if (same) return runRow(same.id)!;
       }
       const id = `cr-${randomBytes(6).toString("hex")}`;
@@ -1714,7 +1715,8 @@ export function createEngine(d: EngineDeps) {
         t.at = now();
       }
       const c = t.c;
-      if (!p.draft && opening(c, p, t.policy, t.at)) continue;
+      // A draft too, where the repo reviews drafts.
+      if ((!p.draft || c.drafts) && opening(c, p, t.policy, t.at)) continue;
       if (!was) trigger(c, p, "open");
       else if (seen !== p.head) trigger(c, p, pushed(p) ? "push" : "open");
       else if (was.draft && !p.draft && !runsOn(p)) trigger(c, p, "open");
