@@ -19,8 +19,8 @@
 //
 // Risk tiers (docs/superpowers/specs/2026-11-24-risk-tiers-design.md): each open PR head is classified before anything is queued for it
 // (classifyPr: one consistent read of its files, the repo's rules, stored on its row with the inputs it came from); a head without a
-// current classification is pending and gets nothing. What runs is its tier's (tierCfg). A head's policy (config.ts policyOf: its tier,
-// the tier's mandatory combos, its base branch, the ignore globs) changing starts a new run of heads (policy_since): it gets the tier's
+// current classification is pending and gets nothing. What runs is its tier's (tierCfg). A head's policy (config.ts policyOf: the
+// tier's mandatory combos, its base branch, the ignore globs) changing starts a new run of heads (policy_since): it gets the tier's
 // full opening batch, and only runs and coverage under the current policy count for its verdict.
 //
 // A repo review (a batch whose target is a tree: a whole repo at one commit, resolved once when it is asked for) runs on the same
@@ -248,7 +248,7 @@ export function createEngine(d: EngineDeps) {
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
     ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"], ["runs", "area", "TEXT"], ["batches", "plan", "TEXT"], ["batches", "blobs", "TEXT"], ["batches", "full", "INTEGER NOT NULL DEFAULT 0"], ["runs", "carried", "TEXT"],
-    ["prs", "tier", "TEXT"], ["prs", "rule", "INTEGER"], ["prs", "why", "TEXT"], ["prs", "facts", "TEXT"], ["prs", "cls", "TEXT"], ["prs", "policy", "TEXT"], ["prs", "policy_since", "TEXT"], ["prs", "policy_at", "INTEGER"], ["runs", "tier", "TEXT"]] as const)
+    ["prs", "tier", "TEXT"], ["prs", "rule", "INTEGER"], ["prs", "why", "TEXT"], ["prs", "facts", "TEXT"], ["prs", "cls", "TEXT"], ["prs", "policy", "TEXT"], ["prs", "policy_since", "TEXT"], ["prs", "policy_at", "INTEGER"], ["runs", "tier", "TEXT"], ["prs", "handled", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
   if (version === 1) {
@@ -290,7 +290,9 @@ export function createEngine(d: EngineDeps) {
     /** Its head's risk tier, the rule that named it, why, the facts (JSON), and the inputs it was computed from (JSON Inputs). */
     tier: Tier | null; rule: number | null; why: string | null; facts: string | null; cls: string | null;
     /** The current run of heads under one policy: the policy, its first head and when it started. */
-    policy: string | null; policy_since: string | null; policy_at: number | null };
+    policy: string | null; policy_since: string | null; policy_at: number | null;
+    /** The head the triggers last ran for (a push seen while its tier was pending is still a push once classified). */
+    handled: string | null };
   const prRow = (repo: string, n: number) => one<PrRow>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
   /** What a head's classification was computed from: a stored one whose inputs differ from these is stale (pending). */
   type Inputs = { head: string; base: string; ref: string; author: string; association: string; config: string };
@@ -1702,6 +1704,9 @@ export function createEngine(d: EngineDeps) {
       // Pending (no current tier): nothing is queued, never on a guessed tier.
       const t = current(p.repo, p.number, p.head);
       if (!t) continue;
+      // The head the triggers last ran for: a push seen while its tier was pending is still a push once it is classified.
+      const seen = was?.handled ?? was?.head;
+      run("UPDATE prs SET handled = ? WHERE repo = ? AND number = ?", p.head, p.repo, p.number);
       const row = prRow(p.repo, p.number)!;
       // A head whose policy differs from the head before it starts a new run of heads under that policy.
       if (row.policy !== t.policy) {
@@ -1711,7 +1716,7 @@ export function createEngine(d: EngineDeps) {
       const c = t.c;
       if (!p.draft && opening(c, p, t.policy, t.at)) continue;
       if (!was) trigger(c, p, "open");
-      else if (was.head !== p.head) trigger(c, p, pushed(p) ? "push" : "open");
+      else if (seen !== p.head) trigger(c, p, pushed(p) ? "push" : "open");
       else if (was.draft && !p.draft && !runsOn(p)) trigger(c, p, "open");
       else if (!p.draft && !anyRun(p)) trigger(c, p, "open");
       // A gated tier's open head missing a mandatory reviewer under its policy gets it.
@@ -1810,7 +1815,8 @@ export function createEngine(d: EngineDeps) {
     if (github) for (const cfg of d.config().repos) {
       try {
         await poll(cfg);
-        if (gatesAny(cfg)) await claims(cfg);
+        // Every watched repo: an earlier mandatory run's finding may still hold a merge whatever the tiers now say, so its answers count.
+        await claims(cfg);
         errors.delete(cfg.repo);
       } catch (e) {
         const msg = String((e as Error).message).slice(0, 200);
@@ -1851,6 +1857,15 @@ export function createEngine(d: EngineDeps) {
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
+      // An automatic review starts only for the head it was queued for, under the policy it was queued under: a newer push or a
+      // changed policy (a new tier's reviewers, a settings edit) supersedes it; a head whose tier is pending waits.
+      if (r.target === "pr" && r.kind === "auto" && repoCfg(r.repo)) {
+        const p = prRow(r.repo, r.number);
+        if (p?.open && p.head !== r.head) { skipQueued(r.id, "superseded: a newer push"); continue; }
+        const t = p?.open ? current(r.repo, r.number, r.head) : undefined;
+        if (p?.open && !t) continue;
+        if (t && r.policy && t.policy !== r.policy) { skipQueued(r.id, "superseded: the head's review policy changed"); continue; }
+      }
       // A repo review's runs start together, each its own check in its own box (metered by the gateway like any run), up to
       // TREE_RUNNING at once.
       if (r.target === "tree" && one<{ n: number }>("SELECT COUNT(*) n FROM runs WHERE target = 'tree' AND status = 'running'")!.n >= TREE_RUNNING) continue;
@@ -2032,7 +2047,8 @@ export function createEngine(d: EngineDeps) {
   async function claims(cfg: Entry) {
     for (const p of all<{ number: number; author: string; fork: number; head: string }>("SELECT number, author, fork, head FROM prs WHERE repo = ? AND open = 1", cfg.repo)) {
       const open = new Set(openGating(cfg.repo, p.number).map((f) => f.id));
-      if (!one("SELECT 1 FROM findings WHERE repo = ? AND number = ?", cfg.repo, p.number)) continue;
+      // Only a PR with an important finding a mandatory run made: an answer to anything else can't move a merge.
+      if (!one("SELECT 1 FROM findings f JOIN runs r ON r.id = f.run WHERE f.repo = ? AND f.number = ? AND f.severity = 'important' AND r.mandatory = 1", cfg.repo, p.number)) continue;
       const threads = await d.source.threads(cfg.repo, p.number).catch((e) => (log("a pull request's threads couldn't be read; its replies wait for the next poll", { repo: cfg.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }), [] as Thread[]));
       for (const t of threads) {
         // Each reply is read once, whether or not its finding is open now: one that arrives while the finding is closed is consumed

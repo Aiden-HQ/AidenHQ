@@ -26,7 +26,8 @@ export function productMergeEligible(p: { repo: string; head: string; checks: Na
   const same = String(p.repo).toLowerCase() === String(p.productRepo ?? "").toLowerCase() && Boolean(p.productRepo);
   // Success itself: a neutral or skipped gate is no pass for a merge that skips the reviewer.
   const ci = p.checks.some((c) => c.name === GATE_CHECK && c.success === true && !c.pending);
-  return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true);
+  // A pass with no mandatory review behind it (a tier that needs none) is no pass for a merge that skips the AI reviewer.
+  return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true && !p.verdict.unreviewed);
 }
 
 // GitHub GraphQL payloads (PR_QUERY's answer), read by field.

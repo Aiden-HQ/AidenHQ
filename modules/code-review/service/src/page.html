@@ -100,7 +100,9 @@
   .else { color: var(--soft); }
   .arrow { color: var(--soft); font-size: 12px; }
   select.tsel { font-weight: 600; color: var(--tc); border-color: color-mix(in srgb, var(--tc) 60%, var(--line)); background: color-mix(in srgb, var(--tc) 8%, var(--color-background-primary, Canvas)); }
+  .rt { display: contents; }
   .ra { display: flex; gap: 4px; justify-content: flex-end; min-width: 128px; }
+  .top .acts { display: flex; gap: 8px; }
   button.ic { height: 26px; padding: 0 8px; font-size: 12px; }
   .globs { display: grid; gap: 4px; padding: 6px 10px 10px 40px; border-top: 1px dashed var(--line); }
   .globs textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; resize: vertical; }
@@ -128,7 +130,9 @@
   .why { color: var(--soft); font-size: 12.5px; overflow-wrap: anywhere; }
   .tierline { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   @media (max-width: 860px) {
-    .rule { grid-template-columns: 22px minmax(0, 1fr); align-items: start; } .rn { padding-top: 6px; } .rule > :not(.rn) { grid-column: 2; } .arrow { display: none; } select.tsel { justify-self: start; width: auto; }
+    .rule { grid-template-columns: 22px minmax(0, 1fr); align-items: start; } .rn { padding-top: 6px; } .rule > :not(.rn) { grid-column: 2; }
+    .rt { display: flex; align-items: center; gap: 6px; } .rt select.tsel { width: auto; flex: 0 1 132px; } .rt .ra { min-width: 0; margin-left: auto; }
+    .top .tabs { flex: 1 1 100%; } .top .acts { flex: 1 1 100%; } .top .acts button { flex: 1 1 0; min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; }
     .pr { grid-template-columns: auto 1fr; gap: 4px 10px; } .pr .ptl, .pr .why { grid-column: 1 / -1; }
     .globs { padding-left: 10px; }
     .run { grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 14px; }
@@ -567,18 +571,18 @@
       const chips = last ? [t("span", "else", "Everything else")] : Object.entries(when).map(([k, v]) => chip(k, v, i));
       const free = Object.keys(COND).filter((k) => !(k in when));
       if (!last && free.length) {
-        const s = select([["", "+ Condition"], ...free.map((k) => [k, COND[k][0]])], "", (k) => { if (!k) return; when[k] = COND[k][1] === "num" ? 10 : COND[k][1] === "globs" ? ["src/**"] : COND[k][1] === "author" ? "member" : "standard"; list[i] = { when, tier: rule.tier }; set(list); }, `Add a condition to rule ${i + 1}`);
+        const s = select([["", "+ Condition"], ...free.map((k) => [k, COND[k][0]])], "", (k) => { if (!k) return; when[k] = COND[k][1] === "num" ? 10 : COND[k][1] === "globs" ? ["src/**"] : COND[k][1] === "author" ? "member" : "standard"; set(list); }, `Add a condition to rule ${i + 1}`);
         s.className = "addc"; chips.push(s);
       }
-      const tierSel = select(TIERS.map(([k, n]) => [k, n]), rule.tier, (v) => { list[i] = { ...rule, tier: v }; set(list); }, `Rule ${i + 1} tier`);
+      const tierSel = select(TIERS.map(([k, n]) => [k, n]), rule.tier, (v) => { rule.tier = v; set(list); }, `Rule ${i + 1} tier`);
       tierSel.className = `tsel t-${rule.tier}`;
       const move = (d) => { const j = i + d; [list[i], list[j]] = [list[j], list[i]]; set(list); };
-      const row = h("div", { className: `rule t-${rule.tier}` }, t("span", "rn", String(i + 1)), h("div", { className: "conds" }, ...chips), h("span", { className: "arrow", ariaHidden: "true" }, "then"), tierSel,
-        h("div", { className: "ra" }, ...(last ? [] : [btn("↑", () => move(-1), "ic", { disabled: i === 0, ariaLabel: `Move rule ${i + 1} up`, title: "Move up" }), btn("↓", () => move(1), "ic", { disabled: i >= list.length - 2, ariaLabel: `Move rule ${i + 1} down`, title: "Move down" }), btn("Remove", () => { list.splice(i, 1); set(list); }, "ic", { ariaLabel: `Remove rule ${i + 1}` })])));
+      const row = h("div", { className: `rule t-${rule.tier}` }, t("span", "rn", String(i + 1)), h("div", { className: "conds" }, ...chips), h("div", { className: "rt" }, h("span", { className: "arrow", ariaHidden: "true" }, "then"), tierSel,
+        h("div", { className: "ra" }, ...(last ? [] : [btn("↑", () => move(-1), "ic", { disabled: i === 0, ariaLabel: `Move rule ${i + 1} up`, title: "Move up" }), btn("↓", () => move(1), "ic", { disabled: i >= list.length - 2, ariaLabel: `Move rule ${i + 1} down`, title: "Move down" }), btn("Remove", () => { list.splice(i, 1); set(list); }, "ic", { ariaLabel: `Remove rule ${i + 1}` })]))));
       const out = [row];
       for (const [k, v] of Object.entries(when)) if (COND[k][1] === "globs" && globsOpen.has(`${repo}|${i}|${k}`)) {
         const ta = h("textarea", { value: v.join("\n"), rows: Math.min(8, Math.max(2, v.length)), spellcheck: false, ariaLabel: `${COND[k][0]} patterns, rule ${i + 1}` });
-        ta.addEventListener("change", () => { const g = lines(ta.value); if (!g.length) return say("A pattern list needs at least one pattern; remove the condition instead.", true); when[k] = g; list[i] = { when, tier: rule.tier }; soon(() => set(list)); });
+        ta.addEventListener("change", () => { const g = lines(ta.value); if (!g.length) return say("A pattern list needs at least one pattern; remove the condition instead.", true); soon(() => { when[k] = g; set(list); }); });
         out.push(h("div", { className: "globs" }, t("small", "soft", `${COND[k][0]}: one pattern per line`), ta));
       }
       return out;
@@ -588,8 +592,11 @@
       h("div", { className: "rules" }, ...rows));
     function chip(k, v, i) {
       const [name, kind, about] = COND[k];
-      const del = btn("×", () => { const w = { ...list[i].when }; delete w[k]; if (!Object.keys(w).length) return say("A rule needs at least one condition: remove the rule instead.", true); list[i] = { when: w, tier: list[i].tier }; set(list); }, "x", { ariaLabel: `Remove ${name} from rule ${i + 1}` });
-      const put = (val) => { list[i] = { when: { ...list[i].when, [k]: val }, tier: list[i].tier }; set(list); };
+      // Edits change their rule in place (this render's own copy): a deferred field edit lands on the rule it was typed in, after a
+      // move or another edit of the same rule alike.
+      const rule = list[i];
+      const del = btn("×", () => { if (Object.keys(rule.when).length < 2) return say("A rule needs at least one condition: remove the rule instead.", true); delete rule.when[k]; set(list); }, "x", { ariaLabel: `Remove ${name} from rule ${i + 1}` });
+      const put = (val) => { rule.when[k] = val; set(list); };
       let ctl;
       if (kind === "num") { ctl = h("input", { type: "text", value: String(v), inputMode: "numeric", size: Math.max(2, String(v).length), ariaLabel: `${name}, rule ${i + 1}` }); ctl.addEventListener("change", () => { if (!/^\d{1,7}$/.test(ctl.value.trim())) return say(`${name} is a whole number.`, true); soon(() => put(Number(ctl.value.trim()))); }); }
       else if (kind === "author") ctl = select([["member", "a member"], ["bot", "a bot"], ["outsider", "an outsider"]], v, put, `${name}, rule ${i + 1}`);
@@ -664,8 +671,8 @@
     const app = $("app");
     if (!ov) return app.replaceChildren(t("div", "empty", "Loading…"));
     const parts = route.page === "run" ? runPage() : route.page === "batch" ? batchPage() : route.page === "pr" ? prForm() : route.page === "tree" ? treeForm() : [
-      h("div", { className: "bar" }, h("div", { className: "tabs", role: "tablist" }, ...[["reviews", "Reviews"], ["repos", "Repos"], ["insights", "Insights"]].map(([k, name]) => { const b = btn(name, () => { tab = k; render(); }, "", { role: "tab" }); b.setAttribute("aria-selected", String(tab === k)); return b; })),
-        btn("Review a PR", () => { form = null; go({ page: "pr" }); }), btn("Review a repo", () => { form = null; catalog = null; go({ page: "tree" }); }), btn("Refresh", () => { const had = Object.keys(pending.watch).length || pending.unwatch.length; pending = { watch: {}, unwatch: [] }; accepted = { watch: {}, unwatch: [] }; say(had ? "Edits dropped here. If the bar above still shows a proposal, press its Discard." : ""); loadOverview(); })),
+      h("div", { className: "bar top" }, h("div", { className: "tabs", role: "tablist" }, ...[["reviews", "Reviews"], ["repos", "Repos"], ["insights", "Insights"]].map(([k, name]) => { const b = btn(name, () => { tab = k; render(); }, "", { role: "tab" }); b.setAttribute("aria-selected", String(tab === k)); return b; })),
+        h("div", { className: "acts" }, btn("Review a PR", () => { form = null; go({ page: "pr" }); }), btn("Review a repo", () => { form = null; catalog = null; go({ page: "tree" }); }), btn("Refresh", () => { const had = Object.keys(pending.watch).length || pending.unwatch.length; pending = { watch: {}, unwatch: [] }; accepted = { watch: {}, unwatch: [] }; say(had ? "Edits dropped here. If the bar above still shows a proposal, press its Discard." : ""); loadOverview(); }))),
       ...(tab === "repos" ? reposTab() : tab === "insights" ? insights() : reviewsTab())];
     app.replaceChildren(...(route.page === "list" ? [t("div", "card pad soft", "Code review reads each pull request on the repos you watch. Each PR is first sorted into a risk tier (skip, trivial, standard or sensitive) by what it changes; that tier's reviewers (an AI engine with a model) then read it when it opens, and again when it is pushed to, and post their findings on the PR: important ones that should be fixed, and smaller nits. Watch a repo and set its tiers under Repos, or review any PR or whole repository by hand with the buttons here. Nothing runs until you do.")] : []), ...parts);
     if (!$("lists").querySelector("#repos")) $("lists").append(h("datalist", { id: "repos" }));

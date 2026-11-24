@@ -51,8 +51,8 @@ code_review:
 kind, the base branch, the repo's class) by the repo's ordered rules, the first that holds; no model call. The facts come from
 one consistent read of the PR's files list (github-mcp's `snapshot`); until a head has one it is pending, and nothing runs or
 passes on it. The tier is stored on the PR's row with what it came from, and served on `GET /v1/verdict` (`tier`,
-`requires_review`, `policy`). A head's policy (its tier, the tier's mandatory combos, base branch and ignore globs) changing
-gets the new tier's full opening batch; only runs and coverage under the head's current policy count for its verdict, and push
+`requires_review`, `policy`). A head's policy (its tier's mandatory combos, base branch and ignore globs; not the tier's name,
+so tiers with the same reviewers share it) changing gets the new tier's full opening batch; only runs and coverage under the head's current policy count for its verdict, and push
 rounds count from where that policy started. A tier with no mandatory combo needs no review: its verdict passes unless an
 earlier mandatory finding is open.
 

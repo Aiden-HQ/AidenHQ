@@ -1509,6 +1509,20 @@ test("risk tiers: each head runs its tier's reviewers; a pending head waits; a t
   await opened(s, 5, sha("5"));
   const v = s.engine.verdict(REPO, 5, sha("5"));
   assert.deepEqual([s.started.length, v.verdict, v.requires_review, v.tier.tier, s.engine.evidence(REPO, 5, sha("5")).kind], [0, "pass", false, "skip", "none"]);
+
+  // Every tier with the same mandatory reviewers (Aiden-HQ/AidenHQ): crossing tiers keeps the policy, so a push is only a push.
+  const same = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH] }] });
+  await opened(same, 6, sha("6"));
+  same.finish(0, NONE); await same.tick();
+  same.snaps.files.set(6, [{ path: "src/auth.ts", additions: 3, deletions: 0 }]);
+  same.pr(6, sha("7")); await same.tick(); same.later(DEBOUNCE + 1); await same.tick();
+  assert.equal(same.engine.verdict(REPO, 6, sha("7")).tier.tier, "sensitive");
+  assert.deepEqual(same.started.slice(1).map((x) => x.incremental_from), [sha("6")], "the push review, incremental: no new opening batch");
+  // A push whose files can't be read at first is still a push once its tier is known.
+  same.finish(1, NONE); await same.tick();
+  same.snaps.down = 1; same.pr(6, sha("8")); await same.tick();
+  same.later(1000); await same.tick(); same.later(DEBOUNCE + 1); await same.tick();
+  assert.deepEqual(same.started.slice(2).map((x) => [x.head, x.incremental_from]), [[sha("8"), sha("7")]]);
 });
 
 test("a bare rebase carries the review and its verdict unrun; a push on the same merge base is incremental, a rebase with changes whole", async () => {

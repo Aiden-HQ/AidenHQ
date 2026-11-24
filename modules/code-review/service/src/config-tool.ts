@@ -22,8 +22,8 @@ export interface Tool {
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 export interface Change {
-  /** Repos to watch, or to change (their given fields replace those fields, by_tier per tier (null drops a tier's own fields); the
-   * rest keep their values or defaults). */
+  /** Repos to watch, or to change (their given fields replace those fields, by_tier per tier and field (null drops a tier's own
+   * fields); the rest keep their values or defaults). */
   watch?: Dict[];
   /** Repos to stop watching. */
   unwatch?: string[];
@@ -46,7 +46,8 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
   for (const w of ch.watch ?? []) {
     if (typeof w?.repo !== "string" || !REPO.test(w.repo)) throw new Error("each watched repo is { repo: owner/name, … }");
     const i = repos.findIndex((x) => key(x.repo) === key(w.repo));
-    // by_tier merges per tier over what the entry has: a tier given replaces that tier's own fields, null drops them (the preset's again).
+    // by_tier merges per tier and field over what the entry has: the fields given replace those, the others keep theirs; null for a
+    // tier drops its own fields (the preset's again).
     if (w.by_tier !== undefined) {
       if (!w.by_tier || typeof w.by_tier !== "object" || Array.isArray(w.by_tier)) throw new Error("by_tier is a map of tier to { on_open?, on_push?, push_rounds? }");
       const by: Dict = { ...((i >= 0 ? repos[i]!.by_tier : undefined) as Dict | undefined ?? {}) };
@@ -59,7 +60,7 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
           if ("error" in c) throw new Error(c.error);
           tier[k] = c.map(({ mandatory, ...x }) => (mandatory ? { ...x, mandatory } : x));
         }
-        by[t] = tier;
+        by[t] = { ...((by[t] as Dict | undefined) ?? {}), ...tier };
       }
       w.by_tier = Object.keys(by).length ? by : undefined;
     }

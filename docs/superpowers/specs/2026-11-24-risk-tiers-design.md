@@ -247,14 +247,16 @@ pending head is never treated as some tier. Ship never reads the fact store.
 `push_rounds` plus the repo-level fields). `trigger()`, `missing()`, `gateRuns()`, `capped()`, `verdict()`, `aiden review` and
 #1687's `fresh()` take it instead of the entry.
 
-**The review policy.** A head's *policy* is a hash of its tier, its tier's mandatory combos (engine, model, effort, moment),
-the PR's base branch and the repo's effective `ignore` globs: everything about *how* the PR is reviewed. It holds no commit:
+**The review policy.** A head's *policy* is a hash of its tier's mandatory combos (engine, model, effort, moment), the PR's
+base branch and the repo's effective `ignore` globs: everything about *how* the PR is reviewed. It holds no tier name
+**(owner, 2026-11-25: no needless spend)**: two tiers with the same mandatory reviewers share a policy, so a push that crosses
+between them (Aiden-HQ/AidenHQ runs its settled combos in every tier) keeps its coverage and runs no new opening batch. It holds no commit:
 which change was reviewed is the job of coverage and `carries()`, so a base merge that leaves the PR's own patch alone keeps
 its policy and carries (§7). Each run records
 the policy it ran under, and so does each `covered` row (the column exists). A head counts as covered, for the verdict and
 for #1687's `evidence()`, only by runs and coverage under the head's current policy. So adding a mandatory model on the Fleet
-page, removing an ignore glob, a retarget to another branch, or a head moving to another tier, asks for a review under the
-new policy; old open important findings still gate.
+page, removing an ignore glob, a retarget to another branch, or a head moving to a tier with other mandatory reviewers, asks
+for a review under the new policy; old open important findings still gate.
 
 **A policy change is its own branch**, ahead of the ordinary push trigger in `poll()`. The PR row keeps `policy_since`: the
 first head of the PR's current run of heads under the current policy, reset whenever a head's policy differs from the one
@@ -263,9 +265,9 @@ before it. Until the PR has a *completed* full opening batch under the current p
 that batch with `full: true` (the whole PR from its merge base, never the last covered head), queued once per head and policy.
 A push while that batch is queued supersedes it with the same batch at the new head, never with an `on_push` run. The same
 check runs on an unchanged head after a settings edit. Going down (sensitive to trivial) costs one cheap
-opening review; going up gets every opening reviewer of the higher tier over the whole PR. Later pushes get the tier's
-`on_push`, up to its `push_rounds`, counted from `policy_since`. A PR that leaves a tier and comes back therefore gets a new
-full opening review: a batch from its earlier stay never counts, and `gateRuns()` never falls back to it. `missing()` keeps its
+opening review; going up gets every opening reviewer of the higher tier over the whole PR (each only where the two tiers'
+mandatory reviewers differ). Later pushes get the tier's `on_push`, up to its `push_rounds`, counted from `policy_since`. A PR
+that leaves a tier for one with other reviewers and comes back therefore gets a new full opening review: a batch from its earlier stay never counts, and `gateRuns()` never falls back to it. `missing()` keeps its
 job of filling a head with no mandatory run.
 
 **The verdict per head.** `verdict()` judges the head against its tier's policy and adds `requires_review`:
@@ -296,7 +298,8 @@ at planning and at execution: a head no mandatory review covered never takes tha
 - **App approvals carry their policy.** The approve record stores the policy it was issued under. At a merge or enqueue, an
   App approval counts only when its policy is the head's current one and the current tier has `approve: on`; otherwise ship
   first dismisses it (github's existing dismissal on a new head, now also on a policy change) and the PR needs an approval
-  under the current policy (a human's, where approve is off). Human approvals are untouched.
+  under the current policy (a human's, where approve is off). Human approvals are untouched. A tier change between tiers with
+  the same mandatory reviewers keeps the policy, so an App approval stands where the new tier's approve is on too.
 - **Carry-over.** A verdict carries to a later head when the PR's own change is the same (`carries()`: a base merge, or only
   generated paths regenerated) **and** both heads have the same policy. A base-merge-only head (an update from `main` for an
   up-to-date rule) moves the merge base but not the policy, and re-classifies the same because the facts come from the PR's

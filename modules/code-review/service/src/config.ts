@@ -92,9 +92,10 @@ export const gatesAny = (e: Entry) => selectable(e.rules).some((t) => gated(e.ti
 /** Every tier a head can get gates: the AI reviewer may leave its agents' pushes to code review. Those the rules name, and sensitive,
  * which a PR over GitHub's 3,000-file list gets whatever the rules say. */
 export const gatesAll = (e: Entry) => [...selectable(e.rules), "sensitive" as Tier].every((t) => gated(e.tiers[t]));
-/** A head's review policy: everything about how it is reviewed (its tier, the tier's mandatory combos, the base branch and the ignore
- * globs), never a commit. Runs and coverage count for a head only under its current policy. */
-export const policyOf = (e: Entry, tier: Tier, base_ref: string) => createHash("sha256").update(JSON.stringify([tier,
+/** A head's review policy: everything about how it is reviewed (its tier's mandatory combos, the base branch and the ignore globs),
+ * never a commit and never the tier's name: two tiers with the same mandatory reviewers share one, so crossing between them costs no
+ * new review (owner, 2026-11-25). Runs and coverage count for a head only under its current policy. */
+export const policyOf = (e: Entry, tier: Tier, base_ref: string) => createHash("sha256").update(JSON.stringify([
   MOMENTS.flatMap((k) => e.tiers[tier][k].filter((c) => c.mandatory).map((c) => [k, c.engine, c.model, c.effort])), base_ref, e.ignore])).digest("hex").slice(0, 16);
 /** The most combos one moment (or one ask) runs. */
 export const MAX_COMBOS = 4;
@@ -198,6 +199,8 @@ export function readConfig(text: string | undefined): Config {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) (raw = {}, errors.push("settings.code_review is a map"));
   if ("reviewers" in raw) errors.push("reviewers are gone: each repo's by_tier lists its combos (engine, model, effort); re-save the repo");
   const repos: Entry[] = [];
+  // A repos value that isn't a list (a YAML entry missing its `-`) is an error, never "nothing watched".
+  if (raw.repos !== undefined && !Array.isArray(raw.repos)) errors.push("settings.code_review.repos is a list of { repo: owner/name, … }");
   const given = Array.isArray(raw.repos) ? raw.repos : [];
   // A repo listed twice is refused whole (neither entry runs): which one counts would be a guess, and the kernel's tiering of an
   // agent's change reads the same list.
