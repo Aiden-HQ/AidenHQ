@@ -94,7 +94,7 @@ export type Options = {
   ship?: ShipAdoptions;
   /**
    * The reviewer App's REST on a repo where it is installed (the owner's one GitHub App, the identity code review posts as), and
-   * its bot login; undefined where it isn't (approvals then go as the owner, never on a PR the owner opened).
+   * its bot login; undefined where it isn't (no approval is posted then: one as the owner would count as a person's).
    */
   reviewer?: (repo: string) => Promise<{ login: string; rest: Gh } | undefined>;
 };
@@ -364,7 +364,11 @@ export function createService(o: Options) {
         files = (await git(head.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, head.sha])).split("\0").filter(Boolean);
       }
       // GitHub refuses an approval from the PR's own author: the code host's account where no reviewer App is installed.
-      if (kind.endsWith(".approve")) ship.selfApproval = !(await o.reviewer?.(s.slug)) && same(String(pr.user?.login ?? ""), await ownerLogin());
+      if (kind.endsWith(".approve")) {
+        const app = await o.reviewer?.(s.slug);
+        if (!app) ship.noApp = "the GitHub App isn't installed on this repo";
+        else if (same(String(pr.user?.login ?? ""), app.login)) ship.noApp = "the GitHub App opened it, and GitHub won't let it approve its own PR";
+      }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
       const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : "";
@@ -612,30 +616,23 @@ export function createService(o: Options) {
   }
 
   /**
-   * The reviewer's approval of an adopted PR at exactly its head (`commit_id`), as the reviewer App where it is installed, else
-   * as the owner. Its approvals of earlier heads are dismissed, so only the current head carries one. GitHub has no
-   * compare-and-swap for a review: the head is read before and after, and an approval that raced a push is dismissed again.
+   * The App's approval of an adopted PR at exactly its head (`commit_id`), never the owner's account (that would count as a
+   * person's, a code owner's included): no App on the repo, or the App's own PR, is "approval needs a human". The head is read
+   * once before posting; GitHub binds the review to `commit_id`, so an approval that raced a push stands on the old head only.
    */
-  async function approve(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+  async function approve(a: any): Promise<{ ok: boolean; text: string }> {
     const s = slugOf(a.repo);
     const n = Number(a.number);
     const url = `https://github.com/${s.slug}/pull/${n}`;
-    const moved = (sha: unknown) => ({ ok: false, text: `ship-head-moved: ${url} is at \`${String(sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not approved.` });
-    const before = await api("GET", `/repos/${s.slug}/pulls/${n}`);
-    if (before.head?.sha !== a.head) return moved(before.head?.sha);
-    if (before.base?.ref !== a.base) return { ok: false, text: `ship-target: ${url} now targets \`${before.base?.ref}\`, not \`${a.base}\`: not approved.` };
+    const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not approved.` };
     const app = await o.reviewer?.(s.slug);
-    const as = app ?? { login: String((await ownerLogin()) ?? ""), rest: gh };
-    const dismiss = (id: unknown) => as.rest("PUT", `/repos/${s.slug}/pulls/${n}/reviews/${id}/dismissals`, { message: "Superseded: the PR has a new head.", event: "DISMISS" })
-      .then((r) => { if (r.status >= 300) log("ship approval not dismissed", { pr: url, review: id, status: r.status }); }, (e: Error) => log("ship approval not dismissed", { pr: url, review: id, err: String(e.message).slice(0, 200) }));
-    const r = await as.rest("POST", `/repos/${s.slug}/pulls/${n}/reviews`, { event: "APPROVE", commit_id: a.head });
+    if (!app) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App isn't installed on this repo).` };
+    if (same(String(pr.user?.login ?? ""), app.login)) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App opened it).` };
+    const r = await app.rest("POST", `/repos/${s.slug}/pulls/${n}/reviews`, { event: "APPROVE", commit_id: a.head });
     if (r.status >= 300) return { ok: false, text: `GitHub refused the approval of ${url}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
-    const after = await api("GET", `/repos/${s.slug}/pulls/${n}`);
-    if (after.head?.sha !== a.head) { await dismiss(r.body?.id); return moved(after.head?.sha); }
-    const reviews = await api("GET", `/repos/${s.slug}/pulls/${n}/reviews?per_page=100`).catch(() => []);
-    for (const x of Array.isArray(reviews) ? reviews : []) if (same(String(x.user?.login ?? ""), as.login) && x.state === "APPROVED" && x.commit_id !== a.head) await dismiss(x.id);
     // No object: an approval makes nothing the fleet owns (the PR stays its author's).
-    return { ok: true, text: `Approved ${url} at \`${String(a.head).slice(0, 12)}\`${app ? ` as ${app.login}` : ""}.` };
+    return { ok: true, text: `Approved ${url} at \`${String(a.head).slice(0, 12)}\` as ${app.login}.` };
   }
 
   /**
@@ -657,20 +654,21 @@ export function createService(o: Options) {
     let bypass: string | undefined;
     const settled = (pr: any) => {
       if (pr.baseRefName !== a.base) return undefined;
-      if (bypass && (pr.state === "MERGED" || pr.isInMergeQueue)) flow.reviewBypassed(s.slug, n, a.head, bypass);
-      if (pr.state === "MERGED" && pr.headRefOid === a.head) return { ok: true, text: `${url} is merged at \`${String(a.head).slice(0, 12)}\`.` };
-      if (pr.isInMergeQueue && pr.mergeQueueEntry?.headCommit?.oid === a.head) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
-      return undefined;
+      const done = pr.state === "MERGED" && pr.headRefOid === a.head ? `${url} is merged at \`${String(a.head).slice(0, 12)}\`.`
+        : pr.isInMergeQueue && pr.mergeQueueEntry?.headCommit?.oid === a.head ? `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` : undefined;
+      if (done && bypass) flow.reviewBypassed(s.slug, n, a.head, bypass);
+      return done ? { ok: true, text: done } : undefined;
     };
     // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass (or its audited bypass) queues.
     // Asked first, so the PR read below is the last one before the mutation.
     const review = await o.reviewGate(s.slug, n, a.head);
-    if (review && "wait" in review) return { ok: false, text: `not queued: ${review.wait}` };
+    // A wait blocks a new enqueue, not the confirmation that an earlier attempt already queued (or merged) this head.
+    if (review && "wait" in review) return settled(await read()) ?? { ok: false, text: `not queued: ${review.wait}` };
     const pr = await read();
     const now = settled(pr);
     if (now) return now;
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
-    if (pr.baseRefName !== a.base) return { ok: false, text: `ship-target: ${url} now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
+    if (pr.baseRefName !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed: it now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
     if (review && "bypass" in review) bypass = review.bypass;
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     let r: { status: number; body: any } | undefined;

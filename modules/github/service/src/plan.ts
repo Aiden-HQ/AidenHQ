@@ -26,7 +26,7 @@ export interface Ship {
   head?: string; headRepo?: string | null; headRef?: string; canModify?: boolean;
   /** A push's branch (args.only): it must be the PR's own head branch. */
   branch?: string;
-  /** The base branch the write is bound to (args `base`) and the PR's base now: a retarget refuses it (ship-target). */
+  /** The base the write was filed against (args `base`) and the PR's base now: a change refuses it (ship-scope). */
   bound?: string; baseRef?: string;
   /** Ship's adoption: its current generation (null: not adopted, undefined: ship isn't installed) and the adoption's task. */
   current?: number | null; task?: string;
@@ -34,8 +34,11 @@ export interface Ship {
   filedOn?: string[];
   /** Filed by the ship module (itself, or for a task through `filed_by`). */
   byShip?: boolean;
-  /** An approval GitHub would refuse: no reviewer App, and the PR is the owner's own (the code host opened it). */
-  selfApproval?: boolean;
+  /**
+   * Why the App can't approve this PR (none installed on the repo, or the App opened it), or undefined. An approval is only ever
+   * the App's: one under the owner's account would count as a person's (a code owner's included), which stays human.
+   */
+  noApp?: string;
 }
 interface State {
   agentsOrgs?: string | string[];
@@ -100,7 +103,7 @@ export function shipRefusal(x: Ship, ref: string): Part | undefined {
   if (x.task && !(x.filedOn ?? []).includes(x.task)) return REJECT("ship-scope", `${ref}: the write isn't on the adoption's task`);
   // A push onto a fork's branch only where its author allows maintainers to modify it; a merge or an approval is the base repo's.
   if (x.branch !== undefined && (x.headRepo === null || (x.headRepo !== undefined && !same(x.headRepo, ref.split("#")[0]) && !x.canModify))) return REJECT("ship-fork", `${ref}: its head is in a fork whose author doesn't allow maintainers to push: hold it with a note`);
-  if (x.bound !== undefined && x.bound !== x.baseRef) return REJECT("ship-target", `${ref} now targets \`${String(x.baseRef ?? "")}\`, not \`${x.bound}\`: read it again`);
+  if (x.bound !== undefined && x.bound !== x.baseRef) return REJECT("ship-scope", `${ref}'s base changed: it now targets \`${String(x.baseRef ?? "")}\`, not \`${x.bound}\`: read it again`);
   if (x.branch !== undefined && x.branch !== x.headRef) return REJECT("ship-scope", `${ref}: \`${x.branch}\` isn't the PR's head branch`);
   if (!x.head || x.head !== x.expected) return REJECT("ship-head-moved", `${ref} moved to \`${String(x.head ?? "").slice(0, 12)}\` since \`${x.expected.slice(0, 12)}\`: read it again`);
   return undefined;
@@ -127,7 +130,7 @@ function shipEffectPart(action: "approve" | "enqueue", p: Pr, s: State): Part {
   if (!p.ship.byShip) return REJECT("ship-only", `${ref}: only the ship module files a ${action}`);
   const refused = shipRefusal(p.ship, ref);
   if (refused) return refused;
-  if (action === "approve" && p.ship.selfApproval) return REJECT("ship-self-approval", `${ref} was opened by the code host's account, which GitHub won't let approve it: set up the reviewer App`);
+  if (action === "approve" && p.ship.noApp) return REJECT("ship-no-app", `${ref}: approval needs a human (${p.ship.noApp})`);
   return T(0, `ship-${action}`, `${ref}: adopted at generation ${p.ship.generation}, at its head \`${p.ship.expected.slice(0, 12)}\``);
 }
 

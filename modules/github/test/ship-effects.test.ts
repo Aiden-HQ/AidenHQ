@@ -10,14 +10,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createService } from "../service/src/service.ts";
 import { planParts } from "../service/src/plan.ts";
-import { decideShip, mergePath, queueRemoval, requiredChecks } from "../service/src/merge-gate.ts";
+import { decide, mergePath, requiredChecks } from "../service/src/merge-gate.ts";
 
 const sh = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@example.com", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@example.com" } }).trim();
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }) } = {}) {
+async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ status: 200, body: { data: {} } }), app = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -61,7 +61,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
     if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author } } };
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
-    if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "owner1" }, state: "APPROVED", commit_id: pr.head }] };
+    if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
@@ -76,6 +76,8 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
     reviewGate: async () => undefined, ship,
+    // The App, installed on the repo: its writes are recorded like the owner's (`as` marks whose they are).
+    reviewer: async () => (app ? { login: "acme-app[bot]", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -128,26 +130,25 @@ test("a push onto an adopted PR's branch is leased on the head it expects; a con
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), fix);
 });
 
-test("approve and enqueue are ship's alone, Tier 0 at the head, and an approval of an earlier head is dismissed", async (t) => {
+test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts as the App", async (t) => {
   const { c1, pr, calls, call, run } = await setup(t);
   const a = { repo: REPO, number: 7, head: c1, generation: 2, base: "main" };
   assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: { kind: "job", roles: ["platform-engineer"] }, task: "t1" })).json.error, /only the ship module/);
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
   assert.equal(plan.json.raise, undefined);
-  // A PR the owner's account opened can't be approved by it: no reviewer App, so refused.
-  pr.author = "owner1";
-  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" })).json.error, /reviewer App/);
+  // The App's own PR: GitHub won't let it approve, so a human must.
+  pr.author = "acme-app[bot]";
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" })).json.error, /approval needs a human/);
   pr.author = "contributor";
   // Retargeted since the filing.
   pr.base = "release";
-  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" })).json.error, /now targets/);
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" })).json.error, /base changed/);
   pr.base = undefined;
 
   const out = await run("k-00000000000000c1", "github.approve", a);
   assert.equal(out.ok, true, out.text);
-  assert.deepEqual(calls.find((c) => c.method === "POST" && c.path.endsWith("/reviews")).body, { event: "APPROVE", commit_id: c1 });
-  assert.deepEqual(calls.filter((c) => c.method === "PUT").map((c) => c.path), [`/repos/${REPO}/pulls/7/reviews/50/dismissals`], "only the earlier head's approval");
+  assert.deepEqual(calls.find((c) => c.method === "POST" && c.path.endsWith("/reviews")).body, { event: "APPROVE", commit_id: c1, as: "app" }, "as the App, never the owner");
 
   // An enqueue of a head the runner didn't push is a merge by the queue: the AI reviewer reads it first.
   const e = { ...a, attempt: 1 };
@@ -174,30 +175,35 @@ test("an enqueue GitHub didn't answer is reconciled by reading the queue entry, 
   assert.equal(sent, 2);
 });
 
-test("ship's decide: waits, repairs, fixes and the merge path", () => {
+test("one readiness rule: ship's actions with its context, the merge queue's without", () => {
   const H = "a".repeat(40);
   const check = (name, conclusion) => ({ __typename: "CheckRun", name, status: "COMPLETED", conclusion });
   const data = (pr) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: { state: "OPEN", headRefOid: H, baseRefName: "main", mergeStateStatus: "CLEAN", reviewDecision: null, isDraft: false, isInMergeQueue: false,
     commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [check("build", "SUCCESS")] } } } }] }, baseRef: { compare: { behindBy: 0 } }, reviews: { nodes: [] }, ...pr } } });
-  const go = (pr, ctx = {}) => decideShip(data(pr), H, { queue: false, approve: false, ...ctx });
+  const ok = [{ name: "build", ok: true, pending: false }];
+  const go = (pr, ctx = {}) => decide(data(pr), H, { queue: false, approve: false, required: ["build"], checks: ok, ...ctx });
   assert.equal(go({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", reviewRequests: { nodes: [{ asCodeOwner: true, requestedReviewer: { combinedSlug: "acme/api" } }] } }).why, "waiting on code owner @acme/api");
   assert.equal(go({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }).why, "waiting for required review");
   assert.equal(go({ mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }, { approve: true }).do, "approve");
   assert.equal(go({ mergeStateStatus: "DIRTY" }).do, "repair");
+  assert.equal(go({ mergeStateStatus: "DIRTY" }, { checks: [] }).do, "repair", "a conflict is repaired before waiting on checks that can't run");
   assert.equal(go({}, { queue: true }).do, "enqueue", "no review needed: the hand-off is enough");
   assert.equal(go({}, { review: true }).do, "wait", "a gated repo needs an approval on the head");
   assert.equal(go({ reviews: { nodes: [{ state: "APPROVED", commit: { oid: H } }] } }, { review: true }).do, "merge");
   assert.equal(go({ state: "MERGED" }).do, "done");
-  // Only the required checks are judged: an optional red one doesn't hold it, and none required with none run is green.
-  const red = { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [check("build", "SUCCESS"), check("lint", "FAILURE")] } } } }] } };
-  assert.equal(go(red).do, "fix_ci");
-  assert.equal(go(red, { required: ["build"] }).do, "merge");
-  assert.equal(go({ commits: { nodes: [{ commit: { statusCheckRollup: null } }] } }).do, "wait");
-  assert.equal(go({ commits: { nodes: [{ commit: { statusCheckRollup: null } }] } }, { required: [] }).do, "merge");
-  // Queue removals at this head.
-  const removed = (reason) => ({ timelineItems: { nodes: [{ __typename: "RemovedFromMergeQueueEvent", createdAt: "2026-11-24T10:00:00Z", reason, beforeCommit: { oid: H } }] } });
-  assert.deepEqual([go(removed("Merge conflict")).do, go(removed("CI timed out")).do, go(removed("A required check failed")).do, go(removed("Manually dequeued")).do, go(removed("something new")).do], ["repair", "enqueue", "fix_ci", "stall", "wait"]);
-  assert.equal(queueRemoval(removed("Merge conflict"), H, "2026-11-25T00:00:00Z"), undefined, "before this generation: history");
+  assert.equal(go({ isInMergeQueue: true }).do, "wait");
+  // A non-default base is unsupported: a visible stall, never a silent wait.
+  assert.deepEqual(go({ baseRefName: "release" }), { do: "stall", why: "non-default base unsupported (`release`)" });
+  // Only the required checks: an optional red one doesn't hold it; none required (and none run) is green.
+  const red = [...ok, { name: "lint", ok: false, pending: false }];
+  assert.equal(go({}, { checks: red }).do, "merge");
+  assert.equal(go({}, { checks: red, required: ["build", "lint"] }).do, "fix_ci");
+  assert.equal(go({}, { checks: [], required: ["build"] }).do, "wait", "a required check not reported yet is running");
+  assert.equal(go({}, { checks: [], required: [] }).do, "merge", "none required, none run: green");
+  // Without ship's context: the merge queue's rule, unchanged.
+  assert.deepEqual(decide(data({}), H), { do: "merge" });
+  assert.equal(decide(data({ mergeStateStatus: "DIRTY" }), H).do, "fail");
+  assert.equal(decide(data({ baseRefName: "release" }), H).do, "fail");
   assert.equal(mergePath([{ type: "pull_request" }, { type: "merge_queue" }]), "queue");
   assert.equal(mergePath([]), "direct");
   assert.deepEqual(requiredChecks([{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "build" }] } }], { contexts: ["ci-required"] }).sort(), ["build", "ci-required"]);
@@ -223,6 +229,8 @@ test("an adoption's direct merge: no checks and none required merges at its boun
         mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
       } } } } };
       if (path.includes("/rules/branches/")) return { status: 200, body: [] };
+      if (path.includes("/check-runs")) return { status: 200, body: { check_runs: [] } };
+      if (path.endsWith("/statuses") || path.includes("/statuses?")) return { status: 200, body: [] };
       if (path.endsWith("/required_status_checks")) return { status: 404, body: {} };
       if (method === "PUT") return { status: 200, body: { sha: "c".repeat(40) } };
       return { status: 404, body: {} };
@@ -241,4 +249,14 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   assert.equal(ended.calls.filter((c) => c.startsWith("PUT")).length, 0);
   assert.equal(ended.outcomes[0]?.ok, false);
   assert.match(ended.outcomes[0].text, /adoption ended/);
+});
+
+test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {
+  const { c1, calls, call, run } = await setup(t, { app: false });
+  const a = { repo: REPO, number: 7, head: c1, generation: 2, base: "main" };
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.approve", args: a, requester: SHIP, task: "t1" })).json.error, /approval needs a human/);
+  const out = await run("k-00000000000000e1", "github.approve", a);
+  assert.equal(out.ok, false);
+  assert.match(out.text, /^ship-no-app: .*approval needs a human/);
+  assert.equal(calls.filter((c) => c.method !== "GET" && c.path !== "/graphql").length, 0);
 });
