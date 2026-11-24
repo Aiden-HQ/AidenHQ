@@ -208,3 +208,22 @@ test("a conflict with no generated setting files ship's repair with the globs di
   const repair = writes.find((w) => w.kind === "github.repair");
   assert.ok(repair?.args.plan.globs.includes("**/package-lock.json"), JSON.stringify(repair?.args.plan));
 });
+
+test("a task's PR that lands tells its task, and gets no report comment", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "f".repeat(40);
+  state.put({ repo: "acme/app", number: 14, generation: 1, trigger: { kind: "fleet", event: "opened:14", actor: "T14", at: "2026-11-24T09:00:00Z", head: H }, task: "T14", owner: { kind: "task", task: "T14" }, hold: null });
+  const wakes = [], comments = [];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: { merged_at: "2026-11-24T10:00:00Z", html_url: "https://github.com/acme/app/pull/14", head: { sha: H }, base: { ref: "main" }, user: { login: "dev", type: "User" } } }),
+    state, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    kernel: { call: async (m, path, body) => (path === "/v1/wakes" && wakes.push(body), {}) },
+    decision: async () => ({ do: "wait" }),
+    effects: { comment: async (r, n, body) => (comments.push(body), 1), askReview: async () => {}, askFresh: async () => {}, verdict: async () => ({ verdict: "wait", reasons: [] }) },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  await pass.gone("acme/app", "main", new Set());
+  assert.equal(wakes.length, 1, "told once");
+  assert.deepEqual([wakes[0].task, /Merged/.test(wakes[0].text)], ["T14", true]);
+  assert.equal(comments.length, 0, "a task's PR gets no report comment");
+});

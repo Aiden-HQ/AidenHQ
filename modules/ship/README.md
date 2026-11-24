@@ -6,14 +6,15 @@ Owns the lifecycle of every pull request on the repos it covers: the fleet's own
 repo) and every repo in `maintainer_repos`. One `ship` setting holds per-repo entries and two presets (`cautious`, the
 default, and `full`), every knob a per-repo setting with no floor in code (`null` caps are unlimited).
 
-Its watch loop (moved from github's pr-watch) reads the open PRs once a minute. An agent's PR is adopted when first seen. Ship
-wakes the task that opened it when the PR conflicts or its checks go red, has GitHub update a branch that is only behind, and
-re-runs checks that never started, got wedged, or failed only on the title gate. When `caps.ci_rounds` red rounds pass, or one
-check is red on `caps.same_check_heads` heads, the CI breaker tells the asker instead. A green PR has its merge filed
-(`github.merge`, on its task). Ship also closes a cancelled or finished task's leftover PR, files a Dependabot PR's task, and has
-the Maintainer nudge, then close, a quiet contributor PR on repos with `contributor_prs`. Every other PR is a hand-off: a
-member's `ship` label or `/ship` comment adopts it, and ship repairs, reports on and merges it. The pause stops all of it,
-merges already filed included.
+Its watch loop reads the open PRs once a minute (one list read per repo) and runs every PR through one engine (`round()`). A PR
+the code host opened for a task is adopted when first seen and owned by that task; any other PR is a hand-off: a member's `ship`
+label or `/ship` comment adopts it. For either, ship repairs a conflict (its no-model repair first), has GitHub update a branch
+that is behind (once, before asking for a fix, when it is red behind a green base), wakes the PR's task for red required checks
+or code review's findings, and files the merge (`github.merge`) once code review passes. Past a cap (`caps`) the PR holds and its
+owner is told: a task's PR wakes whoever asked for the task, a member's PR gets its report comment and its author assigned; a new
+push resumes it. Checks whose jobs never started, and check runs wedged after their job finished, are re-run for any PR. Ship
+also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task, and has the Maintainer nudge,
+then close, a quiet contributor PR on repos with `contributor_prs`. The pause stops all of it, merges already filed included.
 The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: per repo on or off, preset, which PRs to adopt (`handoff`), `approve` and `merge`, a global pause, and the holds. The module's settings are for the advanced options only.
 
 ## Connect
