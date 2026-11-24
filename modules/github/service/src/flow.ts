@@ -419,8 +419,10 @@ export function createFlow(d: FlowDeps) {
     const progress = savedProgress().done ?? {};
     running = (async () => {
       try {
-        for (const repo of await d.repos!()) await backfillRepo(repo, progress);
-        status = { ...status, state: "done", repo: undefined, message: undefined };
+        const repos = await d.repos!();
+        for (const repo of repos) await backfillRepo(repo, progress);
+        // No repos means GitHub isn't connected yet: stay pending so the first pass after connecting runs it.
+        status = { ...status, state: repos.length ? "done" : "idle", repo: undefined, message: undefined };
       } catch (e) {
         status = e instanceof Paused ? { ...status, state: "paused", message: `${e.message}: it goes on at a later pass` } : { ...status, state: "failed", message: String((e as Error).message).slice(0, 300) };
         d.log("backfill stopped", { ...status });
@@ -435,9 +437,10 @@ export function createFlow(d: FlowDeps) {
     churnPass, churnRepo, issuesRepo, backfill, eventsPass,
     /** The churn loop: a first pass shortly after start, then every 15 minutes. */
     startChurn() {
-      const t = setInterval(() => void churnPass(), 15 * 60_000);
+      const pass = () => churnPass().catch((e) => d.log("churn pass failed", { err: String(e?.message ?? e).slice(0, 300) }));
+      const t = setInterval(pass, 15 * 60_000);
       t.unref?.();
-      setTimeout(() => void churnPass(), 60_000).unref?.();
+      setTimeout(pass, 60_000).unref?.();
       return () => clearInterval(t);
     },
   });

@@ -108,7 +108,9 @@ export function eventWrite(body: unknown): { table: Table; row: Row } | null {
  * Writes one message row; a tombstone also blanks the message's earlier revisions in the change log, so deleted content
  * stays readable nowhere.
  */
-export async function writeMessage(store: SourceStore, t: Table, row: Row, baseline: boolean): Promise<"new" | "changed" | "same"> {
+export async function writeMessage(store: SourceStore, t: Table, row: Row, baseline: boolean, history = false): Promise<"new" | "changed" | "same"> {
+  // A history read can be older than a delete the live feed already recorded; Slack never undeletes, so it never revives the row.
+  if (history && !row.deleted && (await store.pool.query(`SELECT 1 FROM src_slack.message WHERE channel_id = $1 AND ts = $2 AND deleted`, [row.channel_id, row.ts])).rowCount) return "same";
   const r = await store.upsert(t, row, { baseline });
   if (row.deleted)
     await store.pool.query(`UPDATE src_slack.change SET old_value = NULL, new_value = NULL WHERE entity = 'message' AND entity_id = $1 AND field = 'text' AND (old_value IS NOT NULL OR new_value IS NOT NULL)`, [`${row.channel_id}/${row.ts}`]);
@@ -259,7 +261,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
       seen.add(m.ts);
       if (oldest && m.ts === ts && Number(ts) <= Number(oldest)) continue; // the parent comes back with every page
       const w = messageWrite(id, m, type);
-      const r = await writeMessage(store, w.table, w.row, baseline);
+      const r = await writeMessage(store, w.table, w.row, baseline, true);
       if (r !== "same") written++;
       await replay(id, type, m, r, baseline, !reconcile);
     }
@@ -302,10 +304,11 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     let newest = st.cursor ?? oldest;
     const seen = new Set<string>();
     const threads = new Set<string>();
+    const readFrom = tsAt(Date.now()); // messages newer than the reads began (live arrivals) aren't in `seen`, and aren't tombstoned
     for await (const m of pages(api, "conversations.history", { channel: id, oldest }, "messages")) {
       seen.add(m.ts);
       const w = messageWrite(id, m, type);
-      const r = await writeMessage(store, w.table, w.row, baseline);
+      const r = await writeMessage(store, w.table, w.row, baseline, true);
       if (r !== "same") written++;
       await replay(id, type, m, r, baseline, !reconcile || Number(m.ts) > Number(st.cursor ?? 0));
       if (Number(m.ts) > Number(newest)) newest = m.ts;
@@ -333,7 +336,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     if (gone.size || pending.length) await store.saveScope(pendingKey, [...gone].join(",")); // not done: retried next pass
     if (reconcile) {
       // Messages of the last week that Slack no longer returns were deleted while we weren't listening.
-      const ours = await store.pool.query(`SELECT ts FROM src_slack.message WHERE channel_id = $1 AND NOT deleted AND ts > $2 AND (thread_ts IS NULL OR thread_ts = ts OR thread_ts = ANY($3))`, [id, weekAgo, [...threads].filter((t) => !gone.has(t))]);
+      const ours = await store.pool.query(`SELECT ts FROM src_slack.message WHERE channel_id = $1 AND NOT deleted AND ts > $2 AND ts < $4 AND (thread_ts IS NULL OR thread_ts = ts OR thread_ts = ANY($3))`, [id, weekAgo, [...threads].filter((t) => !gone.has(t)), readFrom]);
       for (const r of ours.rows) if (!seen.has(r.ts) && (await writeMessage(store, TOMBSTONE, tombstone(id, r.ts, type), false)) !== "same") written++;
     }
     await store.saveScope(scope, newest, true);

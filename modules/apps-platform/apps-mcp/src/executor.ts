@@ -40,12 +40,12 @@ export function appsExecutor(p: Platform): Executor {
           // Stateful: the reviewer's (a migration labelled as one). Already running, healthy: nothing to file.
           const running = p.cached(a) as { sha?: string; healthy?: boolean };
           if (running.sha === com.sha && running.healthy) return { ...base, satisfied: { evidence: `${a.name} already runs ${com.sha.slice(0, 12)} and is healthy` } };
-          if (com.truncated || !com.diff) throw new Error(`the change to ${a.name} since its running commit is too large (or couldn't be read) to review; deploy it in smaller steps, or try again`);
+          if (com.truncated) throw new Error(`the change to ${a.name} since its running commit is too large (or couldn't be read) to review; deploy it in smaller steps, or try again`);
           const migration = touchesMigrations(com.diff);
           return {
             ...base,
             raise: { tier: 1, rule: migration ? "deploy-migration" : "deploy-stateful", reason: migration ? "a stateful deploy that touches a migration or schema file" : "a stateful deploy with no migration or schema change" },
-            card: { ...base.card, details: `app: ${a.name}\ncommit: ${com.sha}\n\nChanges since the running commit:\n${com.diff}${DEPLOY_CLAIM}${oneLine(com.subject, 120)}` },
+            card: { ...base.card, details: `app: ${a.name}\ncommit: ${com.sha}\n\nChanges since the running commit:\n${com.diff || "(none in the app's directory: a redeploy of its last healthy commit, or a commit that changed only other files)"}${DEPLOY_CLAIM}${oneLine(com.subject, 120)}` },
           };
         }
         case "apps-platform.run": {
