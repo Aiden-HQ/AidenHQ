@@ -7,7 +7,7 @@ requires:
 contributes:
   # The Fleet page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").
   board.pages:
-    - { id: maintainer, title: Maintainer, icon: shield, order: 20, connection: maintainer, view: "ui://maintainer/page", tools: [ maintainer_config, maintainer_configure ] }
+    - { id: maintainer, title: Maintainer, icon: shield, order: 20, connection: maintainer, view: "ui://maintainer/page", tools: [ maintainer_config, maintainer_configure ], settings: [ maintainer_repos, external_triage ] }
 roles:
   # product-issues (the chief of staff's): the Fleet Steward's product-bug reports, filed upstream as the owner.
   requests: [ product-issues, ship-admin?, kernel.tasks, kernel.facts ] # kernel.tasks: the issue watcher files a task per labelled or new issue; kernel.facts: its issue.triaged fact

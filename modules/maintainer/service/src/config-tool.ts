@@ -45,7 +45,7 @@ export function configTools(d: { repos: () => string; externalTriage: () => bool
     },
     {
       name: "maintainer_configure",
-      description: "Propose one change to the Maintainer's setup: { repo, duties: { issues, features, dependabot, contributor_prs: true | false } } (lists the repo if it isn't), { repo, remove: true }, or { external_triage: true | false }. It returns the typed settings change; the owner saves it from the Fleet page.",
+      description: "Propose one change to the Maintainer's setup: { repo, duties: { issues, features, dependabot, contributor_prs: true | false } } (lists the repo if it isn't), { repo, remove: true } (a repo ship also covers is removed from the Ship page, which clears both), or { external_triage: true | false }. It returns the typed settings change; the owner saves it from the Fleet page.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, duties: { type: "object" }, remove: { type: "boolean" }, external_triage: { type: "boolean" } }, additionalProperties: false },
       run: async (a, who) => {
         ownerOnly(who.kind);

@@ -50,7 +50,7 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { Swr } from "./swr.js";
 import { CLOSED_WINDOW_MS, OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
 import { createMcp, WRITE_TOOLS } from "./mcp.js";
-import { FRAME_CSP, FRAME_TYPE, ViewError, type ViewHost } from "./module-views.js";
+import { FRAME_CSP, FRAME_TYPE, ViewError, mayPropose, type ViewHost } from "./module-views.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
@@ -2125,9 +2125,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const page = await viewCall(async () => opts.views!.page(m[1]!));
         const { changes } = parse(ChangesSchema, body);
         const { catalog } = readSources(settingsFiles());
-        // Only a setting the page's module alone declares: never one another module or the kernel uses too.
+        // Only a setting the page's module alone declares, or one its declaration lists (compile checked those): never another the kernel or a module uses.
         const owners = (key: string) => catalog.filter((x) => x.enabled && Object.hasOwn(x.settings ?? {}, key)).map((x) => x.name);
-        if (changes.some((c) => c.kind !== "setting" || owners(c.key).join() !== page.module)) throw new HttpError(400, `a ${page.title} page saves only settings ${page.module} alone declares`);
+        if (changes.some((c) => c.kind !== "setting" || !mayPropose(page, c.key, owners(c.key)))) throw new HttpError(400, `a ${page.title} page saves only settings ${page.module} alone declares, or its declaration lists`);
         return fileSettingsChange(changes);
       },
     },

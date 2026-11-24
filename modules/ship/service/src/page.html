@@ -16,7 +16,7 @@
   .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
   .head b { font-size: 13.5px; font-weight: 600; }
   .head small, .soft { color: var(--soft); }
-  .row { display: grid; grid-template-columns: minmax(150px, 1.6fr) 64px repeat(4, minmax(104px, 1fr)); gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: minmax(150px, 1.6fr) 64px repeat(4, minmax(104px, 1fr)) 72px; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); }
   .row.cols { border-top: 0; padding-top: 7px; padding-bottom: 7px; color: var(--soft); font-size: 12px; background: color-mix(in srgb, var(--line) 12%, transparent); }
   .row:not(.cols):hover { background: color-mix(in srgb, var(--line) 10%, transparent); }
   .row.unsaved { box-shadow: inset 2px 0 0 var(--accent); }
@@ -120,11 +120,13 @@
       const sw = h("button", { className: "sw", role: "switch", ariaChecked: String(!!r.enabled), ariaLabel: `Ship on ${r.repo}` });
       sw.setAttribute("aria-checked", String(!!r.enabled));
       sw.addEventListener("click", () => propose(r.repo, { enabled: !r.enabled }));
+      const rm = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
+      rm.addEventListener("click", async () => { try { const x = await tool("ship_configure", { repo: r.repo, remove: true }); pending = null; say(`Proposed: ${(x.changes ?? []).join("; ")}. Save it in the bar above.`); } catch (e) { say(e.message, true); } });
       return h("div", { className: pending && pending.repo === r.repo ? "row unsaved" : "row" },
         h("div", { className: "repo", textContent: r.repo }), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: controls.enabled.label }), sw),
-        choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"));
+        choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"), rm);
     });
-    const cols = h("div", { className: "row cols" }, ...["Repo", "On", "Preset", "Adopt PRs", "Approve", "Merge"].map((t) => h("span", { textContent: t })));
+    const cols = h("div", { className: "row cols" }, ...["Repo", "On", "Preset", "Adopt PRs", "Approve", "Merge", ""].map((t) => h("span", { textContent: t })));
     $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty", textContent: "No repo is on yet. Ship stays quiet until you add one: it adopts the PRs you hand it and works them to a merge." })]));
     $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", textContent: String(x.hold?.kind ?? "").replace("_", " ") }), h("span", { className: "soft", textContent: x.hold?.reason ?? "" }))) : [h("div", { className: "empty", textContent: "Nothing is held." })]));
   }

@@ -13,7 +13,7 @@ requires:
 contributes:
   # The Fleet page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").
   board.pages:
-    - { id: ship, title: Ship, icon: rocket, order: 10, connection: ship, view: "ui://ship/page", tools: [ ship_config, ship_configure, ship_status ] }
+    - { id: ship, title: Ship, icon: rocket, order: 10, connection: ship, view: "ui://ship/page", tools: [ ship_config, ship_configure, ship_status ], settings: [ ship, code_review, maintainer_repos ] }
 roles:
   # kernel.settings: the config tool's settings changes (writers below).
   requests: [ kernel.settings ]

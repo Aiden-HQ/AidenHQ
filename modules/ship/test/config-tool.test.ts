@@ -51,3 +51,10 @@ test("ship_configure for the owner returns the settings change and files nothing
   assert.deepEqual(filed, []);
   await assert.rejects(tool.run({ repo: "x/y", change: "cautious" }, { agent: "x", roles: ["ship-admin"], assertion: "jwt" }), /owner's/);
 });
+
+test("removing a listed repo is one change across maintainer_repos, code_review and ship, and the owner's", async () => {
+  const tool = configTools({ raw: () => ({ repos: { "a/b": "cautious" } }), scope: () => scope, state: state(), maintainerRepos: () => ["a/b", "c/d"], codeReview: () => ({ repos: [{ repo: "a/b" }] }), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  const r = (await tool.run({ repo: "a/b", remove: true }, { agent: "", roles: [], kind: "owner" })) as any;
+  assert.deepEqual(r._aidenhq.settings_change.map((c: any) => c.value), [["c/d"], { repos: [] }, { repos: {} }]);
+  await assert.rejects(tool.run({ repo: "a/b", remove: true }, { agent: "x", roles: ["ship-admin"] }), /owner's/);
+});

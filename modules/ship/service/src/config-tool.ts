@@ -61,6 +61,22 @@ export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]
   return { changes, summary: [`${repo}: listed for the Maintainer and code review, then ${summary[0]!.slice(repo.length + 2)}`] };
 }
 
+/** Takes a listed repo off ship, the Maintainer and code review in one change: no ship entry is left outside the scope. Only the owner's Fleet page calls it. */
+export function removeRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string) {
+  if (!d.scope.listed.some((x) => x.toLowerCase() === repo.toLowerCase())) throw new Error(`${repo} isn't a listed repo (a fleet repo stays covered)`);
+  const ship = structuredClone(d.raw), repos = (ship.repos ?? {}) as Dict;
+  for (const k of Object.keys(repos)) if (same(k, repo)) delete repos[k];
+  const watched = ((d.codeReview.repos as unknown[]) ?? []).filter((x) => !same(x, repo));
+  return {
+    changes: [
+      { kind: "setting", key: "maintainer_repos", value: d.maintainerRepos.filter((x) => !same(x, repo)) },
+      { kind: "setting", key: "code_review", value: { ...d.codeReview, repos: watched } },
+      { kind: "setting", key: "ship", value: { ...ship, repos } },
+    ] as Dict[],
+    summary: [`${repo}: removed from ship, the Maintainer and code review`],
+  };
+}
+
 export function configTools(d: {
   raw: () => Dict; scope: () => Scope; state: State;
   /** maintainer_repos and settings.code_review as compiled (a new repo is added to both). */
@@ -87,8 +103,8 @@ export function configTools(d: {
     },
     {
       name: "ship_configure", roles: ["ship-admin"],
-      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry }, or { paused: true | false } for the kill switch. A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
-      inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {}, paused: { type: "boolean" } }, additionalProperties: false },
+      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry }, or { paused: true | false } for the kill switch, or { repo, remove: true } (the owner's: it takes a listed repo off ship, the Maintainer and code review). A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {}, paused: { type: "boolean" }, remove: { type: "boolean" } }, additionalProperties: false },
       run: async (a, caller) => {
         const raw = d.raw(), scope = d.scope();
         let changes: Dict[], summary: string[], l: string[];
@@ -97,6 +113,9 @@ export function configTools(d: {
           const errors = validate(value, scope);
           if (errors.length) throw new Error(`that setting wouldn't work: ${errors.join("; ")}`);
           changes = [{ kind: "setting", key: "ship", value }]; summary = [a.paused ? "ship paused" : "ship resumed"]; l = loosens(raw, value, scope);
+        } else if (a.remove === true && typeof a.repo === "string") {
+          if (caller.kind !== "owner") throw new Error("removing a repo is the owner's: ask them to remove it from the Fleet page");
+          ({ changes, summary } = removeRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, a.repo)); l = [];
         } else if (typeof a.repo === "string" && a.repo !== "defaults" && !covers(a.repo, scope)) {
           ({ changes, summary } = addRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, a.repo, a.change)); l = [];
           // One change across the github, code-review and ship settings: the board saves it for the owner; an agent's filing is per module.

@@ -660,9 +660,10 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
  * board.pages (modules/board/schemas/pages.json): each page's view and tools sit on one of its own module's connections, as
  * read or write tools (never destructive, never one a write kind routes). Each tool is named <module>_… (the owner MCP serves every page's tools side by side,
  * under their own names). What each view may reach goes onto its connection in the kernel's table (`views`: view -> tools),
- * where the kernel's view route enforces it (kernel/src/views.ts).
+ * where the kernel's view route enforces it (kernel/src/views.ts). `settings` lists keys the page may propose beyond its own
+ * module's: each declared by that module or one it requires (the board's save accepts exactly those).
  */
-export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}) {
+export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}, declares: (module: string, key: string) => boolean = () => true) {
   // One page per view, and one page per MCP name (the owner MCP serves each page's tools and its `<id>_page` opener side by side).
   const views = new Set<string>(), names = new Map<string, string>(OWNER_TOOLS.map((t) => [t, "the owner MCP"]));
   const name = (n: string, p: Obj) => (names.has(n) ? fail(`module ${p.module}: board.pages ${p.id}: the name ${n} is already ${names.get(n)}'s`) : names.set(n, `page ${p.id}`));
@@ -673,6 +674,7 @@ export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}) {
     if (!p.view.startsWith(`ui://${p.module}/`)) fail(`${where}: view must be ui://${p.module}/<path>`);
     if (views.has(p.view)) fail(`${where}: another page already shows ${p.view}`);
     views.add(p.view);
+    for (const k of p.settings ?? []) if (!declares(p.module, k)) fail(`${where}: setting ${k} isn't declared by ${p.module} or a module it requires`);
     name(`${p.id.replace(/-/g, "_")}_page`, p);
     for (const t of p.tools) {
       if (![...c.tools.read, ...c.tools.write].includes(t) || c.tools.destructive.includes(t)) fail(`${where}: ${t} isn't a read or write tool of ${p.connection}`);
@@ -1293,7 +1295,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     ...(c.health_probes ? { health_probes: c.health_probes } : {}),
     ...(c.events ? { events: c.events } : {}),
   }]));
-  modulePages(points.board?.pages ?? [], connections, writes);
+  // A page may propose a setting its module, or a module it requires, declares.
+  const declaresSetting = (module: string, key: string) => [module, ...(all.get(module)?.def.requires ?? [])].some((m) => Object.hasOwn(all.get(String(m))?.def.settings ?? {}, key));
+  modulePages(points.board?.pages ?? [], connections, writes, declaresSetting);
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. An Engineer gets

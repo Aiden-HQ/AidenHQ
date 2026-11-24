@@ -115,6 +115,7 @@ contributes:
       connection: ship              # one of this module's own connections
       view: ui://ship/page          # served by it (resources/read, text/html;profile=mcp-app)
       tools: [ship_config, ship_configure]   # what the view calls: read or write tools of that connection, named <module>_…
+      settings: [ship, code_review]          # optional: setting keys the page may propose beyond its module's own
 ```
 
 - **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool and none a write kind routes, tool names
@@ -134,7 +135,7 @@ contributes:
   control-plane reach).
 - **Settings:** a page's write tool, called by the owner, returns the typed change instead of filing it:
   `structuredContent._aidenhq.settings_change: [{ kind: setting, key, value }]`. The board shows it in a bar outside the
-  frame, and the owner's Save files it as his own settings change, refused unless every key is the page's module's own.
+  frame, and the owner's Save files it as his own settings change, refused unless every key is one only the page's module declares or one its `settings` list names (compile accepts a key declared by that module or a module it requires, so a page can propose a change spanning modules; the owner's Save, with the whole change shown outside the frame, is the only gate, and an agent's call stays per module).
   An agent's call of the same tool files the change itself (`/v1/settings/agent`), so the module's one check serves both.
 - **In the owner's Claude** the owner MCP serves each page as an MCP App: an opener `<id>_page` with `_meta.ui.resourceUri`,
   the view (with no `_meta.ui.csp`, so Claude's strict default holds) and the page's tools with visibility `["app"]`; the
