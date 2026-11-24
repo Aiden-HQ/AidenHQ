@@ -88,7 +88,7 @@ export function shipRoutes(o: {
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
         if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
         // A branch is deleted only as an abandoned PR's: one pr-tasks.json names as an opener's head branch on this repo, never the default.
-        if (method === "DELETE") {
+        if (method === "DELETE" && String(path).includes("/git/refs/heads/")) {
           // The path is exactly an opener's branch on this repo, compared whole (never a prefix or a normalised form).
           const branch = Object.entries(readPrTasks(o.cacheDir)).find(([url, t]) => url.startsWith(`https://github.com/${repo.toLowerCase()}/pull/`) && path === `/repos/${repo}/git/refs/heads/${t.branch}`)?.[1].branch;
           const def = branch ? (await o.gh("GET", `/repos/${repo}`, undefined, { background: true })).body?.default_branch : undefined;

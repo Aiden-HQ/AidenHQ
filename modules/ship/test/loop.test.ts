@@ -642,12 +642,15 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
     ghCalls.push(`${method} ${path}`);
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path === "/repos/acme/app/pulls/11") return { status: 200, body: { title } };
+    // REST's view of the head: the policy check run's job (its details URL), and that job's real workflow run.
+    if (/^\/repos\/acme\/app\/commits\/[^/]+\/check-runs/.test(path)) return { status: 200, body: { total_count: 1, check_runs: [{ id: 71, name: "policy", status: "completed", conclusion: "failure", details_url: "https://github.com/acme/app/actions/runs/500/job/9000000071" }] } };
+    if (path === "/repos/acme/app/actions/jobs/9000000071") return { status: 200, body: { run_id: 500 } };
     const run = path.match(/^\/repos\/acme\/app\/actions\/runs\/(\d+)\/jobs$/)?.[1];
     if (run) {
       const names = jobs.runs[run] ?? ["policy", "ci-required"], bad = jobs.steps[run] ?? ["Conventional Commit title"];
       return { status: 200, body: { jobs: ["policy", "ci-required", "checks"].map((n) => ({
-        name: n, conclusion: names.includes(n) ? "FAILURE" : "SUCCESS",
-        ...(n === "policy" ? { steps: ["Age check (lockfiles) and pins (images, actions, apt, global installs)", "Conventional Commit title"].map((s) => ({ name: s, conclusion: bad.includes(s) ? "FAILURE" : "SUCCESS" })) } : {}),
+        name: n, conclusion: names.includes(n) ? "failure" : "success",
+        ...(n === "policy" ? { steps: ["Age check (lockfiles) and pins (images, actions, apt, global installs)", "Conventional Commit title"].map((s) => ({ name: s, conclusion: bad.includes(s) ? "failure" : "success" })) } : {}),
       })) } };
     }
     return { status: 200, body: {} };
@@ -657,7 +660,7 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
   const policyRed = (n, o = {}) => pr(n, {
     author: { __typename: "User", login: "dev" }, title,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
-      { __typename: "CheckRun", databaseId: 71, name: "policy", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+      { __typename: "CheckRun", databaseId: 71, name: "policy", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: null } } },
       { __typename: "CheckRun", databaseId: 72, name: "ci-required", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
       { __typename: "CheckRun", databaseId: 73, name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
     ] } } } }] },

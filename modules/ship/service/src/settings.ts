@@ -173,6 +173,8 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     // The repair writes the generators' output on these paths: a new glob widens what an untrusted box may change. The command
     // stays an ordinary setting (it runs only in the credential-free box).
     if ((y.generated?.globs ?? []).some((g) => !(x.generated?.globs ?? []).includes(g))) add("generated.globs");
+    // Back from an explicit list to discovery: the discovered paths may reach past the list, so that is a loosening too.
+    if (x.generated && !y.generated) add("generated");
   };
   const dx = resolve(defaultsOf(b).preset, defaultsOf(b).over), dy = resolve(defaultsOf(a).preset, defaultsOf(a).over);
   diff("defaults", dx, dy);

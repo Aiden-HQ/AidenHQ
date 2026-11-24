@@ -152,8 +152,6 @@ const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 /** The module that adopts PRs and files their writes (approve, enqueue, an adoption's merge): its name as the kernel reports it. */
 const SHIP = "ship";
-/** A record the ship module filed itself (its kill switch reaches its merges at the call: merges.ts). */
-const filedByShip = (rec: { requester?: { kind?: string; module?: string } }) => rec.requester?.kind === "module" && rec.requester.module === SHIP;
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 /**
  * GitHub refuses any push that creates or updates a workflow file when the sign-in's OAuth grant lacks `workflow` ("refusing to
@@ -315,6 +313,20 @@ export function createService(o: Options) {
   const pushedKey = (repo: string, sha: string) => `${repo.toLowerCase()} ${sha}`;
   const notePushed = (repo: string, sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), pushedKey(repo, sha)]));
   // Which task opened each PR this code host opened (pr-tasks.ts notePrTask): the task's sibling PRs for the reviewer.
+  // The merges ship filed itself (a fleet PR's plain merge), noted at plan time: the kernel's execute call carries no requester, and
+  // the merge queue stops these when ship is paused, its repo is off or the task is cancelled (merges.ts). Keyed repo#n@head.
+  const shipMergesFile = join(o.cacheDir, "ship-merges.json");
+  const shipMerges = (): Record<string, string> => { try { return JSON.parse(readFileSync(shipMergesFile, "utf8")); } catch { return {}; } };
+  const noteShipMerge = (key: string) => {
+    const keep = Object.fromEntries(Object.entries(shipMerges()).filter(([, at]) => Date.now() - Date.parse(at) < 7 * 86_400_000));
+    writeFileSync(`${shipMergesFile}.tmp`, JSON.stringify({ ...keep, [key]: new Date().toISOString() }));
+    renameSync(`${shipMergesFile}.tmp`, shipMergesFile);
+  };
+  const mergeKey = (repo: string, n: number, head: string) => `${repo.toLowerCase()}#${n}@${head}`;
+  const filedByShip = (rec: { args?: unknown }) => {
+    const p = (rec.args as { prs?: { repo?: string; number?: number; head?: string }[]; generation?: unknown } | undefined);
+    return p?.generation === undefined && (p?.prs ?? []).some((x) => Boolean(shipMerges()[mergeKey(String(x.repo), Number(x.number), String(x.head))]));
+  };
   const prTasks = (): Record<string, { task?: string; branch?: string }> => { try { return JSON.parse(readFileSync(join(o.cacheDir, "pr-tasks.json"), "utf8")); } catch { return {}; } };
   const isPlatform = (requester?: { roles?: string[] }) => (requester?.roles ?? []).includes("platform-engineer");
 
@@ -424,6 +436,7 @@ export function createService(o: Options) {
           bases.push({ repo: s.slug, base: String(pr.base?.ref ?? ""), read: (path) => git(into.dir, ["show", `${into.sha}:${path}`]), dir: into.dir, tip: into.sha });
         }
         own.add(`${s.slug.toLowerCase()}#${Number(p.number)}`);
+        if (merge && byShip && a.generation === undefined && typeof p.head === "string") noteShipMerge(mergeKey(s.slug, Number(p.number), p.head));
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files, checks: await checksAt(s, pr.head?.sha),

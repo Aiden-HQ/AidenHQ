@@ -78,3 +78,20 @@ test("a held adoption whose PR was closed is read once, then never again", async
   assert.equal(reads, 1);
   assert.equal(state.get("acme/app", 8).hold.kind, "stalled", "its own hold is kept");
 });
+
+test("a CI re-run with no push (fix_ci, wait, fix_ci at one head) wakes the task once", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  state.put({ repo: "acme/app", number: 9, generation: 1, trigger: { kind: "label", event: "e9", actor: "maria", at: "2026-11-24T09:00:00Z", head: "a".repeat(40) }, task: "T9", hold: null });
+  const wakes = [];
+  const decisions = ["fix_ci", "wait", "fix_ci"];
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: {} }), state,
+    kernel: { call: async (m, path, body) => (path === "/v1/wakes" && wakes.push(body), path.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}) },
+    settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: decisions.shift(), failing: ["test"] }), effects: { comment: async () => 1, askReview: async () => {} },
+  });
+  const pr = { number: 9, url: "https://github.com/acme/app/pull/9", headRefOid: "a".repeat(40), baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } };
+  const main = { name: "main", rollup: { contexts: { nodes: [] } } };
+  for (let i = 0; i < 3; i++) await pass.open("acme/app", main, pr, new Set([9]));
+  assert.equal(wakes.length, 1);
+});

@@ -34,6 +34,7 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
   assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/main" })).status, 403);
   assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/someone-else" })).status, 403);
   assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/b1" })).status, 200);
+  assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/issues/1/assignees", body: { assignees: ["dev"] } })).status, 200, "removing an assignee is no branch delete");
   // Traversal: a path that normalises to another branch, or out to another repo, is refused whatever its first segment.
   for (const path of ["/repos/acme/app/git/refs/heads/b1/git/refs/heads/x/../../../../../main", "/repos/acme/app/git/refs/heads/b1/../../../../../../other/repo/git/refs/heads/main", "/repos/acme/app/git/refs/heads/b1/%2e%2e/main", "/repos/acme/app/git/refs/heads/b1/./x"])
     assert.equal((await gh({ method: "DELETE", path })).status, 403, path);

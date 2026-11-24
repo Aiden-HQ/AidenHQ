@@ -554,16 +554,26 @@ export function startLoop(o: LoopOptions) {
       const named = namedChecks(rollupOf(pr));
       if (!named.length || named.some((c) => c.pending)) return false;
       const policy = (rollupOf(pr)?.contexts?.nodes ?? []).find((n: Json) => n.__typename === "CheckRun" && n.name === POLICY_CHECK && n.status === "COMPLETED" && n.conclusion === "FAILURE");
-      const run = policy?.checkSuite?.workflowRun?.databaseId;
-      if (!run) return false;
+      if (!policy) return false;
+      // The workflow run from REST (the policy check run's job, then its `run_id`): the rollup's 32-bit databaseId is null or
+      // truncated for today's run ids, so it never builds a request (as the never-started path does).
+      const listed = await latestRuns(pr.headRefOid);
+      const policyRun = listed && listed !== "permanent" ? listed.runs.find((c: Json) => c.name === POLICY_CHECK && String(c.conclusion).toLowerCase() === "failure") : undefined;
+      const jobId = policyRun && jobIdOf(policyRun);
+      if (!jobId) return false;
+      const job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`);
+      const run = Number(job.body?.run_id);
+      if (job.status >= 300 || !Number.isFinite(run) || run <= 0) return false;
       const jobs = await gh("GET", `/repos/${repo}/actions/runs/${run}/jobs`);
       if (jobs.status >= 300 || !Array.isArray(jobs.body?.jobs)) return false;
-      const failed: string[] = jobs.body.jobs.filter((j: Json) => j.conclusion === "FAILURE").map((j: Json) => String(j.name)).sort();
+      // REST answers conclusions in lower case (`failure`), unlike GraphQL's `FAILURE`.
+      const failure = (x: Json) => String(x?.conclusion ?? "").toLowerCase() === "failure";
+      const failed: string[] = jobs.body.jobs.filter(failure).map((j: Json) => String(j.name)).sort();
       // A red test or another job is a real failure: re-running would only repeat it.
       if (failed.length !== 2 || failed[0] !== GATE_CHECK || failed[1] !== POLICY_CHECK) return false;
       // `policy` also runs the age and pin checks: only a title step that failed means the title is the whole failure.
       const policyJob = jobs.body.jobs.find((j: Json) => j.name === POLICY_CHECK);
-      const failedSteps = (policyJob?.steps ?? []).filter((s: Json) => s.conclusion === "FAILURE").map((s: Json) => String(s.name));
+      const failedSteps = (policyJob?.steps ?? []).filter(failure).map((s: Json) => String(s.name));
       if (!Array.isArray(policyJob?.steps) || failedSteps.length !== 1 || failedSteps[0] !== TITLE_STEP) return false;
       const p = await gh("GET", `/repos/${repo}/pulls/${pr.number}`);
       const title = p.status < 300 ? p.body?.title : undefined;

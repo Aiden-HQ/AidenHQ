@@ -38,3 +38,11 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**", "src/**"])), ["a/b.generated.globs"]);
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], "npm run gen")), []);
 });
+
+test("clearing an explicit generated list back to discovery is a loosening", () => {
+  const scope = { fleet: ["acme/*"], listed: [] };
+  const before = { repos: { "acme/app": { generated: { globs: ["gen/**"], command: "make gen" } } } };
+  const after = { repos: { "acme/app": { generated: null } } };
+  assert.ok(loosens(before, after, scope).includes("acme/app.generated"));
+  assert.ok(!loosens(after, before, scope).includes("acme/app.generated"));
+});
