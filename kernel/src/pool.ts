@@ -13,6 +13,8 @@ export function createPool({ capacity, checkCapacity, agentLive, sleep = (ms: nu
     },
     /** A check job's slot: resolves when it may take a box; hold it until the box is released (`freeCheck`). */
     async takeCheck() {
+      // No number at all (a config compiled before check_computers_max): the check can't run, said, never a wait forever.
+      if (!(checkCapacity() >= 1)) throw new Error("config/computers.json has no checks (check_computers_max): run scripts/compile.ts");
       while (checks >= checkCapacity()) await sleep(2_000);
       checks++;
     },
