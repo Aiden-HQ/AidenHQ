@@ -322,16 +322,18 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
           attempt++;
           continue;
         }
-        // Giving up on this boundary: the gap is real, what HubSpot did return lands now, and the time keeps its saved position.
+        // Giving up on this boundary: the gap is real and the time keeps its saved position. Its rows land only while the pass
+        // still has budget for them; past it they are re-read next pass, like every other page.
         state.shortfall = true;
+        if (idTotal !== null) state.partial = { total: idTotal, fetched: new Set(page.map((r) => r.id)).size };
+        if (Date.now() >= deadline) return void (state.ended = false);
         for (const r of page) {
           state.seen.add(r.id);
           yield r;
         }
-        if (idTotal !== null) state.partial = { total: idTotal, fetched: new Set(page.map((r) => r.id)).size };
         // The scan never got past this time: this query's own counts are the gap, not the whole pass's.
-        if (attempt + 1 >= SHORT_PAGE_ATTEMPTS && Date.now() < deadline) state.partialOnly = true;
-        return void (state.ended = attempt + 1 >= SHORT_PAGE_ATTEMPTS && Date.now() < deadline);
+        if (attempt + 1 >= SHORT_PAGE_ATTEMPTS) state.partialOnly = true;
+        return void (state.ended = attempt + 1 >= SHORT_PAGE_ATTEMPTS);
       }
       if (tieTotal === null) tieTotal = total;
       for (const r of page) {
@@ -419,16 +421,10 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
     // indexed. That holds when the retries ran out, when the budget left no time for one, and when a later, narrower window
     // reported its own smaller total. A result listed without an id was never writable, so it doesn't make the window short.
     const read = state.seen.size + (state.dropped ?? 0);
-    // The starting total is from the pass's first page: a record archived while the scan paged leaves the ids read below it.
-    // Ask the starting filter once more (one request, bounded) and only a count still above what was read is a gap.
-    let totalNow = state.total;
-    if (!state.shortfall && state.ended && typeof state.total === "number" && read < state.total) {
-      const again = await bounded(searchPage(call, def, Date.parse(from)), o.deadline);
-      if (again !== "budget" && again.total !== null) totalNow = again.total;
-    }
-    const short = state.shortfall || (state.ended && typeof totalNow === "number" && read < totalNow);
-    // The verified total replaces the starting one for reporting too, so an archived record can't keep a complete pass looking short.
-    if (totalNow !== state.total) state.total = totalNow;
+    // No second, narrower search is asked here to explain the total away: a lower count alone doesn't prove the missing rows were
+    // read, and an extra request in `finally` could throw before `saveScope` runs. The cursor is held and the alert keeps
+    // tripping until a pass reads the window whole (the owner's call: a quiet alarm over a real shortfall is the worse failure).
+    const short = state.shortfall || (state.ended && typeof state.total === "number" && read < state.total);
     const back = state.ended && !tieId && Date.parse(newest) > now - OVERLAP_MS ? new Date(Math.max(Date.parse(newest) - OVERLAP_MS, Date.parse(from))).toISOString() : newest;
     // A resumed pass rewinds to the checkpoint it began at, id included, so the two cursors can't alternate around it.
     const start = cursorId ? `${from}#${cursorId}` : from;
