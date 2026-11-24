@@ -93,3 +93,9 @@ test("the pause is its own setting and works whatever the entries hold; an orpha
   const added = (await listed.run({ repo: "A/B", add: true }, owner)) as any;
   assert.deepEqual(added._aidenhq.settings_change.map((c: any) => c.key), ["ship"]);
 });
+
+test("ship_status lists the fleet's named repos that inherit the defaults, and which fields an entry sets itself", async () => {
+  const tool = configTools({ raw: () => ({ repos: { "a/b": { merge: "off" } } }), scope: () => ({ fleet: ["org/*", "org/product"], listed: ["a/b"] }), state: state(), maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_status")!;
+  const r = (await tool.run({}, { agent: "x", roles: [] })) as any;
+  assert.deepEqual(r.repos.map((x: any) => [x.repo, x.preset, x.enabled, x.over]), [["a/b", "cautious", true, ["merge"]], ["org/product", "cautious", true, []]]);
+});

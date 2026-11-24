@@ -43,7 +43,7 @@ startMaintainer({
 const readKey = () => { try { return readFileSync(process.env.MAINTAINER_SERVICE_KEY_FILE ?? "", "utf8").trim(); } catch { return ""; } };
 const jwks = kernelJwks(`${process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130"}/v1/jwks`);
 const mcp = serveMcp(
-  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", externalTriage: () => process.env.MAINTAINER_EXTERNAL_TRIAGE === "true" }), [{ uri: "ui://maintainer/page", html: pageHtml(new URL("./", import.meta.url)) }]),
+  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", ship: () => !!process.env.MAINTAINER_SHIP, externalTriage: () => process.env.MAINTAINER_EXTERNAL_TRIAGE === "true" }), [{ uri: "ui://maintainer/page", html: pageHtml(new URL("./", import.meta.url)) }]),
   readKey, (req) => verifyCaller(req, jwks, "maintainer"),
 );
 createServer(async (req, res) => {

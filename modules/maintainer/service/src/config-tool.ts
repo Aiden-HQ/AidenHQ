@@ -36,7 +36,7 @@ export function applyRepoChange(list: Dict[], c: { duties?: Record<string, Dict>
   return { value, summary };
 }
 
-export function configTools(d: { repos: () => string; externalTriage: () => boolean }): Tool[] {
+export function configTools(d: { repos: () => string; ship: () => boolean; externalTriage: () => boolean }): Tool[] {
   const ownerOnly = (kind?: string) => { if (kind !== "owner") throw new Error("the Maintainer's repos and duties are the owner's: they set them from the Fleet page"); };
   return [
     {
@@ -55,6 +55,7 @@ export function configTools(d: { repos: () => string; externalTriage: () => bool
         const changes: Dict[] = [];
         const summary: string[] = [];
         if (typeof edits.external_triage === "boolean") { changes.push({ kind: "setting", key: "external_triage", value: edits.external_triage }); summary.push(`external triage ${edits.external_triage ? "on" : "off"}`); }
+        if (typeof a.remove === "string" && d.ship()) throw new Error(`${a.remove}: with Ship on, remove a repo from the Ship page: it clears the Maintainer, code review and ship entries together`);
         if (edits.repos || typeof a.remove === "string") {
           const r = applyRepoChange(rawRepos(d.repos()), { duties: edits.repos, remove: typeof a.remove === "string" ? a.remove : undefined });
           changes.push({ kind: "setting", key: "maintainer_repos", value: r.value }); summary.push(...r.summary);

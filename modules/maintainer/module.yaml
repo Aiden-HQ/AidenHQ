@@ -110,6 +110,7 @@ services:
         MAINTAINER_TOKEN_FILE: ${secrets.maintainer_token}
         MAINTAINER_SERVICE_KEY_FILE: ${secrets.maintainer_service_key}
         MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        MAINTAINER_SHIP: "${settings.ship_enabled}" # set when Ship is on: it owns a listed repo's removal (its page clears all three entries)
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
         MAINTAINER_POLL_MINUTES: "${settings.maintainer_poll_minutes}"
         # Each new unlabelled issue's triage task (off with external_triage false).

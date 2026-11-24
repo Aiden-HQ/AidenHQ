@@ -9,7 +9,12 @@ export function status(raw: Dict, scope: Scope, state: State, repo?: string) {
   const same = (r: string) => !repo || r.toLowerCase() === repo.toLowerCase();
   return {
     paused: raw.paused === true,
-    repos: Object.keys((raw.repos as Dict) ?? {}).filter(same).map((r) => { const s = effective(raw, r, scope); return { repo: r, preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, approve: s?.approve, merge: s?.merge }; }),
+    // Every repo ship works that has a row to control: those with an entry, and the fleet's named repos (the product repo) that inherit the defaults.
+    repos: [...new Set([...Object.keys((raw.repos as Dict) ?? {}), ...scope.fleet.filter((f) => !f.includes("*"))])].filter(same).map((r) => {
+      const s = effective(raw, r, scope), entry = Object.entries((raw.repos as Dict) ?? {}).find(([k]) => k.toLowerCase() === r.toLowerCase())?.[1];
+      // `over`: the fields this repo's entry sets itself, which a preset change doesn't move.
+      return { repo: r, preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, approve: s?.approve, merge: s?.merge, over: entry && typeof entry === "object" ? Object.keys(entry).filter((k) => k !== "preset") : [] };
+    }),
     held: state.all().filter((a) => a.hold && same(a.repo)).slice(0, 100),
   };
 }

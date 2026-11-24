@@ -34,10 +34,11 @@
 </div>
 <script>
 /*kit:js*/
-  let controls = {}, status = { paused: false, repos: [], held: [] };
+  let controls = {}, presets = {}, status = { paused: false, repos: [], held: [] };
   // The edits the owner hasn't saved yet, one proposal for the page: field changes per repo, and the pause. Each edit merges into it.
   let pending = { repos: {}, paused: undefined };
-  const shown = (r) => ({ ...r, ...(pending.repos[r.repo] ?? {}) });
+  // A proposed preset moves every field the repo's entry doesn't set itself to that preset's value, before Save.
+  const shown = (r) => { const p = pending.repos[r.repo] ?? {}, base = p.preset && presets[p.preset] ? Object.fromEntries(["enabled", "handoff", "approve", "merge"].filter((k) => !(r.over ?? []).includes(k)).map((k) => [k, presets[p.preset][k]])) : {}; return { ...r, ...base, ...p }; };
 
   async function propose(fields, repo) {
     const next = { repos: { ...pending.repos }, paused: pending.paused };
@@ -82,7 +83,8 @@
 
   async function load() {
     try {
-      controls = (await tool("ship_config", {})).controls ?? {};
+      const config = await tool("ship_config", {});
+      controls = config.controls ?? {}; presets = config.presets ?? {};
       status = await tool("ship_status", {});
       render();
     } catch (e) { say(e.message, true); }
