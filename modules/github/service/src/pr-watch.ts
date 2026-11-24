@@ -712,6 +712,11 @@ export function startPrWatch(o: PrWatchOptions) {
         o.flow.checksCompleted(repo, pr.number, pr.headRefOid, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20), ends.length ? new Date(Math.max(...ends)).toISOString() : undefined, task);
         save();
       }
+      // The opener's task, once: the lifecycle rule at the end closes a cancelled task's PR, so no report below may wake one.
+      let work: Json | undefined;
+      if (!state.abandoned[url] && opener) work = await kernel("GET", `/v1/work?task=${encodeURIComponent(opener.task)}`).catch((e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
+      // A task read that failed says nothing about cancellation: that is not "cancelled", so the reports below still run.
+      const taskLive = work?.status !== "cancelled";
       // A check run still not completed while its Actions job has finished is re-run at its source (the job), for every same-repo
       // PR: GitHub's branch rules read the check run, so the merge gate cannot pass until GitHub reposts it.
       const wedged = await wedgedAfterJob(pr);
@@ -754,7 +759,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const held = holdsPending ? due.filter((w) => !!w.nodeId && pendingIds.has(w.nodeId)) : [];
       const optional = due.filter((w) => !held.includes(w));
       const redNow = named.filter((c) => !c.ok && !c.pending).map((c) => c.name);
-      if (held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
+      if (taskLive && held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
           ? "after its Actions job completed and the job had been re-run"
           : "after its Actions job completed, and the request to re-run the job was refused";
@@ -767,7 +772,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE") {
+      } else if (taskLive && optional.length && redNow.length && !pr.isDraft && pr.mergeable === "MERGEABLE") {
         // The same eligibility the red-head path requires: a draft (or a head the watcher cannot merge) is not told to publish,
         // and its once-per-head report stays unspent, so marking it ready still wakes its task for the failure.
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
@@ -786,7 +791,7 @@ export function startPrWatch(o: PrWatchOptions) {
             }
           }
         }
-      } else if (optional.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
+      } else if (taskLive && optional.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
         state.wedgedTold[`${url}:optional`] = pr.headRefOid;
         save();
         log("wedged check run holds no required check", { pr: pr.url, head: pr.headRefOid, why: "still in_progress after its job completed and a re-run" });
@@ -797,7 +802,6 @@ export function startPrWatch(o: PrWatchOptions) {
       // A cancelled task's PR is closed with its branch, once. A done task's unmerged PR is too, unless a merge of it may be in flight
       // (an open github.merge record on the task) or its head is under half an hour old (a just-finished merge isn't raced).
       if (!state.abandoned[url]) {
-        const work = await kernel("GET", `/v1/work?task=${encodeURIComponent(opener.task)}`).catch((e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
         const status = work?.status;
         if (!status) log("task status unknown: the cancelled-task rule cannot run", { pr: pr.url, task: opener.task });
         if (status === "cancelled") { await abandon(pr, opener.task, `Closed by the code host: ${opener.task}, the task this PR was for, is cancelled.`); continue; }

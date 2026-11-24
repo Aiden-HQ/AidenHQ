@@ -1081,3 +1081,17 @@ test("a deleted job's 404 does not defer the red-head wake on every tick", async
   assert.equal(c.woke.length, 1, "a permanent 404 is not this rule's: the failure is reported");
   assert.match(c.woke[0].text, /checks failed at/);
 });
+
+// self-review: a cancelled task's PR is closed, never woken for its checks' state first.
+test("a cancelled task's wedged PR is not woken before it is closed", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t, { taskStatus: "cancelled" });
+  c.set([c.agentPr(81, stuckPr(81))]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h81:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h81:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "a cancelled task has nobody to wake; its PR is closed instead");
+  assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/81"), "the PR is closed as the lifecycle rule says");
+});
