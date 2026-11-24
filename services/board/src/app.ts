@@ -1660,8 +1660,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           const closed = await pc.closedFor(agent.id, { q: url.searchParams.get("q") ?? "", ...(status === "done" || status === "cancelled" ? { status } : {}), offset, limit: HISTORY_PAGE });
           return historyPage(closed, offset, chat?.id, await stateRows(closed.map((i) => i.id)), ctx.agents);
         }
-        const mine = tasksOf(await pc.openIssues(), agent.id, chat?.id);
-        return splitTasks(mine, await stateRows(mine.map((i) => i.id)), ctx.agents);
+        // A display page: the inventory failing shows its last good response, marked stale (swr.ts).
+        return served(`agent-tasks:${agent.id}`, async () => {
+          const mine = tasksOf(await pc.openIssues(), agent.id, chat?.id);
+          return splitTasks(mine, await stateRows(mine.map((i) => i.id)), ctx.agents);
+        });
       },
     },
     // The Activity tab (timeline.ts): the agent's last 50 jobs, one kernel read; task titles from what Paperclip already lists.
