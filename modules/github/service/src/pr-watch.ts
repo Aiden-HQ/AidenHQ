@@ -312,7 +312,15 @@ export function startPrWatch(o: PrWatchOptions) {
       if (!runs.size) return false;
       let refused = false;
       for (const run of runs) {
-        const r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {});
+        // A re-run that cannot be sent (a timeout, a quota refusal) is this head's problem: backing off and asking again is
+        // the fix, never aborting the repo's scan and skipping a later PR's merge for the tick.
+        let r: { status: number };
+        try { r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}); }
+        catch (e) {
+          log("never-started re-run failed to send", { pr: pr.url, head: pr.headRefOid, run, err: String((e as Error).message).slice(0, 200) });
+          refused = true;
+          continue;
+        }
         log(r.status < 300 ? "checks re-run" : "check re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
         if (r.status >= 300) refused = true;
       }
@@ -718,7 +726,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && redNow.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid && !(await redsAreEnvironment())) {
+      } else if (optional.length && redNow.length && state.wedgedTold[`${url}:red`] !== pr.headRefOid && !(await redsAreEnvironment())) {
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
         // other rule wakes for it while a named check is still pending. Tell the task the failure once at this head. A red whose
         // job never started is the environment's (`redsAreEnvironment`): re-running it is the fix, never a push, so no wake.
@@ -726,7 +734,9 @@ export function startPrWatch(o: PrWatchOptions) {
           ? await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\` while another check is still \`in_progress\`; \`gh pr checks ${pr.url}\` lists them. Fix the failure on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says. Nothing else.`)
           : "sent";
         if (w !== "failed") {
-          state.wedgedTold[`${url}:optional`] = pr.headRefOid;
+          // Not the log-only marker below: a head that later goes red was never told about a failure, so its wake must not be
+          // suppressed by a wedge line that only went to the log.
+          state.wedgedTold[`${url}:red`] = pr.headRefOid;
           save();
           log("red check beside a wedged one reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }

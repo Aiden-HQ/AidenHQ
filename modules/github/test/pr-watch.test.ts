@@ -190,7 +190,11 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
       return { status: m?.status ?? update, body: m?.body ?? updateBody ?? (update === 422 ? { message: "merge conflict between base and head" } : {}) };
     }
     if (path.startsWith("/repos/acme/app/check-runs/")) return { status: 200, body: { output: { title: "1 test failed", summary: "expected 2, got `3`" } } };
-    if (method === "POST" && path.endsWith("/rerun-failed-jobs")) return { status: rerun(), body: {} };
+    if (method === "POST" && path.endsWith("/rerun-failed-jobs")) {
+      const r = rerun();
+      if (r?.throw) throw r.throw; // a POST that never gets an answer (a timeout, a quota refusal)
+      return { status: r, body: {} };
+    }
     if (method === "PATCH" && closeFails-- > 0) return { status: 502, body: {} };
     return { status: 200, body: {} };
   };
@@ -987,4 +991,37 @@ test("a never-started red beside a wedged check is re-run, not woken as a fix-an
   await c.watch.tick();
   assert.equal(c.woke.length, 0, "a never-started red is the environment's: the re-run is its fix, not a push");
   assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "its failed jobs are re-run instead");
+});
+
+// self-review: a wedge that only went to the log must not consume the head's once-only failure wake.
+test("a log-only wedge report does not suppress a later red head's wake at the same head", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  // First the wedge is logged (a draft, so the gate holds nothing and no red check exists): the log-only path stamps its marker.
+  c.set([c.agentPr(73, { ...stuckPr(73), isDraft: true })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h73:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h73:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.equal(c.woke.length, 0, "nothing to wake for a wedge that holds no required check");
+  // Same head, now with a red check beside the wedge: the failure is actionable and must still be told.
+  const redPlusWedge = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+  ] } };
+  c.set([c.agentPr(73, { isDraft: false, commits: { nodes: [{ commit: { statusCheckRollup: redPlusWedge } }] } })]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the log-only line never stood in for telling the task about a failure");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// self-review: a re-run request that throws is that head's backoff, not the repo scan's end: a later green PR still merges.
+test("a never-started re-run whose POST throws does not skip the repo's other PRs", async (t) => {
+  const c = await rig(t, { steps: [], rerun: () => ({ throw: Object.assign(new Error("The operation was aborted due to timeout"), { cause: "timeout" }) }) });
+  c.set([c.agentPr(74, { ...redPr(74), headRefOid: "h74" }), c.agentPr(75)]);
+  await c.watch.tick();
+  assert.equal(c.merges.length, 1, "the second, green PR's merge is still filed in the same pass");
+  const saved = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
+  assert.match(saved.reran["https://github.com/acme/app/pull/74:h74"], /^retry:/, "the failed request backs off rather than counting as handled");
 });
