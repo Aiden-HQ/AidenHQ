@@ -20,6 +20,7 @@ function world(entry: unknown, repo = "a/b") {
   const records: Record<string, any> = {};
   let n = 0;
   const runs: any[] = [];
+  const changed: { filename: string }[] = [];
   const files: Record<string, string> = {
     ".gitattributes": "api/gen/** linguist-generated\n",
     "package-lock.json": "{}",
@@ -30,7 +31,8 @@ function world(entry: unknown, repo = "a/b") {
     calls.push({ what: `${method} ${path}`, body });
     if (path.includes("/git/trees/")) return { status: 200, body: { tree: Object.keys(files).map((p) => ({ path: p, type: "blob", sha: `sha-${p}` })) } };
     if (path.includes("/git/blobs/")) return { status: 200, body: { content: b64(files[decodeURIComponent(path.split("/git/blobs/sha-")[1]!)]!) } };
-    if (path.endsWith("/pulls/7")) return { status: 200, body: { head: { ref: "feature" } } };
+    if (path.endsWith("/pulls/7")) return { status: 200, body: { head: { ref: "feature", sha: H1 }, base: { sha: H2 } } };
+    if (path.includes("/compare/")) return { status: 200, body: { files: changed } };
     if (path.includes("/runs?")) return { status: 200, body: { workflow_runs: runs } };
     return { status: method === "POST" ? 201 : 200, body: {} };
   };
@@ -53,7 +55,7 @@ function world(entry: unknown, repo = "a/b") {
   const pr = (o: Partial<PrView> = {}): PrView => ({ repo, number: 7, url: `https://github.com/${repo}/pull/7`, head: H1, base: "main", defaultBranch: "main", author: "c", authorBot: false, fork: false, canModify: false, draft: false, state: "open", labels: [], assignees: [], events: [], ...o });
   const adopt = () => intake(deps, pr({ events: [{ id: "e1", kind: "labeled", actor: "admin1", bot: false, at: "2026-11-24T01:00:00Z", label: "ship" }] }));
   const of = (what: string) => calls.filter((c) => c.what.startsWith(what));
-  return { state, calls, records, runs, deps, pr, adopt, of, report: () => report };
+  return { state, calls, records, runs, changed, deps, pr, adopt, of, report: () => report };
 }
 
 test("a conflict posts the repo's /rebase first; the head its bot pushes gets ship's own repair, the command isn't posted again", async () => {
@@ -113,4 +115,13 @@ test("a generator whose tool the box lacks holds loudly and points at an actions
   await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
   assert.match(String((w.state.get("a/b", 7) as any).hold.reason), /^toolchain missing: webrpc-gen .*`actions` step/);
   assert.equal(w.of("POST /v1/wakes").length + w.of("POST /v1/tasks").filter((c) => !String(c.body.source).endsWith(":records")).length, 0, "no Engineer: its computer has the same tools");
+});
+
+test("a workflow the PR itself changes (anything under .github/) is never dispatched on its branch", async () => {
+  const w = world({ preset: "cautious", actions: { before_merge: [{ workflow: "regen.yml" }] } });
+  w.changed.push({ filename: ".github/workflows/regen.yml" });
+  await w.adopt();
+  await round(w.deps, w.pr(), { do: "merge" });
+  assert.equal(w.of("POST /repos/a/b/actions/workflows/regen.yml/dispatches").length, 0);
+  assert.match(String((w.state.get("a/b", 7) as any).hold.reason), /changes files under \.github/);
 });
