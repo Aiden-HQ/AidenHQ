@@ -14,8 +14,9 @@ export type AdoptedOptions = {
   settings(repo: string): ShipSettings | null; paused(): boolean;
   /** The kernel as ship (its module token): throws on a refusal. */
   kernel: { call(method: string, path: string, body?: unknown): Promise<any> };
-  /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY. */
-  decision(repo: string, number: number, head: string): Promise<Decision & { failing?: string[]; dirty?: boolean }>;
+  /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
+   * whether the branch merges through a merge queue, and the required checks red on the PR's latest merge_group run. */
+  decision(repo: string, number: number, head: string): Promise<Decision & { failing?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[] }>;
   /** The report comment and code review's ask (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"] };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -90,11 +91,12 @@ export function adoptedPass(o: AdoptedOptions) {
         if (w?.status === "cancelled") { handBack(o.state, repo, pr.number, "its task was cancelled"); return; }
       }
       a = o.state.get(repo, pr.number) as Kept;
-      if (a.hold || o.paused()) { await retryReport(rounds, view, a); return; }
+      if (a.hold || o.paused()) { await retryReport(rounds, a, view); return; }
       const v = await o.decision(repo, pr.number, view.head);
-      // Red on the base too: the same required check names red on the default branch's head.
+      // Red on the base too: the same required check names (on the head or the merge_group run) red on the default branch's head.
       const onBase = new Set(namedChecks(main.rollup).filter((c) => !c.ok && !c.pending).map((c) => c.name));
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), failing: v.failing ?? [], onBase: (v.failing ?? []).filter((n) => onBase.has(n)) });
+      const red = [...new Set([...(v.failing ?? []), ...(v.groupFailing ?? [])])];
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), queue: !!v.queue, failing: v.failing ?? [], groupFailing: v.groupFailing ?? [], onBase: red.filter((n) => onBase.has(n)) });
     },
     /** The adoptions of `repo` (not the fleet's) whose PR left the open list: a merged one closes its hand-off's task once. */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {

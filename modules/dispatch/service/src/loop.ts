@@ -87,16 +87,22 @@ const TRIES_AGAIN = new Set(["no-grants", "not-your-agent", "bad-profile", "task
 const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || e.status === 409) && TRIES_AGAIN.has(e.body?.type ?? "");
 
 /**
- * A refusal that says the wake is stale: its task has another or no assignee, or it is gone (a 404 that isn't a missing job).
- * Nobody needs to act (the new assignee has its own wake), so such a wake is dropped with a log line and no notice.
- * `task-closed` on the owner's own comment is not one: nobody acted on the owner's word, so that refusal is said to the owner
- * (see the tick below). Any other wake on a closed task (an agent's comment that came in before the close, a timed wait that
- * came due after it, a status move) has nothing left to do, and is stale (`closedQuiet`).
+ * A refusal that says the wake is stale: its task has another or no assignee, it is closed, or it is gone (a 404 that isn't a
+ * missing job). Nobody needs to act — the new assignee has its own wake, and a closed task takes no work by design — so such a
+ * wake is dropped with a log line and no notice.
+ *
+ * `task-closed` belongs here without asking whose word woke it. The platform records no sound link between a comment and the
+ * close it might have caused: the board closes a task with a PATCH and comments with a separate POST, and the close fact's actor
+ * is the last non-unknown event in a debounce window, not provably the closer. Any "his comment caused the close" test is then a
+ * guess with a silent loss behind it (a crew cascade, a grader's settle or the kernel's own close leaves no agent comment, so the
+ * owner's unanswered request would vanish), so this follows the owner's rule for #1676 instead: a refusal for an already-closed
+ * task is bookkeeping, not a page. `#1611`'s page is retired with it; a finished chat reopens on his comment through the kernel
+ * (wakes.ts), so his word still reaches a run.
  */
-const STALE = new Set(["task-not-assigned"]);
+const STALE = new Set(["task-not-assigned", "task-closed"]);
 // A stale-looking refusal may be a reassignment still landing: tried this many times, then dropped.
 const STALE_TRIES = 3;
-const stale = (e: KernelError, closedQuiet = false) => STALE.has(e.body?.type ?? "") || (e.status === 404 && e.body?.type !== "no-job") || closedQuiet;
+const stale = (e: KernelError) => STALE.has(e.body?.type ?? "") || (e.status === 404 && e.body?.type !== "no-job");
 
 /** The kernel's refusal type and words, kept in the sentence so a reader sees what stopped it, not `idle · orphaned`. */
 const refusalWords = (e: KernelError) => {
@@ -111,7 +117,6 @@ const refusalWords = (e: KernelError) => {
 const aftermath = (type: string) =>
   type === "job-running" ? "Another run already answers this task, so this wake was not started and was dropped."
   : type === "wake-not-claimed" ? "This wake was no longer held by the dispatcher that claimed it, so no run was started for it."
-  : type === "task-closed" ? "The task is closed, so nothing was started for it; its message stays on the task."
   : "Nothing is running on it, and this wake was dropped rather than retried.";
 /** The notice the refused wake leaves on its task (kernel.note): the kernel's refusal and what became of the wake. */
 const refusalNotice = (e: KernelError) => {
@@ -265,10 +270,11 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         }
         const task0 = await kernel.task(v.task);
         const o = outcome({ ...v, stopped });
-        // A closed task takes no notice (a stop, a failure): a comment on a finished task would reopen it. A reply it posted under
-        // its run is left as it is; only the batch summary below is still said, and that wakes the parent, never the child.
+        // A closed task takes no outcome at all: no notice and no reply. A reply posted on a finished task would reopen it (or be
+        // refused, and paging him about a task he already closed is #1676). The kernel refuses it at the write anyway, and dispatch
+        // swallows that refusal below. Only the batch summary is still said, and that wakes the parent, never the child.
         const closed = CLOSED.has(String(task0.status));
-        if (o && !(closed && o.kind === "notice")) await kernel.post(v.id, o);
+        if (o && !closed) await kernel.post(v.id, o);
         const task = task0;
         if (closed) await batch(task, v);
         else await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
@@ -284,6 +290,19 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           const holder = /isn't assigned to this agent/.test(e.body?.message ?? "") ? (await kernel.task(v.task).catch(() => undefined))?.assigneeAgentId : undefined;
           if (holder && holder !== v.agent) {
             log("job's outcome dropped: its task moved to another agent", { job: v.id, task: v.task });
+            await kernel.ack(v.id).then(() => q("DELETE FROM stopped WHERE job = ?").run(v.id), () => {});
+            continue;
+          }
+          // The task closed under the run (the owner's close, or cancelled): its refusal is expected news he acted on, so it is
+          // acknowledged and logged quietly. Only a refusal for a task that is genuinely open is paged to him.
+          const shutAt = await kernel.task(v.task).catch(() => undefined);
+          const shut = e.body?.type === "task-closed" || CLOSED.has(String(shutAt?.status ?? ""));
+          if (shut) {
+            log("job's outcome dropped: its task is closed", { job: v.id, task: v.task });
+            // A closed child still owes its parent the batch summary, as it does when its close is seen before the post: the
+            // parent must hear the batch whichever way dispatch learns of it. A failed summary is logged, never thrown: it would
+            // abort this tick's remaining jobs and wakes, and the child's own end still has to be acknowledged.
+            if (shutAt) await batch(shutAt, v).catch((err: Error) => log("batch summary failed on a closed child", { job: v.id, task: v.task, err: err.message }));
             await kernel.ack(v.id).then(() => q("DELETE FROM stopped WHERE job = ?").run(v.id), () => {});
             continue;
           }
@@ -410,22 +429,6 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     log("job started", { job: r.job.id, task: task.identifier, wake: w.key, cause: w.cause });
   }
 
-  /**
-   * Whether a wake is the owner's own comment, as the thread reads speakers (thread.ts `speaker`: a Board correction is the
-   * owner's; an agent's is not) less anything the kernel or a module posted with his key. A comment the read doesn't find counts as the owner's, so the refusal is
-   * said rather than lost.
-   */
-  async function ownersComment(w: Wake): Promise<boolean> {
-    if (!w.key.startsWith("comment:")) return false;
-    const id = w.key.slice("comment:".length);
-    const [task, all, dir] = await Promise.all([kernel.task(w.task), kernel.comments(w.task), kernel.directory()]).catch(() => [undefined, [], {}] as const);
-    const c = all.find((x) => x.id === id);
-    if (!task || !c) return true;
-    // Posted with the owner's key but not said by him: a kernel notice, a grader's verdict (any `<!-- aidenhq` tag but a correction).
-    const body = String(c.body ?? "");
-    return speaker(c, task, dir) === "owner" && (!body.includes("<!-- aidenhq") || body.includes("<!-- aidenhq-correction"));
-  }
-
   /** The owner's fallback for a wake nobody else hears (false when it didn't land: the wake must stay for its lease). */
   async function tellOwner(w: Wake, e: KernelError): Promise<boolean> {
     // The owner's notice names its task by identifier (WOR-123): the kernel refuses a Paperclip id there.
@@ -459,22 +462,19 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         // `idle · orphaned`.
         await handle(w, tick).then(() => refusals.delete(w.key)).catch(async (e: Error) => {
           if (!permanent(e)) return log("wake failed", { wake: w.key, err: e.message });
-          const closedQuiet = e.body?.type === "task-closed" && !(await ownersComment(w));
           // Kept until the drop is confirmed: a wake that comes back on its lease neither restarts the tries nor says its piece twice.
           const had = refusals.get(w.key) ?? { tries: 0, noticed: false, next: 0 };
-          const next = { tries: had.tries + 1, noticed: had.noticed, next: clears(e) && !stale(e, closedQuiet) ? now() + retryIn(had.tries + 1) : 0 };
+          const next = { tries: had.tries + 1, noticed: had.noticed, next: clears(e) && !stale(e) ? now() + retryIn(had.tries + 1) : 0 };
           refusals.set(w.key, next);
           const dropped = () => kernel.drop(w.key, e.message).then(() => true, (err: Error) => (log("wake refused: its drop failed, kept for its lease", { wake: w.key, task: w.task, err: err.message }), false));
           const gone = async () => (await dropped()) && (refusals.delete(w.key), log("wake dropped: the kernel refused it", { wake: w.key, task: w.task, err: e.message.slice(0, 200) }), true);
-          if (clears(e) && (!stale(e, closedQuiet) || next.tries < STALE_TRIES)) return log("wake refused: retried later", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, retry_in_s: retryIn(next.tries) / 1000, err: e.message.slice(0, 200) });
-          if (stale(e, closedQuiet)) return void (await gone(), log("wake stale: dropped without a notice", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status }));
+          if (clears(e) && (!stale(e) || next.tries < STALE_TRIES)) return log("wake refused: retried later", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, tries: next.tries, retry_in_s: retryIn(next.tries) / 1000, err: e.message.slice(0, 200) });
+          if (stale(e)) return void (await gone(), log("wake stale: dropped without a notice", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status }));
           // The word goes out before the row — every dropped wake, including one another run answers or that left this dispatcher's
           // hands (the notice says which). The task's notice first, else the owner's. Neither landed: keep the row for its lease.
           // One that already said its piece (an earlier drop that failed) says nothing more and only retries the drop.
           if (!next.noticed) {
-            // A closed task takes no notice (one on it would reopen it, and a finished task is never written to), so its owner
-            // hears the refusal directly; any other refusal goes on the task first.
-            const told = e.body?.type === "task-closed" ? await tellOwner(w, e) : await sayRefusal(w, e);
+            const told = await sayRefusal(w, e);
             if (!told) return log("wake refused: neither its notice nor the owner's landed, kept for its lease", { wake: w.key, task: w.task, refusal: e.body?.type ?? e.status, err: e.message.slice(0, 200) });
             next.noticed = true;
           }

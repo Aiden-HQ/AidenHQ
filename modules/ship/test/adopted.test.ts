@@ -117,3 +117,34 @@ test("a report that failed to post is posted again on the next pass", async () =
   assert.equal(state.get("acme/app", 10).reportStale, undefined);
   assert.equal(state.get("acme/app", 10).report, 7);
 });
+
+test("on a merge queue branch the pass fills queue and groupFailing: a ready PR is enqueued, a removal red on the base too is enqueued again", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const H = "a".repeat(40);
+  state.put({ repo: "acme/app", number: 9, generation: 1, trigger: { kind: "label", event: "e9", actor: "maria", at: "2026-11-24T09:00:00Z", head: H }, task: "T9", hold: null });
+  const calls = [];
+  let n = 0;
+  const kernel = { call: async (method, path, body) => {
+    calls.push({ method, path, body });
+    if (path.startsWith("/v1/work")) return { status: "in_progress", records: [] };
+    if (path === "/v1/writes") return { id: `q${++n}`, state: "claimed" };
+    if (path.startsWith("/v1/writes/")) return { state: "done", outcome: { text: "queued" } };
+    return {};
+  } };
+  let decision = { do: "enqueue", why: "ready", failing: [], dirty: false, queue: true, groupFailing: [] };
+  const pass = adoptedPass({
+    gh: async () => ({ status: 200, body: {} }), state, kernel, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => decision, effects: { comment: async () => 1, askReview: async () => {} },
+  });
+  const pr = { number: 9, url: "https://github.com/acme/app/pull/9", headRefOid: H, baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } };
+  const main = { name: "main", rollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "x", status: "COMPLETED", conclusion: "FAILURE" }] } } };
+  const enqueues = () => calls.filter((c) => c.path === "/v1/writes" && c.body.kind === "github.enqueue").map((c) => c.body.args);
+
+  await pass.open("acme/app", main, pr);
+  assert.deepEqual(enqueues(), [{ repo: "acme/app", number: 9, head: H, base: "main", generation: 1, attempt: 1 }]);
+  // Removed from the queue with `x` red on its merge_group run and on main too: not the PR's own, so queued once more, no wake.
+  decision = { ...decision, groupFailing: ["x"] };
+  await pass.open("acme/app", main, pr);
+  assert.deepEqual(enqueues().map((a) => a.attempt), [1, 2]);
+  assert.equal(calls.some((c) => c.path === "/v1/wakes"), false);
+});

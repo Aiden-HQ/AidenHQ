@@ -17,7 +17,7 @@ import { DESIGN_REVIEW_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { PR_QUERY, decide, mergeMethod, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
+import { PR_QUERY, decide, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
@@ -71,6 +71,11 @@ export function createMerges(d: {
   identifierOf?: (record: string) => Promise<string | undefined>;
   /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
   taskStatus?: (task: string) => Promise<string | null | undefined>;
+  /**
+   * The status of the task a merge is for (GET /v1/work?task=). A cancelled task's approved merge never lands: cancellation leaves
+   * its PR for a successor, so sending the merge would destroy the handoff. Undefined: the read failed, which holds the merge.
+   */
+  statusOf?: (task: string) => Promise<string | undefined>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
   /** Tells the kernel why a claimed record is still running (POST /v1/writes/:id/wait), so its task hears the reason. */
@@ -183,12 +188,26 @@ export function createMerges(d: {
    * undefined when classic protection can't be read (403: the sign-in isn't a repo admin): every check on the head is then judged.
    */
   async function requiredOf(repo: string, branch: string) {
+    return (await rulesOf(repo, branch)).required;
+  }
+  /** The branch's required checks (undefined: classic protection unreadable) and whether it merges through a merge queue. */
+  async function rulesOf(repo: string, branch: string) {
     const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
     if (rules.status >= 300) throw new Error(`GitHub GET rules: ${rules.status}`);
+    const queue = mergePath(rules.body) === "queue";
     const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
-    if (classic.status === 403) return undefined;
+    if (classic.status === 403) return { required: undefined, queue };
     if (classic.status >= 300 && classic.status !== 404) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
-    return requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body);
+    return { required: requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
+  }
+  /** The required checks red on the PR's latest merge_group run (GitHub's `gh-readonly-queue/<base>/pr-<n>-…` branch). */
+  async function groupFailing(repo: string, number: number, base: string, required: string[]) {
+    const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);
+    if (r.status >= 300) throw new Error(`GitHub GET merge_group runs: ${r.status}`);
+    const run = (r.body?.workflow_runs ?? []).find((x: any) => String(x.head_branch ?? "").startsWith(`gh-readonly-queue/${base}/pr-${number}-`));
+    if (!run) return [];
+    const checks = await allChecks(repo, String(run.head_sha));
+    return [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
   }
   /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts but the
    * advisory design review; with none of those reported yet (the design review alone included) the caller waits. */
@@ -343,6 +362,21 @@ export function createMerges(d: {
         const status = await d.taskStatus(q.task);
         // Only a cancelled task: a merge in flight may finish after its task is done (ship files none on a done task).
         if (status === "cancelled") return fail("its task is cancelled: not merged");
+      }
+      // Cancellation is not authority to land work either: the PR is left for a successor (ship's loop, keepForSuccessor), and a
+      // merge this queue was approved for before the cancellation would take that handoff from it. A read that fails holds the
+      // merge (waiting is never failing): only an answer that the task is live lets it go.
+      if (q.task && d.statusOf) {
+        const status = await d.statusOf(q.task).catch((e: Error) => {
+          log("merge queue: task status not read (retrying)", { pr: p.url, task: q.task, err: says(e).slice(0, 300) });
+          return undefined;
+        });
+        if (status === undefined) return wait("task-status");
+        if (status === "cancelled") return fail(`${q.task}, the task this merge was for, is cancelled: its PR is left open for a successor task, and this merge does not land`);
+        // The PR itself may have changed owners since the card was filed (a done task handed it to a successor): pr-tasks.json's
+        // current row is the authority, and a row naming another task ends this card rather than merging the successor's PR.
+        const now = d.taskOf?.(p.repo, p.number);
+        if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
       // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy). It joins the attempts
@@ -600,18 +634,19 @@ export function createMerges(d: {
   return {
     /**
      * Ship's round decision for an adopted PR at `head` (its watch loop asks through /internal/ship/decision): decide with ship's
-     * context, as an adoption's merge is judged here, and the required checks red on the head. No approval or queue yet (D2, D3).
+     * context, as an adoption's merge is judged here, and the required checks red on the head. On a merge queue branch (mergePath)
+     * a ready PR is `enqueue`, with the required checks red on its latest merge_group run (a removal's cause). No approval yet (D2).
      */
     async decision(repo: string, number: number, head: string) {
       const data = await readPr(repo, number);
       const g = await d.reviewGate(repo, number, head);
       const checks = await allChecks(repo, head);
-      const rules = await requiredOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
+      const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
-      if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false };
-      const v = decide(data, head, { queue: false, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
+      if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
+      const v = decide(data, head, { queue, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
-      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY" };
+      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number, byShip?: boolean): Promise<Outcome> {

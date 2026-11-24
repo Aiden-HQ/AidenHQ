@@ -667,21 +667,56 @@ test("a permanent refusal on the task work read settles the queue instead of ret
   assert.match(outcomes[0].text, /^merged-prs: \[\]/, "no binding, so the PR is not evidence");
 });
 
-test("a task-work read failure never holds a PR the queue merged itself", async (t) => {
-  // The queue merges at the bound head, so its own merge needs no external attribution: an unavailable task read must not stop
-  // the outcome from being delivered.
+test("a task-read failure holds the merge instead of landing it, and it lands once the read answers", async (t) => {
+  // The queue checks the task is still live right before it sends the merge, so a cancelled task's approved merge never lands
+  // (its PR is left for a successor). A read that fails cannot tell live from cancelled: the merge waits, and never guesses.
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  let reads = 0;
+  let reads = 0, down = true;
   const { handle, outcomes, merge, settle } = await setup(t, {
     prs,
-    kernelReply: (m, url) => (m === "GET" && /^\/v1\/work\?task=/.test(url) ? (reads++, { __status: 503 }) : undefined),
+    kernelReply: (m, url) => (m === "GET" && /^\/v1\/work\?task=/.test(url) ? (reads++, down ? { __status: 503 } : { status: "in_progress", records: [] }) : undefined),
   });
   await merge("k-00000000000000dc", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
   await handle.stepMerges();
+  assert.equal(reads, 1, "the status is read before the merge is sent");
+  assert.equal(outcomes.length, 0, "an unreadable task holds the merge rather than landing it");
+  assert.equal(prs["acme-agents/widget"].state, undefined, "nothing was sent");
+  down = false;
+  await handle.stepMerges();
   await settle();
-  assert.equal(reads, 0, "a merge of its own is not read for a binding");
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
   assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")).map((p) => [p.head, typeof p.sha]), [[HEAD, "string"]]);
+});
+
+test("a cancelled task's approved merge never lands: the PR is left for its successor", async (t) => {
+  // An approval can be waiting when its task is cancelled and a successor is assigned. The PR watch never closes that PR, and the
+  // queue must not merge it either: landing it would take the handoff from the successor.
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs,
+    kernelReply: (m, url) => (m === "GET" && /^\/v1\/work\?task=/.test(url) ? { status: "cancelled", records: [] } : undefined),
+  });
+  await merge("k-00000000000000de", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(prs["acme-agents/widget"].state, undefined, "no merge was sent");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /cancelled/);
+});
+
+test("a merge card for a PR that changed owners does not merge the successor's PR", async (t) => {
+  // A done task's PR is handed to a successor, which records itself in pr-tasks.json. A merge approved for the earlier owner must
+  // not land on the successor's PR: its card was read against the earlier owner's work, and merging would finish it for them.
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-owner-moved-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-11", branch: "agent/WOR-9/feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
+  await merge("k-00000000000000df", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(prs["acme-agents/widget"].state, undefined, "no merge was sent");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /now belongs to WOR-11, not WOR-9: this merge was approved for the earlier owner/);
 });
 
 test("a PR the merge commit's message already credits is not also read from the kernel", async (t) => {
