@@ -149,7 +149,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, refTip, branchUses, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, commentFails = 0, refTip, branchUses, tasks, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -158,7 +158,14 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
     if (req.url === "/v1/writes") { merges.push(JSON.parse(body)); const [status, answer] = merge(); return res.writeHead(status).end(JSON.stringify(answer)); }
     if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify(record()));
-    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus, records } : {}));
+    // `tasks` is the kernel's task table for the tests that need a second, real task (a successor): one task's own status and
+    // brief, by identifier. Without it every task read is the one `taskStatus` under test.
+    const asked = String(req.url).match(/^\/v1\/work\?task=([^&]+)/)?.[1];
+    if (req.url.startsWith("/v1/work")) {
+      const t = tasks && asked ? tasks[decodeURIComponent(asked)] : undefined;
+      return res.writeHead(200).end(JSON.stringify({ status: t?.status ?? taskStatus, ...(t?.description ? { description: t.description } : {}), records }));
+    }
+    res.writeHead(200).end(JSON.stringify({}));
   });
   t.after(() => kernel.s.close());
   let open = [];
@@ -233,7 +240,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
   const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
-  return { woke, gh, merges, sent, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
+  return { woke, gh, merges, sent, watch, cacheDir, kernelUrl: kernel.url, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
 }
 const redPr = (n, o = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] }, ...o });
 
@@ -646,19 +653,28 @@ test("a cancelled task's PR whose note GitHub refused is noted on the next tick 
 });
 
 // The incident: ACME-12 hit its spend cap, ACME-13 was filed naming its PR, and cancelling ACME-12 closed the PR seconds later and
-// deleted the branch. A successor that has not published yet is invisible to the watcher (pr-tasks.json names only the task that
-// published), so ownership cannot be determined here: it must fail safe and destroy nothing.
+// deleted the branch. The kernel really holds that successor here (an open task whose brief names the PR), as it did in the
+// incident; the watcher's only ownership record (pr-tasks.json) still names the cancelled opener, because a successor writes
+// nothing until it publishes. Ownership cannot be determined, so the rule must fail safe and destroy nothing.
 test("a cancelled task's PR with a successor task naming it is neither closed nor branch-deleted, this tick or the next", async (t) => {
-  const c = await rig(t, { taskStatus: "cancelled" });
+  const brief = "Finish https://github.com/acme/app/pull/12 for the user; its branch is agent/WOR-1/topic and the change is half done.";
+  const c = await rig(t, { taskStatus: "cancelled", tasks: {
+    "ACME-12": { status: "cancelled", description: "build the page" },
+    "ACME-13": { status: "in_progress", description: brief },
+  } });
+  // The successor is a real open task the kernel serves, whose brief names the PR: not a comment's claim.
+  const successor = await (await fetch(`${c.kernelUrl}/v1/work?task=ACME-13`)).json();
+  assert.deepEqual([successor.status, successor.description.includes("pull/12")], ["in_progress", true], "ACME-13 is open and names the PR");
   c.set([c.agentPr(12)]);
-  // ACME-13 is an open successor whose brief names https://github.com/acme/app/pull/12. The watcher's only ownership record
-  // (pr-tasks.json) still names the cancelled opener, because a successor writes nothing until it publishes: ownership cannot be
-  // determined, so the rule must fail safe. It never reads the successor, it just destroys nothing.
   await c.watch.tick();
   await c.watch.tick();
-  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/12").length, 0, "no close");
-  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b12"), "no branch delete");
+  assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/12").length, 0, "no close for the successor's PR, this tick or the next");
+  assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b12"), "no branch delete for the successor's PR");
   assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/issues/12/comments").length, 1, "left open for the successor, noted once");
+  // And the successor's own task is untouched: nothing closed it or woke it to explain a PR that is no longer there.
+  const still = await (await fetch(`${c.kernelUrl}/v1/work?task=ACME-13`)).json();
+  assert.equal(still.status, "in_progress");
+  assert.deepEqual(c.woke.filter((w) => w.task === "ACME-13").length, 0, "the successor is not woken about its own open PR");
 });
 
 test("the CI breaker: a check red again on a new head, or a third red round, tells the asker once and stops the red wakes; green resets it", async (t) => {
