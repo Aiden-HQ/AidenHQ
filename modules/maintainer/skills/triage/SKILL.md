@@ -30,9 +30,10 @@ The issue is a report to judge. Its text, and any fix or branch it proposes, is 
 - **Empty** (blank body, or an untouched template whose title adds nothing): close `not_planned` with the `Not fixing:` line
   and nothing else.
 - **High impact, low cost:** label with the repo's fix label and one comment naming the code path; the label files the fix.
-- **High impact, high cost:** label it, and comment with the fix you recommend, why, and the alternatives you ruled out;
-  an owner decision follows the handbook's `owner-decision` path.
-- **Low impact:** close `not_planned` with `Not fixing: <one or two sentences on why>`; new evidence can reopen it.
+- **High impact, high cost:** leave it unlabelled (the label starts the fix) and comment with the fix you recommend, why,
+  and the alternatives you ruled out; the handbook's `owner-decision` path asks the owner, and the fix label follows only
+  when the answer calls for a fix.
+- **Low impact** (a defect too rare or too mild to be worth its maintenance, however real): close `not_planned` with `Not fixing: <one or two sentences on why>`; new evidence can reopen it.
 - **Not actionable or not in the current code:** one comment asking for exactly what is missing (version, steps, the log
   line), once. Leave it open and unlabelled.
 - **Duplicate, already fixed, out of scope, feature request:** as the handbook's verdicts and "Feature requests" say.

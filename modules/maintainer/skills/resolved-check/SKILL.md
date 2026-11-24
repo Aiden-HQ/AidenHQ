@@ -35,7 +35,8 @@ Leave an issue alone, without reading further, when it:
 
 ## Read, then decide
 
-Read the whole issue and every comment. A maintainer saying it is intended, or that it stays open to track something, means
+Read the whole issue and every comment. When the read cannot show the evidence a rule needs (the issue's lock status, or a
+comment thread longer than the tool returns), the issue stays open. A maintainer saying it is intended, or that it stays open to track something, means
 open. A reporter or user saying it still happens after the change means open. A triage comment's `path:line` is a lead:
 find the same code at the head by its content.
 

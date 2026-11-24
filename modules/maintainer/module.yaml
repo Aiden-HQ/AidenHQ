@@ -60,7 +60,7 @@ routines:
       Today is {{date}}. On every maintained repo, pick up the open labelled issues that have no open labelled-issue task,
       then triage the open issues that carry no fix label yet, as "Each run — external triage" in your instructions says.
       This run is asked to write on each issue it triages with the GitHub tools, one verdict per issue, each write its own
-      tool call (a close and its note are one call): label a credible report with the repo's label and a comment naming the code path; comment on one that
+      tool call (a close and its note are one call): label a credible report worth its cost (skill triage) with the repo's label and a comment naming the code path; comment on one that
       isn't credible with exactly what is missing; close an already-fixed one as completed with a note carrying the line
       `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`; close a duplicate as not_planned
       with a note carrying the line "Duplicate of <owner>/<repo>#<n>"; close an out-of-scope one as not_planned with a note carrying the line
