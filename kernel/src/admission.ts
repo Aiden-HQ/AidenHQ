@@ -148,7 +148,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     // reads a tasks/<identifier> workspace it doesn't have, and an apply is never a session's.
     const session = (id: string, k: { module: string }) => profile === "session" && CODEHOSTS.includes(k.module) && (id === `${k.module}.merge` || id === `${k.module}.close`);
     // A kind only the owner's own save files (`filer: owner`, a share's publish) is no job's.
-    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && ((k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k) || session(id, k))).map(([id]) => id).sort();
+    const writes = Object.entries(kinds()).filter(([id, k]) => !k.filer && (profile === "session" ? session(id, k) : (k.floor >= 1 && k.tools.length > 0 && k.tools.some(holds)) || engineer(id, k))).map(([id]) => id).sort();
     return {
       profile, image: g.image ?? IMAGE[profile], engine: String(g.engine ?? ""), engines: [...(g.engines ?? [g.engine ?? ""])].filter(Boolean), model: String(routine?.model ?? g.model ?? ""), effort: String(routine?.effort ?? g.effort ?? ""),
       models: [...(g.models ?? [])], skills: (g.skills ?? []).map((k) => ({ ...k })), tools, jobcaps: profile === "check" ? [] : [...(g.jobcaps ?? [])], writes,
@@ -244,8 +244,9 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     }
     launching.delete(id);
     nextTurn.taken(task);
-    // The job is running: its waits and their facts end together, and a failure here never fails the admission.
-    try {
+    // The job is running: its waits and their facts end together, and a failure here never fails the admission. A session's
+    // waits are its own to keep: a job resumed after its box was replaced still waits on them (wakes.ts claim delivers them live).
+    if (job.profile !== "session") try {
       inTx(db, "waits_end", () => { for (const k of wakes.endWaits(b.wake)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } }); });
     } catch (e) {
       log("a started job's waits stay armed", { job: id, task, err: (e as Error).message });

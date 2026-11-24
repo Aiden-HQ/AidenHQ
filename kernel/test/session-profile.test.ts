@@ -25,11 +25,12 @@ process.env.PATH = `${BIN}:${process.env.PATH}`;
 
 const GRANTS = () => ({
   "ag-crew": { key: "acme-crew", roles: ["session"], tools: {}, max_parallel: 4 },
-  "ag-session": { key: "session", profile: "session", roles: ["session"], tools: {}, max_parallel: 1 },
+  "ag-session": { key: "session", profile: "session", roles: ["session"], tools: { slack: ["post"] }, max_parallel: 1 },
 });
 const KINDS = {
   "github.merge": { module: "github", floor: 0, tools: [] }, "github.close": { module: "github", floor: 0, tools: [] }, "github.push": { module: "github", floor: 0, tools: [] },
   "github.pr": { module: "github", floor: 0, tools: [] }, "github.create_repo": { module: "github", floor: 0, tools: [] }, "kernel.apply": { module: "kernel", floor: 1, tools: [] },
+  "slack.post": { module: "slack", floor: 1, tools: ["slack.post"] },
 };
 
 /** Admission on an in-memory kernel: tasks t-crew-N to the crew agent, t-session-N to the session agent; one computer. */
@@ -82,12 +83,17 @@ test("sessions don't take computer slots: max_parallel bounds them", async () =>
   await assert.rejects(k.admit("t-crew-2"), (e) => e.status === 429 && e.code === "busy");
 });
 
-test("session authority: the code host's merge and close, the session role only on a session profile", async () => {
+test("session authority: the code host's merge and close, the session role only on a session profile; its waits outlive a resume", async () => {
   const k = admitting({ capacity: 4 });
+  // Each task's own wait, armed before this job (a session's, before its box was replaced).
+  for (const task of ["t-session-1", "t-crew-1"]) k.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state, until) VALUES (?, ?, 'a', 'wait: x', ?, 'open', ?)").run(`wait:${task}:9`, task, Date.now() + 3600_000, Date.now() + 3600_000);
   const s = (await k.admit("t-session-1")).authority;
   assert.deepEqual([s.profile, s.image, s.writes, s.roles], ["session", "session", ["github.close", "github.merge"], ["session"]]);
   const c = (await k.admit("t-crew-1")).authority;
   assert.deepEqual([c.writes, c.roles], [[], []], "a crew agent listing the role holds nothing of it");
+  // A slack.post a session's tool would reach is no write its authority names (only merge and close are).
+  const waits = Object.fromEntries(k.db.prepare("SELECT task, state FROM wakes WHERE key LIKE 'wait:%'").all().map((w) => [w.task, w.state]));
+  assert.deepEqual(waits, { "t-session-1": "open", "t-crew-1": "dropped" });
 });
 
 test("a session's merge runs at once on a head the plan raises; an Engineer's goes to review", async () => {
@@ -97,24 +103,26 @@ test("a session's merge runs at once on a head the plan raises; an Engineer's go
     plan: async ({ args }) => ({ args, targets: { head: "abc1234" }, raise: { tier: 1, rule: "maintained-merge-foreign-head", reason: "a head the runner didn't push" } }),
     execute: async (r) => (executed.push(r.args), { ok: true, text: "merged" }),
   };
-  const opts = { records, registry: () => KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), executors: () => ({ github }), onTask: { open: async () => true, notify: async () => {} } };
+  const opts = { records, registry: () => KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), executors: () => ({ github, slack: github }), onTask: { open: async () => true, notify: async () => {} } };
   const writes = createWrites(opts);
   const job = (roles, task) => ({ kind: "run", agent: "ag", key: "k", name: "k", roles, tools: {}, writes: ["github.merge"], task, job: `j-${task}`, workspace: task.toUpperCase(), credential: "" });
   const merge = { kind: "github.merge", args: { prs: [{ repo: "acme/widgets", number: 2, head: "abc1234" }] } };
   const s = await writes.request(job(["session"], "t-1"), merge);
   assert.deepEqual([s.tier, s.state, s.rule], [0, "claimed", "session"]);
   assert.equal(executed.length, 1);
+  // Only the kinds its authority names: a kind its tools would reach is no session's to file.
+  await assert.rejects(writes.request({ ...job(["session"], "t-1"), tools: { slack: ["post"] } }, { kind: "slack.post", args: {} }), (e) => e.status === 403);
   const e = await writes.request(job([], "t-2"), merge);
   assert.deepEqual([e.tier, e.state], [1, "review"]);
-  // The owner's no on that head (a card he got with autonomy off) binds a session on the task too, even filed again as other
-  // content (a new digest).
+  // The owner's no on that head (a card he got with autonomy off) binds a session on the task too, even in a batch with another
+  // PR (other content, a new digest).
   // His later yes to another head on the task leaves that no standing.
   const off = createWrites({ ...opts, autonomy: () => "off" });
   const card = await off.request(job([], "t-2"), merge);
   assert.notEqual(typeof records.decide(card.id, card.digest, "reject", "account:o1", "board"), "string");
   const other = await off.request(job([], "t-2"), { kind: "github.merge", args: { prs: [{ repo: "acme/widgets", number: 3, head: "def5678" }] } });
   assert.notEqual(typeof records.decide(other.id, other.digest, "approve", "account:o1", "board"), "string");
-  const again = await writes.request(job(["session"], "t-2"), { kind: "github.merge", args: { ...merge.args, method: "squash" } });
+  const again = await writes.request(job(["session"], "t-2"), { kind: "github.merge", args: { prs: [...merge.args.prs, { repo: "acme/widgets", number: 4, head: "0a0b0c0" }] } });
   assert.deepEqual([again.tier, again.state], [2, "owner"]);
 });
 

@@ -1379,6 +1379,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   }
   // engines: the engines a kernel job may ask its next turn to run on (`aidenhq engine`); absent, only its own.
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.engines != null && (!Array.isArray(a.engines) || a.engines.some((k: string) => !engines[k]))) fail(`agent ${key}: engines is a list of enabled engine kinds (${Object.keys(engines).sort().join(", ") || "none"})`);
+  // A session's job lives on and hears its wakes as live input: every engine it may run on takes live input.
+  for (const [key, a] of Object.entries<Obj>(paperclip.agents)) if (a.profile === "session") for (const k of [a.engine, ...(a.engines ?? [])]) if (!engines[k].live_input) fail(`agent ${key}: a session's engine takes live input, and ${k} doesn't`);
   // The model gateway's CI review and spend limits (config/gateway.json, re-read per call; prices come from OpenRouter itself):
   // the install's day and month on every model call, and one cap per task.
   for (const k of ["spend_day_usd", "spend_month_usd", "task_usd"]) if (!(typeof settings[k] === "number" && settings[k] > 0 && settings[k] <= 100_000)) fail(`settings.${k}: USD, above 0`);

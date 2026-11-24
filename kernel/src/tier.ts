@@ -88,6 +88,16 @@ export function priorDecisions(records: Prior[], action: string, key?: string) {
   return { ownerVeto: mine.filter(byOwner).at(-1)?.state === "rejected" || ownerNo };
 }
 
+/**
+ * A merge's heads the owner said no to: for each head the request names, his latest decision on a merge that named it was a
+ * rejection. Per head, so a batch that adds another PR (other content, another digest) never discards his no on one.
+ */
+export function headVeto(records: Prior[], heads: string[]): string | undefined {
+  const lower = (h: unknown) => String(h ?? "").toLowerCase();
+  const mine = (records ?? []).filter((r) => byOwner(r) && ["approved", "used", "expired", "rejected"].includes(r.state) && carried(r).includes("merge")).sort((a, b) => String(a.decidedAt ?? "").localeCompare(String(b.decidedAt ?? "")));
+  return heads.map(lower).find((h) => h && mine.filter((r) => (r.args?.prs ?? []).some((p: { head?: unknown }) => lower(p?.head) === h)).at(-1)?.state === "rejected");
+}
+
 /** What earlier decisions do to a request: the owner's veto (his card). Only the owner's no binds; a reviewer's reject never does. */
 export function priorPart(p: ReturnType<typeof priorDecisions> | undefined): Part | undefined {
   if (!p) return undefined;

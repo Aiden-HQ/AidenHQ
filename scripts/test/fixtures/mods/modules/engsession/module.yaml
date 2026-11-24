@@ -1,0 +1,4 @@
+name: engsession
+description: a session agent on an engine kind that takes no live input
+agents:
+  sess: { profile: session, engine: codex-openrouter }

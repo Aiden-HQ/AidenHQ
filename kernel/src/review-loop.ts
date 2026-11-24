@@ -10,7 +10,7 @@
 // owner's veto on the task goes to him (tier.ts priorDecisions).
 import type { Rec, Records, State } from "./records.ts";
 import type { Reviews } from "./reviews.ts";
-import { MALICE, priorDecisions, priorPart, requestKey, type Prior, type Verdict } from "./tier.ts";
+import { MALICE, T, headVeto, priorDecisions, priorPart, requestKey, type Prior, type Verdict } from "./tier.ts";
 import { CHIEF } from "./escalate.ts";
 import { MARKER, fenced, type Writes } from "./writes.ts";
 import { instanceDetails, type ToolCall } from "../sdk/src/reviewer.ts";
@@ -203,7 +203,11 @@ export function codeRefusal(r: Pick<Rec, "kind" | "args" | "card" | "context">):
 /** The owner's veto on a request (his no on this action on its task, or on this same content: the PR heads a merge names), or undefined. */
 export const ownerVeto = (records: Records, r: Pick<Rec, "kind" | "args" | "task" | "digest"> & { id?: string }) => {
   const action = actionOf(r.kind);
-  return priorPart(priorDecisions(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), action, requestKey(action, { ...(r.args && typeof r.args === "object" ? r.args : {}), digest: r.digest })));
+  const prior = records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior);
+  const args = (r.args && typeof r.args === "object" ? r.args : {}) as { prs?: { head?: unknown }[] };
+  const head = action === "merge" ? headVeto(prior, (args.prs ?? []).map((p) => String(p?.head ?? ""))) : undefined;
+  if (head) return T(2, "owner-veto", `the owner rejected merging \`${head.slice(0, 12)}\` on this task, and only their own yes lifts it`);
+  return priorPart(priorDecisions(prior, action, requestKey(action, { ...args, digest: r.digest })));
 };
 
 export async function reviewInput(r: Rec, { records, task }: { records: Records; task: TaskApi }): Promise<{ verdict?: Verdict; request: Record<string, unknown> }> {

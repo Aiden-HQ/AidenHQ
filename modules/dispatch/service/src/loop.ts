@@ -66,6 +66,8 @@ const liveNotice = (cause: string) => {
   return RESUME[cause] ?? (waited !== undefined ? `Your wait is up: ${waited || "the time you set"}` : undefined) ?? /^scheduled: (.+)$/s.exec(cause)?.[1]
     ?? (cause === "idle" ? "This task has been idle: carry on, or finish it" : `Woken: ${cause}`);
 };
+/** A session's run its machinery ended (a signal: its box replaced; lost; a machinery stop): never counted against its retries. */
+const interrupted = (j: JobView) => j.profile === "session" && (j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || machineryStop(j));
 export const machineryStop = (j: { state: string; stoppedBy?: string | null }) => j.state === "cancelled" && j.stoppedBy === null;
 export const unfinished = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean; stoppedBy?: string | null }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || silent(j) || machineryStop(j);
 
@@ -228,7 +230,6 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
 
   /** Each ended job's outcome, once: its reply (none for NO_REPLY), or how it stopped; a run whose task was closed is stopped. */
   async function follow() {
-    let dir: Directory | undefined;
     for (const v of await kernel.open()) {
       const wait = backoff.get(v.id);
       if (wait && now() < wait.next) continue;
@@ -242,7 +243,7 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           // reply would be refused, so it is stopped rather than left to run out its time.
           if (cur.assigneeAgentId && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log("task moved while running: run stopped", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
           // A session waits for days with no steps by design: never judged on progress.
-          if ((dir ??= await kernel.directory())[v.agent]?.profile === "session") continue;
+          if (v.profile === "session") continue;
           // A run that stops making progress is stopped here (progress.ts); the kernel keeps only the hard deadline.
           const judge = judges.get(v.id) ?? judges.set(v.id, progressTracker()).get(v.id)!;
           judge.add(v.progress?.steps);
@@ -260,11 +261,13 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         if (unfinished(v)) {
           const runs = await kernel.jobsOf(v.task);
           let tries = 0, ran = 0;
-          for (const j of runs) { if (!unfinished(j)) break; tries++; if (!neverStarted(j)) ran++; }
+          for (const j of runs) { if (!unfinished(j)) break; tries++; if (!neverStarted(j) && !interrupted(j)) ran++; }
           // A run that ran is retried only on a task still in its agent's hands (todo or in progress, an agent assigned): one it
           // left blocked or handed back to the owner waits on them, not on a retry.
           const t = await kernel.task(v.task);
           const open = neverStarted(v) ? !CLOSED.has(String(t.status)) && Boolean(t.assigneeAgentId) : ["todo", "in_progress", "in_review"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
+          // A session is resumed for as long as its task is open when the machinery ended it (its box replaced again and again
+          // by applies and image updates): those runs never count (interrupted); one that exits on its own does.
           if (open && (neverStarted(v) || ran < MAX_RAN_TRIES)) {
             // The agent whose run stopped, named: a task reassigned before this tick must not hand the retry to its new agent. A
             // refusal (400) leaves the run to report its outcome below, as any other un-retried run.

@@ -71,6 +71,8 @@ test("a session task's cap is per day: calls over yesterday's task_usd are admit
   clock.t += 24 * 3600_000; // the next UTC day; each task's next job
   assert.equal((await r.call({ model: "flat", messages: [] }, "WOR-1", { agentId: "ses", job: "j-WOR-1-2" })).status, 200, "a session's cap starts again");
   assert.equal((await r.call({ model: "flat", messages: [] }, "WOR-2", { agentId: "ag", job: "j-WOR-2-2" })).status, 402, "a crew task's cap is the task's");
+  // Admission reads the same buckets: the crew task's lifetime cap is spent, but a session on it starts by today's.
+  assert.deepEqual([r.gw.exhausted("ag", "WOR-2").map((o) => o.scope), r.gw.exhausted("ses", "WOR-2")], [["task"], []]);
 });
 
 test("concurrent calls share the room: each holds its granted output, so two in flight can't both buy all of it", async (t) => {

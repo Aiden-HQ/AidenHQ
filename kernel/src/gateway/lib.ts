@@ -1189,9 +1189,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * month. Each is told as a refused call's is (once), so a limit a last call crossed is never silent.
    */
   const exhausted = (agentId: string, task: string) => {
-    // Admission doesn't know whether the task is a chat or routine one (its cap by the UTC day): both subjects are read.
+    // Admission doesn't know whether the task is a chat or routine one (its cap by the UTC day): both subjects are read. A
+    // session agent's calls are only ever by the day (identify), so only that subject is.
     const t = now(), who = { agentId, issueId: task };
-    const all = [...limits({ ...who, perpetual: false }, t), ...limits({ ...who, perpetual: true }, t).filter((o) => o.scope === "task")];
+    const all = grants()[agentId]?.profile === "session" ? limits({ ...who, perpetual: true }, t) : [...limits({ ...who, perpetual: false }, t), ...limits({ ...who, perpetual: true }, t).filter((o) => o.scope === "task")];
     const over = all.filter((o) => o.spent >= o.cap);
     // Only a limit its settled spend reached is told (a limit held by calls in flight may settle below it); after the
     // caller's transaction (admission's) is over: the notice's row is a write on the same file.

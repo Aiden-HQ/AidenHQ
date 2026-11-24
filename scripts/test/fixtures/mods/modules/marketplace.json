@@ -65,6 +65,10 @@
       "source": "./engrunner"
     },
     {
+      "name": "engsession",
+      "source": "./engsession"
+    },
+    {
       "name": "ext1",
       "source": "./ext1"
     },

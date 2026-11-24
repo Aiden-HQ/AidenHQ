@@ -25,7 +25,7 @@ export interface ControlPlane {
 type Progress = { said?: string; saidAt?: string; plan?: unknown[]; steps?: unknown[]; stepCount?: number; expired?: boolean };
 export interface JobView {
   id: string; module: string; agent: string; task: string; state: string; pid: number; log: string; dir: string; at: number;
-  jobcaps: string[]; observing: boolean; live_input: boolean; exit: number | null; final: string; session: string | null;
+  jobcaps: string[]; observing: boolean; live_input: boolean; exit: number | null; final: string; session: string | null; /** Its profile, frozen at admission (null: a row from before admission kept one). */ profile: string | null;
   timedOut: boolean; cancelled: boolean; /** The account that stopped it (the board's Stop), when the owner did. */ stoppedBy: string | null; usage: { input: number; cached: number; output: number } | null;
   progress: Progress; version: number;
   /** When the run ended (ms), and whether its dispatcher acknowledged the end (outcome posted, whoever asked told). */
@@ -442,7 +442,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     return {
       id: r.id, module: r.module, agent: r.agent, task: r.task, state: r.state, pid: r.pid, log: r.log, dir: r.dir, at: r.at,
       jobcaps: JSON.parse(r.jobcaps), observing: r.observing === 1, live_input: r.live_input === 1, exit: r.exit ?? null, final: r.final,
-      session: r.session ?? null, timedOut: why.timedOut === true,
+      session: r.session ?? null, profile: r.profile ?? null, timedOut: why.timedOut === true,
       cancelled: why.cancelled === true, stoppedBy: why.by ?? null, usage: r.usage ? JSON.parse(r.usage) : null, progress: JSON.parse(r.progress || "{}"), version: versions.get(r.id) ?? 0, ended: r.ended ?? null, acked: r.acked != null, ...refusedFields(refused),
     };
   };

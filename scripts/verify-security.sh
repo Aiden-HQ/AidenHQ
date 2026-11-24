@@ -529,13 +529,13 @@ grep -qF "pattern: '^https://[a-z0-9-]+\.grafana\.net/?\$'" modules/grafana/modu
   && grep -qF "VALUES (?, ?, ?, ?, ?, 0, '', '', ?, ?, 0, 0, 'admitted'," kernel/src/admission.ts \
   && grep -qF 'return send(res, 200, await admission.admit(w.module!, b as never));' kernel/src/backplane.ts \
   && [ "$(grep -rh 'runAdmitted(' kernel/src --include='*.ts' | wc -l | tr -d ' ')" = 2 ] \
-  && grep -qF 'jobs.runAdmitted(job.id, { box: { ...box, workspace } as Box,' kernel/src/boxes.ts \
+  && grep -qF 'jobs.runAdmitted(job.id, { box: { ...box, workspace, servers } as Box,' kernel/src/boxes.ts \
   && grep -qF 'if (!r || r.state !== "admitted" || !r.authority) throw new JobError(409, "not-admitted",' kernel/src/jobs.ts \
   && grep -qF 'if (entry?.box !== true) throw new JobError(400, "not-a-box-engine",' kernel/src/jobs.ts \
   && [ "$(grep -c 'buildJob(' kernel/src/jobs.ts)" = 1 ] && [ "$(grep -c 'spawn(' kernel/src/jobs.ts)" = 1 ] \
-  && grep -qF 'const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap });' kernel/src/jobs.ts \
+  && grep -qF 'const built = buildJob({ cfg, engine, worktree, jobDir, sessionId: session, prompt, job: { agentId: r.agent, issueId: r.task, at }, box, boxWrap, models: a.models ?? [] });' kernel/src/jobs.ts \
   && grep -qF 'if (entry.box !== true) throw new Error(' kernel/src/sandbox.ts \
-  && grep -qF 'const argv = ["docker", "exec", "--env-file", box.envFile, "-w", "/workspace", box.container, "sh", "-c", boxWrap,' kernel/src/sandbox.ts \
+  && grep -qF 'const argv = ["docker", "exec", "--env-file", box.envFile, "-w", box.workdir ?? "/workspace", box.container, "sh", "-c", boxWrap,' kernel/src/sandbox.ts \
   && ! grep -q 'hiding(' kernel/src/jobs.ts \
   && pass "kernel: every job is admitted and runs in its agent's computer (docker exec into its box); none on the host" || fail "kernel: a job can run outside an agent computer again"
 # A job never sees the user's own gh sign-in (~/.config/gh) or any host credential: its box's env file holds only the launcher's

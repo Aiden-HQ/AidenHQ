@@ -7,7 +7,7 @@ import { createDispatch, noticeId } from "../service/src/loop.ts";
 
 function fake({ jobs = [], directory = {} } = {}) {
   const task = { id: "t1", identifier: "WOR-1", title: "Watch acme/widgets#1", description: "When it merges, merge #2.", status: "in_progress", assigneeAgentId: "ses", createdByUserId: "u1" };
-  const k = { inbox: [], wakes: [], dropped: [], started: [], stopped: [] };
+  const k = { inbox: [], wakes: [], dropped: [], started: [], stopped: [], scheduled: [] };
   k.kernel = {
     claim: async () => k.inbox.splice(0),
     drop: async (key, why) => void k.dropped.push({ key, why }),
@@ -19,17 +19,17 @@ function fake({ jobs = [], directory = {} } = {}) {
     connectionsDown: async () => [],
     wake: async (t, text, id) => void k.wakes.push({ task: t, text, id }),
     start: async (req) => (k.started.push(req), { job: { id: "j-new", task: "t1", agent: "ses", state: "running", at: 1, acked: false } }),
-    open: async () => jobs,
+    open: async () => jobs.filter((j) => !j.acked),
     jobsOf: async () => jobs,
     stop: async (job) => void k.stopped.push(job),
-    input: async () => ({ sent: true }), note: async () => {}, post: async () => {}, ack: async () => {}, fileTask: async () => {}, notify: async () => {}, schedule: async () => {},
+    input: async () => ({ sent: true }), note: async () => {}, post: async () => {}, ack: async () => {}, fileTask: async () => {}, notify: async () => {}, schedule: async (b) => void k.scheduled.push(b),
   };
   k.dispatch = createDispatch({ kernel: k.kernel, db: new DatabaseSync(":memory:"), owner: "Dana" });
   return k;
 }
 
 test("a due wait on a live session becomes a wake notice", async () => {
-  const k = fake({ jobs: [{ id: "j1", task: "t1", agent: "ses", state: "running", at: 1, acked: false, progress: {} }], directory: { ses: { profile: "session" } } });
+  const k = fake({ jobs: [{ id: "j1", task: "t1", agent: "ses", profile: "session", state: "running", at: 1, acked: false, progress: {} }] });
   const row = { key: "wait:T:123", task: "t1", agent: "ses", cause: "wait: PR #1 to merge", at: 123, live_job: "j1" };
   k.inbox.push(row);
   await k.dispatch.tick();
@@ -43,12 +43,29 @@ test("a due wait on a live session becomes a wake notice", async () => {
 
 test("a session job is never stopped for no progress; a crew job is", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-25T10:00:00Z") });
-  const job = (id, agent) => ({ id, task: "t1", agent, state: "running", at: 1, acked: false, progress: { steps: [] } });
-  const k = fake({ jobs: [job("j-ses", "ses"), job("j-crew", "crew")], directory: { ses: { profile: "session" }, crew: { profile: "crew" } } });
+  // The job's own profile, frozen at admission, decides: never the agent's current one.
+  const job = (id, agent, profile) => ({ id, task: "t1", agent, profile, state: "running", at: 1, acked: false, progress: { steps: [] } });
+  const k = fake({ jobs: [job("j-ses", "ses", "session"), job("j-crew", "crew", "crew")], directory: { ses: { profile: "crew" } } });
   // The task read names no assignee, so neither run reads as moved to another agent.
   k.kernel.task = async () => ({ id: "t1", identifier: "WOR-1", status: "in_progress", assigneeAgentId: undefined });
   await k.dispatch.tick();
   t.mock.timers.tick(40 * 60_000);
   await k.dispatch.tick();
   assert.deepEqual(k.stopped, ["j-crew"]);
+});
+
+test("a session whose box keeps being replaced is resumed every time, never stopped at the retry limit", async () => {
+  // Seven runs in a row ended by a box replacement (SIGTERM: exit 143, no final): a crew task would get its Stopped notice.
+  const ended = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "failed", exit: 143, final: "", at: 10 - i, ended: 10 - i, acked: i > 0 });
+  const k = fake({ jobs: [0, 1, 2, 3, 4, 5, 6].map(ended) });
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled.map((s) => s.id), ["retry.j0"]);
+});
+
+test("a session that keeps exiting on its own still meets the retry limit", async () => {
+  // Seven runs that exited 0 with no reply (silent): its own doing, not the machinery's.
+  const ended = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "done", exit: 0, final: "", at: 10 - i, ended: 10 - i, acked: i > 0 });
+  const k = fake({ jobs: [0, 1, 2, 3, 4, 5, 6].map(ended) });
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled, []);
 });
