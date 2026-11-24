@@ -32,7 +32,7 @@ export interface Ship {
   current?: number | null; task?: string;
   /** The record's task, its id and identifier: an adoption's write is filed on that adoption's task. */
   filedOn?: string[];
-  /** Filed by the ship module (itself, or for a task through `filed_by`). */
+  /** Filed by the ship module itself (its module token; github's `filed_by` lets it). */
   byShip?: boolean;
   /**
    * Why the App can't approve this PR (none installed on the repo, or the App opened it), or undefined. An approval is only ever
@@ -87,7 +87,7 @@ export function planParts(action: string, s: State) {
   if (action === "close") return (s.prs ?? []).map((p) => [closePart(p, s)]);
   if (action === "create_repo") return [[createRepoPart(s)]];
   if (action === "publish_module") return [[publishModulePart(s)]];
-  if (action === "approve" || action === "enqueue") return (s.prs ?? []).map((p) => shipEffectParts(action, p, s));
+  if (action === "approve" || action === "enqueue" || action === "repair") return (s.prs ?? []).map((p) => shipEffectParts(action, p, s));
   return [];
 }
 
@@ -110,19 +110,21 @@ export function shipRefusal(x: Ship, ref: string): Part | undefined {
 }
 
 /**
- * approve and enqueue: Tier 0 when the adoption, its generation, the target and the head all match, else refused.
+ * approve, enqueue and repair: Tier 0 when the adoption, its generation, the target and the head all match, else refused. A
+ * repair's commit is the base merged in plus the repo's own generators' output (ship's check job, no model): on a fork too, it
+ * carries nothing of the fleet's own.
  * Only the ship module files them (its `approve` setting is what lets a PR be approved: an agent's job can't go around it),
  * only where the fleet may merge, and never an approval GitHub would refuse as the PR author's own. An enqueue is a merge by
  * GitHub's queue, so a head the runner didn't push goes to the AI reviewer first, as a direct merge's does.
  */
-function shipEffectParts(action: "approve" | "enqueue", p: Pr, s: State): Part[] {
+function shipEffectParts(action: "approve" | "enqueue" | "repair", p: Pr, s: State): Part[] {
   const part = shipEffectPart(action, p, s);
   // An enqueue is the queue's merge: it takes every merge rule's tier (a foreign head, .github/, the product's eligibility).
   if (part.reject || action !== "enqueue") return [part];
   const merge = mergeParts({ ...p, ship: undefined }, s);
   return merge.some((m) => m.reject) ? merge : [part, ...merge];
 }
-function shipEffectPart(action: "approve" | "enqueue", p: Pr, s: State): Part {
+function shipEffectPart(action: "approve" | "enqueue" | "repair", p: Pr, s: State): Part {
   const ref = `${p.repo}#${p.number ?? "?"}`;
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
   if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inMaintained(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and maintainer_repos`);
@@ -326,7 +328,7 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   const refused = parts.find((p) => p.reject);
   if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule });
   const top = parts.reduce((a, b) => (b.tier > a.tier ? b : a));
-  const targets = action === "merge" || action === "close" || action === "approve" || action === "enqueue"
+  const targets = action === "merge" || action === "close" || action === "approve" || action === "enqueue" || action === "repair"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : action === "publish_module" ? { [`${state.repo} ${state.ref}`]: { repo: state.repo, ref: state.ref, commit: state.base } }

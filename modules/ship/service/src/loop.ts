@@ -1,18 +1,21 @@
-// The open PRs of the product repo and the agents org's, and of every maintained repo with Dependabot on (those only get the
-// Dependabot task below, and its state is keyed by repo), read once a minute (W5; the runner's watchProductPrs, moved): a Dependabot PR whose checks have
+// Ship's watch loop (moved from github's pr-watch.ts, lane C): the open PRs of the product repo and of every fleet repo ship
+// works, and of every maintained repo with Dependabot on (those only get the Dependabot task below, and its state is keyed by
+// repo), read once a minute: a Dependabot PR whose checks have
 // finished becomes one task for the agent holding the platform-engineer role (kernel POST /v1/tasks, role kernel.tasks), closed
-// again once the PR is merged or closed; an agent's own PR (one this service opened: notePrTask) that conflicts with the default
+// again once the PR is merged or closed; an agent's own PR (one the code host opened for a task: github's pr-tasks.json, read
+// through `openers`) is adopted at first sight (state.ts, trigger `fleet`, generation 1, the opener's task), and when it conflicts with the default
 // branch, or is red while behind a green one, wakes the task that opened it (POST /v1/wakes with text, role kernel.wake), at most once per
-// head of main and half hour; an agent's own PR whose named checks are all green on a mergeable head has its merge filed once per head, by the kernel
-// as the agent whose approved PR record on that task pushed exactly that head (POST /v1/merges: no agent turn waits in between),
-// when it is the task's only open PR; any other green head (one GitHub updated, a task with several PRs) wakes the task to merge it; one whose named checks have
+// head of main and half hour; an agent's own PR whose named checks are all green on a mergeable head has its merge filed once per head
+// by ship itself (POST /v1/writes github.merge with the adoption's generation, on the opener's task: github's `filed_by: [ship]`),
+// when it is the task's only open PR; any other green head (a task with several PRs, a refused filing) wakes the task to merge it; one whose named checks have
 // finished red on its own mergeable head (not only behind main) wakes it once per head to fix it. A check whose job never started (GitHub
 // refused it: billing, no runner; the runner's environmentFailure) is re-run once at that head, never rebased and never woken for. The PR of
 // a cancelled task is closed with its branch, once (the runner's abandoned PR), and so is a done task's unmerged PR once its head is half an hour old with no merge of it open. A PR behind main with no conflict is updated by GitHub
-// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than MAX_WAKES wakes at one head (RED_WAKES); the asker is told once when it is capped. A conflict, a 404, or a refusal the last method answers with no right to update is final; a transient failure retries every five minutes without waking the task, until a few retries at one head have all gone the same way, and then the task is woken to rebase it.
-// The CI breaker: after 3 red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on two
-// heads, its task is no longer woken for red checks; whoever asked for the task (its open parent, else the task) is told once,
-// with the failing checks and the last failure's summary fenced as data. A green head resets it.
+// (update-branch, the runner's rebaseInCode) instead of waking its task, once per head and head of main. No PR gets more than the repo's
+// `caps.wakes_per_head` wakes at one head; the asker is told once when it is capped. A conflict, a 404, or a refusal the last method answers with no right to update is final; a transient failure retries every five minutes without waking the task, until a few retries at one head have all gone the same way, and then the task is woken to rebase it.
+// The CI breaker: after `caps.ci_rounds` red rounds on an agent's PR (heads whose own checks finished red), or the same named check red on
+// `caps.same_check_heads` heads, its task is no longer woken for red checks; whoever asked for the task (its open parent, else the task) is told once,
+// with the failing checks and the last failure's summary fenced as data. A green head resets it. A `null` cap is unlimited.
 // The title gate: a title-only edit starts no workflow run, so the red `policy` (and `ci-required`) it caused stays on the head.
 // Any open same-repo PR whose only failed jobs in that run are `policy` and `ci-required`, and whose title now passes
 // ci.yml's Conventional Commit test, has that run's failed jobs re-run in place, once per head and title.
@@ -22,34 +25,59 @@
 // with no task), because no push fixes it and the merge gate would otherwise wait on it silently.
 // Task text is fixed here: a PR's title, body, commits and check output never reach a task (only the breaker's fenced note).
 //
-// Started by main.ts. Not ported from the runner: the environment receipt comment on the task, rebaseInCode's replay of approved commits and approval move (GitHub updates the branch instead), and the parked-branch refusal (MAX_REJECTS).
+// GitHub, Flow, code review's verdict, the merge gate's rule and opener provenance stay github's: ship reaches them through
+// github's /internal/ship/* routes with its own module token (main.ts). Started by main.ts.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, GATE_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
-import type { Flow } from "./flow.ts";
-import { withFooter } from "./git-auth.ts";
-import { decide } from "./merge-gate.ts";
-import type { ReviewGate } from "./review-gate.ts";
+import { withFooter } from "./aidenhq-sdk/attribution.ts";
+import type { ShipSettings } from "./settings.ts";
+import type { State } from "./state.ts";
 
 type Json = any;
 /** A GitHub status the credential can never get past (no permission, the resource is gone): retrying cannot help. */
 const permanentRefusal = (status: number) => [401, 403, 404].includes(status);
-/** GitHub as the owner (git-auth.ts Gh): every call here is background work. */
+/** GitHub as the owner, through github's /internal/ship/gh (background work). */
 type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
-export type PrWatchOptions = {
+/** Code review's verdict on a head (github's review-gate.ts, through github): undefined when the repo isn't gated. */
+export type ReviewGate = (repo: string, number: number, head: string) => Promise<undefined | { pass: true } | { wait: string; findings?: string; findingsKey?: string; down?: true } | { bypass: string; down?: true }>;
+/** github's Flow facts (flow.ts), sent through github: what this watch sees of every open PR. */
+export type Flow = {
+  opened(repo: string, n: number, head: string, branch: string, at: string, task?: string | null, source?: string, o?: Record<string, unknown>): void;
+  pushed(repo: string, n: number, head: string, from: string, forced: boolean, actor: string): void;
+  merged(repo: string, n: number, head: string, sha: string, at: string, title: string, body: string): void;
+  closed(repo: string, n: number, head: string, at: string): void;
+  checksStarted(repo: string, n: number, head: string, at: string, task?: string | null): void;
+  checksCompleted(repo: string, n: number, head: string, failed: string[], at?: string, task?: string | null): void;
+  authored(login: string | undefined, association: string | undefined, repo: string): Promise<Record<string, unknown>>;
+};
+export type LoopOptions = {
   /**
    * The repos to watch, owner/name: `all` for the fleet's own (the product repo, the agents org's), `dependabot` for a maintained
    * repo elsewhere, where only the Dependabot duty runs (no CI reruns, no branch cleanup, no flow facts).
    */
-  repos: { repo: string; duties: "all" | "dependabot" }[]; kernelUrl: string; /** The module's own token (kernel.tasks, kernel.wake). */ key: string; cacheDir: string;
+  repos: { repo: string; duties: "all" | "dependabot" }[]; kernelUrl: string; /** Ship's own token (kernel.tasks, kernel.wake, kernel.work-read, github.merge). */ key: string; cacheDir: string;
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** Which task opened each PR (github's pr-tasks.json): PR url (lower case) -> { task, branch }. */
+  openers: () => Promise<Record<string, { task: string; branch: string }>>;
+  /** The merge gate's own rule (github's merge-gate.ts decide) on the watcher's view of a PR. */
+  decide: (data: Json, head: string) => Promise<{ do: string; why?: string }>;
+  /** The repo's ship settings (its caps); null where ship doesn't work it (only the Dependabot duty runs there). */
+  settings: (repo: string) => ShipSettings | null;
+  /** Ship's adoption records: an agent's PR is adopted at first sight, so its merge (and github's write checks) name it. */
+  state: State;
+  /** Ship's kill switch: a paused pass does nothing. */
+  paused?: () => boolean;
   /** Whether GitHub is connected: signed out, a pass reads nothing and counts as idle. */
   connected?: () => boolean;
   /** Flow facts: CI done on the head of an agent's PR. */
   flow?: Flow;
   /** Code review's verdict (the merge queue's): a green head waiting only on open important findings wakes its author's task. */
   reviewGate?: ReviewGate;
+  /** Every other PR's hand-off and rounds (adopted.ts): called for each open PR that isn't the fleet's own or Dependabot's, and
+   * with the open list, for adoptions whose PR left it. */
+  adopted?: { begin(): void; open(repo: string, main: { name: string; rollup: Json }, pr: Json, open: Set<number>): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
 /** The pass runs every minute while a watched PR is open; with none open it waits twice as long each pass, up to 30 minutes. */
@@ -59,8 +87,6 @@ const CONVENTIONAL_TITLE = /^(feat|fix|docs|chore|test|refactor|perf|ci|build|st
 const POLICY_CHECK = "policy";
 /** ci.yml's step that reads the title; the `policy` job's other steps (the age and pin checks) are the change's own. */
 const TITLE_STEP = "Conventional Commit title";
-/** Wakes per PR per head, whatever their cause (the runner's RED_WAKES). */
-const MAX_WAKES = 3;
 const HALF_HOUR = 30 * 60_000;
 /** Transient update-branch refusals at one head and head of main before the task is woken to rebase it (and GitHub is asked again). */
 const UPDATE_STUCK_AFTER = 3;
@@ -87,23 +113,11 @@ const RECOVERY_WRITE_DEADLINE_MS = PROBE_DEADLINE_MS + 30_000;
 /** Actions job reads of a PR's budget kept free for the never-started path, so the wedged scan of still-running jobs cannot
  * spend them all and leave a failed job that never started unjudged (which would be woken as if it had run). */
 const NEVER_STARTED_RESERVE = 2;
-/** Red rounds on one PR before its task stops being woken for them and its asker is told (the CI breaker). */
-const BREAKER_ROUNDS = 3;
 /** Review-findings wakes per pass (oldest PR first): the replies post as the owner's login, and a burst trips GitHub's secondary rate limit. */
 const FINDINGS_WAKES_PER_TICK = 3;
 /** The kernel's POST /v1/wakes keeps this many characters of a wake's text (backplane.ts). */
 const WAKE_TEXT = 2000;
-const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { id databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
-const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
-  repository(owner: $owner, name: $repo) {
-    defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
-    pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
-      pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
-    }
-  }
-}`;
-
+/** The open PRs' read is github's one fixed query (ship-routes.ts): ship sends only its variables. */
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json) {
@@ -119,26 +133,23 @@ function rebaseReason(pr: Json, mainRollup: Json) {
   return red && mainGreen ? "red" : undefined;
 }
 
-// Small tables in the cache dir: which task opened each PR (written when the service opens or updates one), and the watcher's own.
-const prTasksFile = (dir: string) => join(dir, "pr-tasks.json");
+// The watcher's own table in ship's data dir (loop.json; the adoption records are state.ts's).
 const readJson = (f: string, empty: Json): Json => (existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : empty);
 /** Written whole or not at all: a kill mid-write leaves the old file, never a truncated one every later tick fails to read. */
 const writeJson = (f: string, v: Json) => { writeFileSync(`${f}.tmp`, JSON.stringify(v)); renameSync(`${f}.tmp`, f); };
-/** Remember the task (and branch) that opened a PR, as the code host executed its `pr` write. */
-export function notePrTask(cacheDir: string, url: string, v: { task: string; branch: string }) {
-  writeJson(prTasksFile(cacheDir), { ...readJson(prTasksFile(cacheDir), {}), [url.toLowerCase()]: v });
-}
+/** A cap as a bound: `null` (unlimited) never trips. */
+const cap = (v: number | null | undefined) => (v === null || v === undefined ? Infinity : v);
 
-export function startPrWatch(o: PrWatchOptions) {
+export function startLoop(o: LoopOptions) {
   const log = o.log ?? (() => {});
   // `deadline`: the latest a background read may spend waiting out a rate limit (a quota wait would otherwise hold every later
   // PR in the scan); past it the client refuses at once and the caller defers to the next tick.
   const gh = (method: string, path: string, body?: unknown, opts?: { deadline?: number }) => o.gh(method, path, body, { background: true, ...opts });
-  const stateFile = join(o.cacheDir, "pr-watch.json");
+  const stateFile = join(o.cacheDir, "loop.json");
   let findingsWakes = 0; // review-findings wakes sent in this pass
   let gateDown = false;  // code review answered unreachable in this pass: no more verdict calls until the next
   let probes = 0;        // Actions job reads the PR being scanned has spent on its recovery paths (PROBES_PER_PASS, reset per PR)
-  async function kernel(method: string, path: string, body: unknown): Promise<Json> {
+  async function kernel(method: string, path: string, body?: unknown): Promise<Json> {
     const r = await fetch(`${o.kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${o.key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => ({}));
     if (!r.ok) throw Object.assign(new Error(`${path}: ${r.status} ${json?.message ?? json?.error ?? ""}`.trim()), { status: r.status });
@@ -151,7 +162,7 @@ export function startPrWatch(o: PrWatchOptions) {
     let r: Json;
     const open: Json[] = [];
     for (let after: string | null = null; ;) {
-      const g = await gh("POST", "/graphql", { query: OPEN_PRS_QUERY, variables: { owner, repo: name, after } });
+      const g = await gh("POST", "/graphql", { variables: { owner, repo: name, after } });
       const page = g.body?.data?.repository;
       if (g.status >= 300 || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
       r ??= page;
@@ -179,21 +190,25 @@ export function startPrWatch(o: PrWatchOptions) {
     state.updateTries ??= {}; // `<pr url>:<head>` -> how many transient refusals the update has had (whatever head of main it was asked at), so one that never goes through wakes the task instead of retrying unseen
     state.wakes ??= {};      // PR url -> { head, n, escalated? }: wakes sent at this head, and whether the asker was told it is capped
     state.found ??= {};      // PR url -> `<head>:<digest of the findings text>` that woke its task: new findings at the same head wake it again, under the wake cap
-    state.breaker ??= {};    // PR url -> { rounds, failed: { check name -> head }, told? }: red rounds since its last green head
+    state.filings ??= {};    // PR url -> { id, task }: a Tier 0 merge ship filed, until its outcome is told to the task
+    state.breaker ??= {};    // PR url -> { rounds, failed: { check name -> head }, heads: { check name -> heads red }, told? }: red rounds since its last green head
     const save = () => writeJson(stateFile, all);
+    // The repo's caps (settings.ts; `cautious` keeps pr-watch's constants): a Dependabot-only repo has none and never wakes.
+    const caps = o.settings(repo)?.caps;
+    const maxWakes = cap(caps?.wakes_per_head), breakerRounds = cap(caps?.ci_rounds), sameCheckHeads = cap(caps?.same_check_heads);
     /**
-     * Wake a task about its PR: at most MAX_WAKES per head, counted here for every cause (with no text, only counted: a branch
+     * Wake a task about its PR: at most `caps.wakes_per_head` per head, counted here for every cause (with no text, only counted: a branch
      * GitHub updated instead). "sent" and "capped" are settled; "failed" (the kernel didn't take it: a restart) counts nothing,
      * and the caller records nothing, so the next tick sends it again.
      */
     async function wake(pr: Json, task: string, text?: string): Promise<"sent" | "capped" | "failed"> {
       const w = state.wakes[pr.url.toLowerCase()]?.head === pr.headRefOid ? state.wakes[pr.url.toLowerCase()] : { head: pr.headRefOid, n: 0 };
-      if (w.n >= MAX_WAKES) {
+      if (w.n >= maxWakes) {
         log("wake cap reached", { pr: pr.url, head: pr.headRefOid });
         // Told once per head, the way the CI breaker tells: whoever asked for the task decides the next step. A note the kernel
         // didn't take is sent again next tick.
         if (task && !w.escalated) {
-          const text = `**Wake cap on ${task}:** ${pr.url} woke ${task} ${MAX_WAKES} times at one head and is not woken again at it. Decide its next step: re-scope it, fix the cause another way, or tell the owner.`;
+          const text = `**Wake cap on ${task}:** ${pr.url} woke ${task} ${maxWakes} times at one head and is not woken again at it. Decide its next step: re-scope it, fix the cause another way, or tell the owner.`;
           try { await kernel("POST", "/v1/wakes", { task, text, to: "asker" }); w.escalated = true; save(); }
           catch (e) { log("wake cap note not delivered: retried next tick", { pr: pr.url, task, err: String((e as Error).message).slice(0, 200) }); return "failed"; }
         }
@@ -208,19 +223,58 @@ export function startPrWatch(o: PrWatchOptions) {
       save();
       return "sent";
     }
+    /** A task's id as the kernel keeps records by it: its jobs carry it; pr-tasks.json holds the identifier (WOR-12). */
+    const taskId = (work: Json, task: string): string => work?.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? task;
     /**
-     * Ask the kernel to file a green PR's merge for its task (POST /v1/merges): "filed", "merging" (one is already asked for),
-     * "wake" (not the head the task's approved PR pushed, a closed task, or a refusal: the agent decides), or "failed" (the
-     * kernel didn't answer: asked again next tick).
+     * The adoption of an agent's own PR (state.ts): made at first sight, generation 1, trigger `fleet`, on the task that opened
+     * it (its id). github's write checks for an adopted PR (GET /v1/generation) read it.
      */
-    async function askMerge(pr: Json, task: string): Promise<"filed" | "merging" | "wake" | "failed"> {
+    function adopt(pr: Json, task: string) {
+      const had = o.state.get(repo, pr.number);
+      if (had) return had;
+      const a = { repo, number: pr.number, generation: 1, trigger: { kind: "fleet" as const, event: `opened:${pr.url.toLowerCase()}`, actor: task }, task, hold: null };
+      o.state.put(a);
+      log("fleet PR adopted", { pr: pr.url, task });
+      return a;
+    }
+    /**
+     * File a green PR's merge on its task (POST /v1/writes github.merge at its head, as ship: github's `filed_by`), the merge an
+     * agent's `aidenhq merge` files, tiered by the same plan: "filed", "merging" (a merge of this PR is open on the task, or one was
+     * filed at this head), "wake" (a refusal, or a closed task: the agent decides), or "failed" (the kernel didn't answer, the
+     * task's records couldn't be read, or the adoption is on hold: asked again next tick). Not an adoption's merge (no
+     * `generation`): that one waits for an approval on a code-review-gated repo, which App approval (a later lane) posts.
+     */
+    async function fileMerge(pr: Json, task: string, work: Json): Promise<"filed" | "merging" | "wake" | "failed"> {
+      if (!work) return "failed"; // without the task's records a second merge can't be ruled out
+      if (["done", "cancelled"].includes(work.status)) return "wake";
+      const names = (r: Json) => (r.args?.prs ?? []).filter((p: Json) => String(p.repo).toLowerCase() === repo.toLowerCase() && p.number === pr.number);
+      const merges = (work.records ?? []).filter((r: Json) => r.kind === "github.merge" && names(r).length);
+      if (merges.some((r: Json) => ["review", "owner", "approved", "claimed"].includes(r.state) || names(r).some((p: Json) => p.head === pr.headRefOid))) return "merging";
+      if (adopt(pr, taskId(work, task)).hold) return "failed";
       try {
-        const r = await kernel("POST", "/v1/merges", { task, repo, number: pr.number, head: pr.headRefOid, branch: pr.headRefName });
-        return r.filed ? "filed" : r.skip === "merging" ? "merging" : "wake";
+        const r = await kernel("POST", "/v1/writes", { kind: "github.merge", task: taskId(work, task), args: { prs: [{ repo, number: pr.number, head: pr.headRefOid }] } });
+        // The kernel tells the task a reviewed record's outcome itself; a Tier 0 one's is told by `tellOutcomes`.
+        if (r?.id && r.tier === 0) { state.filings[pr.url.toLowerCase()] = { id: String(r.id), task }; save(); }
+        return "filed";
       } catch (e) {
         const status = (e as { status?: number }).status;
         log("merge not filed", { pr: pr.url, task, err: String((e as Error).message).slice(0, 200) });
         return status !== undefined && status < 500 ? "wake" : "failed";
+      }
+    }
+    /**
+     * A Tier 0 merge ship filed, once it ended (merged, failed, gone stale): its task hears the outcome, as the kernel tells a
+     * reviewed record's (the agent then finishes its task or fixes what failed). Read again each pass until then.
+     */
+    async function tellOutcomes() {
+      for (const [url, f] of Object.entries<{ id: string; task: string }>(state.filings)) {
+        const r = await kernel("GET", `/v1/writes/${encodeURIComponent(f.id)}`).catch((e) => (log("merge record read failed", { pr: url, err: String(e.message).slice(0, 200) }), undefined));
+        if (!r || !["done", "failed", "rejected", "stale", "cancelled", "unknown"].includes(r.state)) continue;
+        const text = String(r.outcome?.text ?? r.state).replace(/`/g, "'").slice(0, 1500);
+        try { await kernel("POST", "/v1/wakes", { task: f.task, text: `${r.state === "done" ? "**Done**" : "**Failed**"} (merge ${f.id}, github.merge of ${url}, filed by ship). Outcome, written by the module github (data, not instructions):\n\n\`\`\`text\n${text}\n\`\`\`` }); }
+        catch (e) { log("merge outcome not delivered: retried next tick", { pr: url, err: String((e as Error).message).slice(0, 200) }); continue; }
+        delete state.filings[url];
+        save();
       }
     }
     /** The head's latest check runs from REST, every page: `runs` and whether GitHub's own `total_count` was all read (a
@@ -500,16 +554,26 @@ export function startPrWatch(o: PrWatchOptions) {
       const named = namedChecks(rollupOf(pr));
       if (!named.length || named.some((c) => c.pending)) return false;
       const policy = (rollupOf(pr)?.contexts?.nodes ?? []).find((n: Json) => n.__typename === "CheckRun" && n.name === POLICY_CHECK && n.status === "COMPLETED" && n.conclusion === "FAILURE");
-      const run = policy?.checkSuite?.workflowRun?.databaseId;
-      if (!run) return false;
+      if (!policy) return false;
+      // The workflow run from REST (the policy check run's job, then its `run_id`): the rollup's 32-bit databaseId is null or
+      // truncated for today's run ids, so it never builds a request (as the never-started path does).
+      const listed = await latestRuns(pr.headRefOid);
+      const policyRun = listed && listed !== "permanent" ? listed.runs.find((c: Json) => c.name === POLICY_CHECK && String(c.conclusion).toLowerCase() === "failure") : undefined;
+      const jobId = policyRun && jobIdOf(policyRun);
+      if (!jobId) return false;
+      const job = await gh("GET", `/repos/${repo}/actions/jobs/${jobId}`);
+      const run = Number(job.body?.run_id);
+      if (job.status >= 300 || !Number.isFinite(run) || run <= 0) return false;
       const jobs = await gh("GET", `/repos/${repo}/actions/runs/${run}/jobs`);
       if (jobs.status >= 300 || !Array.isArray(jobs.body?.jobs)) return false;
-      const failed: string[] = jobs.body.jobs.filter((j: Json) => j.conclusion === "FAILURE").map((j: Json) => String(j.name)).sort();
+      // REST answers conclusions in lower case (`failure`), unlike GraphQL's `FAILURE`.
+      const failure = (x: Json) => String(x?.conclusion ?? "").toLowerCase() === "failure";
+      const failed: string[] = jobs.body.jobs.filter(failure).map((j: Json) => String(j.name)).sort();
       // A red test or another job is a real failure: re-running would only repeat it.
       if (failed.length !== 2 || failed[0] !== GATE_CHECK || failed[1] !== POLICY_CHECK) return false;
       // `policy` also runs the age and pin checks: only a title step that failed means the title is the whole failure.
       const policyJob = jobs.body.jobs.find((j: Json) => j.name === POLICY_CHECK);
-      const failedSteps = (policyJob?.steps ?? []).filter((s: Json) => s.conclusion === "FAILURE").map((s: Json) => String(s.name));
+      const failedSteps = (policyJob?.steps ?? []).filter(failure).map((s: Json) => String(s.name));
       if (!Array.isArray(policyJob?.steps) || failedSteps.length !== 1 || failedSteps[0] !== TITLE_STEP) return false;
       const p = await gh("GET", `/repos/${repo}/pulls/${pr.number}`);
       const title = p.status < 300 ? p.body?.title : undefined;
@@ -637,7 +701,8 @@ export function startPrWatch(o: PrWatchOptions) {
       return "sent";
     }
     /**
-     * One round of red checks on a head: count it and, past `BREAKER_ROUNDS` or when the same check fails again at a new head,
+     * One round of red checks on a head: count it and, past `caps.ci_rounds` or when the same check has failed on
+     * `caps.same_check_heads` heads,
      * tell the asker instead of the task. Both wake paths (a finished red head, and a red check beside a wedged one) come
      * through here, so either one counts the same rounds and escalates the same way. `"wake"` means this round may wake the
      * task; the caller records the round with `recordRedRound` once its wake is accepted. `"handled"` means the asker was told
@@ -646,20 +711,27 @@ export function startPrWatch(o: PrWatchOptions) {
     async function countRedRound(pr: Json, task: string, red: string[]): Promise<"wake" | "handled" | "failed"> {
       const key = pr.url.toLowerCase();
       const b = state.breaker[key] ?? { rounds: 0, failed: {} };
-      const rounds = b.rounds + 1, again = red.find((n) => b.failed[n] && b.failed[n] !== pr.headRefOid);
-      if (!(b.told || rounds >= BREAKER_ROUNDS || again)) return "wake";
+      const rounds = b.rounds + 1, again = red.find((n) => headsRed(b, n, pr.headRefOid) >= sameCheckHeads);
+      if (!(b.told || rounds >= breakerRounds || again)) return "wake";
       if (!b.told && await tellAsker(pr, task, red, again ? "a check failed again on a new head" : `${rounds} rounds of red checks`) === "failed") return "failed";
-      state.breaker[key] = { rounds, failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, pr.headRefOid])) }, told: true };
+      state.breaker[key] = { ...roundOf(b, red, pr.headRefOid), rounds, told: true };
       state.reded[key] = pr.headRefOid;
       save();
       return "handled";
     }
+    /** How many heads check `n` has been red on, counting `head`: `heads[n]` (or 1 for a check `failed` names), one more for a new head. */
+    const headsRed = (b: Json, n: string, head: string) => (b.heads?.[n] ?? (b.failed[n] ? 1 : 0)) + (b.failed[n] !== head ? 1 : 0);
+    /** The breaker's record after a red round at `head`: each red check's last head and how many heads it was red on. */
+    const roundOf = (b: Json, red: string[], head: string) => ({
+      failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, head])) },
+      heads: { ...b.heads, ...Object.fromEntries(red.map((n) => [n, headsRed(b, n, head)])) },
+    });
     /** This head has been woken about its red checks: one wake per head, and the round counts toward the breaker. */
     function recordRedRound(pr: Json, red: string[]) {
       const key = pr.url.toLowerCase();
       const b = state.breaker[key] ?? { rounds: 0, failed: {} };
       state.reded[key] = pr.headRefOid;
-      state.breaker[key] = { rounds: b.rounds + 1, failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, pr.headRefOid])) }, ...(b.told ? { told: true } : {}) };
+      state.breaker[key] = { ...roundOf(b, red, pr.headRefOid), rounds: b.rounds + 1, ...(b.told ? { told: true } : {}) };
       save();
     }
     /** Close a cancelled or done task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is tried again next tick. */
@@ -668,7 +740,7 @@ export function startPrWatch(o: PrWatchOptions) {
       if (c.status >= 300) { log("abandoned PR not closed: retried next tick", { pr: pr.url, task, status: c.status }); return false; }
       state.abandoned[pr.url.toLowerCase()] = new Date().toISOString();
       save();
-      await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: withFooter(comment, "PR watch") });
+      await gh("POST", `/repos/${repo}/issues/${pr.number}/comments`, { body: withFooter(comment, "Ship") });
       const d = await gh("DELETE", `/repos/${repo}/git/refs/heads/${pr.headRefName}`);
       log("abandoned PR closed", { pr: pr.url, task, branchDeleted: d.status < 300 });
       return true;
@@ -726,8 +798,9 @@ export function startPrWatch(o: PrWatchOptions) {
       save();
     }
 
+    await tellOutcomes();
     if (!main.oid) return open.length;
-    const opened = readJson(prTasksFile(o.cacheDir), {});
+    const opened: Json = await o.openers();
     for (const pr of [...open].reverse()) { // oldest first
       const url = pr.url.toLowerCase();
       probes = 0; // a PR's recovery probes never spend another PR's: one busy head cannot starve the rest
@@ -736,7 +809,7 @@ export function startPrWatch(o: PrWatchOptions) {
       // report below and the red-head rules further down share one call rather than each probing the same jobs.
       let envRed: boolean | "unknown" | undefined;
       // Only an agent's own PR is re-run (an outside author's failure is nobody's here), so only its head is probed for it.
-      const redsAreEnvironment = async () => (envRed ??= pr.mergeable === "MERGEABLE" && !!opener && opener.branch === pr.headRefName ? await neverStarted(pr) : false);
+      const redsAreEnvironment = async (): Promise<boolean | "unknown"> => (envRed ??= pr.mergeable === "MERGEABLE" && !!opener && opener.branch === pr.headRefName ? await neverStarted(pr) : false);
       // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
       // finished (at the last one's end). The task is the agent's that opened it, if one did.
       state.checked ??= {};
@@ -767,6 +840,7 @@ export function startPrWatch(o: PrWatchOptions) {
       const ours = !isDependabot(pr) && pr.isCrossRepository === false && !!opener && opener.branch === pr.headRefName;
       let retiring = !taskLive;
       if (ours && !state.abandoned[url]) {
+        if (work) adopt(pr, taskId(work, opener.task));
         if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
         const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
         const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
@@ -790,7 +864,7 @@ export function startPrWatch(o: PrWatchOptions) {
       // (merge-gate.ts decide()). Asking it here means a "the gate is held, leave it alone" wake is never sent for a head the
       // gate would refuse for another reason and would start holding only later (a draft marked ready), and the once-per-head
       // report is not spent on it.
-      const gate = decide({
+      const gate = await o.decide({
         repository: {
           defaultBranchRef: { name: main.name },
           pullRequest: {
@@ -861,7 +935,10 @@ export function startPrWatch(o: PrWatchOptions) {
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       // The decision itself was made once, above, so nothing between there and here could recover or report a PR it closes.
-      if (!ours) continue;
+      if (!ours) {
+        if (o.adopted && !isDependabot(pr)) await o.adopted.open(repo, main, pr, new Set(open.map((p) => p.number))).catch((e) => log("hand-off pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }));
+        continue;
+      }
       if (retiring && !state.abandoned[url]) {
         const status = work?.status;
         if (!status) log("task status unknown: the cancelled-task rule cannot run", { pr: pr.url, task: opener.task });
@@ -898,9 +975,11 @@ export function startPrWatch(o: PrWatchOptions) {
         }
       }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
+        // The repo's Auto-merge off (`merge: off`): ship files no merge and asks for none; the agent's own `aidenhq merge` still works.
+        if (o.settings(repo)?.merge !== "ready") continue; // nothing recorded: turning it on again files this head
         // The task's only open PR, green at the head its approved PR record pushed: the kernel files its merge, as its agent.
         const only = open.filter((p) => !superseded.has(p.url.toLowerCase()) && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName).length === 1;
-        const asked = only ? await askMerge(pr, opener.task) : "wake";
+        const asked = only ? await fileMerge(pr, opener.task, work) : "wake";
         if (asked === "failed") continue;
         if (asked !== "wake") {
           state.greened[url] = pr.headRefOid; delete state.breaker[url]; save();
@@ -915,7 +994,7 @@ export function startPrWatch(o: PrWatchOptions) {
       // Red checks whose jobs never started are the environment's: re-run once at this head, never a rebase or a wake. A head
       // whose listing could not be read is judged next tick, not woken on a failure CI may never have run.
       const env = await redsAreEnvironment();
-      if (pr.mergeable === "MERGEABLE" && (env || env === "unknown")) continue;
+      if (pr.mergeable === "MERGEABLE" && env) continue; // true, or "unknown"
       const why = rebaseReason(pr, main.rollup);
       if (why === "conflict" || why === "red") {
         const key = `${url}:${main.oid}`;
@@ -951,17 +1030,19 @@ export function startPrWatch(o: PrWatchOptions) {
         if (w === "sent") log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
       }
     }
+    if (o.adopted) await o.adopted.gone(repo, main.name, new Set(open.map((p) => p.number))).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));
     return open.length;
   }
 
   /** One pass over every watched repo: how many PRs were open (a repo that failed counts as open: it is tried again soon). */
   async function tick(): Promise<number> {
-    const all: Json = Object.fromEntries(Object.entries(readJson(stateFile, {})).filter(([k]) => k.includes("/"))); // the old flat state is dropped
+    const all: Json = readJson(stateFile, {});
     let open = 0;
     findingsWakes = 0;
     gateDown = false;
     probes = 0;
-    if (o.connected && !o.connected()) return open;
+    o.adopted?.begin();
+    if ((o.connected && !o.connected()) || o.paused?.()) return open;
     for (const { repo, duties } of o.repos) {
       try { open += await scan(repo, duties, all); }
       catch (e) { open++; log("PR check failed", { repo, err: String((e as Error).message).slice(0, 300) }); }

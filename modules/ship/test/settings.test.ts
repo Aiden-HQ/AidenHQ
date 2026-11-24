@@ -33,4 +33,16 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   assert.deepEqual(loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { rebase: "behind" } } }), ["a/b.rebase"]);
   assert.deepEqual(loosens({}, { repos: { "a/b": "cautious" } }, scope), ["a/b.enabled"]);
   assert.deepEqual(loosens({ paused: true }, { paused: false }), ["paused"]);
+  // A new generated glob widens what the repair may write; the command alone is an ordinary change.
+  const gen = (globs: string[], command = "make gen") => ({ repos: { "a/b": { preset: "cautious", generated: { globs, command } } } });
+  assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**", "src/**"])), ["a/b.generated.globs"]);
+  assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], "npm run gen")), []);
+});
+
+test("clearing an explicit generated list back to discovery is a loosening", () => {
+  const scope = { fleet: ["acme/*"], listed: [] };
+  const before = { repos: { "acme/app": { generated: { globs: ["gen/**"], command: "make gen" } } } };
+  const after = { repos: { "acme/app": { generated: null } } };
+  assert.ok(loosens(before, after, scope).includes("acme/app.generated"));
+  assert.ok(!loosens(after, before, scope).includes("acme/app.generated"));
 });

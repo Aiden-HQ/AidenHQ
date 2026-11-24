@@ -45,12 +45,18 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
   sh(ws, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${fix}.bundle`), `refs/aidenhq/publish/${fix}`);
 
   const pr = { head: c1, author: "contributor" };
+  const checks = [];
+  const regenerated = Buffer.from("regenerated\n");
+  const repairResult = { result: { changed: 1 }, keep: { message: "Merge branch 'main' into the PR", entries: [{ path: "gen.txt", mode: "100644", sha: execFileSync("git", ["hash-object", "--stdin"], { input: regenerated, encoding: "utf8" }).trim(), content: regenerated.toString("base64") }] } };
   const outcomes = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     const m = /^\/v1\/writes\/([^/]+)\/outcome$/.exec(req.url);
     if (m) { outcomes.push({ id: m[1], ...JSON.parse(body) }); return res.writeHead(200).end("{}"); }
+    // Ship's repair check job, already done: its result and the file it kept.
+    if (req.url === "/v1/checks") { checks.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: "c-1", state: "done", version: 1, result: repairResult.result })); }
+    if (req.url === "/v1/checks/c-1/kept") return res.writeHead(200).end(JSON.stringify(repairResult.keep));
     res.writeHead(404).end("{}");
   });
   const calls = [];
@@ -61,10 +67,28 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
     if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
-    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author } } };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author }, maintainer_can_modify: pr.canModify === true } };
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
+    // GitHub's git data API, as the App, over the bare origin: blobs, trees, commits, and a ref update that refuses a non-fast-forward.
+    const git = (args, o = {}) => execFileSync("git", args, { cwd: origin, encoding: "utf8", ...o, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_COMMITTER_NAME: "app", GIT_COMMITTER_EMAIL: "app@example.com", GIT_AUTHOR_NAME: "app", GIT_AUTHOR_EMAIL: "app@example.com", ...o.env } }).trim();
+    if (method === "POST" && path === `/repos/${REPO}/git/blobs`) return { status: 201, body: { sha: git(["hash-object", "-w", "--stdin"], { input: Buffer.from(body.content, "base64") }) } };
+    if (method === "POST" && path === `/repos/${REPO}/git/trees`) {
+      const env = { GIT_INDEX_FILE: join(root, `idx-${Math.random()}`) };
+      git(["read-tree", body.base_tree], { env });
+      for (const e of body.tree) git(e.sha === null ? ["update-index", "--force-remove", e.path] : ["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`], { env });
+      return { status: 201, body: { sha: git(["write-tree"], { env }) } };
+    }
+    if (method === "POST" && path === `/repos/${REPO}/git/commits`) return { status: 201, body: { sha: git(["commit-tree", body.tree, ...body.parents.flatMap((p) => ["-p", p]), "-m", body.message]) } };
+    if (method === "GET" && path.startsWith(`/repos/${REPO}/compare/`)) return { status: 200, body: { merge_base_commit: { sha: main } } };
+    if (method === "GET" && path.startsWith(`/repos/${REPO}/git/commits/`)) return { status: 200, body: { tree: { sha: git(["rev-parse", `${path.split("/").pop()}^{tree}`]) } } };
+    if (method === "PATCH" && path === `/repos/${REPO}/git/refs/heads/contrib`) {
+      const cur = git(["rev-parse", "refs/heads/contrib"]);
+      try { git(["merge-base", "--is-ancestor", cur, body.sha]); } catch { return { status: 422, body: { message: "Update is not a fast forward" } }; }
+      git(["update-ref", "refs/heads/contrib", body.sha]);
+      return { status: 200, body: {} };
+    }
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
   const access = {
@@ -80,7 +104,7 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg: "acme-agents", productRepo: "acme/aidenhq",
     reviewGate: async () => undefined, ship,
     // The App, installed on the repo: its writes are recorded like the owner's (`as` marks whose they are).
-    reviewer: async () => (app ? { login: "acme-app[bot]", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
+    reviewer: async () => (app ? { login: "acme-app[bot]", token: async () => "app-token", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -94,10 +118,10 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { root, ws, origin, c1, fix, pr, queue, calls, call, run, adoption };
+  return { root, ws, origin, c1, fix, main, pr, queue, calls, call, run, adoption, checks, repairResult };
 }
 
-test("a push onto an adopted PR's branch is leased on the head it expects; a contributor's push in between wins", async (t) => {
+test("a push onto an adopted PR's branch is written through the API as the App, a fast-forward from the head it expects; a contributor's push in between wins", async (t) => {
   const { ws, origin, c1, fix, pr, call, run } = await setup(t);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" });
@@ -113,7 +137,7 @@ test("a push onto an adopted PR's branch is leased on the head it expects; a con
   assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).json.error, /fork/);
   pr.fork = false;
 
-  // A contributor pushes after the read: GitHub's API still says c1 (it lags), the lease refuses, and their commit stays.
+  // A contributor pushes after the read: GitHub's API still says c1 (it lags), the fast-forward update refuses, and their commit stays.
   const scratch = `${ws}-contrib`;
   sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, scratch);
   writeFileSync(join(scratch, "c.txt"), "c\n");
@@ -135,7 +159,10 @@ test("a push onto an adopted PR's branch is leased on the head it expects; a con
   pr.state = "open";
   const ok = await run("k-00000000000000b2", "github.push", args);
   assert.equal(ok.ok, true, ok.text);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), fix);
+  // The App's commit: the repair's tree on top of c1, made by the App (GitHub signs it), not the box's commit.
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(ws, "rev-parse", `${fix}^{tree}`));
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1);
+  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "app");
 });
 
 test("approve and enqueue are ship's alone and Tier 0 at the head; approve posts as the App", async (t) => {
@@ -237,25 +264,26 @@ test("plan: an adopted PR's merge is refused when the generation is stale or shi
 
 test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
   const H = "a".repeat(40);
-  const run = async (adopted) => {
+  const run = async (adopted, plain = false, taskStatus = "in_progress", classic = 404, runs = []) => {
     const calls = [];
     const gh = async (method, path) => {
       calls.push(`${method} ${path}`);
       if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
         number: 7, state: calls.some((c) => c.startsWith("PUT")) ? "MERGED" : "OPEN", headRefOid: H, baseRefName: "main", isDraft: false, mergeStateStatus: "CLEAN", reviewDecision: null, isInMergeQueue: false,
-        mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
+        mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: plain ? { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] } } : null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
       } } } } };
       if (path.includes("/rules/branches/")) return { status: 200, body: [] };
-      if (path.includes("/check-runs")) return { status: 200, body: { check_runs: [] } };
+      if (path.includes("/check-runs")) return { status: 200, body: { check_runs: runs } };
       if (path.endsWith("/statuses") || path.includes("/statuses?")) return { status: 200, body: [] };
-      if (path.endsWith("/required_status_checks")) return { status: 404, body: {} };
+      if (path.endsWith("/required_status_checks")) return { status: classic, body: {} };
       if (method === "PUT") return { status: 200, body: { sha: "c".repeat(40) } };
       return { status: 404, body: {} };
     };
     const outcomes = [];
     const { createMerges } = await import("../service/src/merges.ts");
-    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) } });
-    void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
+    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) }, taskStatus: async () => taskStatus });
+    if (plain) void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H }] }, "T1", undefined, undefined, true);
+    else void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
     await m.step();
     return { calls, outcomes };
   };
@@ -266,6 +294,26 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   assert.equal(ended.calls.filter((c) => c.startsWith("PUT")).length, 0);
   assert.equal(ended.outcomes[0]?.ok, false);
   assert.match(ended.outcomes[0].text, /adoption ended/);
+  // A fleet PR's plain merge ship filed stops with ship too: paused (or its repo off), it is never called.
+  const paused = await run(false, true);
+  assert.equal(paused.calls.filter((c) => c.startsWith("PUT")).length, 0, paused.calls.join("\n"));
+  assert.match(paused.outcomes[0]?.text ?? "", /ship is paused/);
+  // ...and when its task has ended: the kernel files a module's write on any task, so the queue reads the task at the call.
+  const cancelled = await run(true, true, "cancelled");
+  assert.equal(cancelled.calls.filter((c) => c.startsWith("PUT")).length, 0, cancelled.calls.join("\n"));
+  assert.match(cancelled.outcomes[0]?.text ?? "", /its task is cancelled/);
+  const live = await run(true, true);
+  assert.equal(live.calls.filter((c) => c.startsWith("PUT")).length, 1, "a live task's merge goes ahead");
+  const done = await run(true, true, "done");
+  assert.equal(done.calls.filter((c) => c.startsWith("PUT")).length, 1, "a merge in flight still lands after its task is done");
+  // Rules unreadable (403) and no check reported yet: the adoption's merge waits, never merges on nothing.
+  const unread = await run(true, false, "in_progress", 403);
+  assert.equal(unread.calls.filter((c) => c.startsWith("PUT")).length, 0, unread.calls.join("\n"));
+  assert.equal(unread.outcomes.length, 0, "waiting, not settled");
+  // The advisory design review alone is no CI: still waiting, never merged on it.
+  const design = await run(true, false, "in_progress", 403, [{ name: "design-review", status: "completed", conclusion: "success" }]);
+  assert.equal(design.calls.filter((c) => c.startsWith("PUT")).length, 0, design.calls.join("\n"));
+  assert.equal(design.outcomes.length, 0, "waiting, not settled");
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {
@@ -276,4 +324,87 @@ test("with no App on the repo, approve is refused as needing a human; nothing is
   assert.equal(out.ok, false);
   assert.match(out.text, /^ship-no-app: .*approval needs a human/);
   assert.equal(calls.filter((c) => c.method !== "GET" && c.path !== "/graphql").length, 0);
+});
+
+test("ship's repair: github runs ship's check job and writes what it kept as the App, a merge commit on the head; leftovers and a fork without edits write nothing", async (t) => {
+  const { origin, c1, main, pr, call, run, checks, repairResult } = await setup(t);
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"], commands: [{ dir: ".", cmd: "make gen" }] } };
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.repair", args, requester: SHIP, task: "t1" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  assert.equal(plan.json.raise, undefined);
+  assert.match((await call("/aidenhq/v1/executor/plan", { kind: "github.repair", args, requester: { kind: "job", roles: ["platform-engineer"] }, task: "t1" })).json.error, /only the ship module/);
+
+  const ok = await run("k-00000000000000c1", "github.repair", args);
+  assert.equal(ok.ok, true, ok.text);
+  assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: main, base_ref: "main", plan: JSON.stringify(args.plan), attempt: "1" } });
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^1"), c1);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^2"), main);
+  assert.equal(sh(origin, "show", "refs/heads/contrib:gen.txt"), "regenerated");
+
+  // Conflicts no generator rewrites: the outcome lists them and the branch stays.
+  pr.head = sh(origin, "rev-parse", "refs/heads/contrib");
+  repairResult.result = { leftovers: ["src/a.ts"] };
+  const left = await run("k-00000000000000c2", "github.repair", { ...args, head: pr.head });
+  assert.equal(left.ok, false);
+  assert.match(left.text, /^ship-leftovers: [\s\S]*\nleftover: src\/a\.ts$/);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), pr.head);
+  pr.fork = true;
+  assert.match((await run("k-00000000000000c3", "github.repair", { ...args, head: pr.head })).text, /^ship-fork/);
+});
+
+test("a fork that allows maintainer edits: the fix and the repair are pushed to the fork's branch as the base repo's App, leased on the head", async (t) => {
+  const { root, origin, ws, c1, fix, main, pr, run, repairResult } = await setup(t);
+  // The contributor's fork, holding the PR's branch.
+  const fork = join(root, "github", "someone", "widget.git");
+  mkdirSync(dirname(fork), { recursive: true });
+  sh(root, "clone", "--quiet", "--bare", origin, fork);
+  Object.assign(pr, { fork: true, canModify: true });
+  const push = { workspace: "TASK-1", only: [{ repo: REPO, branch: "ship-pr-7", sha: fix }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
+  // A contributor's push in between wins.
+  sh(ws, "push", "--quiet", fork, `${main}:refs/heads/other`);
+  const scratch = `${ws}-fork`;
+  sh(dirname(ws), "clone", "--quiet", "-b", "contrib", fork, scratch);
+  writeFileSync(join(scratch, "c.txt"), "c\n");
+  sh(scratch, "add", "c.txt");
+  sh(scratch, "commit", "--quiet", "-m", "contributor again");
+  sh(scratch, "push", "--quiet", fork, "contrib");
+  assert.match((await run("k-00000000000000d1", "github.push", push)).text, /^ship-head-moved/);
+  sh(scratch, "push", "--quiet", "--force", fork, `${c1}:refs/heads/contrib`);
+  const ok = await run("k-00000000000000d2", "github.push", push);
+  assert.equal(ok.ok, true, ok.text);
+  assert.equal(sh(fork, "rev-parse", "refs/heads/contrib"), fix, "the box's own commit, pushed as it is");
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the base repo's branch is untouched");
+
+  // The repair: a merge commit made here from git's merge and the kept generated files, pushed to the fork. The fork's head is
+  // the base repo's too, as refs/pull/7/head (GitHub serves it by sha). Here the repair deletes a generated file.
+  sh(ws, "push", "--quiet", origin, `${fix}:refs/pull/7/head`);
+  sh(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+  pr.head = fix;
+  repairResult.keep.entries = [{ path: "gen.txt", mode: "100644", sha: null }];
+  const r = await run("k-00000000000000d3", "github.repair", { repo: REPO, number: 7, head: fix, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
+  assert.equal(r.ok, true, r.text);
+  assert.equal(sh(fork, "rev-parse", "refs/heads/contrib^1"), fix);
+  assert.equal(sh(fork, "rev-parse", "refs/heads/contrib^2"), main);
+  assert.equal(sh(fork, "ls-tree", "--name-only", "refs/heads/contrib", "gen.txt"), "", "the generated file's deletion is applied");
+  assert.equal(sh(fork, "show", "refs/heads/contrib:b.txt"), "b", "the contributor's own file stays");
+});
+
+test("ship's repair takes the box's files only on generated paths and conflicted lockfiles: never a workflow, a gitlink, a source file, an untouched lockfile or a new symlink", async (t) => {
+  const { origin, c1, run, repairResult } = await setup(t);
+  const file = (path, text, mode = "100644") => ({ path, mode, sha: execFileSync("git", ["hash-object", "--stdin"], { input: text, encoding: "utf8" }).trim(), content: Buffer.from(text).toString("base64") });
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt", ".github/**"] } };
+  const tries = [
+    [[file(".github/workflows/evil.yml", "on: push\njobs: { x: { runs-on: ubuntu-latest, steps: [ { run: curl evil } ] } }\n")], /under \.github\//],
+    [[file("src/evil.ts", "steal()\n")], /neither a generated path nor a conflicted lockfile/],
+    [[file("package-lock.json", "{}\n")], /neither a generated path nor a conflicted lockfile/],
+    [[file("gen.txt", "/etc/passwd", "120000")], /as a symlink where the merge has none/],
+    [[{ path: "gen.txt", mode: "160000", sha: "e".repeat(40) }], /only files and symlinks/],
+  ];
+  for (const [i, [entries, why]] of tries.entries()) {
+    repairResult.keep.entries = entries;
+    const r = await run(`k-00000000000000e${i}`, "github.repair", args);
+    assert.equal(r.ok, false);
+    assert.match(r.text, why);
+    assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
+  }
 });

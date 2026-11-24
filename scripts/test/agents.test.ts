@@ -174,8 +174,9 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     assert.deepEqual(writes, [], k);
   }
   // An Engineer has what it grants itself (attaching its own task's file, reading its own approval cards, finishing it,
-  // recording its wait) and the tasks module's reads.
-  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply"], code_review: ["code_review_findings", "code_review_resolve"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait", "task_approvals", "task_get", "task_search"] });
+  // recording its wait), ship_configure alone of ship's tools (a ship task's generate command, which it proposes) and the tasks
+  // module's reads.
+  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply"], code_review: ["code_review_findings", "code_review_resolve"], ship: ["ship_configure"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait", "task_approvals", "task_get", "task_search"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });

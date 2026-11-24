@@ -72,7 +72,7 @@ setTimeout(() => void tick(true), 5_000);
 // executor@1 for code-review.post, .notice and .status: the kernel calls it with this module's service key, read fresh per request.
 const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";
 const executor = reviewExecutor(githubReview(github, token), (id) => engine.binding(id));
-const api = handler(engine, (auth) => isModule(kernelUrl, auth, "github"));
+const api = handler(engine, (auth, module) => isModule(kernelUrl, auth, module));
 // The Reviewer Manager's tools on the module's connection (code_review): its setting as instance.yaml holds it, and its changes
 // filed as the calling job (its assertion goes along).
 const raw = () => { try { const v = JSON.parse(env.CODE_REVIEW_SETTINGS || "{}"); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; } };
