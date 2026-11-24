@@ -602,7 +602,8 @@
   function tiersSection(repo, e) {
     const cards = TIERS.map(([tier, name]) => {
       const c = e.tiers[tier], own = e.own(tier);
-      const put = (patch) => edit(repo, { by_tier: { [tier]: { on_open: c.on_open, on_push: c.on_push, push_rounds: c.push_rounds, ...patch } } });
+      // Only the fields changed here become this tier's own; the others keep following the preset.
+      const put = (patch) => edit(repo, { by_tier: { [tier]: { ...(own ?? {}), ...patch } } });
       const rounds = h("input", { type: "text", value: c.push_rounds == null ? "" : String(c.push_rounds), placeholder: "Every push", ariaLabel: `${name} pushes reviewed`, inputMode: "numeric" });
       rounds.addEventListener("change", () => { const v = rounds.value.trim(); if (v !== "" && !/^\d{1,3}$/.test(v)) return say("Pushes reviewed is a number, or empty for every push.", true); soon(() => put({ push_rounds: v === "" ? null : Number(v) })); });
       const top = h("div", { className: "th" }, tierTag(tier), help(name, TIER_HELP[tier], { bare: true }), h("span", { style: "flex:1" }), gates(c) ? t("small", "gm", "Gates merges") : t("small", "soft", tier === "skip" ? "No review" : "Advice only"));

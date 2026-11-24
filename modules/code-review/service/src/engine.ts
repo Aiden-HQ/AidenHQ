@@ -494,17 +494,22 @@ export function createEngine(d: EngineDeps) {
   function baseline(r: RunRow): string | null {
     if (r.full || r.kind === "oneoff") return null;
     const cfg = repoCfg(r.repo);
-    if (cfg && r.tier && gated(cfg.tiers[r.tier as Tier])) return one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND head != ? AND policy IS ? ORDER BY at DESC LIMIT 1", r.repo, r.number, r.head, r.policy)?.head ?? null;
+    if (cfg && r.tier && gated(cfg.tiers[r.tier as Tier])) return one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND head != ? AND policy IS ? AND at >= ? ORDER BY at DESC LIMIT 1", r.repo, r.number, r.head, r.policy, isoAt(activeSince(r)))?.head ?? null;
     const p = prRow(r.repo, r.number);
     return p?.last_reviewed_head && p.last_reviewed_head !== r.head ? p.last_reviewed_head : null;
   }
-  const isCovered = (repo: string, n: number, head: string, policy: string | null) => !!one("SELECT 1 FROM covered WHERE repo = ? AND number = ? AND head = ? AND policy IS ?", repo, n, head, policy);
+  /** An ISO time for a run of heads' start (ms; Infinity: a policy not started yet, which nothing is at or after). */
+  const isoAt = (ms: number) => new Date(Math.min(ms, 8.64e15)).toISOString();
+  /** Covered under `policy` in its current run of heads (since `since`): coverage from an earlier stay under the same policy never counts. */
+  const isCovered = (repo: string, n: number, head: string, policy: string | null, since = 0) => !!one("SELECT 1 FROM covered WHERE repo = ? AND number = ? AND head = ? AND policy IS ? AND at >= ?", repo, n, head, policy, isoAt(since));
+  /** When the run of heads under `policy` started on this PR, for a run's policy: 0 for a policy that isn't the PR's current one. */
+  const activeSince = (r: { repo: string; number: number; policy: string | null }) => { const p = prRow(r.repo, r.number); return p && p.policy === r.policy ? p.policy_at ?? 0 : 0; };
   /** The mandatory reviewers that reviewed a head under a policy: its latest run per combo and moment there (one-offs left out),
    * newest first. What the verdict waits on and coverage reads: what reviewed the head under its policy (a run under another policy
    * reviewed it another way: a changed tier, mandatory combo, base branch or ignore list asks for a review under the new one). */
-  const reviewers = (repo: string, n: number, head: string, policy: string | null) => {
+  const reviewers = (repo: string, n: number, head: string, policy: string | null, since = 0) => {
     const seen = new Set<string>();
-    return all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' AND policy IS ? ORDER BY created DESC", repo, n, head, policy)
+    return all<RunRow>("SELECT * FROM runs WHERE repo = ? AND number = ? AND head = ? AND mandatory = 1 AND kind != 'oneoff' AND policy IS ? AND created >= ? ORDER BY created DESC", repo, n, head, policy, since)
       .filter((r) => { const k = `${r.engine}|${r.model}|${r.effort}|${r.moment === "push" ? "push" : "open"}`; return !seen.has(k) && !!seen.add(k); });
   };
 
@@ -526,7 +531,7 @@ export function createEngine(d: EngineDeps) {
    * with the mandatory runs at the head itself (an `aiden review`) and any mandatory run of the PR on its first post (a recheck at
    * an earlier head whose findings aren't posted yet; one still running there is superseded and never posts). */
   const gateRuns = (cfg: Repo, repo: string, n: number, head: string, policy: string, since: number) => {
-    const at = reviewers(repo, n, head, policy);
+    const at = reviewers(repo, n, head, policy, since);
     if (!openOnlyPr(cfg, n)) return at;
     // Only the current run of heads under this policy: a batch from an earlier stay in the tier never stands for this one.
     const seen = new Set<string>();
@@ -632,7 +637,7 @@ export function createEngine(d: EngineDeps) {
   /** No carry while the baseline still owes something: a finding answered after its rechecking run started (what that run
    * rechecked was read as it started, so the claim waits for a mandatory recheck), or its review's first post still being decided (the verdict waits on that post at its own head only). */
   const answeredSince = (r: RunRow, from: string) => !!one("SELECT 1 FROM findings WHERE repo = ? AND number = ? AND claim IS NOT NULL AND outcome_at > COALESCE((SELECT MAX(started) FROM runs WHERE repo = ? AND number = ? AND head = ? AND status = 'done' AND recheck = 1), '')", r.repo, r.number, r.repo, r.number, from)
-    || reviewers(r.repo, r.number, from, r.policy).some((x) => x.posted === "pending" && !x.post_tries);
+    || reviewers(r.repo, r.number, from, r.policy, activeSince(r)).some((x) => x.posted === "pending" && !x.post_tries);
   /** A bare rebase's run: done at no cost and nothing posted, its range from the baseline it carries (covered, and the PR's
    * baseline next). The PR's findings are the PR's, so they stay as they are. */
   function carry(r: RunRow, from: string, merge_base: string) {
@@ -1391,8 +1396,9 @@ export function createEngine(d: EngineDeps) {
    */
   function cover(r: RunRow) {
     if (!repoCfg(r.repo) || !r.mandatory) return;
-    const at = reviewers(r.repo, r.number, r.head, r.policy);
-    if (!at.length || !at.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from, r.policy)))) return;
+    const since = activeSince(r);
+    const at = reviewers(r.repo, r.number, r.head, r.policy, since);
+    if (!at.length || !at.every((x) => x.complete === 1 && (x.incremental_from === null || isCovered(x.repo, x.number, x.incremental_from, r.policy, since)))) return;
     // Covered under the run's policy: a head reviewed under another tier or other mandatory reviewers isn't covered under this one.
     run("INSERT OR REPLACE INTO covered (repo, number, head, base, at, policy) VALUES (?, ?, ?, ?, ?, ?)", r.repo, r.number, r.head, r.base, iso(), r.policy);
   }
@@ -1605,7 +1611,12 @@ export function createEngine(d: EngineDeps) {
    */
   function opening(c: Repo, p: PullRequest, policy: string, at: number): boolean {
     const must = c.on_open.filter((x) => x.mandatory);
-    if (!must.length) return false;
+    // A tier whose opening reviewers are all advice: its opening batch runs once when the run of heads starts, and holds nothing.
+    if (!must.length) {
+      if (!c.on_open.length || one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND policy = ? AND kind != 'oneoff' AND COALESCE(moment, 'open') = 'open' AND created >= ?", p.repo, p.number, policy, at)) return false;
+      trigger(c, p, "open", true);
+      return true;
+    }
     const has = (x: Combo, states: string) => !!one(`SELECT 1 FROM runs WHERE repo = ? AND number = ? AND policy = ? AND kind != 'oneoff' AND mandatory = 1 AND COALESCE(moment, 'open') = 'open' AND engine = ? AND model = ? AND effort = ? AND status IN (${states}) AND created >= ?`, p.repo, p.number, policy, x.engine, x.model, x.effort, at);
     if (must.every((x) => has(x, "'done', 'failed'"))) return false;
     if (!one("SELECT 1 FROM runs WHERE repo = ? AND number = ? AND head = ? AND policy = ? AND kind != 'oneoff' AND mandatory = 1 AND COALESCE(moment, 'open') = 'open' AND status IN ('queued', 'running')", p.repo, p.number, p.head, policy))
@@ -1665,6 +1676,8 @@ export function createEngine(d: EngineDeps) {
   async function classifyPr(cfg: Entry, p: PullRequest) {
     const row = prRow(p.repo, p.number);
     if (row?.cls === JSON.stringify(inputsOf(p, cfg))) return;
+    // Changed inputs make the stored tier stale at once: pending until a snapshot of the new inputs lands, never the old tier.
+    if (row?.cls) (run("UPDATE prs SET tier = NULL, rule = NULL, why = NULL, facts = NULL, cls = NULL WHERE repo = ? AND number = ?", p.repo, p.number), mirrorDue = true);
     let s: Awaited<ReturnType<PrSource["snapshot"]>>;
     try { s = await d.source.snapshot(p.repo, p.number); } catch (e) { return void log("a pull request's files couldn't be read; its tier waits for the next poll", { repo: p.repo, pr: p.number, err: String((e as Error).message).slice(0, 200) }); }
     if ("moved" in s || s.pr.head !== p.head) return;
@@ -2113,8 +2126,8 @@ export function createEngine(d: EngineDeps) {
     // Only coverage under the head's current policy: a review under another tier or other mandatory reviewers is not this one.
     const t = current(repo, n, head);
     if (t && !gated(t.c)) return { reviewed: null, kind: "none" };
-    const reviewed = one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND policy IS ? AND at >= ? ORDER BY at DESC LIMIT 1", repo, n, t?.policy ?? null, new Date(Number.isFinite(t?.at) ? t!.at : 8.64e15).toISOString())?.head ?? null;
-    if (t && isCovered(repo, n, head, t.policy)) return { reviewed: head, kind: "completed" };
+    const reviewed = t ? one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? AND policy IS ? AND at >= ? ORDER BY at DESC LIMIT 1", repo, n, t.policy, isoAt(t.at))?.head ?? null : null;
+    if (t && isCovered(repo, n, head, t.policy, t.at)) return { reviewed: head, kind: "completed" };
     return { reviewed, kind: t && gateRuns(t.c, repo, n, head, t.policy, t.at).some((r) => r.status === "skipped") ? "skipped" : "exhausted" };
   }
 

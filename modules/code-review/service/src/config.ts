@@ -89,8 +89,9 @@ export const gated = (t: Pick<TierCfg, "on_open" | "on_push">) => [...t.on_open,
 export const openOnly = (t: Pick<TierCfg, "on_open" | "on_push">) => t.on_open.some((c) => c.mandatory) && !t.on_push.some((c) => c.mandatory);
 /** Some tier the repo's rules can select gates: its PRs get the commit status and their answers are read. */
 export const gatesAny = (e: Entry) => selectable(e.rules).some((t) => gated(e.tiers[t]));
-/** Every tier the repo's rules can select gates: the AI reviewer may leave its agents' pushes to code review. */
-export const gatesAll = (e: Entry) => selectable(e.rules).every((t) => gated(e.tiers[t]));
+/** Every tier a head can get gates: the AI reviewer may leave its agents' pushes to code review. Those the rules name, and sensitive,
+ * which a PR over GitHub's 3,000-file list gets whatever the rules say. */
+export const gatesAll = (e: Entry) => [...selectable(e.rules), "sensitive" as Tier].every((t) => gated(e.tiers[t]));
 /** A head's review policy: everything about how it is reviewed (its tier, the tier's mandatory combos, the base branch and the ignore
  * globs), never a commit. Runs and coverage count for a head only under its current policy. */
 export const policyOf = (e: Entry, tier: Tier, base_ref: string) => createHash("sha256").update(JSON.stringify([tier,
