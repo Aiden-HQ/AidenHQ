@@ -59,12 +59,12 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "container {{ $labels.name }} ({{ $labels.project }}/{{ $labels.service }}) is restarting or unhealthy"
-      # The core: Paperclip, the board, apps-mcp and every connection in the aidenhq project; the runner and the gateway units;
+      # The core: Paperclip, the board, apps-mcp and every connection in the aidenhq project; the kernel and computers units;
       # the board answering Prometheus.
       - alert: CoreServiceDown
         expr: |
           aidenhq_container_running{project="aidenhq",service!="ci-runner"} == 0
-          or aidenhq_unit_active{scope="user",unit=~"aidenhq-(runner|gateway)\\.service"} == 0
+          or aidenhq_unit_active{scope="user",unit=~"aidenhq-(kernel|computers)\\.service"} == 0
           or up{job="board"} == 0
         for: 5m
         labels: { severity: critical }

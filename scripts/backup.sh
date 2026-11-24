@@ -31,7 +31,7 @@ config="$(cd "${AIDENHQ_CONFIG_DIR:-./config}" && pwd)"
 state=; [ ! -f "$config/runner.yaml" ] || state="$(sed -n 's/^state_dir:[[:space:]]*//p' "$config/runner.yaml" | tr -d "\"'" | head -1)"
 state="${state:-~/.local/state/aidenhq-runner}"; state="${state/#\~/$HOME}"
 out_dir="${args[0]:-$repo/backups}"
-mkdir -p "$out_dir"
+mkdir -p "$out_dir"; out_dir="$(cd "$out_dir" && pwd)" # absolute: git -C below resolves paths against the instance checkout
 stamp="$(date +%Y%m%d-%H%M%S)"
 final="$out_dir/aidenhq-$stamp"
 work="$out_dir/.aidenhq-$stamp.part"
@@ -49,6 +49,10 @@ vols=()
 app_vols="$(docker volume ls -q --filter name='^app-')"
 for v in $app_vols; do
   if [ -n "$(docker ps -q --filter volume="$v")" ] && docker run --rm -v "$v:/v:ro" "$IMG" test -f /v/PG_VERSION; then
+    # Skipped only while its app's <app>_backups volume holds a non-empty dump from the last two days.
+    if ! docker run --rm -v "${v%_*}_backups:/b:ro" "$IMG" sh -c "find /b -name '*.dump' -size +0 -mtime -2 | grep -q ." 2>/dev/null; then
+      echo "error: $v is a live Postgres cluster and ${v%_*}_backups has no fresh dump, so skipping it would leave the backup unrecoverable" >&2; exit 1
+    fi
     echo "  volume $v: a live Postgres cluster, skipped (its app's dumps carry it)"
   else vols+=("$v"); fi
 done

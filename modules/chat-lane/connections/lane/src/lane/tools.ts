@@ -35,16 +35,19 @@ export function makeTools(token: string) {
     const hit = schemas.get(k);
     if (hit && Date.now() - hit.at < 10 * 60_000) return hit.defs;
     const out: ToolDef[] = [];
+    let failed = false;
     for (const connection of new Set(agent.tools.map((t) => t.connection))) {
       const want = agent.tools.filter((t) => t.connection === connection);
       try {
         const listed = await (await client(agent, connection)).listTools();
         for (const t of listed.tools) if (want.some((w) => w.name === t.name)) out.push({ type: "function", function: { name: t.name, ...(t.description ? { description: t.description } : {}), parameters: t.inputSchema } });
-      } catch {
-        // A connection that is down just offers no tools this turn.
+      } catch (e) {
+        // A connection that is down offers no tools this turn, and the reduced list is not cached.
+        failed = true;
+        console.error(`lane: listing tools of ${connection} failed: ${e instanceof Error ? e.message : e}`);
       }
     }
-    schemas.set(k, { at: Date.now(), defs: out });
+    if (!failed) schemas.set(k, { at: Date.now(), defs: out });
     return out;
   }
 

@@ -81,7 +81,7 @@ No secrets or ids in labels.
 
 Rules are `modules/monitoring/prometheus/rules.yml`: `DiskSpaceLow` (over 80%, or on course to fill in 24 h), `DiskNearlyFull`
 (over 95%; a warning too: the kernel's disk sweep tightens itself over 80%, and disk never reaches the owner), `MemoryPressure`, `OomKill`, `HostMetricsStale`, `HostMetricsExporterStale`, `ContainerRestarting`,
-`CoreServiceDown` (an aidenhq-project container other than `ci-runner`, the `aidenhq-runner` or `aidenhq-gateway` user unit, or
+`CoreServiceDown` (an aidenhq-project container other than `ci-runner`, the `aidenhq-kernel` or `aidenhq-computers` user unit, or
 the board not answering Prometheus, for 5 minutes, **critical**), `ApplyFailed` (the newest apply generation failed its health
 check or was refused at validation, **critical**), `UnitFailed`, `CiRunnersDown`, `CiRunnerRestartLooping` (a runner unit that
 keeps dropping out of `active` and isn't staying up: `Restart=always` never makes `UnitFailed`, and a unit backing off a
