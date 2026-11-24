@@ -58,12 +58,6 @@
   .edit { padding: 10px 14px 14px; border-top: 1px solid var(--line); display: grid; gap: 12px; background: color-mix(in srgb, var(--line) 6%, transparent); }
   .edit .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 14px; }
   .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 14px; }
-  .intro { padding: 12px 14px; color: var(--soft); max-width: 90ch; }
-  .tip { display: inline-block; position: relative; margin-left: 6px; vertical-align: middle; }
-  .tip summary { list-style: none; cursor: pointer; width: 16px; height: 16px; line-height: 14px; text-align: center; font-size: 11px; border: 1px solid var(--line); border-radius: 4px; color: var(--soft); }
-  .tip summary::-webkit-details-marker { display: none; }
-  .tip[open] summary { color: inherit; border-color: var(--accent); }
-  .tip div { position: absolute; z-index: 5; left: 0; top: 22px; width: min(320px, 70vw); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--color-background-primary, Canvas); color: var(--color-text-primary, CanvasText); font-size: 12.5px; font-weight: 400; text-transform: none; letter-spacing: 0; box-shadow: 0 4px 14px rgb(0 0 0 / .18); }
   .field { display: grid; gap: 3px; align-content: start; } .field > span { color: var(--soft); font-size: 12px; }
   .field textarea { font: inherit; min-height: 60px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; resize: vertical; }
   .combos { display: grid; gap: 6px; }
@@ -112,7 +106,7 @@
   const usd = (n) => (n == null ? "—" : `$${Number(n).toFixed(2)}`);
   const short = (s) => String(s ?? "").slice(0, 7);
   const when = (r) => r.started ?? r.ended ?? new Date().toISOString();
-  const ago = (t) => { const s = (Date.now() - Date.parse(t)) / 1000; if (!(s >= 90)) return "now"; const m = s / 60; if (m < 90) return `${Math.round(m)}m`; const hr = m / 60; return hr < 36 ? `${Math.round(hr)}h` : `${Math.round(hr / 24)}d`; };
+  const agoShort = (t) => { const s = (Date.now() - Date.parse(t)) / 1000; if (!(s >= 90)) return "now"; const m = s / 60; if (m < 90) return `${Math.round(m)}m`; const hr = m / 60; return hr < 36 ? `${Math.round(hr)}h` : `${Math.round(hr / 24)}d`; };
   const took = (r) => (r.duration_ms != null ? (r.duration_ms >= 60000 ? `${Math.floor(r.duration_ms / 60000)}m ${Math.round((r.duration_ms % 60000) / 1000)}s` : `${Math.max(1, Math.round(r.duration_ms / 1000))}s`) : null);
   const tokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
   const engineLabel = (k) => ov?.engines?.[k]?.label ?? k;
@@ -125,8 +119,7 @@
   const clickable = (el, fn) => { el.classList.add("link"); el.tabIndex = 0; el.setAttribute("role", "button"); el.addEventListener("click", fn); el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); } }); return el; };
   const select = (options, value, fn, label) => { const s = h("select", { ariaLabel: label }); for (const [v, text] of options) s.append(h("option", { value: v, textContent: text, selected: v === value })); s.addEventListener("change", () => fn(s.value)); return s; };
   const check = (on, label, fn) => { const b = h("input", { type: "checkbox", checked: !!on, ariaLabel: label }); b.addEventListener("change", () => fn(b.checked)); return b; };
-  const tip = (text) => h("details", { className: "tip" }, h("summary", { textContent: "?", title: "What is this?", ariaLabel: "What is this?" }), h("div", { textContent: text }));
-  const field = (label, control, help) => h("div", { className: "field" }, h("span", { textContent: label }, help ? tip(help) : null), control);
+  const field = (label, control, text) => h("div", { className: "field" }, h("span", {}, text ? help(label, text) : label), control);
   const sevMarks = (v, words) => h("span", { className: "sev", ariaLabel: SEV.map(([k, n]) => `${v[k]} ${n.toLowerCase()}`).join(", ") }, ...SEV.map(([k, n]) => h("span", { className: `${k}${v[k] ? "" : " zero"}`, title: `${v[k]} ${n.toLowerCase()}` }, h("i"), `${v[k]}${words ? " " + n.toLowerCase() : ""}`)));
   const status = (s) => { const [tone, word] = STATUS[s] ?? ["", s]; return h("span", {}, h("span", { className: `dot ${tone}` }), word); };
   const card = (title, aside, ...kids) => h("div", { className: "card" }, title ? h("div", { className: "head" }, h("b", { textContent: title }), aside ?? h("span")) : null, ...kids);
@@ -181,7 +174,7 @@
       box.append(h("div", { className: "combo" },
         select(Object.entries(ov.engines).map(([k, v]) => [k, v.label]), c.engine, swap, `${label} ${i + 1} engine`), model,
         select(e.efforts.map((x) => [x, x]), c.effort, (x) => set({ effort: x }), `${label} ${i + 1} effort`),
-        gates ? h("label", {}, check(c.mandatory, `${label} ${i + 1} mandatory`, (on) => { const { mandatory: _m, ...rest } = c; onChange(list.map((x, j) => (j === i ? (on ? { ...rest, mandatory: true } : rest) : x))); }), "Mandatory", tip("Mandatory: the PR can merge only after this reviewer has looked at its latest version and every important finding is fixed, answered or dismissed. Leave it off for an advisory review.")) : h("span"),
+        gates ? h("label", {}, check(c.mandatory, `${label} ${i + 1} mandatory`, (on) => { const { mandatory: _m, ...rest } = c; onChange(list.map((x, j) => (j === i ? (on ? { ...rest, mandatory: true } : rest) : x))); }), "Mandatory", help("Mandatory", "The PR can merge only after this reviewer has looked at its latest version and every important finding is fixed, answered or dismissed. Leave it off for an advisory review.", { bare: true })) : h("span"),
         btn("Remove", () => onChange(list.filter((_, j) => j !== i)), "", { ariaLabel: `Remove ${label} ${i + 1}` })));
     });
     if (list.length < 4) box.append(h("div", {}, btn("Add", () => onChange([...list, { engine: "codex", model: ov.engines.codex.models[0], effort: "medium" }]))));
@@ -198,7 +191,7 @@
       h("div", { className: "who soft", textContent: comboLabel(r) + (who ? ` · ${who}` : "") }),
       h("div", { className: "sevc" }, r.status === "done" ? sevMarks(r) : h("span")),
       h("div", { className: "num", textContent: r.cost_usd ? usd(r.cost_usd) : "" }),
-      h("div", { className: "num", textContent: r.status === "queued" ? "queued" : ago(r.ended ?? when(r)) })), () => go({ page: "run", id: r.id }));
+      h("div", { className: "num", textContent: r.status === "queued" ? "queued" : agoShort(r.ended ?? when(r)) })), () => go({ page: "run", id: r.id }));
   }
   function batchRow(b) {
     return clickable(h("div", { className: "row run" },
@@ -206,7 +199,7 @@
       h("div", { className: "ttl" }, h("b", { textContent: `${b.repo} ` }), h("span", { className: "mono", textContent: b.sha7 }), h("small", { textContent: b.status === "failed" || b.status === "skipped" ? (b.why ?? "") : `Whole-repo review: ${(b.option_names ?? []).slice(0, 4).join(", ")}${(b.option_names ?? []).length > 4 ? ` and ${b.option_names.length - 4} more` : ""}` })),
       h("div", { className: "who soft", textContent: b.verdict ? VERDICTS[b.verdict] : "" }), h("div"),
       h("div", { className: "num", textContent: b.cost_usd ? usd(b.cost_usd) : "" }),
-      h("div", { className: "num", textContent: ago(b.ended ?? b.started) })), () => go({ page: "batch", id: b.id }));
+      h("div", { className: "num", textContent: agoShort(b.ended ?? b.started) })), () => go({ page: "batch", id: b.id }));
   }
   function reviewsTab() {
     const runs = ov.runs.filter((r) => (!repoFilter || r.repo === repoFilter) && (filter === "all" || (filter === "important" ? r.important > 0 : r.status === "skipped" || r.status === "failed")));
@@ -239,7 +232,7 @@
     if (run.status === "failed") out.push(t("div", "banner bad", `The review didn't finish${run.why ? `: ${run.why}` : ""}. Nothing was posted. Ask again with “Review again”, or comment “aiden review” on the PR.`));
     if (review?.coverage?.incomplete) out.push(t("div", "banner warn", `Partial review: ${review.coverage.incomplete}. Files outside the reviewed set weren't checked, so fewer findings here doesn't mean clean.`));
     const main = [];
-    if (live(run)) main.push(card(null, null, t("div", "pad", `${run.status === "running" ? "Reading the diff and checking each finding" : "Waiting for a free slot"}. ${run.started ? `Started ${ago(run.started)} ago. ` : ""}This page updates when it's done.`)));
+    if (live(run)) main.push(card(null, null, t("div", "pad", `${run.status === "running" ? "Reading the diff and checking each finding" : "Waiting for a free slot"}. ${run.started ? `Started ${agoShort(run.started)} ago. ` : ""}This page updates when it's done.`)));
     else if (review) {
       if (!review.findings.length) main.push(t("div", "empty", `No issues found in ${review.coverage.reviewed.length} file${review.coverage.reviewed.length === 1 ? "" : "s"}.`));
       for (const [sev, name] of SEV) {
@@ -289,7 +282,7 @@
       row.append(ask);
       return row;
     });
-    return card("Merge gate", h("span", {}, h("span", { className: `dot ${gate.verdict === "pass" ? "done" : "busy"}` }), gate.verdict === "pass" ? "May merge" : "Waiting", tip("This repo requires a mandatory review. The PR can merge once that review has seen its latest version and no important finding is open. Dismissing a finding means you judged it wrong or not worth fixing: it stops blocking the merge, your reason is kept with it, and it opens again if a later review reports it again.")),
+    return card("Merge gate", h("span", {}, h("span", { className: `dot ${gate.verdict === "pass" ? "done" : "busy"}` }), gate.verdict === "pass" ? "May merge" : "Waiting", help("Merge gate", "This repo requires a mandatory review. The PR can merge once that review has seen its latest version and no important finding is open. Dismissing a finding means you judged it wrong or not worth fixing: it stops blocking the merge, your reason is kept with it, and it opens again if a later review reports it again.", { bare: true })),
       h("div", { className: "pad gate" }, t("small", "soft mono", short(gate.head)),
         ...gate.reasons.map((r) => t("span", "", r.text + (r.unblock ? ` ${r.unblock.replace(/^./, (c) => c.toUpperCase())}.` : ""))), ...open));
   }
@@ -472,13 +465,14 @@
 
   /* -------------------------------------------------------------------------------- the page */
   function render() {
+    closeHelp();
     const app = $("app");
     if (!ov) return app.replaceChildren(t("div", "empty", "Loading…"));
     const parts = route.page === "run" ? runPage() : route.page === "batch" ? batchPage() : route.page === "pr" ? prForm() : route.page === "tree" ? treeForm() : [
       h("div", { className: "bar" }, h("div", { className: "tabs", role: "tablist" }, ...[["reviews", "Reviews"], ["repos", "Repos"], ["insights", "Insights"]].map(([k, name]) => { const b = btn(name, () => { tab = k; render(); }, "", { role: "tab" }); b.setAttribute("aria-selected", String(tab === k)); return b; })),
         btn("Review a PR", () => { form = null; go({ page: "pr" }); }), btn("Review a repo", () => { form = null; catalog = null; go({ page: "tree" }); }), btn("Refresh", () => { const had = Object.keys(pending.watch).length || pending.unwatch.length; pending = { watch: {}, unwatch: [] }; say(had ? "Edits dropped here. If the bar above still shows a proposal, press its Discard." : ""); loadOverview(); })),
       ...(tab === "repos" ? reposTab() : tab === "insights" ? insights() : reviewsTab())];
-    app.replaceChildren(...(route.page === "list" ? [t("div", "card intro", "Code review reads each pull request on the repos you watch. When a PR opens, and again when it is pushed to, each reviewer you chose (an AI engine with a model) looks at the changes and posts its findings on the PR: important ones that should be fixed, and smaller nits. Watch a repo under Repos, or review any PR or whole repository by hand with the buttons here. Nothing runs until you do.")] : []), ...parts);
+    app.replaceChildren(...(route.page === "list" ? [t("div", "card pad soft", "Code review reads each pull request on the repos you watch. When a PR opens, and again when it is pushed to, each reviewer you chose (an AI engine with a model) looks at the changes and posts its findings on the PR: important ones that should be fixed, and smaller nits. Watch a repo under Repos, or review any PR or whole repository by hand with the buttons here. Nothing runs until you do.")] : []), ...parts);
     if (!$("lists").querySelector("#repos")) $("lists").append(h("datalist", { id: "repos" }));
   }
   start("code-review", (ctx) => loadOverview(ctx));
