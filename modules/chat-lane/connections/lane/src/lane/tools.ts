@@ -40,7 +40,11 @@ export function makeTools(token: string) {
       const want = agent.tools.filter((t) => t.connection === connection);
       try {
         const listed = await (await client(agent, connection)).listTools();
-        for (const t of listed.tools) if (want.some((w) => w.name === t.name)) out.push({ type: "function", function: { name: t.name, ...(t.description ? { description: t.description } : {}), parameters: t.inputSchema } });
+        for (const t of listed.tools) if (want.some((w) => w.name === t.name)) {
+          // The proxy's stand-ins while a connection is down are schema-less: serve them, but don't cache them.
+          if (!(t.inputSchema as { properties?: unknown }).properties) failed = true;
+          out.push({ type: "function", function: { name: t.name, ...(t.description ? { description: t.description } : {}), parameters: t.inputSchema } });
+        }
       } catch (e) {
         // A connection that is down offers no tools this turn, and the reduced list is not cached.
         failed = true;

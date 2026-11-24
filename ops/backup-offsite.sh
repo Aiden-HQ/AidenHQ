@@ -37,8 +37,11 @@ export RESTIC_REPOSITORY="$url" RESTIC_PASSWORD_FILE="$secrets/restic_password"
 
 staging=backups/offsite
 mkdir -p "$staging"
-rm -rf "$staging"/aidenhq-*
-scripts/backup.sh "$staging" --plain
+old="$(ls -d "$staging"/aidenhq-* 2>/dev/null || true)"
+# An incomplete backup (exit 1) stays on disk but is neither uploaded nor allowed to replace the previous local copy
+# (the next complete run removes both), so restic's retention only ever counts complete backups.
+if ! scripts/backup.sh "$staging" --plain; then echo "error: the backup was incomplete (see above); nothing was uploaded and the previous copy is kept" >&2; exit 1; fi
+[ -z "$old" ] || rm -rf $old
 
 "$restic" cat config >/dev/null 2>&1 || "$restic" init
 paths=("$staging")

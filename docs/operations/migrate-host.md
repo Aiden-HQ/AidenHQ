@@ -234,6 +234,7 @@ R='rsync -aHAX --numeric-ids --info=progress2'
 $R <you>@old:aidenhq/ ~/aidenhq/                       # checkout, .env, config/, data/ (Paperclip's db/ only as a basis)
 $R <you>@old:aidenhq-instance/ ~/aidenhq-instance/
 $R <you>@old:aidenhq-work/ ~/aidenhq-work/
+mkdir -p ~/.local/state
 $R <you>@old:.local/state/aidenhq-runner/ ~/.local/state/aidenhq-runner/
 $R <you>@old:.local/state/aidenhq-computers/ ~/.local/state/aidenhq-computers/
 $R --exclude=/authorized_keys <you>@old:.ssh/ ~/.ssh/

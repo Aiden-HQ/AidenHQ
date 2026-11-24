@@ -65,6 +65,8 @@ groups:
         expr: |
           aidenhq_container_running{project="aidenhq",service!="ci-runner"} == 0
           or aidenhq_unit_active{scope="user",unit=~"aidenhq-(kernel|computers)\\.service"} == 0
+          or (absent(aidenhq_unit_active{scope="user",unit="aidenhq-kernel.service"})
+              unless on() (absent(aidenhq_unit_active{scope="user"}) or (time() - node_textfile_mtime_seconds{file=~".*/units\\.prom"} > 180)))
           or up{job="board"} == 0
         for: 5m
         labels: { severity: critical }
