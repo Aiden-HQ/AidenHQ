@@ -178,8 +178,9 @@ const QUOTE_PREFIX = 64;
 const quoted = (text: string, from: number, to: number, lineStart: number, limit: number) => {
   // A blockquote's own marks are a handful of characters: a longer prefix is reply text, and is not walked at all.
   if (from - lineStart > QUOTE_PREFIX) return false;
+  // A blockquote's own marks, with an optional list marker in front of them ("- > <|im_end|>"): a handful of characters.
   const prefix = text.slice(lineStart, from);
-  if (!/^[ \t]*>[ \t>]*$/.test(prefix)) return false;
+  if (!/^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*$/.test(prefix)) return false;
   let i = to;
   while (i < limit && PAD.test(text[i]!)) i++;
   return i === limit;
