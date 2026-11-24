@@ -266,12 +266,12 @@
     const where = `${f.path}:${f.line}${f.end_line && f.end_line !== f.line ? `-${f.end_line}` : ""}`;
     const blob = review ? `https://github.com/${review.repo}/blob/${review.head}/${f.path.split("/").map(encodeURIComponent).join("/")}#L${f.line}${f.end_line ? `-L${f.end_line}` : ""}` : "";
     // The brief for the author's coding agent: shown to select and copy (the frame has no clipboard).
-    const brief = review ? [`Fix in ${review.repo} (PR #${review.pr}, ${short(review.head)}): ${f.title}`, `Where: ${where}`, `Why: ${f.why}`, `Evidence: ${f.evidence}`, `Wanted: ${f.fix_brief}`].join("\n") : "";
+    const brief = review ? [`Fix in ${review.repo} (PR #${review.pr}, ${short(review.head)}): ${f.title}`, `Where: ${where}`, `Why: ${f.why}`, `Evidence: ${f.evidence}`, `Wanted: ${f.fix_brief ?? ""}`].join("\n") : "";
     const area = h("textarea", { readOnly: true, value: brief, ariaLabel: "Fix brief", rows: 6, spellcheck: false });
     return h("div", { className: `finding ${f.severity}` },
       h("div", { className: "bar" }, h("h4", { textContent: f.title }), outcome ? t("span", "tag", OUTCOMES[outcome]) : null),
       h("div", { className: "mono soft" }, blob ? gh(blob, where) : where), md(f.why),
-      h("details", {}, h("summary", { textContent: "Why flagged" }), h("pre", { textContent: f.evidence }), h("div", {}, h("b", { textContent: "Wanted: " }), ...mdInline(f.fix_brief))),
+      h("details", {}, h("summary", { textContent: "Why flagged" }), h("pre", { textContent: f.evidence }), h("div", {}, h("b", { textContent: "Wanted: " }), ...mdInline(String(f.fix_brief ?? "")))),
       brief ? h("details", {}, h("summary", { textContent: "Fix brief" }), area, h("div", { className: "actions" }, btn("Select all", () => { area.focus(); area.select(); }), t("small", "soft", "Then copy it, to paste to a coding agent."))) : null);
   }
   /** A gated repo's merge verdict for the PR's current head: why it waits, and a Dismiss (with a reason) for each open important finding. */
