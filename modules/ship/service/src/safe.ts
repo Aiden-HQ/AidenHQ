@@ -35,8 +35,10 @@ export function safeClass(files: ChangedFile[], s: ShipSettings["safe"], generat
   if (files.length >= COMPARE_CAP) return out(`${files.length}+ changed files: GitHub doesn't list them all`);
   const denied = files.filter((f) => hit(f.filename, s.deny) || (f.previous_filename !== undefined && hit(f.previous_filename, s.deny)));
   if (denied.length) return out(`touches ${names(denied)} (safe.deny)`);
-  // A lockfile's source is its manifest beside it; any other generated file's is some substantive change (its generator's input).
-  const manifest = (f: ChangedFile) => files.some((m) => posix.dirname(m.filename) === posix.dirname(f.filename) && MANIFESTS.includes(posix.basename(m.filename)));
+  // A lockfile's source is a manifest at or under its directory (a workspace member's too); any other generated file's is some
+  // substantive change (its generator's input).
+  const under = (dir: string, path: string) => dir === "." || path.startsWith(`${dir}/`);
+  const manifest = (f: ChangedFile) => files.some((m) => MANIFESTS.includes(posix.basename(m.filename)) && under(posix.dirname(f.filename), m.filename));
   const orphan = gen.filter((f) => (LOCKFILES.includes(posix.basename(f.filename)) ? !manifest(f) : !counted.length));
   if (orphan.length) return out(`changes generated files (${names(orphan)}) without the source they come from`);
   if (s.max_lines !== null && lines > s.max_lines) return out(`${lines} lines > ${s.max_lines}`);

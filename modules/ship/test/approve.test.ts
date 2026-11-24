@@ -22,6 +22,7 @@ test("the safe class counts substantive lines only, denies config, and never tak
   assert.match(safeClass([file("gen/api.pb.go"), file("go.sum")], s, ["gen/**"]).why, /generated files .* without the source/);
   assert.equal(safeClass([file("proto/api.proto"), file("gen/api.pb.go")], s, ["gen/**"]).safe, true);
   assert.match(safeClass([file("src/a.ts"), file("web/yarn.lock")], { ...s, deny: [] }, []).why, /yarn\.lock.*without the source/, "a lockfile's source is its manifest");
+  assert.equal(safeClass([file("packages/ui/package.json"), file("pnpm-lock.yaml")], { ...s, deny: [] }, []).safe, true, "a workspace member's manifest counts");
   assert.match(safeClass([file("src/a.ts"), file("infra/main.tf")], s, []).why, /infra\/main\.tf.*safe\.deny/);
 });
 
