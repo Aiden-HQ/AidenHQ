@@ -97,7 +97,8 @@ test("a session's merge runs at once on a head the plan raises; an Engineer's go
     plan: async ({ args }) => ({ args, targets: { head: "abc1234" }, raise: { tier: 1, rule: "maintained-merge-foreign-head", reason: "a head the runner didn't push" } }),
     execute: async (r) => (executed.push(r.args), { ok: true, text: "merged" }),
   };
-  const writes = createWrites({ records, registry: () => KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), executors: () => ({ github }), onTask: { open: async () => true, notify: async () => {} } });
+  const opts = { records, registry: () => KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), executors: () => ({ github }), onTask: { open: async () => true, notify: async () => {} } };
+  const writes = createWrites(opts);
   const job = (roles, task) => ({ kind: "run", agent: "ag", key: "k", name: "k", roles, tools: {}, writes: ["github.merge"], task, job: `j-${task}`, workspace: task.toUpperCase(), credential: "" });
   const merge = { kind: "github.merge", args: { prs: [{ repo: "acme/widgets", number: 2, head: "abc1234" }] } };
   const s = await writes.request(job(["session"], "t-1"), merge);
@@ -105,6 +106,16 @@ test("a session's merge runs at once on a head the plan raises; an Engineer's go
   assert.equal(executed.length, 1);
   const e = await writes.request(job([], "t-2"), merge);
   assert.deepEqual([e.tier, e.state], [1, "review"]);
+  // The owner's no on that head (a card he got with autonomy off) binds a session on the task too, even filed again as other
+  // content (a new digest).
+  // His later yes to another head on the task leaves that no standing.
+  const off = createWrites({ ...opts, autonomy: () => "off" });
+  const card = await off.request(job([], "t-2"), merge);
+  assert.notEqual(typeof records.decide(card.id, card.digest, "reject", "account:o1", "board"), "string");
+  const other = await off.request(job([], "t-2"), { kind: "github.merge", args: { prs: [{ repo: "acme/widgets", number: 3, head: "def5678" }] } });
+  assert.notEqual(typeof records.decide(other.id, other.digest, "approve", "account:o1", "board"), "string");
+  const again = await writes.request(job(["session"], "t-2"), { kind: "github.merge", args: { ...merge.args, method: "squash" } });
+  assert.deepEqual([again.tier, again.state], [2, "owner"]);
 });
 
 test("claim returns a scheduled wake for a live session job; for a crew job it waits", async () => {

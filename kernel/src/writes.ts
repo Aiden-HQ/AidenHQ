@@ -23,7 +23,7 @@ import { CODEHOSTS, routeKind } from "./codehost.ts";
 import type { Executor, ReviewContext } from "../sdk/src/executor.ts";
 import { gateMode } from "./gates.ts";
 import { identifierRefused } from "./task-identifier.ts";
-import { codeRefusal } from "./review-loop.ts";
+import { codeRefusal, ownerVeto } from "./review-loop.ts";
 import { AUTONOMY, RETRY_MS, retryWait, capText, computeTier, shadowed, type Autonomy, type Raise, type Cap, type Tier, type Verdict } from "./tier.ts";
 
 export type Schema = { type?: string; properties?: { [k: string]: Schema }; required?: string[]; additionalProperties?: boolean; enum?: unknown[]; pattern?: string; minLength?: number; maxLength?: number; items?: Schema; minItems?: number; maxItems?: number; minimum?: number; maximum?: number; exclusiveMinimum?: number };
@@ -303,7 +303,7 @@ export function createWrites({ records, registry, connections, secret, resolver,
     const top = filedRaises(kind, plan).reduce<Raise | undefined>((a, b) => ((b.tier > (a?.tier ?? 0)) ? b : a), raise);
     // Code's refusals read the whole planned diff (never the card cut for storage), whatever the tier.
     const refused = codeRefusal({ kind, args: plan.args, card, context: { ...plan.review, diff: whole.details } as ReviewContext });
-    const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) : false, autonomy: autonomyOf(requester), ownerSave, session });
+    const t = computeTier({ floor: k.floor, raise: top, refusal: refused?.code, priorVeto: task ? records.vetoed(task, kind, { digest: digestOf(base) }) || (session && Boolean(ownerVeto(records, { kind, args: plan.args, task, digest: digestOf(base) }))) : false, autonomy: autonomyOf(requester), ownerSave, session });
     if (t.state === "rejected") throw fail(422, "refused", refused!.reason, String(t.rule));
     // A reviewer reads a reviewed card's details whole (in parts when they are large): code's own copy rides in the record's
     // context while it is open (records.ts drops it once closed), and the card keeps what it shows.

@@ -1129,10 +1129,10 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           if (live) {
             // A wake is consumed only by a job whose prompt had its cause: any other waits for the next job (still open). A
             // session's job never ends to make way for one, so its timers and waits are claimed for it too (dispatch delivers
-            // them as wake notices); one older than its claim its prompt already had.
+            // them as wake notices), whenever they fell due: a session's prompt carries only the wake that started it.
             const session = live.profile === "session";
             if (!comment && !session) continue;
-            if (w.at < live.at) set(w, comment ? { done: `before the live job ${live.id} was claimed`, job: live.id } : { dropped: `before the live session job ${live.id} was claimed` });
+            if (comment && w.at < live.at) set(w, { done: `before the live job ${live.id} was claimed`, job: live.id });
             else { take.run(module, t + LEASE_MS, w.key); out.push({ ...w, state: "claimed", claimed_by: module, until: t + LEASE_MS, live_job: live.id }); }
             continue;
           }

@@ -200,9 +200,15 @@ export function codeRefusal(r: Pick<Rec, "kind" | "args" | "card" | "context">):
 /**
  * What the reviewer reads of one record, or code's verdict in its place: the owner's veto on the task (his card).
  */
+/** The owner's veto on a request (his no on this action on its task, or on this same content: the PR heads a merge names), or undefined. */
+export const ownerVeto = (records: Records, r: Pick<Rec, "kind" | "args" | "task" | "digest"> & { id?: string }) => {
+  const action = actionOf(r.kind);
+  return priorPart(priorDecisions(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), action, requestKey(action, { ...(r.args && typeof r.args === "object" ? r.args : {}), digest: r.digest })));
+};
+
 export async function reviewInput(r: Rec, { records, task }: { records: Records; task: TaskApi }): Promise<{ verdict?: Verdict; request: Record<string, unknown> }> {
   const action = actionOf(r.kind);
-  const prior = priorPart(priorDecisions(records.list(ALL, 500, { task: r.task, reviewed: true }).filter((x) => x.id !== r.id).map(asPrior), action, requestKey(action, { ...(r.args && typeof r.args === "object" ? r.args : {}), digest: r.digest })));
+  const prior = ownerVeto(records, r);
   if (prior) return { verdict: { decision: "escalate", code: "owner_veto", reason: String(prior.reason), model: "kernel/code" }, request: {} };
   const refused = codeRefusal(r);
   if (refused) return { verdict: refused, request: {} };

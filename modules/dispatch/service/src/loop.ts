@@ -235,8 +235,9 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       try {
         if (!ENDED.has(v.state)) {
           // A task closed while its run goes on (the owner cancelled it): nothing else would end the run or free its computer.
-          const cur = await kernel.task(v.task);
-          if (CLOSED.has(String(cur.status))) { await kernel.stop(v.id); log("task closed while running: run stopped", { job: v.id, task: v.task }); continue; }
+          // A task deleted under its run is closed too (a session has no deadline that would end it).
+          const cur = await kernel.task(v.task).catch((e: Error) => { if (e instanceof KernelError && e.status === 404) return undefined; throw e; });
+          if (!cur || CLOSED.has(String(cur.status))) { await kernel.stop(v.id); log(`task ${cur ? "closed" : "deleted"} while running: run stopped`, { job: v.id, task: v.task }); continue; }
           // A task moved to another agent while its run goes on (re-routed): the new assignee has its own wake, and this run's
           // reply would be refused, so it is stopped rather than left to run out its time.
           if (cur.assigneeAgentId && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log("task moved while running: run stopped", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
