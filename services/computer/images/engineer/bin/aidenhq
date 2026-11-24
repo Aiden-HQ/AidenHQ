@@ -31,6 +31,10 @@
 //   aidenhq reset                                    start the next turn with a fresh session
 //   aidenhq engine <kind> [model]                    run the next turn on another engine or model
 //   aidenhq cleanup                                  remove the workspace when this turn ends
+//   aidenhq ship checkout <PR link> <head>           the adopted PR at <head> (a fork's too, from the repo's refs/pull/<n>/head)
+//                                                    checked out as the branch ship-pr-<n> in this workspace's clone
+//   aidenhq ship push <PR link> <head> <generation>  push the checked-out branch's commits on top of <head> onto the adopted PR's
+//                                                    branch (a fix ship woke you for): one codehost.push write, refused if the PR moved
 //
 // Every git write waits for its record to end: done prints its outcome; failed, rejected or stale prints the reason and exits 1;
 // waiting on the AI reviewer or the owner is said plainly and exits 0 (not an error).
@@ -45,8 +49,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup`;
-const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup"];
+const usage = `usage: aidenhq publish <org/repo> <branch>... [--title <title>] [--body-file <file>] [--fixes <owner/repo#n>]... | review <org/repo> <branch>... [--title <title>] [--body-file <file>] | merge <PR link> <head sha>... | close <PR link>... | create-repo [<org>/]<name> | clone [--keep] <org/name> | apply <org/repo> <branch> | task <PEN-N> | tasks <words> | advise "<question>" [--file <brief>] | reset | engine <kind> [model] | cleanup | ship checkout <PR link> <head> | ship push <PR link> <head> <generation>`;
+const COMMANDS = ["publish", "review", "merge", "close", "create-repo", "clone", "apply", "task", "tasks", "advise", "reset", "engine", "cleanup", "ship"];
 const [command, ...rest] = process.argv.slice(2);
 const fail = (msg, code = 1) => {
   console.error(`aidenhq: ${msg}`);
@@ -369,6 +373,49 @@ if (command === "publish" || command === "review") {
   const question = words.join(" ").trim();
   if (!question) fail('usage: aidenhq advise "<question>" [--file <brief>]', 2);
   lines.push(await tool("advisor_ask", { question, ...(flags.file ? { context: readFileSync(flags.file, "utf8") } : {}) }));
+} else if (command === "ship") {
+  const [sub, link, head, gen] = words;
+  const shape = sub === "push" ? words.length === 4 && /^[1-9]\d{0,8}$/.test(gen) : sub === "checkout" && words.length === 3;
+  if (!shape || !/^[0-9a-f]{40}$/.test(head)) fail("usage: aidenhq ship checkout <PR link> <head> | ship push <PR link> <head> <generation> (copy the line from ship's wake)", 2);
+  const { repo, number } = pr(link);
+  if (sub === "checkout") {
+    // The clone (made or refreshed), then the PR's head commit itself from the code host: a fork's commit is the base repo's too.
+    execFileSync(process.execPath, [process.argv[1], "clone", repo], { stdio: ["ignore", "ignore", "inherit"] });
+    const dir = cloneOf(repo).have;
+    const res = await fetch(new URL("/v1/jobtools/clone", gateway), { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ repo, head }), signal: AbortSignal.timeout(10 * 60_000) }).catch((e) => fail(`the gateway didn't answer (${e.message})`));
+    if (!res.ok) { const t = await res.text(); let m = t; try { m = JSON.parse(t).error?.message ?? t; } catch {} fail(m); }
+    const tmp = mkdtempSync(join(tmpdir(), "pr-")), file = join(tmp, "pr.bundle");
+    try {
+      writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+      execFileSync("git", ["-C", dir, "fetch", "--quiet", "--no-tags", file, `+refs/heads/*:refs/ship/pr-${number}/*`], { stdio: ["ignore", "ignore", "inherit"] });
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+    // Work in progress here is never dropped: a clone with uncommitted changes is refused, and the branch is moved only then.
+    if (execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }).trim()) fail(`${dir} has uncommitted changes: commit them on a branch of your own and check out again`, 2);
+    // Nor are commits: a ship-pr-<n> with commits beyond <head> is pushed (ship push) or renamed first, never reset here. A tip
+    // ship push already landed is published (the PR's head carries it, rewritten as the App's commit), so it moves on.
+    const at = (ref) => { try { return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", ref], { encoding: "utf8" }).trim(); } catch { return ""; } };
+    const kept = at(`refs/heads/ship-pr-${number}`);
+    if (kept && kept !== at(`refs/ship/pushed/pr-${number}`)) { try { execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", kept, head]); } catch { fail(`ship-pr-${number} has commits beyond ${head.slice(0, 12)}: push them with \`aidenhq ship push\`, or rename the branch, then check out again`, 2); } }
+    execFileSync("git", ["-C", dir, "checkout", "--quiet", "-B", `ship-pr-${number}`, head], { stdio: ["ignore", "ignore", "inherit"] });
+    console.log(`${link}: ship-pr-${number} is checked out at ${head.slice(0, 12)} in ${dir}`);
+    process.exit(0);
+  }
+  const dir = cloneOf(repo).have;
+  if (!dir) fail(`this workspace has no clone of ${repo}`, 2);
+  const g = (args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  let branch = "";
+  try { branch = g(["symbolic-ref", "--short", "HEAD"]); } catch {}
+  try { g(["merge-base", "--is-ancestor", head, "HEAD"]); } catch { branch = ""; }
+  // Only the branch ship checkout made for this PR: another branch from the same head is another change.
+  if (branch !== `ship-pr-${number}`) branch = "";
+  if (!branch) fail(`check out the PR with \`aidenhq ship checkout ${link} ${head}\` and commit your fix on ship-pr-${number} first`, 2);
+  const sha = g(["rev-parse", "HEAD"]);
+  if (sha === head) fail("no commit on top of the PR's head to push", 2);
+  bundle(repo, branch, sha);
+  const before = bad.length;
+  lines.push(`${link}: ${(await write("codehost.push", { only: [{ repo, branch, sha }], pr: { repo, number }, expected: head, generation: Number(gen) }))}`);
+  // Landed (done, or waiting on a decision about this exact commit): the next checkout may move ship-pr-<n> past it.
+  if (bad.length === before) g(["update-ref", `refs/ship/pushed/pr-${number}`, sha]);
 } else {
   if (command === "engine" ? !words.length || words.length > 2 : words.length) fail(usage, 2);
   const body = command === "engine" ? { engine: words[0], ...(words[1] ? { model: words[1] } : {}) } : {};

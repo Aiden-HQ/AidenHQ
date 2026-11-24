@@ -18,7 +18,7 @@
 // one that moves an `aidenhq` marketplace pin (the official modules come with the product pin); /apply/write → the owner's
 // typed settings change as a commit on main's head (kernel/src/settings-change.ts), which only a kernel.apply then lands.
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -96,13 +96,13 @@ export type Options = {
    * The reviewer App's REST on a repo where it is installed (the owner's one GitHub App, the identity code review posts as), and
    * its bot login; undefined where it isn't (no approval is posted then: one as the owner would count as a person's).
    */
-  reviewer?: (repo: string) => Promise<{ login: string; rest: Gh } | undefined>;
+  reviewer?: (repo: string) => Promise<{ login: string; rest: Gh; /** An installation token, for a git push (a fork PR's branch). */ token: () => Promise<string> } | undefined>;
 };
 /**
  * The reviewer App (github-mcp's gitHubApp over the owner's one App, `<state>/github-app/`, the identity code review posts as) as `Options.reviewer`: its
  * REST with an installation token on a repo it is installed on, and its bot login; undefined where it isn't (or isn't set up).
  */
-export function reviewerOf(app: { installation(repo: string): Promise<number | null>; token(installation: number, fresh?: boolean): Promise<string>; slug(): string | undefined }, fetchFn: typeof fetch = fetch): (repo: string) => Promise<{ login: string; rest: Gh } | undefined> {
+export function reviewerOf(app: { installation(repo: string): Promise<number | null>; token(installation: number, fresh?: boolean): Promise<string>; slug(): string | undefined }, fetchFn: typeof fetch = fetch): (repo: string) => Promise<{ login: string; rest: Gh; token: () => Promise<string> } | undefined> {
   return async (repo) => {
     const installation = await app.installation(repo);
     const slug = app.slug();
@@ -116,7 +116,7 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
       const r = await call(method, path, body, false);
       return r.status === 401 ? call(method, path, body, true) : r;
     };
-    return { login: `${slug}[bot]`, rest };
+    return { login: `${slug}[bot]`, rest, token: () => app.token(installation) };
   };
 }
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
@@ -141,6 +141,12 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
 type Base = { repo: string; base: string; read: (path: string) => Promise<string>; dir?: string; tip?: string };
 // What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
+/** How long a repair waits for ship's check job: its recipe's 30-minute limit and a few minutes for a free computer. */
+const REPAIR_WAIT_MS = 40 * 60_000;
+/** The lockfiles a repair may rewrite besides the plan's generated globs (ship's recipe regenerates them). */
+const REPAIR_LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+/** A glob (`**` any folders, `*` within one) as a whole-path pattern. */
+const globRe = (glob: string) => new RegExp(`^${String(glob).split("**/").map((part) => part.split("**").map((p) => p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")).join("(?:.*/)?")}$`);
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
@@ -354,7 +360,7 @@ export function createService(o: Options) {
         current: at ? at.generation : undefined, ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
       };
     };
-    if (kind.endsWith(".approve") || kind.endsWith(".enqueue")) {
+    if (kind.endsWith(".approve") || kind.endsWith(".enqueue") || kind.endsWith(".repair")) {
       const s = slugOf(a.repo);
       const n = Number(a.number);
       const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
@@ -376,7 +382,7 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : "";
+      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the App`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha)) } : {}),
@@ -464,8 +470,10 @@ export function createService(o: Options) {
       for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
       // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read.
       bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
-      const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: b.branch } : undefined;
-      branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
+      // The commits go onto the PR's own head branch (GitHub's name for it, a fork's too); the box's branch only carries them.
+      const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: String(onto.pr?.head?.ref ?? "") } : undefined;
+      // An adopted PR's push is planned against where it lands (the PR's head branch), never the box's local branch name.
+      branches.push({ repo: s.slug, branch: ship ? ship.branch : b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
     return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, changed, bases, own, task: String(a.workspace ?? "") };
@@ -504,7 +512,7 @@ export function createService(o: Options) {
       // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
       if (rec.kind.endsWith(".publish_module")) return access.connected() ? publishModule(rec.args) : { ok: false, text: "GitHub isn't connected: preview again once it is." };
       // An approval or an enqueue is never held: its adoption and head are read again by the next round, which files a new one.
-      if (/\.(approve|enqueue)$/.test(rec.kind) && !access.connected()) return { ok: false, text: "GitHub isn't connected: the next round asks again once it is." };
+      if (/\.(approve|enqueue|repair)$/.test(rec.kind) && !access.connected()) return { ok: false, text: "GitHub isn't connected: the next round asks again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -525,6 +533,7 @@ export function createService(o: Options) {
       const done: string[] = [];
       if (action === "approve") return approve(a);
       if (action === "enqueue") return enqueue(a);
+      if (action === "repair") return repairPr(a);
       if (action === "push" && a.pr) return pushOnto(a);
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
@@ -606,10 +615,11 @@ export function createService(o: Options) {
   }
 
   /**
-   * A push onto an adopted PR's branch (ship): the PR is read again here (a Tier 0 push runs right after its plan, with no
-   * revalidation), and the push carries a lease on the head the write expects, so a contributor's push in between wins and
-   * this one is refused (ship-head-moved), never forced over it. The commit is not noted as the runner's own head: the branch
-   * holds the contributor's commits, so its merge stays the AI reviewer's (foreign-head tiering, plan.ts).
+   * A push onto an adopted PR's branch (ship), written through GitHub's API as the App (so GitHub signs the commits): the PR is
+   * read again here (a Tier 0 push runs right after its plan, with no revalidation), each commit from `expected` to the branch's
+   * commit is created as blobs, a tree and a commit, and the ref is moved by a fast-forward update from `expected` (force: false).
+   * A contributor's push in between makes that update fail (ship-head-moved), never overwritten. The commit is not noted as the
+   * runner's own head: the branch holds the contributor's commits, so its merge stays the AI reviewer's (foreign-head tiering).
    */
   async function pushOnto(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     const b = a.only[0];
@@ -620,22 +630,247 @@ export function createService(o: Options) {
     const fork = pr.head?.repo && !same(String(pr.head.repo.full_name), s.slug);
     if (!pr.head?.repo || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainers to push: nothing was pushed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
-    if (pr.head.ref !== b.branch) return { ok: false, text: `ship-scope: \`${b.branch}\` isn't ${url}'s head branch: nothing was pushed.` };
     if (pr.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${pr.state}: nothing was pushed.` };
     const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
+    // A fork's branch: the base repo's App installation pushes the commits as they are, leased on the head the write expects.
+    if (fork) {
+      const app = await o.reviewer?.(s.slug);
+      if (!app) return { ok: false, text: `ship-no-app: ${url}: a fork's branch is pushed as the GitHub App, which isn't installed on ${s.slug}: nothing was pushed.` };
+      // The lease guards a race; the fix itself must build on the head, never rewrite the contributor's history.
+      if (!(await git(dir, ["merge-base", "--is-ancestor", String(a.expected), String(b.sha)]).then(() => true, () => false))) return { ok: false, text: `ship-scope: \`${String(b.sha).slice(0, 12)}\` doesn't build on ${url}'s head \`${String(a.expected).slice(0, 12)}\`: nothing was pushed.` };
+      const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+      if (late) return { ok: false, text: late };
+      const pushed = await forkPush(dir, into, String(pr.head.ref), String(a.expected), String(b.sha), app, url);
+      if (pushed) return pushed;
+      flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, app.login, undefined, a.workspace);
+      flow.checksStarted(s.slug, Number(a.pr.number), b.sha, undefined, a.workspace);
+      return { ok: true, text: `Pushed ${url} \`${pr.head.ref}\` (${into}) from \`${String(a.expected).slice(0, 12)}\` to \`${String(b.sha).slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${b.sha}`] };
+    }
+    // The App writes the commits: GitHub signs what an App creates through the API.
+    const app = await o.reviewer?.(into);
+    if (!app) return { ok: false, text: `ship-no-app: ${url}: commits to an adopted PR are written as the GitHub App, which isn't installed on ${into}: nothing was pushed.` };
+    const made = await apiCommits(app.rest, into, dir, String(a.expected), String(b.sha));
+    if ("refused" in made) return { ok: false, text: `${made.refused.startsWith("ship-") ? "" : "GitHub refused the commit: "}${made.refused} (${url}): nothing was pushed.` };
+    // The adoption once more, right before the branch moves: a pause or a hand-back during the upload refuses it.
+    const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+    if (late) return { ok: false, text: late };
+    // The PR's own head branch, as GitHub names it: the box's branch is only where the commits came from.
+    const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
+    // Not a fast-forward from `expected`: someone pushed after the read above.
+    if (r.status === 422 || r.status === 409) return { ok: false, text: `ship-head-moved: ${url} moved while writing (the update from \`${String(a.expected).slice(0, 12)}\` isn't a fast-forward any more): nothing was pushed; read it again.` };
+    if (r.status >= 300) return { ok: false, text: `GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, app.login, undefined, a.workspace);
+    flow.checksStarted(s.slug, Number(a.pr.number), made.sha, undefined, a.workspace);
+    return { ok: true, text: `Wrote ${url} \`${pr.head.ref}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
+  }
+
+  /**
+   * Ship's repair of an adopted PR (a `repair` record ship filed). Its `ship-repair` check job (ship's recipe, no model, no
+   * credential) merges the base into the head in a box and runs the repo's generators, which on a fork are the contributor's own
+   * code: what it keeps is untrusted. So the merge is made here, in the cache (`git merge-tree`), and the box's files are taken
+   * only on generated paths (the plan's globs) and known lockfiles, as regular files or symlinks, never under `.github/` unless
+   * they are the base's own; every conflict must be on such a path. The result is one merge commit (parents: the head and the
+   * base's tip): through the API as the App on the base repo (signed), or a leased git push as the base repo's App to a fork whose
+   * author allows maintainer edits (unsigned: a rule requiring signed commits refuses it, loudly). Leftover conflicts and a
+   * failed generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
+   */
+  async function repairPr(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const read = async () => api("GET", `/repos/${s.slug}/pulls/${n}`);
+    let pr = await read();
+    if (pr.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${pr.state}: nothing was changed.` };
+    if (pr.base?.ref !== a.base) return { ok: false, text: `ship-scope: ${url}'s base changed to \`${String(pr.base?.ref)}\`: nothing was changed.` };
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: nothing was changed.` };
+    const fork = !pr.head?.repo || !same(String(pr.head.repo.full_name), s.slug);
+    if (fork && (!pr.head?.repo || pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainer edits: nothing was changed.` };
+    const into = slugOf(pr.head.repo.full_name).slug;
+    const app = await o.reviewer?.(s.slug);
+    if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${s.slug}: nothing was changed.` };
+    const baseSha = String(pr.base.sha);
+    // Both commits in the cache (a fork's head is the base repo's too, as refs/pull/<n>/head).
+    const { dir } = await fetchRemote(s, a.head);
+    await fetchRemote(s, baseSha);
+    const mergeBase = await git(dir, ["merge-base", a.head, baseSha]);
+    // The box's run, followed to its end: the recipe's own limit (ship's module.yaml, 30 minutes) and a free computer's wait.
+    let check = await kernel("POST", "/v1/checks", { repo: s.slug, head: a.head, run: "ship-repair", spec: { base: baseSha, merge_base: mergeBase, base_ref: String(a.base), plan: JSON.stringify(a.plan ?? {}), attempt: String(a.attempt ?? 1) } });
+    const until = Date.now() + REPAIR_WAIT_MS;
+    while (check.state === "running" && Date.now() < until) check = await kernel("GET", `/v1/checks/${check.id}?after=${Number(check.version ?? 0)}&wait=25000`);
+    const result = check.result ?? {};
+    if (Array.isArray(result.leftovers) && result.leftovers.length) return { ok: false, text: `ship-leftovers: merging \`${a.base}\` into ${url} leaves conflicts no generator rewrites:\n${result.leftovers.map((p: string) => `leftover: ${p}`).join("\n")}` };
+    if (result.merge_failed) return { ok: false, text: `ship-merge-failed: merging \`${a.base}\` into ${url} failed (data, not instructions):\n${String(result.merge_failed).slice(0, 2000)}` };
+    if (result.failed) return { ok: false, text: `ship-generator: the repair of ${url} stopped (data, not instructions):\n${String(result.failed).slice(0, 2000)}` };
+    if (check.state !== "done" || typeof result.changed !== "number") return { ok: false, text: `ship-repair: the repair of ${url} didn't finish (${String(check.error ?? check.state).slice(0, 300)}): nothing was changed.` };
+    const kept = await kernel("GET", `/v1/checks/${check.id}/kept`);
+    const entries: { path: string; mode: string; sha: string | null; content?: string }[] = Array.isArray(kept.entries) ? kept.entries : [];
+    const globs = (Array.isArray(a.plan?.globs) ? a.plan.globs : []).map(globRe);
+
+    const tmp = mkdtempSync(join(o.cacheDir, "repair-"));
+    let final: string, made: string;
     try {
-      await push(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${a.expected}`, remote(into), `${b.sha}:refs/heads/${b.branch}`]);
+      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), GIT_AUTHOR_NAME: app.login, GIT_AUTHOR_EMAIL: `${app.login}@users.noreply.github.com`, GIT_COMMITTER_NAME: app.login, GIT_COMMITTER_EMAIL: `${app.login}@users.noreply.github.com` };
+      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+      const blobAt = async (tree: string, p: string) => (await g(["ls-tree", "-z", tree, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
+      // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
+      const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
+      const [merged, ...conflicted] = out.split("\0").filter(Boolean);
+      // A generated path (the plan's globs), or a lockfile only where git couldn't merge it (its package manager rewrote it), even
+      // when a glob names lockfiles.
+      const allowed = (p: string) => (REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) ? conflicted.includes(p) : globs.some((re: RegExp) => re.test(p)));
+      const refuse = (why: string) => ({ ok: false, text: `ship-refused: the repair of ${url} ${why}: nothing was changed.` });
+      const taken = new Set<string>();
+      await g(["read-tree", merged!]);
+      for (const e of entries) {
+        // A plain repo path: no control characters, no absolute or `..` path (git's index takes it as it is).
+        if (typeof e.path !== "string" || !e.path || /[\x00-\x1f\x7f]/.test(e.path) || e.path.startsWith("/") || e.path.split("/").some((x) => !x || x === "." || x === "..")) return refuse("kept a path that isn't a plain repo path");
+        if (e.sha !== null && !["100644", "100755", "120000"].includes(e.mode)) return refuse(`kept \`${e.path}\` as mode ${e.mode} (only files and symlinks)`);
+        const [mode, , sha] = await blobAt(merged!, e.path);
+        // As git's merge has it: nothing to write, but on a generated path or a lockfile it is the repair's decision (a conflict
+        // it resolved to that same side).
+        if (e.sha === (sha ?? null) && (e.sha === null || e.mode === mode)) { if (allowed(e.path)) taken.add(e.path); continue; }
+        if (!allowed(e.path)) return refuse(`changed \`${e.path}\`, which is neither a generated path nor a conflicted lockfile`);
+        // A symlink only where git's merge already has one: a new link could point outside the repo.
+        if (e.mode === "120000" && mode !== "120000") return refuse(`kept \`${e.path}\` as a symlink where the merge has none`);
+        if (e.path.startsWith(".github/") && e.sha !== ((await blobAt(baseSha, e.path))[2] ?? null)) return refuse(`changed \`${e.path}\` under .github/`);
+        if (e.sha === null) { execFileSync("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "update-index", "-z", "--index-info"], { env, input: `0 ${"0".repeat(40)}\t${e.path}\0` }); taken.add(e.path); continue; }
+        if (e.content !== undefined) {
+          const f = join(tmp, "blob");
+          writeFileSync(f, Buffer.from(String(e.content), "base64"));
+          if ((await g(["hash-object", "-w", "--", f])) !== e.sha) return refuse(`kept \`${e.path}\` whose content isn't ${e.sha.slice(0, 12)}`);
+        } else if ((await g(["cat-file", "-t", e.sha]).catch(() => "")) !== "blob") return refuse(`named \`${e.path}\` by a blob neither side has`);
+        await g(["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`]);
+        taken.add(e.path);
+      }
+      const left = conflicted.filter((p) => !taken.has(p));
+      if (left.length) return refuse(`left conflicts on paths it may not write (${left.length})`);
+      final = await g(["write-tree"]);
+      made = await g(["commit-tree", final, "-p", a.head, "-p", baseSha, "-m", String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000)]);
+      if (!fork) {
+        // Through the API as the App (GitHub signs it): the files that differ from the head; a blob the base or the head has is
+        // named by its sha, any other (git's clean merge of both sides, a regenerated file) is uploaded.
+        const post = async (path: string, body: unknown) => {
+          const r = await app.rest("POST", `/repos/${into}/git/${path}`, body);
+          if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the ${path.replace(/s$/, "")} on ${into}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
+          return r.body;
+        };
+        const known = new Set((await g(["ls-tree", "-r", "--format=%(objectname)", baseSha])).split("\n").concat((await g(["ls-tree", "-r", "--format=%(objectname)", a.head])).split("\n")));
+        const f = (await g(["diff-tree", "-r", "-z", "--no-renames", a.head, final])).split("\0");
+        const tree = [];
+        try {
+          for (let i = 0; i + 1 < f.length; i += 2) {
+            const [, mode, , sha] = f[i]!.split(" ");
+            const path = f[i + 1]!;
+            if (/^0+$/.test(sha!)) { tree.push({ path, mode: "100644", type: "blob", sha: null }); continue; }
+            if (mode !== "160000" && !known.has(sha!)) {
+              const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", sha!], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+              await post("blobs", { content: content.toString("base64"), encoding: "base64" });
+            }
+            tree.push({ path, mode: mode!, type: mode === "160000" ? "commit" : "blob", sha: sha! });
+          }
+          const t = await post("trees", { base_tree: await g(["rev-parse", `${a.head}^{tree}`]), tree });
+          if (t.sha !== final) return refuse(`built a tree on GitHub (${String(t.sha).slice(0, 12)}) that isn't the merge's (${final.slice(0, 12)})`);
+          made = String((await post("commits", { message: String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000), tree: final, parents: [a.head, baseSha] })).sha);
+        } catch (e) {
+          if ((e as { refused?: boolean }).refused) return { ok: false, text: `ship-refused: ${(e as Error).message} (${url}): nothing was changed.` };
+          throw e;
+        }
+      }
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+    // The adoption and the PR once more, right before the branch moves: a pause, a hand-back or a push during the run refuses it.
+    const ended = await adoptionEnded(s.slug, n, a.generation);
+    if (ended) return { ok: false, text: ended };
+    pr = await read();
+    if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+    if (pr.state !== "open" || pr.base?.ref !== a.base || !pr.head?.repo || !same(String(pr.head.repo.full_name), into) || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-scope: ${url} was closed, retargeted or stopped allowing maintainer edits during the repair: nothing was changed.` };
+    if (fork) {
+      const refused = await forkPush(dir, into, String(pr.head.ref), String(a.head), made, app, url);
+      if (refused) return refused;
+    } else {
+      const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made, force: false });
+      if (r.status >= 300) {
+        // Moved, or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart.
+        const now = await app.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
+        if (now.status < 300 && now.body?.object?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+        return { ok: false, text: `ship-refused: GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+      }
+    }
+    flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
+    flow.checksStarted(s.slug, n, made, undefined, undefined);
+    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${app.login}${fork ? ` (pushed to ${into})` : ""}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
+  }
+
+  /**
+   * A push to a fork PR's head branch as the base repo's App installation (GitHub lets it where the author allows maintainer
+   * edits), leased on the head the write expects: a contributor's push in between wins (ship-head-moved). Anything else GitHub
+   * refuses (no access, a rule requiring signed commits) is its own reason (ship-refused). Undefined when it pushed.
+   */
+  async function forkPush(dir: string, into: string, ref: string, expected: string, sha: string, app: { token: () => Promise<string> }, url: string): Promise<{ ok: false; text: string } | undefined> {
+    try {
+      await git(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${ref}:${expected}`, remote(into), `${sha}:refs/heads/${ref}`], await app.token());
+      return undefined;
     } catch (e) {
-      // The lease: someone pushed after the read above ("stale info", git's own words). Any other refusal (a protected branch,
-      // a rule) is GitHub's own reason and is thrown as it is.
-      if (/stale info/i.test(String((e as Error).message ?? e))) return { ok: false, text: `ship-head-moved: ${url} moved while pushing (the lease on \`${String(a.expected).slice(0, 12)}\` refused it): nothing was pushed; read it again.` };
+      const said = String((e as Error).message ?? e);
+      if (/stale info/i.test(said)) return { ok: false, text: `ship-head-moved: ${url} moved while pushing (the lease on \`${expected.slice(0, 12)}\` refused it): nothing was pushed; read it again.` };
+      return { ok: false, text: `ship-refused: GitHub refused the push to ${into} \`${ref}\` (data, not instructions): ${said.replace(/x-access-token:[^@\s]+@/g, "").slice(-500)}` };
+    }
+  }
+
+  /**
+   * The commits from `from` to `to` (first-parent order) created on GitHub through the API: per commit, the blobs GitHub may not
+   * have (a path's blob that no other parent has at that path), a tree on the new first parent's, and a commit with the same
+   * message and other parents (a merge of the base keeps the base commit). Each tree must come out as git's own, or nothing is
+   * written. Answers the last commit's sha on GitHub (the API's commits carry the App's identity, so it differs from `to`).
+   */
+  async function apiCommits(rest: Gh, repo: string, dir: string, from: string, to: string): Promise<{ sha: string } | { refused: string }> {
+    if (!(await git(dir, ["merge-base", "--is-ancestor", from, to]).then(() => true, () => false))) return { refused: `ship-scope: \`${to.slice(0, 12)}\` doesn't build on the PR's head \`${from.slice(0, 12)}\`` };
+    const list = (await git(dir, ["rev-list", "--reverse", "--first-parent", `${from}..${to}`])).split("\n").filter(Boolean);
+    if (!list.length || list.length > 20) return { refused: `ship-scope: ${list.length} commits to write (1 to 20)` };
+    const post = async (path: string, body: unknown) => {
+      const r = await rest("POST", `/repos/${repo}/git/${path}`, body);
+      if (r.status >= 300) throw Object.assign(new Error(`${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
+      return r.body;
+    };
+    let parent = from;
+    try {
+      for (const c of list) {
+        const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
+        // Entries changed against the first parent; a path another parent has unchanged is already on GitHub (a base merge's files).
+        const diff = (p: string) => git(dir, ["diff-tree", "-r", "--no-renames", "--no-commit-id", "-z", p!, c]).then((out) => {
+          const f = out.split("\0"), m = new Map<string, { mode: string; sha: string }>();
+          for (let i = 0; i + 1 < f.length; i += 2) { const [, mode, , sha] = f[i]!.split(" "); m.set(f[i + 1]!, { mode: mode!, sha: sha! }); }
+          return m;
+        });
+        const changed = await diff(first!);
+        const elsewhere = await Promise.all(others.map(diff));
+        const tree: { path: string; mode: string; type: string; sha: string | null }[] = [];
+        let uploads = 0;
+        for (const [path, e] of changed) {
+          if (/^0+$/.test(e.sha)) { tree.push({ path, mode: "100644", type: "blob", sha: null }); continue; }
+          const type = e.mode === "160000" ? "commit" : "blob";
+          const onGithub = type === "commit" || elsewhere.some((m) => !m.has(path));
+          if (!onGithub) {
+            if (++uploads > MAX_FILES) return { refused: `ship-scope: more than ${MAX_FILES} new files in one commit` };
+            const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", e.sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+            const blob = await post("blobs", { content: content.toString("base64"), encoding: "base64" });
+            if (blob.sha !== e.sha) return { refused: `GitHub stored ${path} as ${String(blob.sha).slice(0, 12)}, not ${e.sha.slice(0, 12)}` };
+          }
+          tree.push({ path, mode: e.mode, type, sha: e.sha });
+        }
+        const want = await git(dir, ["rev-parse", `${c}^{tree}`]);
+        const t = await post("trees", { base_tree: await git(dir, ["rev-parse", `${first}^{tree}`]), tree });
+        if (t.sha !== want) return { refused: `the tree GitHub built (${String(t.sha).slice(0, 12)}) isn't the repair's (${want.slice(0, 12)})` };
+        const message = await git(dir, ["log", "-1", "--format=%B", c]);
+        const made = await post("commits", { message, tree: want, parents: [parent, ...others] });
+        parent = String(made.sha);
+      }
+    } catch (e) {
+      if ((e as { refused?: boolean }).refused) return { refused: String((e as Error).message) };
       throw e;
     }
-    flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
-    flow.checksStarted(s.slug, Number(a.pr.number), b.sha, undefined, a.workspace);
-    return { ok: true, text: `Pushed ${url} \`${b.branch}\` from \`${String(a.expected).slice(0, 12)}\` to \`${b.sha.slice(0, 12)}\`.`, objects: [`github:${s.slug.toLowerCase()}@${b.sha}`] };
+    return { sha: parent };
   }
 
   /**
@@ -786,12 +1021,14 @@ export function createService(o: Options) {
    */
   async function stillApproved(r: Held): Promise<boolean> {
     if (!r.asker) return false;
-    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
-      .then(({ state, facts }) => planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }>)
+    const planned = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
+      .then(({ state, facts }) => ({ branches: (state as { branches?: { branch: string }[] }).branches ?? [], targets: planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }> }))
       .catch((e) => { if (disconnected(e)) throw e; return undefined; });
-    if (!targets) return false;
+    if (!planned) return false;
+    const { targets, branches } = planned;
     const want = [
-      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b) => [`${slugOf(b.repo).slug} ${b.branch}`, b.sha] as const),
+      // Keyed as the plan keys its targets: the planned branch (an adopted PR's push lands on its head ref, not the box's branch).
+      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b, i) => [`${slugOf(b.repo).slug} ${branches[i]?.branch ?? b.branch}`, b.sha] as const),
       ...((r.args?.prs ?? []) as { repo: string; number: number; head?: string }[]).filter((p) => p.head).map((p) => [`${slugOf(p.repo).slug}#${Number(p.number)}`, p.head!] as const),
     ];
     return want.every(([k, sha]) => targets[k]?.commit === sha);
