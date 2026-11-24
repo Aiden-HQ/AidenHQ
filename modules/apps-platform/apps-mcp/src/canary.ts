@@ -82,11 +82,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     dt.on["Network.requestWillBeSent"] = (p) => {
       const x = NET.find((n) => n.id === p.requestId);
       if (x && p.redirectResponse) {
+        // The same request continues: its first hop's answer is kept, and its own method and address stay those of the
+        // original request (a 303's followed GET is not the submission). The final hop's response fills the status.
         x.hop ??= p.redirectResponse.status;
-        x.url = p.request.url;
-        x.method = p.request.method;
         x.status = null;
-        x.at = Date.now();
         return;
       }
       NET.push({ id: p.requestId, url: p.request.url, method: p.request.method, status: null, hop: null, at: Date.now() });
