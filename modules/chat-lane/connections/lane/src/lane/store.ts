@@ -3,7 +3,7 @@
 // (lane_owed: a promised answer the lane continues itself, or a background task whose chat_send hasn't come yet).
 import Database from "better-sqlite3";
 
-export interface Owed { id: number; agent: string; kind: "continue" | "task"; ask: string; attempts: number; due_at: number }
+export interface Owed { id: number; agent: string; kind: "continue" | "task" | "deliver"; ask: string; attempts: number; due_at: number }
 /** A wake into the agent's chat (`chat` 1) or onto a task. */
 export interface Wake { id: number; agent: string; due_at: number; note: string; chat: number; task: string | null }
 

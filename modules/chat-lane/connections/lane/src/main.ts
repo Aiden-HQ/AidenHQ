@@ -58,13 +58,13 @@ const lane = makeLane({
   },
   log,
 });
-// Whether a task has finished (the kernel's read of the control plane), cached a minute: a wake cap check asks about every task it holds.
+// Whether a task has finished or has no assignee (the kernel's read of the control plane), cached a minute: a wake cap check asks about every task it holds.
 const closedTasks = new Map<string, { at: number; closed: boolean }>();
 const taskIsClosed = async (task: string): Promise<boolean> => {
   const hit = closedTasks.get(task);
   if (hit && Date.now() - hit.at < 60_000) return hit.closed;
   const issue = await kernel("GET", `/v1/cp/read/api/issues/${encodeURIComponent(task)}`);
-  const closed = issue?.status === "done" || issue?.status === "cancelled";
+  const closed = issue?.status === "done" || issue?.status === "cancelled" || !issue?.assigneeAgentId; // an unassigned task cannot be woken: the kernel refuses it
   if (closedTasks.size >= 500) closedTasks.clear();
   closedTasks.set(task, { at: Date.now(), closed });
   return closed;

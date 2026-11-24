@@ -95,7 +95,7 @@ export interface WakeDeps {
   agents: () => Record<string, LaneAgent>;
   /** A wake for the task's agent in the kernel's wake inbox (POST /v1/wakes, keyed by the wake's id so it is filed once). */
   wakeTask: (id: number, task: string, note: string) => Promise<void>;
-  /** Whether that task is done or cancelled: a wake left on finished work is dropped, never posted back onto it. */
+  /** Whether that task is done, cancelled or has no assignee (the kernel files wakes for an assignee only): a wake left on finished work is dropped, never posted back onto it. */
   taskIsClosed: (task: string) => Promise<boolean>;
   log: Log;
 }
@@ -108,7 +108,11 @@ export interface WakeDeps {
 export async function wakePass(o: WakeDeps): Promise<void> {
   for (const w of o.store.takeDue()) {
     try {
-      if (w.chat && o.agents()[w.agent]) void o.lane.wake(w.agent, w.note).catch((e: Error) => o.log.warn({ wake: w.id, err: e.message }, "chat wake failed"));
+      if (w.chat && o.agents()[w.agent])
+        void o.lane.wake(w.agent, w.note).catch((e: Error) => {
+          o.store.unfire(w.id); // nothing reached the chat (the post failed): due again next pass
+          o.log.warn({ wake: w.id, err: e.message }, "chat wake failed; retried next pass");
+        });
       else if (!w.task) o.log.warn({ wake: w.id, agent: w.agent }, "wake had nowhere to go");
       else if (await o.taskIsClosed(w.task)) o.log.info({ wake: w.id, agent: w.agent, task: w.task }, "wake dropped: its task is done or cancelled");
       else await o.wakeTask(w.id, w.task, w.note);

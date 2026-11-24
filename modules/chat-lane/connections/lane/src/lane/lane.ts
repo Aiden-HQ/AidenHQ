@@ -28,6 +28,7 @@ const CONTINUE_LIMIT_MS = 300_000;
 const CONTINUE_STEPS = 12;
 const CONTINUE_TRIES = 2;
 const RETRY_MS = 60_000;
+const DELIVER_TRIES = 5;
 const RESUME_MS = 3600_000;
 /** How long an agent's turns pause after one could not post (the kernel or the control plane down). */
 const PAUSE_MS = 60_000;
@@ -98,10 +99,21 @@ export function makeLane(d: LaneDeps) {
     else active--;
   };
 
-  /** Posts on the chat task as the agent (once per key), then to Telegram when asked. A post that fails throws, Telegram's too: the callers retry (the task post is once per key, so a retry only resends to Telegram). */
+  /** Posts on the chat task as the agent (once per key), then to Telegram when asked. Only a failed board post throws. */
   async function send(agent: LaneAgent, key: string, text: string, telegram: boolean): Promise<void> {
     await d.chat.reply(agent, key, text);
-    if (telegram && agent.telegramToken) await d.telegram(agent, text);
+    if (telegram) await deliver(agent, text);
+  }
+
+  /** Telegram's copy of a reply already on the board. A failure is owed as a redelivery of that text (tick), never a rerun of the turn. */
+  async function deliver(agent: LaneAgent, text: string): Promise<void> {
+    if (!agent.telegramToken) return;
+    try {
+      await d.telegram(agent, text);
+    } catch (e) {
+      d.store.owe(agent.key, "deliver", text, now() + RETRY_MS, now());
+      d.log.warn({ agent: agent.key, err: (e as Error).message }, "lane telegram delivery failed; retried by the lane");
+    }
   }
 
   /** Whether a reply only promises the answer (a one-word model call; on its failure, a phrase check). */
@@ -292,7 +304,7 @@ export function makeLane(d: LaneDeps) {
       if (!agent) throw new Error(`${agentKey} has no fast lane`);
       await d.chat.reply(agent, `f${randomUUID()}`, text);
       d.store.settleTasks(agentKey, now()); // it is on the board: a Telegram failure below must not read as a stall
-      if (agent.telegramToken) await d.telegram(agent, text);
+      await deliver(agent, text);
     },
     /**
      * On start, turns a restart cut off (in the last hour): an unanswered message gets its turn again (the scan's job); one
@@ -311,6 +323,18 @@ export function makeLane(d: LaneDeps) {
     /** Every few seconds: runs due continuations; a background task whose follow-up is overdue is said to have stalled. */
     async tick(): Promise<void> {
       for (const c of d.store.due("continue", now())) void lane.poke(c.agent).catch((e: Error) => d.log.warn({ agent: c.agent, err: e.message }, "lane continuation failed"));
+      for (const r of d.store.due("deliver", now())) {
+        const agent = d.agents()[r.agent];
+        d.store.attempt(r.id); // claimed before the send: an overlapping pass does not send it again
+        d.store.retryAt(r.id, now() + RETRY_MS);
+        try {
+          if (agent) await d.telegram(agent, r.ask);
+          d.store.settle(r.id, now());
+        } catch (e) {
+          if (r.attempts + 1 >= DELIVER_TRIES) d.store.settle(r.id, now());
+          d.log.warn({ agent: r.agent, err: (e as Error).message }, "lane telegram redelivery failed");
+        }
+      }
       for (const t of d.store.due("task", now())) {
         const agent = d.agents()[t.agent];
         if (!agent) {

@@ -146,11 +146,18 @@ describe("fast chat lane", () => {
     const store = openLaneStore(":memory:");
     const telegram: string[] = [];
     let fail = true;
-    const lane = makeLane({ memory: async () => "", store, chat: m.chat, agents: () => ({ aria: { ...agent, telegramToken: "tok" } }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async (_a, t) => { if (fail) throw new Error("telegram sendMessage 502"); telegram.push(t); } });
+    let clock = Date.now();
+    const lane = makeLane({ memory: async () => "", store, chat: m.chat, agents: () => ({ aria: { ...agent, telegramToken: "tok" } }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", now: () => clock, log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async (_a, t) => { if (fail) throw new Error("telegram sendMessage 502"); telegram.push(t); } });
     await lane.heard("aria", "tg-aria-1", "book lunch", "telegram");
     await until(() => !lane.busy("aria"));
     expect(telegram).toEqual([]);
-    expect(store.owesContinue("aria")).toBe(true); // owed, so it comes again
+    expect(store.owesContinue("aria")).toBe(false); // the reply is on the board: the turn is not rerun
+    expect(m.texts()).toEqual(["book lunch", "Lunch is booked."]);
+    fail = false;
+    clock += 61_000;
+    await lane.tick(); // only Telegram is redelivered
+    expect(telegram).toEqual(["Lunch is booked."]);
+    expect(m.texts()).toEqual(["book lunch", "Lunch is booked."]);
   });
 
 });
