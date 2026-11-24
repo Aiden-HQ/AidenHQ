@@ -147,6 +147,10 @@ export function createAppAccess(d: AppAccessDeps) {
     try {
       check?.();
       if (d.account(email)?.role === "admin") throw new AccessError(400, "that's an AidenHQ admin: they're an admin of every app");
+      // The test user is a member of exactly the apps settings.edge.test_user names, resolved before any assignment (above),
+      // so a row here could never take effect: refuse it rather than logging a block the listener does not honour. Revoking
+      // its access is the owner's setting, not an app admin's row.
+      if (d.testMember?.(app, email)) throw new AccessError(400, "the test user's access is settings.edge.test_user: change that setting, not this app's roles");
       if (role !== null && !known(app, role)) throw new AccessError(400, `${app} has no role ${role}`);
       before = (db.prepare("SELECT role FROM app_roles WHERE app = ? AND email = ?").get(app, email) as { role: string } | undefined)?.role ?? null;
       if (role === null) db.prepare("DELETE FROM app_roles WHERE app = ? AND email = ?").run(app, email);

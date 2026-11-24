@@ -9,7 +9,7 @@ import { apiTarget, SEND_SCRIPT, targetContainer, TIMEOUT_MS, type ApiRequest, t
 import { AGENT_TIMEOUT_MS, CHECK_SCRIPT, CHECK_TIMEOUT_MS, agentProbeScope, identityProbeArgs, identityDoors, mergeScans, noHttpSurface, processUids, identityPorts, identityProbes, unprobedServices, judgeAgent, judgePage, plan, probeResult, type Declared, type Kind, type PageFacts, type PortAnswers, type ProbeResult } from "./checks.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { BROWSER_IMAGE, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
+import { BROWSER_IMAGE, CANARY_NETWORK, RENDER_TIMEOUT_MS, renderArgs, VIEW_SCRIPT, type Lookup, type Render, type ViewResult } from "./view.js";
 import { checkout, checkoutPr, commitMessage, diffForDeploy, resolveCommit, show, type GitEnv } from "./git.js";
 import { loadRegistry, type App } from "./registry.js";
 import { pickService, scriptCommand } from "./run.js";
@@ -516,7 +516,18 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   /** Every probed app's checks without samples (the board's detector raises the failing ones; samples never leave here). */
   const qualityOf = () => apps().filter((a) => a.health.url).map((a) => ({ name: a.name, ...withoutSamples(qualityFor(a)) }));
   // The test-user canary's one-shot browser (canary.ts): the same image and hardening as a view, on the canary network.
-  const canaryRun = (network: string, script: string, input: object, timeout: number, before?: () => Promise<object>) => renderWith(network, script, input, timeout, before);
+  // ops/vm/canary-net.sh gives that bridge its isolation table (inter-container traffic off, everything but the test
+  // listener dropped). The unit is host-side, so this cannot read it; what it can prove is that the bridge is the one the
+  // script left: its name, its own subnet and gateway, and inter-container traffic off. Anything else (an ordinary bridge
+  // merely carrying the name, a re-created one the rules do not match) refuses the launch rather than running a signed-in
+  // browser on a network the firewall may not guard.
+  const canaryRun = async (network: string, script: string, input: object, timeout: number, before?: () => Promise<object>) => {
+    if (network === CANARY_NETWORK) {
+      const got = (await exec(["network", "inspect", "--format", '{{index .Options "com.docker.network.bridge.name"}}|{{index .Options "com.docker.network.bridge.enable_icc"}}|{{range .IPAM.Config}}{{.Subnet}}|{{.Gateway}}{{end}}', network], { timeout: 15_000 }).catch(() => "")).trim();
+      if (got !== "ahq-canary|false|10.231.6.0/24|10.231.6.1") throw new Error(`the canary network isn't the guarded one (want ahq-canary|false|10.231.6.0/24|10.231.6.1, found ${got || "nothing"}): run ops/vm/canary-net.sh on the host, then retry`);
+    }
+    return renderWith(network, script, input, timeout, before);
+  };
   return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;
