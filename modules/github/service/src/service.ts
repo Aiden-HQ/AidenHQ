@@ -34,12 +34,13 @@ import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
 import type { Feed } from "./feed.ts";
-import { LOCAL_ORG, plan as planRules, type Ship } from "./plan.ts";
+import { LOCAL_ORG, namespaced, plan as planRules, type Ship } from "./plan.ts";
 import { fileContext, numstat } from "./review-files.ts";
 /** One changed file as git counts it (review-files.ts numstat; a binary file has no line counts). */
 type Changed = { path: string; add?: number; del?: number };
 import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
+import { withBranch } from "./branch-lock.ts";
 import { notePrTask } from "./pr-tasks.ts";
 
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
@@ -258,6 +259,55 @@ export function createService(o: Options) {
   }
 
   /**
+   * Who may publish to `branch`, from the open PRs on it and their recorded owner tasks (pr-tasks.json) alone:
+   * - "own": every open PR on it is recorded as this task's, and this task is still open — a successor republishing the branch it
+   *   adopted, or an opener whose PR nobody took over. A branch name proves nothing once ownership has moved.
+   * - "handoff": every open PR on it is recorded to a task no longer open — the cancelled or done task's PR a successor finishes
+   *   (ship's loop.ts keepForSuccessor), the one path that reaches another task's branch.
+   * - "free": no open PR on it, the ordinary first publish.
+   * - "refused": a PR on it belongs to another task still open, a PR on it is recorded to nobody, or an owner cannot be read.
+   *   Never a guess: a failed read is "refused", so an unreachable kernel never hands a branch over.
+   * The unit is one base: the open PRs from this head into the same base (the first one's) are what a push rewrites. A sibling
+   * into another base is a different proposal, so it neither blocks this one nor is taken over with it.
+   * `base` is that base ref: the change is reviewed against the base the PR actually targets, not today's default branch (a PR into
+   * a release or a former default branch is still that PR).
+   */
+  async function ownershipOf(s: { slug: string; org: string }, branch: string, task: string): Promise<{ state: "own" | "handoff" | "free" | "refused"; base?: string }> {
+    const all = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${branch}`)}`).catch(() => undefined);
+    if (!Array.isArray(all)) return { state: "refused" };
+    if (!all.length) return { state: "free" };
+    const at = String(all[0].base?.ref ?? "");
+    const open = all.filter((p: { base?: { ref?: string } }) => String(p.base?.ref ?? "") === at);
+    // Every open PR into it is this task's, or none are: one a live other task owns is never force-pushed by this one.
+    const owners = open.map((p: { html_url?: string }) => prTasks()[String(p.html_url ?? "").toLowerCase()]?.task ?? "").filter(Boolean) as string[];
+    if (owners.length !== open.length) return { state: "refused" }; // an open PR on it that nobody here opened: not this task's to take
+    const status = async (t: string) => {
+      const r = await kernel("GET", `/v1/work?task=${encodeURIComponent(t)}`).catch(() => undefined);
+      const v = (r as { status?: unknown } | undefined)?.status;
+      return typeof v === "string" ? v : undefined;
+    };
+    // Every owner is this task, and it is open: its own PR. (A closed task cannot claim work back.)
+    if (owners.every((t) => t === task)) return (await status(task)) ? { state: "own", base: at || undefined } : { state: "refused" };
+    if (owners.some((t) => t === task)) return { state: "refused" }; // some its own, some another's: one push would rewrite both
+    // Another task's PR: only a handoff, and only when every owner is closed (one still open keeps the branch its own).
+    for (const t of new Set(owners)) {
+      const st = await status(t);
+      if (st !== "cancelled" && st !== "done") return { state: "refused" };
+    }
+    return { state: "handoff", base: at || undefined };
+  }
+
+  /**
+   * Record `task` as the task of every open PR `branch` stands on (notePrTask): a push-only handoff's ownership write, so the PR
+   * watch works the handed-over PR for its successor. Run under the branch lock with the push that precedes it.
+   */
+  async function adoptPrs(s: { slug: string; org: string }, branch: string, task: string, base: string) {
+    const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${branch}`)}`);
+    // Only the same-base PRs a push rewrites: a sibling into another base is not this publish's to take over.
+    for (const p of Array.isArray(open) ? open : []) if (p?.html_url && String(p.base?.ref ?? base) === base) notePrTask(o.cacheDir, String(p.html_url), { task, branch });
+  }
+
+  /**
    * A job's branch head, fetched into the ws cache from the bundle its box wrote (`aidenhq publish|review|apply`), copied out of
    * the workspace the one no-follow way (aidenhq-sdk/box-bundle.ts): host git and fs writes never touch the workspace, and git
    * reads only the copy, verifying every object.
@@ -465,9 +515,26 @@ export function createService(o: Options) {
     for (const b of a.only ?? []) {
       const { s, dir } = await fromWorkspace(a.workspace, b);
       const def = await defaultBranch(s.slug);
-      const tip = await fetchRemote(s, def, "ws").then((r) => r.sha, () => "");
+      // Recorded ownership decides, where a branch rule applies to this task (the product repo and outside the agents org, a
+      // non-platform task -- exactly the condition the executor re-reads it under): "own" is a PR already this task's (a successor
+      // republishing what it adopted, or its own branch's), "handoff" a cancelled or done task's PR it finishes, "free" an ordinary
+      // first publish. Elsewhere -- an agents-org branch, a platform engineer, a ship push onto an adopted PR -- the publish is the
+      // one it had, and no PR is read.
+      const gated = !onto && !base.requester.platform && namespaced(s.slug, { agentsOrg: o.fleetOrg, productRepo: o.productRepo });
+      const { state: ownership, base: prBase } = gated ? await ownershipOf(s, b.branch, base.workspace) : { state: "own" as const, base: undefined };
+      // Refused here as well as under the branch lock: the plan is what the reviewer reads, and a branch this task may not push (a
+      // PR another live task owns, one nobody here opened, or ownership that could not be read) must never reach a filed card.
+      if (ownership === "refused") throw fail(409, `\`${b.branch}\` isn't this task's branch: name it \`agent/${base.workspace}/<topic>\` and publish again`);
+      // A PR into another base (a release branch, a former default) is reviewed against the base it targets, not today's default:
+      // the same change, into the base the executor updates. A branch with no PR of this task's targets the default, as before --
+      // so the base the plan binds is the one the push produces, in every case.
+      const target = prBase && prBase !== def ? prBase : def;
+      // The ref `fetchRemote` wrote (`refs/remote/<name>`), or "" when the base could not be fetched: the branch is then diffed against
+      // the empty tree, exactly as a repo with no base is.
+      const baseRef = await fetchRemote(s, target, "ws").then((r) => r.ref, () => "");
+      const tip = baseRef ? await git(dir, ["rev-parse", "--verify", `${baseRef}^{commit}`]).catch(() => "") : "";
       const empty = !tip;
-      const mb = empty ? "" : await git(dir, ["merge-base", b.sha, `refs/remote/${def}`]).catch(() => "");
+      const mb = empty ? "" : await git(dir, ["merge-base", b.sha, baseRef]).catch(() => "");
       // No renames: a file moved counts at both paths (one moved out of kernel/ still changes kernel/).
       const files = (await git(dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, b.sha])).split("\0").filter(Boolean);
       diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
@@ -484,12 +551,24 @@ export function createService(o: Options) {
         if (msg) throw fail(422, `Not done: a commit message on ${b.branch} mentions "${leakIn(msg)}" ("${msg.trim().split("\n")[0]!.slice(0, 80)}"). ${s.slug}'s reviewers mustn't see internal names; reword the commit and ask again.`);
       }
       for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
-      // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read.
-      bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
+      // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read. The base
+      // the change is reviewed against is the PR's own when ownership says this publish finishes one (own, adopted or handoff): the
+      // executor updates exactly that PR, so the diff the reviewer approved is the one the push produces. A push onto an adopted
+      // PR (ship) reads the default branch, as before.
+      bases.push({ repo: s.slug, base: empty ? "" : target, read: (path) => git(dir, ["show", `${baseRef}:${path}`]), dir, tip });
       // The commits go onto the PR's own head branch (GitHub's name for it, a fork's too); the box's branch only carries them.
       const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: String(onto.pr?.head?.ref ?? "") } : undefined;
+      const handoff = ownership === "handoff";
+      // A branch outside this task's namespace whose open PR is recorded to it: a PR it already took over, whatever base it targets.
+      // (A branch nobody owns is "free", and still needs this task's own namespace; its own namespace needs no grant.)
+      const adopted = ownership === "own" && gated && !b.branch.startsWith(`agent/${base.workspace}/`);
+      // `defaultBranch` stays the repository's own default: plan.ts refuses a publish straight onto it, and a handoff must not be able to
+      // switch that guard off by targeting another base. `destination` is the base the change is reviewed against: the open PR's own
+      // base whenever one decides the publish (own, adopted or handoff -- the executor updates exactly that PR), the default when there
+      // is none. Bound by the target, so a base switch after approval makes the record stale.
+      const destination = gated && ownership !== "free" ? target : def;
       // An adopted PR's push is planned against where it lands (the PR's head branch), never the box's local branch name.
-      branches.push({ repo: s.slug, branch: ship ? ship.branch : b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
+      branches.push({ repo: s.slug, branch: ship ? ship.branch : b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, destination, empty, ...(ship ? { ship } : {}), ...(handoff ? { handoff: true } : {}), ...(adopted ? { adopted: true } : {}) });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
     return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, changed, bases, own, task: String(a.workspace ?? "") };
@@ -512,7 +591,10 @@ export function createService(o: Options) {
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
       // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
       // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
-      if (req.requester) noteAsker(req.kind, req.args, { requester: req.requester, task: req.task });
+      // The base each branch was reviewed against is kept with the asker (the plan read it here): a write held while GitHub is
+      // away compares it on reconnect, so a PR retargeted meanwhile is stale rather than pushing a diff read against another base.
+      const reviewedBases = req.revalidate ? undefined : Object.fromEntries(Object.entries((planned.targets ?? {}) as Record<string, { base_branch?: string | null }>).filter(([, t]) => t && "base_branch" in t).map(([k, t]) => [k, t.base_branch ?? null]));
+      if (req.requester) noteAsker(req.kind, req.args, { requester: req.requester, task: req.task, ...(reviewedBases && Object.keys(reviewedBases).length ? { bases: reviewedBases } : {}) });
       // The reviewer's context goes with the filing only (a revalidation compares targets): never part of the record's digest.
       const sources = req.revalidate ? undefined : await readCardSourceExceptions(bases ?? [], (repo: string, base: string) => bases!.find((b) => b.repo === repo && b.base === base)!.read(SOURCE_EXCEPTIONS_FILE));
       // The task's other PRs already merged into these bases; a read that fails leaves them out, never the plan.
@@ -539,6 +621,65 @@ export function createService(o: Options) {
       }
     },
   };
+  /**
+   * The PR a publish is for: an open one into the default branch the plan read (the same head may also target another base, and that
+   * one is not what was reviewed). Both filters are GitHub's, so paging can't hide it. Run under the branch lock with the push that
+   * precedes it, so the ownership it records (notePrTask) is never seen lagging the ref it describes.
+   */
+  async function openOrUpdatePr(s: ReturnType<typeof slugOf>, b: { branch: string }, def: string, rec: { kind: string; args: any }, sha: string, objects: string[], done: string[], targetBase: string, byOwner = false) {
+    const a = rec.args ?? {};
+    const ref = (slug: string) => `github:${slug.toLowerCase()}`;
+    // The PR this publish is for, whatever base it targets: an already-owned one (recorded to this task, or the cancelled task's it
+    // finishes) is the one to finish. Opening a second PR into today's default branch would leave the original unowned and unworked,
+    // and a PR into a release or a former default is still the PR the plan reviewed against that base.
+    // Every open PR the branch stands on, read once: one of them is the PR this publish finishes (an already-owned one, whatever
+    // base it targets, or the open PR into the default branch), and the ownership write below moves all of them to this task. A
+    // branch with no PR of this task's reads only the default-base one, as before. GitHub's head filter, so paging can't hide one.
+    const head = `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`;
+    const got = await api("GET", byOwner ? head : `${head}&base=${encodeURIComponent(def)}`);
+    const onBranch: any[] = byOwner && Array.isArray(got) ? got : [];
+    const open = (Array.isArray(got) ? got : []).filter((p: { html_url?: string; base?: { ref?: string } }) =>
+      (!byOwner || String(p.base?.ref ?? "") === targetBase) && (!byOwner || prTasks()[String(p.html_url ?? "").toLowerCase()]?.task));
+    // The PR's text is signed by the agent that asked for it (spec §4).
+    const asker = readAskers()[askerKey(rec.kind, rec.args)];
+    // A republish that names no text, or only blank text, keeps the PR as it is: a PATCH replaces the whole description,
+    // so a blank body must never be sent (it would leave the footer alone). A real body still replaces it, once footered.
+    const named = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+    const title = named(a.text?.title), body = named(a.text?.body);
+    const text = a.text ? { ...(title ? { title } : {}), ...(body ? { body: withFooter(body, asker?.requester.name || "AidenHQ") } : {}) } : undefined;
+    // A new PR still opens with the asking agent's footer alone, as before: the attribution is what it had.
+    const opened = a.text ? { ...text, body: withFooter(body ?? "", asker?.requester.name || "AidenHQ") } : undefined;
+    // Ownership is recorded before the PR's text is updated: the push has already landed, so a refused or failed description PATCH
+    // must not leave the branch carrying the successor's commits while pr-tasks.json still names the cancelled opener (the watcher
+    // would never work the new head, and another successor could take the branch over again).
+    const owned0 = open[0] as { html_url?: string } | undefined;
+    if (owned0?.html_url) notePrTask(o.cacheDir, String(owned0.html_url), { task: a.workspace, branch: b.branch });
+    const pr = open[0]
+      ? (Object.keys(text ?? {}).length ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : open[0])
+      // A new PR targets the base the plan reviewed against: the default, or the one an owned PR on the branch already had (a handoff
+      // that lost its PR to a close between the plan and this push still lands where the reviewer read it).
+      : await api("POST", `/repos/${s.slug}/pulls`, { ...opened, head: b.branch, base: byOwner ? targetBase : def });
+    done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
+    if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
+    // Ownership moves to this task for every open PR from this head into the *same* base, not only the one bound above: two such
+    // PRs (a publish into a changed default branch opens a second) advance together with this push, so leaving one recorded to the
+    // old owner would meet the next publish as mixed ownership and refuse it. A sibling into another base is a different
+    // proposal whose diff was not what the reviewer read, so it stays where it is.
+    for (const p of onBranch as { html_url?: string; base?: { ref?: string } }[]) if (p?.html_url && String(p.base?.ref ?? def) === targetBase) notePrTask(o.cacheDir, String(p.html_url), { task: a.workspace, branch: b.branch });
+    if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch works the PR for the task that published it
+    if (!pr.number) return;
+    // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
+    const n = Number(pr.number);
+    if (!open[0]) flow.opened(s.slug, n, sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), author: String(pr.user?.login ?? (await ownerLogin()) ?? "ghost"), author_kind: "agent" });
+    else if (open[0].head?.sha && open[0].head.sha !== sha) {
+      // Forced: the old head is no ancestor of the new one.
+      const cmp = await api("GET", `/repos/${s.slug}/compare/${open[0].head.sha}...${sha}`).catch(() => undefined);
+      flow.pushed(s.slug, n, sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
+    }
+    flow.checksStarted(s.slug, n, sha, undefined, a.workspace);
+    // A fleet-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
+    if (same(s.org, o.fleetOrg)) void designReviews?.fileDesignReview({ repo: s.slug, number: n, head: sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
+  }
   /** The write itself; `objects` names what it made on GitHub for the kernel's records (spec §5). */
   async function run1(rec: { id: string; kind: string; args: any; task?: string; identifier?: string; tier?: number }): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     {
@@ -556,43 +697,41 @@ export function createService(o: Options) {
           const { s, dir } = await fromWorkspace(a.workspace, b);
           // A task branch may be rewritten; the default branch only ever moves forward.
           const def = await defaultBranch(s.slug);
-          await push(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`]);
-          notePushed(s.slug, b.sha);
-          objects.push(`${ref(s.slug)}@${b.sha}`);
-          if (action === "pr") {
-            // The PR this publish is for: an open one into the default branch the plan read (the same head may also target
-            // another base, and that one is not what was reviewed). Both filters are GitHub's, so paging can't hide it.
-            const open = await api("GET", `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}&base=${encodeURIComponent(def)}`);
-            // The PR's text is signed by the agent that asked for it (spec §4).
-            const asker = readAskers()[askerKey(rec.kind, rec.args)];
-            // A republish that names no text, or only blank text, keeps the PR as it is: a PATCH replaces the whole description,
-            // so a blank body must never be sent (it would leave the footer alone). A real body still replaces it, once footered.
-            const named = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
-            const title = named(a.text?.title), body = named(a.text?.body);
-            const text = a.text ? { ...(title ? { title } : {}), ...(body ? { body: withFooter(body, asker?.requester.name || "AidenHQ") } : {}) } : undefined;
-            // A new PR still opens with the asking agent's footer alone, as before: the attribution is what it had.
-            const opened = a.text ? { ...text, body: withFooter(body ?? "", asker?.requester.name || "AidenHQ") } : undefined;
-            const pr = open[0]
-              ? (Object.keys(text ?? {}).length ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : open[0])
-              : await api("POST", `/repos/${s.slug}/pulls`, { ...opened, head: b.branch, base: def });
-            done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
-            if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
-            if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // ship wakes the task that opened it
-            if (pr.number) {
-              // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
-              const n = Number(pr.number);
-              // This write opened it: an agent's PR (the owner's login, AidenHQ's record).
-              if (!open[0]) flow.opened(s.slug, n, b.sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), author: String(pr.user?.login ?? (await ownerLogin()) ?? "ghost"), author_kind: "agent" });
-              else if (open[0].head?.sha && open[0].head.sha !== b.sha) {
-                // Forced: the old head is no ancestor of the new one.
-                const cmp = await api("GET", `/repos/${s.slug}/compare/${open[0].head.sha}...${b.sha}`).catch(() => undefined);
-                flow.pushed(s.slug, n, b.sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
-              }
-              flow.checksStarted(s.slug, n, b.sha, undefined, a.workspace);
+          // Where a branch rule applies to this task (the product repo and outside the agents org, a non-platform task), recorded
+          // ownership decides, re-read under the lock where it is used: the task's own branch name proves nothing once a successor has
+          // adopted it (a reopened opener must not force-push over the successor), a cancelled or done task's PR is the successor's to
+          // finish, and a PR another live task owns is refused. Elsewhere -- an agents-org branch, a platform engineer -- the publish
+          // is the one it had.
+          const asker = readAskers()[askerKey(rec.kind, rec.args)];
+          const platform = isPlatform(asker?.requester);
+          const gatedOwnership = !platform && namespaced(s.slug, { agentsOrg: o.fleetOrg, productRepo: o.productRepo });
+          // Under the branch lock the watch's close and delete take before touching a branch (branch-lock.ts, via ship-routes.ts):
+          // the PR write that records this push's owner (notePrTask) lands inside the same step, so no cleanup sees a branch pushed
+          // and unowned.
+          await withBranch(s.slug, b.branch, async () => {
+            // "free" is the ordinary first publish of this task's own branch; "own" a PR recorded to this task; "handoff" the
+            // cancelled or done task's PR a successor finishes; anything else is refused before anything is pushed.
+            const { state: ownership, base: prBase } = gatedOwnership ? await ownershipOf(s, b.branch, a.workspace) : { state: "own" as const, base: undefined };
+            if (ownership === "refused") throw fail(409, `\`${b.branch}\` isn't this task's branch: name it \`agent/${a.workspace}/<topic>\` and publish again`);
+            if (ownership === "free" && !b.branch.startsWith(`agent/${a.workspace}/`)) throw fail(409, `\`${b.branch}\` isn't this task's branch: name it \`agent/${a.workspace}/<topic>\` and publish again`);
+            const handoff = ownership === "handoff";
+            const base0 = prBase && prBase !== def ? prBase : def;
+            // The base the plan reviewed against is part of what was approved: a PR retargeted after the kernel revalidated it (but
+            // before this lock) would receive a diff nobody read against that base. Read under the lock, where the base is re-read,
+            // and refused before the push, so nothing lands on a proposal nobody reviewed.
+            const reviewed = asker?.bases?.[`${s.slug} ${b.branch}`];
+            if (typeof reviewed === "string" && reviewed && reviewed !== base0) throw fail(409, `\`${b.branch}\` now targets \`${base0}\`, not \`${reviewed}\` as its change was reviewed: publish again so the diff is read against its base`);
+            await push(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${b.branch === def ? "" : "+"}${b.sha}:refs/heads/${b.branch}`]);
+            notePushed(s.slug, b.sha);
+            objects.push(`${ref(s.slug)}@${b.sha}`);
+            if (action === "pr") await openOrUpdatePr(s, b, def, rec, b.sha, objects, done, base0, gatedOwnership && (ownership === "own" || handoff));
+            else {
+              // A push-only handoff still takes the PR over: notePrTask is what the watcher reads for the PR's task, so without it a
+              // successor's push would leave the PR looking cancelled and unworked. Any open PR on the branch moves to this task.
+              if (handoff) await adoptPrs(s, b.branch, a.workspace, base0);
+              done.push(`${s.slug} ${b.branch} at ${b.sha.slice(0, 12)}`);
             }
-            // A fleet-org PR that changes UI files gets its design review at this head (one that changes none files nothing).
-            if (same(s.org, o.fleetOrg) && pr.number) void designReviews?.fileDesignReview({ repo: s.slug, number: Number(pr.number), head: b.sha }).catch((e: Error) => log("design review task failed", { pr: pr.html_url, err: String(e.message ?? e).slice(0, 300) }));
-          } else done.push(`${s.slug} ${b.branch} at ${b.sha.slice(0, 12)}`);
+          });
         }
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
@@ -974,8 +1113,10 @@ export function createService(o: Options) {
   }
 
   // ---- held writes: approved while GitHub was disconnected ----
-  type Asker = { requester: PlanRequest["requester"]; task: string };
-  type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; objects?: string[]; at: string; asker?: Asker };
+  /** The requester of a planned write, and the base each target was reviewed against (`plan.ts`'s `base_branch`): a held write
+   *  re-checks it, so a PR retargeted while GitHub was away is stale rather than pushing a diff read against another base. */
+  type Asker = { requester: PlanRequest["requester"]; task: string; bases?: Record<string, string | null> };
+  type Held = { id: string; kind: string; args: any; state: "held" | "running" | "done" | "failed"; text?: string; objects?: string[]; at: string; asker?: Asker; /** A publish's base per target when it was held (`github.pr`/`github.push`): the base the diff was reviewed against. */ bases?: Record<string, string | null> };
   // The requester of each planned write (the kernel's record of who asked; execute carries none), by a digest of its kind and
   // args, for the held re-check. The last 500 only.
   const askersFile = join(o.cacheDir, "askers.json");
@@ -995,7 +1136,7 @@ export function createService(o: Options) {
     const h = readHeld();
     if (!h[rec.id]) {
       const asker = readAskers()[askerKey(rec.kind, rec.args)];
-      h[rec.id] = { id: rec.id, kind: rec.kind, args: rec.args, state: "held", at: new Date().toISOString(), ...(asker ? { asker } : {}) };
+      h[rec.id] = { id: rec.id, kind: rec.kind, args: rec.args, state: "held", at: new Date().toISOString(), ...(asker ? { asker, ...(asker.bases ? { bases: asker.bases } : {}) } : {}) };
       writeHeld(h);
       log("write held until GitHub is connected", { record: rec.id, kind: rec.kind });
     }
@@ -1047,7 +1188,11 @@ export function createService(o: Options) {
       ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b, i) => [`${slugOf(b.repo).slug} ${branches[i]?.branch ?? b.branch}`, b.sha] as const),
       ...((r.args?.prs ?? []) as { repo: string; number: number; head?: string }[]).filter((p) => p.head).map((p) => [`${slugOf(p.repo).slug}#${Number(p.number)}`, p.head!] as const),
     ];
-    return want.every(([k, sha]) => targets[k]?.commit === sha);
+    if (!want.every(([k, sha]) => (targets[k] as { commit?: string | null })?.commit === sha)) return false;
+    // A publish also binds the base its diff was reviewed against (plan.ts's `base_branch`, recorded when it was held): a PR
+    // retargeted while the record waited would push that diff into a base nobody read it against, so the record is stale.
+    const base = targets as Record<string, { base_branch?: string | null }>;
+    return Object.entries(r.bases ?? {}).every(([k, b]) => (base[k]?.base_branch ?? null) === b);
   }
   const heldStatus = (id: string) => { const r = readHeld()[id]; return r ? (r.state === "done" || r.state === "failed" ? { state: r.state, text: r.text, ...(r.objects ? { objects: r.objects } : {}) } : { state: "running" }) : undefined; };
 
@@ -1110,6 +1255,16 @@ export function createService(o: Options) {
       const r = await kernel("GET", `/v1/work?record=${encodeURIComponent(record)}`).catch((e: Error & { status?: number }) => { if (e.status === 404) return undefined; throw e; });
       const ident = String((r as { identifier?: unknown })?.identifier ?? "");
       return ident || undefined;
+    },
+    // A cancelled task's approved merge never lands: ship's loop leaves its PR for a successor, and the queue checks this before
+    // every merge, not only when the record was filed. A failed read holds the merge rather than landing it.
+    statusOf: async (task) => {
+      const r = await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`).catch((e: Error & { status?: number }) => {
+        if (e.status === 404) return { status: "cancelled" }; // a task the kernel no longer holds has no work left to merge
+        throw e;
+      });
+      const status = (r as { status?: unknown })?.status;
+      return typeof status === "string" ? status : undefined;
     },
     // An already-merged PR's other link to its task: with no pr-tasks.json row (the push refused before the PR write noted it),
     // the task's own planned write naming this repo and this exact commit is the attribution. Any state counts (`failed` is the

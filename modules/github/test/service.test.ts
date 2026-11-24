@@ -23,7 +23,7 @@ const boxBundle = (ws, branch) => {
 };
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"], remoteHooks = "" } = {}) {
+async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"], remoteHooks = "", taskStatus } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -79,6 +79,9 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
     const w = /^\/v1\/writes\/([^/]+)$/.exec(req.url);
     if (w) return res.writeHead(200).end(JSON.stringify({ id: w[1], state: states[w[1]] ?? "claimed" }));
     if (req.url.startsWith("/v1/objects")) return res.writeHead(200).end(JSON.stringify({ ours: oursRefs.has(decodeURIComponent(req.url.split("ref=")[1] ?? "")) }));
+    // A task's status (the publish plan's handoff read and the merge queue's cancellation hold): `taskStatus` answers it.
+    const t = /^\/v1\/work\?task=(.+)$/.exec(req.url);
+    if (t && taskStatus) { const status = taskStatus(decodeURIComponent(t[1])); return status ? res.writeHead(200).end(JSON.stringify({ status, records: [] })) : res.writeHead(404).end("{}"); }
     res.writeHead(404).end("{}");
   });
   const created = [];
@@ -178,7 +181,9 @@ test("connected: a new app's repository is created in the fleet org with the app
 });
 
 test("a PR to a repo outside ours is refused while its text or a commit message names our tooling", async (t) => {
-  const { root, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/partner/lib" ? { status: 200, body: { default_branch: "main" } } : undefined) });
+  // A repo with no open PR: the ownership read the publish plan makes answers an empty list, never a failed read.
+  const { root, call } = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/partner/lib" ? { status: 200, body: { default_branch: "main" } }
+    : m === "GET" && p.startsWith("/repos/partner/lib/pulls?") ? { status: 200, body: [] } : undefined) });
   const origin = join(root, "github", "partner", "lib.git");
   mkdirSync(origin, { recursive: true });
   sh(origin, "init", "--quiet", "--bare", "-b", "main");
@@ -199,6 +204,376 @@ test("a PR to a repo outside ours is refused while its text or a commit message 
   writeFileSync(join(ws, "lib.js"), "export const z = 4;\n");
   sh(ws, "commit", "--quiet", "-am", "Tweak, see /home/agent/notes");
   assert.match((await pr(boxBundle(ws, "agent/TASK-3/fix"), { title: "Fix the parser", body: "Handles empty input." })).json.error, /commit message on agent\/TASK-3\/fix mentions "\/home\/"/);
+});
+
+// A cancelled task's PR is left for a successor, but an ordinary engineer could not push another task's branch: the publish
+// planner refused `agent/<old-task>/…` for everyone but a platform engineer, so the advertised handoff was impossible. The plan
+// now grants exactly that branch, at the reviewer's tier, and only for an open PR whose recorded owner task is no longer open.
+// The review's case: a non-platform engineer assigned to finish a cancelled task's *product* PR follows the left-open note and
+// publishes to `agent/<old-task>/…`; the publish planner refused that branch because it is not the successor's own, so the
+// advertised handoff was impossible. The plan now grants exactly that branch, at the reviewer's tier, only for an open PR whose
+// recorded owner task is no longer open. (An agents-org repo has no branch namespace rule, so only the product repo needs this.)
+test("publishing to a cancelled task's product PR branch is an authorized handoff, and only for that case", async (t) => {
+  const url = "https://github.com/acme/aidenhq/pull/7";
+  const openPr = "/repos/acme/aidenhq/pulls?state=open&head=acme%3Aagent%2FTASK-1%2Ffix";
+  const branch = "agent/TASK-1/fix";
+  const routes = (m, p) => (m === "GET" && p === openPr ? { status: 200, body: [{ number: 7, html_url: url, head: { sha: "a".repeat(40) } }] }
+    : m === "GET" && p === "/repos/acme/aidenhq" ? { status: 200, body: { default_branch: "main" } } : undefined);
+  // A successor's workspace (TASK-2) holding the head it publishes onto the opener's branch.
+  const successor = (root) => {
+    const origin = join(root, "github", "acme", "aidenhq.git");
+    mkdirSync(dirname(origin), { recursive: true });
+    if (!existsSync(origin)) { sh(root, "init", "--quiet", "--bare", "-b", "main", origin); const seed = join(root, "seed-product"); sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main"); }
+    const ws = join(root, "tasks", "TASK-2", "aidenhq");
+    sh(root, "clone", "--quiet", origin, ws);
+    sh(ws, "checkout", "--quiet", "-b", branch);
+    writeFileSync(join(ws, "app.js"), "export const x = 2;\n");
+    sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish the opener's change");
+    return boxBundle(ws, branch);
+  };
+  const plan = (c, sha) => c.call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }] }, requester: { kind: "job", roles: [] }, task: "t2" });
+  const opener = (c, task) => { mkdirSync(join(c.root, "cache"), { recursive: true }); writeFileSync(join(c.root, "cache", "pr-tasks.json"), JSON.stringify({ [url.toLowerCase()]: { task, branch } })); };
+
+  const handoff = await setup(t, { routes, taskStatus: (task) => (task === "ACME-1" ? "cancelled" : undefined) });
+  const heir = successor(handoff.root);
+  opener(handoff, "ACME-1");
+  const granted = await plan(handoff, heir);
+  assert.equal(granted.status, 200, JSON.stringify(granted.json));
+  assert.equal(granted.json.raise?.rule, "handoff-pr", "granted, and the reviewer reads the change that takes the PR over");
+
+  // The opener's task still open keeps the branch its own: another task's push to it is refused as before.
+  const live = await setup(t, { routes, taskStatus: () => "in_progress" });
+  const other = successor(live.root);
+  opener(live, "ACME-1");
+  assert.match(JSON.stringify((await plan(live, other)).json), /isn't this task's branch/, "a live owner's branch is not a handoff");
+
+  // A task the kernel cannot answer for is not open either, but an unreadable answer is not a guess: refused.
+  const unknown = await setup(t, { routes, taskStatus: () => undefined });
+  const blindHeir = successor(unknown.root);
+  opener(unknown, "ACME-1");
+  assert.match(JSON.stringify((await plan(unknown, blindHeir)).json), /isn't this task's branch/, "an unreadable owner is not a handoff");
+
+  // No open PR on the branch: nothing to hand over, so no grant either.
+  const none = await setup(t, { routes: (m, p) => (m === "GET" && p === "/repos/acme/aidenhq" ? { status: 200, body: { default_branch: "main" } } : undefined), taskStatus: () => "cancelled" });
+  const strayHeir = successor(none.root);
+  opener(none, "ACME-1");
+  assert.match(JSON.stringify((await plan(none, strayHeir)).json), /isn't this task's branch/, "a branch no open PR stands on is no handoff");
+});
+
+// The handoff grant is re-decided under the branch lock: two successors can both be approved for one PR, and once the first
+// publish makes the PR the successor's own (its task live) the second must not force-push it. A plain own-branch publish reads
+// nothing extra and is unaffected.
+test("an approved handoff is refused at execute once the PR's task is live again", async (t) => {
+  const url = "https://github.com/acme/aidenhq/pull/7";
+  const openPr = "/repos/acme/aidenhq/pulls?state=open&head=acme%3Aagent%2FTASK-1%2Ffix";
+  const branch = "agent/TASK-1/fix";
+  let live = false;
+  const { root, call, outcomes } = await setup(t, {
+    routes: (m, p) => (m === "GET" && p === openPr ? { status: 200, body: [{ number: 7, html_url: url, head: { sha: "a".repeat(40) } }] }
+      : m === "GET" && p === "/repos/acme/aidenhq" ? { status: 200, body: { default_branch: "main" } } : undefined),
+    taskStatus: (task) => (task === "ACME-1" ? (live ? "in_progress" : "cancelled") : undefined),
+  });
+  mkdirSync(join(root, "cache"), { recursive: true });
+  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [url.toLowerCase()]: { task: "ACME-1", branch } }));
+  const ws = join(root, "tasks", "TASK-2", "aidenhq");
+  const origin = join(root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(root, "seed-p2");
+  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch);
+  writeFileSync(join(ws, "app.js"), "export const x = 2;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish it");
+  const sha = boxBundle(ws, branch);
+  const args = { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }] };
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.equal(plan.json.raise?.rule, "handoff-pr", "granted when its owner is cancelled");
+  // The PR became the successor's between approval and execution (another successor published): the push is refused, not forced.
+  live = true;
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdef", kind: "github.pr", args, digest: "d", idempotency_key: "i" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ex.status, 200, JSON.stringify(ex.json));
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /isn't this task's branch/);
+});
+
+// A push-only handoff still takes the PR over: without notePrTask the watcher would keep treating the PR as the cancelled task's.
+test("a push-only handoff records the successor as the PR's task", async (t) => {
+  const url = "https://github.com/acme/aidenhq/pull/8";
+  const openPr = "/repos/acme/aidenhq/pulls?state=open&head=acme%3Aagent%2FTASK-1%2Ffix";
+  const branch = "agent/TASK-1/fix";
+  let adopted;
+  const { root, call, outcomes } = await setup(t, {
+    routes: (m, p) => (m === "GET" && p === openPr ? { status: 200, body: [{ number: 8, html_url: url, base: { ref: "main" }, head: { sha: "a".repeat(40) } }] }
+      : m === "GET" && p === "/repos/acme/aidenhq" ? { status: 200, body: { default_branch: "main" } } : undefined),
+    taskStatus: (task) => (task === "ACME-1" ? "cancelled" : undefined),
+  });
+  mkdirSync(join(root, "cache"), { recursive: true });
+  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [url.toLowerCase()]: { task: "ACME-1", branch } }));
+  const ws = join(root, "tasks", "TASK-2", "aidenhq");
+  const origin = join(root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(root, "seed-p3");
+  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch);
+  writeFileSync(join(ws, "app.js"), "export const x = 3;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish it");
+  const sha = boxBundle(ws, branch);
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdee", kind: "github.push", args: { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }] }, digest: "d", idempotency_key: "i" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ex.status, 200, JSON.stringify(ex.json));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  adopted = JSON.parse(readFileSync(join(root, "cache", "pr-tasks.json"), "utf8"))[url.toLowerCase()];
+  assert.deepEqual(adopted, { task: "TASK-2", branch }, "the successor owns the PR the watcher works");
+});
+
+// A branch whose ownership is unreadable -- an open PR on it that nobody here recorded, or a listing that fails -- is refused at
+// plan time, not only under the lock: the reviewer must never be asked to read a card the push would then refuse. The branch name
+// alone proves nothing once ownership has moved, so a branch in this task's own namespace is no exception.
+test("a publish whose branch ownership is unreadable is refused when it is planned", async (t) => {
+  const branch = "agent/TASK-2/fix";
+  const head = "a".repeat(40);
+  const pr = { number: 41, html_url: "https://github.com/acme/aidenhq/pull/41", base: { ref: "main" }, head: { sha: head } };
+  const repo = (m, p) => (m === "GET" && p === "/repos/acme/aidenhq" ? { status: 200, body: { default_branch: "main" } } : undefined);
+  const unrecorded = await setup(t, {
+    routes: (m, p) => (m === "GET" && p === `/repos/acme/aidenhq/pulls?state=open&head=acme%3A${encodeURIComponent(branch)}` ? { status: 200, body: [pr] } : repo(m, p)),
+    taskStatus: () => "in_progress",
+  });
+  const ws = join(unrecorded.root, "tasks", "TASK-2", "aidenhq");
+  const origin = join(unrecorded.root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(unrecorded.root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(unrecorded.root, "seed-own");
+  sh(unrecorded.root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(unrecorded.root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch);
+  writeFileSync(join(ws, "app.js"), "export const x = 41;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Fix it");
+  const sha = boxBundle(ws, branch);
+  const args = { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }] };
+  const plan = await unrecorded.call("/aidenhq/v1/executor/plan", { kind: "github.pr", args, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.ok(plan.status >= 400 && plan.status < 500, JSON.stringify(plan.json));
+  assert.match(plan.json.error, /isn't this task's branch/, "an open PR nobody recorded is not this task's to publish");
+
+  // A listing that fails is unknown ownership, never "free": the same refusal, from the same plan.
+  const blind = await setup(t, {
+    routes: (m, p) => (m === "GET" && p.startsWith(`/repos/acme/aidenhq/pulls?`) ? { status: 502, body: { message: "GitHub: unavailable" } } : repo(m, p)),
+    taskStatus: () => "in_progress",
+  });
+  const ws2 = join(blind.root, "tasks", "TASK-2", "aidenhq");
+  const origin2 = join(blind.root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin2), { recursive: true });
+  sh(blind.root, "init", "--quiet", "--bare", "-b", "main", origin2);
+  const seed2 = join(blind.root, "seed-blind");
+  sh(blind.root, "init", "--quiet", "-b", "main", seed2); writeFileSync(join(seed2, "README.md"), "product\n"); sh(seed2, "add", "README.md"); sh(seed2, "commit", "--quiet", "-m", "init"); sh(seed2, "push", "--quiet", origin2, "main");
+  sh(blind.root, "clone", "--quiet", origin2, ws2); sh(ws2, "checkout", "--quiet", "-b", branch);
+  writeFileSync(join(ws2, "app.js"), "export const x = 42;\n"); sh(ws2, "add", "app.js"); sh(ws2, "commit", "--quiet", "-m", "Fix it");
+  const sha2 = boxBundle(ws2, branch);
+  const refused = await blind.call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha: sha2 }] }, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.ok(refused.status >= 400 && refused.status < 500, JSON.stringify(refused.json));
+  assert.match(refused.json.error, /isn't this task's branch/, "a failed ownership read is refused, not guessed");
+});
+
+// The plan binds the base it reviewed the change against, and the PR may be retargeted between the kernel's revalidation and the
+// branch lock. The push rewrites the branch under whichever PRs are open now, so a base that moved is refused before it lands:
+// the diff would go into a proposal nobody read it against.
+test("a publish whose PR was retargeted after approval is refused under the lock, before the push", async (t) => {
+  const branch = "agent/ACME-40/fix";
+  const url = "https://github.com/acme/aidenhq/pull/40";
+  let base = "release-2";
+  const pr = () => ({ number: 40, html_url: url, base: { ref: base }, head: { sha: "a".repeat(40) } });
+  const { root, call, outcomes, ghCalls } = await setup(t, {
+    routes: (m, p) => (m === "GET" && p === `/repos/acme/aidenhq/pulls?state=open&head=acme%3A${encodeURIComponent(branch)}` ? { status: 200, body: [pr()] }
+      : m === "GET" && p === "/repos/acme/aidenhq" ? { status: 200, body: { default_branch: "main" } }
+        : m === "PATCH" && p === "/repos/acme/aidenhq/pulls/40" ? { status: 200, body: pr() } : undefined),
+    taskStatus: (task) => (task === "ACME-40" ? "cancelled" : undefined),
+  });
+  mkdirSync(join(root, "cache"), { recursive: true });
+  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [url.toLowerCase()]: { task: "ACME-40", branch } }));
+  const origin = join(root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(root, "seed-p40");
+  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(seed, "checkout", "--quiet", "-b", "release-2"); writeFileSync(join(seed, "rel.txt"), "release\n"); sh(seed, "add", "rel.txt"); sh(seed, "commit", "--quiet", "-m", "release"); sh(seed, "push", "--quiet", origin, "release-2");
+  const ws = join(root, "tasks", "TASK-40", "aidenhq");
+  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch, "origin/release-2");
+  writeFileSync(join(ws, "app.js"), "export const x = 40;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish it");
+  const sha = boxBundle(ws, branch);
+  const args = { workspace: "TASK-40", only: [{ repo: "acme/aidenhq", branch, sha }], text: { title: "fix(release): finish it", body: "Why." } };
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args, requester: { kind: "job", roles: [] }, task: "t40" });
+  assert.equal(plan.status, 200, JSON.stringify(plan.json));
+  assert.equal(plan.json.targets[`acme/aidenhq ${branch}`].base_branch, "release-2", "reviewed against the PR's own base");
+  // Retargeted after the plan, before the lock: the same approval now means a force-push into a base nobody read.
+  base = "main";
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdf8", kind: "github.pr", args, digest: "d", idempotency_key: "i" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ex.status, 200, JSON.stringify(ex.json));
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /now targets `main`, not `release-2`/);
+  assert.ok(!outcomes[0].text.includes("PRs:"), "nothing was published");
+  assert.equal(ghCalls.some((c) => c.method === "PATCH"), false, "the PR was not edited");
+  const landed = (() => { try { return sh(origin, "rev-parse", "--verify", `refs/heads/${branch}`); } catch { return ""; } })();
+  assert.equal(landed, "", "the branch was not pushed");
+});
+
+// Ownership, not the branch name, decides a republish after a handoff: the successor may keep finishing the branch it adopted (its
+// own recorded PR), and the reopened opener may not force-push over it (the branch still matches its namespace, the PR no longer
+// is its).
+test("after a handoff the successor republishes its branch and the reopened opener is refused", async (t) => {
+  const url = "https://github.com/acme/aidenhq/pull/9";
+  const openPr = "/repos/acme/aidenhq/pulls?state=open&head=acme%3Aagent%2FTASK-1%2Ffix";
+  const branch = "agent/TASK-1/fix";
+  const status = { "ACME-1": "in_progress", "TASK-2": "in_progress" };
+  const { root, call, outcomes, sha } = await setup(t, {
+    routes: (m, p) => (m === "GET" && /^\/repos\/acme\/aidenhq\/pulls\?state=open&head=acme%3Aagent%2FTASK-1%2Ffix/.test(p) ? { status: 200, body: [{ number: 9, html_url: url, base: { ref: "main" }, head: { sha: "a".repeat(40) } }] }
+      : m === "GET" && p === "/repos/acme/aidenhq" ? { status: 200, body: { default_branch: "main" } } : undefined),
+    taskStatus: (task) => status[task],
+  });
+  mkdirSync(join(root, "cache"), { recursive: true });
+  // The successor (TASK-2) recorded the PR when it took it over; the opener is live again.
+  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [url.toLowerCase()]: { task: "TASK-2", branch } }));
+  const ws = join(root, "tasks", "TASK-2", "aidenhq");
+  const origin = join(root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(root, "seed-p4");
+  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch);
+  writeFileSync(join(ws, "app.js"), "export const x = 9;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Fix the failure");
+  const head = boxBundle(ws, branch);
+  // The successor finishes the branch it adopted, under its own workspace name (the branch name is the opener's).
+  const heir = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdf0", kind: "github.pr", args: { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha: head }] }, digest: "d", idempotency_key: "i", requester: { kind: "job", roles: [] } });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  // The reopened opener pushes from its old checkout to the same branch: the PR is the successor's live work now, so it is refused.
+  const opener = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdf1", kind: "github.pr", args: { workspace: "TASK-1", only: [{ repo: "acme/aidenhq", branch, sha }] }, digest: "d", idempotency_key: "i", requester: { kind: "job", roles: [] } });
+  for (let i = 0; i < 300 && outcomes.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(opener.status, 200, JSON.stringify(opener.json));
+  assert.equal(outcomes[1]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[1].text, /isn't this task's branch/);
+});
+
+// A cancelled task's PR may target a release branch (or a former default). The handoff finishes that PR: the plan reviews the change
+// against the base the PR targets, and execution updates that same PR rather than opening a second one into today's default.
+test("a handoff to a PR on another base updates that PR and reviews against its base", async (t) => {
+  const url = "https://github.com/acme/aidenhq/pull/11";
+  const branch = "agent/ACME-9/fix";
+  const head = "a".repeat(40);
+  const pr = { number: 11, html_url: url, base: { ref: "release-2" }, head: { sha: head } };
+  const { root, call, outcomes, ghCalls } = await setup(t, {
+    routes: (m, p) => {
+      if (m === "GET" && p === `/repos/acme/aidenhq/pulls?state=open&head=acme%3A${encodeURIComponent(branch)}`) return { status: 200, body: [pr] };
+      if (m === "GET" && p === `/repos/acme/aidenhq/pulls?state=open&head=acme%3A${encodeURIComponent(branch)}&base=main`) return { status: 200, body: [] };
+      if (m === "GET" && p === "/repos/acme/aidenhq") return { status: 200, body: { default_branch: "main" } };
+      if (m === "PATCH" && p === "/repos/acme/aidenhq/pulls/11") return { status: 200, body: pr };
+      return undefined;
+    },
+    taskStatus: (task) => (task === "ACME-10" ? "cancelled" : undefined),
+  });
+  mkdirSync(join(root, "cache"), { recursive: true });
+  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [url.toLowerCase()]: { task: "ACME-10", branch } }));
+  const origin = join(root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(root, "seed-p5");
+  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(seed, "checkout", "--quiet", "-b", "release-2"); writeFileSync(join(seed, "rel.txt"), "release\n"); sh(seed, "add", "rel.txt"); sh(seed, "commit", "--quiet", "-m", "release"); sh(seed, "push", "--quiet", origin, "release-2");
+  const ws = join(root, "tasks", "TASK-2", "aidenhq");
+  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch, "origin/release-2");
+  writeFileSync(join(ws, "app.js"), "export const x = 11;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish it");
+  const sha = boxBundle(ws, branch);
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }] }, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.equal(plan.json.raise?.rule, "handoff-pr", JSON.stringify(plan.json));
+  assert.equal(plan.json.targets[`acme/aidenhq ${branch}`].base_branch, "release-2", "reviewed against the PR's own base");
+  const args = { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }], text: { title: "fix(release): finish it", body: "Why." } };
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdf2", kind: "github.pr", args, digest: "d", idempotency_key: "i" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ex.status, 200, JSON.stringify(ex.json));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.ok(ghCalls.some((c) => c.method === "PATCH" && c.path === "/repos/acme/aidenhq/pulls/11"), "the handoff PR was updated");
+  assert.ok(!ghCalls.some((c) => c.method === "POST" && c.path === "/repos/acme/aidenhq/pulls"), "no second PR into the default branch");
+});
+
+// A task's *own* branch (agent/<task>/…) in the product repo may already carry a PR into another base: an earlier publish of this
+// same task opened it into release-2, or the default branch changed under it. Planning must read that PR exactly as execution
+// does, so the diff the reviewer approves is the one the push produces: reviewed against release-2, and updating PR 31 -- not
+// diffed against main and then pushed onto a PR into release-2.
+test("a task's own branch with an open PR on another base is reviewed and pushed against that base", async (t) => {
+  const branch = "agent/TASK-2/fix";
+  const url = "https://github.com/acme/aidenhq/pull/31";
+  const pr = { number: 31, html_url: url, base: { ref: "release-2" }, head: { sha: "a".repeat(40) } };
+  const { root, call, outcomes, ghCalls } = await setup(t, {
+    routes: (m, p) => {
+      if (m === "GET" && p === `/repos/acme/aidenhq/pulls?state=open&head=acme%3A${encodeURIComponent(branch)}`) return { status: 200, body: [pr] };
+      if (m === "GET" && p === "/repos/acme/aidenhq") return { status: 200, body: { default_branch: "main" } };
+      if (m === "PATCH" && p === "/repos/acme/aidenhq/pulls/31") return { status: 200, body: pr };
+      return undefined;
+    },
+    taskStatus: (task) => (task === "TASK-2" ? "in_progress" : undefined),
+  });
+  mkdirSync(join(root, "cache"), { recursive: true });
+  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [url]: { task: "TASK-2", branch } }));
+  const origin = join(root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(root, "seed-p7");
+  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(seed, "checkout", "--quiet", "-b", "release-2"); writeFileSync(join(seed, "rel.txt"), "release\n"); sh(seed, "add", "rel.txt"); sh(seed, "commit", "--quiet", "-m", "release"); sh(seed, "push", "--quiet", origin, "release-2");
+  const ws = join(root, "tasks", "TASK-2", "aidenhq");
+  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch, "origin/release-2");
+  writeFileSync(join(ws, "app.js"), "export const x = 31;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish it");
+  const sha = boxBundle(ws, branch);
+  const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.pr", args: { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }] }, requester: { kind: "job", roles: [] }, task: "t2" });
+  assert.equal(plan.json.targets[`acme/aidenhq ${branch}`].base_branch, "release-2", "reviewed against the base its own PR targets");
+  assert.equal(plan.json.raise?.rule, "product-pr", "its own branch is an ordinary product publish, whatever base its PR targets");
+  const args = { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }], text: { title: "fix(release): finish it", body: "Why." } };
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdf4", kind: "github.pr", args, digest: "d", idempotency_key: "i" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ex.status, 200, JSON.stringify(ex.json));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.deepEqual(ghCalls.filter((c) => c.method === "PATCH").map((c) => c.path), ["/repos/acme/aidenhq/pulls/31"], "pushes onto the PR the plan reviewed");
+  assert.ok(!ghCalls.some((c) => c.method === "POST" && c.path === "/repos/acme/aidenhq/pulls"), "no second PR into the default branch");
+  assert.equal(pr.base.ref, "release-2", "the PR the plan bound is the one updated");
+});
+
+// Two open PRs from one head into two bases: one into release-2 (what the plan reviewed) and one into main. A push to that head
+// rewrites both branches, but only the release-2 PR's diff was reviewed, so the handoff takes that one over and leaves the main
+// PR where it is. Adopting both would put a diff nobody read into the main PR, and would let the watcher's "a newer PR supersedes
+// this one" rule close the PR the successor actually took over.
+test("a handoff records the successor only on the PR into the base it was reviewed against", async (t) => {
+  const branch = "agent/ACME-21/fix";
+  const kept = "https://github.com/acme/aidenhq/pull/21"; // into release-2: the PR this publish finishes
+  const other = "https://github.com/acme/aidenhq/pull/22"; // from the same head, into main
+  const prs = [{ number: 21, html_url: kept, base: { ref: "release-2" }, head: { sha: "a".repeat(40) } },
+    { number: 22, html_url: other, base: { ref: "main" }, head: { sha: "a".repeat(40) } }];
+  const { root, call, outcomes, ghCalls } = await setup(t, {
+    routes: (m, p) => {
+      if (m === "GET" && p === `/repos/acme/aidenhq/pulls?state=open&head=acme%3A${encodeURIComponent(branch)}`) return { status: 200, body: prs };
+      if (m === "GET" && p === "/repos/acme/aidenhq") return { status: 200, body: { default_branch: "main" } };
+      if (m === "PATCH" && p === "/repos/acme/aidenhq/pulls/21") return { status: 200, body: prs[0] };
+      return undefined;
+    },
+    taskStatus: (task) => (task === "ACME-21" ? "cancelled" : undefined),
+  });
+  mkdirSync(join(root, "cache"), { recursive: true });
+  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [kept]: { task: "ACME-21", branch }, [other]: { task: "ACME-21", branch } }));
+  const origin = join(root, "github", "acme", "aidenhq.git");
+  mkdirSync(dirname(origin), { recursive: true });
+  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  const seed = join(root, "seed-p6");
+  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
+  sh(seed, "checkout", "--quiet", "-b", "release-2"); writeFileSync(join(seed, "rel.txt"), "release\n"); sh(seed, "add", "rel.txt"); sh(seed, "commit", "--quiet", "-m", "release"); sh(seed, "push", "--quiet", origin, "release-2");
+  const ws = join(root, "tasks", "TASK-2", "aidenhq");
+  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch, "origin/release-2");
+  writeFileSync(join(ws, "app.js"), "export const x = 21;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish it");
+  const sha = boxBundle(ws, branch);
+  const args = { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }], text: { title: "fix(release): finish it", body: "Why." } };
+  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdf3", kind: "github.pr", args, digest: "d", idempotency_key: "i" });
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(ex.status, 200, JSON.stringify(ex.json));
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  const recorded = JSON.parse(readFileSync(join(root, "cache", "pr-tasks.json"), "utf8"));
+  assert.deepEqual([recorded[kept]?.task, recorded[other]?.task], ["TASK-2", "ACME-21"], "only the reviewed base's PR moved to the successor");
+  assert.deepEqual(ghCalls.filter((c) => c.method === "PATCH").map((c) => c.path), ["/repos/acme/aidenhq/pulls/21"], "only the reviewed base's PR is updated");
+  assert.ok(!ghCalls.some((c) => c.method === "POST" && c.path === "/repos/acme/aidenhq/pulls"), "no third PR opened");
 });
 
 // A republish sends the PR's text as a full PATCH, so a blank body coming from the CLI (no --body-file) used to replace the

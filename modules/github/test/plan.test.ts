@@ -29,6 +29,15 @@ describe("plan: the product repo", () => {
     assert.deepEqual(rules("pr", engineer, branch(["src/a.ts"], "fix/x", "other/lib")), [[2, "branch-namespace"]]);
     assert.deepEqual(rules("pr", engineer, branch(["src/a.ts"], "agent/ACME-7/fix", "other/lib")), [[1, "outside-pr"]]);
     assert.deepEqual(rules("pr", { ...s, requester: { platform: true } }, branch(["kernel/src/a.ts"], "fix/x")), [[1, "product-pr"]]);
+    // An explicit handoff: the branch of an open PR whose recorded owner task is no longer open (service.ts reads both facts).
+    // A successor finishes that PR by publishing to its head branch, at the reviewer's tier, never by a general branch widening.
+    assert.deepEqual(rules("pr", engineer, { ...branch(["kernel/src/a.ts"], "agent/ACME-8/fix"), handoff: true }), [[1, "handoff-pr"]]);
+    assert.deepEqual(rules("push", engineer, { ...branch(["kernel/src/a.ts"], "agent/ACME-8/fix"), handoff: true }), [[1, "handoff-push"]]);
+    // A PR this task already took over (recorded to it) is its own however its branch is named: a successor republishes it.
+    assert.deepEqual(rules("pr", engineer, { ...branch(["kernel/src/a.ts"], "agent/ACME-8/fix"), adopted: true }), [[1, "adopted-pr"]]);
+    assert.deepEqual(rules("push", engineer, { ...branch(["kernel/src/a.ts"], "agent/ACME-8/fix"), adopted: true }), [[1, "adopted-push"]]);
+    // Adoption never reaches the default-branch refusal: the product repo's own branch stays refused.
+    assert.deepEqual(rules("pr", engineer, { ...branch(["kernel/src/a.ts"], "main"), adopted: true }), [[2, "product-default-branch"]]);
   });
 
 });
