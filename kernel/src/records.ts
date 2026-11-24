@@ -63,6 +63,13 @@ export type Rec = {
   /** The files the write changes, as its plan named them (`repo:path`): task search reads them; never part of the digest. */
   paths?: string[] | null;
 };
+/** A record without its heavy columns (`args`, `card`, `context`): what a reader that only needs state, who, when and the outcome selects (`list(..., { light: true })`). */
+export type RecRow = Omit<Rec, "args" | "card" | "context">;
+/** A record as the lists read it: whole but for `context` (the reviewer's input, large while a record is open); `diff` is the one part of it a card shows. Read one record whole with `get`. */
+export type RecDetail = Omit<Rec, "context"> & { diff: string | null };
+/** Every column but `args`, `card` and `context`, and the retired panel, review_first and chain. */
+const LIGHT = "id, kind, module, targets, executor, policy, digest, tier, merit, requester, task, state, review, decided_by, via, outcome, created_at, updated_at, rule, review_code, decided_at, owner_reason, identifier, replaced, target, content, cap, wait, waits, paths";
+const DETAIL = `${LIGHT}, args, card, json_extract(context, '$.diff') AS diff`;
 const JSON_COLS = ["args", "targets", "executor", "card", "requester", "outcome", "cap", "context", "paths"] as const;
 const OPEN: State[] = ["review", "owner", "approved"];
 /** Records past this are expired: decided within a week of filing, and run within a week of the approval (an approved record retries a transient failure meanwhile). */
@@ -94,16 +101,21 @@ const prOf = (args: unknown): { pr?: string } => {
 export function openRecords(file: string, now = () => new Date()) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(file);
-  db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;
+  db.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA synchronous = FULL; PRAGMA cache_size = -16384; PRAGMA mmap_size = 67108864;
     CREATE TABLE IF NOT EXISTS records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, module TEXT NOT NULL, args TEXT NOT NULL, targets TEXT NOT NULL,
       executor TEXT NOT NULL, policy TEXT NOT NULL, digest TEXT NOT NULL, tier INTEGER NOT NULL, panel INTEGER NOT NULL, card TEXT NOT NULL,
       requester TEXT NOT NULL, task TEXT NOT NULL, state TEXT NOT NULL, review TEXT, decided_by TEXT, via TEXT, outcome TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS records_state ON records (state);
     CREATE INDEX IF NOT EXISTS records_task ON records (task, kind);`);
   // Columns added since 2d, each additive (older code ignores them, so a rollback keeps working).
   const have = new Set((db.prepare("PRAGMA table_info(records)").all() as { name: string }[]).map((c) => c.name));
   for (const [c, t] of [["merit", "INTEGER"], ["review_first", "TEXT"], ["rule", "TEXT"], ["review_code", "TEXT"], ["decided_at", "TEXT"], ["owner_reason", "TEXT"], ["identifier", "TEXT"], ["replaced", "INTEGER NOT NULL DEFAULT 0"], ["chain", "TEXT"], ["target", "TEXT"], ["content", "TEXT"], ["cap", "TEXT"], ["context", "TEXT"], ["wait", "TEXT"], ["waits", "INTEGER"], ["paths", "TEXT"]] as const) if (!have.has(c)) db.exec(`ALTER TABLE records ADD COLUMN ${c} ${t}`);
+  // The lists read one state newest first, `since` and `stats` read by filing and decision time (stats' counts are answered from these two indexes alone). A state alone is the prefix of the first.
+  db.exec(`DROP INDEX IF EXISTS records_state;
+    CREATE INDEX IF NOT EXISTS records_state_created ON records (state, created_at DESC);
+    DROP INDEX IF EXISTS records_created; DROP INDEX IF EXISTS records_decided;
+    CREATE INDEX IF NOT EXISTS records_created_tier ON records (created_at, tier);
+    CREATE INDEX IF NOT EXISTS records_decided_tier ON records (decided_at, tier, state);`);
   // a task by its identifier (a fact's task, facts.ts; a task's records)
   db.exec("CREATE INDEX IF NOT EXISTS records_identifier ON records (identifier)");
   const facts = openFacts(db, now);
@@ -111,13 +123,26 @@ export function openRecords(file: string, now = () => new Date()) {
   const cutoff = () => new Date(now().getTime() - TTL_MS).toISOString();
   const row = (r: any): Rec | undefined => {
     if (!r) return undefined;
-    for (const c of JSON_COLS) r[c] = r[c] == null ? null : JSON.parse(r[c]);
+    for (const c of JSON_COLS) if (c in r) r[c] = r[c] == null ? null : JSON.parse(r[c]);
     // panel, review_first and chain are columns of the retired panel and review-first flow, no longer read (owner, 2026-11-22).
     const { panel: _p, review_first: _f, chain: _c, ...rest } = r;
     return { ...rest, replaced: r.replaced === 1 };
   };
   const rows = (rs: unknown[]) => rs.map((r) => row(r)!);
+  const cols = (light: boolean) => (light ? LIGHT : DETAIL);
   const get = (id: string) => row(db.prepare("SELECT * FROM records WHERE id = ?").get(id));
+  /** The card's sentence and target of these records, without reading the cards whole (a light list's rows name them). */
+  const cardLines = (ids: string[]) => {
+    const out = new Map<string, { sentence: string; target?: string }>();
+    for (let i = 0; i < ids.length; i += 500) {
+      const part = ids.slice(i, i + 500);
+      for (const r of db.prepare(`SELECT id, json_extract(card, '$.sentence') AS sentence, json_extract(card, '$.target') AS target FROM records WHERE id IN (${part.map(() => "?").join(",")})`).all(...part) as { id: string; sentence: string | null; target: string | null }[])
+        out.set(r.id, { sentence: r.sentence ?? "", ...(r.target != null ? { target: r.target } : {}) });
+    }
+    return out;
+  };
+  /** One record as the lists read it (`RecDetail`): the board's card page. */
+  const detail = (id: string) => row(db.prepare(`SELECT ${DETAIL} FROM records WHERE id = ?`).get(id)) as RecDetail | undefined;
   /** The record's flow fact as it is now, when its tier is 1 or 2: inside the move's transaction, which fails with it. */
   const fact = (id: string, type: string, version: string, actor: string, data: (r: Rec) => Record<string, unknown>) => {
     const r = get(id)!;
@@ -150,20 +175,55 @@ export function openRecords(file: string, now = () => new Date()) {
   };
   /** The code closed an open record (expired, replaced): its closing fact, written in the same transaction. */
   const cancelled = (id: string, via: "expired" | "replaced") => fact(id, "record.decided", "code:cancelled", "kernel", () => ({ decision: "cancelled", decider: "code", via }));
-  /** Open records past their 7 days (an approved one counted from its decision): cancelled as expired, each with its closing fact. */
-  const expire = () => {
+  /**
+   * Open records past their 7 days (an approved one counted from its decision): cancelled as expired, each with its closing fact.
+   * It runs on a timer (main.ts), never on a read: nothing acts on an expired record meanwhile (`move` with `fresh`, which review,
+   * decide, hold and claim use, and `open` refuse it) and the lists leave it out.
+   */
+  const expire = (): number => {
     const ids = (db.prepare("SELECT id FROM records WHERE state IN ('review','owner','approved') AND COALESCE(decided_at, created_at) <= ?").all(cutoff()) as { id: string }[]).map((r) => r.id);
-    if (!ids.length) return;
+    if (!ids.length) return 0;
     const at = iso(), outcome = JSON.stringify({ ok: false, text: "expired: not decided and run within 7 days" });
     inTx(db, "records_expire", () => {
       for (const id of ids) if (db.prepare("UPDATE records SET state = 'cancelled', updated_at = ?, outcome = ?, context = NULL WHERE id = ? AND state IN ('review','owner','approved')").run(at, outcome, id).changes) cancelled(id, "expired");
     });
+    return ids.length;
   };
-  const shownState = (r: Rec) => (OPEN.includes(r.state) && (r.decided_at ?? r.created_at) <= cutoff() ? "expired" : r.state);
+  /** A list leaves out an open record past its 7 days: the timer's next pass cancels it. */
+  const alive = () => " AND (state NOT IN ('review','owner','approved') OR COALESCE(decided_at, created_at) > ?)";
+  type Opts = { reviewed?: boolean; task?: string; kinds?: string[]; after?: string };
+  const select = (columns: string, states: State[], limit: number | null, { reviewed = false, task, kinds, after }: Opts) => {
+    // A negative limit is no limit (as SQLite reads it).
+    if (limit !== null && limit < 0) limit = null;
+    const keyset = after ? " AND (created_at, rowid) < (SELECT created_at, rowid FROM records WHERE id = ?)" : "";
+    const query = (cols: string, part: State[], cap: number | null) => db.prepare(`SELECT ${cols} FROM records WHERE state IN (${part.map(() => "?").join(",")})${alive()}${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""}${keyset} ORDER BY created_at DESC, rowid DESC${cap === null ? "" : " LIMIT ?"}`)
+      .all(...part, cutoff(), ...(task ? [task, task] : []), ...(kinds ?? []), ...(after ? [after] : []), ...(cap === null ? [] : [cap]));
+    // One query when nothing is discarded: one state, a task's (its own index), or every match.
+    if (states.length === 1 || task || limit === null) return rows(query(columns, states, limit));
+    // A capped page of several states: each state's newest `limit` keys from its (state, created_at) index, merged, and only the
+    // winners' columns read, so the page never loads or sorts them whole. One snapshot for both steps.
+    db.exec("SAVEPOINT records_page");
+    try {
+      const keys = states.flatMap((s) => query("rowid AS rid, created_at", [s], limit) as { rid: number; created_at: string }[])
+        .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : b.rid - a.rid)).slice(0, limit);
+      const byRid = new Map<number, { rid?: number }>();
+      for (let n = 0; n < keys.length; n += 500) {
+        const part = keys.slice(n, n + 500);
+        for (const r of db.prepare(`SELECT ${columns}, rowid AS rid FROM records WHERE rowid IN (${part.map(() => "?").join(",")})`).all(...part.map((k) => k.rid)) as { rid: number }[]) byRid.set(r.rid, r);
+      }
+      return rows(keys.flatMap((k) => { const r = byRid.get(k.rid); if (!r) return []; delete r.rid; return [r]; }));
+    } finally {
+      db.exec("RELEASE records_page");
+    }
+  };
+  const shownState = (r: Pick<Rec, "state" | "decided_at" | "created_at">) => (OPEN.includes(r.state) && (r.decided_at ?? r.created_at) <= cutoff() ? "expired" : r.state);
 
   return {
     db,
     get,
+    detail,
+    cardLines,
+    expire,
     file(r: Filing): Rec {
       const id = `k-${randomBytes(8).toString("hex")}`;
       const at = iso();
@@ -197,14 +257,18 @@ export function openRecords(file: string, now = () => new Date()) {
      * shifts a page, and nothing is skipped or repeated). A reader that must see every matching record (the board's live list)
      * pages with it instead of treating the largest page as the whole set.
      */
-    list(states: State[], limit: number | null = 100, { reviewed = false, task, kinds, after }: { reviewed?: boolean; task?: string; kinds?: string[]; after?: string } = {}): Rec[] {
-      expire();
-      const keyset = after ? " AND (created_at, rowid) < (SELECT created_at, rowid FROM records WHERE id = ?)" : "";
-      return rows(db.prepare(`SELECT * FROM records WHERE state IN (${states.map(() => "?").join(",")})${reviewed ? " AND tier > 0" : ""}${task ? " AND (task = ? OR identifier = ?)" : ""}${kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : ""}${keyset} ORDER BY created_at DESC, rowid DESC${limit === null ? "" : " LIMIT ?"}`)
-        .all(...states, ...(task ? [task, task] : []), ...(kinds ?? []), ...(after ? [after] : []), ...(limit === null ? [] : [limit])));
+    list<L extends boolean = false>(states: State[], limit: number | null = 100, o: Opts & { light?: L } = {}): (L extends true ? RecRow : RecDetail)[] {
+      return select(cols(o.light === true), states, limit, o) as never;
     },
-    /** Records filed or decided since then, oldest first (the daily digest). */
-    since: (at: string): Rec[] => rows(db.prepare("SELECT * FROM records WHERE (created_at > ? OR decided_at > ?) AND tier > 0 ORDER BY created_at").all(at, at)),
+    /** Records filed or decided since then (tier 1 and 2), oldest first, without their heavy columns (the daily digest, the work reads). */
+    since(at: string): RecRow[] {
+      // Two index searches: filed since, and decided since but filed before (so no record is read twice), merged oldest first.
+      // Stored times are UTC ISO strings, compared as text: a cutoff in another offset or form is normalised to that first.
+      if (!Number.isNaN(Date.parse(at))) at = new Date(at).toISOString();
+      const q = (where: string) => db.prepare(`SELECT ${LIGHT} FROM records WHERE ${where} AND tier > 0 ORDER BY created_at`);
+      const filed = rows(q("created_at > ?").all(at)), decided = rows(q("decided_at > ? AND +created_at <= ?").all(at, at));
+      return [...filed, ...decided].sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)) as RecRow[];
+    },
     /** Counts for the monitoring metrics: filed and decided since `at` by tier and state, and open by tier. */
     stats(at: string) {
       const q = (sql: string, ...a: string[]) => db.prepare(sql).all(...a) as never;
@@ -235,7 +299,7 @@ export function openRecords(file: string, now = () => new Date()) {
      * conn.tool's connection.tool, so a no on one tool never holds for the task's others.
      */
     vetoed(task: string, kind: string, { digest, content, tool }: { digest?: string; content?: string | null; tool?: string } = {}): boolean {
-      const decided = rows(db.prepare(`SELECT * FROM records WHERE task = ? AND kind = ?${tool ? " AND json_extract(args, '$.connection') || '.' || json_extract(args, '$.tool') = ?" : ""} AND ${OWNER_SQL} AND state IN ('approved','claimed','done','failed','unknown','rejected','cancelled') ORDER BY COALESCE(decided_at, updated_at) DESC, rowid DESC`).all(task, kind, ...(tool ? [tool] : [])));
+      const decided = (db.prepare(`SELECT state, digest, content FROM records WHERE task = ? AND kind = ?${tool ? " AND json_extract(args, '$.connection') || '.' || json_extract(args, '$.tool') = ?" : ""} AND ${OWNER_SQL} AND state IN ('approved','claimed','done','failed','unknown','rejected','cancelled') ORDER BY COALESCE(decided_at, updated_at) DESC, rowid DESC`).all(task, kind, ...(tool ? [tool] : []))) as { state: string; digest: string; content: string | null }[];
       if (decided[0]?.state === "rejected") return true;
       if (content === "?" && decided.some((r) => r.state === "rejected")) return true;
       if (digest && decided.find((r) => r.digest === digest)?.state === "rejected") return true;

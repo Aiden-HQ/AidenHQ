@@ -13,7 +13,7 @@ import type { JourneyDecl } from "./journeys.ts";
 import type { Facts } from "./facts.ts";
 import { factWriter, iso } from "./factlog.ts";
 import { fail } from "./proxy.ts";
-import { actionOf, type Records } from "./records.ts";
+import { actionOf, type RecDetail, type RecRow, type Records } from "./records.ts";
 import type { Writes } from "./writes.ts";
 
 /** config/kernel/modules.json (compile): modules with kernel roles, a privileged entry, a token of their own or a channel. */
@@ -99,13 +99,17 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
 
   /** The owner's pending cards (the records waiting for them) and recent outcomes, as the channels and the pages show them. */
   const ownerCards = async () => {
-    const view = (r: ReturnType<Records["list"]>[number]) => ({
-      id: r.id, identifier: r.identifier ?? r.task, action: actionOf(r.kind), tier: r.state === "review" ? 1 : r.tier, digest: r.digest, sentence: r.card.sentence, changes: r.card.changes,
-      reads: r.card.reads, cost: r.card.cost, details: r.card.details, target: r.card.target ?? "", requestedBy: r.requester.name || r.requester.key || r.requester.module || "", replaced: Boolean(r.replaced),
-      reason: r.card.reason ?? "", review: r.review, state: r.state, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
+    const common = (r: RecRow) => ({
+      id: r.id, identifier: r.identifier ?? r.task, action: actionOf(r.kind), tier: r.state === "review" ? 1 : r.tier, digest: r.digest,
+      requestedBy: r.requester.name || r.requester.key || r.requester.module || "", replaced: Boolean(r.replaced),
+      review: r.review, state: r.state, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
       decidedBy: r.decided_by, createdAt: r.created_at,
     });
-    return { live: records.list(["owner"], 200).reverse().map(view), finished: records.list(["done", "failed", "unknown"], 50, { reviewed: true }).map(view) };
+    // The pending cards carry their whole card; the finished ones only its sentence (the channels' outcome line).
+    const view = (r: RecDetail) => ({ ...common(r), sentence: r.card.sentence, changes: r.card.changes, reads: r.card.reads, cost: r.card.cost, details: r.card.details, target: r.card.target ?? "", reason: r.card.reason ?? "" });
+    const done = records.list(["done", "failed", "unknown"], 50, { reviewed: true, light: true });
+    const lines = records.cardLines(done.map((r) => r.id));
+    return { live: records.list(["owner"], 200).reverse().map(view), finished: done.map((r) => ({ ...common(r), sentence: lines.get(r.id)?.sentence })) };
   };
   /** One decision on a card, bound to the digest the owner saw. Throws 409 when the card was decided, changed or replaced meanwhile. */
   const decideCard = async (id: string, digest: string, decision: "approve" | "reject", by: string, via: string, reason = ""): Promise<{ identifier: string; sentence: string; state: string }> => {
@@ -184,13 +188,15 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
     if (Number(parts.hour) < 21 || kv.get("approvals_digest_day") === day) return null;
     kv.set("approvals_digest_day", day);
     const plain = (v: string, max: number) => v.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, max).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[link removed]").replace(/[\\`*_[\]()~>#|<!]/g, "\\$&");
-    const status = (r: ReturnType<Records["list"]>[number]) => {
+    const status = (r: RecRow) => {
       const st = records.shownState(r);
       if (st === "review" || st === "owner") return "still waiting for you";
       if (st === "approved" || st === "claimed") return "approved, running";
-      return st === "done" ? "approved, applied" : st === "failed" ? "approved, failed" : st === "unknown" ? "approved, no outcome reported" : st === "cancelled" && r.decided_by ? "expired" : st;
+      return st === "done" ? "approved, applied" : st === "failed" ? "approved, failed" : st === "unknown" ? "approved, no outcome reported" : st === "cancelled" && r.outcome?.text.startsWith("expired") ? "expired" : st;
     };
-    const yours = records.since(new Date(t.getTime() - 86_400_000).toISOString()).filter((r) => r.tier === 2 && r.state !== "review" && !r.decided_by?.startsWith("reviewer:") && (r.via !== "save" || r.state === "failed")).map((r) => `• ${r.identifier ?? r.task} ${actionOf(r.kind)} · target (as reported): ${plain(r.card.target ?? r.card.sentence, 80)} · ${status(r)}${r.review ? ` · reviewer's note: ${plain(r.review, 200)}` : ""}`);
+    const recent = records.since(new Date(t.getTime() - 86_400_000).toISOString());
+    const lines = records.cardLines(recent.filter((r) => r.tier === 2).map((r) => r.id));
+    const yours = recent.filter((r) => r.tier === 2 && r.state !== "review" && !r.decided_by?.startsWith("reviewer:") && (r.via !== "save" || r.state === "failed")).map((r) => `• ${r.identifier ?? r.task} ${actionOf(r.kind)} · target (as reported): ${plain(lines.get(r.id)?.target ?? lines.get(r.id)?.sentence ?? "", 80)} · ${status(r)}${r.review ? ` · reviewer's note: ${plain(r.review, 200)}` : ""}`);
     if (!yours.length) return null;
     return [`🧾 **Approvals digest** (last 24h): ${yours.length} ${yours.length === 1 ? "card was" : "cards were"} yours to decide`, ...yours.slice(0, 20)].join("\n");
   };
@@ -217,7 +223,7 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
           requestedBy: a.requestedBy, replaced: Boolean(a.replaced), ...(a.reason ? { reason: a.reason } : {}), ...(a.review ? { review: a.review } : {}), ...(tokens ? { tokens } : {}) };
       });
       // Owner cards that ended without running (rejected anywhere, replaced or expired): a channel edits the message it sent for them.
-      const ended = records.list(["rejected", "stale", "cancelled"], 50, { reviewed: true }).filter((r) => r.tier === 2).map((r) => ({ id: r.id, identifier: r.identifier ?? r.task, state: r.state }));
+      const ended = records.list(["rejected", "stale", "cancelled"], 50, { reviewed: true, light: true }).filter((r) => r.tier === 2).map((r) => ({ id: r.id, identifier: r.identifier ?? r.task, state: r.state }));
       return { cards, finished: finished.map((a) => ({ id: a.id, identifier: a.identifier, state: a.state, outcome: a.outcome ?? null, outcomeText: a.outcomeText ?? null, sentence: a.sentence })), ended };
     },
 

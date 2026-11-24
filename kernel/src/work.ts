@@ -84,7 +84,7 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
         if (typeof d.repo === "string" && Number.isInteger(d.number)) prs.set(`${d.repo}#${d.number}`, { repo: d.repo, number: d.number as number, title: String(d.title ?? "") });
       }
       const paths = new Set<string>();
-      for (const r of rows("SELECT paths, card FROM records WHERE task = ? AND state = 'done' AND (paths IS NOT NULL OR card LIKE '%diff --git%')", task)) {
+      for (const r of rows("SELECT paths, CASE WHEN paths IS NULL THEN card END AS card FROM records WHERE task = ? AND state = 'done' AND (paths IS NOT NULL OR card LIKE '%diff --git%')", task)) {
         try {
           if (r.paths) for (const p of JSON.parse(r.paths) as string[]) paths.add(p.slice(p.indexOf(":") + 1));
           else for (const m of String(JSON.parse(r.card)?.details ?? "").matchAll(/^diff --git a\/(\S+) b\//gm)) paths.add(m[1]!);
@@ -107,6 +107,10 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       }) };
     },
     since(from: string, to = new Date().toISOString()) {
+      // The stored times are UTC ISO strings compared as text: both bounds are put in that form first (records and spend alike).
+      const utc = (t: string) => (Number.isNaN(Date.parse(t)) ? t : new Date(t).toISOString());
+      from = utc(from);
+      to = utc(to);
       const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
       // Confirmed spend only: a `reserved` call's amount is an estimate, an `unsettled` one the gateway's fail-closed hold, and a call
       // that settled with no tokens seen (a stream cut or gone quiet, `upstream_aborted`) was closed at its reservation. A billed call has tokens (a free refusal, at $0, is confirmed too).
@@ -127,13 +131,12 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
     ownerCards(after: string | undefined, limit: number) {
       // Put to the owner later: the reviewer's escalation, or a hold (autonomy tightened after an approval). Else the filing.
       const reached = "COALESCE((SELECT f.at FROM facts f WHERE f.subject = 'record:' || r.id AND ((f.type = 'record.decided' AND f.version = 'reviewer:owner') OR f.type = 'record.held') ORDER BY f.seq DESC LIMIT 1), r.created_at)";
-      const cte = `WITH c AS (SELECT r.id, r.kind, r.state, r.task, r.identifier, r.requester, r.card, r.decided_by, r.created_at, r.decided_at, ${reached} AS reached FROM records r WHERE r.tier = 2 AND COALESCE(r.via, '') != 'save')`;
+      const cte = `WITH c AS (SELECT r.id, r.kind, r.state, r.task, r.identifier, r.requester, json_extract(r.card, '$.sentence') AS sentence, json_extract(r.card, '$.reason') AS reason, r.decided_by, r.created_at, r.decided_at, ${reached} AS reached FROM records r WHERE r.tier = 2 AND COALESCE(r.via, '') != 'save')`;
       const keyset = after ? " WHERE (reached, id) < ((SELECT reached FROM c WHERE id = ?), ?)" : "";
       const got = rows(`${cte} SELECT * FROM c${keyset} ORDER BY reached DESC, id DESC LIMIT ?`, ...(after ? [after, after] : []), limit + 1);
       const cards = got.slice(0, limit).map((r) => {
         const who = JSON.parse(r.requester || "{}") as { key?: string; module?: string; name?: string };
-        const card = JSON.parse(r.card || "{}") as { sentence?: string; reason?: string };
-        return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, requester: who.key || who.module || who.name || null, sentence: card.sentence ?? null, reason: card.reason ?? null, decided_by: r.decided_by ?? null, reached_owner_at: r.reached, created_at: r.created_at, decided_at: r.decided_at ?? null };
+        return { id: r.id, kind: r.kind, state: r.state, task: r.task, identifier: r.identifier ?? null, requester: who.key || who.module || who.name || null, sentence: r.sentence ?? null, reason: r.reason ?? null, decided_by: r.decided_by ?? null, reached_owner_at: r.reached, created_at: r.created_at, decided_at: r.decided_at ?? null };
       });
       return { cards, next: got.length > limit ? cards.at(-1)!.id : null };
     },
@@ -185,16 +188,17 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       return { running, capacity: capacity(), recent, latest: [...latest].slice(0, 200).map(([task, state]) => ({ task, state })), queued, parked, failing, waiting, last_started_at };
     },
     metrics(now = Date.now()) {
-      const all = rows("SELECT * FROM jobs");
-      const running = all.filter((r) => r.state === "running");
-      const ended = all.filter((r) => r.state !== "running" && r.ended && r.at && r.ended >= r.at).map((r) => (r.ended - r.at) / 1000);
+      // Counted in SQL over the integer columns alone: no job row is materialised per scrape. A duration is a job that has ended (ms).
+      const bucket = BUCKETS.filter((b) => b !== Infinity).map((b, i) => `COALESCE(SUM(d <= ${b * 1000}), 0) AS b${i}`).join(", ");
+      const m = rows(`SELECT COALESCE(SUM(state = 'running'), 0) AS running, MIN(CASE WHEN state = 'running' THEN at END) AS first, COUNT(d) AS n, COALESCE(SUM(d), 0) AS ms, ${bucket}
+        FROM (SELECT state, at, CASE WHEN state != 'running' AND ended AND at AND ended >= at THEN ended - at END AS d FROM jobs)`)[0]!;
       const out: string[] = [];
       const gauge = (name: string, help: string, v: number) => out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`, `${name} ${v}`);
-      gauge("aidenhq_kernel_jobs_running", "Jobs the kernel runs for its own agents, running now.", running.length);
-      gauge("aidenhq_kernel_jobs_oldest_seconds", "How long the oldest running kernel-owned job has run.", Math.round(Math.max(0, ...running.map((r) => (now - r.at) / 1000))));
+      gauge("aidenhq_kernel_jobs_running", "Jobs the kernel runs for its own agents, running now.", m.running);
+      gauge("aidenhq_kernel_jobs_oldest_seconds", "How long the oldest running kernel-owned job has run.", Math.round(Math.max(0, m.first == null ? 0 : (now - m.first) / 1000)));
       out.push("# HELP aidenhq_kernel_jobs_duration_seconds Kernel-owned job runs, start to end, over every job on record.", "# TYPE aidenhq_kernel_jobs_duration_seconds histogram");
-      for (const b of BUCKETS) out.push(`aidenhq_kernel_jobs_duration_seconds_bucket{le="${b === Infinity ? "+Inf" : b}"} ${ended.filter((s) => s <= b).length}`);
-      out.push(`aidenhq_kernel_jobs_duration_seconds_sum ${Math.round(ended.reduce((a, b) => a + b, 0))}`, `aidenhq_kernel_jobs_duration_seconds_count ${ended.length}`);
+      BUCKETS.forEach((b, i) => out.push(`aidenhq_kernel_jobs_duration_seconds_bucket{le="${b === Infinity ? "+Inf" : b}"} ${b === Infinity ? m.n : m[`b${i}`]}`));
+      out.push(`aidenhq_kernel_jobs_duration_seconds_sum ${Math.round(m.ms / 1000)}`, `aidenhq_kernel_jobs_duration_seconds_count ${m.n}`);
       return out.join("\n") + "\n";
     },
   };

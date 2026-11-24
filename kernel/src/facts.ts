@@ -30,11 +30,13 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
       data TEXT NOT NULL DEFAULT '{}');
     CREATE INDEX IF NOT EXISTS facts_task ON facts (task, at);
     CREATE INDEX IF NOT EXISTS facts_type ON facts (type, at);
-    CREATE INDEX IF NOT EXISTS facts_subject ON facts (subject);`);
+    DROP INDEX IF EXISTS facts_subject;
+    CREATE INDEX IF NOT EXISTS facts_subject_type ON facts (subject, type, at, seq);`);
   ensureObjects(db);
   migrateEvents(db);
   normaliseFacts(db);
   const insert = db.prepare("INSERT OR IGNORE INTO facts (id, type, subject, version, task, at, seen_at, actor, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const newest = db.prepare("SELECT * FROM facts WHERE subject = ? AND type = ? ORDER BY at DESC, seq DESC LIMIT 1");
   const row = (r: any): FactRow => ({ ...r, data: JSON.parse(r.data) });
   // A writer may name the task by its identifier (a code host knows the workspace, WOR-12): the log keeps the id every other fact
   // uses, from the records that know both. Kept once resolved (an identifier never moves).
@@ -68,8 +70,12 @@ export function openFacts(db: DatabaseSync, now = () => new Date()) {
     },
     /** A subject's newest fact of each of `types` (by `at`, then `seq`, as task state reads them). */
     latest(subject: string, types: string[]): Map<string, FactRow> {
+      // One index step per type to its newest fact: a subject's history is never read whole.
       const out = new Map<string, FactRow>();
-      for (const r of db.prepare(`SELECT * FROM facts WHERE subject = ? AND type IN (${types.map(() => "?").join(",")}) ORDER BY at, seq`).all(subject, ...types) as any[]) out.set(r.type, row(r));
+      for (const type of new Set(types)) {
+        const r = newest.get(subject, type);
+        if (r) out.set(type, row(r));
+      }
       return out;
     },
     /** The tasks whose newest status fact is open (not done or cancelled): what task state lists as open. */

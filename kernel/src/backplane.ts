@@ -1102,10 +1102,10 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             // `kinds`: only these record kinds (comma-separated). A read of one kind's history — a task's merge cards — must not
             // lose it behind newer writes of other kinds, whatever the page cap.
             const kinds = (p.get("kinds") ?? "").split(",").map((k) => k.trim()).filter(Boolean);
-            const rows = one ? [records.get(one)].filter((r): r is NonNullable<typeof r> => Boolean(r)) : records.list(list!, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}), ...(kinds.length ? { kinds } : {}), ...(after ? { after } : {}) });
+            const rows = one ? [records.detail(one)].filter((r): r is NonNullable<typeof r> => Boolean(r)) : records.list(list!, Math.min(Number(p.get("limit")) || 100, 1000), { reviewed: p.get("tier0") !== "1", ...(task ? { task } : {}), ...(kinds.length ? { kinds } : {}), ...(after ? { after } : {}) });
             // An open record's card shows the whole diff the reviewer reads (context.diff), so the owner decides on all of it; the
             // reviewer's other input (the files' text) stays in the kernel.
-            return send(res, 200, { records: rows.map(({ context, ...r }) => ({ ...r, card: context?.diff ? { ...r.card, details: context.diff } : r.card, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });
+            return send(res, 200, { records: rows.map(({ diff, ...r }) => ({ ...r, card: diff ? { ...r.card, details: diff } : r.card, state: records.shownState(r), ...(writes.retryAt(r.id) ? { retry_at: writes.retryAt(r.id) } : {}) })) });
           }
           case "GET /v1/writes/:id": {
             if (isBoard(req)) return send(res, 200, record(id));

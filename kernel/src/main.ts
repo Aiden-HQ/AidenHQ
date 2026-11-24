@@ -794,6 +794,10 @@ afterPrevious(() => { once(reconcile, 60_000); every(reconcile, 10 * 60_000); })
 // Approved records not yet run (a restart between the decision and the claim, a check that failed transiently): every minute.
 every(() => writes.retryApproved(), 60_000);
 once(() => writes.retryApproved(), 60_000);
+// Open records past their 7 days are cancelled here, not on a read of the lists (records.ts expire).
+const expireRecords = () => { try { records.expire(); } catch (e) { log("records expiry failed", { err: String((e as Error).message ?? e).slice(0, 300) }); } };
+every(expireRecords, 60_000);
+once(expireRecords, 5_000);
 
 const gw = createGateway({
   dbFile: path.join(dataDir, "kernel", "kernel.db"),
