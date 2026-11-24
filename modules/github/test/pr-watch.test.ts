@@ -1170,3 +1170,40 @@ test("a typed unreachable need on the check-runs listing still reports the red h
   assert.equal(c.woke.length, 1, "a permanent listing refusal does not defer the failure forever");
   assert.match(c.woke[0].text, /checks failed at/);
 });
+
+// fd7e47a6502ae698: a credential without Actions read (a typed `scope` refusal) is as permanent as a 404: report the red head.
+test("an Actions scope refusal does not defer the red-head wake", async (t) => {
+  const c = await rig(t, { jobRead: () => Object.assign(new Error("acme/app needs a scope this sign-in has not granted"), { need: { cause: "scope", scope: "repo" } }) });
+  c.set([c.agentPr(88, redPr(88))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent scope refusal is not this rule's: the failure is reported");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
+
+// f860612ff95e4e6a: a later attempt is a replacement only of the workflow run that was re-run, never of a same-named sibling.
+test("a same-named job on another workflow run is not taken as the re-run's replacement", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  // The ledger's ask was for job 77 of run 500; REST now lists a different job, 78, on attempt 2 of run 600. It merely shares
+  // the suite and display name, so it is a job of its own and must get its own ask.
+  const c = await rig(t, { gigRun: () => 600, job: { run_attempt: 2 },
+    restRuns: () => [{ id: 78, node_id: "CR_78", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/600/job/78" }] });
+  c.set([c.agentPr(89, stuckPr(89, 78))]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h89:500:image-changes": { at: asked, accepted: true, job: 77, run: 500 } },
+    reran: { "acme/app:h89:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(c.gh.includes("POST /repos/acme/app/actions/jobs/78/rerun"), "another run's job is its own check and gets its own ask");
+});
+
+// e72fb15673cc76c4: only a check the head's rollup still shows is re-run; a REST check the rollup replaced is left alone.
+test("a wedged REST check the rollup no longer shows is never re-run", async (t) => {
+  const c = await rig(t, { restRuns: () => [
+    { id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" },
+  ] });
+  // The head's rollup carries a *new* check run (CR_NEW) for the same job number: REST's 77 (CR_77) is the replaced one.
+  const rollup = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: "CR_NEW", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } }] } };
+  c.set([c.agentPr(90, { ...stuckPr(90, 77), commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
+  await c.watch.tick();
+  assert.ok(!c.gh.some((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun"), "an obsolete check's job is not re-run");
+});

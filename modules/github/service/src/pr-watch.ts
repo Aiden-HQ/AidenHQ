@@ -269,6 +269,9 @@ export function startPrWatch(o: PrWatchOptions) {
         // The client answers a 404 on `/repos/...` as a typed "unreachable" need, not as a status: the job (or the repo) is gone
         // for good, so it is reported as that 404 rather than rethrown (a rethrow would defer this head on every tick forever).
         if (cause === "unreachable") return { status: 404, body: {} };
+        // A credential that is not granted Actions read (`scope`) can never read these either: the same permanent refusal. The
+        // red-head rules report the failure instead of the head deferring on every tick.
+        if (cause === "scope") return { status: 403, body: {} };
         throw e;
       }
     }
@@ -380,8 +383,12 @@ export function startPrWatch(o: PrWatchOptions) {
       const { runs } = listed;
       if (!listed.complete) log("wedged check runs only partly read", { pr: pr.url, head, got: runs.length });
       const out: { at: number; accepted: boolean; name: string; nodeId: string | undefined; key: string }[] = [];
-      // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix.
-      const candidates = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed");
+      // Only GitHub Actions' own unfinished checks have a job to re-run; another app's is not ours to fix. And only one the
+      // head's rollup still shows: REST can list a check run the rollup has replaced (a newer run of the same job), and
+      // re-running that old job would spend a run on a check the merge gate no longer reads. A truncated rollup cannot say,
+      // so the REST list stands in (the gate refuses a truncated head anyway).
+      const onHead = rollup?.contexts?.pageInfo?.hasNextPage ? undefined : new Set((rollup?.contexts?.nodes ?? []).filter((n: Json) => n.__typename === "CheckRun").map((n: Json) => String(n.id ?? n.databaseId)));
+      const candidates = runs.filter((c: Json) => c.app?.slug === "github-actions" && c.status !== "completed" && (!onHead || onHead.has(String(c.node_id ?? c.id))));
       // Where the last pass's budget ran out, so the checks it never reached are the first probed this pass instead of the
       // head's first few spending every pass and the rest never being re-run or reported.
       const cursorKey = `${repo.toLowerCase()}:${head}`;
@@ -425,7 +432,9 @@ export function startPrWatch(o: PrWatchOptions) {
         // A re-run this head took for this very job, or for the job it replaced (a later attempt), or a re-run a sibling PR
         // at this head asked for, is not asked again. A job of another attempt-1 lineage that merely shares the display name
         // is a check of its own and gets its own ask.
-        const replaced = !!asked?.accepted && !!job.body && Number(job.body.run_attempt ?? 1) > 1;
+        // A later attempt of *this* workflow run is the re-run's replacement. Two different jobs in one suite that share a
+        // display name are different runs: their attempt numbers say nothing about the ask, so the run id must match too.
+        const replaced = !!asked?.accepted && !!asked.run && !!job.body && Number(job.body.run_id) === Number(asked.run) && Number(job.body.run_attempt ?? 1) > 1;
         if ((asked?.accepted && (Number(asked.job) === Number(jobId) || replaced)) || (prior && !prior.startsWith("retry:"))) {
           const at = prior && !prior.startsWith("retry:") ? Date.parse(prior) : Date.parse(asked?.at ?? "");
           out.push({ at, accepted: true, name: String(c.name ?? ""), nodeId, key: name });
@@ -438,7 +447,7 @@ export function startPrWatch(o: PrWatchOptions) {
         };
         if (asked) tell();
         // The first ask starts the report's clock and is not moved by a refusal.
-        state.wedged[name] ??= { at: new Date().toISOString(), accepted: false, job: Number(jobId) };
+        state.wedged[name] ??= { at: new Date().toISOString(), accepted: false, job: Number(jobId), run: Number(job.body?.run_id) || undefined };
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/jobs/${jobId}/rerun`, {}, { deadline: Date.now() + RECOVERY_WRITE_DEADLINE_MS }); }
         catch (e) {
