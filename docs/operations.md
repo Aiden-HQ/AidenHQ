@@ -275,8 +275,9 @@ tasks for the Fleet Steward; neither tells the owner.
   kernel/src/paperclip-prune.mjs`) counts what a pass would delete. Paperclip's own UI loses runs older than a week.
   The container is `AIDENHQ_PAPERCLIP_CONTAINER` (default `aidenhq-paperclip-1`).
 
-Clearing rows frees pages for reuse but never shrinks a file: `ops/compact-stores.sh kernel` (a short kernel stop, VACUUM INTO,
-verified swap) and `ops/compact-stores.sh paperclip` (VACUUM FULL per table) are run by hand, once, after the first runs.
+Clearing rows frees pages for reuse but never shrinks a file: `flock data/apply.lock ops/compact-stores.sh kernel` (a short kernel
+stop, VACUUM INTO, verified swap) and `... paperclip` (VACUUM FULL per table) are run by hand, once, when the first runs have
+cleared a few weeks of rows (the kernel's first clears start 14 days after the system began; Paperclip's prune frees most at once).
 
 ## Host one-offs
 

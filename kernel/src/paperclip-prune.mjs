@@ -11,7 +11,7 @@
 // Then the execution workspaces nothing references any more. One pass at a time (an advisory lock), bounded in time (DEADLINE_MIN)
 // and per statement.
 import { createRequire } from "node:module";
-import { readdirSync, unlinkSync } from "node:fs";
+import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 const RUN_DAYS = Number(process.env.RUN_DAYS), ACTIVITY_DAYS = Number(process.env.ACTIVITY_DAYS), BATCH = Number(process.env.BATCH || 200);
@@ -66,7 +66,7 @@ if (process.env.DRY) {
   const n = async (sql, d) => Number((await c.query(sql, [d])).rows[0].n);
   console.log(JSON.stringify({ dry: {
     runs: await n(`SELECT count(*) AS n FROM heartbeat_runs r WHERE ${runWhere}`, RUN_DAYS),
-    workspaces: await n(`SELECT count(*) AS n FROM execution_workspaces w WHERE ${wsWhere}`, RUN_DAYS),
+    workspacesAlreadyUnreferenced: await n(`SELECT count(*) AS n FROM execution_workspaces w WHERE ${wsWhere}`, RUN_DAYS),
     activity: await n("SELECT count(*) AS n FROM activity_log WHERE created_at < now() - make_interval(days => $1)", ACTIVITY_DAYS),
     runsKept: { owned: owned.map((o) => o.table), nulled: nulls.map((o) => `${o.table}.${o.col}`) },
   } }));
@@ -77,8 +77,6 @@ while (!out()) {
   const { rows } = await c.query(`SELECT r.id, r.log_store, r.log_ref FROM heartbeat_runs r WHERE ${runWhere} ORDER BY r.finished_at LIMIT $2`, [RUN_DAYS, BATCH]);
   if (!rows.length) break;
   const ids = rows.map((r) => r.id);
-  // A log is only a file: removed first, so a failed batch leaves a run without its log, never a log nothing names.
-  for (const r of rows) if (r.log_store === "local_file" && r.log_ref && !r.log_ref.includes("..")) { try { unlinkSync(join(LOGS, r.log_ref)); stats.logs++; } catch (e) { if (e.code !== "ENOENT") console.error(`log ${r.log_ref}: ${e.message}`); } }
   await c.query("BEGIN");
   try {
     for (const o of owned) stats.owned[o.table] = (stats.owned[o.table] ?? 0) + (await c.query(`DELETE FROM ${o.table} WHERE ${q(o.col)} = ANY($1)`, [ids])).rowCount;
@@ -86,7 +84,18 @@ while (!out()) {
     stats.runs += (await c.query("DELETE FROM heartbeat_runs WHERE id = ANY($1)", [ids])).rowCount;
     await c.query("COMMIT");
   } catch (e) { await c.query("ROLLBACK"); throw e; }
+  // Their logs only once the rows are gone; one a crash leaves behind is found by the orphan sweep below.
+  for (const r of rows) if (r.log_store === "local_file" && r.log_ref && !r.log_ref.includes("..")) { try { unlinkSync(join(LOGS, r.log_ref)); stats.logs++; } catch (e) { if (e.code !== "ENOENT") console.error(`log ${r.log_ref}: ${e.message}`); } }
   await sleep(200);
+}
+
+// Run logs no run names any more (a crash between a commit and its unlinks), a day old at least.
+if (!out()) {
+  const named = new Set((await c.query("SELECT log_ref FROM heartbeat_runs WHERE log_ref IS NOT NULL")).rows.map((r) => r.log_ref));
+  const walk = (dir, rel = "") => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name), join(rel, e.name)) : [join(rel, e.name)]));
+  let files = [];
+  try { files = walk(LOGS); } catch (e) { if (e.code !== "ENOENT") throw e; }
+  for (const f of files) if (!named.has(f) && Date.now() - statSync(join(LOGS, f)).mtimeMs > 864e5) { try { unlinkSync(join(LOGS, f)); stats.logs++; } catch (e) { console.error(`log ${f}: ${e.message}`); } }
 }
 
 // 2. Execution workspaces nothing references: any foreign key into one counts (an issue, a lease, a derived workspace...). Only
