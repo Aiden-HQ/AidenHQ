@@ -407,7 +407,8 @@ function writeCatalog() {
     mcp_servers: a.mcp_servers ?? [],
     tools: a.enabled_tools ?? {},
     routines: Object.values<Obj>(cfg.routines ?? {}).filter((r) => r.agent === key).map((r) => r.title),
-    ...(a.team ? { team: a.team.members } : {}), ...(a.member_of ? { member_of: a.member_of } : {}),
+    // A member does its team's work with the team's roles (the router picks it): say so, or a reader takes `roles: []` for no right.
+    ...(a.team ? { team: a.team.members } : {}), ...(a.member_of ? { member_of: a.member_of, team_roles: cfg.agents?.[a.member_of]?.roles ?? [] } : {}),
   }));
   const mcp = Object.fromEntries(Object.keys(cfg.mcp_servers ?? {}).map((n) => [n, agentsOut.filter((a) => a.mcp_servers.includes(n)).map((a) => a.key)]));
   // The tasks module's fleet_catalog reads it (its data dir's catalog folder, mounted read-only).

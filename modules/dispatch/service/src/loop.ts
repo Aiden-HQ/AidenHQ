@@ -73,6 +73,8 @@ type Log = (msg: string, f?: Record<string, unknown>) => void;
 const blockedEpisode = (task: Issue) => `blocked:${(task.blockedBy ?? []).filter((b) => !CLOSED.has(b.status)).map((b) => b.id).sort().join(",")}`;
 
 /** A kernel answer that retrying never changes: a refusal (4xx, except 429's "busy") or an agent the kernel holds no key for. */
+/** Why this module stopped a run whose task moved to another agent (the `stopped` row): its end is acknowledged, never reported. */
+const MOVED = "moved";
 const permanent = (e: unknown): e is KernelError => e instanceof KernelError && ((e.status >= 400 && e.status < 500 && e.status !== 429) || /no-agent-key/.test(e.message));
 /**
  * Refusals a recompile or a re-queue clears (admission.ts: grants, profile or dispatcher list replaced under an older table,
@@ -196,7 +198,11 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       try {
         if (!ENDED.has(v.state)) {
           // A task closed while its run goes on (the owner cancelled it): nothing else would end the run or free its computer.
-          if (CLOSED.has(String((await kernel.task(v.task)).status))) { await kernel.stop(v.id); log("task closed while running: run stopped", { job: v.id, task: v.task }); continue; }
+          const cur = await kernel.task(v.task);
+          if (CLOSED.has(String(cur.status))) { await kernel.stop(v.id); log("task closed while running: run stopped", { job: v.id, task: v.task }); continue; }
+          // A task moved to another agent while its run goes on (re-routed): the new assignee has its own wake, and this run's
+          // reply would be refused, so it is stopped rather than left to run out its time.
+          if (cur.assigneeAgentId && cur.assigneeAgentId !== v.agent) { q("INSERT OR REPLACE INTO stopped (job, why) VALUES (?, ?)").run(v.id, MOVED); await kernel.stop(v.id); log("task moved while running: run stopped", { job: v.id, task: v.task, to: cur.assigneeAgentId }); continue; }
           // A run that stops making progress is stopped here (progress.ts); the kernel keeps only the hard deadline.
           const judge = judges.get(v.id) ?? judges.set(v.id, progressTracker()).get(v.id)!;
           judge.add(v.progress?.steps);
@@ -206,6 +212,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         }
         judges.delete(v.id);
         const stopped = (q("SELECT why FROM stopped WHERE job = ?").get(v.id) as { why: string } | undefined)?.why;
+        // A run stopped because its task moved has nothing to say or report: the task's new agent answers it.
+        if (stopped === MOVED) { await kernel.ack(v.id); q("DELETE FROM stopped WHERE job = ?").run(v.id); log("job ended: its task had moved", { job: v.id, task: v.task }); continue; }
         // A job that didn't get to finish is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
         if (!stopped && unfinished(v)) {
           const runs = await kernel.jobsOf(v.task);
@@ -234,6 +242,13 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         // A job whose outcome the kernel will never take (task or agent gone) is acknowledged, or it is retried every tick forever.
         if (permanent(e)) {
           backoff.delete(v.id);
+          // The task moved to another agent (re-routed): that agent's own run answers it, so this outcome goes quietly.
+          const holder = /isn't assigned to this agent/.test(e.body?.message ?? "") ? (await kernel.task(v.task).catch(() => undefined))?.assigneeAgentId : undefined;
+          if (holder && holder !== v.agent) {
+            log("job's outcome dropped: its task moved to another agent", { job: v.id, task: v.task });
+            await kernel.ack(v.id).then(() => q("DELETE FROM stopped WHERE job = ?").run(v.id), () => {});
+            continue;
+          }
           log("job given up: its outcome can't be posted", { job: v.id, err: e.message });
           // The owner hears once per job that its reply was dropped (a fixed text, the task named).
           // The owner's notice names its task by identifier (WOR-123): the kernel refuses a Paperclip id there.
