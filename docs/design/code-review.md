@@ -30,24 +30,39 @@ Rules that bind (owner and design):
 code_review:
   repos:
     - repo: acme/payments
-      on_open:                   # defaults shown; a list of combos (at most 4), each its own run and post; [] runs none
-        - { engine: codex, model: "~deepseek/deepseek-flash-latest", effort: medium }
-      on_push:                   # only the new changes since the last reviewed head
-        - { engine: codex-native, model: "openai/gpt-6.2-sol", effort: low }   # mandatory: true gates merges
-      push_rounds: 1             # pushes per PR that get an on_push review; null: every push
+      preset: standard           # light | standard | thorough: what each risk tier runs (config.ts PRESETS)
+      repo_class: standard       # critical | standard | sandbox: an input to the rules
+      # rules: [...]             # omitted: the default rules (kernel/sdk/src/tiers.ts DEFAULT_RULES); given whole
+      by_tier:                   # per tier, its own fields over the preset's
+        sensitive:
+          on_open:               # a list of combos (at most 4), each its own run and post; [] runs none
+            - { engine: codex-native, model: "openai/gpt-6.2-sol", effort: medium, mandatory: true }   # mandatory gates merges
+          on_push:               # only the new changes since the last reviewed head
+            - { engine: codex-native, model: "openai/gpt-6.2-sol", effort: low, mandatory: true }
+          push_rounds: 2         # pushes per PR in the tier that get an on_push review; null: every push
       drafts: false
       forks: manual              # manual: only when someone with write access asks; auto: like any PR
       ignore: ["**/generated/**"]
       max_nits: 5
 ```
 
+**Risk tiers** (`docs/superpowers/specs/2026-11-24-risk-tiers-design.md`): every open PR head gets one tier (`skip`, `trivial`,
+`standard`, `sensitive`) from cheap facts about its own change (lines and files that count, every changed path, the author
+kind, the base branch, the repo's class) by the repo's ordered rules, the first that holds; no model call. The facts come from
+one consistent read of the PR's files list (github-mcp's `snapshot`); until a head has one it is pending, and nothing runs or
+passes on it. The tier is stored on the PR's row with what it came from, and served on `GET /v1/verdict` (`tier`,
+`requires_review`, `policy`). A head's policy (its tier, the tier's mandatory combos, base branch and ignore globs) changing
+gets the new tier's full opening batch; only runs and coverage under the head's current policy count for its verdict, and push
+rounds count from where that policy started. A tier with no mandatory combo needs no review: its verdict passes unless an
+earlier mandatory finding is open.
+
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
-claude-code and codegenie low to max), and `mandatory` (default false; written only when on), stored whole. A repo with a mandatory combo has one in `on_open`, else it is refused (the service and the compile say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, returned by `code_review_overview`) offers a
+claude-code and codegenie low to max), and `mandatory` (default false; written only when on; every preset combo is on), stored whole. A tier with a mandatory combo has one in `on_open`, else it is refused (the service and the compile say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, returned by `code_review_overview`) offers a
 short model list per engine (the board picker's "Recommended" group) and what the engine can run (`accepts`: one provider's
 models, or models that call tools), which filters the picker's full list: every text model of OpenRouter's catalog, read from the
 kernel gateway's own hourly list (`GET /v1/models/catalog`). Only a listed id is pickable; the gateway refuses one OpenRouter doesn't price. A deeper review is asked for (Review again, `aiden review`), never a moment of its own. A repo that does not validate is
 dropped loudly (listed in the config tool's errors and the board's banner), never half-used; a repo listed twice is refused
-whole. The old shape (named `reviewers`, a string trigger, `on_risk`) is refused: the owner re-saves the repo on the board.
+whole. The old shapes (named `reviewers`, a string trigger, `on_risk`, a repo-level `on_open`, `on_push` or `push_rounds`) are refused: the owner re-saves the repo on the board.
 
 Engines are box recipes behind one contract (`recipe/engines.ts`: a prompt and the brief in, the checkout and the diff's base,
 the final message out; fan-out, verification, dedupe and the schema are `review.ts`'s):

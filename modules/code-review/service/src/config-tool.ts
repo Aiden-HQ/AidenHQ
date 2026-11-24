@@ -224,9 +224,9 @@ export function configTools(d: {
     {
       name: "code_review_config",
       roles: ["reviewer-manager"],
-      description: "What code review is set to: the watched repos (each moment's combos and today's spend), the engines a combo may name (efforts, offered models), and any problem with the setting.",
+      description: "What code review is set to: the watched repos (each with its preset, class, tier rules, each tier's combos per moment, today's spend and its open PRs' tiers), the presets, the engines a combo may name (efforts, offered models), and any problem with the setting.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
-      run: async () => ({ setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors, repos: d.repos(), engines: ENGINES }),
+      run: async () => ({ setting: d.raw(), problems: readConfig(JSON.stringify(d.raw())).errors, repos: d.repos(), presets: PRESETS, engines: ENGINES }),
     },
     {
       name: "code_review_configure",
