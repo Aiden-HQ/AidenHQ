@@ -58,8 +58,8 @@ routines:
     agent: maintainer
     description: |
       Today is {{date}}. On every maintained repo, pick up the open labelled issues that have no open labelled-issue task,
-      then triage the open issues that carry no fix label yet, as "Each run — external triage" in your instructions says:
-      judge each by the skill `triage`, check the open ones by the skill `resolved-check`, one verdict per issue, each write
+      then, when external_triage is ${settings.external_triage}, the open issues that carry no fix label yet, as "Each run — external triage" in your instructions says
+      (with external_triage false, only the labelled issues): judge each by the skill `triage`, check the open ones by the skill `resolved-check`, one verdict per issue, each write
       its own tool call. Close this task with one verdict line per issue you considered.
     concurrency: skip_if_active
     schedules:
