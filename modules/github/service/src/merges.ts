@@ -79,6 +79,14 @@ export function createMerges(d: {
   taskOf?: (repo: string, n: number) => string | null;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
   identifierOf?: (record: string) => Promise<string | undefined>;
+  /**
+   * Whether the task `other` is the task the record `record` was filed on, from the kernel's own work read for that task (its
+   * records list); undefined when the read failed or could not tell (a page at the kernel's cap, where an older record is not
+   * listed). A pr-tasks.json row holds the task's identifier while a queue ship filed holds the record's task id (a module has no
+   * workspace, so the kernel keeps no identifier for its record): this tells the two spellings from two owners without an
+   * identifier the record does not carry.
+   */
+  sameTask?: (record: string, other: string) => Promise<boolean | undefined>;
   /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
   taskStatus?: (task: string) => Promise<string | null | undefined>;
   /**
@@ -285,6 +293,26 @@ export function createMerges(d: {
     log("merged without code review's verdict", { pr: p.url, why: p.bypass.slice(0, 300) });
     d.flow?.reviewBypassed(p.repo, p.number, p.head, p.bypass);
   };
+  /**
+   * Who owns the PR now. "other": pr-tasks.json's row names a task that is not this record's, so the card was approved for an
+   * earlier owner and never lands. "unknown": the row or the proof could not be read, and ownership that cannot be determined
+   * never lands work. "same": the row's task is this record's task, however the two are spelled (`WOR-11712` and the record's
+   * uuid), and `row` is kept as the queue's identifier so a PR already merged still credits the task (finish's `linked`).
+   */
+  async function owner(q: Queue, p: Pr): Promise<{ who: "same" | "other" | "unknown"; row: string | null }> {
+    const row = d.taskOf?.(p.repo, p.number);
+    if (!row || !q.task || row === q.task || row === q.taskIdentifier) return { who: "same", row };
+    const same = d.sameTask ? await d.sameTask(q.id, row).catch(() => undefined) : undefined;
+    // The row may have moved to another task while the answer was read (a successor publishing): the same task's answer is now
+    // about a row that is no longer there, so ownership is unknown until the next poll reads the new row.
+    if (d.taskOf?.(p.repo, p.number) !== row) return { who: "unknown", row };
+    if (same === undefined) return { who: "unknown", row };
+    if (!same) return { who: "other", row };
+    // The two spellings are one task: keep the row's identifier, so an already-merged PR still credits this task (finish's `linked`).
+    q.taskIdentifier = row;
+    save();
+    return { who: "same", row };
+  }
   async function poll(id: string, q: Queue, p: Pr, merged: Set<string>) {
     const fail = (why: string) => {
       Object.assign(p, { status: "failed", note: why });
@@ -319,6 +347,16 @@ export function createMerges(d: {
       const ship = open ? { queue: false, approve: false, required, checks } : undefined;
       const v = decide(data, p.head, ship);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);
+      // Who owns the PR, before this poll settles or merges it: a row that resolves to this same task under its other spelling keeps
+      // that spelling (`finish` credits an already-merged PR by the row), a row naming another task ends a live merge, and an
+      // ownership that cannot be read holds the merge. An already-merged PR is settled either way — `finish` vetoes the credit for
+      // a row that is another task's — so a moved row never turns a merge that already landed into a failed card.
+      const { who, row } = await owner(q, p);
+      if (who === "unknown") {
+        p.note = "this PR's owner could not be read: the merge waits until it can tell this task from a successor's";
+        return wait("retry");
+      }
+      if (who === "other" && v.do !== "done") return fail(`${p.url} now belongs to ${row}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       const pull = data.repository.pullRequest;
       // The PR's state is read: a merge call that got no answer did not merge it unless this poll finds it merged. Every unanswered
       // call is kept across a wait (checks, review, mergeability) while the PR is still open at the bound head: a PUT that merged it
@@ -380,6 +418,14 @@ export function createMerges(d: {
         // Only a cancelled task: a merge in flight may finish after its task is done (ship files none on a done task).
         if (status === "cancelled") return fail("its task is cancelled: not merged");
       }
+      // The row is read again here: a successor can publish while this poll's checks and review reads go out, and the merge is
+      // never sent for a PR that changed owners in between (the first proof is the one that settles the card).
+      const late = await owner(q, p);
+      if (late.who === "other") return fail(`${p.url} now belongs to ${late.row}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
+      if (late.who === "unknown") {
+        p.note = "this PR's owner could not be read: the merge waits until it can tell this task from a successor's";
+        return wait("retry");
+      }
       // Cancellation is not authority to land work either: the PR is left for a successor (ship's loop, keepForSuccessor), and a
       // merge this queue was approved for before the cancellation would take that handoff from it. A read that fails holds the
       // merge (waiting is never failing): only an answer that the task is live lets it go.
@@ -390,10 +436,6 @@ export function createMerges(d: {
         });
         if (status === undefined) return wait("task-status");
         if (status === "cancelled") return fail(`${q.task}, the task this merge was for, is cancelled: its PR is left open for a successor task, and this merge does not land`);
-        // The PR itself may have changed owners since the card was filed (a done task handed it to a successor): pr-tasks.json's
-        // current row is the authority, and a row naming another task ends this card rather than merging the successor's PR.
-        const now = d.taskOf?.(p.repo, p.number);
-        if (now && now !== q.task && now !== q.taskIdentifier) return fail(`${p.url} now belongs to ${now}, not ${q.taskIdentifier ?? q.task}: this merge was approved for the earlier owner, so it does not land`);
       }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
       // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy). It joins the attempts

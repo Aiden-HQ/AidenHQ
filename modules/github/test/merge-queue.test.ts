@@ -719,6 +719,72 @@ test("a merge card for a PR that changed owners does not merge the successor's P
   assert.match(outcomes[0].text, /now belongs to WOR-11, not WOR-9: this merge was approved for the earlier owner/);
 });
 
+// The same owner in two spellings: pr-tasks.json's row holds the task's identifier (notePrTask writes the publisher's), while a
+// queue ship filed holds the record's task id — a module has no workspace, so the kernel keeps no identifier for its records. The
+// kernel is asked whether that task holds this record, and the merge lands. Without that proof the guard read the two spellings as
+// two owners and refused a card the kernel had approved.
+test("a merge whose pr-tasks row holds this task's identifier, not its record id, still lands", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-owner-ident-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "agent/WOR-9/feature" } }));
+  const asked = [];
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, cacheDir, kernelReply: (m, url) => {
+    if (m !== "GET" || !url.startsWith("/v1/work?task=")) return undefined;
+    asked.push(decodeURIComponent(url.slice("/v1/work?task=".length)));
+    // The record's own task: its work read lists the record this merge is for.
+    return { status: "in_progress", records: [{ id: "k-00000000000000e1", kind: "github.merge", state: "claimed", args: { prs: [] } }] };
+  } });
+  await merge("k-00000000000000e1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", null);
+  await handle.stepMerges();
+  await settle();
+  assert.ok(asked.includes("WOR-9"), "the row's task was asked whether it holds this record");
+  assert.equal(github.merges().length, 1, "the same task in two spellings is not a new owner: it merges");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
+// Ownership undetermined is never a reason to merge: the record read fails, so the queue holds and asks again (the next poll lands
+// it), rather than landing a PR whose owner it could not tell from a successor's.
+test("a merge whose owner cannot be proven is held, not landed, and lands once the read answers", async (t) => {
+  let down = true;
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-owner-held-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "agent/WOR-9/feature" } }));
+  const { handle, github, outcomes, merge, settle } = await setup(t, { prs, cacheDir, kernelReply: (m, url) => {
+    if (m !== "GET" || !url.startsWith("/v1/work?task=")) return undefined;
+    // The record's own task answers; the row's task (an identifier, asked for the ownership proof) is unavailable at first.
+    if (!url.includes("WOR-9")) return { status: "in_progress", records: [{ id: "k-00000000000000e2", kind: "github.merge", state: "claimed", args: { prs: [] } }] };
+    return down ? { __status: 503 } : { status: "in_progress", records: [{ id: "k-00000000000000e2", kind: "github.merge", state: "claimed", args: { prs: [] } }] };
+  } });
+  await merge("k-00000000000000e2", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", null);
+  await handle.stepMerges();
+  assert.deepEqual(github.merges(), [], "the owner read failed: nothing is merged");
+  assert.equal(outcomes.length, 0, "and the card is not failed on a guess");
+
+  down = false;
+  await handle.stepMerges();
+  await settle();
+  assert.equal(github.merges().length, 1, "the next poll proves the owner and merges");
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+});
+
+// The kernel answers a task's newest 100 records (kernel/src/work.ts). An older record is not on that page, so its absence proves
+// nothing: the queue must not read a full page as "another owner" and fail a merge the kernel approved.
+test("a full record page that does not list this record leaves ownership undetermined, never another owner", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-owner-page-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "agent/WOR-9/feature" } }));
+  const full = Array.from({ length: 100 }, (_, i) => ({ id: `k-0000000000000${String(i).padStart(3, "0")}`, kind: "github.push", state: "done", args: {} }));
+  const { handle, github, outcomes, merge } = await setup(t, { prs, cacheDir, kernelReply: (m, url) => {
+    if (m !== "GET" || !url.startsWith("/v1/work?task=")) return undefined;
+    return { status: "in_progress", records: full };
+  } });
+  await merge("k-00000000000000e3", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", null);
+  await handle.stepMerges();
+  await handle.stepMerges();
+  assert.deepEqual(github.merges(), [], "a cut page is not proof of a different owner: nothing merges");
+  assert.equal(outcomes.length, 0, "and the card is held, not failed");
+});
+
 test("a PR the merge commit's message already credits is not also read from the kernel", async (t) => {
   // The message path and the record path are two proofs of the same link: once the message answers, the kernel is not asked.
   const mergeSha = "d".repeat(40);

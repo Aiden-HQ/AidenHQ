@@ -1264,6 +1264,9 @@ export function createService(o: Options) {
     },
     git: (dir, args) => git(dir, args),
   });
+  // The kernel's work read lists a task's newest 100 records (kernel/src/work.ts): a full page says the list was cut, so an absent
+  // record there is "not readable", never "another owner".
+  const RECORDS_PAGE = 100;
   const merges = createMerges({
     ship: o.ship,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
@@ -1275,6 +1278,19 @@ export function createService(o: Options) {
       const r = await kernel("GET", `/v1/work?record=${encodeURIComponent(record)}`).catch((e: Error & { status?: number }) => { if (e.status === 404) return undefined; throw e; });
       const ident = String((r as { identifier?: unknown })?.identifier ?? "");
       return ident || undefined;
+    },
+    // The row's task holds this merge record: the kernel's own work read for that task lists its records, so the two spellings
+    // (a pr-tasks.json identifier and a queue's record task id) are told apart without an identifier the record does not carry.
+    // A read that failed leaves ownership undetermined (the queue holds the merge, never guesses). The list is capped (the kernel
+    // keeps a task's newest 100 records), so a full page where the record is absent proves nothing: an older record's absence is
+    // not another owner, and it is undetermined too rather than read as one.
+    sameTask: async (record, other) => {
+      const r = await kernel("GET", `/v1/work?task=${encodeURIComponent(other)}`).catch(() => undefined);
+      if (!r) return undefined;
+      const records = (r as { records?: unknown }).records;
+      if (!Array.isArray(records)) return undefined;
+      if (records.some((x) => (x as { id?: unknown })?.id === record)) return true;
+      return records.length >= RECORDS_PAGE ? undefined : false;
     },
     // A cancelled task's approved merge never lands: ship's loop leaves its PR for a successor, and the queue checks this before
     // every merge, not only when the record was filed. A failed read holds the merge rather than landing it.
