@@ -496,3 +496,14 @@ test("product names that differ only in case are refused", () => {
   assert.throws(() => productsOf({ Billing: ["acme/a"], billing: ["acme/b"] }), /differ only in case/);
   assert.deepEqual(productsOf({ Billing: ["acme/a"], Hiring: ["acme/b"] }), { Billing: ["acme/a"], Hiring: ["acme/b"] });
 });
+
+test("subscribes: compiled from settings into the kernel's module table, kinds checked, * only for product modules", () => {
+  const gh = { connections: { github: { events: { kinds: ["pull_request.opened", "push"] } } } };
+  const settings = { code_review: { repos: [{ repo: "Org/A" }, { repo: "org/b" }] }, maintainer_repos: ["org/c", { repo: "Org/D" }] };
+  const t = kernelModuleTable({ github: gh, cr: { subscribes: { github: { kinds: ["pull_request.opened"], resources: { setting: "code_review", path: "repos[].repo" } } } }, mt: { subscribes: { github: { kinds: ["push"], resources: { setting: "maintainer_repos", path: "[].repo" } } } }, ship: { subscribes: { github: { kinds: ["push"], resources: "*" } } } }, settings, new Set(["ship"]));
+  assert.deepEqual(t.cr.subscribes, { github: { kinds: ["pull_request.opened"], resources: ["org/a", "org/b"] } });
+  assert.deepEqual(t.mt.subscribes, { github: { kinds: ["push"], resources: ["org/c", "org/d"] } });
+  assert.deepEqual(t.ship.subscribes, { github: { kinds: ["push"], resources: "*" } });
+  assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["push"], resources: "*" } } } }, {}), /product modules/);
+  assert.throws(() => kernelModuleTable({ github: gh, x: { subscribes: { github: { kinds: ["status"], resources: [] } } } }, {}), /isn't one of github's events.kinds/);
+});

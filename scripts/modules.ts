@@ -1383,7 +1383,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // (a service outside the owning module can mount one), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)), review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated }, modules: kernelModuleTable(enabledDefs, settings), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)), review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated }, modules: kernelModuleTable(enabledDefs, settings, new Set(enabled.filter((n) => all.get(n)!.tier === "official"))), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -1517,7 +1517,44 @@ function flowDecls(name: string, def: Obj, declared: Obj) {
   return { facts, stages, journeys };
 }
 
-export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
+/**
+ * A module's `subscribes:` (connection -> { kinds, resources }): the events of the kernel's log it reads (kernel/src/events.ts).
+ * Each kind is one its connection's `events.kinds` declares. `resources` is "*" (every resource; a product module's only), a list,
+ * or `{ setting, path }`: the repos the owner's settings name, resolved here so a module can't widen them at run time (`path`
+ * walks the setting: `repos[].repo` is each entry's `repo`; a plain string entry stands for itself). Resources are lower case.
+ */
+export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, official: boolean) {
+  const sub = def.subscribes;
+  if (sub == null) return undefined;
+  const at = `module ${name}: subscribes`;
+  if (typeof sub !== "object" || Array.isArray(sub)) fail(`${at} is a map of connection: { kinds, resources }`);
+  const out: Obj = {};
+  for (const [conn, s] of Object.entries<Obj>(sub)) {
+    const ev = Object.values<Obj>(defs).map((d) => d.connections?.[conn]?.events).find(Boolean);
+    if (!ev) fail(`${at}.${conn}: no enabled module's connection ${conn} declares events`);
+    if (!s || typeof s !== "object" || Object.keys(s).some((k) => !["kinds", "resources"].includes(k))) fail(`${at}.${conn} is { kinds, resources }`);
+    if (!Array.isArray(s.kinds) || !s.kinds.length) fail(`${at}.${conn}.kinds is a list`);
+    for (const k of s.kinds) if (!(ev.kinds ?? []).includes(k)) fail(`${at}.${conn}.kinds: ${k} isn't one of ${conn}'s events.kinds`);
+    let resources: string[] | "*";
+    if (s.resources === "*") {
+      if (!official) fail(`${at}.${conn}.resources: * is for product modules; name the resources`);
+      resources = "*";
+    } else if (Array.isArray(s.resources)) resources = s.resources.map(String);
+    else if (s.resources && typeof s.resources === "object" && typeof s.resources.setting === "string") {
+      let vals: unknown[] = [settings[s.resources.setting]];
+      for (const seg of String(s.resources.path ?? "").split(".").filter(Boolean)) {
+        const [, field, many] = /^([^[\]]*)(\[\])?$/.exec(seg) ?? fail(`${at}.${conn}.resources.path: ${seg} is a field or field[]`);
+        vals = vals.map((v) => (field && v && typeof v === "object" ? (v as Obj)[field] : v));
+        if (many) vals = vals.flatMap((v) => (Array.isArray(v) ? v : v == null ? [] : [v]));
+      }
+      resources = vals.flatMap((v) => (Array.isArray(v) ? v : [v])).filter((v) => typeof v === "string" && v);
+    } else fail(`${at}.${conn}.resources is "*", a list, or { setting, path }`);
+    out[conn] = { kinds: [...s.kinds], resources: resources === "*" ? "*" : [...new Set(resources.map((r) => r.toLowerCase()))] };
+  }
+  return out;
+}
+
+export function kernelModuleTable(defs: Obj, settings: Obj = {}, official: Set<string> = new Set()) {
   const out: Obj = {};
   const declared = new Set(KERNEL_FACT_TYPES);
   for (const [name, def] of Object.entries(defs)) for (const t of Object.keys(def.facts ?? {})) declared.add(t);
@@ -1558,6 +1595,7 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
       if (!ownSecrets(def).includes(bd.auth)) fail(`module ${name}: providers.board.auth must name one of its own secrets`);
     }
     const { facts, stages, journeys } = flowDecls(name, def, declared);
+    const subscribes = subscriptions(name, def, defs, settings, official.has(name));
     // Two modules may declare one journey (github and codehost-local both draw `pr`): only the same declaration.
     for (const j of journeys ?? []) {
       if (seen.has(j.name) && JSON.stringify(seen.get(j.name).j) !== JSON.stringify(j)) fail(`module ${name}: journey ${j.name} differs from module ${seen.get(j.name).name}'s (one journey, one declaration)`);
@@ -1568,7 +1606,7 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}) {
     const label = [signin?.label, [def.contributes?.["board.setup_flows"] ?? []].flat()[0]?.title].find((v) => typeof v === "string" && v.trim());
     const e = {
       ...(label ? { label: String(label).trim() } : {}),
-      ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(journeys ? { journeys } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
+      ...(roles.length ? { roles } : {}), ...(facts ? { facts } : {}), ...(stages ? { stages } : {}), ...(journeys ? { journeys } : {}), ...(subscribes ? { subscribes } : {}), ...(privileged.length ? { privileged } : {}), ...(codehost != null ? { codehost } : {}),
       // A module that generates its own `<module>_token` is known to the kernel by it (whoami): its roles are the kernel.* ones it requests, none otherwise.
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
