@@ -260,6 +260,17 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
       return false;
     }
   };
+  /**
+   * Does the instance name a test user (settings.edge.test_user)? The canary tool exists only then, as the design says: a
+   * default install lists no tool it can never run. Re-read on use, like the previews setting.
+   */
+  const gateTestUser = (): boolean => {
+    try {
+      return !!cfg.gateFile && !!JSON.parse(readFileSync(cfg.gateFile, "utf8")).test_user;
+    } catch {
+      return false;
+    }
+  };
   /** A preview's URL (previews.ts): its gate host when the gate serves previews, else the apps' tailnet node (none without one). */
   const previewUrl = (app: App): string | undefined => (app.share?.host ? (gatePreviews() ? `https://${app.share.host}` : undefined) : nodeUrl(app));
 
@@ -547,6 +558,6 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     }
     return renderWith(network, script, input, timeout, before);
   };
-  return { previewUrl, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  return { previewUrl, gateTestUser, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;
