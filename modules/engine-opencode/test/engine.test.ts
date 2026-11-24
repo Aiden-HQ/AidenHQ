@@ -10,7 +10,7 @@ const bin = join(import.meta.dirname, "bin");
 const engine = join(import.meta.dirname, "../bin/engine");
 let port = 24000 + (process.pid % 1000) * 4;
 
-function setup(session?: string) {
+function setup(session?: string, known = session ?? "") {
   const root = mkdtempSync(join(tmpdir(), "oc-engine-"));
   const lease = join(root, "l-test"), job = join(lease, "job-1"), state = join(root, "state"), work = join(root, "work", "PEN-1"), plug = join(root, "opt");
   for (const d of [job, state, work, join(plug, "node_modules")]) mkdirSync(d, { recursive: true });
@@ -19,13 +19,15 @@ function setup(session?: string) {
   writeFileSync(join(job, "job.json"), JSON.stringify(spec));
   const log = join(root, "fake.log");
   writeFileSync(log, "");
-  const child = spawn(engine, [job], { cwd: work, stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: log, AIDENHQ_OPENCODE_BIN: join(bin, "opencode"), AIDENHQ_OPENCODE_PLUGINS: plug, AIDENHQ_SESSION_PORT: String(port++), AIDENHQ_TERM_PORT: String(port++), OPENCODE_SERVER_PASSWORD: "pw", AIDENHQ_TERM_CREDENTIAL: "u:p", AIDENHQ_RUN_TOKEN: "ahqj_tok", FAKE_SESSIONS: session ?? "", FAKE_BUSY_MS: "1500" } });
+  const child = spawn(engine, [job], { cwd: work, stdio: ["ignore", "inherit", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: log, AIDENHQ_OPENCODE_BIN: join(bin, "opencode"), AIDENHQ_OPENCODE_PLUGINS: plug, AIDENHQ_SESSION_PORT: String(port++), AIDENHQ_TERM_PORT: String(port++), OPENCODE_SERVER_PASSWORD: "pw", AIDENHQ_TERM_CREDENTIAL: "u:p", AIDENHQ_RUN_TOKEN: "ahqj_tok", FAKE_SESSIONS: known, FAKE_BUSY_MS: "1500" } });
+  let stderr = "";
+  child.stderr!.on("data", (d) => (stderr += d));
   const exited = new Promise<{ code: number | null }>((r) => child.on("exit", (code) => r({ code })));
   const lines = (f: string) => readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l.startsWith("{") ? l : JSON.stringify({ raw: l })));
   const events = () => { try { return lines(join(job, "events.jsonl")); } catch { return []; } };
   const calls = () => lines(log);
   const until = async (f: () => boolean, ms = 15000) => { for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (f()) return; throw new Error("timed out\n" + JSON.stringify({ events: events(), calls: calls() })); };
-  return { child, exited, job, lease, state, events, calls, log, until };
+  return { child, exited, err: () => stderr, job, lease, state, events, calls, log, until };
 }
 
 test("first turn: session, progress and usage; one prompt; no final", async () => {
@@ -47,7 +49,7 @@ test("first turn: session, progress and usage; one prompt; no final", async () =
     assert.ok(cfg.plugin[0].endsWith("/node_modules/opencode-pty"));
     // the terminal
     const raw = readFileSync(e.log, "utf8");
-    assert.match(raw, /tmux new-session -d -s l-test .*opencode attach http:\/\/127\.0\.0\.1:\d+ --session ses_new/);
+    assert.match(raw, /tmux new-session -d -s l-test -c \S+ -e OPENCODE_SERVER_PASSWORD=pw opencode attach http:\/\/127\.0\.0\.1:\d+ --session ses_new/);
     assert.match(raw, /ttyd --port \d+ --credential u:p --writable tmux attach -t l-test/);
   } finally { e.child.kill("SIGTERM"); await e.exited; }
 });
@@ -60,6 +62,14 @@ test("resume: the reported session is opened, none created", async () => {
     assert.equal((e.calls().find((c: any) => c.prompt) as any).prompt, "s1");
     assert.deepEqual((e.events()[0] as any), { t: "session", id: "s1" });
   } finally { e.child.kill("SIGTERM"); await e.exited; }
+});
+
+test("a session opencode no longer has ends as the kernel's stale session", async () => {
+  const e = setup("gone", "");
+  const { code } = await e.exited;
+  assert.equal(code, 1);
+  assert.match(e.err(), /no rollout found for thread id gone/);
+  assert.ok(!e.calls().some((c: any) => c.create || c.prompt));
 });
 
 test("a comment during a turn waits, in order, and never overlaps a turn", async () => {
@@ -81,5 +91,6 @@ test("stop: SIGTERM aborts the turn and exits 143 with no final", async () => {
   const { code } = await e.exited;
   assert.equal(code, 143);
   assert.ok(e.calls().some((c: any) => c.abort));
+  assert.match(readFileSync(e.log, "utf8"), /tmux kill-session -t l-test/);
   assert.ok(!e.events().some((x: any) => x.t === "final"));
 });

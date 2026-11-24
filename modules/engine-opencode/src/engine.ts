@@ -2,7 +2,7 @@
 // opencode session (resumed by spec.session), the prompt and every comment sent as turns one at a time, its events → events.jsonl.
 // It never emits `final` and never exits by itself: the session lives until the kernel stops the job (SIGTERM: the turn is
 // aborted and the exit is 143, which the kernel reads as machinery, so a box replacement resumes the same session).
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { engineIO } from "../sdk/engine-io.ts";
@@ -40,13 +40,20 @@ async function run() {
   writeFileSync(join(state, "opencode.json"), JSON.stringify(opencodeConfig(spec, { plugins, stateDir: state })), { mode: 0o600 });
   // The context-pruning plugin would update itself from npm: off.
   writeFileSync(join(state, "dcp.jsonc"), JSON.stringify({ autoUpdate: false }));
-  const ocEnv = { ...env, OPENCODE_CONFIG: join(state, "opencode.json"), OPENCODE_CONFIG_DIR: state, XDG_DATA_HOME: join(state, "data"), OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_AUTOUPDATE: "1" };
+  const ocEnv = { ...env, OPENCODE_CONFIG: join(state, "opencode.json"), OPENCODE_CONFIG_DIR: state, XDG_DATA_HOME: join(state, "data"), OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_AUTOUPDATE: "1",
+    // Only the engine's config: a workspace's own opencode.json, agents or plugins cannot change the gateway, connections or plugin set.
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
   const server = await serve({ bin: env.AIDENHQ_OPENCODE_BIN, port, password, env: ocEnv });
 
   process.on("exit", () => server.child.kill("SIGKILL"));   // a failure past this point never leaves the server behind
   let session = spec.session ?? "";
-  if (session) try { await server.call("GET", `/session/${session}`); } catch { session = ""; }
-  if (!session) session = (await server.call("POST", "/session", { title: basename(process.cwd()) })).id;
+  if (session) {
+    try { await server.call("GET", `/session/${session}`); } catch (e) {
+      // A session opencode no longer has: the kernel's stale-session path (kernel/src/jobs.ts STALE_SESSION) reruns the job with its full first-turn prompt.
+      if (/ 404 /.test((e as Error).message)) { console.error(`Error: no rollout found for thread id ${session}`); process.exit(1); }
+      throw e;
+    }
+  } else session = (await server.call("POST", "/session", { title: basename(process.cwd()) })).id;
   io.emit({ t: "session", id: session });
 
   const sse = sseEvents(spec, io.emit, () => session);
@@ -72,7 +79,7 @@ async function run() {
 
   const lease = basename(leaseDir);
   const ttyd = startTerminal({ lease, leaseDir, port: Number(need("AIDENHQ_TERM_PORT")), sessionPort: port, session, credential: need("AIDENHQ_TERM_CREDENTIAL"), cwd: process.cwd(), env: ocEnv });
-  void ttyd;
+  process.on("exit", () => { ttyd.kill("SIGKILL"); spawnSync("tmux", ["kill-session", "-t", lease], { stdio: "ignore" }); });
 
   let stopping = false;
   process.on("SIGTERM", async () => {

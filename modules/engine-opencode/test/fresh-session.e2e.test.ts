@@ -21,6 +21,11 @@ test("a fresh session lists the expected models, MCP servers and plugins", { ski
   for (const d of [job, state!, work!, home!, shim!]) mkdirSync(d, { recursive: true });
   // The terminal and setsid are the image's; where they are missing, the stand-ins are.
   for (const t of ["tmux", "ttyd", "setsid"]) { try { execFileSync("which", [t], { stdio: "ignore" }); } catch { symlinkSync(join(bin, t), join(shim!, t)); } }
+  // The kernel places the agent's skills in the state folder.
+  mkdirSync(join(state!, "skills/demo"), { recursive: true });
+  writeFileSync(join(state!, "skills/demo/SKILL.md"), "---\nname: demo\ndescription: A demo skill.\n---\nSay hi.\n");
+  // A workspace's own opencode.json cannot change the engine's config.
+  writeFileSync(join(work!, "opencode.json"), JSON.stringify({ disabled_providers: ["aidenhq"], plugin: ["left-pad"] }));
   const [gw, mcp] = [await fakeGateway(28801), await fakeMcp(28802, "ahqj_e2e")];
   const spec = {
     contract: "engine@1", job: "j", agent: "a", task: "t", prompt: "hello", web: false, env: [], limits: { timeout_s: 0 }, state,
@@ -49,6 +54,8 @@ test("a fresh session lists the expected models, MCP servers and plugins", { ski
     assert.ok(mcp.keys.length > 0 && mcp.keys.every((k) => k === "ahqj_e2e"), "every MCP request carried the X-Agent-Key");
     const config = await call("/config");
     for (const p of plugins) assert.ok(config.plugin.some((x: string) => x.endsWith(`/node_modules/${p.slice(0, p.lastIndexOf("@"))}`)), `${p} is configured`);
+    assert.ok(!config.plugin.includes("left-pad"), "a workspace's plugin is not loaded");
+    assert.ok((await call("/skill")).some((k: any) => k.name === "demo"), "the agent's skills are listed");
     const tools: string[] = await call("/experimental/tool/ids");
     assert.ok(tools.includes("pty_spawn") && tools.includes("compress"), "the plugins' tools are loaded");   // opencode-pty, opencode-dcp
     for (const end = Date.now() + 20_000; !gw.seen.some((s) => s.model === "~deepseek/deepseek-flash-latest") && Date.now() < end; await new Promise((r) => setTimeout(r, 200)));
