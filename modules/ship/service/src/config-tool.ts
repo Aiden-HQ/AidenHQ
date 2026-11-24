@@ -69,7 +69,7 @@ export function configTools(d: {
     },
     {
       name: "ship_configure", roles: ["ship-admin"],
-      description: "Change one repo's ship settings in one reviewed settings change on your task: { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, a generated command, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
+      description: "Change one repo's ship settings in one reviewed settings change on your task: { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {} }, required: ["repo", "change"], additionalProperties: false },
       run: async (a, caller) => {
         const { value, summary, loosens: l } = applyShipChange(d.raw(), { repo: String(a.repo), change: a.change, scope: d.scope() });
