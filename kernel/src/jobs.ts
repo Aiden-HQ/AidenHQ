@@ -93,24 +93,100 @@ export function writeLastMessage(logPath: string, text: string, log: (msg: strin
   }
 }
 /**
- * Model-format sentinels a tokenizer or chat template can leak into a reply as literal text: DeepSeek's
- * `<begin\u2581of\u2581sentence>` (its word separator, U+2581), the `<\uff5c...\uff5c>` and `<|...|>` families, and a stray
- * zero-width space. A run whose whole answer was sentinels is left with no message at all, which its dispatcher reads as one that
- * ended without a reply.
+ * Model-format sentinels a tokenizer or chat template can leak into a reply as literal text: DeepSeek's begin/end of sentence
+ * (its word separator is U+2581, and a model may echo it with underscores instead), the `<|...|>` chat templates, Gemma's
+ * `<start_of_turn>` and OpenAI's `<|endoftext|>`. A run whose whole answer was sentinels is left with no message at all, which
+ * its dispatcher reads as one that ended without a reply.
  */
 const SENTINELS = [
-  "<begin\u2581of\u2581sentence>", "<begin_of_sentence>",
-  "<\uff5cbegin_of_sentence\uff5c>", "<|begin_of_text|>", "<|end_of_text|>", "<|endoftext|>",
+  "<\uff5cbegin\u2581of\u2581sentence\uff5c>", "<\uff5cend\u2581of\u2581sentence\uff5c>",
+  "<\uff5cbegin_of_sentence\uff5c>", "<\uff5cend_of_sentence\uff5c>",
+  "<begin\u2581of\u2581sentence>", "<end\u2581of\u2581sentence>", "<begin_of_sentence>", "<end_of_sentence>",
+  "<|im_start|>", "<|im_end|>", "<\uff5cim_start\uff5c>", "<\uff5cim_end\uff5c>",
+  "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>", "<|eom_id|>",
+  "<start_of_turn>", "<|end_of_turn|>", "<end_of_turn>",
+  "<|begin_of_text|>", "<|end_of_text|>", "<|endoftext|>",
   "<\uff5cend\u2581of\u2581text\uff5c>", "<|end\u2581of\u2581text|>",
-  "<|eot_id|>", "<|eom_id|>", "<|end_of_turn|>", "<end_of_turn>",
-  "<|start_header_id|>", "<|end_header_id|>", "<|im_start|>", "<\uff5cim_start\uff5c>",
-  "<|im_end|>", "<\uff5cim_end\uff5c>",
+  // DeepSeek's turn markers, which stand alone at an edge and name the role in the marker itself.
+  "<\uff5cUser\uff5c>", "<\uff5cAssistant\uff5c>", "<\uff5cSystem\uff5c>",
 ];
-const SENTINEL = new RegExp(SENTINELS.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
-/** A final message without the model-format sentinels a tokenizer or chat template leaks as literal text, and the invisible
- * characters that pad them: what is left is what the model meant to say. */
+/** The padding beside a sentinel: whitespace and the invisible characters a tokenizer leaves around one. */
+const PAD = /[\s\u200b\ufeff\u2060]/;
+/** A chat template's message header, which carries the role of the turn that follows it. */
+const START = /^(?:<\|im_start\|>|<\uff5cim_start\uff5c>|<\|start_header_id\|>|<start_of_turn>)$/;
+/** A turn's role, and the same at the end of a reply: what a template leaves when its turn held no reply body. */
+const ROLE_START = /^(?:system|user|assistant|model|tool|ipython)(?=$|[\s\u200b\ufeff\u2060]*(?:\r?\n|<[|\uff5c]|<end_of_turn>))/;
+const ROLE_END = /(?:system|user|assistant|model|tool|ipython)$/;
+/** `text` without the padding at either end. */
+const trim = (text: string) => {
+  let from = 0, to = text.length;
+  while (from < to && PAD.test(text[from]!)) from++;
+  while (to > from && PAD.test(text[to - 1]!)) to--;
+  return text.slice(from, to);
+};
+const trimStart = (text: string) => {
+  let i = 0;
+  while (i < text.length && PAD.test(text[i]!)) i++;
+  return text.slice(i);
+};
+const trimEnd = (text: string) => {
+  let i = text.length;
+  while (i > 0 && PAD.test(text[i - 1]!)) i--;
+  return text.slice(0, i);
+};
+/** How much of `text` a leading header and its role take, or undefined when it opens with neither. */
+const afterHeader = (text: string) => {
+  const header = SENTINELS.find((s) => START.test(s) && text.startsWith(s) && text[0 - 1] !== "\\");
+  if (!header) return undefined;
+  const rest = text.slice(header.length);
+  let at = 0;
+  while (at < rest.length && /[ \t\u200b\ufeff\u2060]/.test(rest[at]!)) at++;
+  return header.length + at + (rest.slice(at).match(ROLE_START)?.[0].length ?? 0);
+};
+/** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
+const beforeHeader = (text: string) => {
+  const end = text.length - (text.length - trimEnd(text).length);
+  const role = text.slice(0, end).match(ROLE_END)?.[0];
+  if (!role) return undefined;
+  const at = end - role.length;
+  const head = trimEnd(text.slice(0, at));
+  const header = SENTINELS.find((s) => START.test(s) && head.endsWith(s) && head[head.length - s.length - 1] !== "\\");
+  return header ? head.length - header.length : undefined;
+};
+/**
+ * A final message without the model-format sentinels a tokenizer or chat template leaks as literal text. They leak at the edges
+ * of a completion, so a sentinel at either end is removed, with the padding beside it and the role line its header carries: a
+ * reply that was only sentinels is left empty, so its dispatcher reads it as one that ended without a reply, and a reply that
+ * quotes a marker on purpose keeps it. Each removal shortens the text, so a long run of whitespace costs no more than its length.
+ */
 export function stripSentinels(text: string): string {
-  return text.replace(SENTINEL, "").replace(/[\u200b\ufeff\u2060]/g, "");
+  let from = 0, to = text.length;
+  // Each edge is settled once: a removal there shortens the text and never touches the other edge, so neither end is rescanned.
+  for (;;) {
+    const rest = text.slice(from);
+    const lead = rest.length - trimStart(rest).length;
+    const head = rest.slice(lead);
+    const after = afterHeader(head);
+    if (after !== undefined) from += lead + after;
+    else {
+      const hit = SENTINELS.find((s) => head.startsWith(s) && head[-1] !== "\\");
+      if (!hit) break;
+      from += lead + hit.length;
+    }
+  }
+  for (;;) {
+    const before = beforeHeader(text.slice(0, to));
+    if (before !== undefined) to = before;
+    else {
+      const tail = trimEnd(text.slice(0, to));
+      const hit = SENTINELS.find((s) => tail.endsWith(s) && tail[tail.length - s.length - 1] !== "\\");
+      if (!hit) break;
+      to = tail.length - hit.length;
+    }
+  }
+  const body = trim(text.slice(from, to));
+  // A reply of nothing but padding is no reply; anything else keeps its own text as the model wrote it.
+  return from === 0 && to === text.length ? (trim(text) === "" ? "" : text) : body;
 }
 export function firstError(logPath: string): string {
   let head = "";

@@ -10,7 +10,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createJobs, writeLastMessage } from "../src/jobs.ts";
+import { createJobs, stripSentinels, writeLastMessage } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
 import { quietRun } from "../src/quiet.ts";
@@ -46,7 +46,8 @@ function sandbox() {
   const missing = engine("missing.mjs", `import { spawnSync } from "node:child_process";\nconst r = spawnSync("aidenhq-no-such-program", [], { stdio: "inherit" });\nprocess.exit(r.error?.code === "ENOENT" ? 127 : 1);`);
   // Engines whose reply carries model-format sentinels as literal text, as a tokenizer or chat template can leak them.
   const sentinel = engine("sentinel.mjs", `emit({ t: "final", text: "<begin\u2581of\u2581sentence>Attention: x<|im_end|>" });`);
-  const sentinelsOnly = engine("sentinels-only.mjs", `emit({ t: "final", text: "<begin\u2581of\u2581sentence>\u200b<|endoftext|>" });`);
+  const sentinelsOnly = engine("sentinels-only.mjs", `emit({ t: "final", text: "<\uff5cbegin\u2581of\u2581sentence\uff5c>\u200b<|endoftext|>" });`);
+  const quoted = engine("quoted.mjs", `emit({ t: "final", text: "The marker is " + String.fromCharCode(96) + "<|im_end|>" + String.fromCharCode(96) + "." });`);
   // An engine that dies at start on stderr, as Codex does resuming a session its home doesn't have.
   const dies = engine("dies.mjs", `console.log(JSON.stringify({ type: "noise" }));\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=sk-or-v1-abc123 Bearer sk-or-v1-def456 run ahqj_body.sig");\nprocess.exit(1);`);
   const engines = {
@@ -56,6 +57,7 @@ function sandbox() {
     env: { module: "test", dir: join(dir, "engines"), bin: envdump, kind: "env", box: true },
     sentinel: { module: "test", dir: join(dir, "engines"), bin: sentinel, kind: "sentinel", box: true },
     sentinelsOnly: { module: "test", dir: join(dir, "engines"), bin: sentinelsOnly, kind: "sentinelsOnly", box: true },
+    quoted: { module: "test", dir: join(dir, "engines"), bin: quoted, kind: "quoted", box: true },
     missing: { module: "test", dir: join(dir, "engines"), bin: missing, kind: "missing", box: true },
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
@@ -125,6 +127,43 @@ test("a job's final has model-format sentinels stripped, and a final of only sen
   assert.equal(silent.final, "", "no sentinel survives, and no reply is recorded");
   assert.equal(silent.state, "done");
   assert.equal(silent.exit, 0);
+  const keeps = await finished(jobs, jobs.run(sb, "quoted").id);
+  assert.equal(keeps.final, "The marker is `<|im_end|>`.", "a sentinel the reply quotes on purpose stays");
+});
+
+// A sentinel stands at a final's edges, with the padding a tokenizer leaves beside it; a marker a reply quotes on purpose stays,
+// and a long run of whitespace is not a place for a quadratic scan (the kernel's loop serves every request).
+test("a final's sentinels are stripped from its edges only, in time linear in its length", () => {
+  assert.equal(stripSentinels("Attention: x<|im_end|>\n"), "Attention: x", "a newline after the sentinel goes with it");
+  assert.equal(stripSentinels("<\uff5cbegin_of_sentence\uff5c>hello"), "hello", "the full-width underscore spelling");
+  assert.equal(stripSentinels("\u200b"), "", "a final of only invisible padding is no reply");
+  assert.equal(stripSentinels("<|im_start|>assistant\n<|im_end|>"), "", "a leaked template's header and role are not a reply");
+  assert.equal(stripSentinels("<|im_start|>assistant<|im_end|>"), "", "a role before a closing sentinel is not a reply");
+  assert.equal(stripSentinels("<|im_start|>assistant<|im_end|>\nNO_REPLY"), "NO_REPLY", "an empty turn before the reply goes");
+  assert.equal(stripSentinels("The ChatML header is \\<|im_start|>assistant"), "The ChatML header is \\<|im_start|>assistant", "an escaped header is literal text");
+  assert.equal(stripSentinels("<|im_start|>assistant\u200b\nNO_REPLY"), "NO_REPLY", "padding before a role's delimiter still finds it");
+  assert.equal(stripSentinels("The raw token is \\<|im_end|>"), "The raw token is \\<|im_end|>", "an escaped marker is literal text");
+  assert.equal(stripSentinels("Done.<|im_end|><|im_start|>user"), "Done.", "a trailing header and its role go too");
+  assert.equal(stripSentinels("<|im_start|>User-facing changes are ready."), "User-facing changes are ready.", "a word is not a role");
+  assert.equal(stripSentinels("<|im_start|>user@example.com"), "user@example.com", "an address is not a role");
+  assert.equal(stripSentinels("<|im_start|>model<sub>1</sub> is ready"), "model<sub>1</sub> is ready", "a tag is not a role delimiter");
+  assert.equal(stripSentinels("NO_REPLY<|im_end|><|im_start|>\u200buser"), "NO_REPLY", "invisible padding at a header's role");
+  assert.equal(stripSentinels("<|im_start|>user settings were saved."), "user settings were saved.", "a reply starting with a word is not a role");
+
+  assert.equal(stripSentinels("Done.<|eot_id|><|start_header_id|>ipython<|end_header_id|>"), "Done.", "a Llama tool-result header goes too");
+  assert.equal(stripSentinels("<start_of_turn>model\nNO_REPLY<end_of_turn>"), "NO_REPLY", "Gemma's opening turn header goes too");
+  assert.equal(stripSentinels("<|im_start|>assistant<|im_start|>assistant\nDone."), "Done.", "a repeated opening header goes too");
+  assert.equal(stripSentinels("The token is:\n```\n<|im_end|>\n```"), "The token is:\n```\n<|im_end|>\n```", "a reply showing a marker in code keeps it");
+  assert.equal(stripSentinels("<|im_start|>\nmodel\ngpt-4.1"), "model\ngpt-4.1", "a bare header is a leak; the next line is the reply");
+  assert.equal(stripSentinels("<|im_end|>\n    "), "", "trailing whitespace does not hide a sentinel");
+  assert.equal(stripSentinels("<\uff5cUser\uff5c>"), "", "DeepSeek's own turn marker is a sentinel");
+  assert.equal(stripSentinels("<|im_start|>\u200bassistant\nDone."), "Done.", "padding before a role still finds it");
+  assert.equal(stripSentinels("  keep my padding  "), "  keep my padding  ", "a reply without a sentinel is left as it is");
+  for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`]) {
+    const t0 = Date.now();
+    assert.ok(stripSentinels(long).length > 0 || long.startsWith(" "), "a long run of whitespace is walked once");
+    assert.ok(Date.now() - t0 < 2_000, "not rescanned");
+  }
 });
 
 test("a job's env in its box: the launcher's env file, nothing of the kernel's own", async () => {
