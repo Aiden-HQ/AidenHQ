@@ -126,6 +126,12 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   // The reviewer reads which agents the new skill steers.
   assert.deepEqual(sRec.args.authority, ["skill library.nudge changed; enabled by agent review-chaser (review)", "agent review-chaser enables skill library.nudge (review)"]);
 
+  // The filed record's own commit compiles to the skill the next run loads: the agent's effective list gains library.nudge,
+  // and the compiled SKILL.md is the text the change sent.
+  const compiled = await skillSides({ product, fetch: async () => {}, tree: checkoutTree(bare) })(await host.read({ repo: REPO, branch: sRec.args.branch, sha: sRec.args.sha }));
+  assert.deepEqual(compiled.after["review-chaser"], ["library.nudge", "tasks.delegate-work"]);
+  assert.equal(compiled.enabledTexts["library.nudge"], skillText);
+
   // A skill another module ships is refused: the library write would be a second, unused skill, since the agent reads the
   // skill copied from its module folder.
   const moduleSkill = readFileSync(join(product, "modules/fleet-steward/skills/fleet-check/SKILL.md"), "utf8");
