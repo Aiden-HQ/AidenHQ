@@ -52,7 +52,7 @@ export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CA
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
+export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 /** Where ship works: the fleet's own repos (the agents org as `org/*`, the product repo), always; a `maintainer_repos` repo only
