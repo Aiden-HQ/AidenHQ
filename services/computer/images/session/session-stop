@@ -1,0 +1,41 @@
+#!/bin/bash
+# session-stop <lease>: ends one session's processes in the standing box and nothing else (the box is shared; the launcher
+# never restarts it). Run by the launcher as `docker exec <box> /opt/aidenhq/bin/session-stop <lease>` when a session's job is
+# released or its lease lapses.
+#
+# What the engine (modules/engine-opencode) leaves for it, under the lease's own out folder /aidenhq-out/<lease>/:
+#   pgid        the process group of the opencode server and everything it started (one `setsid`), one number
+#   ttyd.pid    optional: the lease's ttyd (its tmux session is named by the lease id, so ttyd is also found by that name)
+# Order: the tmux session (its shells), the process group, the lease's ttyd. TERM first, then KILL after 5 s. Exits 0 when
+# nothing is left, so a lease that was never started, or already stopped, is not an error.
+set -u
+lease="${1:-}"
+[[ "$lease" =~ ^l-[0-9a-f]{8}$ ]] || { echo "session-stop: not a lease id: $lease" >&2; exit 2; }
+dir="/aidenhq-out/$lease"
+
+tmux kill-session -t "$lease" 2>/dev/null || true
+
+group=""
+[[ -f "$dir/pgid" ]] && group="$(tr -dc '0-9' < "$dir/pgid")"
+ttyd_pid=""
+[[ -f "$dir/ttyd.pid" ]] && ttyd_pid="$(tr -dc '0-9' < "$dir/ttyd.pid")"
+
+# The lease's ttyd by its command line (`ttyd ... tmux attach -t <lease>`): the lease id is unique, so no other lease matches.
+alive() {
+  { [[ -n "$group" && "$group" -gt 1 ]] && kill -0 -- "-$group" 2>/dev/null; } && return 0
+  { [[ -n "$ttyd_pid" && "$ttyd_pid" -gt 1 ]] && kill -0 "$ttyd_pid" 2>/dev/null; } && return 0
+  pgrep -f -- "ttyd .*$lease" >/dev/null 2>&1
+}
+signal() {
+  [[ -n "$group" && "$group" -gt 1 ]] && kill -"$1" -- "-$group" 2>/dev/null
+  [[ -n "$ttyd_pid" && "$ttyd_pid" -gt 1 ]] && kill -"$1" "$ttyd_pid" 2>/dev/null
+  pkill -"$1" -f -- "ttyd .*$lease" 2>/dev/null
+  return 0
+}
+
+signal TERM
+for _ in $(seq 1 50); do alive || exit 0; sleep 0.1; done
+signal KILL
+for _ in $(seq 1 20); do alive || exit 0; sleep 0.1; done
+echo "session-stop: $lease still has processes" >&2
+exit 1
