@@ -658,11 +658,11 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
 
 /**
  * board.pages (modules/board/schemas/pages.json): each page's view and tools sit on one of its own module's connections, as
- * read or write tools (never destructive). Each tool is named <module>_… (the owner MCP serves every page's tools side by side,
+ * read or write tools (never destructive, never one a write kind routes). Each tool is named <module>_… (the owner MCP serves every page's tools side by side,
  * under their own names). What each view may reach goes onto its connection in the kernel's table (`views`: view -> tools),
  * where the kernel's view route enforces it (kernel/src/views.ts).
  */
-export function modulePages(pages: Obj[], connections: Obj) {
+export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}) {
   // One page per view, and one page per MCP name (the owner MCP serves each page's tools and its `<id>_page` opener side by side).
   const views = new Set<string>(), names = new Map<string, string>(OWNER_TOOLS.map((t) => [t, "the owner MCP"]));
   const name = (n: string, p: Obj) => (names.has(n) ? fail(`module ${p.module}: board.pages ${p.id}: the name ${n} is already ${names.get(n)}'s`) : names.set(n, `page ${p.id}`));
@@ -676,6 +676,9 @@ export function modulePages(pages: Obj[], connections: Obj) {
     name(`${p.id.replace(/-/g, "_")}_page`, p);
     for (const t of p.tools) {
       if (![...c.tools.read, ...c.tools.write].includes(t) || c.tools.destructive.includes(t)) fail(`${where}: ${t} isn't a read or write tool of ${p.connection}`);
+      // The view route calls a tool directly; a tool routed into a write kind goes through its record, tier and executor instead.
+      const kind = Object.keys(kinds).find((k) => kinds[k].tools?.includes(`${p.connection}.${t}`));
+      if (kind) fail(`${where}: ${t} is write kind ${kind}'s, which a view can't call`);
       if (!t.startsWith(`${p.module.replace(/-/g, "_")}_`)) fail(`${where}: tool ${t} must be named ${p.module.replace(/-/g, "_")}_…`);
       name(t, p);
     }
@@ -1289,7 +1292,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     ...(c.health_probes ? { health_probes: c.health_probes } : {}),
     ...(c.events ? { events: c.events } : {}),
   }]));
-  modulePages(points.board?.pages ?? [], connections);
+  modulePages(points.board?.pages ?? [], connections, writes);
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. An Engineer gets

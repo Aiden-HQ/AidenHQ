@@ -490,7 +490,7 @@ export function createMcp(d: McpDeps) {
 
     // Module pages as MCP Apps (docs/design/board-ui.md "Modules"): an opener the model calls, the view it shows (served with no
     // `_meta.ui.csp` of the module's, so the strict default holds) and the page's tools, visible to the view only. A view's calls
-    // run the board's own route, as the board page's do; their answers go to the view as the module sent them.
+    // run the board's own route, as the board page's do; their answers come back fenced, as any module's words do here.
     for (const p of d.pages()) {
       // Compile keeps pages' names apart from each other and from OWNER_TOOLS.
       const opener = `${p.id.replace(/-/g, "_")}_page`;
@@ -498,8 +498,12 @@ export function createMcp(d: McpDeps) {
       server.registerTool(opener, { description: `Show the owner the ${p.title} page of the ${p.module} module, where its features are configured.`, inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: p.view, visibility: ["model"] } } }, async () => ({ content: [{ type: "text" as const, text: `The ${p.title} page is open: ${ctx.origin}/#/fleet/${p.id}` }] }));
       for (const t of p.tools)
         server.registerTool(t, { description: `${p.title} page: ${t}`, inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ["app"] } } }, async (a: Record<string, unknown>) => {
+          // A module's answer is its words: fenced like every other text the owner's Claude reads from an agent or a module.
           const r = await call("POST", `/api/pages/${p.id}/call`, { name: t, arguments: a });
-          return r.error ? { isError: true, content: [{ type: "text" as const, text: String(r.error.message ?? "failed") }] } : r.result;
+          if (r.error) return { isError: true, content: [{ type: "text" as const, text: fence(String(r.error.message ?? "failed"), t) }] };
+          // Text fenced, images as they are, anything else (audio, links) dropped: as the kernel's proxy hands an agent a result.
+          const content = ((r.result?.content ?? []) as { type?: string; text?: unknown }[]).flatMap((c): ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] => (c?.type === "text" ? [{ type: "text", text: fence(String(c.text ?? ""), t) }] : c?.type === "image" ? [c as { type: "image"; data: string; mimeType: string }] : []));
+          return { content, ...(r.result?.structuredContent ? { structuredContent: fenceAll(r.result.structuredContent, { origin: ctx.origin }) as Record<string, unknown> } : {}), ...(r.result?.isError ? { isError: true } : {}) };
         });
     }
 

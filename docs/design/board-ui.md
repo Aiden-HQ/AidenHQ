@@ -117,7 +117,7 @@ contributes:
       tools: [ship_config, ship_configure]   # what the view calls: read or write tools of that connection, named <module>_…
 ```
 
-- **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool, tool names
+- **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool and none a write kind routes, tool names
   `<module>_…`) and puts each view with its tools on its connection in the kernel's `connections.json` (`views`).
 - **The board** lists the pages after Fleet's own (sidebar, phone More, ⌘K) and shows one at `#/fleet/<id>`
   (`ModuleView.tsx`). The view runs in an iframe served from `/api/pages/<id>/frame` with a sandbox CSP (`allow-scripts
@@ -138,7 +138,7 @@ contributes:
   An agent's call of the same tool files the change itself (`/v1/settings/agent`), so the module's one check serves both.
 - **In the owner's Claude** the owner MCP serves each page as an MCP App: an opener `<id>_page` with `_meta.ui.resourceUri`,
   the view (with no `_meta.ui.csp`, so Claude's strict default holds) and the page's tools with visibility `["app"]`; the
-  board's own tools are `["model"]`, so no view calls them. Claude scopes app-visible tools by server, not by view, so there a view can also reach another page's tools (each still only a declared, non-destructive one, run as the board's own route). A proposed setting there is saved by asking Claude to apply it
+  board's own tools are `["model"]`, so no view calls them. Their answers come back fenced as untrusted data (text blocks and every string of `structuredContent`), so a view written for Claude reads values out of the fence. Claude scopes app-visible tools by server, not by view, so there a view can also reach another page's tools (each still only a declared, non-destructive one, run as the board's own route). A proposed setting there is saved by asking Claude to apply it
   (`change_settings`).
 - **A view's job:** the module's state and its feature settings, empty states that say how to connect. The example
   (`web/dev/example-view.html`, the mock API's Notes page) is the starting point: no build step, about 100 lines.

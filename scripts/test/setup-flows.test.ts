@@ -50,4 +50,5 @@ test("board.pages: a module's Fleet page compiles onto its own connection, and a
   assert.deepEqual(out.connections["pageok-mcp"].views, { "ui://pageok/page": ["pageok_notes", "pageok_configure"] });
   const conns = () => ({ "pageok-mcp": { module: "pageok", tools: { read: ["pageok_notes"], write: [], destructive: ["pageok_wipe"] } } });
   assert.throws(() => modulePages([{ id: "notes", module: "pageok", connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_wipe"] }], conns()), /pageok_wipe isn't a read or write tool/);
+  assert.throws(() => modulePages([{ id: "notes", module: "pageok", connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_configure"] }], { "pageok-mcp": { module: "pageok", tools: { read: [], write: ["pageok_configure"], destructive: [] } } }, { "pageok.set": { tools: ["pageok-mcp.pageok_configure"] } }), /is write kind pageok.set's/);
 });
