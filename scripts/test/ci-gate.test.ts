@@ -2,13 +2,14 @@
 // the Review step, the reviewer (code-review.ts, codex with its shell off) and its only tools (review-tools.ts).
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verdict } from "../../modules/ci/template/.github/codegenie-gate.ts";
 import { decide, STATE } from "../../modules/ci/template/.github/codegenie-prior.ts";
-import { changes, codexConfig, tierOf } from "../../modules/ci/template/.github/codegenie-tier.ts";
+import { changes, tierOf } from "../../modules/ci/template/.github/codegenie-tier.ts";
 
 const finding = (severity, title) => ({ severity, title, path: "src/a.ts", anchor: { line: 3 }, finalBody: `${title} body` });
 const review = (findings, extra = {}) => JSON.stringify({ findings, summaryOnlyFindings: [], coverage: { partial: false }, health: { status: "completed" }, ...extra });
@@ -180,11 +181,9 @@ test("the tier: a small member change is trivial, an auth path or a bumped lockf
   assert.throws(() => tier([F("a.ts")], { tiers: { rules: [{ tier: "huge" }] } }), /tier rules/);
 });
 
-test("git's numstat is read with renames and binaries, and codex config is refused wherever it moved from", () => {
+test("git's numstat is read with renames and binaries", () => {
   const files = changes("3\t1\tsrc/a.ts\0-\t-\tlogo.png\0" + "0\t0\t\0.codex/old.toml\0docs/new.md\0");
   assert.deepEqual(files, [F("src/a.ts", 3, 1), F("logo.png", 0, 0), F("docs/new.md", 0, 0, ".codex/old.toml")]);
-  assert.equal(codexConfig(files), ".codex/old.toml");
-  assert.equal(codexConfig([F("src/a.ts")]), undefined);
 });
 
 test("a green review carries to a later head only at the same tier and model and an effort at least as high", async () => {
@@ -194,10 +193,10 @@ test("a green review carries to a later head only at the same tier and model and
   const state = (d) => async (path) => path.includes("/statuses") ? [{ context: STATE, state: "success", creator: { login: "github-actions[bot]" }, target_url: "https://github.com/o/r/actions/runs/1", created_at: t, description: d }]
     : path.includes("/jobs") ? { jobs: [{ name: "code-review", conclusion: "success" }] }
     : { workflow_runs: [{ id: 1, head_sha: sha("a"), head_branch: "br", head_repository: { full_name: "o/r" }, pull_requests: [{ base: { ref: "main" } }], run_started_at: t, updated_at: t }] };
-  const ran = (o = {}) => decide({ api: state(`full n=0 lines=0 mb=${sha("b")} tier=standard model=m effort=high`), git, repo: "o/r", headRef: "br", baseRef: "main", base: sha("c"), head: sha("d"), defaultRef: "origin/main", tier: "standard", model: "m", effort: "high", ...o });
+  const ran = (o = {}) => decide({ api: state(`full n=0 lines=0 mb=${sha("b")} tier=standard model=${createHash("sha256").update("m").digest("hex").slice(0, 8)} effort=high`), git, repo: "o/r", headRef: "br", baseRef: "main", base: sha("c"), head: sha("d"), defaultRef: "origin/main", tier: "standard", model: "m", effort: "high", ...o });
   assert.equal((await ran()).mode, "reuse");
   assert.equal((await ran({ effort: "medium" })).mode, "reuse", "reviewed at a higher effort than now");
-  assert.equal((await ran({ effort: "xhigh" })).mode, "full", "the tier rose");
+  assert.equal((await ran({ effort: "xhigh" })).mode, "full", "a higher effort than the green review's");
   assert.equal((await ran({ tier: "sensitive", effort: "xhigh" })).mode, "full");
   assert.equal((await ran({ model: "other" })).mode, "full");
   assert.equal((await decide({ ...{ api: state(`full n=0 lines=0 mb=${sha("b")}`), git, repo: "o/r", headRef: "br", baseRef: "main", base: sha("c"), head: sha("d"), defaultRef: "origin/main" }, tier: "standard", model: "m", effort: "high" })).mode, "full", "a status without a tier");

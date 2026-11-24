@@ -215,6 +215,17 @@ jobs:
             printf 'REVIEW_STOP=1\nCODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=permanent\nCODEGENIE_CAUSE=%s\n' "$1" >> "$GITHUB_ENV"
             exit 0
           }
+          # A policy refusal, not a missing verdict: the gate blocks it (a prompt-injection guard). First of all, before any tier
+          # shortcut, reuse, bootstrap or token failure, on the whole PR's paths: codex's own config, hooks, skills and instruction
+          # overrides never belong in an app repo (the reviewer runs from an empty directory and loads none of them, but nothing
+          # else should either). The path is a PR's text: one line only.
+          git diff --name-only -z --no-renames "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths" || gave_up "Couldn't read the PR's changes."
+          codexcfg=$(tr '\0' '\n' < "$RUNNER_TEMP/changed-paths" | grep -m1 -E '(^|/)\.codex/|(^|/)codex\.toml$|(^|/)AGENTS\.override\.md$' | tr -d '\r' | head -c 200)
+          if [ -n "$codexcfg" ]; then
+            echo "::error::The PR changes codex config ($codexcfg)"
+            printf 'REVIEW_STOP=1\nCODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=policy\nCODEGENIE_CAUSE=%s\n' "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it." >> "$GITHUB_ENV"
+            exit 0
+          fi
           # The reviewer's scripts and the house rules (REVIEW.md): the base commit's. A base without them (an old or stacked base)
           # gets the default branch's, never a skip; only when the default branch has none either (the one PR that brings the
           # reviewer in) is the PR not reviewed, like the PR that first adds CI.
@@ -232,15 +243,6 @@ jobs:
             echo "::notice::The base commit has no reviewer with risk tiers: the default branch's reviews it."
           fi
           : > "$RUNNER_TEMP/REVIEW.md"; git show "$ref:REVIEW.md" > "$RUNNER_TEMP/REVIEW.md" 2>/dev/null
-          # A policy refusal, not a missing verdict: the gate blocks it (a prompt-injection guard). Before any tier shortcut,
-          # reuse or token failure, on the whole PR's paths: codex's own config, hooks, skills and instruction overrides never
-          # belong in an app repo (the reviewer runs from an empty directory and loads none of them, but nothing else should either).
-          codexcfg=$(node "$rv/codegenie-tier.ts" refuse) || gave_up "Couldn't read the PR's changes."
-          if [ -n "$codexcfg" ]; then
-            echo "::error::The PR changes codex config ($codexcfg)"
-            printf 'REVIEW_STOP=1\nCODEGENIE_EXIT=1\nCODEGENIE_ATTEMPTS=0\nCODEGENIE_FAILURE=policy\nCODEGENIE_CAUSE=%s\n' "The PR changes codex config ($codexcfg): .codex/, codex.toml and AGENTS.override.md don't belong in an app repo. Remove it." >> "$GITHUB_ENV"
-            exit 0
-          fi
           # The model key. On AidenHQ's runners (AIDENHQ_GATEWAY_URL, set on the runner container) the review spends through
           # the instance's model gateway: this job's GitHub OIDC token is traded there for a CI token bound to this repo and
           # PR, which may call only the review models, under the gateway's CI caps, into its cost ledger, with zero data
@@ -403,5 +405,5 @@ jobs:
           if [ "${CODE_REVIEW_DONE:-}" != 1 ] || [ "${CODE_REVIEW_PARTIAL:-}" = 1 ] || [ "${REVIEW_MB:--}" = - ]; then exit 0; fi
           curl -sSf -o /dev/null -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
-            -d "{\"state\":\"success\",\"context\":\"code-review/state\",\"description\":\"$REVIEW_MODE n=$REVIEW_N lines=$REVIEW_LINES mb=$REVIEW_MB tier=$REVIEW_TIER model=$REVIEW_MODEL effort=$REVIEW_EFFORT\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+            -d "{\"state\":\"success\",\"context\":\"code-review/state\",\"description\":\"$REVIEW_MODE n=$REVIEW_N lines=$REVIEW_LINES mb=$REVIEW_MB tier=$REVIEW_TIER model=$(printf '%s' "$REVIEW_MODEL" | sha256sum | cut -c1-8) effort=$REVIEW_EFFORT\",\"target_url\":\"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
             || echo "::warning::Couldn't record this review for the next push: it will review the whole PR."

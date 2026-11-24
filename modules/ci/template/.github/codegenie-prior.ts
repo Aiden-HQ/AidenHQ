@@ -17,6 +17,7 @@
 // REVIEW_TIER, REVIEW_MODEL and REVIEW_EFFORT (what this run would review at: codegenie-tier.ts, the gateway), GITHUB_API_URL.
 // No dependencies; Node 22+.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export const STATE = "code-review/state"; // the commit status this workflow sets on a head whose code-review passed
@@ -34,7 +35,7 @@ type Api = (path: string) => Promise<unknown>;
 interface Run { id: number; head_sha: string; head_branch?: string; head_repository?: { full_name?: string }; pull_requests?: { base?: { ref?: string } }[]; run_started_at: string; updated_at: string }
 interface Status { context: string; created_at?: string; state?: string; creator?: { login?: string }; target_url?: string; description?: string }
 export interface Decision { mode: string; from: string; n: number; lines: number; mb?: string }
-/** What a review ran at: the PR's risk tier, the model and its effort. */
+/** What a review ran at: the PR's risk tier, the model (a status records its hash: the status description is short) and its effort. */
 export interface Ran { tier: string; model: string; effort: string }
 interface DecideInput extends Ran { api: Api; git: (...args: string[]) => string; repo: string; headRef: string; baseRef: string; base: string; head: string; defaultRef: string; fetchCommit?: (sha: string) => void }
 const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
@@ -59,7 +60,7 @@ async function lastGreen(api: Api, { repo, headRef, baseRef, head }: { repo: str
     const t = Date.parse(s?.created_at!);
     const own = s?.state === "success" && s.creator?.login === "github-actions[bot]" && s.target_url?.endsWith(`/actions/runs/${run.id}`)
       && t >= Date.parse(run.run_started_at) && t <= Date.parse(run.updated_at);
-    const m = own && s!.description?.match(/^(full|delta|reuse) n=(\d+) lines=(\d+) mb=([0-9a-f]{40}) tier=(\w+) model=(\S+) effort=(\w+)$/);
+    const m = own && s!.description?.match(/^(full|delta|reuse) n=(\d+) lines=(\d+) mb=([0-9a-f]{40}) tier=(\w+) model=([0-9a-f]{8}) effort=(\w+)$/);
     return m ? { sha: run.head_sha, n: Number(m[2]), lines: Number(m[3]), mb: m[4]!, tier: m[5]!, model: m[6]!, effort: m[7]! } : undefined; // no state (yet): full
   }
 }
@@ -75,7 +76,7 @@ export async function decide({ api, git, repo, headRef, baseRef, base, head, def
   const full = { ...FULL, mb };
   const last = await lastGreen(api, { repo, headRef, baseRef, head });
   // A verdict carries forward only from a review at the same tier and model and an effort at least as high.
-  if (!last || last.tier !== tier || last.model !== model || EFFORTS.indexOf(last.effort) < EFFORTS.indexOf(effort)) return full;
+  if (!last || last.tier !== tier || last.model !== createHash("sha256").update(model).digest("hex").slice(0, 8) || EFFORTS.indexOf(last.effort) < EFFORTS.indexOf(effort)) return full;
   const ok = (...a: string[]) => { try { git(...a); return true; } catch { return false; } };
   if (!ok("cat-file", "-e", `${last.sha}^{commit}`)) {
     fetchCommit(last.sha);
