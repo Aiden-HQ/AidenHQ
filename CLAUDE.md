@@ -151,8 +151,10 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   set-password link from an app admin). The gate's auth listener is 3129 (loopback; `X-AidenHQ-Gate` =
   `gate_board_secret`); app hosts get host-only `__Host-` cookies through a one-time handoff, never a shared cookie.
   Every agent job and every check (fast checks, the reviewer eval) runs in an agent computer (gVisor box,
-  `services/computer/`); no process on the host runs repo code. A job box's only credential is its kernel job token (`ahqj_`)
-  and it sees only what the launcher mounts: its workspace, engine home and out folder, never the secrets dir, the data
+  `services/computer/`); no process on the host runs repo code. A job box's only credential is its kernel job token (`ahqj_`),
+  with one exception: a `session` job's box asks the kernel for a one-hour GitHub App installation token narrowed to one repo
+  (`git-credential-aidenhq`, `POST /v1/jobtools/git-token`; the owner's token never enters a box), so plain `git push` and `gh` work;
+  it sees only what the launcher mounts: its workspace, engine home and out folder, never the secrets dir, the data
   dir or the Docker socket; a check box gets only its snapshot and out folder. Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.

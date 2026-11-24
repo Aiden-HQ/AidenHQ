@@ -19,6 +19,8 @@
 //                default branch's head, on a new aidenhq/setup-<sha> branch no one else has moved, and its PR (an earlier setup PR is
 //                closed). Answers {pending, write} while the record waits.
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
+//   app_token    {repo} → {token, expires_at}: the kernel's own op (appToken below, never a module's: no grant names it), the
+//                GitHub App's installation token narrowed to that repo (contents and pull requests), for a session box's git
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
 // and the same answer (its bundle: every branch), and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
 // the github code host for other orgs is 404.
@@ -331,8 +333,24 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     const existing = Array.isArray(j.existing) ? j.existing.filter((p): p is string => typeof p === "string") : [];
     return { repo: j.repo, base: j.base, private: j.private !== false, existing, ...(typeof j.conflict === "string" ? { conflict: j.conflict } : {}) };
   }
+  /**
+   * A session box's git credential (jobtools.ts gitToken asks, for a repo it already checked): the App's installation token
+   * narrowed to `repo`, at most an hour old. Never a module's op (no grant names it), and never the owner's token.
+   */
+  async function appToken(repo: string): Promise<{ token: string; expires_at: string }> {
+    const k = kind();
+    if (!k?.executor) throw fail(404, NO_HOST);
+    const r = await forward(k, "kernel", "app_token", { module: "kernel", repo });
+    let said = "";
+    for await (const c of r) said += c;
+    let j: { token?: unknown; expires_at?: unknown; error?: unknown } = {};
+    try { j = JSON.parse(said); } catch { /* the status says it */ }
+    if ((r.statusCode ?? 502) >= 300) throw fail(r.statusCode === 409 ? 409 : 502, String(j.error ?? `${CODEHOST} answered ${r.statusCode}`).slice(0, 500));
+    if (typeof j.token !== "string" || !j.token) throw fail(502, `${CODEHOST} sent no token`);
+    return { token: j.token, expires_at: String(j.expires_at ?? "") };
+  }
   return {
-    ask, identity, publishTip,
+    ask, identity, publishTip, appToken,
     /** POST /v1/codehost/:op: the answer goes back as it came. */
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       if (op === "bundle") throw fail(404, "no codehost operation bundle");

@@ -75,6 +75,8 @@ export type Options = {
   /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
    * here with the owner's token and never answering it; unset: those ops answer 404. */
   ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
+  /** The owner's one GitHub App, for the `app_token` op (ops.ts). */
+  app?: OpsContext["app"];
   /** github_fleet_org: where the fleet's repos live on GitHub ("" while unset). */
   fleetOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
   /** maintainer_repos ("owner/name"): where the fleet merges and closes outside the agents org and the product repo. */
@@ -1411,7 +1413,7 @@ export function createService(o: Options) {
       if (!o.ops) throw fail(404, "no such operation");
       return o.ops(req, res, {
         access, cacheDir: o.cacheDir, cache: (s) => cache(s), git, fetchRemote: (s, name) => fetchRemote(slugOf(s.slug), name),
-        initBare, ours,
+        initBare, ours, app: o.app,
       });
     }
     const b = await body(req);

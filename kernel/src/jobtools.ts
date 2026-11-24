@@ -25,7 +25,7 @@ export class JobToolError extends Error {
 const KIND = /^[a-z][a-z0-9-]{0,40}$/;
 const MODEL = /^~?[\w.-]{1,60}\/[\w.:-]{1,100}$/;
 
-export function createJobTools({ db, secret, engines, orgs = () => [], now = Date.now }: {
+export function createJobTools({ db, secret, engines, orgs = () => [], reach = () => false, now = Date.now }: {
   db: DatabaseSync;
   /** The kernel's gateway_job_secret, read fresh. */
   secret: () => string;
@@ -33,6 +33,8 @@ export function createJobTools({ db, secret, engines, orgs = () => [], now = Dat
   engines: () => string[];
   /** The agents orgs (one per enabled code host): the only orgs a job's `repo-checkout` may name. */
   orgs?: () => string[];
+  /** Whether the code host's merge rules reach this repo (the agents orgs, the product, the instance, `maintainer_repos`): the repos a session may push. */
+  reach?: (repo: string) => boolean;
   now?: () => number;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS jobtools (job TEXT PRIMARY KEY, fresh INTEGER NOT NULL DEFAULT 0, engine TEXT, cleanup INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL)");
@@ -91,6 +93,20 @@ export function createJobTools({ db, secret, engines, orgs = () => [], now = Dat
       const sha = String(b?.sha ?? "").trim().toLowerCase();
       if (sha && !/^[0-9a-f]{40}$/.test(sha)) throw new JobToolError(400, "bad-sha", "give the full 40-character commit SHA (e.g. the PR's head), or none for the default branch");
       return { repo: `${m[1]}/${m[2]!.replace(/\.git$/, "")}`, ref: sha || "HEAD" };
+    },
+    /**
+     * A session job's git credential (`git-credential-aidenhq`, `gh`): the repo to ask the code host's `app_token` for, once this
+     * live job holds the `session` profile (frozen at its admission) and names a repo the merge rules reach. The token itself
+     * is the code host's, narrowed to that repo, and lasts at most an hour (codehost.ts appToken); the owner's never leaves it.
+     */
+    gitToken(token: string, b: { repo?: unknown }): { repo: string } {
+      const r = db.prepare("SELECT authority FROM jobs WHERE id = ?").get(jobOf(token)) as { authority: string | null } | undefined;
+      if ((r?.authority ? JSON.parse(r.authority).profile : undefined) !== "session") throw new JobToolError(403, "no-role", "a git token is a session's");
+      const m = /^([\w.-]+)\/([\w.-]+)$/.exec(String(b?.repo ?? "").trim());
+      if (!m || /^\.+$/.test(m[1]!) || /^\.+$/.test(m[2]!)) throw new JobToolError(400, "bad-repo", "give the repository as org/name");
+      const repo = `${m[1]}/${m[2]!.replace(/\.git$/, "")}`;
+      if (!reach(repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository the code host merges in (the agents orgs, the product, maintainer_repos)`);
+      return { repo };
     },
     /**
      * A job's `aidenhq clone`: a repository for an engineer job's box to clone, or to fetch into the clone it has, from the

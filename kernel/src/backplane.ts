@@ -78,6 +78,7 @@
 //                              {sha256} out), and the file a keep recipe left after its run (raw bytes; 404 when none)
 //   POST /v1/checkout          (a kernel job's own token) {repo, sha?}: a code host snapshot (tar.gz) for a job holding the
 //                              repo-checkout role, an agents-org repo only: GitHub's, or local/… from codehost-local (jobtools.ts checkout)
+//   POST /v1/jobtools/git-token {repo}   a session job's own token: the code host's App token for that repo, at most an hour (jobtools.ts gitToken)
 //   POST /v1/jobtools/:cmd     (a kernel job's own token) reset | engine {engine, model?} | cleanup: what the running job asks of its
 //                              task's next turn (jobtools.ts); review {kind, args}: what the AI reviewer would say of that write,
 //                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
@@ -342,7 +343,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -401,6 +402,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   jobTools?: JobTools;
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
   precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
+  /** A session job's git token for a repo (codehost.ts appToken): the App's, narrowed to that repo. */
+  appToken?: (repo: string) => Promise<{ token: string; expires_at: string }>;
   /** A repo's bundle for a job's `aidenhq clone`, under its dispatcher's clone grant (codehost.ts bundle): the code host's answer. */
   repoBundle?: (module: string, repo: string, head?: string) => Promise<Answer>;
   /** The host's health probes (health.ts), and the key the host's healthcheck asks with (health_probe_key, held by no container). */
@@ -628,6 +631,16 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
               throw j.name === "JobToolError" ? fail(j.status!, j.code!, j.message) : e;
             } };
             return send(res, 200, await precheck(w, { kind: String(b.kind ?? ""), args: b.args }, slot));
+          }
+          if (m[0] === "git-token") {
+            if (!appToken) throw fail(503, "unavailable", "git tokens are off");
+            let c: { repo: string };
+            try { c = jobTools.gitToken(bearer(req), b); } catch (e) {
+              const j = e as { name?: string; status?: number; code?: string; message: string };
+              if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
+              throw e;
+            }
+            return send(res, 200, await appToken(c.repo).catch((e: { status?: number; message: string }) => { throw fail(e.status ?? 502, "no-token", e.message); }));
           }
           if (m[0] === "clone") {
             // The repo as a git bundle; the box clones it, or fetches it into the clone it has, itself.
