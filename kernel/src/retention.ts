@@ -108,17 +108,20 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
 }
 
 /** Paperclip's run history and activity log, pruned inside its container (paperclip-prune.mjs): the container has the only client that reaches its embedded Postgres. */
-export function pruneIn(container: string, run = spawn): Promise<string> {
+export function pruneIn(container: string, { stopping = (): boolean => false, run = spawn }: { stopping?: () => boolean; run?: typeof spawn } = {}): Promise<string> {
   const script = readFileSync(new URL("./paperclip-prune.mjs", import.meta.url));
   return new Promise((ok, no) => {
     const child = run("docker", ["exec", "-i", "-e", `RUN_DAYS=${PAPERCLIP_RUN_DAYS}`, "-e", `ACTIVITY_DAYS=${PAPERCLIP_ACTIVITY_DAYS}`, "-e", "DEADLINE_MIN=45", container, "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
     let out = "", err = "";
     // The worker bounds itself (DEADLINE_MIN) and holds an advisory lock against a second pass; this only ends a hung docker client.
     const t = setTimeout(() => child.kill("SIGTERM"), 70 * 60_000);
+    // A drain: the worker's own stop file ends its pass at the next batch (killing the docker client would not).
+    const drain = setInterval(() => { if (stopping()) { clearInterval(drain); run("docker", ["exec", container, "touch", "/tmp/aidenhq-prune.stop"], { stdio: "ignore" }).on("error", () => {}); } }, 5_000).unref();
+    child.stdin!.on("error", () => {}); // the docker client exited before reading the script: its exit code says so
     child.stdout!.on("data", (d) => (out += d));
     child.stderr!.on("data", (d) => (err += d));
-    child.on("error", (e) => (clearTimeout(t), no(e)));
-    child.on("close", (code) => (clearTimeout(t), code === 0 ? ok(out.trim().split("\n").pop() ?? "") : no(new Error(`exit ${code}: ${(err || out).trim().slice(0, 500)}`))));
+    child.on("error", (e) => (clearTimeout(t), clearInterval(drain), no(e)));
+    child.on("close", (code) => (clearTimeout(t), clearInterval(drain), code === 0 ? ok(out.trim().split("\n").pop() ?? "") : no(new Error(`exit ${code}: ${(err || out).trim().slice(0, 500)}`))));
     child.stdin!.end(script);
   });
 }
@@ -133,7 +136,7 @@ export function createRetention({ db, log, container = process.env.AIDENHQ_PAPER
       try {
         const t = Date.now();
         await clearFinished(db, { stopping }).then((c) => log("retention: kernel rows cleared", { ...c, ms: Date.now() - t }), (e: Error) => log("WARNING: retention failed on the kernel's rows", { err: String(e.message).slice(0, 300) }));
-        if (!stopping()) await pruneIn(container).then((s) => log("retention: paperclip pruned", { result: s }), (e: Error) => log("WARNING: retention couldn't prune paperclip", { err: String(e.message).slice(0, 300) }));
+        if (!stopping()) await pruneIn(container, { stopping }).then((s) => log("retention: paperclip pruned", { result: s }), (e: Error) => log("WARNING: retention couldn't prune paperclip", { err: String(e.message).slice(0, 300) }));
       } finally { busy = false; }
     },
   };

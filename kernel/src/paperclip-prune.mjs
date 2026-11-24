@@ -11,14 +11,20 @@
 // Then the execution workspaces nothing references any more. One pass at a time (an advisory lock), bounded in time (DEADLINE_MIN)
 // and per statement.
 import { createRequire } from "node:module";
-import { readdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 const RUN_DAYS = Number(process.env.RUN_DAYS), ACTIVITY_DAYS = Number(process.env.ACTIVITY_DAYS), BATCH = Number(process.env.BATCH || 200);
 const deadline = Date.now() + Number(process.env.DEADLINE_MIN || 45) * 60_000;
 if (!(RUN_DAYS > 0) || !(ACTIVITY_DAYS > 0)) throw new Error("RUN_DAYS and ACTIVITY_DAYS are required");
-const OWNED = new Set(["heartbeat_run_events", "environment_leases", "workspace_operations"]);
-const LOGS = join(process.env.PAPERCLIP_HOME || "/paperclip", "instances/default/data/run-logs");
+// Run-owned tables and what of them goes with the run: a lease only when ephemeral (a reusable one still owns its sandbox: the
+// database detaches it from the run), an operation with its log file.
+const OWNED = new Map([["heartbeat_run_events", ""], ["environment_leases", "AND lease_policy = 'ephemeral'"], ["workspace_operations", ""]]);
+const DATA = join(process.env.PAPERCLIP_HOME || "/paperclip", "instances/default/data");
+const LOGS = join(DATA, "run-logs"), OP_LOGS = join(DATA, "workspace-operation-logs");
+// The kernel's drain touches this file (retention.ts): the pass stops at its next check.
+const STOP = "/tmp/aidenhq-prune.stop";
+rmSync(STOP, { force: true });
 const pgDir = process.env.PG_MODULE_DIR || "/app/node_modules/.pnpm/" + readdirSync("/app/node_modules/.pnpm").find((d) => d.startsWith("pg@")) + "/node_modules/pg";
 // import.meta.url of a module read from stdin is not a file URL: resolve `pg` from its own directory instead.
 const { Client } = createRequire(join(pgDir, "x.js"))(pgDir);
@@ -45,11 +51,12 @@ async function referrers(parent) {
 }
 
 const stats = { runs: 0, owned: {}, nulled: {}, workspaces: 0, activity: 0, logs: 0, stopped: null };
-const out = () => (stats.stopped = stats.stopped ?? (Date.now() > deadline ? "deadline" : null));
+const out = () => (stats.stopped = stats.stopped ?? (existsSync(STOP) ? "drain" : Date.now() > deadline ? "deadline" : null));
 
 // 1. Runs.
 const runRefs = await referrers("heartbeat_runs");
 const owned = runRefs.filter((r) => OWNED.has(bare(r.table)));
+const unlinkLog = (root, store, ref) => { if (store === "local_file" && ref && !ref.includes("..")) { try { unlinkSync(join(root, ref)); stats.logs++; } catch (e) { if (e.code !== "ENOENT") console.error(`log ${ref}: ${e.message}`); } } };
 const strict = (r) => !OWNED.has(bare(r.table)) && (r.del === "a" || r.del === "r");
 const nulls = runRefs.filter((r) => strict(r) && !r.notNull);
 const kept = [
@@ -78,31 +85,39 @@ while (!out()) {
   if (!rows.length) break;
   const ids = rows.map((r) => r.id);
   await c.query("BEGIN");
+  const opLogs = [];
   try {
-    for (const o of owned) stats.owned[o.table] = (stats.owned[o.table] ?? 0) + (await c.query(`DELETE FROM ${o.table} WHERE ${q(o.col)} = ANY($1)`, [ids])).rowCount;
+    for (const o of owned) {
+      const hasLog = bare(o.table) === "workspace_operations";
+      const r = await c.query(`DELETE FROM ${o.table} WHERE ${q(o.col)} = ANY($1) ${OWNED.get(bare(o.table))}${hasLog ? " RETURNING log_store, log_ref" : ""}`, [ids]);
+      stats.owned[o.table] = (stats.owned[o.table] ?? 0) + r.rowCount;
+      if (hasLog) opLogs.push(...r.rows);
+    }
     for (const n of nulls) stats.nulled[n.table] = (stats.nulled[n.table] ?? 0) + (await c.query(`UPDATE ${n.table} SET ${q(n.col)} = NULL WHERE ${q(n.col)} = ANY($1)`, [ids])).rowCount;
     stats.runs += (await c.query("DELETE FROM heartbeat_runs WHERE id = ANY($1)", [ids])).rowCount;
     await c.query("COMMIT");
   } catch (e) { await c.query("ROLLBACK"); throw e; }
   // Their logs only once the rows are gone; one a crash leaves behind is found by the orphan sweep below.
-  for (const r of rows) if (r.log_store === "local_file" && r.log_ref && !r.log_ref.includes("..")) { try { unlinkSync(join(LOGS, r.log_ref)); stats.logs++; } catch (e) { if (e.code !== "ENOENT") console.error(`log ${r.log_ref}: ${e.message}`); } }
+  for (const r of rows) unlinkLog(LOGS, r.log_store, r.log_ref);
+  for (const r of opLogs) unlinkLog(OP_LOGS, r.log_store, r.log_ref);
   await sleep(200);
 }
 
-// Run logs no run names any more (a crash between a commit and its unlinks), a day old at least.
-if (!out()) {
-  const named = new Set((await c.query("SELECT log_ref FROM heartbeat_runs WHERE log_ref IS NOT NULL")).rows.map((r) => r.log_ref));
-  // One folder at a time, the deadline checked between files; a file that vanished or can't be read is skipped.
+// Log files no row names any more (a crash between a commit and its unlinks), a day old at least.
+for (const [root, table] of [[LOGS, "heartbeat_runs"], [OP_LOGS, "workspace_operations"]]) {
+  if (out()) break;
+  const named = new Set((await c.query(`SELECT log_ref FROM ${table} WHERE log_ref IS NOT NULL`)).rows.map((r) => r.log_ref));
+  // One folder at a time, the stop checked between files; a file that vanished or can't be read is skipped.
   const dirs = [""];
   while (dirs.length && !out()) {
     const rel = dirs.pop();
     let entries = [];
-    try { entries = readdirSync(join(LOGS, rel), { withFileTypes: true }); } catch (e) { if (e.code === "ENOENT") continue; throw e; }
+    try { entries = readdirSync(join(root, rel), { withFileTypes: true }); } catch (e) { if (e.code === "ENOENT") continue; throw e; }
     for (const e of entries) {
       const f = join(rel, e.name);
       if (e.isDirectory()) { dirs.push(f); continue; }
       if (out()) break;
-      try { if (!named.has(f) && Date.now() - statSync(join(LOGS, f)).mtimeMs > 864e5) { unlinkSync(join(LOGS, f)); stats.logs++; } } catch (err) { if (err.code !== "ENOENT") console.error(`log ${f}: ${err.message}`); }
+      try { if (!named.has(f) && Date.now() - statSync(join(root, f)).mtimeMs > 864e5) { unlinkSync(join(root, f)); stats.logs++; } } catch (err) { if (err.code !== "ENOENT") console.error(`log ${f}: ${err.message}`); }
     }
   }
 }

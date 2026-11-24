@@ -74,7 +74,8 @@ paperclip() {
 import { createRequire } from "node:module";
 import { readdirSync } from "node:fs";
 const dir = "/app/node_modules/.pnpm/" + readdirSync("/app/node_modules/.pnpm").find((d) => d.startsWith("pg@")) + "/node_modules/pg";
-const { Client } = createRequire(import.meta.url)(dir);
+// import.meta.url of a module read from stdin is not a file URL: resolve from the package folder itself.
+const { Client } = createRequire(dir + "/x.js")(dir);
 const c = new Client({ host: "127.0.0.1", port: 54329, user: process.env.PAPERCLIP_PG_USER || "paperclip", password: process.env.PAPERCLIP_PG_PASSWORD || "paperclip", database: process.env.PAPERCLIP_PG_DB || "paperclip" });
 await c.connect();
 await c.query("SET lock_timeout = '30s'");
