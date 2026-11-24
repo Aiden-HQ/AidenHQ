@@ -109,7 +109,8 @@ describe("app_page_canary", () => {
     expect(script).toContain("new URL(n.url).origin === listener");
     // The app's own intake answer is the reported status; a 5xx is not a success.
     expect(script).toContain("const intakeStatus =");
-    expect(script).toContain("status: intakeStatus ?? 200");
+    expect(script).toContain("status: intakeStatus ?? 0");
+    expect(script).toContain("intake.some((x) => x.status == null)");
     // The image's launch maps the canary names to the listener's address, and the network is the one renderArgs allows.
     expect(renderArgs(CANARY_NETWORK, "img")).toContain(CANARY_NETWORK);
     // No DNS that could leave the host from the canary bridge (the listener's name comes from Chrome's resolver rule).

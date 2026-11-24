@@ -801,7 +801,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           }
           if (op === "revoke") {
             const sessionId = typeof b.sessionId === "string" ? b.sessionId : undefined;
-            return send(res, 200, await sessions.revoke({ ...(sessionId ? { sessionId } : {}), ...(sessionId ? {} : { task: who.task }), reason: "canary finished" }));
+            // The calling job's task always scopes the revocation, so one task can never end another's session by id.
+            return send(res, 200, await sessions.revoke({ ...(sessionId ? { sessionId } : {}), task: who.task, reason: "canary finished" }));
           }
           throw fail(404, "not_found", `no test session op ${op}`);
         } catch (e) {

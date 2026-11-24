@@ -38,6 +38,9 @@ table inet $TABLE {
     type filter hook input priority filter - 1; policy accept;
     iifname "$BRIDGE" ct state established,related accept
     ${GATEWAY_PORT:+iifname "$BRIDGE" ip daddr $GATEWAY tcp dport $GATEWAY_PORT accept}
+    # The listener is the canary bridge's alone: the address is also routable from the host and the other bridges, so a
+    # packet to it arriving on any other interface (another Docker bridge included) is dropped here, not just outside.
+    ${GATEWAY_PORT:+ip daddr $GATEWAY tcp dport $GATEWAY_PORT iifname != "$BRIDGE" counter drop}
     iifname "$BRIDGE" counter drop
   }
   chain forward {
