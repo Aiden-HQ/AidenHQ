@@ -64,8 +64,8 @@ test("a kernel job's graded task is graded, reopened with the unmet criterion, t
   assert.equal(grades.get("t1").state, "satisfied");
   // Flow: each attempt is a requested/verdict pair on its own subject, and the reopen is a grade_retry wait that the next attempt ends.
   assert.deepEqual(facts.map((f) => [f.type, f.subject, f.version, f.data.pass ?? f.data.reason]), [
-    ["grade.requested", "grade:t1:1", "1", undefined], ["grade.verdict", "grade:t1:1", "1", false], ["work.waiting", "task:t1", "1", "grade_retry"],
-    ["work.resumed", "task:t1", "1", "grade_retry"], ["grade.requested", "grade:t1:2", "2", undefined], ["grade.verdict", "grade:t1:2", "2", true],
+    ["grade.requested", "grade:t1:1:1", "1:1", undefined], ["grade.verdict", "grade:t1:1:1", "1:1", false], ["work.waiting", "task:t1", "1", "grade_retry"],
+    ["work.resumed", "task:t1", "1", "grade_retry"], ["grade.requested", "grade:t1:3:2", "3:2", undefined], ["grade.verdict", "grade:t1:3:2", "3:2", true],
   ]);
   assert.ok(facts.every((f) => f.task === "t1"));
 });
@@ -446,6 +446,14 @@ test("a grader that keeps failing keeps its hold, then closes the task done, ung
   assert.equal(waits.length, 4);
   assert.equal(new Set(waits.map((f) => f.subject)).size, 1, "all four waits are on the task's one subject");
   assert.equal(new Set(waits.map((f) => f.version)).size, 4, "and each pass has its own version, so the log keeps all four");
+  // A retry after a failed pass keeps the attempt (nothing was rejected) but moves the round, so its stage facts are their own:
+  // keyed by the attempt alone they would reuse the failed pass's ids and Flow would drop them as duplicates.
+  const requested = facts.filter((f) => f.type === "grade.requested" && f.task === "t4");
+  assert.equal(requested.length, 5, "every pass asks the grader once");
+  assert.equal(new Set(requested.map((f) => f.subject)).size, 5, "and each pass's request is its own stage");
+  assert.equal(new Set(requested.map((f) => f.version)).size, 5, "the log keeps all five");
+  const verdicts = facts.filter((f) => f.type === "grade.verdict" && f.task === "t4");
+  assert.equal(new Set(verdicts.map((f) => f.subject)).size, 5, "so is each verdict");
   // Each wait is ended by the next pass's resumed fact on the same subject: a retrying task is not counted as waiting while it
   // is being graded again.
   const resumed = facts.filter((f) => f.type === "work.resumed" && f.task === "t4");
@@ -483,6 +491,76 @@ test("a grading-failed note is posted for the pass it reports, and dropped once 
   assert.equal(calls.wake[0].task, "t9");
   assert.equal(calls.wake[0].id, "grade-retry-t9-1");
   assert.equal(calls.wake[0].quiet, true, "posted as a quiet note, never a wake");
+});
+
+test("a deferred failed-pass note says what is left of the retry when it is posted, not when it was queued", async () => {
+  // The note's post can be delayed (a 502 from the kernel). Its text is rendered when it lands, from the ladder's due time, so a
+  // note that waited out the first minute does not promise a retry that has already happened.
+  const issue = { id: "t32", identifier: "WOR-32", title: "report", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] };
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["says it"];
+  grades.file("t32", rubric, { kind: "report", ref: "" });
+  const row = grades.record("t32", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "report", ref: "" }, 0) });
+  const realNow = Date.now;
+  let now = Date.parse(row.failedAt!);
+  Date.now = () => now;
+  try {
+    const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {} });
+    const step = (retryAt) => JSON.stringify([{ do: "note", note: "**Grading failed; retrying.** (stale).", id: "grade-retry-t32-1", round: row.round, retryAt,
+      render: { g: { model: "m", criteria: [], reason: "the grader failed (OpenRouter 502)" }, rubric, version: "v1" } }]);
+    // The post was tried when the note was queued, failed, and is retried 50 s into the ladder's one-minute wait.
+    now += 50_000;
+    db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t32', ?)").run(step(new Date(Date.parse(row.failedAt!) + 60_000).toISOString()));
+    await loop.runGrades();
+    assert.equal(calls.wake.length, 1);
+    assert.match(calls.wake[0].text, /the grader runs again in 1 minute/, "50 s left of the wait, not the 1 minute the note was queued with");
+    // Posted after the wait is spent: it says the retry is due now rather than promising a minute that has passed.
+    now += 30_000;
+    db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('owed:t32', ?)").run(step(new Date(Date.parse(row.failedAt!) + 60_000).toISOString()));
+    await loop.runGrades();
+    assert.equal(calls.wake.length, 2);
+    assert.match(calls.wake[1].text, /the grader runs again shortly/);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("an amendment that replaces the failed round ends its retry wait", async () => {
+  // The owner amends the rubric while the grader waits out the ladder. The row restarts `open` at a new round, so the failed
+  // round's pass is never retried; without this, Flow reports grade_retry for the task forever. The amended pass here finds its
+  // evidence unavailable (an app that is not deployed), which is exactly the branch that leaves the row waiting on something
+  // other than the retry ladder.
+  const issue = { id: "t33", identifier: "WOR-33", title: "app", description: "", status: "in_review", companyId: "co", assigneeAgentId: "eng", createdByAgentId: "cos", parentId: null };
+  const calls = { resolve: [], wake: [] }, facts = [];
+  const { kernel } = heldKernel(issue, calls);
+  const db = new DatabaseSync(":memory:");
+  const { runner, grades } = createGrading({ db, kernel: { issue: async () => issue, settings: async () => ({}) }, keys: { check: "c", board: "b" } });
+  const rubric = ["the app is deployed"];
+  grades.file("t33", rubric, { kind: "app", ref: "roadmap-keeper" });
+  const row = grades.record("t33", { version: "v1", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(rubric, { kind: "app", ref: "roadmap-keeper" }, 0) });
+  // No row is due: the amended row is open and not resumed (the agent is still working), so no pass will look at it. The wait
+  // must end anyway.
+  const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: [], resubmitted: [] }), kernel, kernelBytes: async () => Buffer.alloc(0), apps: async () => ({}), gatewayUrl: "http://127.0.0.1:1", github: noGithub, log: () => {}, emit: (f) => facts.push(f) });
+  // The failed pass left its wait (the loop recorded it when it queued the note).
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('grade-wait:t33', ?)").run(JSON.stringify({ round: row.round }));
+  grades.amend("t33", ["the app is deployed", "and it serves the page", "and the page loads"], { by: "agent:cos", delegator: "agent:cos" });
+  assert.equal(grades.get("t33").state, "open");
+  assert.equal(grades.get("t33").resume, false, "not resumed: nothing grades it until the agent finishes");
+  await loop.runGrades();
+  const resumed = facts.filter((f) => f.type === "work.resumed" && f.task === "t33");
+  assert.equal(resumed.length, 1, "the failed round's wait is resumed");
+  assert.equal(resumed[0].version, `round:${row.round}`, "naming the round the failed pass left");
+  assert.equal(db.prepare("SELECT v FROM loop_state WHERE k = 'grade-wait:t33'").get()?.v ?? "", "", "and the marker is cleared");
+  // A row still on the failed round keeps its wait: the ladder has not asked again yet.
+  const again = grades.record("t33", { version: "v2", outcome: "grading_failed", model: "m", criteria: [], rubric: rubricHash(["the app is deployed", "and it serves the page", "and the page loads"], { kind: "app", ref: "roadmap-keeper" }, 1) });
+  assert.equal(again.state, "grading_failed");
+  db.prepare("INSERT OR REPLACE INTO loop_state (k, v) VALUES ('grade-wait:t33', ?)").run(JSON.stringify({ round: again.round }));
+  await loop.runGrades();
+  assert.equal(facts.filter((f) => f.type === "work.resumed" && f.task === "t33").length, 1, "a row still failed keeps its wait open");
+  assert.ok(db.prepare("SELECT v FROM loop_state WHERE k = 'grade-wait:t33'").get()?.v, "and its marker stays");
 });
 
 test("a failed pass whose verdict the store dropped posts no note and no wait", async () => {

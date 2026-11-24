@@ -296,6 +296,7 @@ test("a quiet note posts as a note: no wake tag, the grader's marker kept, and t
   assert.doesNotMatch(wrote[0].body, /<!-- aidenhq-wake -->/, "not a wake notice: nothing may start the agent on it");
   assert.doesNotMatch(wrote[0].body, /^\[wake\]/, "and not labelled as one either");
   assert.match(wrote[0].body, /<!-- aidenhq:grader -->/, "the grader's own marker stays, so a later pass's evidence read skips it");
+  assert.match(wrote[0].body, /<!-- aidenhq-notice -->/, "and the board's notice marker: the board and dispatch read it as a system message, never as the owner's words or the agent's");
   assert.match(wrote[0].body, /<!-- aidenhq-note-id:grade-retry-1@WOR-7 -->/, "its own id marker (keyed by task, as a notice is), read back for a retried post");
   assert.match(wrote[0].body, /<!-- aidenhq:job=kernel kind=grade-note -->$/, "and the kernel's own tag, so it wakes nobody");
   assert.deepEqual((await k.v1("POST", "/v1/wakes", note, LANE)).json, { posted: true, duplicate: true }, "a retried post lands once");

@@ -61,9 +61,10 @@ type TeamGrant = { key?: string; max_parallel?: number; team?: { name: string; m
  * already there. The plain `WAKE_NOTICE` tag stays whole beside it, so every reader of a wake notice is unaffected. Without an
  * id it posts every time, as the kernel's own notices (escalate, outcomes) always have.
  *
- * `quiet` posts a note, not a notice: it keeps the grader's own marker (`<!-- aidenhq:grader -->`, which the evidence read
- * filters on) instead of the wake tag, so it wakes nobody and is never read as the task's own evidence or the owner's words.
- * The grading loop's failed-pass note uses it: a task retrying on the grader ladder has nothing for its agent to act on.
+ * `quiet` posts a note, not a notice: it carries the board's own notice marker (`<!-- aidenhq-notice -->`, which the board
+ * and dispatch read as a system message, never the owner's words or the agent's) and the grader's marker (which the evidence
+ * read filters on) instead of the wake tag, so it wakes nobody. The grading loop's failed-pass note uses it: a task retrying
+ * on the grader ladder has nothing for its agent to act on.
  */
 export async function wakeNotice(owner: Api, task: string, text: string, id?: string, quiet = false): Promise<"posted" | "closed" | "missing" | "duplicate"> {
   const issue = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
@@ -84,10 +85,11 @@ export async function wakeNotice(owner: Api, task: string, text: string, id?: st
     if (list.some((c) => !c.deletedAt && String(c.body ?? "").includes(mark))) return "duplicate";
   }
   if (["done", "cancelled"].includes(issue.json.status)) return "closed";
-  // A quiet note carries neither the wake tag nor the `[wake]` label, and its two markers are written here (the caller's text is
-  // neutralized by the route, so a marker it typed itself could not survive): the grader marker keeps it out of the evidence a
-  // later pass reads, and the kernel's own job tag makes it wake nobody and never read as anyone's words.
-  const body = quiet ? `${text}\n\n<!-- aidenhq:grader -->\n${mark}\n<!-- aidenhq:job=kernel kind=grade-note -->` : `[wake] ${text}\n\n<!-- aidenhq-wake -->${id ? `\n${mark}` : ""}`;
+  // A quiet note carries neither the wake tag nor the `[wake]` label, and its markers are written here (the caller's text is
+  // neutralized by the route, so a marker it typed itself could not survive): the notice marker makes the board and dispatch read
+  // it as a system message rather than the owner's words, the grader marker keeps it out of the evidence a later pass reads, and
+  // the kernel's own job tag makes it wake nobody.
+  const body = quiet ? `${text}\n\n<!-- aidenhq:grader -->\n<!-- aidenhq-notice -->\n${mark}\n<!-- aidenhq:job=kernel kind=grade-note -->` : `[wake] ${text}\n\n<!-- aidenhq-wake -->${id ? `\n${mark}` : ""}`;
   const c = await owner("POST", `/api/issues/${encodeURIComponent(issue.json.id)}/comments`, { body });
   if (c.status >= 300) throw Object.assign(new Error(`the control plane answered ${c.status}`), { status: 502 });
   return "posted";
