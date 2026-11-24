@@ -11,13 +11,18 @@ import type { LiveRun } from "./runs.js";
 import { isLive, type Records } from "./records.js";
 import { statesOf, type TaskStates } from "./task-state.js";
 
-const TICK_MS = 2_000;
+const TICK_MS = 5_000;
+/** After a failed look the next waits twice as long each time, up to this. */
+const BACKOFF_MAX_MS = 60_000;
+/** The kernel's live records (a page walk) are read every this many ticks; the newest records, every tick. */
+const LIVE_EVERY_TICKS = 3;
 /** Each look reaches back this far past the newest change seen, so a write that commits late isn't missed. */
 const OVERLAP_MS = 5_000;
 /** A working agent's live words come from its session log, which the board reads at most every 5s (live-activity.ts). */
 const PROGRESS_MS = 5_000;
-/** The board's sweep (app.ts `sweep`) runs at most this often while boards listen, and when the watch starts. */
+/** The board's sweep (app.ts `sweep`) runs when tasks changed (at most this often) and at least once a minute while boards listen, and when the watch starts. */
 const SWEEP_MS = 10_000;
+const SWEEP_IDLE_MS = 60_000;
 /** Time alone changes a task's state (a task idle for 15 minutes needs someone, a wake falls due), and nothing in Paperclip says so: every 30th tick (a minute) the open tasks' states are read. */
 const OPEN_EVERY_TICKS = 30;
 
@@ -75,6 +80,8 @@ export function startWatch(o: {
   let busy = false;
   let failing = false;
   let cards: string | undefined;
+  let liveCards: Awaited<ReturnType<Records["live"]>> | undefined;
+  let failures = 0;
   let sweeping = false, sweptAt = 0, sweepFailing = false;
   const sweep = () => {
     if (!o.sweep || sweeping) return;
@@ -123,12 +130,12 @@ export function startWatch(o: {
 
   async function tick() {
     // Nobody listening: forget, and start fresh with the next board.
-    if (!o.events.open) return void ((state = null), (cards = undefined));
+    if (!o.events.open) return void ((state = null), (cards = undefined), (liveCards = undefined));
     if (busy) return;
     busy = true;
     try {
       // A watch that starts again (no board listened meanwhile) catches up first: its cursor restarts near now.
-      if (!state || Date.now() - sweptAt >= SWEEP_MS) sweep();
+      if (!state) sweep();
       const s = (state ??= await start());
       const since = new Date(Date.parse(s.cursor) - OVERLAP_MS).toISOString();
       const [changed, live] = await Promise.all([o.pc.changedSince(since), o.liveRuns()]);
@@ -141,6 +148,8 @@ export function startWatch(o: {
         if (s.last.get(i.id) !== i.updatedAt) touched.add(i.id);
       }
       s.last = seen;
+      // The board's writes follow the tasks that changed (the snapshot already has these rows); a quiet board looks once a minute.
+      if (touched.size ? Date.now() - sweptAt >= SWEEP_MS : Date.now() - sweptAt >= SWEEP_IDLE_MS) sweep();
       // A run that started, ended or changed state touches its task; more output is progress.
       const now = await runs(s, live);
       for (const id of new Set([...now.keys(), ...s.runs.keys()])) {
@@ -175,7 +184,10 @@ export function startWatch(o: {
         // blocked merge). A live record's wait reason changes nothing else about it, so it is in the key too: an open view refetches
         // when the reason does (a merge entering or leaving code review's wait), not a minute later. The record's own reason is
         // compared whole (`records.list`, before the wire's display cap), so a change past the cap still refreshes.
-        const [recent, live] = await Promise.all([o.records.list("recent", { limit: 100 }), o.records.live().catch(() => undefined)]);
+        const readLive = !liveCards || s.ticks % LIVE_EVERY_TICKS === 0;
+        const [recent, read] = await Promise.all([o.records.list("recent", { limit: 100 }), readLive ? o.records.live().catch(() => undefined) : undefined]);
+        const live = read ?? liveCards;
+        if (read) liveCards = read;
         // A failed live page throws (never a short list posing as the whole set): the watcher then leaves its key alone, so a
         // transient kernel restart neither hides a blocked card nor announces a reason it couldn't read.
         if (live) {
@@ -213,16 +225,25 @@ export function startWatch(o: {
       }
       if (failing) o.log.info("live watch back");
       failing = false;
+      failures = 0;
     } catch (err) {
       if (!failing) o.log.warn({ err: String((err as Error).message ?? err).slice(0, 300) }, "live watch failed; trying again every tick");
       failing = true;
+      failures++;
     } finally {
       busy = false;
     }
   }
 
   sweep(); // start-up catch-up
-  const t = setInterval(() => void tick(), o.everyMs ?? TICK_MS);
-  t.unref();
-  return () => clearInterval(t);
+  // One look at a time, the next after the base wait (longer after failures, so a struggling upstream isn't asked every tick).
+  const every = o.everyMs ?? TICK_MS;
+  let t: NodeJS.Timeout;
+  let stopped = false;
+  const next = () => {
+    t = setTimeout(() => void tick().finally(() => !stopped && next()), Math.min(BACKOFF_MAX_MS, every * 2 ** Math.min(failures, 6)));
+    t.unref();
+  };
+  next();
+  return () => ((stopped = true), clearTimeout(t));
 }

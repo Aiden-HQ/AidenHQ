@@ -47,7 +47,8 @@ import { setupFlowRoutes, type SetupFlowPoint } from "./setup-flows.js";
 import type { SetupField } from "./config.js";
 import { welcomeRoutes } from "./welcome.js";
 import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
-import { OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
+import { Swr } from "./swr.js";
+import { CLOSED_WINDOW_MS, OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
 import { createMcp, WRITE_TOOLS } from "./mcp.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
@@ -171,7 +172,7 @@ const mergeView = (a: Approval) => {
 /** Pages of a task's merge history one approval read walks (500 records a page): far past any task's real history. */
 const HISTORY_PAGES = 20;
 const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
-const RECENT_MS = 48 * 3_600_000;
+const RECENT_MS = CLOSED_WINDOW_MS;
 /** Older closed search hits per page (the Done lane asks for more while the owner's filters keep too few). */
 const SEARCH_DONE_PAGE = 50;
 /** How long a board read waits for the parents outside its inventory (Agent work's "part of" links). */
@@ -602,6 +603,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   /** The account the page is signed in as: saved boards are its own. */
   const viewer = () => perRequest.getStore()?.session?.accountId ?? "operator";
+  /** The big pages' last good responses (swr.ts), per account; anything the board or Paperclip changes makes the next read look again. */
+  const swr = new Swr();
+  store.events.listen(() => swr.touch());
+  const served = <T extends object>(page: string, load: () => Promise<T>) => swr.serve(`${page}:${viewer()}`, load);
   const savedViews = (): View[] => store.views(viewer()).map((r) => ({ ...r, spec: ViewSpecSchema.parse(JSON.parse(r.spec)) }));
   const viewConflict = (id: string) => new ViewConflict(savedViews().find((x) => x.id === id) ?? null);
 
@@ -759,10 +764,26 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   // A chat's conversation, re-read only when the chat has changed (the list asks for every chat's last word).
   const conversations = new Map<string, { stamp: string; messages: Message[] }>();
+  const chatStamp = (issue: Issue) => `${issue.lastActivityAt ?? issue.updatedAt}`;
+  /** The conversation as last read, when the chat hasn't changed since: no read of Paperclip. */
+  const knownMessages = (issue: Issue): Message[] | undefined => (conversations.get(issue.id)?.stamp === chatStamp(issue) ? conversations.get(issue.id)!.messages : undefined);
+  /** The chats whose conversations are being read for the list's previews (the list doesn't wait for them). */
+  const warming = new Set<string>();
+  /** Reads these chats' conversations a few at a time, then has the pages look again: a cold list shows previews a moment later. */
+  function warmChats(issues: Issue[], ctx: Awaited<ReturnType<typeof context>>) {
+    const todo = issues.filter((i) => !warming.has(i.id));
+    for (const i of todo) warming.add(i.id);
+    const next = async () => {
+      for (let i = todo.shift(); i; i = todo.shift()) await chatMessages(i, ctx).catch(() => {}).finally(() => warming.delete(i!.id));
+    };
+    return Promise.all([next(), next(), next(), next()]).then(() => swr.touch());
+  }
+  /** How long a chat list waits for conversations it hasn't read yet before it shows without their previews. */
+  const WARM_WAIT_MS = 1_000;
   async function chatMessages(issue: Issue, ctx: Awaited<ReturnType<typeof context>>, comments?: Comment[]): Promise<Message[]> {
-    const stamp = `${issue.lastActivityAt ?? issue.updatedAt}`;
-    const hit = conversations.get(issue.id);
-    if (!comments && hit?.stamp === stamp) return hit.messages;
+    const stamp = chatStamp(issue);
+    const hit = comments ? undefined : knownMessages(issue);
+    if (hit) return hit;
     // Lists truncate descriptions, and the opening message's marker sits at the end.
     const full = issue.descriptionTruncated ? await pc.issue(issue.id) : issue;
     const name = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id)?.name ?? "Agent";
@@ -777,7 +798,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    */
   async function chatView(ref: string, peek = false) {
     const { ctx, issue } = await editableIssue(ref, "this chat isn't yours");
-    const [comments, files, busy, live, kids, parent, names] = await Promise.all([
+    const [comments, files, busy, live, kids, parent, names, cards, runs] = await Promise.all([
       pc.comments(issue.id),
       pc.attachments(issue.id).catch(() => []),
       working(ctx),
@@ -785,6 +806,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       pc.children(issue.id).catch(() => [] as Issue[]),
       issue.parentId ? pc.issueSummary(issue.parentId).catch(() => undefined) : undefined,
       bylines(),
+      cardsOf("recent", { limit: 50 }),
+      runLinks(issue.id, ctx.agents),
     ]);
     const [said, states, jobs] = await Promise.all([chatMessages(issue, ctx, comments), stateRows([issue.id, ...kids.map((k) => k.id)]), work.task(issue.id).catch(() => [])]);
     // A reply's `answers`: the newest owner message its run had read. The reply's own kernel tag names the run (a model can't write
@@ -812,6 +835,16 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));
     if (!peek) store.markSeen(issue.id);
+    const [liveWork, handedOut, asks] = await Promise.all([
+      withSession(busy.map.get(issue.identifier), live, issue.id, true),
+      // Work handed out from this chat (Aiden's delegations are children of the chat).
+      Promise.all(
+        kids
+          .filter((k) => k.status !== "cancelled")
+          .map(async (k) => ({ identifier: k.identifier, title: k.title, agent: agentOf(k.assigneeAgentId)?.name ?? "You", state: states.get(k.id) ?? null, updatedAt: k.lastActivityAt ?? k.updatedAt, working: await withSession(busy.map.get(k.identifier), live, k.id, false) })),
+      ),
+      asksOf(issue, kids, states, ctx),
+    ]);
     return {
       id: issue.id,
       identifier: issue.identifier,
@@ -821,18 +854,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       state: states.get(issue.id) ?? null,
       // The owner's side of the chat: an admin other than the owner wrote it gets their name on it (the opening is the task's).
       messages: messages.map((m) => (m.kind === "owner" ? { ...m, ...byOf(names, m.id === `${issue.id}:opening` ? issue.id : m.id) } : m)),
-      working: await withSession(busy.map.get(issue.identifier), live, issue.id, true),
+      working: liveWork,
       files: fileViews(files, ctx.me),
-      approvals: (await cardsOf("recent", { limit: 50 })).filter((a) => ids.has(a.issueId)).map((a) => shownApproval(names, a)),
-      // Work handed out from this chat (Aiden's delegations are children of the chat).
-      handedOut: await Promise.all(
-        kids
-          .filter((k) => k.status !== "cancelled")
-          .map(async (k) => ({ identifier: k.identifier, title: k.title, agent: agentOf(k.assigneeAgentId)?.name ?? "You", state: states.get(k.id) ?? null, updatedAt: k.lastActivityAt ?? k.updatedAt, working: await withSession(busy.map.get(k.identifier), live, k.id, false) })),
-      ),
+      approvals: cards.filter((a) => ids.has(a.issueId)).map((a) => shownApproval(names, a)),
+      handedOut,
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
-      runs: await runLinks(issue.id, ctx.agents),
-      asks: await asksOf(issue, kids, states, ctx),
+      runs,
+      asks,
     };
   }
 
@@ -1460,7 +1488,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "GET",
       path: /^\/api\/board$/,
-      handle: async () => {
+      handle: () => served("board", async () => {
         const inv = await inventory();
         const { ctx } = inv;
         // Who is working and the connections' states don't depend on the tasks: started with them, not after.
@@ -1495,7 +1523,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
         return { ...board, work, asOf: inv.read.as_of, incomplete: inv.incomplete, projects: inv.projects, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
-      },
+      }),
     },
     // Saved boards (views.ts): the signed-in account's own; a write at a stale rev is a 409 with the row as it is now (null: gone).
     { method: "GET", path: /^\/api\/views$/, handle: async () => ({ views: savedViews() }) },
@@ -1530,7 +1558,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "GET", path: /^\/api\/issues\/([^/]+)$/, handle: async (m) => issueView(dec(m[1]!)) },
     { method: "GET", path: /^\/api\/runs\/(j-[0-9a-f]{16})$/, handle: async (m) => runView(m[1]!) },
     { method: "GET", path: /^\/api\/chats\/([^/]+)$/, handle: async (m, _b, url) => chatView(dec(m[1]!), url.searchParams.has("peek")) },
-    { method: "GET", path: /^\/api\/agents$/, handle: async () => activity(await context(), true) },
+    { method: "GET", path: /^\/api\/agents$/, handle: () => served("agents", async () => activity(await context(), true)) },
     // The Agents page's first paint: who is in the fleet, where each sits and its schedules (no run history; /api/agents
     // brings that, with each agent's last run, after).
     { method: "GET", path: /^\/api\/agents\/roster$/, handle: async () => {
@@ -1677,11 +1705,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state.
       method: "GET",
       path: /^\/api\/chats$/,
-      handle: async () => {
+      handle: () => served("chats", async () => {
         const ctx = await context();
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
-        // Every open task too (for the work handed out from open chats), in the same round trip rather than after.
-        const [open, closed, openTasks] = await Promise.all([pc.labelled(label.id, OPEN), pc.labelled(label.id, "done,cancelled", "20"), pc.openIssues()]);
+        // The open chats are among the open tasks (the snapshot, which also gives the work handed out from them); only the newest finished ones are read.
+        const [closed, openTasks] = await Promise.all([pc.labelled(label.id, "done,cancelled", "20"), pc.openIssues()]);
+        const open = openTasks.filter((i) => isChat(i, ctx));
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
         const all = [...open.sort(newest), ...closed.sort(newest)];
         // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent.
@@ -1698,9 +1727,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           updatedAt: i.lastActivityAt ?? i.updatedAt,
         });
         const settledAt = store.settledAt();
+        // The preview is the chat's last word, from conversations already read; a cold list reads the rest a few at a time and waits only a moment for them.
+        const cold = all.filter((i) => !knownMessages(i));
+        if (cold.length) await Promise.race([warmChats(cold, ctx), new Promise((r) => setTimeout(r, WARM_WAIT_MS).unref())]);
+        const stillCold = cold.some((i) => !knownMessages(i));
         const chats = await Promise.all(
           all.map(async (i) => {
-            const messages = await chatMessages(i, ctx).catch(() => [] as Message[]);
+            const messages = knownMessages(i) ?? [];
             const r = row(i, agentOf(chatAgent(i)));
             const said = lastWord(messages);
             // Settled: out of the active list until something happens on it (then it comes back on its own).
@@ -1720,15 +1753,15 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           delete (c as { settled?: boolean }).settled;
           store.unsettle(all.find((i) => i.identifier === c.identifier)!.id);
         }
-        return { chats: [...chats, ...handedOut], agents };
-      },
+        return { chats: [...chats, ...handedOut], agents, ...(stillCold ? { stale: true as const } : {}) };
+      }),
     },
     {
       // Everything that needs someone, from the kernel (task-state.ts): each open task with attention, oldest first, and the
       // fleet's counts (needs you, failed, unexplained idle).
       method: "GET",
       path: /^\/api\/needs-you$/,
-      handle: async () => {
+      handle: () => served("needs-you", async () => {
         const ctx = await context();
         const [read, open] = await Promise.all([taskStates.read({ open: true }), pc.openIssues()]);
         const byId = new Map(open.map((i) => [i.id, i]));
@@ -1745,8 +1778,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           unexplained_idle: rows.filter((r) => has(r, (a) => ["unpolled", "orphaned", "unknown", "history_expired"].includes(a.why))).length,
         };
         // approvals: the Tier 2 cards the owner decides in Approvals.
-        return { counts, items, approvals: (await records.list("owner")).length };
-      },
+        return { counts, items, approvals: (await records.list("owner", { strict: true })).length };
+      }),
     },
     // Approvals: the cards, open ones first, then the newest decided ones with their outcome, and the newest Tier 0 runs (made
     // at once, shown after the fact; read apart so they never crowd the cards out). A card is decided by its own
@@ -1754,25 +1787,26 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "GET",
       path: /^\/api\/approvals$/,
-      handle: async () => {
+      handle: () => served("approvals", async () => {
         const names = await bylines();
         // Live records (`approved`, and `claimed` ones an executor holds) are read apart from the capped history, in their own
         // read with no tier filter (a Tier 0 merge held on review is claimed too), paged to the last one: a hundred newer writes
         // must never push a blocked merge out of the list the owner watches, and neither may the kernel's own page size. The
         // wider recent list adds the ended Tier 0 audit rows.
+        // The kernel not answering is "unavailable" (the strict reads throw; the page keeps its last good response), never an empty list.
         // A page of the live read that fails (the kernel restarting) is not "no live records": the cached page is kept instead
         // of publishing a short list that would drop an old blocked merge off the cards. The kernel-down fallback below still
         // answers what the capped reads have.
         const [cards, all, live] = await Promise.all([
-          cardsOf("recent", { limit: 100 }),
-          cardsOf("recent", { limit: 100, tier0: true }),
+          cardsOf("recent", { limit: 100, strict: true }),
+          cardsOf("recent", { limit: 100, tier0: true, strict: true }),
           records.live().then((rows) => Promise.all(rows.map(named))).then((rows) => ((liveCache = rows), rows), () => liveCache ?? []),
         ]);
         const held = [...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
         const seen = new Set(cards.map((c) => c.id));
         const rest = held.filter((a) => !seen.has(a.id) && (seen.add(a.id), true));
         return { approvals: [...cards, ...rest].map((a) => shownApproval(names, a)) };
-      },
+      }),
     },
     {
       // A new chat: with the agent named (body.agent or a leading @name), else Aiden.
@@ -2466,6 +2500,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       if (!route) throw new HttpError(404, "not found");
       const body = req.method === "GET" ? undefined : await readJson(req, route.maxBody);
       const result = await route.handle(path.match(route.path)!, body, url, req);
+      if (req.method !== "GET") swr.touch();
       await sendCompressed(req, res, 200, JSON.stringify(result), "application/json");
     });
   }

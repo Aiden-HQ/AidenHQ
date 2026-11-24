@@ -11,6 +11,8 @@ const PREFIX = "aidenhq.cache.";
 const ACCOUNT_KEY = `${PREFIX}account`;
 /** Per entry: a larger response just isn't persisted (memory still holds it). */
 const MAX_BYTES = 1_500_000;
+/** A response the server marked stale is asked for again after this. */
+const STALE_RETRY_MS = 2_000;
 
 interface Entry {
   data: unknown;
@@ -154,6 +156,8 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist: Persist
     (data) => {
       if (inflight.get(key) !== p) return data;
       put(key, data, persist);
+      // The server showed its last good answer while it reads a fresh one (swr.ts `stale`): ask again in a moment.
+      if ((data as { stale?: unknown } | null)?.stale === true) setTimeout(() => load(key, fetcher, persist).catch(noop), STALE_RETRY_MS);
       // The stored copy: unchanged parts keep their identity (share), so callers' memos hold.
       return mem.get(key)!.data as T;
     },
@@ -223,5 +227,5 @@ export function useCached<T>(key: string, fetcher: () => Promise<T>, opts: { per
   // Stale: loaded before this view opened (an earlier visit, or storage), until a load that lands after.
   const opened = useRef({ key, at: Date.now() });
   if (opened.current.key !== key) opened.current = { key, at: Date.now() };
-  return { data: entry?.data, stale: !!entry && entry.at < opened.current.at, error: error.key === key ? error.text : "", reload };
+  return { data: entry?.data, stale: !!entry && (entry.at < opened.current.at || (entry.data as { stale?: unknown } | null)?.stale === true), error: error.key === key ? error.text : "", reload };
 }

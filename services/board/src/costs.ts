@@ -108,7 +108,7 @@ export function pulledRecords(body: unknown): z.infer<typeof PulledRecord>[] {
  * Every minute: model calls from the model gateway's ledger, with what OpenRouter billed, deduped by generation id; usage
  * older than 62 days goes. The gateway keeps 40 days of calls, so a board down for less than that loses none.
  */
-export function pullUsage(gateway: { url: string; token: string } | undefined, store: Pick<Store, "addUsage" | "pruneUsage" | "meta" | "setMeta">, log: Logger, everyMs = 60_000, metaKey = "usage_pulled_at") {
+export function pullUsage(gateway: { url: string; token: string } | undefined, store: Pick<Store, "addUsages" | "pruneUsage" | "meta" | "setMeta">, log: Logger, everyMs = 60_000, metaKey = "usage_pulled_at") {
   if (!gateway) return;
   let pulling = false; // a catch-up longer than a tick: the next tick waits for it, never starts a second pull
   const tick = async () => {
@@ -125,7 +125,7 @@ export function pullUsage(gateway: { url: string; token: string } | undefined, s
         if (!res.ok) throw new Error(`the gateway answered ${res.status}`);
         const body = await res.json();
         const records = pulledRecords(body);
-        for (const r of records) store.addUsage({ ...r, component: r.component ?? "agent", model: r.model || "unknown" });
+        store.addUsages(records.map((r) => ({ ...r, component: r.component ?? "agent", model: r.model || "unknown" })));
         const skipped = (body as { records: unknown[] }).records.length - records.length;
         if (skipped) log.warn({ skipped }, "usage records the board could not read: their dollars are not counted");
         const next = (body as { next?: { since?: unknown; after?: unknown } }).next;

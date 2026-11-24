@@ -35,6 +35,8 @@ export const notificationsSupported = () => usable;
 export const notificationsOn = () => usable && Notification.permission === "granted";
 export const askForNotifications = () => (usable ? Notification.requestPermission() : Promise.resolve("denied" as NotificationPermission));
 
+const WAKE_DEBOUNCE_MS = 2_000;
+
 /** Polls every 30 s; returns a stop function. The first poll only records what's already waiting (no burst on open). */
 export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen: (identifier: string) => void, wake?: (tick: () => void) => () => void): () => void {
   let first = true;
@@ -58,6 +60,8 @@ export function watchNeedsYou(poll: () => Promise<{ items: Waiting[] }>, onOpen:
   void tick();
   const t = setInterval(() => void tick(), 30_000);
   // `wake`: live updates (a card filed or decided anywhere) poll at once; the 30 s poll stays as the fallback.
-  const off = wake?.(() => void tick());
-  return () => (clearInterval(t), off?.());
+  // Events come in bursts (an agent's every step): one read after they settle, not one per event.
+  let soon: ReturnType<typeof setTimeout> | undefined;
+  const off = wake?.(() => (clearTimeout(soon), (soon = setTimeout(() => void tick(), WAKE_DEBOUNCE_MS))));
+  return () => (clearInterval(t), clearTimeout(soon), off?.());
 }
