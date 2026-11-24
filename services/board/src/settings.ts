@@ -48,6 +48,8 @@ export interface RecurringRow {
   task: string;
   summary: string;
   paused: boolean;
+  /** The zone its schedule runs in (Paperclip's trigger). */
+  zone?: string;
   next?: string;
 }
 

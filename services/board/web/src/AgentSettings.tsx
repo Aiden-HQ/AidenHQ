@@ -13,13 +13,13 @@ export function AgentSettings({ agentKey, profile, onSignIn }: { agentKey: strin
   const [data, setData] = useState<SettingsData | null>(null);
   const [error, setError] = useState("");
   // Reload on fleet changes and once a minute, so a shown next run moves on after its schedule fires.
-  useLive(["fleet"], () => api.settings().then(setData, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), 60_000);
+  useLive(["fleet"], () => api.settings().then((d) => (setData(d), setError("")), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), 60_000);
   const a = data?.agents.find((x) => x.key === agentKey);
   return (
     <ChangesScope onSignIn={onSignIn}>
       {profile && <Details p={profile} />}
       <section className="st-embedded">
-        {error ? <p className="fleet-empty">Couldn't load settings: {error}</p> : !data ? <SkeletonLines lines={4} /> : a ? <AgentDetails a={a} data={data} /> : <p className="fleet-empty">This agent has no settings in the compiled config yet.</p>}
+        {error && !data ? <p className="fleet-empty">Couldn't load settings: {error}</p> : !data ? <SkeletonLines lines={4} /> : a ? <AgentDetails a={a} data={data} /> : <p className="fleet-empty">This agent has no settings in the compiled config yet.</p>}
       </section>
       <AgentGrants agentKey={agentKey} onSignIn={onSignIn} />
     </ChangesScope>

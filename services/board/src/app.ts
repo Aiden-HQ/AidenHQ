@@ -1360,7 +1360,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       const agent = agents.find((x) => x.id === r?.assigneeAgentId)?.metadata?.setupKey?.toString().replace(/^aidenhq:/, "");
       if (!r || !agent) return [];
       const v = recurringView(rec, r);
-      return [{ agent, title: r.title, task: r.title.replace(ROUTINE_PREFIX, ""), summary: v.summary, paused: v.paused, ...(v.nextRun ? { next: v.nextRun } : {}) }];
+      return [{ agent, title: r.title, task: r.title.replace(ROUTINE_PREFIX, ""), summary: v.summary, paused: v.paused, zone: r.triggers?.find((t) => t.kind === "schedule" && t.label === "repeats")?.timezone ?? undefined, ...(v.nextRun ? { next: v.nextRun } : {}) }];
     });
     return settingsView({
       ...readSources(settingsFiles()),

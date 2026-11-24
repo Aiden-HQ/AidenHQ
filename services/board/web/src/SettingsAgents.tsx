@@ -139,7 +139,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
           </Field>
         )}
         {routines.map((r) => (
-          <RoutineField key={r.key} r={r} models={data.choices.models} agentModel={a.model} zone={data.instance.boardTimezone} />
+          <RoutineField key={`${r.key}:${JSON.stringify([r.schedules, r.model])}`} r={r} models={data.choices.models} agentModel={a.model} zone={data.instance.boardTimezone} />
         ))}
         {a.recurring.map((r) => (
           <Row
@@ -149,7 +149,7 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
               <>
                 <span>
                   {r.summary}
-                  {!r.paused && r.next && ` · next ${at(r.next, data.instance.boardTimezone)}`}{zoneNote(data.instance.boardTimezone)}
+                  {!r.paused && r.next && ` · next ${at(r.next, r.zone || data.instance.boardTimezone)}`}{zoneNote(r.zone || data.instance.boardTimezone)}
                 </span>
                 {r.paused && <StatusDot tone="idle">Paused</StatusDot>}
               </>
