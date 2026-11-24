@@ -74,7 +74,7 @@ One setting, `ship`, declared in `modules/ship/module.yaml`:
 
 ```yaml
 ship:
-  defaults: cautious           # every repo ship covers that has no entry of its own
+  defaults: cautious           # the fleet's own repos with no entry of their own
   repos:
     acme/api: { preset: cautious, approve: safe }
     acme/sandbox: full
@@ -87,7 +87,9 @@ ship:
 - the fleet's own repos: the agents org and the product repo;
 - every repo in `maintainer_repos`, the github module's list of repos the fleet may merge in.
 
-An entry for any other repo is refused at validation.
+An entry for any other repo is refused at validation. `defaults` applies only to the fleet's own repos. A maintained repo
+outside them is adopted only once it has an explicit `ship` entry, so quiet start holds: listing a repo in
+`maintainer_repos` alone never lets a `/ship` adopt anything there.
 
 **Fields.** Every field may take any value its type allows, including `null` caps **(owner)**.
 
@@ -188,7 +190,9 @@ tasks that github filed move to ship in the move's data migration, with task own
 ### 3. Rounds
 
 **A round is a settled head:** every check on the head has finished, and code review's verdict for it has arrived (Alcora's
-idea in its simplest form). Each pass, ship takes one decision from merge-gate's `decide`. `decide` is extended to return
+idea in its simplest form). Recovery comes before settlement: a conflicting head, where GitHub runs no checks, gets
+`repair`, and a check whose job never started gets its re-run, without waiting for the head to settle. Code review's verdict
+is waited for only where approval needs it (§5). Each pass, ship takes one decision from merge-gate's `decide`. `decide` is extended to return
 actions:
 
 `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`, `merge`, `done`, `hold`, with the reason.
@@ -260,7 +264,7 @@ refuses it when the head has moved or the repo is `paused`.
 
 | Effect | How github runs it |
 |---|---|
-| Commit to an adopted PR's branch | The runner's patch is written through the GitHub API as the App: create the blobs, tree and commit, then update the ref as a fast-forward from `expected_head`. A moved ref fails the update, so commits are verified with no signing key. A fork is written to only when it allows maintainer edits. The push planner (`plan.ts`) allows this one adopted ref. Foreign-head tiering stays. |
+| Commit to an adopted PR's branch | The runner's patch is written through the GitHub API by the code host's existing installation of the instance's GitHub App (the identity its fleet commits already use; not the reviewer App): create the blobs, tree and commit, then update the ref as a fast-forward from `expected_head`. A moved ref fails the update, so commits are verified with no signing key. A fork is written to only when it allows maintainer edits and GitHub accepts the App's write; a refused write becomes a `hold`. The push planner (`plan.ts`) allows this one adopted ref. Foreign-head tiering stays. |
 | Update branch | Existing update-branch with `expected_head_sha`. |
 | Approve | `github.approve` as the reviewer identity (§5), with `commit_id` set to the head. On a new head its earlier review is dismissed. |
 | Enqueue | `enqueuePullRequest` with `expectedHeadOid`. |
@@ -427,3 +431,8 @@ Cut to keep ship simple **(owner: handle the common path, fix rare cases when th
 - **Sandboxing the generator.** It runs like any repo command in the task's computer, and its output is committed as is.
 - **A settings revision check at apply time.** The last writer wins, and the card shows the change.
 - **Forks without maintainer edits.** Any push they need becomes a `hold`.
+- **A contributor rewinding the branch during a repair.** The ref update is a fast-forward from `expected_head`, and GitHub's
+  ref API has no atomic old-SHA check. A rewind to an ancestor within the seconds between ship's read and its write could
+  be overwritten. The next pass shows the result in the report.
+- **Generator commands are ordinary settings (owner).** Changing one isn't a loosening. Its output is committed to the PR
+  and reviewed like any other change.
