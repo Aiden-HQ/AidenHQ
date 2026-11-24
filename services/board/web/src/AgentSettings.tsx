@@ -1,5 +1,6 @@
 // An agent's Settings tab (#/agents/<key>/settings), docs/design/agent-and-module-pages.md "Agent page".
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useLive } from "./events";
 import { AgentGrants } from "./AgentGrants";
 import { SignInRequired, api } from "./api";
 import { AgentDetails } from "./SettingsAgents";
@@ -11,9 +12,8 @@ import type { AgentProfile, SettingsData } from "./types";
 export function AgentSettings({ agentKey, profile, onSignIn }: { agentKey: string; profile?: AgentProfile; onSignIn: () => void }) {
   const [data, setData] = useState<SettingsData | null>(null);
   const [error, setError] = useState("");
-  useEffect(() => {
-    void api.settings().then(setData, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
-  }, [onSignIn]);
+  // Reload on fleet changes and once a minute, so a shown next run moves on after its schedule fires.
+  useLive(["fleet"], () => api.settings().then(setData, (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message))), 60_000);
   const a = data?.agents.find((x) => x.key === agentKey);
   return (
     <ChangesScope onSignIn={onSignIn}>

@@ -144,9 +144,10 @@ export function keepsSecureCookies(): boolean {
   return secureOnHttp;
 }
 
-/** A run time: the clock time, with the weekday when it isn't today. */
-export const runAt = (iso: string) => {
+/** A run time: the clock time, with the weekday when it isn't today; in `timeZone` when given, else the browser's. */
+export const runAt = (iso: string, timeZone?: string) => {
   const d = new Date(iso);
-  const day = d.toDateString() === new Date().toDateString() ? "" : `${d.toLocaleDateString(undefined, { weekday: "short" })} `;
-  return `${day}${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+  const dayOf = (x: Date) => x.toLocaleDateString("en-CA", { timeZone });
+  const day = dayOf(d) === dayOf(new Date()) ? "" : `${d.toLocaleDateString(undefined, { weekday: "short", timeZone })} `;
+  return `${day}${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone })}`;
 };

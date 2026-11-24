@@ -17,9 +17,9 @@
 - Colour paired with text; existing tokens; no pill buttons.
 - Product CLAUDE.md "Conventions" apply. Tests: only those listed. Hard timeouts; `pkill -f <worktree>/` after runs; never leave vite/mock-api running; never `git stash`.
 
-## Review Focus
+## Failure modes to test
 
-1. A group with chats that need you and chats working: the count shows needs-you (with its colour and words), not working.
+1. A group with chats that need you and chats working: the count is needs-you (with its colour and words), not working.
 2. A paused schedule routine: no next run time, "Paused" shown.
 3. An event routine whose subscription isn't applied yet: shows "Not set up yet", not a blank.
 4. Fleet with zero working agents: groups keep their usual order, no empty "Now" column artefacts.

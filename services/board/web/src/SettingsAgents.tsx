@@ -139,17 +139,17 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
           </Field>
         )}
         {routines.map((r) => (
-          <RoutineField key={r.key} r={r} models={data.choices.models} agentModel={a.model} />
+          <RoutineField key={r.key} r={r} models={data.choices.models} agentModel={a.model} zone={data.instance.boardTimezone} />
         ))}
         {a.recurring.map((r) => (
           <Row
             key={r.title}
-            title={<a href={`#/t/${r.task}`}>{r.title}</a>}
+            title={<a className="st-row-title" href={`#/t/${r.task}`}>{r.title}</a>}
             meta={
               <>
                 <span>
                   {r.summary}
-                  {!r.paused && r.next && ` · next ${at(r.next)}`}
+                  {!r.paused && r.next && ` · next ${at(r.next, data.instance.boardTimezone)}`}{zoneNote(data.instance.boardTimezone)}
                 </span>
                 {r.paused && <StatusDot tone="idle">Paused</StatusDot>}
               </>
@@ -163,11 +163,15 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
   );
 }
 
+const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** The zone, named once, when it isn't the browser's. */
+const zoneNote = (tz: string) => (tz && tz !== browserZone ? ` (${tz})` : "");
+
 /**
  * A routine: schedule (cron and timezone) and model in one editor, filed as one `routine` change per field changed; pause and
  * resume are its live controls here (Paperclip's status, no settings change).
  */
-function RoutineField({ r, models, agentModel }: { r: Routine; models: string[]; agentModel: string }) {
+function RoutineField({ r, models, agentModel, zone }: { r: Routine; models: string[]; agentModel: string; zone: string }) {
   const filed = useFiled((c) => c.kind === "routine" && c.routine === r.key);
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
@@ -189,6 +193,7 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
   if (model.trim() !== (r.model ?? "")) (items.push({ kind: "routine", routine: r.key, field: "model", value: model.trim() || null }), was.push(r.model ?? null));
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
+  const tz = r.schedules[0]?.timezone || zone; // the cadence and the next run read in the schedule's own zone
   const w = typeof r.wakes === "object" ? r.wakes : null;
   const wakes = w && `wakes on ${w.connection}${w.resource && w.resource !== "*" ? ` ${w.resource}` : ""} events`;
   const matching = w?.filter && Object.entries(w.filter).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : String(v)}`).join("; ");
@@ -204,7 +209,7 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
           <span>
             {when}
             {r.model && ` on ${modelShort(r.model)}`}
-            {!paused && next && ` · next ${at(next)}`}
+            {!paused && next && ` · next ${at(next, tz)}`}{r.schedules.length > 0 && zoneNote(tz)}
           </span>
           {paused && <StatusDot tone="idle">Paused</StatusDot>}
           {r.wakes === "not_applied" && <StatusDot tone="idle">Not set up yet</StatusDot>}
