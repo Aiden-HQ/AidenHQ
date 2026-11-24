@@ -251,14 +251,19 @@ export const skillRun = (cwd: string, target?: "tree" | "pr") => `You run an ins
  * that reviewed anything, or an answer that doesn't say, is no review at all. A run that reviewed counts as read and says its
  * coverage isn't tracked.
  */
-type Said = { ran?: unknown; partial?: unknown; why?: unknown }[];
+type Said = { skill?: unknown; ran?: unknown; partial?: unknown; why?: unknown }[];
 /** The restated answer's per-skill statements when it gives one valid entry per skill that started (all, or those up to the one stopped at the time limit). */
 const skillsSaid = (message: unknown, names: string[], cut?: number) => {
   const said = answer(message)?.skills as Said | undefined;
-  return Array.isArray(said) && said.length === (cut ?? names.length - 1) + 1 && !said.some((s) => typeof s?.ran !== "boolean" || (s.ran && typeof s.partial !== "boolean")) ? said : undefined;
+  return Array.isArray(said) && said.length === (cut ?? names.length - 1) + 1 && !said.some((s, i) => s?.skill !== names[i] || typeof s?.ran !== "boolean" || (s.ran && typeof s.partial !== "boolean")) ? said : undefined;
 };
 /** Asked once when the restate didn't give them (a long run's last message came back with words around the JSON, or without the "skills"): the same answer again, as the JSON alone. */
-const REASK = `Your last message wasn't the single JSON object asked for, or its "skills" list didn't have one valid entry per command run. Reply again with that one JSON object alone (the same findings, and the "skills" entries as asked): no words before or after it, no code fence.`;
+const REASK = `Your last message wasn't the single JSON object asked for, or its "skills" list didn't have one valid entry per command run. Reply again with that one JSON object alone (the findings you restated, and the "skills" entries as asked, one per command run, each with its command as "skill"): no words before or after it, no code fence.`;
+/** The retry's statements on the first restate's own answer: its findings (the retry was asked only for the statement) are kept. */
+const withSaid = (first: unknown, retry: unknown) => {
+  const a = answer(first), b = answer(retry);
+  return a && b ? JSON.stringify({ ...b, ...a, skills: b.skills }) : String(retry ?? "");
+};
 export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>(), cut?: number): EngineResult {
   const said = skillsSaid(r.message, names, cut);
   if (!said) return { ...r, message: "", read: false, cause: "the skill run didn't say whether each skill reviewed the code" };
@@ -382,7 +387,7 @@ async function codex({ prompt, instructions, model, effort, root, base, minutes,
   const read = () => { try { message = readFileSync(out, "utf8"); } catch {} };
   read();
   // After a skill run the restate is what says whether each skill reviewed (skillOutcome): asked once more when it didn't say.
-  if (sk && own && last.done && !skillsSaid(message, sk.invocations.map((v) => v.split(" ")[0]!), sk.cut)) { last = await turn(REASK, last.thread ?? session); message = ""; read(); }
+  if (sk && own && last.done && !skillsSaid(message, sk.invocations.map((v) => v.split(" ")[0]!), sk.cut)) { const first = message; last = await turn(REASK, last.thread ?? session); message = ""; read(); message = withSaid(first, message); }
   return { message: last.done ? message : "", read: calls.some((c) => c.tool === "diff"), calls, cause: last.done ? undefined : stopped(last.r, last.said) };
 }
 
@@ -488,9 +493,10 @@ async function claudeCode({ prompt, instructions, model, effort, root, base, min
     prompt = restate(prompt, sk);
   }
   let last = await turn(prompt, session);
-  if (sk && own && last.ok && !skillsSaid(last.end?.result, sk.invocations.map((v) => v.split(" ")[0]!), sk.cut)) last = await turn(REASK, last.id ?? session);
+  let message = String(last.end?.result ?? "");
+  if (sk && own && last.ok && !skillsSaid(message, sk.invocations.map((v) => v.split(" ")[0]!), sk.cut)) { const first = message; last = await turn(REASK, last.id ?? session); message = withSaid(first, last.end?.result); }
   if (!last.ok) return { message: "", read: calls.some((c) => c.tool === "diff"), calls, cause: stopped(last.r, last.end?.result ?? "") };
-  return { message: String(last.end?.result ?? ""), read: calls.some((c) => c.tool === "diff"), calls };
+  return { message, read: calls.some((c) => c.tool === "diff"), calls };
 }
 
 /** codegenie's JSON review (its ReviewResult), as far as the mapping reads it. */
