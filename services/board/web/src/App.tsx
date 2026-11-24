@@ -24,7 +24,7 @@ import { SettingsView, isCategory, type Category } from "./Settings";
 import { AttentionStrip } from "./Attention";
 import { ApprovalsView, onYouBeyondCards } from "./Chat";
 import { needsOwner } from "./ui/TaskState";
-import { clearCache, load, peek, setAccount } from "./cache";
+import { clearCache, load, peek, setAccount, subscribe as cacheSubscribe } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
 import type { ModuleTab } from "./ModulePage";
@@ -333,6 +333,13 @@ export function App() {
     setItems((i) => i ?? cached.buckets);
   }, [session]);
 
+  // A stale answer's retry (cache.ts) lands in the cache, not through refresh(): paint it unless an edit is being held.
+  useEffect(() => cacheSubscribe("board", () => {
+    const b = fresh(peek<Board>("board")?.data);
+    if (!b || (b as { stale?: unknown }).stale === true) return;
+    setBoard(b);
+    if (Date.now() > holdUntil.current) setItems(b.buckets);
+  }), []);
   // A sign-in finished (in the tab Connect opened): its banner goes at once.
   useEffect(() => subscribe(["connections"], () => void refresh()), [refresh]);
   useEffect(() => {
@@ -350,8 +357,9 @@ export function App() {
       } catch {}
       setSession(s);
     }, () => {});
-    // Tasks needs the inventory now; any other landing reads it a few seconds later (its header only), so the page opened first gets the server.
-    const first = landsOnBoard() ? undefined : setTimeout(() => void refresh(true), 3_000);
+    // Tasks, or a first visit with nothing cached (the page waits for a board), needs the inventory now; any other landing paints the
+    // cached board and reads it a few seconds later (its header only), so the page opened first gets the server.
+    const first = landsOnBoard() || !loaded.current ? undefined : setTimeout(() => void refresh(true), 3_000);
     if (!first) void refresh(true);
     // Every 10s on Tasks; elsewhere only the header reads it (the working dot, sign-in banners, the brief): once a minute.
     const t = setInterval(() => {

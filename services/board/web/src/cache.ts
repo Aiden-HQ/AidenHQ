@@ -69,6 +69,8 @@ export function clearCache() {
   written.clear();
   inflight.clear();
   followUps.clear();
+  for (const r of staleRetries.values()) clearTimeout(r.timer);
+  staleRetries.clear();
   account = null;
   const s = storage();
   try {
@@ -157,7 +159,8 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist: Persist
       if (inflight.get(key) !== p) return data;
       put(key, data, persist);
       // The server showed its last good answer while it reads a fresh one (swr.ts `stale`): ask again in a moment.
-      if ((data as { stale?: unknown } | null)?.stale === true) setTimeout(() => load(key, fetcher, persist).catch(noop), STALE_RETRY_MS);
+      if ((data as { stale?: unknown } | null)?.stale === true) retryStale(key, fetcher, persist);
+      else staleRetries.delete(key);
       // The stored copy: unchanged parts keep their identity (share), so callers' memos hold.
       return mem.get(key)!.data as T;
     },
@@ -174,6 +177,19 @@ export function load<T>(key: string, fetcher: () => Promise<T>, persist: Persist
   return p;
 }
 
+/** One pending retry per key for a stale response, backing off while the answers stay stale. */
+const staleRetries = new Map<string, { timer: ReturnType<typeof setTimeout>; n: number }>();
+function retryStale(key: string, fetcher: () => Promise<unknown>, persist: Persist) {
+  const have = staleRetries.get(key);
+  if (have?.timer) return;
+  const n = have?.n ?? 0;
+  const timer = setTimeout(() => {
+    staleRetries.set(key, { timer: undefined as never, n: n + 1 });
+    load(key, fetcher, persist).catch(noop);
+  }, Math.min(STALE_RETRY_MS * 2 ** n, 16_000));
+  staleRetries.set(key, { timer, n });
+}
+
 /** Warm the cache (a hovered tab): ignores errors; skips a key fetched in the last 15 seconds. */
 export function prefetch(key: string, fetcher: () => Promise<unknown>, persist: Persist = true) {
   const e = mem.get(key);
@@ -181,7 +197,7 @@ export function prefetch(key: string, fetcher: () => Promise<unknown>, persist: 
   load(key, fetcher, persist).catch(() => {});
 }
 
-function subscribe(key: string, l: () => void) {
+export function subscribe(key: string, l: () => void) {
   if (!listeners.has(key)) listeners.set(key, new Set());
   listeners.get(key)!.add(l);
   return () => void listeners.get(key)?.delete(l);

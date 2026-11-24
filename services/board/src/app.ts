@@ -177,6 +177,8 @@ const RECENT_MS = CLOSED_WINDOW_MS;
 const SEARCH_DONE_PAGE = 50;
 /** How long a board read waits for the parents outside its inventory (Agent work's "part of" links). */
 const PARENTS_MS = 1_500;
+/** The Approvals page acts on what it shows: it waits this long for a fresh read before showing its last one (marked stale, controls held). */
+const APPROVALS_WAIT_MS = 15_000;
 const WORKWEEK: Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
 
 // The page and its assets only. Remote images are blocked too (tracking pixels in email/Slack text).
@@ -587,7 +589,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   async function sweep() {
     const ctx = await context();
     const since = new Date(Date.now() - RECENT_MS).toISOString();
-    const [all, listed] = await Promise.all([pc.openIssues().then((l) => mine(l, ctx)), pc.closedListed(since).then((l) => mine(l.issues, ctx))]);
+    // Writes follow from this inventory: it must be a successful read, never the last one kept through a failure.
+    const [all, listed] = await Promise.all([pc.openListed(true).then((l) => mine(l.issues, ctx)), pc.closedListed(since, true).then((l) => mine(l.issues, ctx))]);
     const settledAt = store.settledAt();
     const closed = listed.filter((i) => {
       if (!settledAt.has(i.id)) return true;
@@ -605,8 +608,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const viewer = () => perRequest.getStore()?.session?.accountId ?? "operator";
   /** The big pages' last good responses (swr.ts), per account; anything the board or Paperclip changes makes the next read look again. */
   const swr = new Swr();
-  store.events.listen(() => swr.touch());
-  const served = <T extends object>(page: string, load: () => Promise<T>) => swr.serve(`${page}:${viewer()}`, load);
+  store.events.listen((name) => name !== "progress" && swr.touch());
+  const served = <T extends object>(page: string, load: () => Promise<T>, waitMs?: number) => swr.serve(`${page}:${viewer()}`, load, waitMs);
   const savedViews = (): View[] => store.views(viewer()).map((r) => ({ ...r, spec: ViewSpecSchema.parse(JSON.parse(r.spec)) }));
   const viewConflict = (id: string) => new ViewConflict(savedViews().find((x) => x.id === id) ?? null);
 
@@ -1710,7 +1713,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const label = await labelNamed(ctx, "chat", "#0ea5e9");
         // The open chats are among the open tasks (the snapshot, which also gives the work handed out from them); only the newest finished ones are read.
         const [closed, openTasks] = await Promise.all([pc.labelled(label.id, "done,cancelled", "20"), pc.openIssues()]);
-        const open = openTasks.filter((i) => isChat(i, ctx));
+        const finished = new Set(closed.map((i) => i.id));
+        const open = openTasks.filter((i) => isChat(i, ctx) && !finished.has(i.id));
         const newest = (a: Issue, b: Issue) => (b.lastActivityAt ?? b.updatedAt).localeCompare(a.lastActivityAt ?? a.updatedAt);
         const all = [...open.sort(newest), ...closed.sort(newest)];
         // Work an agent handed out from an open chat (a child task of it): listed under that chat's agent.
@@ -1806,7 +1810,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const seen = new Set(cards.map((c) => c.id));
         const rest = held.filter((a) => !seen.has(a.id) && (seen.add(a.id), true));
         return { approvals: [...cards, ...rest].map((a) => shownApproval(names, a)) };
-      }),
+      }, APPROVALS_WAIT_MS),
     },
     {
       // A new chat: with the agent named (body.agent or a leading @name), else Aiden.

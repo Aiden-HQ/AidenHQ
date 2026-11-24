@@ -59,3 +59,16 @@ it("serves the last good response while a fresh one is read, one read at a time"
   swr.touch();
   expect(await swr.serve("k", async () => ({ n: 3 }))).toEqual({ n: 3 });
 });
+
+it("never lets a read that began before a change answer after it", async () => {
+  const swr = new Swr();
+  let release!: (v: { n: number }) => void;
+  const slow = () => new Promise<{ n: number }>((r) => (release = r));
+  const first = swr.serve("k", slow);
+  swr.touch(); // a change while that read is under way
+  const second = swr.serve("k", async () => ({ n: 2 }));
+  expect(await second).toEqual({ n: 2 });
+  release({ n: 1 });
+  expect(await first).toEqual({ n: 1 }); // its own caller still gets it, but it isn't kept as the answer
+  expect(await swr.serve("k", async () => ({ n: 9 }))).toEqual({ n: 2 });
+});

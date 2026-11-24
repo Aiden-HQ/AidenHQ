@@ -23,8 +23,8 @@ const PROGRESS_MS = 5_000;
 /** The board's sweep (app.ts `sweep`) runs when tasks changed (at most this often) and at least once a minute while boards listen, and when the watch starts. */
 const SWEEP_MS = 10_000;
 const SWEEP_IDLE_MS = 60_000;
-/** Time alone changes a task's state (a task idle for 15 minutes needs someone, a wake falls due), and nothing in Paperclip says so: every 30th tick (a minute) the open tasks' states are read. */
-const OPEN_EVERY_TICKS = 30;
+/** Time alone changes a task's state (a task idle for 15 minutes needs someone, a wake falls due), and nothing in Paperclip says so: every minute the open tasks' states are read. */
+const OPEN_EVERY_MS = 60_000;
 
 interface Watched {
   label?: string;
@@ -43,6 +43,8 @@ interface Watched {
   states: Map<string, string>;
   open: Set<string>;
   ticks: number;
+  /** When the open tasks' states were last read. */
+  openAt: number;
 }
 
 /** A wait's fingerprint: the whole reason identifies a change, however long it is, and the key stays small. */
@@ -120,7 +122,7 @@ export function startWatch(o: {
 
   async function start(): Promise<Watched> {
     const [open, labels] = await Promise.all([o.pc.openIssues(), o.pc.labels()]);
-    const s: Watched = { label: labels.find((l) => l.name === "chat")?.id, chats: new Set(), parents: new Map(), cursor: new Date(Date.now() - OVERLAP_MS).toISOString(), last: new Map(), runs: new Map(), progress: new Set(), progressAt: new Map(), states: new Map(), open: new Set(), ticks: 0 };
+    const s: Watched = { label: labels.find((l) => l.name === "chat")?.id, chats: new Set(), parents: new Map(), cursor: new Date(Date.now() - OVERLAP_MS).toISOString(), last: new Map(), runs: new Map(), progress: new Set(), progressAt: new Map(), states: new Map(), open: new Set(), ticks: 0, openAt: Date.now() };
     for (const i of open) learn(s, i);
     s.runs = await runs(s, await o.liveRuns());
     // What every open task shows now: the first look announces nothing.
@@ -210,7 +212,9 @@ export function startWatch(o: {
         }
       };
       if (touched.size) learnStates([...(await statesOf(o.states, [...touched])).values()], touched, true);
-      if (++s.ticks % OPEN_EVERY_TICKS === 0) {
+      s.ticks++;
+      if (Date.now() - s.openAt >= OPEN_EVERY_MS) {
+        s.openAt = Date.now();
         const rows = (await o.states.read({ open: true })).tasks;
         const now = new Set(rows.map((r) => r.task));
         // One that left the open list was closed: its own read says how.
