@@ -58,7 +58,8 @@ function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
   if (which === "off" || !isDependabot(pr)) return false;
   const checks = namedChecks(rollupOf(pr));
   if (checks.some((c) => c.pending)) return false; // a PR with no named checks has none to wait for
-  return which === "all" || checks.some((c) => !c.ok);
+  // Past the query's first page of contexts a red one can't be ruled out, so the bump counts as failing.
+  return which === "all" || checks.some((c) => !c.ok) || !!rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
 }
 
 // The watcher's own table in ship's data dir (loop.json; the adoption records are state.ts's).
