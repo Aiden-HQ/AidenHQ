@@ -51,7 +51,8 @@ export function safeClass(files: ChangedFile[], s: ShipSettings["safe"], generat
  * list is cut. */
 function fingerprint(files: ChangedFile[], generated: string[]): string | null {
   if (files.length >= COMPARE_CAP) return null;
-  const own = files.filter((f) => !isGenerated(f, generated));
+  // A rename out of a source path stays (only a move between generated paths is dropped).
+  const own = files.filter((f) => !isGenerated(f, generated) || (f.previous_filename !== undefined && !isGenerated({ ...f, filename: f.previous_filename }, generated)));
   if (own.some((f) => typeof f.patch !== "string")) return null;
   return own.map((f) => `${f.status}\0${f.previous_filename ?? ""}\0${f.filename}\0${f.patch}`).sort().join("\0\0");
 }

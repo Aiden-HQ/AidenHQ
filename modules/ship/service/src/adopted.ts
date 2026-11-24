@@ -86,7 +86,9 @@ export function adoptedPass(o: AdoptedOptions) {
   const approvalOf = async (s: ShipSettings, view: PrView, base: string): Promise<Judged> => {
     const verdict = await o.effects.verdict(view.repo, view.number, view.head);
     const files = await changed(view.repo, base, view.head);
-    const reviewedFiles = verdict.verdict === "pass" && verdict.kind !== "completed" && verdict.reviewed ? await changed(view.repo, base, verdict.reviewed) : undefined;
+    // The reviewed head may be gone (a force-push): its change can't be read, so nothing carries and a fresh review is asked for.
+    const reviewedChange = async (h: string) => { const r = await o.gh("GET", `/repos/${view.repo}/compare/${base}...${h}`); if (r.status === 404 || r.status === 422) return undefined; if (r.status >= 300) throw new Error(`GitHub GET compare: ${r.status}`); return (r.body?.files ?? []) as ChangedFile[]; };
+    const reviewedFiles = verdict.verdict === "pass" && verdict.kind !== "completed" && verdict.reviewed ? await reviewedChange(verdict.reviewed) : undefined;
     return judge(s, { files, generated: s.generated?.globs ?? [], verdict, ...(reviewedFiles ? { reviewedFiles } : {}) });
   };
   return {
