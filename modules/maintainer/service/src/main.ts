@@ -7,7 +7,7 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { configTools } from "./config-tool.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
-import { maintainerIssues, maintainerPrs, maintainerPrWake, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./watcher.ts";
+import { maintainerIssues, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./watcher.ts";
 
 const stateFile = process.env.MAINTAINER_STATE_FILE ?? "/data/state.json";
 const state = (() => {
@@ -35,7 +35,7 @@ const emitter = () => {
 };
 
 startMaintainer({
-  wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage, limits: triageLimits(), emit: (f) => emitter()?.emit(f), prs: maintainerPrs(), firePr: maintainerPrWake() } : undefined; },
+  wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage, limits: triageLimits(), emit: (f) => emitter()?.emit(f) } : undefined; },
   store, log,
 });
 

@@ -50,8 +50,8 @@ export interface Approval {
   replaced: boolean;
   panel: boolean;
   reviewFirst: "final" | "owner" | null;
-  /** Whether its outcome is posted to the task: a decided record (a rejection and a stale close notify too), or one a module
-   * filed for its agent. A Tier 0 record an agent filed itself answers that call inline and wakes nobody; a card still waiting
+  /** Whether its outcome is posted to the task: a decided record (a rejection and a stale close notify too). A Tier 0 record
+   * answers its caller inline and wakes nobody; a card still waiting
    * on the reviewer or owner, one expired or replaced (`cancelled`), and one the kernel recovers as `unknown` after a restart
    * are all closed by the code with no notice (kernel/src/writes.ts reconcile, records.ts expire), so none of those is a
    * wake. */
@@ -66,7 +66,7 @@ type KernelRecord = {
   id: string; kind: string; args: unknown; digest: string; tier: Tier; panel: boolean; task: string; identifier?: string | null; state: string; review: string | null;
   review_code?: string | null; review_first?: "final" | "owner" | null; rule?: string | null; decided_by: string | null; decided_at?: string | null; replaced?: boolean;
   outcome: { ok: boolean; text: string } | null; wait?: string | null; created_at: string; updated_at: string;
-  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string; filed_by?: string };
+  card: { sentence: string; changes: string; reads: string; cost: string; details: string; reason?: string; target?: string }; requester: { agent: string; key: string; name: string };
   owner_reason?: string | null;
 };
 const KIND: Record<string, string> = { "apps-platform.deploy": "deploy_app", "apps-platform.run": "app_run" };
@@ -102,7 +102,7 @@ export function recordApproval(r: KernelRecord): Approval {
     // and not yet claimed), never for one in flight, whose wait the owner is shown while it holds.
     reviewCode: (r.review_code as ReviewCode | null | undefined) ?? null, state: r.state === CLAIMED ? "running" : r.tier === 0 && ["approved", CLAIMED, ...RAN].includes(r.state) ? "auto" : (STATE[r.state] ?? "expired"), decidedBy: r.decided_by, decidedAt: r.decided_at ?? null,
     ownerReason: r.owner_reason ?? null, usedAt: RAN.includes(r.state) ? r.updated_at : null, outcome: r.state === "done" ? "applied" : r.state === "failed" || r.state === "unknown" ? "failed" : null, outcomeText: r.outcome?.text ?? null,
-    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: (r.tier > 0 || r.requester.filed_by !== undefined) && !["review", "owner", "unknown", "cancelled"].includes(r.state) && r.state !== "expired", live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
+    wait: r.state === CLAIMED ? r.wait ?? null : null, createdAt: r.created_at, updatedAt: r.updated_at, replaced: r.replaced === true, panel: r.panel, reviewFirst: r.review_first ?? null, wakes: r.tier > 0 && !["review", "owner", "unknown", "cancelled"].includes(r.state) && r.state !== "expired", live: LIVE.includes(STATE[r.state] ?? "") || ["review", "owner"].includes(r.state),
   };
 }
 

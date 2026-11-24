@@ -1,5 +1,5 @@
 name: maintainer
-description: "Watches, triages and fixes the GitHub repos you list (setting maintainer_repos): validates each issue labelled for a fix, hands the fix to an engineer, and sees it through to a merged PR that closes the issue. Per repo you can also have it label feature requests and build the ones you mark agent-build, and nudge then close quiet contributor PRs."
+description: "Watches, triages and fixes the GitHub repos you list (setting maintainer_repos): validates each issue labelled for a fix, hands the fix to an engineer, and sees it through to a merged PR that closes the issue. Per repo you can also have it label feature requests and build the ones you mark agent-build, and nudge then close quiet contributor PRs (filed by the ship module)."
 # The repo list is the github module's setting maintainer_repos (github-mcp reads it), so the Maintainer's tools need it.
 requires:
   - github
