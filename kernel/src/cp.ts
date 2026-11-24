@@ -30,7 +30,7 @@ import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
-import { TYPED } from "./cplimit.ts";
+import { MAX_ANSWER, readCapped, shareReads, TooLarge, TYPED } from "./cplimit.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
 import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
@@ -53,7 +53,10 @@ export const CP_AGENT_PATHS: [string, RegExp][] = [
   ["POST", new RegExp(`^/api/issues/${ID}/comments$`)],
   ["GET", new RegExp(`^/api/attachments/${ID}/content$`)],
 ];
-const MAX = 32 * 1024 * 1024;
+/** A job's reads with its agent key: identical ones in flight share one request (cplimit.ts shareReads, keyed by the key). */
+const agentFetch = shareReads(fetch);
+/** The answer cap, enforced while the answer streams in (cplimit.ts readCapped). */
+const capped = (r: Response) => readCapped(r, MAX_ANSWER).catch((e) => { throw e instanceof TooLarge ? fail(502, "too_large", e.message) : e; });
 /**
  * What a PATCH may change besides its status and comment (post.js PATCH_KEYS), and what a create may carry. `project` is a
  * project's name, resolved here (projects.ts named: the one of that name, else a new one) and written as `projectId`.
@@ -119,11 +122,10 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     let n = 0;
     for await (const ch of req) { n += ch.length; if (n > 4 * 1024 * 1024) throw fail(413, "too_large", "too large"); chunks.push(ch); }
     const read = async (p: string) => {
-      const r = await fetch(new URL(p, controlUrl), { signal: AbortSignal.timeout(60_000), headers: { authorization: `Bearer ${key}`, accept: String(req.headers.accept ?? "application/json") } });
-      return { status: r.status, type: r.headers.get("content-type") ?? "application/json", out: Buffer.from(await r.arrayBuffer()) };
+      const r = await agentFetch(new URL(p, controlUrl), { signal: AbortSignal.timeout(60_000), headers: { authorization: `Bearer ${key}`, accept: String(req.headers.accept ?? "application/json") } });
+      return { status: r.status, type: r.headers.get("content-type") ?? "application/json", out: await capped(r) };
     };
     const answer = (status: number, out: Buffer, type = "application/json") => {
-      if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
       log("cp", { module: mod.module, agent: c.key, method, path, status });
       res.writeHead(status, { "content-type": type, "content-length": out.length }).end(out);
     };
@@ -414,8 +416,7 @@ export function createBoardCp({ controlUrl, key, fetch = globalThis.fetch, obser
       headers: { authorization: `Bearer ${key()}`, accept: String(req.headers.accept ?? "application/json"), ...(body?.length && type ? { "content-type": String(type) } : {}), ...(req.headers[TYPED] === "owner" ? { [TYPED]: "owner" } : {}) },
       ...(body?.length ? { body } : {}),
     });
-    const out = Buffer.from(await r.arrayBuffer());
-    if (out.length > MAX) throw fail(502, "too_large", "the control plane's answer is too large");
+    const out = await capped(r);
     if (lane === "owner") log("cp owner", { method, path, status: r.status, ...(account ? { account } : {}) });
     // The owner's comment is a fact at once (version = its id), whoever holds the task.
     if (lane === "owner" && r.ok && method === "POST") {

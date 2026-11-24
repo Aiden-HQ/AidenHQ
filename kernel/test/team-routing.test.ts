@@ -52,7 +52,10 @@ function world({ paused = [] } = {}) {
     const u = new URL(path, "http://cp");
     let m;
     if ((m = /^\/api\/agents\/([^/]+)$/.exec(u.pathname))) return { status: 200, json: { id: m[1], companyId: "c-1", status: paused.includes(m[1]) ? "paused" : "idle", lifecycleHolds: paused.includes(m[1]) ? ["manual"] : [] } };
-    if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: Object.values(issues).filter((i) => (u.searchParams.get("status") ?? "").split(",").includes(i.status) && i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) };
+    if (u.pathname === "/api/companies/c-1/issues") {
+      const since = u.searchParams.get("updatedSince");
+      return { status: 200, json: Object.values(issues).filter((i) => (!u.searchParams.has("status") || u.searchParams.get("status").split(",").includes(i.status)) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) && (!since || Date.parse(i.updatedAt ?? 0) > Date.parse(since))) };
+    }
     if ((m = /^\/api\/issues\/([^/]+)\/comments$/.exec(u.pathname))) {
       if (method === "POST") { (comments[m[1]] ??= []).push({ id: `c-${clock}`, body: body.body, createdAt: new Date(clock).toISOString() }); return { status: 201, json: {} }; }
       return { status: 200, json: comments[m[1]] ?? [] };
@@ -72,7 +75,7 @@ function world({ paused = [] } = {}) {
   };
   const told = [];
   const wakes = createWakes({
-    db, owner, post: async () => ({}), now: () => clock, grants: () => grants, knownRepo: (r) => ["acme/api", "acme/web"].includes(r),
+    db, owner, post: async () => ({}), now: () => clock, debounceMs: 0, grants: () => grants, knownRepo: (r) => ["acme/api", "acme/web"].includes(r),
     tellBlocked: async (task, text) => { told.push({ task: task.id, text }); },
     dispatches: { may: () => true, agents: (mod) => (mod === "dispatch" ? [TEAM, KAI, MINA] : []) },
   });
@@ -107,7 +110,7 @@ test("a placement whose reassignment failed is retried with the same pick, never
   const w = world();
   w.issue("t1");
   w.failPatches(true);
-  await assert.rejects(w.wakes.event({ issueId: "t1" }));
+  assert.deepEqual(await w.wakes.event({ issueId: "t1" }), { scanned: false }, "the failed write is logged; the poll retries");
   assert.equal(w.issues.t1.assigneeAgentId, TEAM);
   w.grants[KAI].max_parallel = 0.001; // kai now looks overloaded: a fresh score would pick mina
   w.issue("busy", { assigneeAgentId: KAI });
@@ -142,7 +145,9 @@ test("continuity counts a member's done tasks in the same repo; a wake already f
   const w = world();
   w.issue("old1", { assigneeAgentId: MINA }); w.issue("old2", { assigneeAgentId: MINA });
   await w.wakes.poll();
-  w.issues.old1.status = "done"; w.issues.old2.status = "done";
+  w.tick();
+  for (const t of ["old1", "old2"]) Object.assign(w.issues[t], { status: "done", updatedAt: new Date(Date.parse(w.issues[t].updatedAt) + 1000).toISOString() });
+  await w.wakes.poll(); // the closes reach the issue mirror
   w.db.prepare("INSERT INTO wakes (key, task, agent, cause, at) VALUES ('issue:x:1', 'x', ?, 'assigned', 1)").run(TEAM);
   w.issue("t1");
   await w.wakes.event({ issueId: "t1" });

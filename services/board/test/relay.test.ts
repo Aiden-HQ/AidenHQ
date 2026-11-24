@@ -61,7 +61,7 @@ describe("/internal/relay", () => {
   const store = new Store(":memory:");
   const TOKEN = "t".repeat(64);
   // The kernel's state of each task, from what the test says of it: in_review is a card with the AI reviewer, else working.
-  const states = { read: async (q: { ids?: string[] }) => ({ as_of: "", counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, tasks: issues.filter((i) => q.ids?.includes(i.id)).map((i) => row(i.id, i.status === "in_review" ? { kind: "waiting", reason: "card_review" } : { kind: "working", reason: "job_running" })) }) };
+  const states = { issues: async () => [], read: async (q: { ids?: string[] }) => ({ as_of: "", counts: { needs_you: 0, failed: 0, unexplained_idle: 0 }, tasks: issues.filter((i) => q.ids?.includes(i.id)).map((i) => row(i.id, i.status === "in_review" ? { kind: "waiting", reason: "card_review" } : { kind: "working", reason: "job_running" })) }) };
   const app = createApp({ taskStates: states, paperclip: pc, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", allowedHosts: ["board:3122"], mode: "internal", internalToken: TOKEN });
   // The owner's own board (a signed-in session), on the same Paperclip and store: where he starts a chat.
   const owners = createApp({ paperclip: pc, store, log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", allowedHosts: ["localhost:3120"], session: () => ({ accountId: "owner", role: "admin" as const }) });

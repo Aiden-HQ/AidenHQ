@@ -1,7 +1,7 @@
 // The kernel's task state, as the board reads it (kernel/src/task-state.ts computes it from the fact log; GET /v1/tasks/state
 // serves it). The board never works a state out itself: every view shows this row, a task the kernel has no facts for shows none.
 // Its shape is the kernel's own (aidenhq-sdk/task-state-types.ts, a synced copy).
-import type { StateRead, StateRow } from "./aidenhq-sdk/task-state-types.js";
+import type { IssueRow, StateRead, StateRow } from "./aidenhq-sdk/task-state-types.js";
 
 /**
  * A row with what its refs name, read from where the board already has it (see `shown`): `refLabel` for the primary reason's
@@ -11,7 +11,11 @@ export type ShownState = StateRow & { refLabel?: string; refs?: Record<string, s
 
 /** `closed_since` (an ISO instant, with `open`): the tasks closed since then too, in the same snapshot. */
 export type StateQuery = { ids?: string[]; open?: boolean; closed_since?: string };
-export type TaskStates = { read(q: StateQuery): Promise<StateRead> };
+export type TaskStates = {
+  read(q: StateQuery): Promise<StateRead>;
+  /** The kernel's issue mirror (GET /v1/tasks/issues): identifier, title, status and parent by id or identifier, ≤ MAX_IDS. */
+  issues(ids: string[]): Promise<IssueRow[]>;
+};
 
 /** The most ids one read takes (the kernel refuses more). */
 export const MAX_IDS = 200;
@@ -20,13 +24,15 @@ const OPEN_FRESH_MS = 2_000;
 
 /** The kernel's state reads, with the board's key. */
 export function kernelStates(k: { url: string; token: string }): TaskStates {
-  const get = async (query: string): Promise<StateRead> => {
-    const res = await fetch(`${k.url}/v1/tasks/state?${query}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
+  const kernel = async <T>(path: string): Promise<T> => {
+    const res = await fetch(`${k.url}${path}`, { headers: { authorization: `Bearer ${k.token}` }, signal: AbortSignal.timeout(15_000) });
     if (!res.ok) throw new Error(`the kernel answered ${res.status}`);
-    return res.json() as Promise<StateRead>;
+    return res.json() as Promise<T>;
   };
+  const get = (query: string) => kernel<StateRead>(`/v1/tasks/state?${query}`);
   let open: { at: number; read: Promise<StateRead> } | undefined;
   return {
+    issues: async (ids) => (ids.length ? (await kernel<{ issues: IssueRow[] }>(`/v1/tasks/issues?ids=${[...new Set(ids)].map(encodeURIComponent).join(",")}`)).issues : []),
     read: (q) => {
       if (!q.open) return get(`ids=${(q.ids ?? []).map(encodeURIComponent).join(",")}`);
       if (q.closed_since) return get(`open=1&closed_since=${encodeURIComponent(q.closed_since)}`);
@@ -41,7 +47,7 @@ export function kernelStates(k: { url: string; token: string }): TaskStates {
 }
 
 /** Without a kernel (a test, an unconfigured board) no task has a state. */
-export const noStates: TaskStates = { read: async () => ({ as_of: new Date().toISOString(), tasks: [], counts: { needs_you: 0, failed: 0, unexplained_idle: 0 } }) };
+export const noStates: TaskStates = { issues: async () => [], read: async () => ({ as_of: new Date().toISOString(), tasks: [], counts: { needs_you: 0, failed: 0, unexplained_idle: 0 } }) };
 
 /** Every id's row (batches of MAX_IDS, side by side); a task the kernel has no facts for has none. */
 export async function statesOf(states: TaskStates, ids: string[]): Promise<Map<string, StateRow>> {
@@ -51,6 +57,14 @@ export async function statesOf(states: TaskStates, ids: string[]): Promise<Map<s
   const out = new Map<string, StateRow>();
   for (const read of await Promise.all(batches.map((ids) => states.read({ ids })))) for (const r of read.tasks) out.set(r.task, r);
   return out;
+}
+
+/** The mirror's rows for any number of ids (batches of MAX_IDS, side by side), by task id. */
+export async function issuesOf(states: TaskStates, ids: string[]): Promise<Map<string, IssueRow>> {
+  const all = [...new Set(ids)];
+  const batches: string[][] = [];
+  for (let i = 0; i < all.length; i += MAX_IDS) batches.push(all.slice(i, i + MAX_IDS));
+  return new Map((await Promise.all(batches.map((b) => states.issues(b)))).flat().map((r) => [r.id, r]));
 }
 
 /** Something waits on the owner: a card, his answer, a handback. */

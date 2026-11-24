@@ -70,7 +70,7 @@ const reviewParkable = (i: ParkedIssue) => String(i.status) === "in_review" && i
 export function createIdle({ db, facts, state, wakes, owner, team = () => false, keyOf = (agent: string) => agent, escalate, now = Date.now, log = () => {} }: {
   /** kernel.db: a wait's fact, its wake and its park row are one transaction (the status PATCH is the one write outside). */
   db: DatabaseSync;
-  facts?: Facts; state: Pick<TaskStateRead, "read">; wakes: Pick<Wakes, "open" | "polls" | "settleOn" | "settleEach">;
+  facts?: Facts; state: Pick<TaskStateRead, "read">; wakes: Pick<Wakes, "open" | "polls" | "settleOn" | "settleEach" | "mirror">;
   /** The control plane as the owner: the issue read, its status PATCH, a stale recovery hold's resolution, and an agent's status. */
   owner: Api;
   /** Where a wait's question goes (escalate.ts); none: the wait is recorded and nobody is asked. */
@@ -301,6 +301,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
     const out = { parked: [] as string[], resumed: [] as string[], resolved: [] as string[] };
     for (const task of tasks) {
       try {
+        // Parked in backlog with its row while its wait is armed (the issue mirror says so): nothing for this pass to do, so
+        // nothing is read. Every other state is read whole (the hold and its recovery action are on the issue only).
+        if (wakes.mirror(task)?.status === "backlog" && armed(task) && parkOf(task)) continue;
         const i = await issue(task);
         // Only a 404 (gone) or a closed task drops the row: an unread issue is a failure, and dropping its row would
         // strand a parked task in backlog with nothing to restore it.
@@ -417,6 +420,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
         // Idle with nothing pending (or a wake nothing took) and an agent holds it; an owner's or unassigned task is not read.
         if (!IDLE_REASONS.has(i.reason) || !i.holder || i.holder === "owner" || t - Date.parse(i.since) < IDLE_AFTER_MS) continue;
         try {
+          // Only a task the issue mirror reports in a status this sweep acts on (or one it hasn't seen) is read.
+          const seen = wakes.mirror(i.task)?.status;
+          if (seen && !SWEPT.has(seen) && seen !== "in_review") continue;
           const r = await owner("GET", `/api/issues/${encodeURIComponent(i.task)}`);
           const task = r.json as { status?: string; assigneeAgentId?: string | null };
           // In review with nothing running, filed or waiting on it (a merge that landed after

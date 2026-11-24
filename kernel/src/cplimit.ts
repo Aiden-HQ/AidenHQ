@@ -28,6 +28,96 @@ export function limitIssueLists(f: typeof fetch, max = 6): typeof fetch {
   }) as typeof fetch;
 }
 
+/** The largest answer the kernel reads from the control plane: refused while it streams in, never buffered past this. */
+export const MAX_ANSWER = 32 * 1024 * 1024;
+export class TooLarge extends Error { status = 502; code = "too_large"; constructor() { super("the control plane's answer is too large"); } }
+
+/** A response's body, read up to `max` bytes: a longer one is cancelled where it stands and refused (TooLarge). */
+export async function readCapped(r: Response, max = MAX_ANSWER): Promise<Buffer> {
+  if (Number(r.headers.get("content-length") ?? 0) > max) { await r.body?.cancel().catch(() => {}); throw new TooLarge(); }
+  if (!r.body) return Buffer.alloc(0);
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for await (const c of r.body) {
+    n += c.length;
+    if (n > max) throw new TooLarge(); // leaving the loop cancels the stream
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks);
+}
+
+// The reads that rarely change (an agent, a company, its agents, labels and projects): kept a few seconds, shared by every
+// caller of every shareReads wrapper (each entry keyed by its credential, so one caller never reads another's answer).
+const STATIC = [/^\/api\/agents\/[^/]+$/, /^\/api\/companies\/[^/]+$/, /^\/api\/companies\/[^/]+\/(agents|labels|projects)$/];
+const STATIC_MS = 15_000;
+type Held = { status: number; statusText: string; headers: [string, string][]; body: Buffer };
+const statics = new Map<string, { at: number; v: Held }>();
+// Eras: a read joins only a flight started in its own era, and caches only if its era held. Any write starts a new read era
+// (before and after it), so a read made after a write never shares an answer begun before it; a write to a static path also
+// starts a new static era, which drops the kept reads and stops a flight that began before it from being kept.
+let readEra = 0, staticEra = 0;
+/** Every cached static read goes: a write that may change one (an agent, a label, a project) was made. */
+export const forgetStatic = () => { staticEra++; statics.clear(); };
+/** A write made outside these wrappers (the events plugin's `post`): reads after it never share an answer begun before it. */
+export const wrote = () => { readEra++; };
+const STATIC_WRITE = /^\/api\/(agents\/|companies\/[^/]+\/(agents|labels|projects)$)/;
+
+/**
+ * `f` with identical GETs shared: one in flight per URL, credential and accept (each caller gets its own copy of the answer),
+ * the static reads above kept STATIC_MS (any write to an agent or a company's labels, projects or agents drops them), and
+ * every answer read under MAX_ANSWER while it streams. Attachment content passes through untouched.
+ */
+export function shareReads(f: typeof fetch, now = Date.now): typeof fetch {
+  const flying = new Map<string, { era: number; p: Promise<Held> }>();
+  const answer = (h: Held) => new Response(h.status === 204 || h.status === 304 ? null : new Uint8Array(h.body), { status: h.status, statusText: h.statusText, headers: h.headers });
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    if (method !== "GET") {
+      const touches = STATIC_WRITE.test(url.pathname);
+      readEra++;
+      if (touches) forgetStatic();
+      try { return await f(input, init); } finally { readEra++; if (touches) forgetStatic(); }
+    }
+    if (url.pathname.endsWith("/content")) return f(input, init);
+    const h = new Headers(init?.headers);
+    const key = `${url}\n${h.get("authorization") ?? ""}\n${h.get("accept") ?? ""}`;
+    const isStatic = STATIC.some((re) => re.test(url.pathname));
+    const hit = isStatic ? statics.get(key) : undefined;
+    if (hit && now() - hit.at < STATIC_MS) return answer(hit.v);
+    let flight = flying.get(key);
+    if (!flight || flight.era !== readEra) {
+      const era = readEra, kept = staticEra;
+      const p = (async () => {
+        const r = await f(input, init);
+        return { status: r.status, statusText: r.statusText, headers: [...r.headers], body: await readCapped(r) } as Held;
+      })();
+      const mine = { era, p };
+      flight = mine;
+      flying.set(key, mine);
+      void p.then((v) => {
+        if (isStatic && v.status === 200 && kept === staticEra) { if (statics.size > 1000) statics.clear(); statics.set(key, { at: now(), v }); }
+      }, () => {}).finally(() => { if (flying.get(key) === mine) flying.delete(key); });
+    }
+    return answer(await flight.p);
+  }) as typeof fetch;
+}
+
+/**
+ * JSON both ways over `call` (the control plane as the owner, the board's internal listener). A 2xx whose body can't be read
+ * whole or isn't JSON (a read the timeout cut off) is a failure, never an empty answer: an empty `{}` read as a task would put
+ * an undefined id into its caller's queries.
+ */
+export const jsonApi = (call: (p: string, init: RequestInit) => Promise<Response>) => async (method: string, p: string, body?: unknown): Promise<{ status: number; json: any }> => {
+  const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  const text = (await readCapped(r)).toString("utf8");
+  if (!text.trim()) return { status: r.status, json: {} };
+  try { return { status: r.status, json: JSON.parse(text) }; } catch {
+    if (r.ok) throw new Error(`${method} ${p.split("?")[0]} answered ${r.status} with a body that isn't JSON`);
+    return { status: r.status, json: {} };
+  }
+};
+
 /** A request header the owner's own typed words carry to the owner-key caller (stripped before the control plane). */
 export const TYPED = "x-aidenhq-typed";
 /** The marker every other comment written with the owner key carries: code wrote it, so it is never the owner's words. */

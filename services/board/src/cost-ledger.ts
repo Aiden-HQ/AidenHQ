@@ -7,7 +7,7 @@
 import { BadRequest } from "./board.js";
 import { departmentOf } from "./activity.js";
 import type { KeyUsage, Prices, SpendSummary } from "./costs.js";
-import type { Agent, Issue } from "./paperclip.js";
+import type { Agent } from "./paperclip.js";
 import type { LedgerFilter, LedgerMetrics, Store } from "./store.js";
 
 const DAY = 864e5;
@@ -60,14 +60,17 @@ export function ledgerRange(q: URLSearchParams, now = Date.now()): LedgerRange {
   return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket, offset };
 }
 
+/** What the ledger shows of a task. */
+export type TaskNames = { identifier: string | null; title: string | null; status: string | null };
+
 export interface LedgerDeps {
   store: Pick<Store, "ledgerCube" | "ledgerBy" | "usageSpend" | "usageEarliest" | "taskCount" | "failedCalls" | "longRuns">;
   agents: () => Promise<Agent[]>;
   key: () => Promise<KeyUsage | string>;
   /** The kernel's spend summary (the install's day and month against its limits); without it no limit shows. */
   spend: () => Promise<SpendSummary | null>;
-  /** A task's identifier, title and status (Paperclip); without it the task figures are left out. */
-  issue?: (id: string) => Promise<Pick<Issue, "identifier" | "title" | "status">>;
+  /** Tasks' identifiers, titles and statuses by id, in one read (the kernel's issue mirror); without it the task figures are left out. */
+  issues?: (ids: string[]) => Promise<Map<string, TaskNames>>;
   /** OpenRouter's list prices, for the cache savings; without them the savings are left out. */
   prices?: () => Promise<Prices>;
 }
@@ -238,14 +241,12 @@ async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<St
   // Tasks: the costliest ones are looked up in Paperclip for title and status; the totals over all tasks come from SQL.
   const attributed = store.ledgerBy("hasIssue", r.from, r.to).find((x) => Number(x.a) === 1)?.usd ?? 0;
   const count = store.taskCount(r.from, r.to);
-  const sample = d.issue
-    ? await Promise.all(
-        store.ledgerBy("issue", r.from, r.to, {}, TASK_SAMPLE).map(async (x) => {
-          const issue = await d.issue!(x.a!).catch(() => null);
-          return { issueId: x.a!, identifier: issue?.identifier ?? null, title: issue?.title ?? null, status: issue?.status ?? null, agent: nameOf(x.b), usd: x.usd, calls: x.calls };
-        }),
-      )
-    : [];
+  const costly = d.issues ? store.ledgerBy("issue", r.from, r.to, {}, TASK_SAMPLE) : [];
+  const names = d.issues && costly.length ? await d.issues(costly.map((x) => x.a!)).catch(() => new Map<string, TaskNames>()) : new Map<string, TaskNames>();
+  const sample = costly.map((x) => {
+    const issue = names.get(x.a!);
+    return { issueId: x.a!, identifier: issue?.identifier ?? null, title: issue?.title ?? null, status: issue?.status ?? null, agent: nameOf(x.b), usd: x.usd, calls: x.calls };
+  });
   const done = sample.filter((t) => t.status === "done");
   const cancelled = sample.filter((t) => t.status === "cancelled");
   const sum = (xs: { usd: number }[]) => xs.reduce((s, t) => s + t.usd, 0);
@@ -273,7 +274,7 @@ async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<St
 const TOP = 15;
 
 /** One agent's or one model's most expensive runs and tasks in the range (titles for the top tasks only). */
-export async function ledgerTop(d: Pick<LedgerDeps, "store" | "agents"> & { issue: (id: string) => Promise<Pick<Issue, "identifier" | "title">> }, r: LedgerRange, filter: LedgerFilter) {
+export async function ledgerTop(d: Pick<LedgerDeps, "store" | "agents"> & Required<Pick<LedgerDeps, "issues">>, r: LedgerRange, filter: LedgerFilter) {
   if (!filter.agentId === !filter.model) throw new BadRequest("name one agent or one model");
   const agents = await d.agents().catch(() => [] as Agent[]);
   const who = (id: string | null) => (id ? (agents.find((a) => a.id === id)?.name ?? `Agent ${id.slice(0, 8)}`) : null);
@@ -284,12 +285,12 @@ export async function ledgerTop(d: Pick<LedgerDeps, "store" | "agents"> & { issu
     last: x.last,
     ...metrics(x),
   }));
-  const tasks = await Promise.all(
-    d.store.ledgerBy("issue", r.from, r.to, filter, TOP).map(async (x) => {
-      const issue = await d.issue(x.a!).catch(() => null);
-      return { issueId: x.a!, identifier: issue?.identifier ?? null, title: issue?.title ?? null, agent: who(x.b), ...metrics(x) };
-    }),
-  );
+  const top = d.store.ledgerBy("issue", r.from, r.to, filter, TOP);
+  const names = top.length ? await d.issues(top.map((x) => x.a!)).catch(() => new Map<string, TaskNames>()) : new Map<string, TaskNames>();
+  const tasks = top.map((x) => {
+    const issue = names.get(x.a!);
+    return { issueId: x.a!, identifier: issue?.identifier ?? null, title: issue?.title ?? null, agent: who(x.b), ...metrics(x) };
+  });
   // An agent's spend by model, or a model's by agent (system calls under "System").
   const split = filter.agentId
     ? d.store.ledgerBy("model", r.from, r.to, filter).map((x) => ({ name: x.a!, ...metrics(x) }))

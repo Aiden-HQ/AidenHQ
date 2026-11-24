@@ -1,6 +1,8 @@
 // The wake inbox (one-way spec §4.2a): every reason to run an agent on a task is one durable row in kernel.db, written by
-// one per-task scan. The reconcile poll scans every open task of the polled agents; a Paperclip event (the paperclip-events
-// plugin, at most once and with duplicates) only scans its one task sooner. A dispatcher (role kernel.jobs) claims rows and
+// one per-task scan. The reconcile poll reads what changed in each company since its cursor (one paged list) into the issue
+// mirror, then scans every open task of the polled agents from that mirror, reading a task's comments only when it changed; a
+// Paperclip event (the paperclip-events plugin, at most once and with duplicates) scans its one task sooner, merged per task.
+// Scans of one task never overlap (`lane`). A dispatcher (role kernel.jobs) claims rows and
 // turns them into jobs; admission binds `job` (unique, so a wake starts at most one job).
 // Keys (never Paperclip's eventId): comment:<commentId>, issue:<issueId>:<updatedAt> (assigned or moved to todo),
 // routine-run:<issueId> (a routine run's new task, cause routine:<key>: the routine's compiled key, so admission applies its own
@@ -26,6 +28,12 @@ import { CONTINUITY_MS, decisionText, pickMember, weightsOf, type Candidate, typ
 export const SELF_TAG = /<!-- aidenhq:job=/;
 const OPEN = "todo,in_progress,in_review";
 const LIVE = "('admitted','running')";
+/** A task unchanged since its comments were last read whole has them read again at least this often anyway. */
+const READ_EVERY_MS = 10 * 60_000;
+/** The state a comment read covers: a new comment moves the task's updatedAt (and its lastActivityAt). */
+/** Up to half of READ_EVERY_MS more per task (fixed by its id), so the refreshes of tasks first seen together spread out. */
+const jitter = (id: string) => parseInt(createHash("sha256").update(id).digest("hex").slice(0, 8), 16) % (READ_EVERY_MS / 2);
+const stampOf = (i: { updatedAt?: string; lastActivityAt?: string }) => `${i.updatedAt ?? ""}|${i.lastActivityAt ?? ""}`;
 /** A claimed row with no job comes back to its claimer after this (a dispatcher crash, a busy admission). */
 export const LEASE_MS = 60_000;
 
@@ -38,7 +46,7 @@ CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NO
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
   state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
 CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS chat_cursor (agent TEXT PRIMARY KEY, at INTEGER NOT NULL, after TEXT, until INTEGER);`;
+CREATE TABLE IF NOT EXISTS wake_cursor (company TEXT PRIMARY KEY, since TEXT NOT NULL, floor INTEGER NOT NULL, full_at INTEGER NOT NULL DEFAULT 0, after TEXT, after_at INTEGER);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
@@ -78,13 +86,15 @@ export async function wakeNotice(owner: Api, task: string, text: string, id?: st
 }
 
 export interface Wake { key: string; task: string; agent: string; cause: string; at: number; state: string; claimed_by: string | null; job: string | null; until: number | null }
-type Issue = { id: string; identifier?: string; title?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; labels?: { name?: string }[]; updatedAt?: string; createdAt?: string; statusVersion?: number; completedAt?: string | null; cancelledAt?: string | null; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string; createdByAgentId?: string | null };
+type Issue = { id: string; identifier?: string; title?: string; lastActivityAt?: string; description?: string | null; parentId?: string | null; status?: string; assigneeAgentId?: string | null; assigneeUserId?: string | null; labels?: { name?: string }[]; updatedAt?: string; createdAt?: string; statusVersion?: number; completedAt?: string | null; cancelledAt?: string | null; blockedBy?: { id: string; identifier?: string | null; status: string }[]; originKind?: string | null; originId?: string | null; companyId?: string; createdByAgentId?: string | null };
 type Comment = { id: string; body?: string; authorAgentId?: string | null; authorUserId?: string | null; createdAt?: string; deletedAt?: string | null };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const ms = (t?: string) => (t ? Date.parse(t) || 0 : 0);
 const str = (v: unknown) => (typeof v === "string" && v ? v : null);
 
-export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now }: {
+export function createWakes({ db, owner, post, dispatches, containers = () => new Set(), routineKey = () => undefined, grants = () => ({}), knownRepo = () => false, tellBlocked = async () => {}, facts, log = () => {}, now = Date.now, debounceMs = 1500 }: {
+  /** How long a task's events are gathered before its one scan (duplicates and echoes of a burst merge into it). */
+  debounceMs?: number;
   /** Flow's fact log (facts.ts): task changes the scan sees, and each wake's opening, binding and dropping. */
   facts?: Facts;
   db: DatabaseSync;
@@ -117,6 +127,12 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
     db.exec("CREATE TABLE task_facts_seen (task TEXT PRIMARY KEY, holder TEXT, status TEXT, blocked TEXT, at INTEGER NOT NULL DEFAULT 0)");
     db.exec("INSERT INTO task_facts_seen (task, holder, status, blocked) SELECT task, CASE WHEN agent IS NULL THEN NULL ELSE 'agent:' || agent END, status, NULL FROM wake_tasks");
   }
+  // The issue mirror (task_facts_seen beside its facts cursor): what Paperclip last reported of each task, written with the task's
+  // facts (the poll's change list, the full listing, events and the kernel's own writes). `issue` is the row the poll scans from
+  // (no description); identifier, title, parent and updated_at serve the board's batch reads (GET /v1/tasks/issues).
+  const mirrorCols = new Set((db.prepare("PRAGMA table_info(task_facts_seen)").all() as { name: string }[]).map((c) => c.name));
+  for (const c of ["identifier", "title", "parent", "updated_at", "issue"]) if (!mirrorCols.has(c)) db.exec(`ALTER TABLE task_facts_seen ADD COLUMN ${c} TEXT`);
+  db.exec("CREATE INDEX IF NOT EXISTS task_facts_seen_identifier ON task_facts_seen (identifier)");
   if (!(db.prepare("PRAGMA table_info(team_routes)").all() as { name: string }[]).some((c) => c.name === "snapshot")) db.exec("ALTER TABLE team_routes ADD COLUMN snapshot TEXT");
   // What the scan last saw of a task (wake_tasks): `blocked` its blocker ids, and `polled` whether the wake logic has run on it
   // (a row made only to diff the task's facts, for a task nobody polls, is not a first sight's cursor).
@@ -129,6 +145,10 @@ export function createWakes({ db, owner, post, dispatches, containers = () => ne
   if (!have.has("blocked_deleted")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked_deleted TEXT");
   if (!have.has("blocked_exists")) db.exec("ALTER TABLE wake_tasks ADD COLUMN blocked_exists TEXT");
   if (!have.has("polled")) db.exec("ALTER TABLE wake_tasks ADD COLUMN polled INTEGER NOT NULL DEFAULT 1");
+  // The state whose comments the scan last read whole (`seen_stamp`: its updatedAt|lastActivityAt) and when (`read_at`): a scan of
+  // a task unchanged since then reads no comments. The comment cursor stays the authority over what was consumed.
+  if (!have.has("seen_stamp")) db.exec("ALTER TABLE wake_tasks ADD COLUMN seen_stamp TEXT");
+  if (!have.has("read_at")) db.exec("ALTER TABLE wake_tasks ADD COLUMN read_at INTEGER");
   // When a row was last claimed (`claimed_at`): the dispatcher reads the task's thread after it claims, so the job a wake starts
   // covers what happened before its claim, not before its spawn (a box start or a clone can take minutes).
   if (!(db.prepare("PRAGMA table_info(wakes)").all() as { name: string }[]).some((c) => c.name === "claimed_at")) db.exec("ALTER TABLE wakes ADD COLUMN claimed_at INTEGER");
@@ -236,7 +256,15 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
     return r.status === 200 ? (r.json as Issue) : issue;
   };
-  const taskFacts = (issue: Issue, source: "live" | "poll", actor: string) => inTx(db, "task_facts", () => recordTaskFacts(issue, source, actor));
+  /**
+   * An observation older than the mirror's (a list read before an event's newer read was recorded) changes nothing: neither
+   * the facts nor the mirror go back to what it saw. Equal is the same state, recorded again harmlessly.
+   */
+  const stale = (issue: Issue) => {
+    const at = (q("SELECT updated_at FROM task_facts_seen WHERE task = ?").get(issue.id) as { updated_at: string | null } | undefined)?.updated_at;
+    return Boolean(at && issue.updatedAt && ms(issue.updatedAt) < ms(at));
+  };
+  const taskFacts = (issue: Issue, source: "live" | "poll", actor: string) => inTx(db, "task_facts", () => { if (!stale(issue)) recordTaskFacts(issue, source, actor); });
   function recordTaskFacts(issue: Issue, source: "live" | "poll", actor: string) {
     const last = lastFacts(issue.id);
     const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
@@ -261,7 +289,18 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const lastBlocked = last.get("task.blocked_changed")?.data.blocked_by;
     const wasBlocked = Array.isArray(lastBlocked) ? lastBlocked.map(String).sort().join(",") : "";
     if (blocked !== null && blocked !== wasBlocked) fact({ ...base, type: "task.blocked_changed", version: `${blocked}@${issue.updatedAt ?? changed}`, at: iso(changed), data: { blocked_by: blocked ? blocked.split(",") : [] } });
-    q("INSERT INTO task_facts_seen (task, holder, status, blocked, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(task) DO UPDATE SET holder = excluded.holder, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), at = excluded.at").run(issue.id, holder, status, blocked, now());
+    mirror(issue, holder, blocked);
+  }
+  /** The mirror's row (see above), written with the facts (and alone for an old closed task with no facts: its title only). */
+  function mirror(issue: Issue, holder = issue.assigneeAgentId ? `agent:${issue.assigneeAgentId}` : issue.assigneeUserId ? "owner" : null, blocked: string | null = null) {
+    const row = { id: issue.id, identifier: issue.identifier, title: issue.title, parentId: issue.parentId, status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+      labels: Array.isArray(issue.labels) ? issue.labels.map((l) => ({ name: l.name })) : undefined, updatedAt: issue.updatedAt, lastActivityAt: issue.lastActivityAt, createdAt: issue.createdAt,
+      statusVersion: issue.statusVersion, completedAt: issue.completedAt, cancelledAt: issue.cancelledAt, originKind: issue.originKind, originId: issue.originId, companyId: issue.companyId, createdByAgentId: issue.createdByAgentId };
+    q(`INSERT INTO task_facts_seen (task, holder, status, blocked, at, identifier, title, parent, updated_at, issue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task) DO UPDATE SET holder = excluded.holder, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), at = excluded.at,
+      identifier = COALESCE(excluded.identifier, identifier), title = COALESCE(excluded.title, title), parent = CASE WHEN ? THEN excluded.parent ELSE parent END, updated_at = COALESCE(excluded.updated_at, updated_at), issue = excluded.issue`)
+      // A parent the read leaves out is kept; one it reports as null (the task was detached) is cleared.
+      .run(issue.id, holder, String(issue.status ?? ""), blocked, now(), issue.identifier ?? null, issue.title ?? null, issue.parentId ?? null, issue.updatedAt ?? null, JSON.stringify(row), issue.parentId !== undefined ? 1 : 0);
   }
   /** The polled agents, each with when its dispatcher joined. */
   const polled = () => {
@@ -279,14 +318,18 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   const lastJob = (task: string) => q("SELECT j.id, COALESCE(w.claimed_at, j.at) AS at FROM jobs j LEFT JOIN wakes w ON w.job = j.id WHERE j.task = ? ORDER BY j.at DESC LIMIT 1").get(task) as { id: string; at: number } | undefined;
 
   /** One task's wakes: new comments past its cursor, and a move to todo (or a first sight of an unstarted todo task). */
-  async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown", rehome = true }: { reopened?: boolean; source?: "live" | "poll"; actor?: string; rehome?: boolean } = {}) {
-    const seen = q("SELECT agent, status, comment, blocked, blocked_names, blocked_deleted, blocked_exists, polled FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; blocked_names: string | null; blocked_deleted: string | null; blocked_exists: string | null; polled: number } | undefined;
+  /**
+   * `joined`: the polled agents, read once by the caller (a poll's whole pass); `fresh`: read the comments whatever the stamp says
+   * (a retry of a reply that needs reading again).
+   */
+  async function scan(issue: Issue, { reopened = false, source = "live", actor = "unknown", rehome = true, joined: members, fresh = false }: { reopened?: boolean; source?: "live" | "poll"; actor?: string; rehome?: boolean; joined?: Map<string, number>; fresh?: boolean } = {}) {
+    const seen = q("SELECT agent, status, comment, blocked, blocked_names, blocked_deleted, blocked_exists, polled, seen_stamp, read_at FROM wake_tasks WHERE task = ?").get(issue.id) as { agent: string | null; status: string | null; comment: string | null; blocked: string | null; blocked_names: string | null; blocked_deleted: string | null; blocked_exists: string | null; polled: number; seen_stamp: string | null; read_at: number | null } | undefined;
     // The task's facts first: a task nobody polls (unassigned, or an agent no dispatcher claims) is recorded too.
     issue = await whole(issue);
     taskFacts(issue, source, actor);
     const box = containers();
     const agent = box.has(issue.id) || (issue.identifier && box.has(issue.identifier)) ? null : issue.assigneeAgentId;
-    const joined = agent ? polled().get(agent) : undefined;
+    const joined = agent ? (members ?? polled()).get(agent) : undefined;
     if (!agent || joined === undefined || grants()[agent]?.team) {
       const st = String(issue.status ?? ""), mem = memory(seen, st, issue);
       q("INSERT INTO wake_tasks (task, agent, status, blocked, blocked_names, blocked_deleted, blocked_exists, polled) VALUES (?, ?, ?, ?, ?, ?, ?, 0) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, blocked = excluded.blocked, blocked_names = excluded.blocked_names, blocked_deleted = excluded.blocked_deleted, blocked_exists = excluded.blocked_exists, polled = 0").run(issue.id, agent ?? null, st, mem.blocked, mem.names, mem.deleted, mem.exists);
@@ -297,13 +340,29 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       // Re-placed (and scanned under its new member) when it never started on a busy member; the scan that follows a placement
       // runs inside the lock, so it never asks (`rehome`).
       if (rehome && mayMove(issue.id, agent) && await serial(() => move(issue, agent))) return;
-      named(issue, agent);
+      // Its first record names its repos from its text: a mirror row carries no description, so that one is read whole.
+      if (issue.description === undefined && !q("SELECT 1 FROM team_routes WHERE task = ?").get(issue.id)) {
+        const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+        if (r.status !== 200 || typeof r.json?.id !== "string") throw new Error(`control plane GET issue → ${r.status}`);
+        named({ ...issue, description: (r.json as Issue).description ?? null, title: (r.json as Issue).title ?? issue.title }, agent);
+      } else named(issue, agent);
     }
     const prev = seen?.polled ? { agent: seen.agent, status: seen.status, comment: seen.comment } : undefined;
-    const path = `/api/issues/${encodeURIComponent(issue.id)}/comments?${prev?.comment ? `order=asc&limit=500&after=${encodeURIComponent(prev.comment)}` : "order=desc&limit=500"}`;
-    const r = await owner("GET", path);
-    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`control plane GET comments → ${r.status}`);
-    const all = (r.json as Comment[]).slice().sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
+    // The comments are read when the task changed since they were last read whole (its updatedAt or lastActivityAt moved: a
+    // comment moves both), on first sight, and at least every READ_EVERY_MS; otherwise the cursor's last read stands and
+    // everything below that needs no comment (a deferred move, a routine re-arm, a wait) still runs.
+    const stamp = stampOf(issue);
+    const read = fresh || !prev || seen?.seen_stamp !== stamp || now() - (seen?.read_at ?? 0) >= READ_EVERY_MS + jitter(issue.id);
+    let all: Comment[] = [];
+    if (read) {
+      const path = `/api/issues/${encodeURIComponent(issue.id)}/comments?${prev?.comment ? `order=asc&limit=500&after=${encodeURIComponent(prev.comment)}` : "order=desc&limit=500"}`;
+      const r = await owner("GET", path);
+      if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`control plane GET comments → ${r.status}`);
+      all = (r.json as Comment[]).slice().sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
+    }
+    // A full page past the cursor may have more behind it: the cursor moves, but the stamp isn't marked read, so the next scan
+    // goes on from there at once.
+    const drained = read && !(prev?.comment && all.length >= 500);
     // First sight: only what came after the dispatcher joined or the agent's last word on the task.
     const boundary = prev ? 0 : Math.max(since(agent, joined), ...all.filter((c) => c.authorAgentId === agent || SELF_TAG.test(c.body ?? "")).map((c) => ms(c.createdAt)));
     // Every untagged comment read is a fact (version = its id): the owner's say, an agent's. A comment the kernel wrote carries a
@@ -348,7 +407,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const chatWord = String(issue.status ?? "") === "done" && chat && ownerWordAfter(finishedAt);
     // A finished chat with no owner word left to act on (the read found none, or the owner reopened or cancelled it himself) has
     // nothing to retry, so its row goes rather than being re-scanned every poll.
-    if (!chatWord && q("SELECT 1 FROM chat_reopen WHERE task = ?").get(issue.id)) q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
+    if (read && !chatWord && q("SELECT 1 FROM chat_reopen WHERE task = ?").get(issue.id)) q("DELETE FROM chat_reopen WHERE task = ?").run(issue.id);
     if (chatWord) {
       // Said before the move: the comment read is a snapshot, and the owner may have cancelled the chat since. Only a task still
       // `done` is reopened (a cancelled chat stays closed), and a read that fails writes nothing.
@@ -452,8 +511,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     }
     const newest = prev?.comment && !all.length ? prev.comment : all.at(-1)?.id ?? null;
     const rowStatus = deferred ? String(prev?.status ?? seen?.status ?? "") : status, mem = memory(seen, rowStatus, issue);
-    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, blocked_names, blocked_deleted, blocked_exists, polled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = excluded.blocked, blocked_names = excluded.blocked_names, blocked_deleted = excluded.blocked_deleted, blocked_exists = excluded.blocked_exists, polled = 1")
-      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, rowStatus, newest, mem.blocked, mem.names, mem.deleted, mem.exists);
+    q("INSERT INTO wake_tasks (task, agent, status, comment, blocked, blocked_names, blocked_deleted, blocked_exists, polled, seen_stamp, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT(task) DO UPDATE SET agent = excluded.agent, status = excluded.status, comment = excluded.comment, blocked = excluded.blocked, blocked_names = excluded.blocked_names, blocked_deleted = excluded.blocked_deleted, blocked_exists = excluded.blocked_exists, polled = 1, seen_stamp = COALESCE(excluded.seen_stamp, seen_stamp), read_at = COALESCE(excluded.read_at, read_at)")
+      .run(issue.id, deferred ? (prev?.agent ?? seen?.agent ?? null) : agent, rowStatus, newest, mem.blocked, mem.names, mem.deleted, mem.exists, read ? (drained ? stamp : "") : null, read ? now() : null);
   }
 
   /**
@@ -570,15 +629,16 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (!id) continue;
       const a = await owner("GET", `/api/agents/${encodeURIComponent(id)}`);
       if (a.status !== 200) throw new Error(`control plane GET agent → ${a.status}`);
-      const l = await owner("GET", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(id)}`);
+      // Only the ids are read: the compact view, which Paperclip may answer from its short request cache.
+      const l = await owner("GET", `/api/companies/${encodeURIComponent(String(a.json.companyId))}/issues?status=${OPEN}&limit=500&view=compact&assigneeAgentId=${encodeURIComponent(id)}`);
       if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
       // Continuity: whether this member finished a task in one of the task's repos within the window (task status done).
       let done = 0;
       if (repos.length) for (const r of q("SELECT task, repos, done FROM team_routes WHERE member = ? AND at > ? AND task != ? AND state != 'blocked' ORDER BY done DESC").all(id, since, task) as { task: string; repos: string; done: number }[]) {
         if (!(JSON.parse(r.repos) as string[]).some((x) => repos.includes(x))) continue;
         if (!r.done) {
-          const t = await owner("GET", `/api/issues/${encodeURIComponent(r.task)}`);
-          if (t.status === 200 && t.json?.status === "done") q("UPDATE team_routes SET done = 1 WHERE task = ?").run(r.task);
+          // Its status as the issue mirror last recorded it (the poll's change list keeps it current).
+          if ((q("SELECT status FROM task_facts_seen WHERE task = ?").get(r.task) as { status: string | null } | undefined)?.status === "done") q("UPDATE team_routes SET done = 1 WHERE task = ?").run(r.task);
           else continue;
         }
         done = 1;
@@ -687,173 +747,260 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     return true;
   }
 
+  /** Each polled agent's company (read once: an agent never changes company). */
   const companies = new Map<string, string>();
-  /**
-   * Since when an agent's finished chats are re-read (chat_cursor): a durable cursor per agent, so a comment missed while the
-   * kernel is down is still found after it restarts, however long it was away. Per agent, not per company: one agent whose
-   * turn failed (its company unknown, a list or a chat read broken) holds only its own window, never a colleague's.
-   */
-  const chatSince = (agent: string) => {
-    const row = q("SELECT at, after, until FROM chat_cursor WHERE agent = ?").get(agent) as { at: number; after: string | null; until: number | null } | undefined;
-    return row ?? { at: now() - 10 * 60_000, after: null, until: null };
-  };
-  /**
-   * Where the agent's pass over its window stands: the window's start, the last id read when an earlier poll was cut short,
-   * and the time the window ends (`until`, the first pass's start). A resumed pass that finishes moves the start to `until`,
-   * so a long outage with more rows than one pass covers still catches up instead of restarting the same window forever.
-   */
-  const setChatSince = (agent: string, at: number, after: string | null, until: number | null) => q("INSERT INTO chat_cursor (agent, at, after, until) VALUES (?, ?, ?, ?) ON CONFLICT(agent) DO UPDATE SET at = excluded.at, after = excluded.after, until = excluded.until").run(agent, at, after, until);
   /** The wait-park reconcile, once idle.ts has it (it is made after this inbox): a task's own event re-parks a restored wait at
    *  once, so the recovery sweep's tick never gets to see a settled wait in a status it scans. */
   let settleOn: ((issue: Issue) => Promise<unknown>) | undefined;
   /** The reconcile's own pass (idle.ts settle), run after each poll: a wait that just ended is restored at this cadence. */
   let settleEach: (() => Promise<unknown>) | undefined;
-  /** The most tasks a poll re-reads one by one (closures and hand-offs its lists can't show), and how long its reconcile may take. */
+  /** The most tasks a poll re-reads one by one (tasks the facts call open that the full listing didn't return), and how long that may take. */
   const RECONCILE_MAX = 100;
   const RECONCILE_MS = 30_000;
   /** A task Paperclip says is gone is cancelled only once it is missing on two passes this far apart (first miss: in memory). */
   const MISSING_MS = 10 * 60_000;
   const missing = new Map<string, number>();
+
+  // ---- Scans of one task never overlap: the poll's, an event's, a retry's. ----
+  const lanes = new Map<string, Promise<unknown>>();
+  /** `fn` once every earlier scan of `task` has finished (taken at the entry points: a scan re-enters itself through place/move). */
+  const lane = <T>(task: string, fn: () => Promise<T>): Promise<T> => {
+    const run = (lanes.get(task) ?? Promise.resolve()).then(fn, fn);
+    const tail = run.then(() => {}, () => {});
+    lanes.set(task, tail);
+    void tail.then(() => { if (lanes.get(task) === tail) lanes.delete(task); });
+    return run;
+  };
+
+  // ---- The reconcile: one paged list of each company's changes since its cursor (wake_cursor). ----
+  /**
+   * `since`: the next pass reads rows updated after it (Paperclip's `updatedSince` is strictly after). It starts at the epoch, so
+   * the first pass fills the mirror with every task. `floor`: a finished chat is scanned for a reply only if it changed after
+   * it (set once: a first pass over old chats files nothing for words long answered). `full_at`: the last full listing. `after`:
+   * where a by-id pass (see changes) cut short resumes ('' from the start), null when the pass goes by time; `after_at`: when
+   * that by-id pass began, which its completion moves `since` to (a row it had passed may have changed since).
+   */
+  const legacyFloor = (() => { try { return (q("SELECT MIN(at) AS at FROM chat_cursor").get() as { at: number | null } | undefined)?.at ?? null; } catch { return null; } })();
+  const cursorOf = (company: string) => {
+    const row = q("SELECT since, floor, full_at, after, after_at FROM wake_cursor WHERE company = ?").get(company) as { since: string; floor: number; full_at: number; after: string | null; after_at: number | null } | undefined;
+    if (row) return row;
+    const fresh = { since: iso(0), floor: legacyFloor ?? now() - 10 * 60_000, full_at: 0, after: null as string | null, after_at: null as number | null };
+    q("INSERT INTO wake_cursor (company, since, floor, full_at) VALUES (?, ?, ?, 0)").run(company, fresh.since, fresh.floor);
+    db.exec("DROP TABLE IF EXISTS chat_cursor"); // its window is the floor now
+    return fresh;
+  };
+  /**
+   * One changed row: its facts and mirror row. A finished chat of a polled agent is scanned (an owner's reply on it reopens it); a
+   * scan that fails puts it on the retry list (chat_reopen). An old closed task with no facts gets its mirror row only: its title
+   * for the board, no history invented for it. Open rows are scanned after the list, from the mirror. False: not recorded.
+   */
+  async function changed(row: Issue, joined: Map<string, number>, floor: number): Promise<boolean> {
+    try {
+      const st = String(row.status ?? "");
+      if (st === "done" || st === "cancelled") {
+        // A closure older than what the mirror holds (a reopen the event path already recorded) changes nothing, the wake cursor included.
+        if (stale(row)) return true;
+        const holder = row.assigneeAgentId;
+        if (st === "done" && holder && joined.has(holder) && ms(row.updatedAt) > floor && isChat(row)) {
+          await lane(row.id, () => scan(row, { source: "poll", joined })).catch((e: Error) => {
+            q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(row.id, now());
+            log("wake scan failed", { task: row.id, err: e.message });
+          });
+          return true;
+        }
+        if (facts && !lastFacts(row.id).has("task.created")) { mirror(row); return true; }
+        taskFacts(row, "poll", "unknown");
+        // A closed task is before `blocked`: its blocker history must not outlive the period it was recorded for.
+        q("UPDATE wake_tasks SET status = ?, blocked = NULL, blocked_names = NULL, blocked_deleted = NULL, blocked_exists = NULL WHERE task = ? AND status IS NOT ?").run(st, row.id, st);
+        return true;
+      }
+      taskFacts(await whole(row), "poll", "unknown");
+      return true;
+    } catch (e) {
+      log("wake reconcile failed", { task: row.id, err: (e as Error).message });
+      return false;
+    }
+  }
+  /** Rows changed since a pass this far back are read again: a write commits after the time it is stamped with. */
+  const OVERLAP_MS = 2 * 60_000;
+  const PAGE = 500, PAGES = 25;
+  /**
+   * Every company's changes since its cursor, paged by id over `updatedSince` (Paperclip sorts `sortField=updated` by last
+   * activity, not by the updatedAt it filters on, so only the id order is a stable cursor: a row updated during the pass keeps
+   * its place, a deleted one shifts nothing). A pass the page budget cuts short resumes from its last page on the next poll
+   * (`after`), its start (`after_at`) held: a complete pass moves `since` to that start, with the overlap, never past a row
+   * whose record failed and never backwards.
+   */
+  async function changes(company: string, joined: Map<string, number>, signal?: AbortSignal) {
+    const cur = cursorOf(company), began = cur.after_at ?? now();
+    let afterId = cur.after ?? "", complete = false, failedAt: number | undefined;
+    for (let page = 0; page < PAGES && !signal?.aborted; page++) {
+      const query = new URLSearchParams({ updatedSince: cur.since, sortField: "id", sortDir: "asc", limit: String(PAGE), ...(afterId ? { afterId } : {}) });
+      const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
+      if (l.status !== 200 || !Array.isArray(l.json)) { log("wake changes failed", { company, status: l.status }); break; }
+      const rows = l.json as Issue[];
+      let cut = false;
+      for (const row of rows) {
+        if (signal?.aborted) { cut = true; break; }
+        if (!(await changed(row, joined, cur.floor))) failedAt = Math.min(failedAt ?? Infinity, ms(row.updatedAt));
+      }
+      if (cut) break;
+      if (rows.length < PAGE) { complete = true; break; }
+      afterId = rows.at(-1)!.id;
+    }
+    if (complete) {
+      let to = began - OVERLAP_MS;
+      if (failedAt !== undefined) to = Math.min(to, failedAt - 1);
+      q("UPDATE wake_cursor SET since = ?, after = NULL, after_at = NULL WHERE company = ?").run(iso(Math.max(to, ms(cur.since))), company);
+      return;
+    }
+    // Cut short: resume past the finished pages, or from the start when a row failed (so it is read again).
+    q("UPDATE wake_cursor SET after = ?, after_at = ? WHERE company = ?").run(failedAt === undefined ? afterId : "", began, company);
+    log("wake changes cut short", { company, after: afterId || null });
+  }
+
+  /** How often every open task is listed whole: the backstop for a change the cursor missed, and what "gone" is judged against. */
+  const FULL_MS = 10 * 60_000;
+  /** Every open, blocked and parked task of a company (paged by id): their facts and mirror rows, and the ids, or undefined when the listing failed. */
+  async function listing(company: string, signal?: AbortSignal): Promise<Set<string> | undefined> {
+    const ids = new Set<string>();
+    let afterId: string | undefined;
+    // To the end: the open, blocked and parked tasks are a bounded set, and "gone" needs all of them.
+    for (;;) {
+      if (signal?.aborted) return undefined;
+      const query = new URLSearchParams({ status: `${OPEN},blocked,backlog`, limit: String(PAGE), sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) });
+      const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
+      if (l.status !== 200 || !Array.isArray(l.json)) { log("wake reconcile failed", { company, status: l.status }); return undefined; }
+      const rows = l.json as Issue[];
+      for (const row of rows) {
+        ids.add(row.id);
+        try { taskFacts(await whole(row), "poll", "unknown"); } catch (e) { log("wake reconcile failed", { task: row.id, err: (e as Error).message }); }
+      }
+      if (rows.length < PAGE) { q("UPDATE wake_cursor SET full_at = ? WHERE company = ?").run(now(), company); return ids; }
+      afterId = rows.at(-1)!.id;
+    }
+  }
+  /** The mirror's row for a task, as the poll scans it. */
+  const mirrored = (raw: string | null) => { try { const i = raw ? (JSON.parse(raw) as Issue) : undefined; return i?.id ? i : undefined; } catch { return undefined; } };
+
+  // ---- Events: merged per task for `debounceMs`, then one scan (in the task's lane). ----
+  type Pending = { reopened: boolean; actor: string; updatedAt?: string; waiters: ((v: { scanned: boolean }) => void)[]; timer?: ReturnType<typeof setTimeout> };
+  const pending = new Map<string, Pending>();
+  async function fire(id: string, p: Pending) {
+    const out = await lane(id, async () => {
+      // Events that came while this one waited for the lane are in it; any that come from here on are the trailing scan's.
+      if (pending.get(id) === p) pending.delete(id);
+      // A proven duplicate (a redelivery, an echo the scan already saw): this task's comments were read whole at a state at least
+      // as new as the event's, so a scan now would find nothing it hasn't.
+      if (p.updatedAt && !p.reopened) {
+        const at = (q("SELECT seen_stamp FROM wake_tasks WHERE task = ?").get(id) as { seen_stamp: string | null } | undefined)?.seen_stamp?.split("|")[0];
+        if (at && ms(at) >= ms(p.updatedAt)) return { scanned: false };
+      }
+      const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}`);
+      if (r.status !== 200 || typeof r.json?.id !== "string") return { scanned: false };
+      const issue = r.json as Issue;
+      await scan(issue, { reopened: p.reopened, actor: p.actor });
+      // A task put back into a status the recovery sweep scans while its own wait is armed is parked again here rather than at
+      // the next settle tick: the sweep's tick is 60–90 s and so is the poll, so the poll alone would leave a window in which
+      // it can act first (idle.ts).
+      if (settleOn && SCANNED.has(String(issue.status))) await settleOn(issue).catch((e: Error) => log("wait settle on event failed", { task: issue.id, err: e.message }));
+      return { scanned: true };
+    }).catch((e: Error) => { log("wake event scan failed", { task: id, err: e.message }); return { scanned: false }; });
+    for (const w of p.waiters) w(out);
+  }
+
   return {
     scan,
     /** Hand the task reconcile to the inbox (idle.ts settleOne): called on a task's own event, before the next settle tick. */
     settleOn: (f: (issue: Issue) => Promise<unknown>) => { settleOn = f; },
-    /** Hand the reconcile's whole pass to the inbox (idle.ts settle): run once per poll, after the lists are scanned. */
+    /** Hand the reconcile's whole pass to the inbox (idle.ts settle): run once per poll, after the tasks are scanned. */
     settleEach: (f: () => Promise<unknown>) => { settleEach = f; },
     /**
      * A change the kernel just made through the control plane (cp.ts, the owner proxy): the task's facts at once, from the issue the
      * write returned. No wake: the event and the poll file those, from their own cursor.
      */
     async observe(issue: Issue, actor: string) { taskFacts(issue, "live", actor); },
+    /** What the mirror last recorded of a task (its Paperclip status and row), or undefined for a task it has never seen. */
+    mirror(task: string): { status: string | null; issue: Issue | undefined; at: number } | undefined {
+      const r = q("SELECT status, issue, at FROM task_facts_seen WHERE task = ?").get(task) as { status: string | null; issue: string | null; at: number } | undefined;
+      return r ? { status: r.status || null, issue: mirrored(r.issue), at: r.at } : undefined;
+    },
     /**
-     * The reconcile poll: every open or blocked task of every polled agent (a blocked one is released once its blockers closed); and wakes whose jobs
-     * ended are done. Then every other open task of their companies (the owner's, unassigned ones, unpolled agents') has its facts
-     * recorded, and the tasks the facts call open that no list returned are read one by one.
+     * The reconcile poll: each company's changes since its cursor into the mirror (and every open task listed whole every
+     * FULL_MS); then every open or blocked task of a polled agent, and every task with an armed wait, is scanned from the mirror
+     * (a blocked one is released once its blockers closed); wakes whose jobs ended are done; finished chats whose reply needs a
+     * retry are read again; and, after a full listing, the tasks the facts call open that it didn't return are read one by one.
+     * `signal` (a drain) stops it between tasks.
      */
-    async poll() {
+    async poll(signal?: AbortSignal) {
       try { q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run(); } catch (e) { log("wake poll failed", { step: "close ended wakes", err: (e as Error).message }); }
-      const listed = new Set<string>();
-      // A finished chat's comment can be missed with its event (a kernel restart, a lost delivery): every poll re-reads the chats
-      // whose activity is newer than the company's durable cursor, so the scan can reopen and wake them.
-      const polledAt = now();
-      for (const agent of polled().keys()) {
-        // The cursor is this agent's own, so a failure below holds only its window: every other agent still advances, and the
-        // chats this one never listed stay inside its next `updatedSince`.
-        let company = companies.get(agent);
-        // The pass over the agent's window: where it started, whether it reached the end, and the last id it fully read. A pass
-        // cut short keeps its start (nothing past it is skipped) and resumes past the ids it did read.
-        const window = chatSince(agent);
-        let complete = false, readTo: string | null = null;
+      const joined = polled();
+      // Every agent's company, polled or not: the mirror serves the board on an install with no dispatcher yet too.
+      for (const agent of new Set([...Object.keys(grants()), ...joined.keys()])) {
+        if (companies.has(agent) || signal?.aborted) continue;
         try {
-          if (!company) {
-            const a = await owner("GET", `/api/agents/${encodeURIComponent(agent)}`);
-            if (a.status !== 200 || !a.json?.companyId) throw new Error(`control plane GET agent → ${a.status}`);
-            company = String(a.json.companyId);
-            companies.set(agent, company);
-          }
-          const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=${OPEN}&limit=500&assigneeAgentId=${encodeURIComponent(agent)}`);
-          if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
-          for (const issue of l.json as Issue[]) listed.add(issue.id);
-          for (const issue of l.json as Issue[]) await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
-          const b = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=blocked&limit=200&assigneeAgentId=${encodeURIComponent(agent)}`);
-          if (b.status !== 200 || !Array.isArray(b.json)) throw new Error(`control plane GET blocked issues → ${b.status}`);
-          for (const issue of b.json as Issue[]) listed.add(issue.id);
-          // A blocked task hears its comments too (a sub-task's question to its delegator, which it is blocked on), then is released.
-          for (const issue of b.json as Issue[]) {
-            await scan(issue, { source: "poll" }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
-            await unblock(issue, agent).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
-          }
-          // Paged by id, not offset: after an outage an agent can have more finished tasks than one page, and a concurrent
-          // reopen shifting offset pages would skip the row that slid into the gap. The id cursor is stable under exactly that;
-          // every page is collected before any scan, so this poll's own writes cannot move it either.
-          const finished: Issue[] = [];
-          let afterId: string | undefined = window.after ?? undefined, pageFailed = false;
-          for (let page = 0; page < 25; page++) {
-            const query = new URLSearchParams({ status: "done", limit: "200", assigneeAgentId: agent, updatedSince: iso(window.at), sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) });
-            const d = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`).catch((e: Error) => (log("wake poll failed", { agent, page, err: e.message }), undefined));
-            if (!d || d.status !== 200 || !Array.isArray(d.json)) { pageFailed = true; break; }
-            const rows = d.json as Issue[];
-            finished.push(...rows);
-            if (rows.length < 200) { complete = true; break; }
-            afterId = rows.at(-1)?.id;
-            if (!afterId) break;
-          }
-          // A page that failed ends the listing, but the pages before it are scanned: the work already read is not thrown away
-          // (and their resume point is kept for the rest).
-          if (pageFailed) log("wake chat window cut short", { agent, company });
-          // A traversal cut short at its page budget, or a chat whose scan failed, is not the whole window. Its start stays, and
-          // a resume point past the rows the pass actually processed lets the next poll go on from there: the page budget never
-          // strands the chats beyond it. A page fetched but never scanned is not passed (`readTo` moves per processed row).
-          let scanned = true;
-          for (const issue of finished) {
-            if (!listed.has(issue.id) && isChat(issue)) {
-              listed.add(issue.id);
-              await scan(issue, { source: "poll" }).catch((e: Error) => {
-                scanned = false;
-                readTo = null; // this chat's comment may be anywhere in the window: reread it whole
-                q("INSERT INTO chat_reopen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(issue.id, now());
-                log("wake scan failed", { task: issue.id, err: e.message });
-              });
-            }
-            // The resume point moves one processed row at a time: a row whose scan failed stops it here, so the next pass reads
-            // that row's window again rather than starting past its comment.
-            if (scanned) readTo = issue.id;
-          }
-          if (!complete) log("wake chat window truncated", { agent, company, reads_to: readTo });
-          // A finished pass moves the start to its window's end (`until`): a resumed pass covers its ids to the end, and a reply
-          // that landed while it ran is later than that end, so the next window has it. The one-second overlap keeps a change
-          // that commits at the boundary inside the next window: Paperclip's `updatedSince` is strictly after.
-          if (complete && scanned) setChatSince(agent, (window.until ?? polledAt) - 1000, null, null);
-          else setChatSince(agent, window.at, readTo, window.until ?? polledAt);
-        } catch (e) {
-          // Whatever was processed before the failure is not skipped: the window keeps its start, and the resume point covers
-          // only rows already scanned (a failed page adds none).
-          setChatSince(agent, window.at, readTo, window.until ?? polledAt);
-          log("wake poll failed", { agent, err: (e as Error).message });
-        }
+          const a = await owner("GET", `/api/agents/${encodeURIComponent(agent)}`);
+          if (a.status !== 200 || !a.json?.companyId) throw new Error(`control plane GET agent → ${a.status}`);
+          companies.set(agent, String(a.json.companyId));
+        } catch (e) { log("wake poll failed", { agent, err: (e as Error).message }); }
       }
-      // A reopen the control plane refused, or a finished chat's comment read that failed, waits here until it succeeds, whatever
-      // the rolling window above says: the scan reads its comment again and retries (no wake was filed for it).
+      let listed: Set<string> | undefined = new Set<string>();
+      const all = [...new Set(companies.values())];
+      for (const company of all) {
+        if (signal?.aborted) return;
+        try { await changes(company, joined, signal); } catch (e) { log("wake changes failed", { company, err: (e as Error).message }); }
+      }
+      // Every company is listed whole together, so "gone" is judged against all of them at once (the fact log names no company).
+      const fullPass = all.some((c) => now() - cursorOf(c).full_at >= FULL_MS);
+      if (fullPass) for (const company of all) {
+        if (signal?.aborted) return;
+        const ids = await listing(company, signal).catch((e: Error) => (log("wake reconcile failed", { company, err: e.message }), undefined));
+        if (ids && listed) for (const id of ids) listed.add(id);
+        else listed = undefined;
+      }
+      // Every open or blocked task of a polled agent, and every task whose own wait is armed (parked in backlog: a lost comment
+      // event would leave an answer unread until the timed wake), from the mirror the lists just refreshed.
+      const waits = new Set((q("SELECT DISTINCT task FROM wakes WHERE state = 'open' AND key LIKE 'wait:%'").all() as { task: string }[]).map((r) => r.task));
+      const rows = q(`SELECT task, issue FROM task_facts_seen WHERE issue IS NOT NULL AND (status IN ('todo', 'in_progress', 'in_review', 'blocked')${waits.size ? ` OR task IN (${[...waits].map(() => "?").join(",")})` : ""})`).all(...waits) as { task: string; issue: string }[];
+      for (const r of rows) {
+        if (signal?.aborted) return;
+        const issue = mirrored(r.issue);
+        if (!issue) continue;
+        const agent = issue.assigneeAgentId;
+        const mine = Boolean(agent && joined.has(agent));
+        if (!mine && !waits.has(issue.id)) continue;
+        await lane(issue.id, async () => {
+          // Read again inside the lane: an event scanned while this poll waited may have moved the task on (another assignee, closed).
+          const now2 = mirrored((q("SELECT issue FROM task_facts_seen WHERE task = ?").get(issue.id) as { issue: string | null } | undefined)?.issue ?? null);
+          if (!now2) return;
+          const holder = now2.assigneeAgentId, still = Boolean(holder && joined.has(holder)) && ["todo", "in_progress", "in_review", "blocked"].includes(String(now2.status));
+          if (!still && !waits.has(now2.id)) return;
+          await scan(now2, { source: "poll", joined }).catch((e: Error) => log("wake scan failed", { task: now2.id, err: e.message }));
+          // A blocked task hears its comments too (a sub-task's question to its delegator, which it is blocked on), then is released.
+          if (still && now2.status === "blocked") await unblock(now2, holder!).catch((e: Error) => log("wake unblock failed", { task: now2.id, err: e.message }));
+        });
+      }
+      // A reopen the control plane refused, or a finished chat's comment read that failed, waits here until it succeeds: the scan
+      // reads its comments again and retries (no wake was filed for it).
       for (const { task } of q("SELECT task FROM chat_reopen ORDER BY at").all() as { task: string }[]) {
-        try {
+        if (signal?.aborted) return;
+        await lane(task, async () => {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
           // Gone, or no longer a done chat (the owner cancelled or reopened it himself): there is nothing left to retry.
           if (r.status === 404 || (r.status === 200 && (String(r.json?.status) !== "done" || !isChat(r.json as Issue)))) q("DELETE FROM chat_reopen WHERE task = ?").run(task);
-          else if (r.status === 200) await scan(r.json as Issue, { source: "poll" });
-        } catch (e) { log("wake scan failed", { task, err: (e as Error).message }); }
+          else if (r.status === 200) await scan(r.json as Issue, { source: "poll", joined, fresh: true });
+        }).catch((e: Error) => log("wake scan failed", { task, err: e.message }));
       }
       if (settleEach) await settleEach().catch((e: Error) => log("task wait settle failed", { err: e.message }));
-      // A parked task (backlog, its own wait armed) is outside OPEN, so the per-agent list above never scans it, and the
-      // company query below only records its status facts: a lost `issue.comment.created` event would leave an owner's or
-      // delegator's answer unread until the timed wake. These are scanned like an open task's, so the answer still wakes it.
-      const parkedUntil = Date.now() + RECONCILE_MS;
-      for (const { task } of q("SELECT DISTINCT task FROM wakes WHERE state = 'open' AND key LIKE 'wait:%'").all() as { task: string }[]) {
-        if (Date.now() > parkedUntil) break;
-        try {
-          const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
-          if (r.status === 200) await scan(r.json as Issue, { source: "poll" });
-        } catch (e) { log("wake scan failed", { task, err: (e as Error).message }); }
-      }
+      // A task the facts call open that the full listing didn't return was closed or deleted with its change missed: each is read
+      // once, least recently seen first. Gone from Paperclip (404 on two passes ≥ 10 minutes apart) is cancelled, by the kernel.
+      if (!facts || !fullPass || !listed) return;
       const until = Date.now() + RECONCILE_MS;
-      for (const company of new Set(companies.values())) {
-        try {
-          const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?status=${OPEN},blocked,backlog&limit=500`);
-          if (l.status !== 200 || !Array.isArray(l.json)) throw new Error(`control plane GET issues → ${l.status}`);
-          for (const row of l.json as Issue[]) {
-            if (listed.has(row.id) || Date.now() > until) continue;
-            listed.add(row.id);
-            try { taskFacts(await whole(row), "poll", "unknown"); } catch (e) { log("wake reconcile failed", { task: row.id, err: (e as Error).message }); }
-          }
-        } catch (e) { log("wake reconcile failed", { company, err: (e as Error).message }); }
-      }
-      // A task the facts call open that no list returned may have closed or gone, its event lost: each is read once, least
-      // recently seen first. Gone from Paperclip (404 on two passes ≥ 10 minutes apart) is cancelled, by the kernel.
-      if (!facts) return;
       const seenAt = new Map((q("SELECT task, at FROM task_facts_seen").all() as { task: string; at: number }[]).map((r) => [r.task, r.at]));
-      const gone = facts.openTasks().filter((t) => !listed.has(t)).sort((a, b) => (seenAt.get(a) ?? 0) - (seenAt.get(b) ?? 0) || a.localeCompare(b)).slice(0, RECONCILE_MAX);
+      const gone = facts.openTasks().filter((t) => !listed!.has(t)).sort((a, b) => (seenAt.get(a) ?? 0) - (seenAt.get(b) ?? 0) || a.localeCompare(b)).slice(0, RECONCILE_MAX);
       const seen = (task: string) => q("INSERT INTO task_facts_seen (task, at) VALUES (?, ?) ON CONFLICT(task) DO UPDATE SET at = excluded.at").run(task, now());
       for (const task of gone) {
-        if (Date.now() > until) break;
+        if (Date.now() > until || signal?.aborted) break;
         try {
           const r = await owner("GET", `/api/issues/${encodeURIComponent(task)}`);
           if (r.status === 404) {
@@ -862,7 +1009,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             missing.delete(task);
             inTx(db, "task_gone", () => {
               fact({ type: "task.status_changed", subject: `task:${task}`, task, version: "missing", at: iso(now()), actor: "kernel", source: "poll", data: { from: str(lastFacts(task).get("task.status_changed")?.data.to), to: "cancelled" } });
-              q("UPDATE task_facts_seen SET status = 'cancelled' WHERE task = ?").run(task);
+              // Gone, not just cancelled: no longer a ref the board can resolve (its facts keep the history).
+              q("UPDATE task_facts_seen SET status = 'cancelled', identifier = NULL, title = NULL, issue = NULL WHERE task = ?").run(task);
               // A closed task is before `blocked`: its blocker history must not outlive the period it was recorded for.
               q("UPDATE wake_tasks SET status = 'cancelled', blocked = NULL, blocked_names = NULL, blocked_deleted = NULL, blocked_exists = NULL WHERE task = ?").run(task);
               seen(task);
@@ -872,26 +1020,43 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           missing.delete(task);
           if (r.status !== 200) { seen(task); log("wake reconcile failed", { task, err: `control plane GET issue → ${r.status}` }); continue; }
           const issue = r.json as Issue;
+          // An older read than the mirror's changes nothing, the wake cursor included (see `changed`).
+          if (stale(issue)) continue;
           taskFacts(issue, "poll", "unknown");
           if (issue.status === "done" || issue.status === "cancelled") q("UPDATE wake_tasks SET status = ?, blocked = NULL, blocked_names = NULL, blocked_deleted = NULL, blocked_exists = NULL WHERE task = ?").run(issue.status, task);
         } catch (e) { log("wake reconcile failed", { task, err: (e as Error).message }); }
       }
     },
-    /** A Paperclip event (ids only, untrusted): scan the task it names, as the poll would. */
-    async event(b: { issueId?: unknown; reopened?: unknown; actorType?: unknown; actorId?: unknown }) {
-      if (typeof b.issueId !== "string" || !/^[\w-]{1,100}$/.test(b.issueId)) return { scanned: false };
-      const r = await owner("GET", `/api/issues/${encodeURIComponent(b.issueId)}`);
-      if (r.status !== 200) return { scanned: false };
+    /**
+     * A Paperclip event (ids only, untrusted): its task is scanned once `debounceMs` has passed with no newer event for it (a burst,
+     * duplicates and the echoes of the kernel's own writes merge into one scan; a `reopened` hint from any of them is kept). One
+     * scan per task runs at a time, plus one trailing scan for what came during it. Resolves when the scan that covers it ends.
+     */
+    event(b: { issueId?: unknown; reopened?: unknown; actorType?: unknown; actorId?: unknown; updatedAt?: unknown }): Promise<{ scanned: boolean }> {
+      if (typeof b.issueId !== "string" || !/^[\w-]{1,100}$/.test(b.issueId)) return Promise.resolve({ scanned: false });
+      const id = b.issueId;
       // Who Paperclip says did it (the event's actor), as a fact's actor.
-      const id = typeof b.actorId === "string" && /^[\w-]{1,100}$/.test(b.actorId) ? b.actorId : "";
-      const actor = id && b.actorType === "agent" ? `agent:${keyOf(id)}` : id && b.actorType === "user" ? `account:${id}` : "unknown";
-      const issue = r.json as Issue;
-      await scan(issue, { reopened: b.reopened === true, actor });
-      // A task put back into a status the recovery sweep scans while its own wait is armed is parked again here rather than at
-      // the next settle tick: the sweep's tick is 60–90 s and so is the poll, so the poll alone would leave a window in which
-      // it can act first (idle.ts).
-      if (settleOn && SCANNED.has(String(issue.status))) await settleOn(issue).catch((e: Error) => log("wait settle on event failed", { task: issue.id, err: e.message }));
-      return { scanned: true };
+      const who = typeof b.actorId === "string" && /^[\w-]{1,100}$/.test(b.actorId) ? b.actorId : "";
+      const actor = who && b.actorType === "agent" ? `agent:${keyOf(who)}` : who && b.actorType === "user" ? `account:${who}` : "unknown";
+      const at = typeof b.updatedAt === "string" && Number.isFinite(Date.parse(b.updatedAt)) ? b.updatedAt : undefined;
+      let p = pending.get(id);
+      if (!p) {
+        const fresh: Pending = { reopened: false, actor: "unknown", updatedAt: at, waiters: [] };
+        p = fresh;
+        pending.set(id, fresh);
+        fresh.timer = setTimeout(() => void fire(id, fresh), debounceMs);
+        fresh.timer.unref?.();
+      } else if (at && (!p.updatedAt || ms(at) > ms(p.updatedAt))) p.updatedAt = at;
+      // An event without a time proves nothing about what was seen: the merged scan always runs.
+      if (!at) p.updatedAt = undefined;
+      if (b.reopened === true) p.reopened = true;
+      if (actor !== "unknown") p.actor = actor;
+      const mine = p;
+      return new Promise((res) => mine.waiters.push(res));
+    },
+    /** A drain: events still gathering are let go (the next kernel's poll reads their tasks). */
+    close() {
+      for (const [id, p] of pending) { clearTimeout(p.timer); pending.delete(id); for (const w of p.waiters) w({ scanned: false }); }
     },
     /** A module's scheduled wake (role kernel.wake) for the task's assignee, due at `at`. */
     async schedule(module: string, b: { task?: unknown; agent?: unknown; at?: unknown; cause?: unknown; id?: unknown }) {

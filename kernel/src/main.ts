@@ -101,7 +101,7 @@ import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
-import { TYPED, limitIssueLists, markCode } from "./cplimit.ts";
+import { TYPED, jsonApi as asApi, limitIssueLists, markCode, shareReads } from "./cplimit.ts";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
 
@@ -112,8 +112,9 @@ const grantsTable = watched(grantsFile, (j) => j as { agents?: Record<string, Gr
 const connections = watched(path.join(configDir, "kernel", "connections.json"), (j) => j as Record<string, Connection>, {});
 // The control plane with the owner key (paperclip_board_key: only the kernel holds it; the board reaches it through cp.ts createBoardCp): a record's task.
 // One owner-key caller to the control plane, kept under its issue-list cap (cplimit.ts).
-// Every comment it writes is marked as code's unless it carries the owner's typed words (cplimit.ts markCode).
-const ownerFetch = markCode(limitIssueLists(fetch));
+// Every comment it writes is marked as code's unless it carries the owner's typed words (cplimit.ts markCode), and identical
+// reads share one request (static ones a few seconds), each read under the answer cap (cplimit.ts shareReads).
+const ownerFetch = markCode(shareReads(limitIssueLists(fetch)));
 const cpApi = (p: string, init: RequestInit = {}, typed = false) => ownerFetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json", ...(typed ? { [TYPED]: "owner" } : {}) }, signal: init.signal ?? AbortSignal.timeout(15_000) });
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
 const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { snapshot?: string; reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]>; check_jobs?: Recipes }, {});
@@ -247,10 +248,6 @@ replay = proxy.replay as never;
 const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections, kindOf: writes.kindOf, callAs: proxy.callAs, log });
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
 // the kernel's key (gateway_board_key).
-const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api => async (method, p, body) => {
-  const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-  return { status: r.status, json: await r.json().catch(() => ({})) };
-};
 const ownerApi = asApi(cpApi);
 // Projects (projects.ts): repos map into products; a PR's repo fills in its task's project, agents tag one by name.
 const projects = createProjects({ db: records.db, owner: ownerApi, products: () => (grantsTable().projects ?? {}) as Record<string, string[]>, log });
@@ -509,7 +506,7 @@ let polling = false;
 every(() => {
   if (polling) return;
   polling = true;
-  void wakes.poll().catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
+  void wakes.poll(drainSignal.signal).catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
 const idle = createIdle({ db: records.db, facts, state: taskStates, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
@@ -539,7 +536,15 @@ every(() => {
 // The disk stays bounded (workspaces.ts): closed and idle tasks' workspaces, cache layers, engine homes and left check folders
 // go, sooner when a disk is over PRESSURE. Every 15 minutes, and once soon after start; one pass at a time.
 const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, stopping: () => draining,
-  stillClosed: async (task) => { const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(task)}`); return r.status === 404 ? true : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined; }, // 404: the task is gone, so is its workspace's reason to stay
+  // A task the issue mirror (wakes.ts) reports open keeps its folder with no read; deleting one is decided on a live read only.
+  stillClosed: async (task) => {
+    const seen = wakes.mirror(task)?.status;
+    if (seen && !["done", "cancelled"].includes(seen)) return false;
+    const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(task)}`);
+    // A 404 on a task the mirror records closed (closed, or confirmed gone by two misses) is gone; one it has no status for keeps
+    // just its own folder (false, not unknown: one such task never stops the rest of the pass).
+    return r.status === 404 ? Boolean(seen) : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined;
+  },
   engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
 let diskSweeping = false;
 const sweepDisk = () => {
@@ -934,6 +939,7 @@ drain = () => {
   stopTending();
   for (const t of timers) clearTimeout(t);
   drainSignal.abort();
+  wakes.close(); // events still gathering are the next kernel's poll's
   // The ledger's own timers stop now; it closes once the calls it holds and the true-up in flight have settled.
   let truedUp = false;
   void gw.stop().finally(() => { truedUp = true; });

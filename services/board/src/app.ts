@@ -54,7 +54,7 @@ import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { NOTICE_MARKER, askedQuestions, chatAgent, chatAgentMarker, conversation, lastWord, pickAgent, type Message } from "./chats.js";
-import { isActive, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
+import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
 import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
 import { addDays, nextWorkday, type Weekday } from "./dates.js";
 import { BUCKETS, isBucket, localDate, type Store } from "./store.js";
@@ -175,8 +175,6 @@ const REF = /^(?:[0-9a-f-]{36}|[A-Z][A-Z0-9]{1,9}-\d{1,7})$/;
 const RECENT_MS = CLOSED_WINDOW_MS;
 /** Older closed search hits per page (the Done lane asks for more while the owner's filters keep too few). */
 const SEARCH_DONE_PAGE = 50;
-/** How long a board read waits for the parents outside its inventory (Agent work's "part of" links). */
-const PARENTS_MS = 1_500;
 /** The Approvals page acts on what it shows: it waits this long for a fresh read before showing its last one (marked stale, controls held). */
 const APPROVALS_WAIT_MS = 15_000;
 const WORKWEEK: Weekday[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
@@ -310,7 +308,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const identifiers = new Map<string, string>();
   async function named<T extends Approval>(a: T): Promise<T> {
     if (a.identifier !== a.issueId) return a;
-    const id = identifiers.get(a.issueId) ?? (await pc.issue(a.issueId).then((i) => i.identifier, () => undefined));
+    const id = identifiers.get(a.issueId) ?? (await taskStates.issues([a.issueId]).then((l) => l[0]?.identifier ?? undefined, () => undefined));
     if (id) identifiers.set(a.issueId, id);
     return id ? { ...a, identifier: id } : a;
   }
@@ -561,14 +559,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // Done: the kernel's row is done and Paperclip's own close time is in the window (a close fact the kernel dated by a later
     // edit never brings an old task back).
     const cards = shown.filter((i) => !closedIssue(i) || (states.get(i.id)?.lane === "done" && closedAt(i) >= inv.since));
-    // A parent outside the inventory (closed before the window) is read by id, a few at a time (issueSummary caches each a
-    // minute), for at most PARENTS_MS: a link still missing then shows on the next read.
+    // A parent outside the inventory (closed before the window) is named from the kernel's issue mirror, in one read.
     const missing = [...new Set(cards.flatMap((i) => (i.parentId && !byId.has(i.parentId) ? [i.parentId] : [])))];
     const parents = new Map<string, string>();
-    const lookup = (async () => {
-      for (let n = 0; n < missing.length; n += 4) await Promise.all(missing.slice(n, n + 4).map((id) => pc.issueSummary(id).then((p) => void parents.set(p.id, p.identifier), () => {})));
-    })();
-    await Promise.race([lookup, new Promise((r) => setTimeout(r, PARENTS_MS).unref())]);
+    if (missing.length) for (const p of (await issuesOf(taskStates, missing).catch(() => new Map())).values()) if (p.identifier) parents.set(p.id, p.identifier);
     const out: WorkCard[] = [];
     for (const i of cards) {
       const closed = closedIssue(i);
@@ -1959,13 +1953,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "GET",
       path: /^\/api\/costs\/ledger$/,
-      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issue: (id) => pc.issueSummary(id), prices }, ledgerRange(url.searchParams)),
+      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issues: (ids) => issuesOf(taskStates, ids), prices }, ledgerRange(url.searchParams)),
     },
     {
       method: "GET",
       path: /^\/api\/costs\/top$/,
       handle: async (_m, _b, url) =>
-        ledgerTop({ store, agents: () => pc.agents(), issue: (id) => pc.issueSummary(id) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
+        ledgerTop({ store, agents: () => pc.agents(), issues: (ids) => issuesOf(taskStates, ids) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
     },
     // What each feature (a top-level task and its delegated tree) cost and how long it took (feature-cost.ts): the last 14 days...
     {
@@ -2354,10 +2348,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   async function refCache(id: string) {
     const hit = refs.get(id);
     if (hit && Date.now() - hit.at < 30_000) return hit.value;
-    const value = await pc.issue(id).then(
-      async (i) => ({ state: (await stateRows([i.id])).get(i.id) ?? null, title: i.title }),
-      (err) => (err instanceof PaperclipError && err.status === 404 ? null : Promise.reject(err)),
-    );
+    // From the kernel's issue mirror: a task it has never seen is no ref.
+    const i = (await taskStates.issues([id])).find((r) => r.identifier === id || r.id === id);
+    const value = i ? { state: (await stateRows([i.id])).get(i.id) ?? null, title: i.title ?? "" } : null;
     refs.set(id, { at: Date.now(), value });
     return value;
   }
