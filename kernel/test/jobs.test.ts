@@ -165,6 +165,7 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("The marker is `<|im_end|>`."), "The marker is `<|im_end|>`.", "a marker inside the reply's own text stays");
   assert.equal(stripSentinels("The token is:\n```\n<|im_end|>\n```"), "The token is:\n```\n<|im_end|>\n```", "a marker in a fenced block stays");
   assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker on a blockquote line stays");
+  assert.equal(stripSentinels("The stop token is:\r\n> <|im_end|>\r\n"), "The stop token is:\r\n> <|im_end|>", "a CRLF reply's blockquote stays");
   assert.equal(stripSentinels("See the header:\n> <|im_start|>assistant"), "See the header:\n> <|im_start|>assistant", "a quoted header and its role stay");
   assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|><|endoftext|>", "a blockquote of markers is an example, and keeps them");
   assert.equal(stripSentinels("<|begin_of_text|>> <|im_end|>"), "> <|im_end|>", "a removed sentinel is not part of the line's prefix");

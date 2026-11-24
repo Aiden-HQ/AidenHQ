@@ -183,13 +183,15 @@ const exampleLine = (text: string, markerFrom: number, markerTo: number, lineSta
   if (!hasOther) return false;
   const begin = lineStart < from && from <= markerFrom ? from : lineStart;
   if (lineEnd - begin > QUOTE_LINE) return false;
-  const quote = text.slice(begin, lineEnd).match(/^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*|^[ \t]*(?:\t| {4})[ \t]*/);
+  // A CRLF line's carriage return ends the line, not the content: the quote's marks end before it.
+  const line = text.slice(begin, lineEnd).replace(/\r$/, "");
+  const quote = line.match(/^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*|^[ \t]*(?:\t| {4})[ \t]*/);
   if (!quote) return false;
   // After the quote's own marks the line is a run of model markers only, up to its end.
   let i = begin + quote[0].length;
   for (;;) {
     while (i < lineEnd && /[ \t\u200b\ufeff\u2060]/.test(text[i]!)) i++;
-    if (i >= lineEnd) return true;
+    if (i >= lineEnd || (i === lineEnd - 1 && text[i] === "\r")) return true;
     const header = HEADERS.find((h) => text.startsWith(h.text, i));
     const hit = header
       ? header.text.length + roleAt(text, i + header.text.length, lineEnd, header.roles)
