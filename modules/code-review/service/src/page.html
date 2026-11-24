@@ -264,7 +264,7 @@
     const area = h("textarea", { readOnly: true, value: brief, ariaLabel: "Fix brief", rows: 6, spellcheck: false });
     return h("div", { className: `finding ${f.severity}` },
       h("div", { className: "bar" }, h("h4", { textContent: f.title }), outcome ? t("span", "tag", OUTCOMES[outcome]) : null),
-      h("div", { className: "mono soft" }, blob ? gh(blob, where) : where, ...(f.url ? [" · ", gh(f.url, "View the comment")] : [])), md(f.why),
+      h("div", { className: "mono soft" }, blob ? gh(blob, where) : where), md(f.why),
       h("details", {}, h("summary", { textContent: "Why flagged" }), h("pre", { textContent: f.evidence }), h("div", {}, h("b", { textContent: "Wanted: " }), ...mdInline(f.fix_brief))),
       brief ? h("details", {}, h("summary", { textContent: "Fix brief" }), area, h("div", { className: "actions" }, btn("Select all", () => { area.focus(); area.select(); }), t("small", "soft", "Then copy it, to paste to a coding agent."))) : null);
   }

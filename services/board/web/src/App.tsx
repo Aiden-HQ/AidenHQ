@@ -858,7 +858,7 @@ export function App() {
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
-      {view === "fleet" && route.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={route.id} sub={route.sub} page={pages.find((p) => p.id === route.id)} onSignIn={signInNeeded} /></Suspense>}
+      {view === "fleet" && route.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={`${route.id}/${route.sub ?? ""}`} sub={route.sub} page={pages.find((p) => p.id === route.id)} onSignIn={signInNeeded} /></Suspense>}
       {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
