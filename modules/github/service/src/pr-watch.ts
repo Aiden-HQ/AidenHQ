@@ -295,7 +295,10 @@ export function startPrWatch(o: PrWatchOptions) {
           continue;
         }
         if (!job) { spentAll = false; continue; } // the budget is spent: this check is judged on the next tick
-        if (job.status >= 300 || !Array.isArray(job.body?.steps) || job.body.steps.length) return false; // a step ran: it judged the commit
+        // A read that came back with no usable job (a 5xx, a body without steps) cannot say a step ran: unjudged for the next
+        // tick, never read as "the code failed" and woken on.
+        if (job.status >= 300 || !Array.isArray(job.body?.steps)) { spentAll = false; continue; }
+        if (job.body.steps.length) return false; // a step ran: it judged the commit
         if (job.body.head_sha !== pr.headRefOid || !String(job.body.check_run_url ?? "").endsWith(`/check-runs/${run.id}`)) return false;
         // The job's own REST `run_id` is the full workflow-run id the re-run needs: the rollup's `workflowRun.databaseId` is a
         // 32-bit Int, null or truncated past 2^31-1, so it is never what the request is built from.
@@ -587,6 +590,32 @@ export function startPrWatch(o: PrWatchOptions) {
       log("ci breaker tripped", { pr: pr.url, task, why });
       return "sent";
     }
+    /**
+     * One round of red checks on a head: count it and, past `BREAKER_ROUNDS` or when the same check fails again at a new head,
+     * tell the asker instead of the task. Both wake paths (a finished red head, and a red check beside a wedged one) come
+     * through here, so either one counts the same rounds and escalates the same way. `"wake"` means this round may wake the
+     * task; the caller records the round with `recordRedRound` once its wake is accepted. `"handled"` means the asker was told
+     * and the head is settled; `"failed"` means the note could not be delivered, so the next tick tries again.
+     */
+    async function countRedRound(pr: Json, task: string, red: string[]): Promise<"wake" | "handled" | "failed"> {
+      const key = pr.url.toLowerCase();
+      const b = state.breaker[key] ?? { rounds: 0, failed: {} };
+      const rounds = b.rounds + 1, again = red.find((n) => b.failed[n] && b.failed[n] !== pr.headRefOid);
+      if (!(b.told || rounds >= BREAKER_ROUNDS || again)) return "wake";
+      if (!b.told && await tellAsker(pr, task, red, again ? "a check failed again on a new head" : `${rounds} rounds of red checks`) === "failed") return "failed";
+      state.breaker[key] = { rounds, failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, pr.headRefOid])) }, told: true };
+      state.reded[key] = pr.headRefOid;
+      save();
+      return "handled";
+    }
+    /** This head has been woken about its red checks: one wake per head, and the round counts toward the breaker. */
+    function recordRedRound(pr: Json, red: string[]) {
+      const key = pr.url.toLowerCase();
+      const b = state.breaker[key] ?? { rounds: 0, failed: {} };
+      state.reded[key] = pr.headRefOid;
+      state.breaker[key] = { rounds: b.rounds + 1, failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, pr.headRefOid])) }, ...(b.told ? { told: true } : {}) };
+      save();
+    }
     /** Close a cancelled or done task's PR and delete its branch, once: recorded only once GitHub closed it, so a refused close is tried again next tick. */
     async function abandon(pr: Json, task: string, comment: string) {
       const c = await gh("PATCH", `/repos/${repo}/pulls/${pr.number}`, { state: "closed" });
@@ -736,19 +765,22 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (optional.length && redNow.length && state.reded[url] !== pr.headRefOid && !state.breaker[url]?.told && (await redsAreEnvironment()) === false) {
+      } else if (optional.length && redNow.length) {
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
-        // other rule wakes for it while a named check is still pending. Tell the task the failure once at this head. A red whose
-        // job never started is the environment's (`redsAreEnvironment`): re-running it is the fix, never a push, so no wake.
-        // The red-head rules' own markers (`state.reded`, the breaker) guard it, so a head already told about a failure, or one
-        // whose breaker tripped, is never told a second time by this path.
-        const w = opener && opener.branch === pr.headRefName
-          ? await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\` while another check is still \`in_progress\`; \`gh pr checks ${pr.url}\` lists them. Fix the failure on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says. Nothing else.`)
-          : "sent";
-        if (w !== "failed") {
-          state.reded[url] = pr.headRefOid;
-          save();
-          log("red check beside a wedged one reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
+        // other rule wakes for it while a named check is still pending. A red whose job never started is the environment's
+        // (`redsAreEnvironment`): re-running it is the fix, never a push, so no wake. A head already told about a failure, or one
+        // whose breaker tripped, is not told again: both wake paths count the same rounds (countRedRound).
+        if (!state.breaker[url]?.told && state.reded[url] !== pr.headRefOid && (await redsAreEnvironment()) === false) {
+          const round = await countRedRound(pr, opener?.task ?? opened[url]?.task ?? "", redNow);
+          if (round === "wake") {
+            const w = opener && opener.branch === pr.headRefName
+              ? await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\` while another check is still \`in_progress\`; \`gh pr checks ${pr.url}\` lists them. Fix the failure on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says. Nothing else.`)
+              : "sent";
+            if (w !== "failed") {
+              recordRedRound(pr, redNow);
+              log("red check beside a wedged one reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
+            }
+          }
         }
       } else if (optional.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
         state.wedgedTold[`${url}:optional`] = pr.headRefOid;
@@ -845,17 +877,10 @@ export function startPrWatch(o: PrWatchOptions) {
       // Red on its own head: its named checks have all finished and some failed, and the PR is not only behind main.
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && !named.some((c) => c.pending) && named.some((c) => !c.ok) && state.reded[url] !== pr.headRefOid) {
         const red = named.filter((c) => !c.ok).map((c) => c.name);
-        const b = state.breaker[url] ?? { rounds: 0, failed: {} };
-        const rounds = b.rounds + 1, again = red.find((n) => b.failed[n] && b.failed[n] !== pr.headRefOid);
-        if (b.told || rounds >= BREAKER_ROUNDS || again) {
-          if (!b.told && await tellAsker(pr, opener.task, red, again ? "a check failed again on a new head" : `${rounds} rounds of red checks`) === "failed") continue;
-          state.breaker[url] = { rounds, failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, pr.headRefOid])) }, told: true };
-          state.reded[url] = pr.headRefOid;
-          save();
-          continue;
-        }
+        const round = await countRedRound(pr, opener.task, red);
+        if (round === "handled" || round === "failed") continue;
         const w = await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\`: \`gh pr checks ${pr.url}\` lists the failures. Fix the cause on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says (its title corrected, if the title check failed). Nothing else.`);
-        if (w !== "failed") { state.reded[url] = pr.headRefOid; state.breaker[url] = { rounds, failed: { ...b.failed, ...Object.fromEntries(red.map((n) => [n, pr.headRefOid])) } }; save(); }
+        if (w !== "failed") recordRedRound(pr, red);
         if (w === "sent") log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
       }
     }
