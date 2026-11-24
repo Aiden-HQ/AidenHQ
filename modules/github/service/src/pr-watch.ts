@@ -29,11 +29,12 @@ import { join } from "node:path";
 import { CODE_REVIEW_STATUS, DESIGN_REVIEW_CHECK, GATE_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Flow } from "./flow.ts";
 import { withFooter } from "./git-auth.ts";
+import { decide } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 type Json = any;
 /** GitHub as the owner (git-auth.ts Gh): every call here is background work. */
-type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean }) => Promise<{ status: number; body: any }>;
+type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
 export type PrWatchOptions = {
   /**
    * The repos to watch, owner/name: `all` for the fleet's own (the product repo, the agents org's), `dependabot` for a maintained
@@ -73,6 +74,9 @@ const WEDGED_REPORT_MS = 20 * 60_000;
 /** Actions job reads one pass may spend on the recovery paths. Each unfinished check costs one read, serially, at a 30-second
  * timeout, so an older PR with many of them would otherwise hold a newer PR's merge for minutes; the rest wait for the next tick. */
 const PROBES_PER_PASS = 10;
+/** How long one recovery probe may wait out the owner's rate limit before it is deferred to the next tick: the pass reads
+ * several checks in sequence, so a probe that would sleep out a quota window must not hold the PRs after it. */
+const PROBE_DEADLINE_MS = 5_000;
 /** Actions job reads of a PR's budget kept free for the never-started path, so the wedged scan of still-running jobs cannot
  * spend them all and leave a failed job that never started unjudged (which would be woken as if it had run). */
 const NEVER_STARTED_RESERVE = 2;
@@ -88,7 +92,7 @@ const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable isCrossRepository headRefName headRefOid authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable mergeStateStatus isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
@@ -120,7 +124,9 @@ export function notePrTask(cacheDir: string, url: string, v: { task: string; bra
 
 export function startPrWatch(o: PrWatchOptions) {
   const log = o.log ?? (() => {});
-  const gh = (method: string, path: string, body?: unknown) => o.gh(method, path, body, { background: true });
+  // `deadline`: the latest a background read may spend waiting out a rate limit (a quota wait would otherwise hold every later
+  // PR in the scan); past it the client refuses at once and the caller defers to the next tick.
+  const gh = (method: string, path: string, body?: unknown, opts?: { deadline?: number }) => o.gh(method, path, body, { background: true, ...opts });
   const stateFile = join(o.cacheDir, "pr-watch.json");
   let findingsWakes = 0; // review-findings wakes sent in this pass
   let gateDown = false;  // code review answered unreachable in this pass: no more verdict calls until the next
@@ -237,7 +243,14 @@ export function startPrWatch(o: PrWatchOptions) {
     async function probeJob(id: string, reserve = 0): Promise<{ status: number; body: any } | undefined> {
       if (probes >= PROBES_PER_PASS - reserve) return undefined;
       probes++;
-      return gh("GET", `/repos/${repo}/actions/jobs/${id}`);
+      // A quota wait is bounded to this read: a recovery probe is never worth stalling the pass (and every later PR's merge) on
+      // the owner's rate limit, so one that cannot run promptly is deferred like a read the budget could not cover.
+      try { return await gh("GET", `/repos/${repo}/actions/jobs/${id}`, undefined, { deadline: Date.now() + PROBE_DEADLINE_MS }); }
+      catch (e) {
+        const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: string }).cause;
+        if (cause === "rate_limited") return undefined;
+        throw e;
+      }
     }
     /** Re-run the failed jobs of red checks whose jobs never started, once per head. True when the red checks are all of that kind
      * (or when the pass could not read them yet: the next tick asks again). */
@@ -253,21 +266,33 @@ export function startPrWatch(o: PrWatchOptions) {
       // Every one of the head's checks must be judged before a re-run is asked (a partly judged head would re-run a job whose
       // sibling did run). What one pass judged is kept for the next, so the budget reads a slice of them, never the same slice.
       const memoKey = `${pr.url.toLowerCase()}:${pr.headRefOid}`;
-      const judged: Record<string, "unstarted" | "started"> = state.neverStartedJudged[memoKey] ?? (state.neverStartedJudged[memoKey] = {});
+      const judged: Record<string, { state: "unstarted" | "started"; run?: number }> = state.neverStartedJudged[memoKey] ?? (state.neverStartedJudged[memoKey] = {});
       let spentAll = true;
       for (const n of checks) {
         if (n.__typename !== "CheckRun") return false;
         const id = String(n.id ?? `${n.name}:${n.databaseId ?? ""}`);
-        if (judged[id] === "started") return false; // a step ran: it judged the commit
-        if (judged[id] === "unstarted") { unstarted.push(n); continue; }
+        if (judged[id]?.state === "started") return false; // a step ran: it judged the commit
+        if (judged[id]?.state === "unstarted") { unstarted.push(n); continue; }
         const run = runOf(listed.runs, n);
         const jobId = run && jobIdOf(run);
         if (!jobId) return false; // no Actions job in REST's own answer: not this rule's
-        const job = await probeJob(jobId);
+        // One read that times out or is refused must not abort the repo's other PRs (the scan's per-repo catch would skip
+        // them all): the check is left unjudged and the next tick reads it. The wedged path wraps its own read the same way.
+        let job: { status: number; body: any } | undefined;
+        try { job = await probeJob(jobId); }
+        catch (e) {
+          log("never-started check's job read failed", { pr: pr.url, head: pr.headRefOid, job: jobId, err: String((e as Error).message).slice(0, 200) });
+          spentAll = false;
+          continue;
+        }
         if (!job) { spentAll = false; continue; } // the budget is spent: this check is judged on the next tick
         if (job.status >= 300 || !Array.isArray(job.body?.steps) || job.body.steps.length) return false; // a step ran: it judged the commit
         if (job.body.head_sha !== pr.headRefOid || !String(job.body.check_run_url ?? "").endsWith(`/check-runs/${run.id}`)) return false;
-        judged[id] = "unstarted";
+        // The job's own REST `run_id` is the full workflow-run id the re-run needs: the rollup's `workflowRun.databaseId` is a
+        // 32-bit Int, null or truncated past 2^31-1, so it is never what the request is built from.
+        const restRun = Number(job.body.run_id);
+        if (!Number.isFinite(restRun)) { log("never-started check's job names no run", { pr: pr.url, head: pr.headRefOid, job: jobId }); spentAll = false; continue; }
+        judged[id] = { state: "unstarted", run: restRun };
         unstarted.push(n);
       }
       save();
@@ -278,7 +303,11 @@ export function startPrWatch(o: PrWatchOptions) {
       const prior = state.reran[key];
       // Re-ran at this head, or a refusal still backing off: either way nothing is asked this tick.
       if (prior && (!prior.startsWith("retry:") || Date.parse(prior.slice(6)) > Date.now())) return true;
-      const runs = new Set(unstarted.map((n) => n.checkSuite?.workflowRun?.databaseId).filter(Boolean));
+      // Each unstarted check's run, from the job's own REST `run_id` (kept with what was judged, so a check judged on an
+      // earlier pass still carries it). A check with no run id asks nothing: a re-run needs the run, not a truncated rollup id.
+      const runOfCheck = (n: Json) => judged[String(n.id ?? `${n.name}:${n.databaseId ?? ""}`)]?.run;
+      const runs = new Set(unstarted.map(runOfCheck).filter((v): v is number => typeof v === "number" && Number.isFinite(v)));
+      if (!runs.size) return false;
       let refused = false;
       for (const run of runs) {
         const r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {});
@@ -639,23 +668,39 @@ export function startPrWatch(o: PrWatchOptions) {
       // A check run still not completed well after its re-run was first asked: GitHub's branch rules read the check run too, so
       // the merge gate is held by it and no push fixes it. A PR with no task here (an outside author's) has nobody to tell, so
       // it is logged instead. The check's name is PR-controlled text: it never enters the wake, which points at `gh pr checks`.
-      // The stuck checks whose reporting interval has passed. A check the merge waits on wakes the task once at this head; one
-      // that only a matrix job hangs on is logged once, because it holds nothing and must not use up the merge's report.
+      // The stuck checks whose reporting interval has passed.
       const due = wedged.filter((w) => Date.now() - w.at >= WEDGED_REPORT_MS);
-      // A wedged check holds the merge when the rollup shows its very check run (by node id, never by display name: an old
-      // wedged check that shares a name with a newer, normally running one holds nothing) as a pending named check. Only on a
-      // complete rollup: the gate refuses a truncated one before reading any check, so a re-run cannot clear that. And only
-      // while no named check is red: merge-gate.ts fails a red head before it considers pending ones, so the existing
-      // red-head rules own that head and a "the gate is held, leave it alone" wake would be wrong.
-      const complete = !rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
-      const red = named.some((c) => !c.ok && !c.pending);
+      // Whether a wedged check is what holds the merge is the merge gate's own answer, not a copy of a few of its rules: a draft,
+      // a PR off the default branch, a moved head, an unruly review state and a closed PR all fail before a check is read
+      // (merge-gate.ts decide()). Asking it here means a "the gate is held, leave it alone" wake is never sent for a head the
+      // gate would refuse for another reason and would start holding only later (a draft marked ready), and the once-per-head
+      // report is not spent on it.
+      const gate = decide({
+        repository: {
+          defaultBranchRef: { name: main.name },
+          pullRequest: {
+            number: pr.number, url: pr.url, state: "OPEN", isDraft: pr.isDraft, reviewDecision: pr.reviewDecision, mergeStateStatus: pr.mergeStateStatus,
+            headRefOid: pr.headRefOid, baseRefName: pr.baseRefName ?? main.name, isCrossRepository: pr.isCrossRepository,
+            commits: { nodes: [{ commit: { statusCheckRollup: rollupOf(pr) } }] },
+            // The watcher's rollup has no base ref: an empty branch is not "behind", so a green check set is "mergeable" here.
+            baseRef: { compare: { behindBy: 0 }, target: { oid: main.oid, statusCheckRollup: main.rollup } },
+            latestOpinionatedReviews: { nodes: [] },
+          },
+        },
+      }, pr.headRefOid);
+      // A wedged check holds the merge when the gate's own answer is that only a pending check is in the way: a red named check
+      // makes it "fail" before it reads any pending one, so that head is the red-head rules' to wake, never this report's. Only a
+      // complete rollup: the gate refuses a truncated one before reading any check, so a re-run cannot clear that.
       const pendingIds = new Set(runs.filter((n: Json) => n.__typename === "CheckRun" && n.status !== "COMPLETED" && n.name && n.name !== DESIGN_REVIEW_CHECK && n.name !== CODE_REVIEW_STATUS).map((n: Json) => String(n.id)));
-      const held = complete && !red ? due.filter((w) => !!w.nodeId && pendingIds.has(w.nodeId)) : [];
+      const holdsPending = gate.do === "wait" && !rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
+      const held = holdsPending ? due.filter((w) => !!w.nodeId && pendingIds.has(w.nodeId)) : [];
       const optional = due.filter((w) => !held.includes(w));
+      const redNow = named.filter((c) => !c.ok && !c.pending).map((c) => c.name);
       if (held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
           ? "after its Actions job completed and the job had been re-run"
           : "after its Actions job completed, and the request to re-run the job was refused";
+        // A red check is never here: the gate fails the head on it before any pending check, so it is the mixed-state wake below.
         const text = `${pr.url}'s check run is still \`in_progress\` at \`${pr.headRefOid}\` ${how}, and the merge gate is held by it: this head cannot merge. A push does not fix it. Leave the head alone and report the wedged check run to the owner, or wait for a re-run to repost it; \`gh pr checks ${pr.url}\` names it.`;
         const w = opener && opener.branch === pr.headRefName ? await wake(pr, opener.task, text) : "sent";
         // Told once at this head, whether or not GitHub took the re-run: the ask's clock ran, so the next tick must not repeat it.
@@ -663,6 +708,17 @@ export function startPrWatch(o: PrWatchOptions) {
           state.wedgedTold[`${url}:merge`] = pr.headRefOid;
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
+        }
+      } else if (optional.length && redNow.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
+        // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no
+        // other rule wakes for it while a named check is still pending. Tell the task the failure once at this head.
+        const w = opener && opener.branch === pr.headRefName
+          ? await wake(pr, opener.task, `${pr.url}'s checks failed at \`${pr.headRefOid}\` while another check is still \`in_progress\`; \`gh pr checks ${pr.url}\` lists them. Fix the failure on the PR's branch, rerun the tests and publish once with \`aidenhq publish\` as skill \`publish\` says. Nothing else.`)
+          : "sent";
+        if (w !== "failed") {
+          state.wedgedTold[`${url}:optional`] = pr.headRefOid;
+          save();
+          log("red check beside a wedged one reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
       } else if (optional.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
         state.wedgedTold[`${url}:optional`] = pr.headRefOid;

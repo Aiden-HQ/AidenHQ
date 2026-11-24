@@ -88,7 +88,12 @@ export type Identity = {
   wrote?(refusal?: string): void;
 };
 /** `etag`: a conditional read (If-None-Match): GitHub answers 304, free of the rate budget, when nothing changed. */
-type CallOpts = { background?: boolean; accept?: string; as?: Identity; etag?: string };
+type CallOpts = {
+  background?: boolean; accept?: string; as?: Identity; etag?: string;
+  /** Reads only: the latest this call may spend waiting out a rate limit. Past it GitHub's limit refuses at once (a typed
+   * rate_limited need) instead of sleeping until the reset, which is what a background scan wants for a read it can retry. */
+  deadline?: number;
+};
 
 export interface GitHubAccess {
   connected(): boolean;
@@ -314,9 +319,9 @@ export function createAccess(o: {
     fail({ cause: "write_busy" });
   }
 
-  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string) {
+  function send(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, readDeadline?: number) {
     const p = paceOf(as);
-    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, undefined, as, false, etag);
+    if (!createsContent(method, path, body)) return attempt(p, method, path, body, resource, background, accept, readDeadline, as, false, etag);
     // One budget for the tool invocation this write belongs to, fixed at its entry so preflight reads and earlier writes
     // have already spent it (and before the queue: a write that waited behind others has spent that wait too); outside a
     // tool call, each write gets its own. A background write (a job's, never a tool's) is not on a caller's clock: it keeps
@@ -431,7 +436,7 @@ export function createAccess(o: {
     connected,
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag),
+    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline),
     graphql: async (query, variables, opts = {}) => {
       const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
       const body = res.body;
