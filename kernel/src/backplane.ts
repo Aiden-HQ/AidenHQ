@@ -11,8 +11,6 @@
 //                              record (own only; the board: any)
 //   POST /v1/writes/:id/outcome (the kind's executor module) the outcome of an execute
 //   POST /v1/writes/:id/wait (the kind's executor module) {reason}: why its claimed record is still running
-//   POST /v1/merges            (a code host module, for its own kind) {task, repo, number, head, branch}: a green PR's merge, filed
-//                              as the agent whose approved PR record on the task pushed that head (writes.fileOwnMerge), or {skip}
 //   GET  /v1/writes            (the board's key) records by state or task (`tier0=1`: Tier 0 runs too; `after=<id>`: the next page)
 //   GET  /v1/writes/:id/chain  (the board's key) what the record's task asks, as the AI reviewer reads it (review-loop.ts requestChain)
 //   GET  /v1/channel/cards, POST /v1/channel/{decide,owner-message,stop,thread}  (a speaks-as-owner channel's token) cards
@@ -181,7 +179,6 @@ export const ROUTES = [
   { method: "GET", path: "/v1/writes/:id/chain", auth: "board" },
   { method: "POST", path: "/v1/writes/:id/outcome", auth: "module" },
   { method: "POST", path: "/v1/writes/:id/wait", auth: "module" },
-  { method: "POST", path: "/v1/merges", auth: "module" },
   { method: "GET", path: "/v1/channel/cards", auth: "module" },
   { method: "POST", path: "/v1/channel/decide", auth: "module" },
   { method: "POST", path: "/v1/channel/owner-message", auth: "module" },
@@ -1133,13 +1130,6 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         const b = await json(req);
         if (!b || typeof b !== "object" || !reviews.verdict(m[0]!, bearer(req), b)) throw fail(404, "not_found", "no review waits for that token");
         return send(res, 200, { ok: true });
-      }
-      if (hit?.path === "/v1/merges") {
-        // A code host module's green PR: its task's merge, filed by the kernel as the agent whose approved PR pushed that head.
-        if (!writes) throw fail(503, "unavailable", "records are off");
-        const w = await moduleOf(req);
-        const r = await writes.fileOwnMerge(w.module!, await json(req));
-        return send(res, 200, r.filed ? { filed: { id: r.filed.id, tier: r.filed.tier, state: r.filed.state } } : { skip: r.skip });
       }
       if (hit && hit.path.startsWith("/v1/writes")) {
         if (!writes || !records) throw fail(503, "unavailable", "records are off");

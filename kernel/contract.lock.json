@@ -149,7 +149,6 @@
     "route POST /v1/jobs/workspace": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/jobtools/:cmd": {"state":"experimental","fp":"auth=job"},
     "route POST /v1/memory/:op": {"state":"experimental","fp":"auth=module+assertion"},
-    "route POST /v1/merges": {"state":"experimental","fp":"auth=module"},
     "route POST /v1/modules/share": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/modules/share/preview": {"state":"experimental","fp":"auth=board"},
     "route POST /v1/notify": {"state":"experimental","fp":"auth=board"},

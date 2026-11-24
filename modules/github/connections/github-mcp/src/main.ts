@@ -640,16 +640,16 @@ const http = createServer(async (req, res) => {
     }
     return;
   }
-  // The Maintainer's watcher: each repo with contributor_prs on, its open PRs (author kind, the author's latest activity and what
-  // waits on them). Read-only, no model call.
-  if (url.pathname === "/internal/maintainer/prs") {
-    { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "maintainer"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
+  // Ship's contributor_prs pass (modules/ship/service/src/contributor.ts): each repo with contributor_prs on, its open PRs (author
+  // kind, the author's latest activity and what waits on them). Read-only, no model call.
+  if (url.pathname === "/internal/ship/contributor-prs") {
+    { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "ship"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
     if (req.method !== "GET") return void res.writeHead(405).end();
     try {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await maintainer.prRepos()));
     } catch (err) {
       const refused = err instanceof GitHubRefused;
-      log.warn({ err: (err as Error).message.slice(0, 200) }, "maintainer PRs read failed");
+      log.warn({ err: (err as Error).message.slice(0, 200) }, "contributor PRs read failed");
       res.writeHead(refused ? 400 : 502, { "content-type": "application/json" }).end(JSON.stringify({ error: refused ? "refused" : "github_error", detail: (err as Error).message.slice(0, 300) }));
     }
     return;

@@ -52,7 +52,7 @@ export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CA
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
+export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 /** Where ship works: the fleet's own repos (the agents org as `org/*`, the product repo), always; a `maintainer_repos` repo only
@@ -173,6 +173,8 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     // The repair writes the generators' output on these paths: a new glob widens what an untrusted box may change. The command
     // stays an ordinary setting (it runs only in the credential-free box).
     if ((y.generated?.globs ?? []).some((g) => !(x.generated?.globs ?? []).includes(g))) add("generated.globs");
+    // Back from an explicit list to discovery: the discovered paths may reach past the list, so that is a loosening too.
+    if (x.generated && !y.generated) add("generated");
   };
   const dx = resolve(defaultsOf(b).preset, defaultsOf(b).over), dy = resolve(defaultsOf(a).preset, defaultsOf(a).over);
   diff("defaults", dx, dy);
