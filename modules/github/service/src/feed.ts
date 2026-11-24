@@ -13,7 +13,7 @@
 // secondary rate limit pauses the whole scheduler until GitHub's time.
 //
 // A repo's first read (newly watched, or its state lost) is a baseline: snapshots recorded, nothing emitted but `github.resync`.
-// A lost state file (missing while this cache ran before, or unreadable) is also recorded as a loss.
+// A lost state file (missing where the feed ran before, its feed.started marker, or unreadable) is also recorded as a loss.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -71,15 +71,16 @@ export type FeedOptions = {
 
 export function createFeed(o: FeedOptions) {
   const now = o.now ?? Date.now, log = o.log ?? (() => {});
-  const file = join(o.cacheDir, "feed.json");
+  const file = join(o.cacheDir, "feed.json"), marker = join(o.cacheDir, "feed.started");
   let lost = false;
   const load = (): State => {
     try { if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8")); } catch (e) { lost = true; log("feed: state unreadable, every repo starts afresh", { err: String((e as Error).message).slice(0, 200) }); }
-    // A cache dir Flow already wrote to ran before: a missing state file is lost, not new.
-    if (existsSync(join(o.cacheDir, "backfill.json")) || existsSync(join(o.cacheDir, "churn.json"))) lost = true;
+    // A cache dir the feed already ran in (its marker) whose state file is missing: lost, not new.
+    if (existsSync(marker)) lost = true;
     return { gen: randomUUID().slice(0, 8), k: {}, outbox: [], repos: {} };
   };
   const state = load();
+  if (!existsSync(marker)) writeFileSync(marker, new Date(now()).toISOString());
   const save = () => { writeFileSync(`${file}.tmp`, JSON.stringify(state)); renameSync(`${file}.tmp`, file); };
   const windows = new Map<string, Window>();
   const win = (repo: string) => { let w = windows.get(repo); if (!w) windows.set(repo, (w = { passes: 0, ok: 0, sent: 0 })); return w; };
@@ -296,16 +297,17 @@ export function createFeed(o: FeedOptions) {
 
   /** The outbox to the kernel, oldest first: accepted (or a repeated id) leaves it; no answer, 5xx or 429 stops until the next send. */
   async function send() {
-    let sent = 0;
+    let moved = 0;
     while (state.outbox.length) {
       const { at: _at, ...ev } = state.outbox[0]!;
       const r = await o.kernel.raw("POST", "/v1/events", { connection: "github", ...ev }).catch(() => ({ status: 0, json: {} }));
       if (r.status === 0 || r.status === 429 || r.status >= 500) break;
       if (r.status >= 300) { loss(ev.resource, `the kernel refused ${ev.kind} ${ev.id} (${r.status})`); log("feed: the kernel refused an event, dropped", { id: ev.id, kind: ev.kind, status: r.status, why: String(r.json?.error?.message ?? "").slice(0, 200) }); }
-      else { win(ev.resource).sent++; sent++; }
+      else win(ev.resource).sent++;
       state.outbox.shift();
+      moved++;
     }
-    if (sent || state.outbox.length === 0) save();
+    if (moved) save();
   }
 
   /** The watched set: the managed repos and every subscribed resource ("*": the managed ones), lower case. */
@@ -325,7 +327,7 @@ export function createFeed(o: FeedOptions) {
       await o.record?.(`repo:${repo}`, async () => {
         if (stalled) throw new Error("outbox stalled: kernel not accepting");
         if (w.loss) throw new Error(w.loss);
-        if (!w.ok && w.err) throw new Error(w.err);
+        if (!w.ok) throw new Error(w.err ?? "no pass completed in this window");
         return w.sent;
       }).catch(() => undefined);
     }
