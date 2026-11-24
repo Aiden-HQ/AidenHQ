@@ -49,8 +49,11 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   const head = commit(ws, [mb], "head");
   const base = commit(tree("base") ?? mbDir, [mb], "base");
   g(["checkout", "-q", "-f", head]);
-  ok(["merge", "-q", "--no-commit", "--no-ff", base]);
   const unmerged = () => g(["diff", "--name-only", "--diff-filter=U", "-z"]).split("\0").filter(Boolean);
+  // A merge that stops for anything but conflicts is no repair: it fails, loudly, with git's own words.
+  try { g(["merge", "-q", "--no-commit", "--no-ff", base]); } catch (e) {
+    if (!unmerged().length) return { result: { failed: `git merge of the base failed: ${String((e as { stderr?: string }).stderr || (e as Error).message).slice(-2000)}` } };
+  }
   const name = (p: string) => p.slice(p.lastIndexOf("/") + 1);
   const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
   const covered = (p: string) => commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));

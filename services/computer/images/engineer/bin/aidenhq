@@ -389,7 +389,9 @@ if (command === "publish" || command === "review") {
       writeFileSync(file, Buffer.from(await res.arrayBuffer()));
       execFileSync("git", ["-C", dir, "fetch", "--quiet", "--no-tags", file, `+refs/heads/*:refs/ship/pr-${number}/*`], { stdio: ["ignore", "ignore", "inherit"] });
     } finally { rmSync(tmp, { recursive: true, force: true }); }
-    execFileSync("git", ["-C", dir, "checkout", "--quiet", "--force", "-B", `ship-pr-${number}`, head], { stdio: ["ignore", "ignore", "inherit"] });
+    // Work in progress here is never dropped: a clone with uncommitted changes is refused, and the branch is moved only then.
+    if (execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }).trim()) fail(`${dir} has uncommitted changes: commit them (or put them aside yourself) and check out again`, 2);
+    execFileSync("git", ["-C", dir, "checkout", "--quiet", "-B", `ship-pr-${number}`, head], { stdio: ["ignore", "ignore", "inherit"] });
     console.log(`${link}: ship-pr-${number} is checked out at ${head.slice(0, 12)} in ${dir}`);
     process.exit(0);
   }
