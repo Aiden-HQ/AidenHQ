@@ -3,7 +3,7 @@
 // a fact's id is type, subject and version, so a re-send, a restart or the owner's backfill never records one twice.
 //
 // Subjects: pr:<repo>#<n>, CI per head pr:<repo>#<n>@<head>, issue:<repo>#<n> (repos in lower case). `task` is the task that opened
-// the PR, from pr-tasks.json (pr-watch.ts notePrTask). Every `at` is UTC with a Z.
+// the PR, from pr-tasks.json (pr-tasks.ts notePrTask). Every `at` is UTC with a Z.
 //
 // Authors: `author_kind` is "agent" for an object in AidenHQ's records (the kernel's /v1/objects), or (records pruned, a crash,
 // a restore) one whose text carries the AidenHQ footer or whose head commit carries the AidenHQ trailer: the fleet acts as the

@@ -32,7 +32,7 @@ export interface Ship {
   current?: number | null; task?: string;
   /** The record's task, its id and identifier: an adoption's write is filed on that adoption's task. */
   filedOn?: string[];
-  /** Filed by the ship module (itself, or for a task through `filed_by`). */
+  /** Filed by the ship module itself (its module token; github's `filed_by` lets it). */
   byShip?: boolean;
   /**
    * Why the App can't approve this PR (none installed on the repo, or the App opened it), or undefined. An approval is only ever

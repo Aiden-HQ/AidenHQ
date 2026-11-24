@@ -391,9 +391,11 @@ if (command === "publish" || command === "review") {
     } finally { rmSync(tmp, { recursive: true, force: true }); }
     // Work in progress here is never dropped: a clone with uncommitted changes is refused, and the branch is moved only then.
     if (execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" }).trim()) fail(`${dir} has uncommitted changes: commit them on a branch of your own and check out again`, 2);
-    // Nor are commits: a ship-pr-<n> with commits beyond <head> is pushed (ship push) or renamed first, never reset here.
-    const kept = (() => { try { return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/ship-pr-${number}`], { encoding: "utf8" }).trim(); } catch { return ""; } })();
-    if (kept) { try { execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", kept, head]); } catch { fail(`ship-pr-${number} has commits beyond ${head.slice(0, 12)}: push them with \`aidenhq ship push\`, or rename the branch, then check out again`, 2); } }
+    // Nor are commits: a ship-pr-<n> with commits beyond <head> is pushed (ship push) or renamed first, never reset here. A tip
+    // ship push already landed is published (the PR's head carries it, rewritten as the App's commit), so it moves on.
+    const at = (ref) => { try { return execFileSync("git", ["-C", dir, "rev-parse", "--verify", "--quiet", ref], { encoding: "utf8" }).trim(); } catch { return ""; } };
+    const kept = at(`refs/heads/ship-pr-${number}`);
+    if (kept && kept !== at(`refs/ship/pushed/pr-${number}`)) { try { execFileSync("git", ["-C", dir, "merge-base", "--is-ancestor", kept, head]); } catch { fail(`ship-pr-${number} has commits beyond ${head.slice(0, 12)}: push them with \`aidenhq ship push\`, or rename the branch, then check out again`, 2); } }
     execFileSync("git", ["-C", dir, "checkout", "--quiet", "-B", `ship-pr-${number}`, head], { stdio: ["ignore", "ignore", "inherit"] });
     console.log(`${link}: ship-pr-${number} is checked out at ${head.slice(0, 12)} in ${dir}`);
     process.exit(0);
@@ -404,11 +406,16 @@ if (command === "publish" || command === "review") {
   let branch = "";
   try { branch = g(["symbolic-ref", "--short", "HEAD"]); } catch {}
   try { g(["merge-base", "--is-ancestor", head, "HEAD"]); } catch { branch = ""; }
-  if (!branch) fail(`check out the PR with \`aidenhq ship checkout ${link} ${head}\` and commit your fix on top of it first`, 2);
+  // Only the branch ship checkout made for this PR: another branch from the same head is another change.
+  if (branch !== `ship-pr-${number}`) branch = "";
+  if (!branch) fail(`check out the PR with \`aidenhq ship checkout ${link} ${head}\` and commit your fix on ship-pr-${number} first`, 2);
   const sha = g(["rev-parse", "HEAD"]);
   if (sha === head) fail("no commit on top of the PR's head to push", 2);
   bundle(repo, branch, sha);
+  const before = bad.length;
   lines.push(`${link}: ${(await write("codehost.push", { only: [{ repo, branch, sha }], pr: { repo, number }, expected: head, generation: Number(gen) }))}`);
+  // Landed (done, or waiting on a decision about this exact commit): the next checkout may move ship-pr-<n> past it.
+  if (bad.length === before) g(["update-ref", `refs/ship/pushed/pr-${number}`, sha]);
 } else {
   if (command === "engine" ? !words.length || words.length > 2 : words.length) fail(usage, 2);
   const body = command === "engine" ? { engine: words[0], ...(words[1] ? { model: words[1] } : {}) } : {};

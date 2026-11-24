@@ -84,7 +84,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const people = pr.assignees.filter((x) => !(a!.assigned ?? []).includes(x));
   if (d.paused() || a.hold || pr.state !== "open" || pr.draft || pr.labels.includes(s.stop_label) || people.length) return "stopped";
 
-  const c = a.counters && a.counters.head === pr.head ? a.counters : { ...(a.counters ?? { rounds: 0, ci: 0, review: 0, red: {} }), head: pr.head, wakes: 0 };
+  const c = a.counters && a.counters.head === pr.head ? a.counters : { ...(a.counters ?? { rounds: 0, ci: 0, review: 0, red: {} }), head: pr.head, wakes: 0, acted: [] };
   a = { ...a, counters: c };
   const caps = s.caps;
   const over = (n: number, cap: number | null) => cap !== null && n >= cap;
@@ -129,7 +129,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
   const key = `${pr.head}:${v.do}`;
   const followed = v.do === "merge" || v.do === "enqueue" || (v.do === "repair" && f.dirty === true);
-  if (!followed && c.lastRound === key) return "nothing";
+  // A fix already asked for at this head is not asked again after a `wait` in between (a CI re-run with no push).
+  const fix = ["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty);
+  if (!followed && (c.lastRound === key || (fix && (c.acted ?? []).includes(v.do)))) return "nothing";
   // Each new action spends a round; past `rounds` the PR holds.
   const spend = () => (over(c.rounds, caps.rounds) ? hold(`${c.rounds} rounds (rounds)`) : (c.rounds++, undefined));
   let queueWait: string | undefined;
@@ -204,7 +206,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       case "fix_review": {
         if (!s.fix.includes("review")) return hold("review findings are open, and this repo's `fix` setting excludes review");
         if (pr.fork && !pr.canModify) return hold(noEdits);
-        if (over(c.review, caps.review_rounds)) return hold(`${c.review} review fix rounds (review_rounds)`);
+        // How many review and fix cycles a PR gets is code review's (its push_rounds): ship fixes what each review finds.
         c.review++;
         return wake("fix_review", `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.\n${push()}`);
       }
@@ -250,6 +252,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     }
   };
   const did = await step();
+  if (did === "acted" && fix) c.acted = [...(c.acted ?? []), v.do];
   if (a!.hold) return "acted";
   // A merge already asked for at this head: nothing new to say until its record ends.
   // A queue wait is reported once per head (its own marker), as the enqueue's own key is followed by its record.

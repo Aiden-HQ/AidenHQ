@@ -1,13 +1,26 @@
-// The product-PR watcher end to end against a fake GitHub and a fake kernel (ported from the runner's flow-product cases):
+// Ship's watch loop end to end against a fake GitHub and a fake kernel (moved from github's pr-watch tests, under `cautious`):
 // a Dependabot PR becomes one task for the platform-engineer role once its checks finish, and that task closes when the PR is
 // gone; an agent's PR (one this service opened) that conflicts with main wakes its task once, with fixed text only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { notePrTask, startPrWatch } from "../service/src/pr-watch.ts";
+import { startLoop } from "../service/src/loop.ts";
+import { PRESETS } from "../service/src/settings.ts";
+import { openState } from "../service/src/state.ts";
+// The merge gate's rule is github's (the loop asks it through /internal/ship/decide): the test asks the same function.
+import { decide } from "../../github/service/src/merge-gate.ts";
+
+// github's pr-tasks.json (opener provenance), read through `openers`.
+const prTasks = (dir) => join(dir, "pr-tasks.json");
+const notePrTask = (dir, url, v) => writeFileSync(prTasks(dir), JSON.stringify({ ...(existsSync(prTasks(dir)) ? JSON.parse(readFileSync(prTasks(dir), "utf8")) : {}), [url.toLowerCase()]: v }));
+/** The loop as main.ts starts it, under `cautious` (pr-watch's constants), with github's routes stood in for in process. */
+const startPrWatch = (o) => startLoop({
+  openers: async () => (existsSync(prTasks(o.cacheDir)) ? JSON.parse(readFileSync(prTasks(o.cacheDir), "utf8")) : {}),
+  decide: async (data, head) => decide(data, head), settings: () => PRESETS.cautious, state: openState(join(o.cacheDir, "state.json")), ...o,
+});
 
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const checks = (status) => ({ state: status === "PENDING" ? "PENDING" : "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "test", status: status === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: status === "PENDING" ? null : "SUCCESS" }] } });
@@ -70,14 +83,15 @@ test("a Dependabot PR becomes one task once its checks finish and closes with it
   assert.equal(wakes().length, 1, "once per head of main and half hour");
 });
 
-test("an agent's green mergeable PR wakes its task to merge once per head", async (t) => {
+test("an agent's green mergeable PR whose merge filing is refused wakes its task to merge once per head", async (t) => {
   let open = [];
   const wakes = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     if (req.url === "/v1/wakes") wakes.push(JSON.parse(body));
-    res.writeHead(200).end("{}");
+    if (req.url === "/v1/writes") return res.writeHead(422).end(JSON.stringify({ message: "refused" }));
+    res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}));
   });
   t.after(() => kernel.s.close());
   const gh = async (m, path) => path === "/graphql"
@@ -135,14 +149,15 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [200, {}], reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
     if (req.url === "/v1/wakes" && wakeFails-- > 0) return res.writeHead(503).end("{}");
     if (req.url === "/v1/wakes") woke.push(JSON.parse(body));
-    if (req.url === "/v1/merges") { merges.push(JSON.parse(body)); const [status, answer] = merge(); return res.writeHead(status).end(JSON.stringify(answer)); }
+    if (req.url === "/v1/writes") { merges.push(JSON.parse(body)); const [status, answer] = merge(); return res.writeHead(status).end(JSON.stringify(answer)); }
+    if (req.url.startsWith("/v1/writes/")) return res.writeHead(200).end(JSON.stringify(record()));
     res.writeHead(200).end(JSON.stringify(req.url.startsWith("/v1/work") ? { status: taskStatus, records } : {}));
   });
   t.after(() => kernel.s.close());
@@ -203,7 +218,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
   return { woke, gh, merges, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
@@ -223,7 +238,7 @@ test("a cancelled task's PR is closed with its branch once; a done task's unmerg
   const old = new Date(Date.now() - 31 * 60_000).toISOString();
   const e = await rig(t, { taskStatus: "done", records: [{ kind: "github.merge", state: "claimed", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }] } }] });
   e.set([e.agentPr(2), e.agentPr(3)]);
-  writeFileSync(join(e.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { headAt: { "https://github.com/acme/app/pull/2": { head: "h2", at: old }, "https://github.com/acme/app/pull/3": { head: "h3", at: old } } } }));
+  writeFileSync(join(e.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { headAt: { "https://github.com/acme/app/pull/2": { head: "h2", at: old }, "https://github.com/acme/app/pull/3": { head: "h3", at: old } } } }));
   await e.watch.tick(); await e.watch.tick();
   assert.equal(e.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/2").length, 1, "done, unmerged and old: closed once");
   assert.ok(e.gh.includes("DELETE /repos/acme/app/git/refs/heads/b2"));
@@ -238,7 +253,7 @@ test("an agent PR red on its own head wakes its task once per head, and no PR ge
   assert.match(c.woke[0].text, /pull\/3's checks failed at `h3`: `gh pr checks https:\/\/github.com\/acme\/app\/pull\/3` lists the failures/);
   const capped = await rig(t);
   capped.set([capped.agentPr(8, redPr(8))]);
-  writeFileSync(join(capped.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wakes: { "https://github.com/acme/app/pull/8": { head: "h8", n: 3 } } } }));
+  writeFileSync(join(capped.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { wakes: { "https://github.com/acme/app/pull/8": { head: "h8", n: 3 } } } }));
   await capped.watch.tick();
   assert.equal(capped.woke.length, 1, "three wakes at this head: no more, but the asker is told once");
   assert.deepEqual([capped.woke[0].to, /Wake cap on ACME-8/.test(capped.woke[0].text)], ["asker", true]);
@@ -283,11 +298,11 @@ test("a wedged check run's job re-run GitHub refused is asked again after its ba
   const key = "acme/app:h43:77";
   const asks = () => c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length;
   assert.equal(asks(), 1);
-  const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
+  const db = JSON.parse(readFileSync(join(c.cacheDir, "loop.json"), "utf8"));
   assert.match(String(db["acme/app"].reran[key]), /^retry:/, "a refusal is not recorded as a re-run");
   await c.watch.tick();
   assert.equal(asks(), 1, "inside the backoff nothing is asked again");
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { ...db["acme/app"], reran: { [key]: `retry:${new Date(Date.now() - 60_000).toISOString()}` } } }));
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { ...db["acme/app"], reran: { [key]: `retry:${new Date(Date.now() - 60_000).toISOString()}` } } }));
   await c.watch.tick();
   assert.equal(asks(), 2, "past the backoff it is asked again instead of staying unhandled");
 });
@@ -296,7 +311,7 @@ test("a check run still wedged 20 minutes after its re-run wakes its task once a
   const c = await rig(t);
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   c.set([c.agentPr(44, stuckPr(44))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h44:500:image-changes": { at: asked, accepted: true, job: 77 } } } }));
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h44:500:image-changes": { at: asked, accepted: true, job: 77 } } } }));
   await c.watch.tick(); await c.watch.tick();
   assert.equal(c.woke.length, 1, "told once at this head");
   assert.equal(c.woke[0].task, "ACME-44");
@@ -313,14 +328,14 @@ test("a refused re-run is reported after the interval, and a check job still run
   // A refused re-run keeps the first ask's clock, so the check is reported rather than retried unseen.
   const c = await rig(t, { jobRerun: () => 502 });
   c.set([c.agentPr(46, stuckPr(46))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false, job: 77 } } } }));
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h46:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: false, job: 77 } } } }));
   await c.watch.tick();
   assert.equal(c.woke.length, 1);
   assert.match(c.woke[0].text, /the request to re-run the job was refused/);
   // A replacement job still queued or running is not stuck: nothing is reported for it.
   const running = await rig(t, { job: { status: "in_progress", completed_at: null } });
   running.set([running.agentPr(49, stuckPr(49))]);
-  writeFileSync(join(running.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true, job: 77 } } } }));
+  writeFileSync(join(running.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { wedged: { "acme/app:h49:500:image-changes": { at: new Date(Date.now() - 21 * 60_000).toISOString(), accepted: true, job: 77 } } } }));
   await running.watch.tick();
   assert.equal(running.woke.length, 0, "a re-run still running is not a stuck check");
 });
@@ -331,7 +346,7 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
     let body = "";
     for await (const x of req) body += x;
     if (req.url === "/v1/wakes") return res.writeHead(200).end("{}");
-    if (req.url === "/v1/merges") { merges.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ filed: { id: "r1", tier: 0, state: "claimed" } })); }
+    if (req.url === "/v1/writes") { merges.push(JSON.parse(body)); return res.writeHead(200).end(JSON.stringify({ id: "r1", tier: 0, state: "claimed" })); }
     res.writeHead(200).end(JSON.stringify({ status: "in_progress", records: [] }));
   });
   t.after(() => kernel.s.close());
@@ -353,9 +368,9 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
   notePrTask(cacheDir, "https://github.com/acme/app/pull/47", { task: "ACME-47", branch: "b47" });
   open = [pr(47, { author: { __typename: "Bot", login: "aidenhq" } }), pr(48, { ...stuckPr(48, 77), number: 48, url: "https://github.com/acme/app/pull/48", headRefOid: "h48", headRefName: "b48", author: { __typename: "Bot", login: "aidenhq" } })];
   await real.tick();
-  const rows = JSON.parse(readFileSync(join(cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
+  const rows = JSON.parse(readFileSync(join(cacheDir, "loop.json"), "utf8"))["acme/app"];
   assert.match(String(rows.reran?.["acme/app:h48:77"]), /^retry:/, "the unanswered read backs off instead of being lost");
-  assert.deepEqual(merges.map((m) => m.number), [47], "the PR after it still reached its merge");
+  assert.deepEqual(merges.map((m) => m.args.prs[0].number), [47], "the PR after it still reached its merge");
 });
 
 
@@ -363,12 +378,12 @@ test("a check re-run GitHub refused is asked again rather than recorded as handl
   const c = await rig(t, { steps: [], rerun: () => 502 });
   c.set([c.agentPr(33, redPr(33))]);
   await c.watch.tick();
-  const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
+  const db = JSON.parse(readFileSync(join(c.cacheDir, "loop.json"), "utf8"));
   assert.match(String(db["acme/app"].reran["https://github.com/acme/app/pull/33:h33"]), /^retry:/, "a refusal is not recorded as a re-run");
   await c.watch.tick();
   const asks = () => c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length;
   assert.equal(asks(), 1, "inside the backoff nothing is asked again");
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { ...db["acme/app"], reran: { "https://github.com/acme/app/pull/33:h33": `retry:${new Date(Date.now() - 6 * 60_000).toISOString()}` } } }));
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { ...db["acme/app"], reran: { "https://github.com/acme/app/pull/33:h33": `retry:${new Date(Date.now() - 6 * 60_000).toISOString()}` } } }));
   await c.watch.tick();
   assert.equal(asks(), 2, "past the backoff it is asked again instead of staying unhandled");
 });
@@ -467,7 +482,7 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   // still waited for, not asked again.
   const c2 = await rig(t, { behind: 2 });
   c2.set([c2.agentPr(24, redPr(24))]);
-  writeFileSync(join(c2.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/24:h24:m1": "ok" } } }));
+  writeFileSync(join(c2.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/24:h24:m1": "ok" } } }));
   await c2.watch.tick(); await c2.watch.tick();
   assert.equal(c2.gh.filter((g) => g.includes("24/update-branch")).length, 0, "an acceptance the older version recorded is carried over, not re-asked");
   // But a waiter is not forever: an accepted update GitHub never applied is asked again, and repeated accepts end in the wake.
@@ -475,25 +490,25 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   {
     const carried = await rig(t, { behind: 2 });
     carried.set([carried.agentPr(29, redPr(29))]);
-    writeFileSync(join(carried.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/29:h29:m1": "ok" } } }));
+    writeFileSync(join(carried.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/29:h29:m1": "ok" } } }));
     await carried.watch.tick();
     assert.equal(carried.gh.filter((g) => g.includes("29/update-branch")).length, 0, "the acceptance is waited for, not asked again");
-    const db = JSON.parse(readFileSync(join(carried.cacheDir, "pr-watch.json"), "utf8"));
+    const db = JSON.parse(readFileSync(join(carried.cacheDir, "loop.json"), "utf8"));
     assert.equal(db["acme/app"]?.updated?.["https://github.com/acme/app/pull/29:h29:m1"], undefined, "and the legacy marker is gone, so it cannot re-seed");
     assert.ok(db["acme/app"]?.updatedOk?.["https://github.com/acme/app/pull/29:h29"], "the acceptance now lives on the PR's head");
   }
   const lost = await rig(t, { behind: 2, update: 201 });
   lost.set([lost.agentPr(25, redPr(25))]);
   const stale = new Date(Date.now() - 11 * 60_000).toISOString();
-  writeFileSync(join(lost.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/25:h25:m1": "ok" }, updatedOk: { "https://github.com/acme/app/pull/25:h25": stale } } }));
+  writeFileSync(join(lost.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { updated: { "https://github.com/acme/app/pull/25:h25:m1": "ok" }, updatedOk: { "https://github.com/acme/app/pull/25:h25": stale } } }));
   // GitHub keeps accepting (201) and never moves the head; each expired acceptance counts, so a couple of polls reach the wake.
   const past = Date.now() - 11 * 60_000;
   for (let i = 0; i < 3; i++) {
     await lost.watch.tick();
-    const db = JSON.parse(readFileSync(join(lost.cacheDir, "pr-watch.json"), "utf8"));
+    const db = JSON.parse(readFileSync(join(lost.cacheDir, "loop.json"), "utf8"));
     const row = db["acme/app"] ?? {};
     row.updatedOk = { "https://github.com/acme/app/pull/25:h25": new Date(past).toISOString() };
-    writeFileSync(join(lost.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": row }));
+    writeFileSync(join(lost.cacheDir, "loop.json"), JSON.stringify({ "acme/app": row }));
   }
   assert.ok(lost.gh.filter((g) => g.includes("25/update-branch")).length >= 1, "an accepted update that never lands is asked for again");
   assert.equal(lost.woke.length, 1, "and one GitHub keeps accepting without applying wakes the task rather than waiting forever");
@@ -515,28 +530,42 @@ test("an update-branch refusal is retried unless it is permanent (a conflict or 
   assert.equal(conflict.woke.length, 1);
 });
 
-test("a green agent PR has its merge filed by the kernel for its task, once per head; a head its task's PR didn't push wakes the task", async (t) => {
-  const c = await rig(t, { merge: () => [200, { filed: { id: "r1", tier: 0, state: "claimed" } }] });
+test("a green agent PR is adopted and its merge filed by ship on its task, once per head; a refused filing wakes the task", async (t) => {
+  let landed = { id: "r1", state: "claimed" };
+  const c = await rig(t, { merge: () => [200, { id: "r1", tier: 0, state: "claimed" }], record: () => landed });
   c.set([c.agentPr(3)]);
   await c.watch.tick(); await c.watch.tick();
-  assert.deepEqual(c.merges, [{ task: "ACME-3", repo: "acme/app", number: 3, head: "h3", branch: "b3" }], "asked once at this head");
+  assert.deepEqual(c.merges, [{ kind: "github.merge", task: "ACME-3", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }] } }], "filed once at this head");
   assert.equal(c.woke.length, 0, "no agent turn between green and the merge");
-  const merging = await rig(t, { merge: () => [200, { skip: "merging" }] });
+  const adopted = openState(join(c.cacheDir, "state.json")).get("acme/app", 3);
+  assert.deepEqual([adopted.generation, adopted.task, adopted.trigger.kind, adopted.hold], [1, "ACME-3", "fleet", null], "adopted at first sight, on its task");
+  // A Tier 0 merge's outcome reaches its task once (the kernel tells only a reviewed record's).
+  landed = { id: "r1", state: "done", outcome: { ok: true, text: "Merged https://github.com/acme/app/pull/3." } };
+  c.set([]);
+  await c.watch.tick(); await c.watch.tick();
+  assert.equal(c.woke.length, 1);
+  assert.equal(c.woke[0].task, "ACME-3");
+  assert.match(c.woke[0].text, /^\*\*Done\*\* \(merge r1, github\.merge of https:\/\/github\.com\/acme\/app\/pull\/3/);
+  const merging = await rig(t, { records: [{ kind: "github.merge", state: "review", args: { prs: [{ repo: "acme/app", number: 4, head: "h4" }] } }] });
   merging.set([merging.agentPr(4)]);
   await merging.watch.tick(); await merging.watch.tick();
-  assert.deepEqual([merging.merges.length, merging.woke.length], [1, 0], "a merge already asked for: nothing more");
-  const unapproved = await rig(t, { merge: () => [200, { skip: "not-approved" }] });
-  unapproved.set([unapproved.agentPr(5)]);
-  await unapproved.watch.tick(); await unapproved.watch.tick();
-  assert.equal(unapproved.woke.length, 1, "not the head its task's approved PR pushed: the agent decides");
-  assert.match(unapproved.woke[0].text, /checks are green at `h5`.*aidenhq merge/);
+  assert.deepEqual([merging.merges.length, merging.woke.length], [0, 0], "a merge already open on the task: nothing more");
+  const off = await rig(t, { merge: () => [200, { id: "r9", tier: 0, state: "claimed" }], settings: () => ({ ...PRESETS.cautious, merge: "off" }) });
+  off.set([off.agentPr(9)]);
+  await off.watch.tick(); await off.watch.tick();
+  assert.deepEqual([off.merges.length, off.woke.length], [0, 0], "Auto-merge off: no merge filed and none asked for");
+  const refused = await rig(t);
+  refused.set([refused.agentPr(5)]);
+  await refused.watch.tick(); await refused.watch.tick();
+  assert.equal(refused.woke.length, 1, "a filing the kernel refused: the agent decides");
+  assert.match(refused.woke[0].text, /checks are green at `h5`.*aidenhq merge/);
   const down = await rig(t, { merge: () => [503, {}] });
   down.set([down.agentPr(6)]);
   await down.watch.tick();
   assert.deepEqual([down.merges.length, down.woke.length], [1, 0], "the kernel didn't answer: nothing settled");
   await down.watch.tick();
   assert.equal(down.merges.length, 2, "asked again next tick");
-  const two = await rig(t, { merge: () => [200, { filed: { id: "r2", tier: 0, state: "claimed" } }] });
+  const two = await rig(t, { merge: () => [200, { id: "r2", tier: 0, state: "claimed" }] });
   notePrTask(two.cacheDir, "https://github.com/acme/app/pull/8", { task: "ACME-7", branch: "b8" });
   two.set([two.agentPr(7), pr(8, { author: { __typename: "Bot", login: "aidenhq" }, checks: "PENDING" })]);
   await two.watch.tick();
@@ -613,12 +642,15 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
     ghCalls.push(`${method} ${path}`);
     if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { nodes: open } } } } };
     if (path === "/repos/acme/app/pulls/11") return { status: 200, body: { title } };
+    // REST's view of the head: the policy check run's job (its details URL), and that job's real workflow run.
+    if (/^\/repos\/acme\/app\/commits\/[^/]+\/check-runs/.test(path)) return { status: 200, body: { total_count: 1, check_runs: [{ id: 71, name: "policy", status: "completed", conclusion: "failure", details_url: "https://github.com/acme/app/actions/runs/500/job/9000000071" }] } };
+    if (path === "/repos/acme/app/actions/jobs/9000000071") return { status: 200, body: { run_id: 500 } };
     const run = path.match(/^\/repos\/acme\/app\/actions\/runs\/(\d+)\/jobs$/)?.[1];
     if (run) {
       const names = jobs.runs[run] ?? ["policy", "ci-required"], bad = jobs.steps[run] ?? ["Conventional Commit title"];
       return { status: 200, body: { jobs: ["policy", "ci-required", "checks"].map((n) => ({
-        name: n, conclusion: names.includes(n) ? "FAILURE" : "SUCCESS",
-        ...(n === "policy" ? { steps: ["Age check (lockfiles) and pins (images, actions, apt, global installs)", "Conventional Commit title"].map((s) => ({ name: s, conclusion: bad.includes(s) ? "FAILURE" : "SUCCESS" })) } : {}),
+        name: n, conclusion: names.includes(n) ? "failure" : "success",
+        ...(n === "policy" ? { steps: ["Age check (lockfiles) and pins (images, actions, apt, global installs)", "Conventional Commit title"].map((s) => ({ name: s, conclusion: bad.includes(s) ? "failure" : "success" })) } : {}),
       })) } };
     }
     return { status: 200, body: {} };
@@ -628,7 +660,7 @@ test("a red policy whose title now passes is re-run in place once; a still-red t
   const policyRed = (n, o = {}) => pr(n, {
     author: { __typename: "User", login: "dev" }, title,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
-      { __typename: "CheckRun", databaseId: 71, name: "policy", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+      { __typename: "CheckRun", databaseId: 71, name: "policy", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: null } } },
       { __typename: "CheckRun", databaseId: 72, name: "ci-required", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
       { __typename: "CheckRun", databaseId: 73, name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
     ] } } } }] },
@@ -780,7 +812,7 @@ test("a wedged check is matched to the rollup by node id, so a same-named newer 
     restRuns: (head) => [{ id: 77, node_id: "CR_old", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/77` }],
   });
   c.set([c.agentPr(50, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h50:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h50:77": asked },
   } }));
@@ -799,7 +831,7 @@ test("a red named check beats a wedged pending one: no wake claims the merge gat
     restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/77` }],
   });
   c.set([c.agentPr(51, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h51:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h51:77": asked },
   } }));
@@ -916,7 +948,7 @@ test("a draft PR gets no held-merge wake, and a ready one does", async (t) => {
   const c = await rig(t);
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   c.set([c.agentPr(67, { ...stuckPr(67), isDraft: true })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h67:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h67:77": asked },
   } }));
@@ -937,7 +969,7 @@ test("a red check beside a wedged one wakes the task about the failure, not with
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   const c = await rig(t, { restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" }] });
   c.set([c.agentPr(68, { commits: { nodes: [{ commit: { statusCheckRollup: rollup(true) } }] } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h68:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h68:77": asked },
   } }));
@@ -962,7 +994,7 @@ test("a head with changes requested gets no held-merge wake for its wedged check
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   const c = await rig(t);
   c.set([c.agentPr(70, { ...stuckPr(70), reviewDecision: "CHANGES_REQUESTED" })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h70:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h70:77": asked },
   } }));
@@ -970,7 +1002,7 @@ test("a head with changes requested gets no held-merge wake for its wedged check
   assert.equal(c.woke.length, 0, "the gate refuses the review state first: the wedge is not what holds the merge");
   const latest = await rig(t);
   latest.set([latest.agentPr(71, { ...stuckPr(71), latestOpinionatedReviews: { nodes: [{ state: "CHANGES_REQUESTED" }] } })]);
-  writeFileSync(join(latest.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(latest.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h71:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h71:77": asked },
   } }));
@@ -988,7 +1020,7 @@ test("a never-started red beside a wedged check is re-run, not woken as a fix-an
   // The red job 78 has no steps: it never started, so the environment owns it (the rig's default `steps` is empty for that job).
   const c = await rig(t, { steps: [] });
   c.set([c.agentPr(72, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h72:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h72:77": asked },
   } }));
@@ -1003,7 +1035,7 @@ test("a log-only wedge report does not suppress a later red head's wake at the s
   const c = await rig(t);
   // First the wedge is logged (a draft, so the gate holds nothing and no red check exists): the log-only path stamps its marker.
   c.set([c.agentPr(73, { ...stuckPr(73), isDraft: true })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h73:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h73:77": asked },
   } }));
@@ -1026,7 +1058,7 @@ test("a never-started re-run whose POST throws does not skip the repo's other PR
   c.set([c.agentPr(74, { ...redPr(74), headRefOid: "h74" }), c.agentPr(75)]);
   await c.watch.tick();
   assert.equal(c.merges.length, 1, "the second, green PR's merge is still filed in the same pass");
-  const saved = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"))["acme/app"];
+  const saved = JSON.parse(readFileSync(join(c.cacheDir, "loop.json"), "utf8"))["acme/app"];
   assert.match(saved.reran["https://github.com/acme/app/pull/74:h74"], /^retry:/, "the failed request backs off rather than counting as handled");
 });
 
@@ -1035,7 +1067,7 @@ test("a conflicting head gets no leave-it-alone wedge wake", async (t) => {
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   const c = await rig(t);
   c.set([c.agentPr(76, { ...stuckPr(76), mergeStateStatus: "DIRTY" })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h76:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h76:77": asked },
   } }));
@@ -1066,7 +1098,7 @@ test("a draft with a red and a wedged check is not told to publish, and its read
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   const c = await rig(t, { steps: [{ name: "Build" }] });
   c.set([c.agentPr(79, { isDraft: true, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h79:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h79:77": asked },
   } }));
@@ -1091,7 +1123,7 @@ test("a cancelled task's wedged PR is not woken before it is closed", async (t) 
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   const c = await rig(t, { taskStatus: "cancelled" });
   c.set([c.agentPr(81, stuckPr(81))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h81:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h81:77": asked },
   } }));
@@ -1127,7 +1159,7 @@ test("a behind head with a red and a wedged check is not told to publish", async
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
   const c = await rig(t, { steps: [{ name: "Build" }] });
   c.set([c.agentPr(84, { mergeStateStatus: "BEHIND", commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h84:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h84:77": asked },
   } }));
@@ -1154,7 +1186,7 @@ test("a stale REST wedged check absent from the rollup does not wake a red head"
   // REST lists an old check (77) that the rollup no longer has; the head's own check is 90.
   const c = await rig(t, { steps: [{ name: "Build" }], restRuns: () => [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" }] });
   c.set([c.agentPr(86, { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h86:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h86:77": asked },
   } }));
@@ -1188,7 +1220,7 @@ test("a same-named job on another workflow run is not taken as the re-run's repl
   const c = await rig(t, { gigRun: () => 600, job: { run_attempt: 2 },
     restRuns: () => [{ id: 78, node_id: "CR_78", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/600/job/78" }] });
   c.set([c.agentPr(89, stuckPr(89, 78))]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h89:500:image-changes": { at: asked, accepted: true, job: 77, run: 500 } },
     reran: { "acme/app:h89:77": asked },
   } }));
@@ -1223,7 +1255,7 @@ test("a superseded PR's wedged check is neither re-run nor reported", async (t) 
   // Both PRs belong to one task: 93 is the newer branch it published, so 92 is superseded.
   notePrTask(c.cacheDir, "https://github.com/acme/app/pull/93", { task: "ACME-92", branch: "b93" });
   c.set([c.agentPr(92, stuckPr(92)), pr(93, { author: { __typename: "Bot", login: "aidenhq" } })]);
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
     wedged: { "acme/app:h92:500:image-changes": { at: asked, accepted: true, job: 77 } },
     reran: { "acme/app:h92:77": asked },
   } }));
@@ -1254,10 +1286,10 @@ test("an accepted re-run is remembered per run, so a refused sibling run's retry
   const posts = (run) => c.gh.filter((g) => g === `POST /repos/acme/app/actions/runs/${run}/rerun-failed-jobs`).length;
   assert.deepEqual([posts(500), posts(600)], [1, 1], "the first pass asks each run once");
   // 500 was accepted; 600 was refused, so only 600 is retried after its backoff.
-  const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
+  const db = JSON.parse(readFileSync(join(c.cacheDir, "loop.json"), "utf8"));
   db["acme/app"].reranRuns = { "acme/app:h95:500": new Date().toISOString() };
   db["acme/app"].reran = { "https://github.com/acme/app/pull/95:h95": `retry:${new Date(Date.now() - 60_000).toISOString()}` };
-  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify(db));
+  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify(db));
   await c.watch.tick();
   assert.deepEqual([posts(500), posts(600)], [1, 2], "the accepted run is never posted again; the refused one is retried");
 });

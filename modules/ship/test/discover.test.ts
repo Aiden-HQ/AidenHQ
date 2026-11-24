@@ -32,4 +32,10 @@ test("discover: generated paths from .gitattributes, lockfiles and headers; the 
   assert.ok(d.globs.includes("api/types.pb.go"));
   assert.deepEqual(d.commands, [{ dir: ".", cmd: "make generate" }, { dir: "web", cmd: "npm run generate" }]);
   assert.deepEqual(d.ambiguous, []);
+  // A step's own working directory is the generator's, whatever the job's later steps say.
+  const api = discover({ ".github/workflows/gen.yml": ["jobs:", "  codegen:", "    runs-on: ubuntu-latest", "    steps:", "      - run: make generate", "        working-directory: api", "      - run: git diff --exit-code", "        working-directory: web"].join("\n") });
+  assert.deepEqual(api.commands, [{ dir: "api", cmd: "make generate" }]);
+  // A `needs:` list is no step: the job's later defaults.run.working-directory is the job's own.
+  const needs = discover({ ".github/workflows/gen.yml": ["jobs:", "  codegen:", "    needs:", "      - build", "      - lint", "    defaults:", "      run:", "        working-directory: api", "    steps:", "      - run: make generate"].join("\n") });
+  assert.deepEqual(needs.commands, [{ dir: "api", cmd: "make generate" }]);
 });
