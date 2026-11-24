@@ -341,20 +341,28 @@ export function startPrWatch(o: PrWatchOptions) {
       const runOfCheck = (n: Json) => judged[String(n.id ?? `${n.name}:${n.databaseId ?? ""}`)]?.run;
       const runs = new Set(unstarted.map(runOfCheck).filter((v): v is number => typeof v === "number" && Number.isFinite(v)));
       if (!runs.size) return false;
-      let refused = false;
+      let refused = false, permanent = false;
       for (const run of runs) {
         // A re-run that cannot be sent (a timeout, a quota refusal) is this head's problem: backing off and asking again is
         // the fix, never aborting the repo's scan and skipping a later PR's merge for the tick.
         let r: { status: number };
         try { r = await gh("POST", `/repos/${repo}/actions/runs/${run}/rerun-failed-jobs`, {}, { deadline: Date.now() + RECOVERY_WRITE_DEADLINE_MS }); }
         catch (e) {
-          log("never-started re-run failed to send", { pr: pr.url, head: pr.headRefOid, run, err: String((e as Error).message).slice(0, 200) });
+          // A credential that may not write Actions (`scope`) can never take this re-run: retrying it is pointless, so the head
+          // goes to the red-head rules, which tell the task the recovery needs a person. Anything else backs off and retries.
+          const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: string }).cause;
+          log("never-started re-run failed to send", { pr: pr.url, head: pr.headRefOid, run, cause, err: String((e as Error).message).slice(0, 200) });
+          if (cause === "scope") { permanent = true; continue; }
           refused = true;
           continue;
         }
         log(r.status < 300 ? "checks re-run" : "check re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
+        if (permanentRefusal(r.status)) { permanent = true; continue; } // 401/403/404: never clears, the red-head rules report it
         if (r.status >= 300) refused = true;
       }
+      // A re-run GitHub can never accept is not this rule's any more: the red-head rules must report the head, not the scan
+      // retry a refused write forever.
+      if (permanent && !refused) return false;
       // Only a re-run GitHub took is recorded as done: one it refused would otherwise leave the head marked as handled with its
       // jobs still never started, so it backs off and is asked again instead of being lost.
       state.reran[key] = refused ? `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}` : new Date().toISOString();
@@ -818,9 +826,10 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (!retiring && wedgedOnHead && redNow.length && opener && opener.branch === pr.headRefName && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
-        // A head behind main is the update rule's (GitHub updates the branch below), so it is not told to publish a head that is
-        // about to be replaced: only a head this watcher will not move is the task's to fix.
+      } else if (!retiring && wedgedOnHead && redNow.length && opener && opener.branch === pr.headRefName && !pr.isDraft && pr.mergeable === "MERGEABLE" && !(pr.mergeStateStatus === "BEHIND" && rebaseReason(pr, main.rollup) === "red")) {
+        // A head the update rule will move (behind main and red, `rebaseReason`'s "red") is not told to publish a head that is
+        // about to be replaced. Any other head is the task's to fix: a behind head the update rule does not own would otherwise
+        // be neither updated nor reported.
         // The same eligibility the red-head path requires: a draft (or a head the watcher cannot merge) is not told to publish,
         // and its once-per-head report stays unspent, so marking it ready still wakes its task for the failure.
         // A red check beside a wedged one the gate's own rules do not point at: the red check is the actionable failure, and no

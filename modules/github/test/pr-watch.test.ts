@@ -1232,3 +1232,12 @@ test("a superseded PR's wedged check is neither re-run nor reported", async (t) 
   assert.equal(c.woke.filter((w) => /pull\/92/.test(w.text ?? "")).length, 0, "a PR about to be closed is not woken for its checks");
   assert.ok(!c.gh.some((g) => g.startsWith("POST /repos/acme/app/actions/jobs/")), "no recovery run is spent on it");
 });
+
+// self-review: a re-run the credential can never be allowed to send is not retried forever: the red-head rules report the head.
+test("a permanent refusal to re-run a never-started job still reports the red head", async (t) => {
+  const c = await rig(t, { steps: [], rerun: () => ({ throw: Object.assign(new Error("no Actions write"), { need: { cause: "scope", scope: "repo" } }) }) });
+  c.set([c.agentPr(94, redPr(94))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "the refusal is permanent, so the failure is reported rather than retried forever");
+  assert.match(c.woke[0].text, /checks failed at/);
+});
