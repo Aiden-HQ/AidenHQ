@@ -447,7 +447,7 @@ export function createService(o: Options) {
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the App`;
+      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
       return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha)) } : {}),
@@ -789,12 +789,15 @@ export function createService(o: Options) {
     return at?.generation === generation ? undefined : `ship-generation: https://github.com/${repo}/pull/${n} is no longer adopted at generation ${generation} (handed back, stopped, paused or handed over again): nothing was done.`;
   }
 
+  /** The code host's own sign-in (the fleet's one write identity), for the content writes ship makes: never the reviewer App. */
+  const writer = async () => ({ login: String((await ownerLogin()) ?? "ghost"), rest: gh, token: async () => token() });
   /**
-   * A push onto an adopted PR's branch (ship), written through GitHub's API as the App (so GitHub signs the commits): the PR is
-   * read again here (a Tier 0 push runs right after its plan, with no revalidation), each commit from `expected` to the branch's
-   * commit is created as blobs, a tree and a commit, and the ref is moved by a fast-forward update from `expected` (force: false).
-   * A contributor's push in between makes that update fail (ship-head-moved), never overwritten. The commit is not noted as the
-   * runner's own head: the branch holds the contributor's commits, so its merge stays the AI reviewer's (foreign-head tiering).
+   * A push onto an adopted PR's branch (ship), written through GitHub's API as the code host's sign-in (the identity every
+   * ordinary task push uses): the PR is read again here (a Tier 0 push runs right after its plan, with no revalidation), each
+   * commit from `expected` to the branch's commit is created as blobs, a tree and a commit, and the ref is moved by a
+   * fast-forward update from `expected` (force: false). A contributor's push in between makes that update fail
+   * (ship-head-moved), never overwritten. The commit is not noted as the runner's own head: the branch holds the contributor's
+   * commits, so its merge stays the AI reviewer's (foreign-head tiering).
    */
   async function pushOnto(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
     const b = a.only[0];
@@ -809,36 +812,38 @@ export function createService(o: Options) {
     const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
-    // A fork's branch: the base repo's App installation pushes the commits as they are, leased on the head the write expects.
+    const who = await writer();
+    // A fork's branch: the code host's sign-in pushes the commits as they are, leased on the head the write expects.
     if (fork) {
-      const app = await o.reviewer?.(s.slug);
-      if (!app) return { ok: false, text: `ship-no-app: ${url}: a fork's branch is pushed as the GitHub App, which isn't installed on ${s.slug}: nothing was pushed.` };
       // The lease guards a race; the fix itself must build on the head, never rewrite the contributor's history.
       if (!(await git(dir, ["merge-base", "--is-ancestor", String(a.expected), String(b.sha)]).then(() => true, () => false))) return { ok: false, text: `ship-scope: \`${String(b.sha).slice(0, 12)}\` doesn't build on ${url}'s head \`${String(a.expected).slice(0, 12)}\`: nothing was pushed.` };
       const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
       if (late) return { ok: false, text: late };
-      const pushed = await forkPush(dir, into, String(pr.head.ref), String(a.expected), String(b.sha), app, url);
+      const pushed = await forkPush(dir, into, String(pr.head.ref), String(a.expected), String(b.sha), who, url);
       if (pushed) return pushed;
-      flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, app.login, undefined, a.workspace);
+      flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, who.login, undefined, a.workspace);
       flow.checksStarted(s.slug, Number(a.pr.number), b.sha, undefined, a.workspace);
-      return { ok: true, text: `Pushed ${url} \`${pr.head.ref}\` (${into}) from \`${String(a.expected).slice(0, 12)}\` to \`${String(b.sha).slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${b.sha}`] };
+      return { ok: true, text: `Pushed ${url} \`${pr.head.ref}\` (${into}) from \`${String(a.expected).slice(0, 12)}\` to \`${String(b.sha).slice(0, 12)}\` as ${who.login}.`, objects: [`github:${into.toLowerCase()}@${b.sha}`] };
     }
-    // The App writes the commits: GitHub signs what an App creates through the API.
-    const app = await o.reviewer?.(into);
-    if (!app) return { ok: false, text: `ship-no-app: ${url}: commits to an adopted PR are written as the GitHub App, which isn't installed on ${into}: nothing was pushed.` };
-    const made = await apiCommits(app.rest, into, dir, String(a.expected), String(b.sha));
+    // The code host's sign-in writes the commits: the same identity as every ordinary task push.
+    const made = await apiCommits(who.rest, into, dir, String(a.expected), String(b.sha));
     if ("refused" in made) return { ok: false, text: `${made.refused.startsWith("ship-") ? "" : "GitHub refused the commit: "}${made.refused} (${url}): nothing was pushed.` };
     // The adoption once more, right before the branch moves: a pause or a hand-back during the upload refuses it.
     const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (late) return { ok: false, text: late };
     // The PR's own head branch, as GitHub names it: the box's branch is only where the commits came from.
-    const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
-    // Not a fast-forward from `expected`: someone pushed after the read above.
-    if (r.status === 422 || r.status === 409) return { ok: false, text: `ship-head-moved: ${url} moved while writing (the update from \`${String(a.expected).slice(0, 12)}\` isn't a fast-forward any more): nothing was pushed; read it again.` };
+    const r = await who.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
+    // A 422 or 409 is a moved head or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart,
+    // as the repair's does, so a rule refusal keeps GitHub's reason instead of reading as head movement.
+    if (r.status === 422 || r.status === 409) {
+      const now = await who.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
+      if (now.status < 300 && now.body?.object?.sha === a.expected) return { ok: false, text: `GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+      return { ok: false, text: `ship-head-moved: ${url} moved while writing (the update from \`${String(a.expected).slice(0, 12)}\` isn't a fast-forward any more): nothing was pushed; read it again.` };
+    }
     if (r.status >= 300) return { ok: false, text: `GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
-    flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, app.login, undefined, a.workspace);
+    flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, who.login, undefined, a.workspace);
     flow.checksStarted(s.slug, Number(a.pr.number), made.sha, undefined, a.workspace);
-    return { ok: true, text: `Wrote ${url} \`${pr.head.ref}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
+    return { ok: true, text: `Wrote ${url} \`${pr.head.ref}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${who.login}.`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
   }
 
   /**
@@ -847,8 +852,8 @@ export function createService(o: Options) {
    * code: what it keeps is untrusted. So the merge is made here, in the cache (`git merge-tree`), and the box's files are taken
    * only on generated paths (the plan's globs) and known lockfiles, as regular files or symlinks, never under `.github/` unless
    * they are the base's own; every conflict must be on such a path. The result is one merge commit (parents: the head and the
-   * base's tip): through the API as the App on the base repo (signed), or a leased git push as the base repo's App to a fork whose
-   * author allows maintainer edits (unsigned: a rule requiring signed commits refuses it, loudly). Leftover conflicts and a
+   * base's tip): through the API as the code host's sign-in on the base repo, or a leased git push as that same sign-in to a fork
+   * whose author allows maintainer edits (unsigned: a rule requiring signed commits refuses it, loudly). Leftover conflicts and a
    * failed generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
    */
   async function repairPr(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
@@ -863,8 +868,8 @@ export function createService(o: Options) {
     const fork = !pr.head?.repo || !same(String(pr.head.repo.full_name), s.slug);
     if (fork && (!pr.head?.repo || pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainer edits: nothing was changed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
-    const app = await o.reviewer?.(s.slug);
-    if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${s.slug}: nothing was changed.` };
+    // The code host's sign-in writes the repair (the identity every ordinary task push uses); the reviewer App only reviews.
+    const who = await writer();
     const baseSha = String(pr.base.sha);
     // Both commits in the cache (a fork's head is the base repo's too, as refs/pull/<n>/head).
     const { dir } = await fetchRemote(s, a.head);
@@ -886,7 +891,7 @@ export function createService(o: Options) {
     const tmp = mkdtempSync(join(o.cacheDir, "repair-"));
     let final: string, made: string;
     try {
-      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), GIT_AUTHOR_NAME: app.login, GIT_AUTHOR_EMAIL: `${app.login}@users.noreply.github.com`, GIT_COMMITTER_NAME: app.login, GIT_COMMITTER_EMAIL: `${app.login}@users.noreply.github.com` };
+      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
       const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
       const blobAt = async (tree: string, p: string) => (await g(["ls-tree", "-z", tree, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
       // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
@@ -924,10 +929,10 @@ export function createService(o: Options) {
       final = await g(["write-tree"]);
       made = await g(["commit-tree", final, "-p", a.head, "-p", baseSha, "-m", String(kept.message ?? `Merge branch '${a.base}'`).slice(0, 2000)]);
       if (!fork) {
-        // Through the API as the App (GitHub signs it): the files that differ from the head; a blob the base or the head has is
+        // Through the API as the code host's sign-in: the files that differ from the head; a blob the base or the head has is
         // named by its sha, any other (git's clean merge of both sides, a regenerated file) is uploaded.
         const post = async (path: string, body: unknown) => {
-          const r = await app.rest("POST", `/repos/${into}/git/${path}`, body);
+          const r = await who.rest("POST", `/repos/${into}/git/${path}`, body);
           if (r.status >= 300) throw Object.assign(new Error(`GitHub refused the ${path.replace(/s$/, "")} on ${into}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`), { refused: true });
           return r.body;
         };
@@ -961,30 +966,30 @@ export function createService(o: Options) {
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
     if (pr.state !== "open" || pr.base?.ref !== a.base || !pr.head?.repo || !same(String(pr.head.repo.full_name), into) || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-scope: ${url} was closed, retargeted or stopped allowing maintainer edits during the repair: nothing was changed.` };
     if (fork) {
-      const refused = await forkPush(dir, into, String(pr.head.ref), String(a.head), made, app, url);
+      const refused = await forkPush(dir, into, String(pr.head.ref), String(a.head), made, who, url);
       if (refused) return refused;
     } else {
-      const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made, force: false });
+      const r = await who.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made, force: false });
       if (r.status >= 300) {
         // Moved, or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart.
-        const now = await app.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
+        const now = await who.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
         if (now.status < 300 && now.body?.object?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
         return { ok: false, text: `ship-refused: GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
       }
     }
-    flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
+    flow.pushed(s.slug, n, made, String(a.head), false, who.login, undefined, undefined);
     flow.checksStarted(s.slug, n, made, undefined, undefined);
-    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${app.login}${fork ? ` (pushed to ${into})` : ""}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
+    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${who.login}${fork ? ` (pushed to ${into})` : ""}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
   }
 
   /**
-   * A push to a fork PR's head branch as the base repo's App installation (GitHub lets it where the author allows maintainer
-   * edits), leased on the head the write expects: a contributor's push in between wins (ship-head-moved). Anything else GitHub
+   * A push to a fork PR's head branch as the code host's sign-in (GitHub lets it where the author allows maintainer edits),
+   * leased on the head the write expects: a contributor's push in between wins (ship-head-moved). Anything else GitHub
    * refuses (no access, a rule requiring signed commits) is its own reason (ship-refused). Undefined when it pushed.
    */
-  async function forkPush(dir: string, into: string, ref: string, expected: string, sha: string, app: { token: () => Promise<string> }, url: string): Promise<{ ok: false; text: string } | undefined> {
+  async function forkPush(dir: string, into: string, ref: string, expected: string, sha: string, who: { token: () => Promise<string> }, url: string): Promise<{ ok: false; text: string } | undefined> {
     try {
-      await git(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${ref}:${expected}`, remote(into), `${sha}:refs/heads/${ref}`], await app.token());
+      await git(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${ref}:${expected}`, remote(into), `${sha}:refs/heads/${ref}`], await who.token());
       return undefined;
     } catch (e) {
       const said = String((e as Error).message ?? e);
@@ -997,7 +1002,7 @@ export function createService(o: Options) {
    * The commits from `from` to `to` (first-parent order) created on GitHub through the API: per commit, the blobs GitHub may not
    * have (a path's blob that no other parent has at that path), a tree on the new first parent's, and a commit with the same
    * message and other parents (a merge of the base keeps the base commit). Each tree must come out as git's own, or nothing is
-   * written. Answers the last commit's sha on GitHub (the API's commits carry the App's identity, so it differs from `to`).
+   * written. Answers the last commit's sha on GitHub (the API's commits carry the writer's identity, so it differs from `to`).
    */
   async function apiCommits(rest: Gh, repo: string, dir: string, from: string, to: string): Promise<{ sha: string } | { refused: string }> {
     if (!(await git(dir, ["merge-base", "--is-ancestor", from, to]).then(() => true, () => false))) return { refused: `ship-scope: \`${to.slice(0, 12)}\` doesn't build on the PR's head \`${from.slice(0, 12)}\`` };
@@ -1049,8 +1054,8 @@ export function createService(o: Options) {
   }
 
   /**
-   * The App's approval of an adopted PR at exactly its head (`commit_id`), never the owner's account (that would count as a
-   * person's, a code owner's included): no App on the repo, or the App's own PR, is "approval needs a human". The head is read
+   * The reviewer App's approval of an adopted PR at exactly its head (`commit_id`), never the owner's account (that would count
+   * as a person's, a code owner's included): no App on the repo, or the App's own PR, is "approval needs a human". The head is read
    * once before posting; GitHub binds the review to `commit_id`, so an approval that raced a push stands on the old head only.
    */
   async function approve(a: any): Promise<{ ok: boolean; text: string }> {
