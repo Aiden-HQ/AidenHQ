@@ -625,11 +625,13 @@ export function createEngine(d: EngineDeps) {
       const boxed = r.engine === "deepsec" && b.setup_files ? Object.fromEntries(Object.entries(JSON.parse(b.setup_files) as Record<string, string>).filter(([p]) => BOX_SETUP.test(p))) : {};
       const fits = JSON.stringify(boxed).length <= SETUP_FILES_MAX;
       if (!fits) log("deepsec's setup files are too big for a check's spec: it sets up itself", { run: r.id });
+      // A rerun's due area is read from the files not covered yet (changed first), the rest of it staying in the checkout as context.
+      const unseen = o && o.scope !== "map" && o.scope !== "repo" && plan && b.blobs ? unseenOf(b, o.id, filesOf(plan, JSON.parse(b.blobs) as Record<string, string>, r.area), JSON.parse(b.blobs) as Record<string, string>) : undefined;
       const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: tools ? "code-review-tools" : "code-review",
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skills: o.run.skills, tools: o.run.tools } : {}), ...(o?.run.max_cost_usd ? { max_cost_usd: o.run.max_cost_usd } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
         ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}), ...await deepsecData(r),
-        ...(area ? { area: { id: area.id, name: area.name, files: area.files } } : {}), ...(o?.scope === "map" && plan && plan.areas.length > 1 ? { area_map: areaMap(plan) } : {}),
+        ...(area ? { area: { id: area.id, name: area.name, files: area.files } } : {}), ...(unseen ? { unseen } : {}), ...(o?.scope === "map" && plan && plan.areas.length > 1 ? { area_map: areaMap(plan) } : {}),
         focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -1000,6 +1002,19 @@ export function createEngine(d: EngineDeps) {
     });
     return { sha: last.sha, at: last.at, findings };
   }
+  /** A due area's files to read first on a rerun (what the run's focus is): those changed since this option last read them, then those it never read,
+   * cut to what a check's spec field holds. None on a Full review, a first review (nothing seen: all of it is new) or when nothing is unseen. */
+  function unseenOf(b: BatchRow, option: string, files: string[], blobs: Record<string, string>) {
+    if (b.full) return undefined;
+    const seen = new Map(all<{ path: string; blob: string }>("SELECT path, blob FROM area_seen WHERE repo = ? AND option = ?", b.repo, option).map((x) => [x.path, x.blob]));
+    if (!seen.size) return undefined;
+    const changed = files.filter((p) => seen.has(p) && seen.get(p) !== blobs[p]), fresh = files.filter((p) => !seen.has(p)), all_ = [...changed, ...fresh];
+    const kept: string[] = [];
+    let size = 100;
+    for (const p of all_) { size += JSON.stringify(p).length + 1; if (size > 15_000) break; kept.push(p); }
+    return all_.length ? { files: kept, changed: Math.min(changed.length, kept.length), more: all_.length - kept.length } : undefined;
+  }
+
   /** One run of a repo review: queued, or ended at once (`end`: skipped or failed, with why). */
   const addTree = (b: BatchRow, engine: string, model: string, effort: string, option: string, profile: string, area: string | null, end?: { status: "skipped" | "failed"; why: string }, carried?: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, why, ended, full, due, created, author, batch, target, option, profile, area, carried)
     VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'oneoff', ?, ?, ?, 1, ?, ?, ?, ?, 'tree', ?, ?, ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, b.repo, b.sha, b.sha, engine, model, effort, end?.status ?? "queued", end?.why.slice(0, 500) ?? null, end ? iso() : null, now(), now(), b.author, b.id, option, profile, area, carried ?? null);
