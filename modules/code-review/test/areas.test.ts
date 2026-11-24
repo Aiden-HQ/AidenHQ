@@ -134,6 +134,9 @@ test("a plan of several areas files each per-area option per area, a stack optio
     { option: "perf.react", lens: "performance", status: "skipped", why: "skipped: no react code in any of the 2 areas", cost_usd: 0, review: null, none: true },
     { option: "plan", lens: null, status: "done", why: null, cost_usd: 0.02, review: null, plan: true }] });
   assert.equal(clean.verdict, "clean");
+  // A skill that reports no reads is unverified coverage, summed over its areas, never "0 read".
+  const skill = (files) => ({ option: "cor.review", lens: "correctness", status: "done", why: null, cost_usd: 1, area: { name: "a", files }, review: { coverage: { reviewed: [], excluded: [], incomplete: null, counts: { eligible: files, reviewed: 0 } }, coverage_note: "reads its own way", findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 } } });
+  assert.match(render({ repo: REPO, sha: sha("1"), created: "2026-11-24", lensOf: () => "correctness", runs: [skill(2), skill(3)] }).markdown, /cor\.review: partial: coverage unverified: it reports no reads \\\(5 eligible files across 2 areas\\\)/);
 });
 
 test("a failed plan fails every option that waited for it; the whole-repo ones keep their results", async () => {

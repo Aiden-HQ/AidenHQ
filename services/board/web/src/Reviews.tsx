@@ -1021,7 +1021,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
                 <Select aria-label="Effort" value={efforts.includes(c.effort) ? c.effort : "medium"} options={efforts.map((x) => [x, x] as const)} disabled={!override} onChange={(x) => setCombos([{ ...c, effort: x }])} />
               </div>
             )}
-            <span className="ui-field-help">{override ? "Runs every check that calls a model. " : "Untouched, each check runs its own default model; pick one to run them all on it. "}Free checks don't use it. Effort is how hard the model thinks.</span>
+            <span className="ui-field-help">{override ? "Runs every check that calls a model. " : "Untouched, each check runs its own default model; pick one to run them all on it. "}Free checks don't use it. Effort is how hard the model thinks. A large repo is first split into areas by Claude Haiku, which reads only its file paths and line counts.</span>
           </div>
         </div>
       </Card>

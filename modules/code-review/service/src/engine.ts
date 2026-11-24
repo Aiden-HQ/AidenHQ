@@ -2067,8 +2067,8 @@ export function createEngine(d: EngineDeps) {
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
       // What past repo reviews cost, per option, model and effort (finished runs of one option; the board's cost hint reads it).
       const past = new Map<string, { model: string; effort: string; n: number; usd: number }[]>();
-      // An option's cost in one review: all its runs there (one per area).
-      for (const r of all<{ option: string; model: string; effort: string; n: number; usd: number }>("SELECT option, model, effort, COUNT(*) n, AVG(usd) usd FROM (SELECT batch, option, model, effort, SUM(cost_usd) usd FROM runs WHERE target = 'tree' AND status = 'done' AND cost_usd > 0 GROUP BY batch, option, model, effort) GROUP BY option, model, effort")) {
+      // An option's cost in one review: every run of it there (one per area, failed ones' billing too), where any finished.
+      for (const r of all<{ option: string; model: string; effort: string; n: number; usd: number }>("SELECT option, model, effort, COUNT(*) n, AVG(usd) usd FROM (SELECT batch, option, model, effort, SUM(cost_usd) usd FROM runs WHERE target = 'tree' GROUP BY batch, option, model, effort HAVING SUM(status = 'done') > 0 AND SUM(cost_usd) > 0) GROUP BY option, model, effort")) {
         past.set(r.option, [...(past.get(r.option) ?? []), { model: r.model, effort: r.effort, n: r.n, usd: r.usd }]);
       }
       // Every option, the ones that can't run here with why (the board lists them last, greyed).
