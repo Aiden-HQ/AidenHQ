@@ -73,7 +73,8 @@ if (report("agent-check", staticCheck(out.paperclip))) die("the agent check fail
 // transcripts, vault folders and knowledge bases. A module can't declare a host mount; these are the host's own.
 const ops = out.compose.services["meetings-ops-mcp"];
 if (ops) {
-  const own = ["${AIDENHQ_CONFIG_DIR:-./config}/system.yaml:/config/system.yaml:ro", "${AIDENHQ_CONFIG_DIR:-./config}/routing.yaml:/config/routing.yaml:ro", "${TRANSCRIPTS_DIR:?set TRANSCRIPTS_DIR in .env}:/sources/transcripts"];
+  // The config directory, not its files: a file saved by rename (an editor, setup.sh) would stay the old inode in a single-file bind mount.
+  const own = ["${AIDENHQ_CONFIG_DIR:-./config}:/config:ro", "${TRANSCRIPTS_DIR:?set TRANSCRIPTS_DIR in .env}:/sources/transcripts"];
   // A bind source that is missing becomes a directory: an install from before routing.yaml was mounted gets the example's empty rules (scripts/bootstrap.sh does the same).
   const routing = join(resolve(repo, env("AIDENHQ_CONFIG_DIR") || "config"), "routing.yaml");
   if (!stage && !existsSync(routing)) { writeFileSync(routing, readFileSync(join(repo, "config", "routing.example.yaml"))); console.log(`  created ${routing}`); }
