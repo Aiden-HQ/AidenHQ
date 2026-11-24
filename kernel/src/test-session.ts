@@ -198,9 +198,18 @@ export function createTestSessions(d: TestSessionsDeps) {
       return { email: r.email, app: r.app, expires: iso(r.expires), role: "member" };
     },
 
-    /** Revoke one session (the tool after its run), or every session on a task (the sweep). */
+    /**
+     * Revoke one session (the tool after its run), or every session on a task (the sweep). A session id is only ever revoked
+     * for the task that owns it: another task's in-flight call can never end a canary that isn't its own.
+     */
     async revoke(input: { sessionId?: string; task?: string; reason?: string }): Promise<{ revoked: number }> {
-      if (input.sessionId) return { revoked: (await end(input.sessionId, input.reason ?? "requested")) ? 1 : 0 };
+      if (input.sessionId) {
+        const r = byId(input.sessionId);
+        if (!r) return { revoked: 0 };
+        // The job's task may be the control plane's identifier (WOR-…); the row keeps both that and its id.
+        if (input.task && r.task !== input.task && r.identifier !== input.task) throw new TestSessionError(403, "that session isn't this task's");
+        return { revoked: (await end(input.sessionId, input.reason ?? "requested")) ? 1 : 0 };
+      }
       if (!input.task) throw new TestSessionError(400, "send sessionId or task");
       const rows = d.db.prepare("SELECT id FROM test_session WHERE task = ? AND revoked = 0").all(input.task) as { id: string }[];
       let n = 0;

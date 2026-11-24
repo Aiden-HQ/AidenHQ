@@ -157,6 +157,25 @@ test("revoke ends the session now (the tool's after-run call), and the sweep end
   assert.equal((await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP })).app, APP);
 });
 
+test("a session id is only revoked for the task that owns it, so one canary never ends another's", async () => {
+  const OTHER_TASK = "00000000-0000-4000-8000-0000000000b2";
+  const st = store({ tasks: {
+    [TASK]: { id: TASK, identifier: "WOR-11495", status: "in_progress", assigneeAgentId: AGENT },
+    [OTHER_TASK]: { id: OTHER_TASK, identifier: "WOR-11496", status: "in_progress", assigneeAgentId: AGENT },
+  } });
+  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
+  // Another task's id, or its identifier, is refused and the session stays live.
+  await refused(st.s.revoke({ sessionId: m.id, task: OTHER_TASK }), 403, /isn't this task's/);
+  await refused(st.s.revoke({ sessionId: m.id, task: "WOR-11496" }), 403, /isn't this task's/);
+  assert.equal((await st.s.check({ cookie, host: HOST }))?.email, EMAIL);
+  // The owning task, named by its id or its identifier, ends it.
+  assert.equal((await st.s.revoke({ sessionId: m.id, task: TASK })).revoked, 1);
+  assert.equal(await st.s.check({ cookie, host: HOST }), null);
+  const m2 = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  assert.equal((await st.s.revoke({ sessionId: m2.id, task: "WOR-11495" })).revoked, 1);
+});
+
 test("a session signs in as the account it was minted for: a changed setting email ends it, and a failed task read does not", async () => {
   let setting: { email: string; apps: string[] } | undefined = { email: EMAIL, apps: [APP] };
   let read: "ok" | "down" = "ok";
