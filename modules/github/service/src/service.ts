@@ -146,6 +146,8 @@ const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
 /** The module that adopts PRs and files their writes (approve, enqueue, an adoption's merge): its name as the kernel reports it. */
 const SHIP = "ship";
+/** A record the ship module filed itself (its kill switch reaches its merges at the call: merges.ts). */
+const filedByShip = (rec: { requester?: { kind?: string; module?: string } }) => rec.requester?.kind === "module" && rec.requester.module === SHIP;
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 /**
  * GitHub refuses any push that creates or updates a workflow file when the sign-in's OAuth grant lacks `workflow` ("refusing to
@@ -344,7 +346,7 @@ export function createService(o: Options) {
     }
     // A write for an adopted PR (ship): the PR as GitHub has it now and ship's adoption, never the args.
     const filedOn = [String(task ?? ""), String(a.workspace ?? "")].filter(Boolean);
-    const byShip = requester?.kind === "module" ? requester.module === SHIP : (requester as { filed_by?: string } | undefined)?.filed_by === SHIP;
+    const byShip = requester?.kind === "module" && requester.module === SHIP;
     const adoption = async (repo: string, number: number, generation: unknown, expected: unknown, pr: any, bound?: unknown): Promise<Ship> => {
       if (!Number.isInteger(generation) || typeof expected !== "string") throw fail(400, "a write for an adopted PR names its generation and the head it expects");
       const at = o.ship ? await o.ship.generation(repo, number) : undefined;
@@ -498,7 +500,7 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
-      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier);
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier, filedByShip(rec));
       // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
       if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
       // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
@@ -572,7 +574,7 @@ export function createService(o: Options) {
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
-      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier, rec.tier);
+      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier, rec.tier, filedByShip(rec));
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);

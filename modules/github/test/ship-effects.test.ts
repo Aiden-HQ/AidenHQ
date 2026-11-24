@@ -255,13 +255,13 @@ test("plan: an adopted PR's merge is refused when the generation is stale or shi
 
 test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
   const H = "a".repeat(40);
-  const run = async (adopted) => {
+  const run = async (adopted, plain = false) => {
     const calls = [];
     const gh = async (method, path) => {
       calls.push(`${method} ${path}`);
       if (path === "/graphql") return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: true, pullRequest: {
         number: 7, state: calls.some((c) => c.startsWith("PUT")) ? "MERGED" : "OPEN", headRefOid: H, baseRefName: "main", isDraft: false, mergeStateStatus: "CLEAN", reviewDecision: null, isInMergeQueue: false,
-        mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
+        mergeCommit: null, commits: { nodes: [{ commit: { statusCheckRollup: plain ? { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] } } : null } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, reviews: { nodes: [] }, latestOpinionatedReviews: { nodes: [] },
       } } } } };
       if (path.includes("/rules/branches/")) return { status: 200, body: [] };
       if (path.includes("/check-runs")) return { status: 200, body: { check_runs: [] } };
@@ -273,7 +273,8 @@ test("an adoption's direct merge: no checks and none required merges at its boun
     const outcomes = [];
     const { createMerges } = await import("../service/src/merges.ts");
     const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) } });
-    void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
+    if (plain) void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H }] }, undefined, undefined, undefined, true);
+    else void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
     await m.step();
     return { calls, outcomes };
   };
@@ -284,6 +285,10 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   assert.equal(ended.calls.filter((c) => c.startsWith("PUT")).length, 0);
   assert.equal(ended.outcomes[0]?.ok, false);
   assert.match(ended.outcomes[0].text, /adoption ended/);
+  // A fleet PR's plain merge ship filed stops with ship too: paused (or its repo off), it is never called.
+  const paused = await run(false, true);
+  assert.equal(paused.calls.filter((c) => c.startsWith("PUT")).length, 0, paused.calls.join("\n"));
+  assert.match(paused.outcomes[0]?.text ?? "", /ship is paused/);
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {
