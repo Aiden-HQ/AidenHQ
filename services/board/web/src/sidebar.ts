@@ -17,8 +17,8 @@ export interface AgentGroup {
   tests: ChatRow[];
   /** Work handed out from this agent's open chats, by the chat it came from. */
   handedOut: Map<string, ChatRow[]>;
-  busy: boolean;
-  needsYou: boolean;
+  /** The one count on the group's header: what needs the owner, else what is working, across its chats and their handed-out work. */
+  count: { kind: "needs" | "working"; n: number } | null;
   unread: boolean;
 }
 
@@ -42,6 +42,13 @@ export function groupTasks<T extends { state: ShownState | null; updatedAt: stri
     waiting: open.filter((t) => !needsOwner(t.state) && t.state?.kind !== "working").sort(newestFirst),
     finished: done.filter((t) => t.updatedAt >= cutoff).sort(newestFirst).slice(0, 5),
   };
+}
+/** A group's header count: chats needing the owner first (kept even beside working ones), else chats working; null when quiet. */
+export function groupCount(chats: ChatRow[]): AgentGroup["count"] {
+  const needs = chats.filter((r) => needsOwner(r.state)).length;
+  if (needs) return { kind: "needs", n: needs };
+  const working = chats.filter((r) => r.state?.kind === "working").length;
+  return working ? { kind: "working", n: working } : null;
 }
 /** A chat that may be settled: nothing running and nothing waiting on anyone (the board checks again). */
 export const settleableChat = (s: ShownState | null) => !isActive(s);
@@ -69,8 +76,7 @@ export function groupChats(rows: ChatRow[], agents: ChatAgent[]): { front: Agent
       earlier,
       tests,
       handedOut,
-      busy: anyLive(all),
-      needsYou: all.some((r) => needsOwner(r.state)),
+      count: groupCount(all),
       unread: mine.some((r) => r.unread),
     };
   };

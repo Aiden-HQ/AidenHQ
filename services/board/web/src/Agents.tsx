@@ -7,7 +7,7 @@ import { useCached } from "./cache";
 import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } from "./queries";
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
-import { ago, elapsed } from "./util";
+import { ago, elapsed, runAt as when } from "./util";
 import { StatusDot, type StatusTone } from "./ui";
 
 const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
@@ -54,6 +54,19 @@ function byDepartment(agents: RosterAgent[]): { dept: Department; members: Roste
   const front = (a: RosterAgent) => (a.key === FRONT ? 0 : 1);
   for (const g of groups.values()) g.members.sort((x, y) => front(x) - front(y));
   return [...groups.values()].sort((x, y) => x.dept.order - y.dept.order || x.dept.name.localeCompare(y.dept.name));
+}
+
+/** Agents with a job running first, a reporting line counting by its busiest member; the order within each half is kept (so with nobody working, nothing moves). */
+function workingFirst(agents: RosterAgent[]): RosterAgent[] {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const byKey = new Map(agents.flatMap((a) => (a.key ? [[a.key, a] as const] : [])));
+  const hot = new Set(agents.filter((a) => a.state === "working" || a.running > 0).map((a) => a.id));
+  // Each working agent warms every agent above it: its team record and whom it reports to.
+  for (const a of [...hot].map((id) => byId.get(id)!)) {
+    const seen = new Set<string>();
+    for (let p = (a.memberOf && byKey.get(a.memberOf)) || (a.reportsTo ? byId.get(a.reportsTo) : undefined); p && !seen.has(p.id); p = (p.memberOf && byKey.get(p.memberOf)) || (p.reportsTo ? byId.get(p.reportsTo) : undefined)) (seen.add(p.id), hot.add(p.id));
+  }
+  return [...agents].sort((x, y) => Number(hot.has(y.id)) - Number(hot.has(x.id)));
 }
 
 /**
@@ -223,10 +236,10 @@ export function CrewView({ crew, onSignIn }: { crew: Assignee[]; onSignIn: () =>
                   <h3>{dept.name}</h3>
                   {dept.description && <span className="hint">{dept.description}</span>}
                 </div>
-                {orgTree(members).map(row)}
+                {orgTree(workingFirst(members)).map(row)}
               </div>
             ))
-          : orgTree(agents).map(row)}
+          : orgTree(workingFirst(agents)).map(row)}
       </div>
     </section>
   );
@@ -282,12 +295,6 @@ function standing(a: RosterAgent, now: number, team?: TeamLoad): { text: string;
     default: return { text: "Idle", tone: "idle" };
   }
 }
-
-const when = (iso: string) => {
-  const d = new Date(iso);
-  const day = d.toDateString() === new Date().toDateString() ? "" : `${d.toLocaleDateString(undefined, { weekday: "short" })} `;
-  return `${day}${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
-};
 
 /** The soonest scheduled run that isn't paused. */
 const nextRun = (a: RosterAgent) => a.schedules.filter((r) => !r.paused && r.nextRunAt).sort((x, y) => x.nextRunAt!.localeCompare(y.nextRunAt!))[0];
@@ -414,22 +421,6 @@ function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runs
             </div>
           </section>
           <section>
-            <h4>Schedules</h4>
-            {a.schedules.length ? (
-              <ul className="agent-schedules">
-                {a.schedules.map((r) => (
-                  <li key={r.title} className={r.paused ? "paused" : ""}>
-                    <ClockIcon />
-                    <span className="sched-title">{r.title}</span>
-                    <span className="sched-next">{r.paused ? "paused" : r.nextRunAt ? when(r.nextRunAt) : ""}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="fleet-empty">No schedule; runs when asked.</p>
-            )}
-          </section>
-          <section>
             <h4>Running now</h4>
             {on.length || queued.length ? (
               <div className="fleet-jobs">
@@ -528,13 +519,6 @@ export function Scorecard({ id }: { id: string }) {
     </section>
   );
 }
-
-const ClockIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <circle cx="12" cy="12" r="9" />
-    <path d="M12 7v5l3 2" />
-  </svg>
-);
 
 function SessionRow({ s, now }: { s: Session; now: number }) {
   const routine = s.run && !s.tasks.some((t) => t.identifier === s.run!.identifier);
