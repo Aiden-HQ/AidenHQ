@@ -210,6 +210,7 @@ test("one repo's incomplete bootstrap files what it read and is read again, and 
   assert.equal(await w.look(), 1, "the other repo's label is handled while the first repo is still pending");
   assert.ok(w.state().feed.digest[R], "the next look's bootstrap finished it");
   assert.equal(w.state().feed.after, 2);
+});
 
 test("new-issue triage follows the repo's triage setting alone, and with `new` a held issue waits for a slot instead of expiring", async () => {
   const w = world({ repos: [repo({ issues: false, triage: "new", triage_cap_per_author_day: 1 })] });
