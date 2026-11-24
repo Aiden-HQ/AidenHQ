@@ -1,6 +1,8 @@
 [Unit]
 Description=AidenHQ: transparent hugepage defrag=defer (no direct compaction stalls)
 
+ConditionPathExists=/sys/kernel/mm/transparent_hugepage/defrag
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes

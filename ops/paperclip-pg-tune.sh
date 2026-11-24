@@ -12,5 +12,8 @@ shared_buffers = '512MB'"
 keep="$(grep -vE "^[[:space:]]*(jit|random_page_cost|shared_buffers)[[:space:]]*=" "$f" || true)"
 new="$(printf '%s\n%s\n' "$keep" "$want" | sed '/^$/d')"
 if [ "$new" = "$(sed '/^$/d' "$f")" ]; then exit 0; fi
-printf '%s\n' "$new" >"$f" # in place, never a rename: the file is Postgres's
+tmp="$f.tune.$$"
+printf '%s\n' "$new" >"$tmp" # a whole file then a rename, as ALTER SYSTEM does: never a half-written settings file
+chmod --reference="$f" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+mv "$tmp" "$f"
 echo "paperclip postgres: tuned postgresql.auto.conf (jit off, random_page_cost 1.1, shared_buffers 512MB; next Paperclip restart)"
