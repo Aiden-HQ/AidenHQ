@@ -12,7 +12,8 @@ export type Row = { id: string; kind: string; args: unknown; tier: number; panel
 export type Text = { id: string; title: string; body?: string; url?: string; repo?: string; number?: number };
 export type Change = { id: string; tier: Tier; at: string; keys: string[]; link: string; label: string };
 
-const action = (kind: string) => kind.replace(/^(runner|kernel)\./, "");
+// A code host's kinds (github.merge, codehost-local.pr) are bare actions too, as kernel review-loop.ts actionOf reads them.
+const action = (kind: string) => kind.replace(/^(runner|kernel|github|codehost-local)\./, "");
 const repoKey = (s: string) => s.toLowerCase().replace(/\.git$/, "");
 
 /** Who approved it: the reviewer (alone or with the panel's second), the owner, or nobody (it ran at once); undefined when no one did. */

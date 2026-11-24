@@ -48,7 +48,7 @@ export const neutral = (v: string) => v.replace(/<!/g, "‹!").replace(/-->/g, "
 /** May this module speak as the owner (a channel)? */
 export const isChannel = (m: ModuleInfo | undefined) => Boolean(m?.channel && m.privileged?.includes("speaks-as-owner"));
 
-export function createChannels({ db, records, writes, board, owner, ownerTyped = owner, modules, facts, log = () => {}, now = Date.now }: {
+export function createChannels({ db, records, writes, board, owner, ownerTyped = owner, modules, facts, log = () => {}, now = Date.now, stopJobs }: {
   /** The fact log: the owner's message is a task.commented fact (actor `account:<channel>`). */
   facts?: Facts;
   db: DatabaseSync; records: Records; writes: Writes;
@@ -59,6 +59,8 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
   /** The same, for the owner's own typed words (their channel message): its comment isn't marked as code's (cplimit.ts markCode). */
   ownerTyped?: Api;
   modules: () => ModulesFile; log?: Log; now?: () => number;
+  /** Ends a task's running kernel jobs (as `by`); how many it ended. Unset when jobs are off. */
+  stopJobs?: (task: string, by: string) => Promise<number>;
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS channel_tokens (hash TEXT PRIMARY KEY, card TEXT NOT NULL, digest TEXT NOT NULL, channel TEXT NOT NULL, decision TEXT NOT NULL, created_at TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', panel INTEGER NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS channel_tokens_card ON channel_tokens (card, channel);
@@ -291,9 +293,10 @@ export function createChannels({ db, records, writes, board, owner, ownerTyped =
       const task = str(b.task, 100);
       if (!task) throw fail(400, "bad_request", "send {task}");
       const issue = await ok(owner("GET", `/api/issues/${encodeURIComponent(task)}`), "the task");
+      const jobs = stopJobs ? await stopJobs(String(issue.id), `channel:${channelId(module)}`) : 0; // before Paperclip's runs: a failure there must not leave a job running
       const runs = ((await ok(owner("GET", `/api/companies/${issue.companyId}/live-runs`), "live runs")) as { id: string; issueId: string | null }[]).filter((r) => r.issueId === issue.id);
       for (const r of runs) await ok(owner("POST", `/api/heartbeat-runs/${encodeURIComponent(r.id)}/cancel`, {}), "cancelling a run");
-      return { stopped: runs.length };
+      return { stopped: runs.length + jobs };
     },
 
     /** The approvals digest (once a day, from 21:00 owner time): the Tier 2 cards of the last 24 hours, for the owner's notify. */
