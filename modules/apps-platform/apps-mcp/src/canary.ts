@@ -149,12 +149,12 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
       "const word = (b) => (b.tagName === 'INPUT' ? (b.value || b.alt) : b.textContent) || '';" +
       // "feedback" is the form's own subject, not its send: a "Preview feedback" button must not be taken for "Save feedback".
       "const sendish = /send|submit|share|post|save|publish/i;" +
-      // Never guess between several explicit controls: two submit buttons with different actions (Preview, Save) are a form
-      // whose send nobody can name, so the canary stops instead of clicking the first one and submitting the wrong thing.
+      // Never guess between several explicit controls, and never click a type=button "Save draft": only a send-named submit
+      // control sends, or the form's one explicit submit when it is worded as sending. Otherwise the canary stops.
       "const named = explicit.filter((x) => sendish.test(word(x)));" +
       // One send-named control, or the form's only button when it is worded as sending. A lone "Preview feedback" is not
       // that: a two-step form's real send is on the next screen, and clicking Preview would send nothing.
-      "const b = named.length === 1 ? named[0] : named.length === 0 && els.length === 1 && sendish.test(word(els[0])) ? els[0] : null;" +
+      "const b = named.length === 1 ? named[0] : named.length === 0 && explicit.length === 1 && sendish.test(word(explicit[0])) ? explicit[0] : null;" +
       "if (!b) return '';" +
       "b.setAttribute('data-aidenhq-canary-submit', '1');" +
       "return b.tagName + ':' + word(b).trim().slice(0, 60);" +

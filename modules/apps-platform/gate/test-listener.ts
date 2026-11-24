@@ -144,6 +144,8 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     }
 
     const who = await session(req, c, app, publicHost);
+    // The browser may go while the kernel is answering: nothing is proxied to the app behind a response no one will read.
+    if (res.destroyed || req.destroyed) return;
     if (who === "other-app") return plain(res, 404, "not found");
     if (who === "down") return plain(res, 503, "unavailable: the session may still be valid; try again");
     if (!who) return plain(res, 401, "sign in first");
