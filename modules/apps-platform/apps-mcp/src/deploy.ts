@@ -414,7 +414,7 @@ export function createEngine(d: Deps) {
       try {
         return { ok: true, timed_out: false, output: (await compose(app, runArgv(service, o.script, o.timeoutMs), { timeout: o.timeoutMs + 30_000, both: true })).slice(-8000) };
       } catch (e: any) {
-        return { ok: false, timed_out: Boolean(e.killed) || e.code === 124 || e.code === 137, output: `${e.stdout ?? ""}\n${e.message}`.slice(-8000) };
+        return { ok: false, timed_out: Boolean(e.killed), output: `${e.stdout ?? ""}\n${e.message}`.slice(-8000) };
       }
     });
   }

@@ -101,7 +101,7 @@ export function SidebarShell({
             href={n.href}
             aria-current={n.href === path ? "page" : undefined}
             className={cn(
-              "flex min-w-16 flex-1 shrink-0 px-2 whitespace-nowrap flex-col items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring justify-center gap-1 text-xs font-medium text-muted-foreground",
+              "flex min-w-16 flex-auto shrink-0 px-2 flex-col items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring justify-center gap-1 text-xs font-medium text-muted-foreground",
               n.href === path && "text-link"
             )}
           >
