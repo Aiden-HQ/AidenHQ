@@ -145,6 +145,76 @@ test("a module files another module's kind only when that kind's filed_by names 
   assert.equal((await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-1" }, "third-key")).status, 401);
 });
 
+test("a module-filed write on a task records that task's identifier, and GET /v1/work?record= reads it", async (t) => {
+  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE, "TASK-11": { id: "TASK-11", identifier: "", status: "open" } } });
+  // A module files on a task by its UUID (ship's github.merge: no job, no workspace): the record carries its identifier.
+  const filed = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(filed.status, 200, JSON.stringify(filed.json));
+  const rec = k.records.get(filed.json.id);
+  assert.deepEqual([rec.task, rec.identifier, rec.requester.kind], ["TASK-9", "WOR-8637", "module"]);
+  const read = await k.v1("GET", `/v1/work?record=${filed.json.id}`);
+  assert.equal(read.status, 200, JSON.stringify(read.json));
+  assert.deepEqual([read.json.task, read.json.identifier], ["TASK-9", "WOR-8637"]);
+  // A job's own workspace is never re-read or overwritten: its record keeps the row's identifier.
+  const job = mintToken("job-secret", { kind: "job", job: "jw:twin.post", agentId: "ag-bo", issueId: "TASK-7" });
+  const byJob = await k.v1("POST", "/v1/writes", { kind: "twin.post", args: { note: "y" } }, job);
+  assert.equal(k.records.get(byJob.json.id).identifier, "TASK-7");
+});
+
+test("a module-filed write on a task the control plane can't resolve leaves its identifier unset", async (t) => {
+  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE, "TASK-11": { id: "TASK-11", identifier: "", status: "open" } },
+    onControl: (req) => (/^\/api\/issues\/TASK-404$/.test(req.url ?? "") ? { status: 404, body: { error: "not_found" } } : undefined) });
+  // An empty identifier, and a task the control plane has no row for (404): both leave it unset, so the guard fails closed.
+  const empty = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "a" }, task: "TASK-11" }, "other-key");
+  assert.equal(empty.status, 200, JSON.stringify(empty.json));
+  assert.equal(k.records.get(empty.json.id).identifier ?? null, null);
+  assert.equal((await k.v1("GET", `/v1/work?record=${empty.json.id}`)).json.identifier, null);
+  const gone = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "b" }, task: "TASK-404" }, "other-key");
+  assert.equal(gone.status, 200, JSON.stringify(gone.json));
+  assert.equal(k.records.get(gone.json.id).identifier ?? null, null);
+});
+
+test("a task that answers 200 with no issue body is no answer: the write is refused retryably, never filed", async (t) => {
+  for (const body of [null, [], { error: "not_found" }]) {
+    const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") ? { status: 200, body } : undefined) });
+    const r = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+    assert.equal(r.status, 503, JSON.stringify(r.json));
+    assert.equal(r.json.error.type, "check_failed");
+    assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+  }
+});
+
+test("the same module request filed again persists the identifier on the open record it reuses", async (t) => {
+  // The task isn't resolvable yet (the control plane can't find it), so this filing is the identifier-less record an upgrade's
+  // open cards are; then it resolves, and the same request comes again.
+  const issues = { ...HEARTBEAT };
+  const { k } = await twin(t, { issues });
+  // The same object the fake control plane reads: taken in, then given the task.
+  const first = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(first.status, 200, JSON.stringify(first.json));
+  assert.equal(k.records.get(first.json.id).identifier ?? null, null);
+  issues["TASK-9"] = { ...TRIAGE["TASK-9"] };
+  const again = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(again.status, 200, JSON.stringify(again.json));
+  assert.equal(again.json.id, first.json.id);
+  assert.deepEqual([k.records.get(first.json.id).identifier, (await k.v1("GET", `/v1/work?record=${first.json.id}`)).json.identifier], ["WOR-8637", "WOR-8637"]);
+  // A decided record's identifier is still filled in, but never rewritten once it has one.
+  assert.equal(k.records.setIdentifier(first.json.id, "WOR-9999"), false);
+  assert.equal(k.records.get(first.json.id).identifier, "WOR-8637");
+});
+
+test("a module-filed write whose task the control plane can't read now is refused retryably, never filed identifier-less", async (t) => {
+  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") ? { status: 503, body: { error: "unavailable" } } : undefined) });
+  const r = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key");
+  assert.equal(r.status, 503, JSON.stringify(r.json));
+  assert.equal(r.json.error.type, "check_failed");
+  assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+  // A control plane that drops the read (no answer at all) is the same retryable refusal, never an identifier-less record.
+  const dropped = await (await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => { if (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") && String(req.headers["x-dropped"] ?? "") !== "once") req.socket.destroy(); return undefined; } })).k;
+  assert.equal((await dropped.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key")).status, 503);
+  assert.equal(dropped.records.list(["review", "owner", "claimed", "done"]).length, 0);
+});
+
 test("a job's plan-time refusal keeps its rule's stable code beside its words, and a write that goes through clears both", async (t) => {
   const { k, fx } = await twin(t);
   // The executor refuses this plan with a code, as the code host's platform-only rule does: the job's row keeps both, so a
