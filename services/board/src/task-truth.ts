@@ -35,7 +35,7 @@ function hrefOf(d: Deliverable): string | undefined {
 }
 
 /** The grade as the drawer shows it. `view` undefined: the module couldn't be read (never read as passed). */
-export function gradeShown(view: GradesView | undefined, id: string, status: string, w: Waterfall | null = null): GradeShown {
+export function gradeShown(view: GradesView | undefined, id: string, status: string): GradeShown {
   if (!view || !Object.hasOwn(view.grades, id)) return { state: "unavailable", rubric: [] };
   const g = view.grades[id];
   if (!g) return { state: "none", rubric: [] };
@@ -48,14 +48,11 @@ export function gradeShown(view: GradesView | undefined, id: string, status: str
   const closed = status === "done" || g.closedReason !== null;
   // Met only on a satisfied (or owner-accepted) verdict: the module also closes a row satisfied when it gives up or lets unmet work through.
   const verified = v?.verdict === "satisfied" || v?.verdict === "accepted";
-  // An unset PR ref means the task's own PRs: the newest one it opened.
-  const opened = g.deliverable.ref || g.deliverable.kind !== "pr" ? undefined : w?.facts.findLast((f) => f.type === "pr.opened" && HOSTED.test(f.subject.slice(3)))?.subject.slice(3);
-  const deliverable = { ...g.deliverable, ref: g.deliverable.ref || opened || "" };
   return {
     state: (g.state === "satisfied" && !verified) || (!v && closed) ? "ungraded_close" : g.state,
     rubric,
     ...(v ? { judgedAt: v.at, version: v.version } : {}),
-    deliverable: { kind: deliverable.kind, ref: deliverable.ref, href: hrefOf(deliverable) },
+    deliverable: { kind: g.deliverable.kind, ref: g.deliverable.ref, href: hrefOf(g.deliverable) },
   };
 }
 

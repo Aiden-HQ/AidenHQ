@@ -760,7 +760,7 @@ function DoneMeans({ grade }: { grade: IssueView["grade"] }) {
                 {DELIVERABLE[d.kind]}: {d.ref} ›
               </a>
             ) : (
-              <span className="muted">{d.ref || (d.kind === "pr" ? "PR not opened yet" : `${DELIVERABLE[d.kind]} not ready yet`)}</span>
+              <span className="muted">{d.ref || (d.kind === "pr" ? (grade.version ? "PR: the task's own" : "PR not opened yet") : `${DELIVERABLE[d.kind]} not ready yet`)}</span>
             )}
           </span>
         )}
