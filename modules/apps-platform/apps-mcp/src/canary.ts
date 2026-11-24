@@ -143,29 +143,28 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     await new Promise((ok) => setTimeout(ok, 1200)); // the notify's own answer, and the page's "thanks" render
     const finalUrl = (await within(ab("get", "url"), 3000, {})).url || landed;
     const pageTitle = (await within(ab("get", "title"), 3000, {})).title || title;
-    // The app's own intake answer(s): a same-origin POST other than notify, from this submission. A failed intake is not a
-    // successful submission even when the page still fires its notify, so its status is reported apart from notify's. A
-    // request still pending when the page settles is waited for, so its real status is what comes back.
-    const intakeOf = () => NET.filter((x) => x.at >= submittedAt && x.method === "POST" && new URL(x.url).origin === listener && new URL(x.url).pathname !== "/.aidenhq/notify");
+    // The app's own intake answer: a same-origin POST other than notify, from this submission and made before the page fired
+    // its notify (the form's handler saves first, then notifies). Anything the page posts after notify is not the intake.
+    const intakeOf = () => NET.filter((x) => x.at >= submittedAt && (notify ? x.at <= notify.at : true) && x.method === "POST" && new URL(x.url).origin === listener && new URL(x.url).pathname !== "/.aidenhq/notify");
     let intake = intakeOf();
     const ti = Date.now();
     while (intake.length && intake.some((x) => x.status == null) && Date.now() - ti < 10000) { await new Promise((ok) => setTimeout(ok, 250)); intake = intakeOf(); }
-    // No intake request at all is a page that never saved anything either: report it as no answer rather than a success.
-    // The POST's own answer: the first hop when it redirected, else the response itself. Its redirect target's status says
-    // nothing about whether the app took the feedback.
-    const last = intake.at(-1);
-    const intakeStatus = last ? (last.hop ?? last.status) : null;
-    // The reference: the app's own intake response body, else the text the page shows.
-    let reference = null;
+    // The reference: the app's own intake response body, else the text the page shows. The request that carries it is the
+    // intake, so its answer is the one that decides whether the feedback was saved.
+    let reference = null, intakeAnswer = null;
     for (const n of intake.filter((x) => x.id).slice(-4)) {
       try {
         const b = await dt.send("Network.getResponseBody", { requestId: n.id }, sessionId);
         const body = String(b.body || "");
         const json = JSON.parse(body);
         const v = json && (json.reference ?? json.ref ?? json.id ?? json.ticket ?? json.submission_id ?? json.submissionId);
-        if (typeof v === "string" || typeof v === "number") { reference = String(v); break; }
+        if (typeof v === "string" || typeof v === "number") { reference = String(v); intakeAnswer = n; break; }
       } catch {}
     }
+    // No body named a reference: the last POST before notify is the intake, by the page's own order. Its own answer is the
+    // first hop when it redirected, never the redirect target's 200; a request that never answered is no answer at all.
+    const last = intakeAnswer ?? intake.at(-1) ?? null;
+    const intakeStatus = last ? (last.hop ?? last.status) : null;
     const shown = String((await within(ab("eval", "document.body.innerText"), 4000, {})).result ?? "");
     if (!reference) reference = (shown.match(/(?:reference|ref(?:erence)?\s*(?:id|no\.?)?)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,80})/i) || [])[1] || null;
     let png;
