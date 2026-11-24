@@ -216,7 +216,7 @@ test("restart: a live kernel's reservations are left to it; a dead one's close a
   add.run("gw:cut", ownerOf(dead), "gen-cut"); // cut off mid-answer
   add.run("gw:early", ownerOf(dead), null); // cut off before the answer began
   db.close();
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, now: () => clock.t });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, now: () => Date.parse("2026-11-16T10:00:00Z") });
   t.after(() => gw.close());
   const rows = () => Object.fromEntries(gw.db.prepare("SELECT key, status, cost_usd, input, cached, output FROM calls").all().map((r) => [r.key, [r.status, r.cost_usd, r.input, r.cached, r.output]]));
   assert.deepEqual(rows(), { "gw:live": ["reserved", 0.25, 0, 0, 0], "gw:cut": ["unsettled", 0.25, 0, 0, 0], "gw:early": ["unsettled", 0.25, 0, 0, 0] });

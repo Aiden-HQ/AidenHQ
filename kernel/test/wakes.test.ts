@@ -20,7 +20,7 @@ function world() {
   // The agents' companies (`fail.agents` makes one lookup answer 503, as a control plane under load does).
   const agentCompanies = {};
   const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER)");
+  db.exec("CREATE TABLE jobs (id TEXT PRIMARY KEY, task TEXT, agent TEXT, state TEXT, at INTEGER, profile TEXT)");
   const owner = async (method, path, body) => {
     const u = new URL(path, "http://cp");
     calls.push(`${method} ${u.pathname}`);
@@ -132,7 +132,7 @@ test("claims are exclusive; a claimed row with no job comes back after its lease
   assert.equal(w.wakes.claim("dispatch").length, 2, "redelivered after the lease");
   // t5 becomes a job; a comment arrives during it and is claimed for the live job, delivered on the ack.
   w.db.prepare("UPDATE wakes SET job = 'j-5' WHERE task = 't5'").run();
-  w.db.prepare("INSERT INTO jobs VALUES ('j-5', 't5', ?, 'running', ?)").run(AGENT, w.tick());
+  w.db.prepare("INSERT INTO jobs VALUES ('j-5', 't5', ?, 'running', ?, NULL)").run(AGENT, w.tick());
   w.tick();
   w.comment("t5", "c5");
   await w.wakes.event({ issueId: "t5" });
@@ -151,7 +151,7 @@ test("a comment a later job consumed ends bound to that job, so task state never
   w.tick();
   w.comment("t30", "c30");
   await w.wakes.event({ issueId: "t30" });
-  w.db.prepare("INSERT INTO jobs VALUES ('j-30', 't30', ?, 'done', ?)").run(AGENT, w.tick());
+  w.db.prepare("INSERT INTO jobs VALUES ('j-30', 't30', ?, 'done', ?, NULL)").run(AGENT, w.tick());
   w.tick();
   assert.deepEqual(w.wakes.claim("dispatch").filter((x) => x.task === "t30"), []);
   assert.deepEqual(w.rows("t30"), ["comment:c30 done"]);
@@ -300,7 +300,7 @@ test("a routine run whose dropped wake is re-armed on the next poll starts once,
   assert.deepEqual(w.wakes.claim("dispatch"), [], "claimed once, not twice");
   // The dispatcher starts the job; later polls leave the run alone.
   w.db.prepare("UPDATE wakes SET job = 'j-r1' WHERE key = 'routine-run:r1'").run();
-  w.db.prepare("INSERT INTO jobs VALUES ('j-r1', 'r1', ?, 'running', ?)").run(AGENT, w.tick());
+  w.db.prepare("INSERT INTO jobs VALUES ('j-r1', 'r1', ?, 'running', ?, NULL)").run(AGENT, w.tick());
   for (let i = 0; i < 3; i++) { w.tick(60_000); await w.wakes.poll(); }
   assert.deepEqual(w.rows("r1"), ["routine-run:r1 claimed"]);
   assert.deepEqual(w.wakes.claim("dispatch"), [], "no second wake while the run's job is live");
@@ -398,7 +398,7 @@ test("a wake is consumed only by a job whose prompt had its cause: a comment aft
   w.tick();
   w.comment("t20", "c20"); // after the dispatcher read the thread, before the job spawned (a box start takes minutes)
   w.db.prepare("UPDATE wakes SET job = 'j-20' WHERE key = ?").run(start.key);
-  w.db.prepare("INSERT INTO jobs VALUES ('j-20', 't20', ?, 'running', ?)").run(AGENT, w.tick(300_000));
+  w.db.prepare("INSERT INTO jobs VALUES ('j-20', 't20', ?, 'running', ?, NULL)").run(AGENT, w.tick(300_000));
   await w.wakes.event({ issueId: "t20" });
   await w.wakes.schedule("dispatch", { task: "t20", at: w.tick(), id: "check-ci" });
   const live = w.wakes.claim("dispatch");
@@ -421,7 +421,7 @@ test("a task handed to the agent while another job runs on it starts once that j
   const w = world();
   w.issue("t22", { assigneeAgentId: OTHER });
   await w.wakes.event({ issueId: "t22" });
-  w.db.prepare("INSERT INTO jobs VALUES ('j-22', 't22', ?, 'running', ?)").run(OTHER, w.tick());
+  w.db.prepare("INSERT INTO jobs VALUES ('j-22', 't22', ?, 'running', ?, NULL)").run(OTHER, w.tick());
   w.tick();
   w.issue("t22", { assigneeAgentId: AGENT, updatedAt: new Date(w.tick()).toISOString() });
   await w.wakes.event({ issueId: "t22" });
