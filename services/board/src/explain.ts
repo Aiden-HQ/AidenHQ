@@ -60,6 +60,24 @@ const REVIEW_WORDS: Record<string, string> = {
 
 const capWords = (c: NonNullable<RecordWhole["cap"]>) => `Autonomy is ${c.value}.`;
 const models = (by: string) => (by.startsWith("reviewer:") && by !== "reviewer:kernel/code" ? [by.slice("reviewer:".length)] : []);
+/**
+ * The tier the record actually filed at, in words: its own tier, Tier 2 because a cap (autonomy) or the owner's call lifted
+ * it above its merits, or Tier 1 above its merits (any raise above 0 is the AI reviewer's, tier.ts). The reviewer's
+ * escalation sets the record's tier to 2 without a cap, so a record without one reads its merits, never "at Tier 2" for
+ * what the reviewer sent to the owner.
+ */
+const tierWords = (r: { tier: number; merit?: number | null; cap?: { by: "autonomy"; value: string } | null; review?: string | null; decided_by: string | null }) => {
+  const merit = r.merit ?? r.tier;
+  // A record the AI reviewer read filed at Tier 1; if it is Tier 2 without a cap, the reviewer's escalation put it there
+  // (records.review sets tier 2), so the history says Tier 1 whether it waits on the owner or the owner has decided.
+  if (r.tier === 2 && !r.cap && (r.review != null || (r.decided_by ?? "").startsWith("reviewer:")))
+    return `at Tier 1${merit !== 1 ? ` (Tier ${merit} on its merits)` : ""}, then the AI reviewer sent it to you`;
+  if (merit === r.tier) return `at Tier ${r.tier}`;
+  if (merit < r.tier) return r.cap
+    ? `at Tier ${merit}, raised to Tier ${r.tier} (${capWords(r.cap).replace(/\.$/, "").toLowerCase()})`
+    : `at Tier ${merit}, then yours to decide`;
+  return `at Tier ${r.tier} (Tier ${merit} on its merits; every raise above 0 is the AI reviewer's)`;
+};
 const verdict = (state: string) => (["approved", "claimed", "done", "failed", "unknown"].includes(state) ? "approved it" : state === "stale" ? "closed it: its head moved, so nothing ran" : "rejected it");
 
 export function explain(r: RecordWhole, asked: string | null): Explanation {
@@ -74,7 +92,7 @@ export function explain(r: RecordWhole, asked: string | null): Explanation {
     : `${deciderWords(by)![0]!.toUpperCase()}${deciderWords(by)!.slice(1)}.`;
   const note = r.review ?? "";
   const rule = r.rule ?? null;
-  const path: string[] = [`Filed by ${r.requester.name || r.requester.key || "an agent"} at Tier ${r.merit ?? r.tier}${r.merit != null && r.merit < r.tier ? `, raised to Tier ${r.tier}` : ""}.`];
+  const path: string[] = [`Filed by ${r.requester.name || r.requester.key || "an agent"} ${tierWords(r)}.`];
   if (r.tier === 0 && !waiting) path.push("Its tier rule let it run at once.");
   else if (r.review || by.startsWith("reviewer:") || r.state === "review") {
     const who = "The AI reviewer";
