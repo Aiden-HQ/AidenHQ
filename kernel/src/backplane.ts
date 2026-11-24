@@ -109,6 +109,8 @@
 //                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
+//   POST /v1/views/<module>/mcp (the board's key) {view, method, params}: a module view's resources/read of itself or tools/call of a
+//                              tool its page lists (board.pages), sent to the module as the owner (views.ts) -> {result} | {error}
 import type { Projects } from "./projects.ts";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -134,6 +136,7 @@ import { fail } from "./proxy.ts";
 import { logTasks } from "./task-scope.ts";
 import type { Records, Requester, State } from "./records.ts";
 import type { BoardApi } from "./board-api.ts";
+import type { Views } from "./views.ts";
 import type { Work } from "./work.ts";
 import { BY, type By, type Flow } from "./flow.ts";
 import type { TaskStateRead } from "./task-state-read.ts";
@@ -250,6 +253,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/events/sources", auth: "module" },
   { method: "GET", path: "/v1/events/batch/:batch", auth: "module+assertion" },
   { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
+  { method: "POST", path: "/v1/views/:module/mcp", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
   { method: "POST", path: "/v1/auth/mcp/:op", auth: "board" },
   { method: "POST", path: "/v1/owner/decide", auth: "board+mcp" },
@@ -332,7 +336,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], accounts, checks, checkJobs, jobTools, precheck, repoBundle, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -410,6 +414,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   memory?: Memory;
   /** The event router (events.ts). */
   events?: Events;
+  /** A module view's calls for the owner (views.ts): its own resource and its page's tools. */
+  views?: Views;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
   boardApi?: BoardApi;
 }) {
@@ -538,6 +544,11 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           const b = req.method === "POST" ? JSON.stringify(await json(req, 400_000)) : undefined;
           const r = await moduleBoardApi(m[0]!, String(req.method), m[1] ?? "/", query, b);
           return void res.writeHead(r.status, { "content-type": "application/json" }).end(r.body);
+        }
+        case "POST /v1/views/:module/mcp": {
+          if (!isBoard(req)) throw fail(401, "unauthorized", "the board's key is required");
+          if (!views) throw fail(503, "unavailable", "module views are off");
+          return send(res, 200, await views(m[0]!, await json(req, 400_000)));
         }
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
         case "POST /v1/checks/:task": {

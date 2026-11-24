@@ -107,9 +107,14 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
     const installation = await app.installation(repo);
     const slug = app.slug();
     if (installation === null || !slug) return undefined;
-    const rest: Gh = async (method, path, body) => {
-      const r = await fetchFn(`https://api.github.com${path}`, { method, headers: { authorization: `Bearer ${await app.token(installation)}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
+    const call = async (method: string, path: string, body: unknown, fresh: boolean) => {
+      const r = await fetchFn(`https://api.github.com${path}`, { method, headers: { authorization: `Bearer ${await app.token(installation, fresh)}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
       return { status: r.status, body: await r.json().catch(() => ({})), headers: r.headers };
+    };
+    // A token GitHub rejects (401: revoked before its expiry) is fetched fresh once.
+    const rest: Gh = async (method, path, body) => {
+      const r = await call(method, path, body, false);
+      return r.status === 401 ? call(method, path, body, true) : r;
     };
     return { login: `${slug}[bot]`, rest };
   };
@@ -372,7 +377,10 @@ export function createService(o: Options) {
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
       const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : "";
-      return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: [], ship, ...(files ? { files } : {}), ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))) }] }, facts: { target: url, sentence: `${what} (generation ${a.generation}).`, diff } };
+      return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
+        // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
+        ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha)) } : {}),
+        ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))) }] }, facts: { target: url, sentence: `${what} (generation ${a.generation}).`, diff } };
     }
     // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
@@ -443,7 +451,9 @@ export function createService(o: Options) {
       diff += `${await diffOf(dir, mb || EMPTY_TREE, b.sha)}\n`;
       changed.push(...(await numstatOf(dir, mb || EMPTY_TREE, b.sha)));
       // Outside our own repos (the agents org, the product) the PR's text and the branch's commit messages name none of our tooling.
-      if (!ownRepo(s.slug, o.fleetOrg, o.productRepo)) {
+      // The commits land where the PR's head lives: a contributor's fork is outside our repos whatever its base is.
+      const receiver = onto?.pr?.head?.repo?.full_name ? String(onto.pr.head.repo.full_name) : s.slug;
+      if (!ownRepo(s.slug, o.fleetOrg, o.productRepo) || !ownRepo(receiver, o.fleetOrg, o.productRepo)) {
         // The AidenHQ trailer (attribution, spec §4) is the one internal name these may carry.
         const messages = (await git(dir, ["log", "--format=%B%x1e", mb ? `${mb}..${b.sha}` : b.sha])).split("\x1e").map((m) => m.split("\n").filter((l) => !hasTrailer(l)).join("\n"));
         const leak = kind.endsWith(".pr") ? leakIn(`${a.text?.title ?? ""}\n${a.text?.body ?? ""}`) : undefined;
@@ -612,6 +622,7 @@ export function createService(o: Options) {
     if (!pr.head?.repo || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainers to push: nothing was pushed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
     if (pr.head.ref !== b.branch) return { ok: false, text: `ship-scope: \`${b.branch}\` isn't ${url}'s head branch: nothing was pushed.` };
+    if (pr.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${pr.state}: nothing was pushed.` };
     const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
@@ -749,12 +760,13 @@ export function createService(o: Options) {
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     let r: { status: number; body: any } | undefined;
     try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
-    if (r && r.status < 300 && !r.body?.errors?.length) {
+    // Success is GitHub's queue entry, not a bare 200: an answer without one is read back like a lost answer.
+    if (r && r.status < 300 && !r.body?.errors?.length && r.body?.data?.enqueuePullRequest?.mergeQueueEntry) {
       if (bypass) flow.reviewBypassed(s.slug, n, a.head, bypass);
       return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
     }
     // GitHub's own refusal (a GraphQL error, a 4xx): the PR wasn't queued.
-    if (r && r.status < 500) return { ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.errors?.[0]?.message ?? r.body?.message ?? r.status).slice(0, 300)}` };
+    if (r && r.status < 500 && (r.status >= 300 || r.body?.errors?.length)) return { ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.errors?.[0]?.message ?? r.body?.message ?? r.status).slice(0, 300)}` };
     const again = await read().catch(() => undefined);
     return (again && settled(again)) ?? { ok: false, text: `${url}: GitHub didn't answer the enqueue and the PR doesn't read as queued at \`${String(a.head).slice(0, 12)}\`: the next round reads it and asks again.` };
   }

@@ -146,7 +146,7 @@ describe("sharing a local module (V4)", () => {
 
     // The kernel: the write kind as compiled from the github module, its records, the write lifecycle and the share routes.
     const def = YAML.parse(readFileSync(join(repoRoot, "modules/github/module.yaml"), "utf8"));
-    const kinds = writeKinds("github", def, join(repoRoot, "modules/github"), {}, {}, ["github"]);
+    const kinds = writeKinds("github", def, join(repoRoot, "modules/github"), {}, {}, ["github", "ship"]);
     const resolver = { resolve: async (u: string) => ({ host: "127.0.0.1", port: svc.port, path: new URL(u).pathname }), forget: () => {} };
     records = openRecords(join(root, "kernel.db"));
     writes = createWrites({ records, registry: () => kinds, connections: () => ({}), secret: () => "ch-key", resolver: resolver as never, replay: async () => ({ ok: false, text: "" }), onTask: { open: async () => true, notify: async (_t, text) => void notices.push(text) } });

@@ -12,14 +12,14 @@ import { AnswerForm } from "./AnswerForm";
 import { ApprovalCard } from "./Chat";
 import { LaneChat } from "./LaneChat";
 import { FeatureCostStrip } from "./FeatureCost";
-import { LineageStrip } from "./Lineage";
+import { DelegatedList, LineageStrip, useLineage } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupChats, groupTasks, laneOf, settleableChat, taskSummary, type AgentGroup } from "./sidebar";
 import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
 import { foldCount, foldNoise, isNoise, shortTitle, type Folded } from "./conversation";
-import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, FileView, SettledItem, Working } from "./types";
+import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, FileView, Lineage, SettledItem, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { Icon } from "./ui/icons";
 
@@ -440,6 +440,8 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
   // From the cache (queries.ts): a chat opened before (or warmed by a hover) paints at once, then refreshes.
   const query = useQuery(chatQuery(refId), onSignIn);
   const chat = query.data ?? null;
+  // One read of the delegated work, for the strip above the conversation and the Details panel.
+  const lineage = useLineage(refId, onSignIn);
   const error = query.error;
   const load = query.reload;
   // Cards shown from an earlier load can't be decided until the fresh copy lands (as on Approvals).
@@ -714,7 +716,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             </a>
           </div>
         )}
-        <LineageStrip refId={chat.identifier} title={chat.title} agent={chat.agent.name} crew={crew} prefix={prefix} href={(id) => `#/c/${id}`} onSignIn={onSignIn} />
+        <LineageStrip data={lineage} refId={chat.identifier} title={chat.title} agent={chat.agent.name} crew={crew} prefix={prefix} href={(id) => `#/c/${id}`} onSignIn={onSignIn} />
         <FeatureCostStrip refId={chat.identifier} />
         <div
           className="conv-scroll"
@@ -777,7 +779,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           <button className="icon-btn subtle panel-close" aria-label="Hide details" onClick={togglePanel}>
             <CloseIcon />
           </button>
-          <DetailsPanel chat={chat} go={go} />
+          <DetailsPanel chat={chat} lineage={lineage} go={go} />
         </aside>
       )}
       {mobile && sheet && (
@@ -788,6 +790,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             </button>
             <DetailsPanel
               chat={chat}
+              lineage={lineage}
               go={(h) => {
                 setSheet(false);
                 go(h);
@@ -882,6 +885,12 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
             </button>
           ))}
         </div>
+      )}
+      {m.run && (
+        <a className="run-line muted small" href={`#/r/${m.run.id}`} title="Open this run's steps">
+          Ran for {m.run.seconds >= 60 ? `${Math.floor(m.run.seconds / 60)}m ${m.run.seconds % 60}s` : `${m.run.seconds}s`}
+          {m.run.trigger ? ` · ${m.run.trigger}` : ""} ›
+        </a>
       )}
       {asking && open && m.questions && <AnswerForm questions={m.questions} onAnswer={answerAsk} />}
       <div className="msg-actions">
@@ -1024,42 +1033,16 @@ function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; s
 
 // ------------------------------------------------------------------ the right panel
 
-type Handed = ChatDetail["handedOut"][number];
-
 /**
- * The one details panel: the chat's context in a line, then the work it handed out by what it needs (you first,
- * finished folded), then progress and files only when there are some.
+ * The one details panel: the chat's context in a line, then the work it handed out (the Lineage list, you first), then progress and files only when there are some.
  */
-function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void }) {
+function DetailsPanel({ chat, lineage, go }: { chat: ChatDetail; lineage: Lineage | null; go: (h: string) => void }) {
   const files = chat.files.filter((f) => !f.textOf);
   const plan = chat.working?.plan ?? [];
   const done = plan.filter((p) => p.state === "done").length;
   const waiting = chat.approvals.filter((a) => a.state === "pending");
-  const g = groupTasks(chat.handedOut);
   const onYou = waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : waitsForAnswer(chat.state) ? "a reply" : "";
-  const row = (h: Handed) => (
-    <li key={h.identifier}>
-      <a className="handed-row" href={`#/c/${h.identifier}`} title={`${h.agent}: ${h.title}`} onClick={(e) => (e.preventDefault(), go(`#/c/${h.identifier}`))}>
-        <span className="handed-title">{h.title}</span>
-        <span className="handed-agent">
-          {h.agent} · {ago(h.updatedAt)}
-        </span>
-        <span className="handed-state">
-          <TaskState state={h.state} bare />
-        </span>
-      </a>
-    </li>
-  );
-  const section = (label: string, list: Handed[], cls = "") =>
-    list.length > 0 && (
-      <section className={`tasks-sec ${cls}`}>
-        <h4 className="panel-sub">
-          {label} <span className="panel-count">{list.length}</span>
-        </h4>
-        <ul className="handed-list">{list.map(row)}</ul>
-      </section>
-    );
-  const quiet = !chat.handedOut.length && !plan.length && chat.state?.kind !== "working" && !files.length;
+  const quiet = !chat.handedOut.length && !lineage?.children.length && !plan.length && chat.state?.kind !== "working" && !files.length;
   return (
     <div className="panel">
       <dl className="panel-context" aria-label="Context">
@@ -1092,21 +1075,12 @@ function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void 
           </div>
         )}
       </dl>
-      {chat.handedOut.length > 0 && (
+      {(chat.handedOut.length > 0 || (lineage?.children.length ?? 0) > 0) && (
         <section className="panel-card">
           <h3>
-            Tasks<span className="panel-count">{chat.handedOut.length}</span>
+            Delegated{lineage && <span className="panel-count">{lineage.total.tasks}</span>}
           </h3>
-          {section("Needs you", g.needs, "needs")}
-          {section("Working", g.working)}
-          {section("Waiting", g.waiting)}
-          {g.finished.length > 0 && (
-            <details className="handed-done">
-              <summary>Finished ({g.finished.length})</summary>
-              <ul className="handed-list">{g.finished.map(row)}</ul>
-            </details>
-          )}
-          {!g.needs.length && !g.working.length && !g.waiting.length && !g.finished.length && <p className="muted small">Nothing open.</p>}
+          {lineage ? <DelegatedList lineage={lineage} go={go} /> : <p className="muted small">Loading…</p>}
         </section>
       )}
       {(plan.length > 0 || chat.state?.kind === "working") && (

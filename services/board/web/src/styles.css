@@ -267,6 +267,17 @@ kbd {
 .comment.folded .who { flex: none; }
 .comment.folded .preview { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--text-sm); color: var(--muted); }
 .comment-head.foldable { cursor: pointer; }
+.milestone { display: flex; align-items: baseline; gap: 8px; padding: 2px 12px; margin-bottom: 4px; font-size: var(--text-sm); color: var(--muted); }
+.milestone-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.milestone a { flex: none; }
+.done-means { padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.dm-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.dm-head h3 { font-size: var(--text-sm); font-weight: 600; margin: 0; }
+.dm-deliverable { margin-left: auto; }
+.dm-rubric { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 3px; }
+.dm-rubric li { display: grid; grid-template-columns: 76px minmax(0, 1fr); column-gap: 8px; align-items: baseline; font-size: var(--text-sm); }
+.dm-evidence { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lin-sub { padding-left: 14px; color: var(--muted); }
 .who { font-weight: 600; font-size: var(--text-sm); }
 /* Written or decided by an admin other than the owner. */
 .by { font-size: var(--text-xs); color: var(--faint); margin: 0 6px; }
@@ -702,6 +713,8 @@ kbd {
 .msg-name { font-weight: 650; }
 .msg-time, .msg-meta { font-variant-numeric: tabular-nums; }
 .msg-time { font-size: var(--text-xs); color: var(--faint); }
+.run-line { display: block; margin-top: 4px; text-decoration: none; font-variant-numeric: tabular-nums; }
+.run-line:hover { color: var(--accent); text-decoration: underline; }
 .msg-actions, .msg.agent > .link-btn { padding-left: var(--indent); justify-self: start; }
 .msg-actions { opacity: 0; transition: opacity var(--fast) var(--ease); }
 .msg.agent:hover .msg-actions, .msg.agent:focus-within .msg-actions, .app.mobile .msg-actions { opacity: 1; }
@@ -827,9 +840,6 @@ button.live-toggle:focus-visible { outline: 2px solid var(--accent); border-radi
 .handed-row:hover { background: var(--hover); }
 .handed-agent { grid-area: agent; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); color: var(--muted); }
 .handed-title { grid-area: title; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tasks-sec + .tasks-sec, .tasks-sec + .handed-done { margin-top: 4px; }
-.handed-done summary { cursor: pointer; font-size: var(--text-xs); color: var(--muted); padding: 4px 0; width: max-content; }
-.handed-done .handed-row { color: var(--muted); }
 .panel-card p { margin: 0; }
 .panel-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .panel-list li { display: grid; gap: 1px; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-base); }

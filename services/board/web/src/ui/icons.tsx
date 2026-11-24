@@ -18,6 +18,10 @@ const paths = {
   bell: "M4 11V7a4 4 0 1 1 8 0v4l1 1.5H3zM6.6 14h2.8",
   brief: "M3.5 2.5h9v11h-9zM5.5 5.5h5M5.5 8h5M5.5 10.5h3",
   back: "M10 3 5 8l5 5",
+  // For module pages (modules/board/schemas/pages.json lists the names a page may use).
+  rocket: "M9.5 2.5c2.2.2 3.8 1.8 4 4L9 11 5 7zM5 7 2.8 7.4 2 9.5l2.3.2M9 11l-.4 2.2-2.1.8-.2-2.3M4.3 11.7 2.5 13.5",
+  list: "M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01",
+  shield: "M8 1.8 13 4v3.6c0 3-2.1 5.3-5 6.6-2.9-1.3-5-3.6-5-6.6V4z",
 } as const;
 
 export type IconName = keyof typeof paths;
