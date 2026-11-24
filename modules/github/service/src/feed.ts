@@ -34,9 +34,9 @@ export type Hook = (e: FeedEvent, ctx: FeedContext) => void | Promise<void>;
 type Pr = { n: number; head: string; base: string; base_ref: string; head_ref: string; draft: boolean; fork: boolean; title: string; body: string; author: string; association: string; labels: string[]; created_at: string; url: string; author_kind?: Kind };
 type Run = { id: number; name: string; suite: number; status: string; conclusion: string | null; started: string | null; completed: string | null };
 type Status = { id: number; context: string; state: string; at: string };
-type Review = { id: number; n: number; state: string; commit: string; author: string; url: string };
+type Review = { id: number; n: number; state: string; commit: string; at: string; author: string; url: string };
 type Page = { etag: string; items: Json[]; full: boolean };
-type Head = { first: number; read: number; settled: boolean; runs: Record<string, Run>; statuses: Record<string, Status>; reviews: Record<string, Review>; pages: Record<string, Page> };
+type Head = { first: number; read: number; settled: boolean; started?: boolean; runs: Record<string, Run>; statuses: Record<string, Status>; reviews: Record<string, Review>; pages: Record<string, Page> };
 type RepoState = {
   base: number; every: number; due: number;
   pages: Record<string, Page>; prs: Record<string, Pr>; closed: number[];
@@ -64,6 +64,8 @@ export type FeedOptions = {
   /** Who an author is (flow.ts kindOf). */
   kindOf: (who: string, association: string, repo: string, seen?: { number?: number; body?: string }) => Promise<Kind>;
   hooks?: Hook[];
+  /** A head's CI is seen started (its earliest check start), once per head: Flow's fact, while the checks still run. */
+  started?: (repo: string, prs: number[], head: string, at: string) => void;
   /** One src_meta.ingest_run (SourceStore.run): `fn` answers the rows or throws the run's failure. */
   record?: (scope: string, fn: () => Promise<number>) => Promise<unknown>;
   /** Background jobs on the same scheduler, each every 15 minutes after `first` ms: never awaited by a repo's pass. */
@@ -146,10 +148,10 @@ export function createFeed(o: FeedOptions) {
     }
     if (newest !== since) { rs.cursors[key] = newest; delete rs.cursorTags[key]; }
   }
-  /** Created after the repo's baseline, inside the 2-day window, and never sent: a creation to announce (its key remembered). */
+  /** Created at or after the repo's baseline second (GitHub's times have no milliseconds), inside the 2-day window, and never sent: a creation to announce (its key remembered). */
   const fresh = (rs: RepoState, key: string, created: string) => {
     const at = Date.parse(created);
-    if (!(at > rs.base && now() - at < KEEP_SENT_MS) || rs.sent[key]) return false;
+    if (!(at >= rs.base - (rs.base % 1000) && now() - at < KEEP_SENT_MS) || rs.sent[key]) return false;
     rs.sent[key] = now();
     return true;
   };
@@ -174,10 +176,15 @@ export function createFeed(o: FeedOptions) {
     const out: { ev: FeedEvent; ctx: FeedContext }[] = [];
     const emit = (ev: Omit<FeedEvent, "resource">, ctx: FeedContext = {}) => { if (!first) out.push({ ev: { ...ev, resource: repo }, ctx }); };
     const used = new Set<string>();
+    const starts: { prs: number[]; sha: string; at: string }[] = [];
 
     // 1. Open PRs: new, moved, flipped, retitled, closed, reopened.
     const open = await snapshot(rs.pages, `/repos/${repo}/pulls?state=open`, prOf(repo), undefined, used);
     const was = rs.prs, now_: Record<string, Pr> = {};
+    const emitClosed = (p: Pr, g: Json) => {
+      emit({ author: p.author, bot: bot(p.author), url: p.url, ...clip(p.title), id: `${repo}#${p.n}:closed:${String(g.closed_at ?? iso)}`, kind: "pull_request.closed", data: { ...record({ ...p, head: String(g.head?.sha ?? p.head) }), merged: Boolean(g.merged_at), merge_sha: g.merge_commit_sha ? String(g.merge_commit_sha) : null } }, { pr: g });
+      rs.closed = [...rs.closed, p.n].slice(-200);
+    };
     for (const p of open) {
       const before = was[p.n];
       p.author_kind = before?.author_kind ?? (await o.kindOf(p.author, p.association, repo, { number: p.n, body: p.body }));
@@ -199,9 +206,7 @@ export function createFeed(o: FeedOptions) {
       const g = await get(`/repos/${repo}/pulls/${n}`);
       // Missing from the open list but still open (the list shifted between pages): kept, never a false close.
       if (g?.body?.state !== "closed") { now_[n] = p; continue; }
-      const closedAt = String(g?.body?.closed_at ?? iso);
-      emit({ author: p.author, bot: bot(p.author), url: p.url, ...clip(p.title), id: `${repo}#${n}:closed:${closedAt}`, kind: "pull_request.closed", data: { ...record({ ...p, head: String(g?.body?.head?.sha ?? p.head) }), merged: Boolean(g?.body?.merged_at), merge_sha: g?.body?.merge_commit_sha ? String(g.body.merge_commit_sha) : null } }, { pr: g?.body });
-      rs.closed = [...rs.closed, Number(n)].slice(-200);
+      emitClosed(p, g.body);
     }
     rs.prs = now_;
 
@@ -234,7 +239,16 @@ export function createFeed(o: FeedOptions) {
           const pr = Boolean(e.issue?.pull_request), n = Number(e.issue?.number), actor = String(e.actor?.login ?? "ghost");
           const base = { id: `ev:${e.id}`, author: actor, bot: bot(actor), url: String(e.issue?.html_url ?? "") };
           if (e.event === "labeled" || e.event === "unlabeled") emit({ ...base, kind: `${pr ? "pull_request" : "issues"}.${e.event}`, data: { number: n, label: short(e.label?.name), actor } }, { pr: e });
-          else if ((e.event === "closed" || e.event === "reopened") && !pr) emit({ ...base, kind: `issues.${e.event}`, data: { number: n, actor, state_reason: e.state_reason ? short(e.state_reason) : null } });
+          else if (e.event === "closed" && pr && !rs.prs[n] && !rs.closed.includes(n)) {
+            // A PR opened and closed between two polls was never in the open list: read it once and announce both.
+            const g = await get(`/repos/${repo}/pulls/${n}`);
+            if (g?.body?.state === "closed" && fresh(rs, `pr:${n}`, String(g.body.created_at))) {
+              const p = prOf(repo)(g.body);
+              p.author_kind = await o.kindOf(p.author, p.association, repo, { number: n, body: p.body });
+              emit({ author: p.author, bot: bot(p.author), url: p.url, ...clip(`${p.title}\n\n${p.body}`), id: `${repo}#${n}:opened`, kind: "pull_request.opened", data: record(p), ...(p.labels.length ? { labels: p.labels } : {}) });
+              emitClosed(p, g.body);
+            }
+          } else if ((e.event === "closed" || e.event === "reopened") && !pr) emit({ ...base, kind: `issues.${e.event}`, data: { number: n, actor, state_reason: e.state_reason ? short(e.state_reason) : null } });
         }
       }
       rs.top = top;
@@ -281,6 +295,8 @@ export function createFeed(o: FeedOptions) {
       const prs = Object.values(rs.prs).filter((p) => p.head === sha).map((p) => p.n);
       const branch = sha === rs.tip && rs.branch ? { branch: short(rs.branch) } : {};
       const runs = await snapshot(h.pages, `/repos/${repo}/commits/${sha}/check-runs?filter=all`, (r): Run => ({ id: r.id, name: short(r.name), suite: Number(r.check_suite?.id ?? 0), status: String(r.status), conclusion: r.conclusion ?? null, started: r.started_at ?? null, completed: r.completed_at ?? null }), (b) => b?.check_runs);
+      const begun = runs.map((r) => Date.parse(r.started ?? "")).filter(Number.isFinite);
+      if (!h.started && begun.length) { h.started = true; starts.push({ prs, sha, at: new Date(Math.min(...begun)).toISOString().replace(/\.\d{3}Z$/, "Z") }); }
       for (const r of runs) {
         if (r.status === "completed" && h.runs[r.id]?.status !== "completed") emit({ id: `check:${r.id}`, kind: "check_run.completed", data: { head: sha, name: r.name, conclusion: r.conclusion, prs, ...branch } });
         h.runs[r.id] = r;
@@ -291,9 +307,10 @@ export function createFeed(o: FeedOptions) {
         h.statuses[s.id] = s;
       }
       for (const n of prs) {
-        const reviews = await snapshot(h.pages, `/repos/${repo}/pulls/${n}/reviews`, (v): Review => ({ id: v.id, n, state: String(v.state), commit: String(v.commit_id ?? ""), author: String(v.user?.login ?? "ghost"), url: String(v.html_url ?? "") }));
+        const reviews = await snapshot(h.pages, `/repos/${repo}/pulls/${n}/reviews`, (v): Review => ({ id: v.id, n, state: String(v.state), commit: String(v.commit_id ?? ""), at: String(v.submitted_at ?? ""), author: String(v.user?.login ?? "ghost"), url: String(v.html_url ?? "") }));
         for (const v of reviews) {
-          if ((!h.reviews[v.id] || h.reviews[v.id]!.state === "PENDING") && v.state !== "PENDING") emit({ id: `review:${v.id}`, kind: "pull_request_review.submitted", author: v.author, bot: bot(v.author), url: v.url, data: { number: n, state: v.state, head: v.commit } });
+          // Once per review (its key remembered, the 2-day window): a new head reads the PR's earlier reviews again.
+          if (v.state !== "PENDING" && fresh(rs, `review:${v.id}`, v.at)) emit({ id: `review:${v.id}`, kind: "pull_request_review.submitted", author: v.author, bot: bot(v.author), url: v.url, data: { number: n, state: v.state, head: v.commit } });
           h.reviews[v.id] = v;
         }
       }
@@ -317,20 +334,21 @@ export function createFeed(o: FeedOptions) {
     for (const { ev, ctx } of out) for (const h of o.hooks ?? []) {
       try { await h(ev, ctx); } catch (e) { log("feed: a hook failed", { kind: ev.kind, id: ev.id, err: String((e as Error).message).slice(0, 200) }); }
     }
+    for (const s of starts) o.started?.(repo, s.prs, s.sha, s.at);
     state.outbox.push(...out.map(({ ev }) => ({ ...ev, at: t })));
     save();
     return out.map((x) => x.ev);
   }
   const emitAlways = (out: { ev: FeedEvent; ctx: FeedContext }[], ev: FeedEvent) => void out.push({ ev, ctx: {} });
 
-  /** The outbox to the kernel, oldest first: accepted (or a repeated id) leaves it; no answer, 5xx or 429 stops until the next send. */
+  /** The outbox to the kernel, oldest first: accepted (or a repeated id) leaves it; no answer, 408, 5xx or 429 stops until the next send. */
   async function send() {
     let moved = 0;
     while (state.outbox.length) {
       const { at: _at, ...ev } = state.outbox[0]!;
       const r = await o.kernel.raw("POST", "/v1/events", { connection: "github", ...ev }).catch(() => ({ status: 0, json: {} }));
-      // No answer, a 5xx, a 429, or a 401/404 the kernel gives while it restarts mid-apply: tried again later.
-      if (r.status === 0 || r.status === 429 || r.status === 401 || r.status === 404 || r.status >= 500) break;
+      // No answer, a 408, a 5xx, a 429, or a 401/404 the kernel gives while it restarts mid-apply: tried again later.
+      if (r.status === 0 || r.status === 408 || r.status === 429 || r.status === 401 || r.status === 404 || r.status >= 500) break;
       if (r.status >= 300) { loss(ev.resource, `the kernel refused ${ev.kind} ${ev.id} (${r.status})`); log("feed: the kernel refused an event, dropped", { id: ev.id, kind: ev.kind, status: r.status, why: String(r.json?.error?.message ?? "").slice(0, 200) }); }
       else win(ev.resource).sent++;
       state.outbox.shift();

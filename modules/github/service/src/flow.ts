@@ -324,7 +324,7 @@ export function createFlow(d: FlowDeps) {
   }
   /**
    * The change feed's events as Flow's facts (feed.ts hooks): issues opened and labelled, PRs opened, pushed, closed or merged,
-   * and a PR head's CI started and completed (its check runs, newest per suite and name, as the feed holds them).
+   * and a PR head's CI completed (its start comes from the feed's `started` callback; its check runs, newest per suite and name, as the feed holds them).
    */
   const observe = (feed: { runs(repo: string, sha: string): { name: string; status: string; conclusion: string | null; started: string | null; completed: string | null }[] }): Hook => async (e, ctx) => {
     const repo = e.resource, x = e.data ?? {}, n = Number(x.number), head = String(x.head ?? "");
@@ -333,7 +333,8 @@ export function createFlow(d: FlowDeps) {
     else if (e.kind === "issues.labeled") f.issueLabeled(repo, n, e.id.replace(/^ev:/, ""), String(x.label ?? ""), String(x.actor ?? "ghost"), String(ctx.pr?.created_at ?? t));
     else if (e.kind === "pull_request.opened") f.opened(repo, n, head, String(x.head_ref ?? ""), t, taskOf(repo, n), undefined, { title: String(e.text ?? "").split("\n")[0], author: e.author ?? "ghost", author_kind: x.author_kind });
     else if (e.kind === "pull_request.synchronize") {
-      const cmp = d.gh ? await d.gh("GET", `/repos/${repo}/compare/${x.before}...${head}`).catch(() => undefined) : undefined;
+      // The feed waits on this hook: a comparison held up by the rate-limit reserve is given 10 s, then the push counts as not forced.
+      const cmp = d.gh ? await Promise.race([d.gh("GET", `/repos/${repo}/compare/${x.before}...${head}`).catch(() => undefined), new Promise<undefined>((r) => setTimeout(r, 10_000, undefined).unref())]) : undefined;
       f.pushed(repo, n, head, String(x.before ?? ""), cmp && cmp.status < 300 ? !["ahead", "identical"].includes(String(cmp.body?.status)) : false, e.author ?? "ghost", t);
     } else if (e.kind === "pull_request.closed") {
       const pr = ctx.pr ?? {};
@@ -341,9 +342,8 @@ export function createFlow(d: FlowDeps) {
       else f.closed(repo, n, head, pr.closed_at ?? t);
     } else if (e.kind === "check_run.completed") {
       const runs = feed.runs(repo, head);
-      const starts = runs.map((r) => Date.parse(r.started ?? "")).filter(Number.isFinite), ends = runs.map((r) => Date.parse(r.completed ?? "")).filter(Number.isFinite);
+      const ends = runs.map((r) => Date.parse(r.completed ?? "")).filter(Number.isFinite);
       for (const pr of (x.prs as number[]) ?? []) {
-        if (starts.length) f.checksStarted(repo, pr, head, utc(Math.min(...starts)));
         if (runs.every((r) => r.status === "completed")) f.checksCompleted(repo, pr, head, runs.filter((r) => FAILED.has(String(r.conclusion))).map((r) => r.name).slice(0, 20), ends.length ? utc(Math.max(...ends)) : t);
       }
     }

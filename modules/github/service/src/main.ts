@@ -81,6 +81,7 @@ const feed = createFeed({
     return [...new Set([...(await handle.managedRepos()), ...maintained.map((r) => r.repo.toLowerCase())])];
   },
   kindOf: (who, association, repo, seen) => handle.flow.kindOf(who, association, repo, seen),
+  started: (repo, prs, head, at) => { for (const n of prs) handle.flow.checksStarted(repo, n, head, at); },
   hooks: [
     handle.flow.observe({ runs: (repo, sha) => feed.runs(repo, sha) }),
     handle.designReviews.observe({ pr: (repo, n) => feed.pr(repo, n) }),
@@ -98,7 +99,6 @@ handle.useFeed(feed);
 access.onWrite((_method, path) => { const m = /^\/repos\/([^/]+\/[^/?]+)(\/[^?]*)?/.exec(path); if (m) feed.touch(m[1]!, /\/(statuses|rerun|rerequest|update-branch|merge)\b/.test(m[2] ?? "")); });
 feed.start();
 startTidy({ cacheDir, log });
-const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const ship = shipRoutes({
   gh: access.rest, decision: handle.shipDecision, flow: handle.flow, gate: watchGate, cacheDir,
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
