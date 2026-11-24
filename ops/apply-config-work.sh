@@ -854,13 +854,21 @@ kernelRestart() {
 }
 
 # Restarts the computer launcher and waits (at most a minute) until the next one answers on both its listeners, the control
-# address and the boxes' model address (the old one closes them as it drains, so an answer is the next launcher's).
+# address and the boxes' model address. A draining launcher may still answer for a moment, so an answer counts only from the
+# new unit's launcher: every answer names its process (x-aidenhq-launcher-pid), whose parent is the unit's main process
+# (ops/run-draining.sh).
 launcherRestart() {
   systemctl --user restart aidenhq-computers || return 1
-  local n
-  for n in $(seq 60); do
-    curl -s -o /dev/null -m 2 -X POST "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}/" \
-      && curl -s -o /dev/null -m 2 -X POST "${AIDENHQ_LAUNCHER_GATEWAY_URL:-http://10.231.2.1:8200}/" && return 0
+  local main url pid ok until=$(( $(date +%s) + 60 ))
+  while [ "$(date +%s)" -lt "$until" ]; do
+    main="$(systemctl --user show -p MainPID --value aidenhq-computers 2>/dev/null)"
+    ok=1
+    for url in "${AIDENHQ_LAUNCHER_URL:-http://10.231.0.1:8199}/" "${AIDENHQ_LAUNCHER_GATEWAY_URL:-http://10.231.2.1:8200}/"; do
+      [ "$ok" = 1 ] || break
+      pid="$(curl -s -o /dev/null -D - -m 2 -X POST "$url" | tr -d '\r' | sed -n 's/^x-aidenhq-launcher-pid: *//Ip')"
+      if [ -z "$pid" ] || [ -z "$main" ] || [ "$main" = 0 ] || [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" != "$main" ]; then ok=0; fi
+    done
+    [ "$ok" = 1 ] && return 0
     sleep 1
   done
   echo "the computer launcher isn't answering yet; the kernel restarts anyway" >&2

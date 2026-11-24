@@ -336,7 +336,11 @@ async function checkout(who: { container: string }, token: string, raw: string) 
 const bearer = (req: http.IncomingMessage) => String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
 const send = (res: http.ServerResponse, status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
+// Every answer names this launcher's process, so an apply can tell the next launcher from a draining one (apply-config-work.sh
+// launcherRestart).
+const LAUNCHER_PID = String(process.pid);
 const controlServer = http.createServer((req, res) => {
+  res.setHeader("x-aidenhq-launcher-pid", LAUNCHER_PID);
   if (req.method === "GET" && req.url === "/health") {
     try { return send(res, 200, { ok: true, computers: boxes.size, max: maxBoxes() }); } catch (e) { return send(res, 500, { ok: false, error: (e as Error).message }); }
   }
@@ -368,6 +372,7 @@ const controlServer = http.createServer((req, res) => {
 const liveBox = (token: string) => jobs.byKernelToken(token);
 
 const gatewayServer = http.createServer(async (req, res) => {
+  res.setHeader("x-aidenhq-launcher-pid", LAUNCHER_PID);
   const deny = (status: number, msg: string) => { log("gateway", req.method, req.url, status, msg); res.writeHead(status, { "content-type": "text/plain" }).end(`gateway: ${msg}`); };
   try {
     const model = /^\/api\/v1\/(responses|chat\/completions|messages)$/.exec((req.url ?? "").split("?")[0]!);
