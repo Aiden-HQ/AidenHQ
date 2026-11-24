@@ -142,12 +142,14 @@ describe("app_page_canary", () => {
     expect(script).toContain("(b.type || 'submit') === 'submit'");
     expect(script).toContain("no submit control in the feedback form");
     // Several explicit submit controls with no single send-like one: stop, never click the first (a Preview before a Save).
-    expect(script).toContain("const named = explicit.filter((x) => sendish.test(word(x)));");
+    expect(script).toContain("const named = explicit.filter((x) => sendish.test(word(x)) && !draftish.test(word(x)));");
     expect(script).toContain("named.length === 1 ? named[0]");
     // A "Preview feedback" button is not a send: the form's subject word is not part of what names its submit.
-    expect(script).toContain('const sendish = /send|submit|share|post|save|publish/i;');
+    expect(script).toContain('const sendish = /send|submit|share|post|publish/i;');
+    // A draft/preview action is never the send, alone or as the form's only explicit submit.
+    expect(script).toContain("const draftish = /draft|preview|discard|cancel|back/i;");
     // Nor is a lone "Preview feedback" a send: the form's real send may be on the next screen.
-    expect(script).toContain("named.length === 0 && explicit.length === 1 && sendish.test(word(explicit[0]))");
+    expect(script).toContain("named.length === 0 && explicit.length === 1 && sendish.test(word(explicit[0])) && !draftish.test(word(explicit[0]))");
     // A "Save draft" type=button is not a submit control, even as the form's only button.
     expect(script).not.toContain("els.length === 1 && sendish");
     // The landing page's own feedback link is followed even when it has a search box: a feedback field is what ends the walk.
