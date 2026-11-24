@@ -70,8 +70,23 @@ export function parseRecords(o: any): CrmRecord[] {
   return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {}, ...(template ? { url: template.replace("{id}", String(r.id)) } : {}) }));
 }
 
-/** One page of records modified at or after `sinceMs`, oldest first, with HubSpot's `total` for the whole search (null when it gave none). */
-export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number): Promise<{ records: CrmRecord[]; total: number | null }> {
+/** A search answer's `total` (null when it gave none), how many results it listed, malformed ones included, and those
+ * listed results that carry no id: unusable, and identified by their content so a page re-issued at the same time can't count
+ * one of them twice. */
+const counts = (o: any) => {
+  const list: unknown[] = Array.isArray(o?.results) ? o.results : [];
+  return {
+    total: Number.isInteger(o?.total) && o.total >= 0 ? o.total : null,
+    returned: list.length,
+    unusable: list.filter((r: any) => r?.id == null).map((r) => JSON.stringify(r)),
+  };
+};
+
+/**
+ * One page of records modified at or after `sinceMs`, oldest first, with HubSpot's `total` for the whole search (null when it
+ * gave none) and how many results it listed (one with no id is unusable, so it must not read as a page HubSpot truncated).
+ */
+export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number): Promise<{ records: CrmRecord[]; total: number | null; returned: number; unusable: string[] }> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,
@@ -82,14 +97,15 @@ export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: num
     }),
     "search_crm_objects",
   );
-  return { records: parseRecords(o), total: Number.isInteger(o?.total) && o.total >= 0 ? o.total : null };
+  return { records: parseRecords(o), ...counts(o) };
 }
 
 /**
- * One page of the records modified at exactly `ms` with an id above `afterId`, by id. A time shared by more than one page of
- * records (a bulk edit) can't be passed by time, so it is read by id instead.
+ * One page of the records modified at exactly `ms` with an id above `afterId`, by id, with HubSpot's `total` for that same
+ * filter (the records left from `afterId` on; null when it gave none). A time shared by more than one page of records (a bulk
+ * edit) can't be passed by time, so it is read by id instead.
  */
-export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string): Promise<CrmRecord[]> {
+export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string): Promise<{ records: CrmRecord[]; total: number | null; returned: number; unusable: string[] }> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,
@@ -100,7 +116,7 @@ export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, a
     }),
     "search_crm_objects",
   );
-  return parseRecords(o);
+  return { records: parseRecords(o), ...counts(o) };
 }
 
 /** A time property as an ISO string (HubSpot returns ISO strings or epoch milliseconds, as text). */

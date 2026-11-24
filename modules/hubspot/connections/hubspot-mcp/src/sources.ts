@@ -97,6 +97,22 @@ const OVERLAP_MS = 10 * 60_000;
 export const PASS_BUDGET_MS = 5 * 60_000;
 /** The reference data's own share, so a slow owner scan can't take the object types' time. */
 const REFERENCE_BUDGET_MS = 60_000;
+/** A short page while HubSpot's total says more is left is usually a search index lagging a bulk edit, not the end: re-issue it
+ * this many times, this long apart, before treating the shortfall as real. */
+const SHORT_PAGE_ATTEMPTS = 3;
+const SHORT_PAGE_RETRY_MS = 2_000;
+/** A request bounded by what is left of the pass budget, request included, so a slow answer can't overrun it and leave the other
+ * object types unsynced. `"budget"` means the deadline passed while the request was in flight. */
+const bounded = async <T>(p: Promise<T>, deadline: number): Promise<T | "budget"> => {
+  void p.catch(() => undefined); // a late rejection of a request already given up on is not an unhandled one
+  let timer: NodeJS.Timeout | undefined;
+  const spent = new Promise<"budget">((r) => (timer = setTimeout(() => r("budget"), Math.max(0, deadline - Date.now()))));
+  try {
+    return await Promise.race([p, spent]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 const text = (v: unknown, cap?: number) => capText(v == null || v === "" ? null : String(v), cap);
 const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
 
@@ -166,22 +182,110 @@ export function selected(setting: string[]): string[] {
  * resumes inside it): `state.tieId` is the id read last (undefined outside such a time) and `state.doneMs` the latest such time
  * read whole. A pass that starts fresh (not inside a bulk-edit time) keeps HubSpot's `total` for its first search (the records
  * modified since the cursor) and the distinct ids it read, which `syncObject` compares when the search ended.
+ * A page shorter than `SEARCH_LIMIT` while its own query's `total` says more matched is re-issued a few times: a bulk edit whose
+ * records HubSpot's search index publishes late gives one full page and then a short one, and ending there would save a cursor past
+ * records that were not indexed yet. Only after the attempts does the shortfall end the search (`state.ended`, `state.shortfall`),
+ * with the cursor left where the pass began. The same holds for an id page (by its own total) and a resumed pass (whose first
+ * time query has its own total).
  */
-async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string> }, deadline: number): AsyncGenerator<CrmRecord> {
+async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; unusable: Set<string>; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowUnusable: Set<string>; windowDropped?: number }, deadline: number): AsyncGenerator<CrmRecord> {
   let since = Date.parse(from.sinceIso);
   let afterId = from.afterId;
+  // A page shorter than the limit while its own query's total says more matched is a page HubSpot has not published whole (its
+  // search index lags a bulk edit), not the end of the search: re-issue it a few times before treating the gap as real. A result
+  // the search listed without an id is unusable but was returned, so it is counted separately and never makes a page look short.
+  const shortOf = (returned: number, total: number | null) => returned < SEARCH_LIMIT && typeof total === "number" && total > returned;
+  const wait = async () => {
+    if (Date.now() + SHORT_PAGE_RETRY_MS >= deadline) return false;
+    await new Promise((r) => setTimeout(r, SHORT_PAGE_RETRY_MS));
+    return true;
+  };
+  // The pass's `total` is its first search's (the records modified since the cursor), across its retries; a later window's
+  // smaller total describes only that window and must not replace it.
+  const resumed = from.afterId !== undefined; // this pass began inside a bulk-edit time, not at its own start
+  let firstWindow = !resumed;
+  // Only the first newer time window of a resumed pass describes the whole range it re-read: the windows after it cover a
+  // narrower slice (from a later `since`) and must not replace that range's total.
+  let newerWindowFirst = resumed;
   for (;;) {
     if (afterId === undefined) {
-      const { records: page, total } = await searchPage(call, def, since);
-      if (from.afterId === undefined && state.total === undefined) state.total = total;
+      const shortBefore = state.shortfall; // this window's gap must not erase an earlier one when it resolves
+      const partialBefore = state.partial;
+      let page: CrmRecord[] = [],
+        total: number | null = null,
+        returned = 0,
+        unusable: string[] = [],
+        answered = false,
+        spent = false,
+        gap = false, // the last accepted page was short of its own total
+        gapTotal: number | null = null; // the last total that page reported (a retry may omit it)
+      for (let attempt = 0; ; attempt++) {
+        const answer = await bounded(searchPage(call, def, since), deadline);
+        // No answer at all this pass and nothing read yet: a failed pass, not a quiet empty one. A retry that timed out still
+        // has the page before it to keep, below.
+        if (answer === "budget" && !answered && state.seen.size === 0)
+          throw new Error(`search_crm_objects (${def.objectType}) did not answer within the pass budget`);
+        // A retry that timed out leaves the short page before it as the gap: the pass keeps its cursor and reports it.
+        if (answer === "budget" || (answered && Date.now() >= deadline)) {
+          state.shortfall = gap;
+          spent = true;
+          break;
+        }
+        answered = true;
+        ({ records: page, total, returned, unusable } = answer);
+        // A result listed without an id is unusable but was returned; identified by its content, so the same one listed again
+        // on an overlapping page (a re-read time) can't count twice toward the total.
+        for (const u of unusable) state.unusable.add(u);
+        state.dropped = state.unusable.size;
+        if (total !== null) gapTotal = total;
+        // The count comes from the answer the page is accepted with — a retry reporting a smaller total may count a record
+        // HubSpot has since archived — but a retry that omits it keeps the count its predecessor gave: a full replacement page
+        // must not erase a shortfall the earlier page measured.
+        // Only a pass that began at the search's start has a whole-search total to compare (a resumed one counts from the
+        // middle, per the ingest-run contract). A resumed pass's newer time range is compared on its own: the first newer
+        // window's total covers the range, and `state.windowRead` collects the ids every newer window read.
+        if (firstWindow) state.total = gapTotal;
+        else if (state.windowRead && newerWindowFirst && gapTotal !== null) state.windowTotal = gapTotal;
+        // A retry that omits its total can't disprove the gap the page before it showed: the last total it gave is used.
+        gap = shortOf(returned, gapTotal);
+        // Recorded before the retry, so a retry that throws or runs out of budget still leaves the gap (and the cursor) as it
+        // was; a replacement page that resolves it clears it again.
+        state.shortfall = gap || shortBefore;
+        // Counted from the page in hand (its rows are written right after), not from `state.seen`, which is a snapshot before them.
+        if (gap && gapTotal !== null)
+          state.partial = firstWindow
+            ? { total: gapTotal, fetched: new Set([...state.seen, ...page.map((r) => r.id)]).size }
+            : { total: gapTotal, fetched: new Set(page.map((r) => r.id)).size };
+        if (!gap) break;
+        if (attempt + 1 >= SHORT_PAGE_ATTEMPTS) break;
+        // No budget left for another retry's delay: the page in hand is written now (the shortfall keeps the cursor), so a
+        // lagging index doesn't leave every pass with nothing ingested. Past the deadline nothing new is started.
+        if (!(await wait())) break;
+        if (Date.now() >= deadline) {
+          spent = true;
+          break;
+        }
+      }
       let last = since;
+      // Past the budget no new write is started: the page is re-read next pass from the held cursor instead of a long batch of
+      // upserts running past the pass's share.
+      if (spent) return void (state.ended = false);
+      if (state.windowRead) {
+        for (const u of unusable) state.windowUnusable.add(u);
+        state.windowDropped = state.windowUnusable.size; // returned but unusable, deduped like the pass's count
+      }
       for (const r of page) {
+        state.windowRead?.add(r.id);
         state.seen.add(r.id);
         yield r;
         const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
         if (t > last) last = t;
       }
-      if (page.length < SEARCH_LIMIT) return void (state.ended = true);
+      // A gap this window resolved on retry is no longer a gap (an earlier one's counts stay).
+      if (!gap) state.partial = partialBefore;
+      firstWindow = false;
+      newerWindowFirst = false;
+      if (returned < SEARCH_LIMIT) return void (state.ended = true);
       if (last > since) {
         since = last;
         if (Date.now() >= deadline) return void (state.ended = false);
@@ -192,19 +296,110 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       if (Date.now() >= deadline) return void (state.ended = false);
     }
     let id = afterId;
-    for (;;) {
-      const page = await searchTie(call, def, since, id);
+    // A page kept as the fallback while its retry is in flight; cleared once a page is accepted, so a later timeout can't replay
+    // rows that are already written.
+    let last: { records: CrmRecord[]; total: number | null; returned: number; unusable: string[] } | undefined;
+    const tieShortBefore = state.shortfall;
+    // The first id query's total covers the whole range left from `afterId`, the pages after it only their own slice: the range
+    // is read whole only when what it returned reaches that count (a lower id still unindexed is otherwise invisible).
+    let tieTotal: number | null = null;
+    let tieDropped = 0;
+    const tieUnusable = new Set<string>(); // malformed results this range listed, by content
+    let short = false; // the last id page was short of its own total
+    let idTotal: number | null = null; // the last total that filter gave (a retry may omit it)
+    const tieRead = new Set<string>();
+    for (let attempt = 0; ; ) {
+      const answer = await bounded(searchTie(call, def, since, id), deadline);
+      if (answer === "budget") {
+        // The first request of a resumed scan never answered and nothing was read: a failed pass, not a quiet empty one.
+        if (!last && state.seen.size === 0) throw new Error(`search_crm_objects (${def.objectType}) did not answer within the pass budget`);
+        // A short page whose retry timed out is a gap, exactly like one whose retries ran out, reported with the count its
+        // filter last gave.
+        if (short) {
+          state.shortfall = true;
+          state.partialOnly = true;
+          state.partial = { total: idTotal ?? 0, fetched: new Set(last?.records.map((r) => r.id) ?? []).size };
+        }
+        // A retry that timed out: what the last page returned is real and lands now (the time keeps its saved position), unless
+        // the budget is spent, in which case the page is re-read next pass.
+        if (last && Date.now() < deadline) {
+          for (const r of last.records) {
+            state.seen.add(r.id);
+            yield r;
+          }
+          if (last.total !== null) state.partial = { total: last.total, fetched: new Set(last.records.map((r) => r.id)).size };
+        }
+        return void (state.ended = false);
+      }
+      const { records: page, total, returned } = answer;
+      // A short id page is retried from the same boundary, its ids not applied, so no record is skipped. The gap is recorded
+      // before the retry so a retry that throws still keeps the cursor; a page that resolves it clears it again.
+      if (total !== null) idTotal = total;
+      short = shortOf(returned, idTotal);
+      state.shortfall = short || tieShortBefore;
+      last = short ? answer : undefined; // only a page whose retry is still in flight can be replayed
+      // The range's total comes from the page the range is accepted with, so a record archived during a retry doesn't pin it.
+      if (!short && tieTotal === null) tieTotal = idTotal;
+      // Recorded before the retry: a spend budget or a throw still leaves the gap (and the cursor) as it is.
+      if (short) state.partial = { total: idTotal ?? 0, fetched: new Set(page.map((r) => r.id)).size };
+      if (short) {
+        if (attempt + 1 < SHORT_PAGE_ATTEMPTS && (await wait()) && Date.now() < deadline) {
+          attempt++;
+          continue;
+        }
+        // Giving up on this boundary: the gap is real and the time keeps its saved position. Its rows land only while the pass
+        // still has budget for them; past it they are re-read next pass, like every other page.
+        state.shortfall = true;
+        if (idTotal !== null) state.partial = { total: idTotal, fetched: new Set(page.map((r) => r.id)).size };
+        if (Date.now() >= deadline) return void (state.ended = false);
+        for (const r of page) {
+          state.seen.add(r.id);
+          yield r;
+        }
+        // The scan never got past this time: this query's own counts are the gap, not the whole pass's.
+        if (attempt + 1 >= SHORT_PAGE_ATTEMPTS) state.partialOnly = true;
+        return void (state.ended = attempt + 1 >= SHORT_PAGE_ATTEMPTS);
+      }
+      if (tieTotal === null) tieTotal = total;
       for (const r of page) {
         id = r.id;
         state.tieId = id;
+        tieRead.add(r.id);
+        // A newer time window is read by time and then by id: both halves count toward the same range.
+        state.windowRead?.add(r.id);
         state.seen.add(r.id);
         yield r;
       }
-      if (page.length < SEARCH_LIMIT) break;
+      attempt = 0; // a complete page: the next gets its own retries
+      idTotal = null; // the next page is a new boundary, with its own total
+      // A result listed without an id can't be written on an id page either; it is returned, not missing. It counts toward the
+      // resumed pass's newer-window coverage too, or one such row would look like a gap forever.
+      for (const u of answer.unusable) state.unusable.add(u);
+      state.dropped = state.unusable.size;
+      for (const u of answer.unusable) tieUnusable.add(u);
+      tieDropped = tieUnusable.size;
+      if (state.windowRead) {
+        for (const u of answer.unusable) state.windowUnusable.add(u);
+        state.windowDropped = state.windowUnusable.size;
+      }
+      if (returned < SEARCH_LIMIT) break; // the tie time is read whole
       if (Date.now() >= deadline) return void (state.ended = false);
+    }
+    // The range's own total, across its pages: fewer returned than it reported means one is still unindexed, so the time is not
+    // read whole and the pass keeps its starting cursor. No second, narrower search is asked to explain the total away: a lower
+    // count alone doesn't prove those rows were read (the ids at or below the boundary are excluded from it), and an extra
+    // request here could throw after rows were written. The gap stands until a pass reads the range whole.
+    if (tieTotal !== null && tieRead.size + tieDropped < tieTotal) {
+      state.shortfall = true;
+      state.partialOnly = true;
+      state.partial = { total: tieTotal, fetched: tieRead.size + tieDropped };
+      return void (state.ended = Date.now() < deadline);
     }
     state.tieId = undefined;
     state.doneMs = since;
+    // The resumed tie is read whole: the newer time window after it is a fresh search whose own total is comparable, against
+    // the rows that window reads. `state.windowRead` holds them, so the resumed tie's rows don't inflate its count.
+    if (resumed) state.windowRead ??= new Set<string>();
     since += 1;
     afterId = undefined;
   }
@@ -226,7 +421,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
   const from = newest;
   let tieId = cursorId || undefined;
-  const state: { ended: boolean; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string> } = { ended: false, seen: new Set() };
+  const state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; unusable: Set<string>; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowUnusable: Set<string>; windowDropped?: number } = { ended: false, shortfall: false, dropped: 0, unusable: new Set(), seen: new Set(), windowUnusable: new Set() };
   try {
     for await (const r of records(call, def, { sinceIso: newest, afterId: tieId }, state, o.deadline)) {
       let row: Row;
@@ -247,16 +442,48 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
     // A bulk-edit time read whole is the newest the cursor must pass, even when no later record came.
     if (state.doneMs !== undefined && state.doneMs >= Date.parse(newest)) newest = new Date(state.doneMs + 1).toISOString();
   } finally {
-    // The cursor moves with what was written, and the type is baselined only when its search ended.
+    // The cursor moves with what was written, and the type is baselined only when its search ended without a shortfall: a
+    // baseline backfill that missed records stays open, so the rows its replay writes are still baseline, not news.
     // A search that ended has caught up: the next pass starts a little before, so records HubSpot indexed late (bulk edits)
     // aren't left behind a cursor that already passed their time.
     const now = o.now ?? Date.now();
+    // A pass that ended short of HubSpot's total missed records (the search index lags a bulk edit): keep the cursor at the
+    // pass's start so the next pass reads the same window again, rather than at/after `newest` and past what was not yet
+    // indexed. That holds when the retries ran out, when the budget left no time for one, and when a later, narrower window
+    // reported its own smaller total. A result listed without an id was never writable, so it doesn't make the window short.
+    const read = (state.windowRead?.size ?? state.seen.size) + state.dropped;
+    // A pass resumed inside a bulk-edit time compares the newer time range it read against that range's own first total: a full
+    // page that omitted an older record still leaves fewer distinct ids than the range held, even when each later, narrower
+    // page matches its own total.
+    const windowFetched = (state.windowRead?.size ?? 0) + (state.windowDropped ?? 0);
+    if (!state.shortfall && state.ended && state.windowTotal !== undefined && windowFetched < state.windowTotal) {
+      state.shortfall = true;
+      state.partial = { total: state.windowTotal, fetched: windowFetched };
+      state.partialOnly = true;
+    }
+    // No second, narrower search is asked here to explain the total away: a lower count alone doesn't prove the missing rows were
+    // read, and an extra request in `finally` could throw before `saveScope` runs. The cursor is held and the alert keeps
+    // tripping until a pass reads the window whole (the owner's call: a quiet alarm over a real shortfall is the worse failure).
+    const short = state.shortfall || (state.ended && typeof state.total === "number" && read < state.total);
     const back = state.ended && !tieId && Date.parse(newest) > now - OVERLAP_MS ? new Date(Math.max(Date.parse(newest) - OVERLAP_MS, Date.parse(from))).toISOString() : newest;
-    await store.saveScope(scope, tieId ? `${newest}#${tieId}` : back, state.ended);
+    // A resumed pass rewinds to the checkpoint it began at, id included, so the two cursors can't alternate around it.
+    const start = cursorId ? `${from}#${cursorId}` : from;
+    await store.saveScope(scope, short ? start : tieId ? `${newest}#${tieId}` : back, state.ended && !short);
   }
   if (skipped) o.log?.warn({ kind, skipped }, "src_hubspot: records skipped");
-  // Only a search that began at its start (a resumed bulk-edit read counts from the middle) and ended is comparable with HubSpot's total.
-  if (o.pass && state.ended && typeof state.total === "number") o.pass.complete = { total: state.total, fetched: state.seen.size };
+  // Only a search that began at its start (a resumed bulk-edit read counts from the middle) and ran to its end is comparable with
+  // HubSpot's total for the whole pass. A gap a query measured is reported even when the pass stopped early or when the
+  // whole-pass comparison alone would look complete, so the alert doesn't go quiet. A pass that stopped early without measuring
+  // a gap reports nothing, as before.
+  // A result listed without an id was returned, not missed: count it the same way the cursor decision does.
+  const whole = typeof state.total === "number" ? { total: state.total, fetched: (state.windowRead?.size ?? state.seen.size) + state.dropped } : undefined;
+  const wholeShort = whole !== undefined && whole.fetched < whole.total;
+  if (o.pass) {
+    if (state.shortfall) {
+      if (state.partial && (state.partialOnly || !state.ended || !wholeShort)) o.pass.complete = state.partial;
+      else if (state.ended && whole) o.pass.complete = whole;
+    } else if (state.ended && whole) o.pass.complete = whole;
+  }
   return written;
 }
 
