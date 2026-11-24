@@ -208,18 +208,82 @@ it("an out-of-range headcount is stored as null and the type goes on", async () 
   expect(writes.map((w) => w.row.employees)).toEqual([null, 250]);
 });
 
-it("a search that ran from its start to its end reports HubSpot's total against the distinct records read; a short one is the gap", async () => {
+it("a search that ran from its start to its end reports HubSpot's total against the distinct records read; a resumed one compares nothing", async () => {
   const mk = (total: number, ids: string[]) => async () => answer(ids.map((id) => deal(id, "2026-11-10T10:00:00.000Z")), ids.length, total);
   const whole = { pass: {} as any };
   await syncObject(fakeStore().store, mk(2, ["1", "2"]), "deals", opts(whole));
   expect(whole.pass.complete).toEqual({ total: 2, fetched: 2 });
-  const gap = { pass: {} as any };
-  await syncObject(fakeStore().store, mk(5000, ["1", "2"]), "deals", opts(gap));
-  expect(gap.pass.complete).toEqual({ total: 5000, fetched: 2 });
   // A pass resumed inside a bulk-edit time counts from the middle: no comparison.
   const f = fakeStore();
   await f.store.saveScope("deals", "2026-11-10T10:00:00.000Z#7", false);
   const resumed = { pass: {} as any };
-  await syncObject(f.store, async (tool, args: any) => answer([deal("8", "2026-11-10T10:00:00.000Z")], 1, 9), "deals", opts(resumed));
+  await syncObject(f.store, async (tool, args: any) => answer([deal("8", "2026-11-10T10:00:00.000Z")], 1, 1), "deals", opts(resumed));
   expect(resumed.pass.complete).toBeUndefined();
+});
+
+// These two drive real retries (which sleep between attempts), so the clock and timers are faked around them.
+const withRetries = async (run: () => Promise<unknown>) => {
+  vi.useFakeTimers({ now: NOW });
+  try {
+    const p = run();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await p;
+  } finally {
+    vi.useRealTimers();
+  }
+};
+
+it("a short page below HubSpot's total keeps the contacts cursor at the pass start and records the shortfall", async () => {
+  const T = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const full = Array.from({ length: 200 }, (_, i) => contact(i + 1, T));
+  let calls = 0;
+  const call = async () => (calls++ === 0 ? answer(full, full.length, 4950) : answer([], 0, 4950));
+  const { store, scopes } = fakeStore();
+  const pass = {} as any;
+  await withRetries(() => syncObject(store, call, "contacts", opts({ pass })));
+  expect(calls).toBe(4); // the full page, then the same time re-issued three times in all before giving up
+  expect(pass.complete).toEqual({ total: 4950, fetched: 200 }); // the shortfall stays visible to the detector
+  // The pass began 30 days back; the cursor did not move past it, so the next pass re-reads the same window. A short first
+  // pass is not a finished baseline either.
+  expect(scopes.get("contacts")).toEqual({ baselined: false, cursor: new Date(NOW - 30 * 86_400_000).toISOString() });
+});
+
+it("a resumed bulk-edit read that ends short keeps its own id checkpoint and reports that page's shortfall", async () => {
+  const TIE = "2026-09-01T04:00:00.000Z";
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const { store, scopes } = fakeStore();
+  scopes.set("contacts", { baselined: true, cursor: `${TIE}#100` });
+  const boundaries: string[] = [];
+  let calls = 0;
+  const shortTie = async (_: string, args: Record<string, any>) => {
+    calls++;
+    const [mod, idf] = args.filterGroups[0].filters;
+    expect(mod).toMatchObject({ propertyName: "lastmodifieddate", operator: "EQ", value: String(Date.parse(TIE)) });
+    boundaries.push(idf.value); // every attempt starts at the same boundary
+    return answer([contact(101, TIE)], 1, 2); // 2 matches reported, only id 101 served
+  };
+  const pass = {} as any;
+  await withRetries(() => syncObject(store, shortTie, "contacts", opts({ pass })));
+  expect(calls).toBe(3);
+  expect(boundaries).toEqual(["100", "100", "100"]);
+  expect(scopes.get("contacts")).toEqual({ baselined: true, cursor: `${TIE}#100` }); // not past the unread time
+  expect(pass.complete).toEqual({ total: 2, fetched: 1 }); // the shortfall is visible on a resumed pass too
+});
+
+it("a short page that fills out on retry is read whole in the same pass", async () => {
+  const T = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const first = Array.from({ length: 100 }, (_, i) => contact(i + 1, T));
+  const all = Array.from({ length: 150 }, (_, i) => contact(i + 1, T));
+  let calls = 0;
+  // The same GTE query: the first answer omits the last 50 (index lag), the retry has the whole set.
+  const call = async () => (calls++ === 0 ? answer(first, first.length, 150) : answer(all, all.length, 150));
+  const { store, writes, scopes } = fakeStore();
+  const pass = {} as any;
+  await withRetries(() => syncObject(store, call, "contacts", opts({ pass })));
+  expect(calls).toBe(2);
+  expect(new Set(writes.map((w) => w.row.contact_id)).size).toBe(150);
+  expect(pass.complete).toEqual({ total: 150, fetched: 150 });
+  expect(scopes.get("contacts")).toEqual({ baselined: true, cursor: new Date(Date.parse(T) - 10 * 60_000).toISOString() }); // caught up, with the overlap
 });
