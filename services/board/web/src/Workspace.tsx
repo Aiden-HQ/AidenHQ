@@ -12,7 +12,7 @@ import { AnswerForm } from "./AnswerForm";
 import { ApprovalCard } from "./Chat";
 import { LaneChat } from "./LaneChat";
 import { FeatureCostStrip } from "./FeatureCost";
-import { LineageStrip } from "./Lineage";
+import { DelegatedList, LineageStrip } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
 import { CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
@@ -777,7 +777,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           <button className="icon-btn subtle panel-close" aria-label="Hide details" onClick={togglePanel}>
             <CloseIcon />
           </button>
-          <DetailsPanel chat={chat} go={go} />
+          <DetailsPanel chat={chat} go={go} onSignIn={onSignIn} />
         </aside>
       )}
       {mobile && sheet && (
@@ -788,6 +788,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             </button>
             <DetailsPanel
               chat={chat}
+              onSignIn={onSignIn}
               go={(h) => {
                 setSheet(false);
                 go(h);
@@ -1024,41 +1025,15 @@ function LiveRow({ chat, retry, stop }: { chat: ChatDetail; retry: () => void; s
 
 // ------------------------------------------------------------------ the right panel
 
-type Handed = ChatDetail["handedOut"][number];
-
 /**
- * The one details panel: the chat's context in a line, then the work it handed out by what it needs (you first,
- * finished folded), then progress and files only when there are some.
+ * The one details panel: the chat's context in a line, then the work it handed out (the Lineage list, you first), then progress and files only when there are some.
  */
-function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void }) {
+function DetailsPanel({ chat, go, onSignIn }: { chat: ChatDetail; go: (h: string) => void; onSignIn: () => void }) {
   const files = chat.files.filter((f) => !f.textOf);
   const plan = chat.working?.plan ?? [];
   const done = plan.filter((p) => p.state === "done").length;
   const waiting = chat.approvals.filter((a) => a.state === "pending");
-  const g = groupTasks(chat.handedOut);
   const onYou = waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : waitsForAnswer(chat.state) ? "a reply" : "";
-  const row = (h: Handed) => (
-    <li key={h.identifier}>
-      <a className="handed-row" href={`#/c/${h.identifier}`} title={`${h.agent}: ${h.title}`} onClick={(e) => (e.preventDefault(), go(`#/c/${h.identifier}`))}>
-        <span className="handed-title">{h.title}</span>
-        <span className="handed-agent">
-          {h.agent} · {ago(h.updatedAt)}
-        </span>
-        <span className="handed-state">
-          <TaskState state={h.state} bare />
-        </span>
-      </a>
-    </li>
-  );
-  const section = (label: string, list: Handed[], cls = "") =>
-    list.length > 0 && (
-      <section className={`tasks-sec ${cls}`}>
-        <h4 className="panel-sub">
-          {label} <span className="panel-count">{list.length}</span>
-        </h4>
-        <ul className="handed-list">{list.map(row)}</ul>
-      </section>
-    );
   const quiet = !chat.handedOut.length && !plan.length && chat.state?.kind !== "working" && !files.length;
   return (
     <div className="panel">
@@ -1095,18 +1070,9 @@ function DetailsPanel({ chat, go }: { chat: ChatDetail; go: (h: string) => void 
       {chat.handedOut.length > 0 && (
         <section className="panel-card">
           <h3>
-            Tasks<span className="panel-count">{chat.handedOut.length}</span>
+            Delegated<span className="panel-count">{chat.handedOut.length}</span>
           </h3>
-          {section("Needs you", g.needs, "needs")}
-          {section("Working", g.working)}
-          {section("Waiting", g.waiting)}
-          {g.finished.length > 0 && (
-            <details className="handed-done">
-              <summary>Finished ({g.finished.length})</summary>
-              <ul className="handed-list">{g.finished.map(row)}</ul>
-            </details>
-          )}
-          {!g.needs.length && !g.working.length && !g.waiting.length && !g.finished.length && <p className="muted small">Nothing open.</p>}
+          <DelegatedList refId={chat.identifier} go={go} onSignIn={onSignIn} />
         </section>
       )}
       {(plan.length > 0 || chat.state?.kind === "working") && (

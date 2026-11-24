@@ -189,6 +189,22 @@ const chatDetail = (ref: string) => {
 };
 
 const kid = (n: number, title: string, agent: string, state: ReturnType<typeof st>, o: Record<string, unknown> = {}) => ({ identifier: `WOR-${n}`, title, agent, model: "deepseek-flash high", state: named(`WOR-${n}`, state), latest: { text: "Working through the export tests.", at: ago(4) }, tokens: 182_000, usd: 0.42, startedAt: ago(90), endedAt: state.kind === "done" ? ago(30) : null, children: [], approvals: [], ...o });
+// The task drawer's Done means by ref: WOR-795 grading down, WOR-796 closed without a verdict, WOR-797 a report not yet opened, else graded.
+const gradeFor = (ref: string) =>
+  ref === "WOR-795" ? { state: "unavailable", rubric: [] }
+  : ref === "WOR-796" ? { state: "ungraded_close", rubric: [{ text: "Export respects the current filter", met: "unknown" }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } }
+  : ref === "WOR-797" ? { state: "open", rubric: [{ text: "Says what was found", met: "unknown" }, { text: "Cites sources", met: "unknown" }], deliverable: { kind: "pr", ref: "" } }
+  : { state: "needs_revision", judgedAt: ago(30), version: "9f3a1c2e77b0", rubric: [{ text: "Export respects the current filter", met: "yes", evidence: "ExportButton passes the filter state; test covers it." }, { text: "Totals row uses the account currency", met: "no", evidence: "The total row is hard-coded to USD in export.ts line 88." }, { text: "Docs mention the new export", met: "unknown" }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } };
+const milestones = () => [
+  { at: ago(240), kind: "created", text: "Created" },
+  { at: ago(235), kind: "run_started", text: "Run started", runId: "j-aaaaaaaaaaaaaaaa" },
+  { at: ago(200), kind: "run_ended", text: "Run failed: ran past 120 minutes", runId: "j-aaaaaaaaaaaaaaaa" },
+  { at: ago(120), kind: "asked_you", text: "Asked you: Ship the CSV export behind a flag?" },
+  { at: ago(60), kind: "approved", text: "Card approved by the AI reviewer", href: "#/approvals/k-00000000000000a1" },
+  { at: ago(50), kind: "applied", text: "Card applied: pr", href: "#/approvals/k-00000000000000a1" },
+  { at: ago(35), kind: "deployed", text: "Deployed in generation 7", href: "https://github.com/acme-agents/invoices/pull/41" },
+  { at: ago(30), kind: "graded", text: "Graded: sent back" },
+];
 const lineage = (identifier: string) => {
   if (identifier !== "WOR-818" || mock.empty) return { identifier, children: [], total: { tasks: 0, running: 0, needs: 0, failed: 0, tokens: 0, usd: 0, ms: 0 } };
   const children = [kid(819, "Build the invoices app", "Engineer", WORKING_CARD, { children: [kid(824, "Add CSV export", "Engineer", FAILED, { latest: { text: "The export test timed out.", at: ago(8) } })], approvals: [approval("k-00000000000000a1")] }), kid(821, "Design the invoice screens", "UI Designer", ASK), kid(822, "Write the export tests", "Engineer", STATES.blocked), kid(823, "Seed the demo data", "Engineer", STATES.done)];
@@ -429,12 +445,12 @@ function route(method: string, url: URL): [number, unknown] {
   if ((x = m(/^\/api\/issues\/([^/]+)$/))) {
     const ref = decodeURIComponent(x![1]!);
     // A crew part of WOR-790: the Engineer's issue, opened from that task's agent tab.
-    if (ref === "WOR-791") return [200, { ...card(791, "Add CSV export"), parent: { identifier: "WOR-790", title: "Ship the invoices app's export" }, assignee: "engineer", editable: true, labelIds: [], replyTarget: "The Engineer reads replies here and continues the coding job.", scheduled: null, recurring: null, comments: [], files: [], runs: [], crew: [] }];
+    if (ref === "WOR-791") return [200, { ...card(791, "Add CSV export"), parent: { identifier: "WOR-790", title: "Ship the invoices app's export" }, assignee: "engineer", editable: true, labelIds: [], replyTarget: "The Engineer reads replies here and continues the coding job.", scheduled: null, recurring: null, comments: [], files: [], crew: [], grade: { state: "none", rubric: [] }, milestones: [] }];
     const c = Object.values(board().buckets).flat().find((k) => k.identifier === ref || k.id === ref) ?? card(790, "Ship the invoices app's export");
     const crew = (c as { crew?: { agent: string }[] }).crew ?? [];
     const onTask = board().assignees.find((a) => a.key === crew[0]?.agent);
     const replyTarget = onTask ? (onTask.kind === "engineer" ? "The Engineer reads replies here and continues the coding job." : `${onTask.name} reads replies here.`) : "No agent is assigned; this message stays on the task. @name brings an agent in.";
-    return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget, scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, runs: [], crew }];
+    return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget, scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, crew, grade: gradeFor(ref), milestones: milestones() }];
   }
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];
