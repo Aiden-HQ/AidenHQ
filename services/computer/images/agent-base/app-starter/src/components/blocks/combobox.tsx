@@ -50,7 +50,7 @@ export function Combobox({
               <CommandEmpty>{empty}</CommandEmpty>
               <CommandGroup>
                 {options.map((o) => (
-                  <CommandItem key={o.value} value={o.value} keywords={[o.label]} onSelect={() => pick(o.value)}>
+                  <CommandItem key={o.value} value={`v:${encodeURIComponent(o.value)}`} keywords={[o.label]} onSelect={() => pick(o.value)}>
                     <CheckIcon aria-hidden className={cn(chosen.includes(o.value) ? "opacity-100" : "opacity-0")} />
                     {o.label}
                   </CommandItem>
