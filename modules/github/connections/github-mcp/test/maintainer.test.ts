@@ -1107,7 +1107,7 @@ it("the bootstrap covers every listed repo, and one repo's failure holds up no o
   const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER, issues: false }]);
   expect((await m.bootstrap()).repos).toEqual([{ repo: PRODUCT, issues: [expect.objectContaining({ number: 1 }), expect.objectContaining({ number: 2 })] }, { repo: OTHER }]);
   f.opts.failList = [PRODUCT];
-  expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, error: expect.stringMatching(/couldn't list acme\/product's issues/) });
+  expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, incomplete: expect.stringMatching(/couldn't list acme\/product's issues/) });
   f.opts.failList = undefined;
   f.opts.failTimeline = [2];
   expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, issues: [expect.objectContaining({ number: 1 })], incomplete: expect.stringMatching(/1 issue\(s\) whose label events couldn't be read/) });
@@ -1188,7 +1188,7 @@ it("oneIssue reads the issue as it stands with its label's trust verdict, and nu
   const m = maintainer(f);
   expect((await m.oneIssue(PRODUCT, 1)).issue).toMatchObject({ number: 1, trusted: true, labeled_at: "2026-01-01T00:00:00Z", labels: ["agent-fix"] });
   expect((await m.oneIssue(PRODUCT, 2)).issue).toMatchObject({ number: 2, trusted: false, actor: "random-user" });
-  for (const n of [3, 4]) expect((await m.oneIssue(PRODUCT, n)).issue).toBeNull();
+  for (const n of [3, 4, 99]) expect((await m.oneIssue(PRODUCT, n)).issue).toBeNull(); // 99 was deleted: a 404 is a no, not a retry
   f.opts.failTimeline = [1];
   await expect(m.oneIssue(PRODUCT, 1)).rejects.toThrow(/timeline/);
   f.opts.failTimeline = undefined;

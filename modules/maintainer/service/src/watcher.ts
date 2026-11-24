@@ -39,6 +39,8 @@ const STATE_KEY = "maintainer_issues";
 const KEEP = 500;
 const DAY = 24 * 60 * MIN;
 const POLL_MS = 5_000;
+/** A silence this long (the module off, a long outage) may have missed events the kernel never logged: every repo is read afresh. */
+const SILENT_MS = 30 * MIN;
 
 export interface MaintainerIssue {
   number: number;
@@ -85,7 +87,7 @@ interface RepoState {
 interface State {
   repos?: Record<string, RepoState>;
   /** The last log seq committed, and each repo's settings as of the last bootstrap. */
-  feed?: { after: number; digest: Record<string, string> };
+  feed?: { after: number; digest: Record<string, string>; /** When the last look finished (ms): a long silence means events may not have been logged. */ at?: number };
   /** The last error logged: a run of the same one is said once. */
   error?: string;
 }
@@ -130,13 +132,14 @@ export interface PumpDeps {
  */
 export async function maintainerPump(d: PumpDeps): Promise<number> {
   const state = readState(d.store);
-  const repos: Record<string, RepoState> = { ...(state.repos ?? {}) };
+  // Persisted keys are lower case (an older state kept the entry's own case).
+  const repos: Record<string, RepoState> = Object.fromEntries(Object.entries(state.repos ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   let cfg = new Map<string, MaintainedRepo>();
   let digest: Record<string, string> = {};
   let after = state.feed?.after;
   let committed = state.feed?.digest ?? {};
   let count = 0;
-  const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(after === undefined ? {} : { feed: { after, digest: committed } }), ...(error ? { error } : {}) }));
+  const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(after === undefined ? {} : { feed: { after, digest: committed, at: Date.now() } }), ...(error ? { error } : {}) }));
   const of = (repo: string): RepoState => (repos[repo.toLowerCase()] ??= {});
   const bootstrap = async (keys: string[]) => {
     const read = await d.bootstrap(keys);
@@ -153,7 +156,8 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
     const page = await d.feed(after);
     // The first look's watermark is kept at once, so a bootstrap that fails and is retried still handles what was opened since it.
     if (first) { after = page.next; save(); }
-    const stale = first || page.gap ? [...cfg.keys()] : [...cfg.keys()].filter((k) => committed[k] !== digest[k]);
+    const silent = !first && Date.now() - (state.feed?.at ?? 0) > SILENT_MS;
+    const stale = first || page.gap || silent ? [...cfg.keys()] : [...cfg.keys()].filter((k) => committed[k] !== digest[k]);
     // Each repo is bootstrapped on its own: one that fails is retried on the next look (its digest is not committed) and holds up no other.
     for (const k of stale) delete committed[k];
     const failed: string[] = [];
@@ -188,7 +192,8 @@ async function bootRepo(d: PumpDeps, r: MaintainedRepo, row: BootstrapRow, st: R
   let count = 0;
   for (const i of row.issues ?? []) count += await file(d, r, i, "fix", st);
   for (const i of row.builds ?? []) count += await file(d, r, i, "build", st);
-  if (r.features && row.featured && !row.incomplete) st.featured = keep(row.featured);
+  if (!r.features) st.featured = [];
+  else if (row.featured && !row.incomplete) st.featured = keep(row.featured);
   if (row.incomplete) throw new Error(`${r.repo}: ${row.incomplete}`);
   return count;
 }
@@ -264,7 +269,8 @@ async function opened(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
   const recent = (st.recent = (st.recent ?? []).filter((x) => Date.now() - x.at < DAY));
   const valid = new Set([...(st.fired ?? []), ...(st.featured ?? [])]);
   const byAuthor = recent.filter((x) => x.author === author && !valid.has(x.issue!)).length;
-  if (byAuthor >= limits.perAuthor) {
+  // An author with an issue already held queues behind it: a freed slot goes to the older one first.
+  if (byAuthor >= limits.perAuthor || (st.held ?? []).some((h) => h.author === author)) {
     d.log.info({ repo: r.repo, issue: number, author, invalid_today: byAuthor }, "triage limit reached (invalid issues per author): held until a slot frees");
     st.held = [...(st.held ?? []), { number, author, created_at: String(ev.data?.created_at ?? new Date().toISOString()) }].slice(-KEEP);
     return 0;

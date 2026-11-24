@@ -860,14 +860,14 @@ export class Maintainer {
         if (unread.length) row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${label ?? r.label}: ${unread.length} issue(s) whose label events couldn't be read (${unread[0]!.reason})`.slice(0, 300);
         return read.issues;
       };
-      try {
-        if (r.issues) row.issues = await part(undefined);
-        if (r.features) {
-          row.builds = await part(BUILD_LABEL);
-          row.featured = (await part(FEATURE_LABEL)).map((i) => i.number);
-        }
-      } catch (err) {
-        row.error = (err as Error).message.slice(0, 300);
+      // Each list is its own read: one that fails marks the repo `incomplete` and hands over the others.
+      const tolerate = async (fn: () => Promise<void>) => {
+        try { await fn(); } catch (err) { row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${(err as Error).message}`.slice(0, 300); }
+      };
+      if (r.issues) await tolerate(async () => { row.issues = await part(undefined); });
+      if (r.features) {
+        await tolerate(async () => { row.builds = await part(BUILD_LABEL); });
+        await tolerate(async () => { row.featured = (await part(FEATURE_LABEL)).map((i) => i.number); });
       }
       out.push(row);
     }
@@ -883,6 +883,8 @@ export class Maintainer {
     const r = this.target(repo);
     const asked = label ?? r.label;
     const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
+    // A deleted issue is a definite no, never a retry that would stall the watcher's feed.
+    if (res.status === 404) return { repo: r.repo, number, issue: null };
     if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number} (GitHub said ${res.status})`);
     const i = res.body as GhIssue & { state?: string };
     if (i.pull_request || i.state !== "open" || !labelNames(i).some((l) => named(l, asked))) return { repo: r.repo, number, issue: null };

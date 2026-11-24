@@ -210,3 +210,27 @@ test("one repo's incomplete bootstrap files what it read and is read again, and 
   assert.ok(w.state().feed.digest[R], "the next look's bootstrap finished it");
   assert.equal(w.state().feed.after, 2);
 });
+
+test("a long silence bootstraps again, an old mixed-case state is kept, features off clears the valid reports, and a held author's newer issue queues behind", async () => {
+  const w = world({ repos: [repo({ features: true })], bootstrap: { repos: [{ repo: R, issues: [], builds: [], featured: [4] }] } });
+  await w.look();
+  assert.deepEqual(w.state().repos[R.toLowerCase()].featured, [4]);
+  const at = w.state();
+  at.feed.at = Date.now() - 2 * 3600_000;
+  w.store.setMeta("maintainer_issues", JSON.stringify({ ...at, repos: { [R]: at.repos[R.toLowerCase()] } }));
+  await w.look();
+  assert.equal(w.boots, 2, "silent for hours: read afresh");
+  assert.deepEqual(Object.keys(w.state().repos), [R.toLowerCase()], "the mixed-case key is normalised, not dropped");
+  w.repos = [repo()];
+  await w.look();
+  assert.deepEqual(w.state().repos[R.toLowerCase()].featured, [], "features off: no feature exemptions");
+  const t = world();
+  await t.look();
+  const o = (seq, n) => ev(seq, "issues.opened", { number: n, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] });
+  t.log.push(o(1, 1), o(2, 2));
+  await t.look();
+  t.log.push(ev(3, "issues.labeled", { number: 1, label: "agent-fix" }), o(4, 3));
+  t.ones["1:agent-fix"] = issue(1);
+  await t.look();
+  assert.deepEqual(t.triaged, [1, 2], "the older held issue took the freed slot; the newer one waits behind");
+});
