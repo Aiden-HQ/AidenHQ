@@ -245,7 +245,9 @@ export function startPrWatch(o: PrWatchOptions) {
         // The client answers a refused listing (a 404 for a head it cannot see, a 403 without Checks read) as a typed need, not a
         // status, so a permanent one is "not this rule's" here too rather than an unread head deferred on every tick.
         const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: string }).cause;
-        return cause === "unreachable" ? "permanent" : null;
+        // A `scope` refusal (the credential is not granted Checks read) is as permanent as a 404: the red-head rules report the
+        // failure rather than the head deferring on every tick.
+        return cause === "unreachable" || cause === "scope" ? "permanent" : null;
       }
       return { runs, complete: !total || runs.length >= total };
     }
@@ -458,7 +460,9 @@ export function startPrWatch(o: PrWatchOptions) {
         }
         log(r.status < 300 ? "wedged check run's job re-run" : "wedged check run's re-run refused", { pr: pr.url, head, job: jobId, status: r.status });
         // A re-run GitHub takes is the one the report's interval counts from: an earlier refusal never ran a re-run.
-        if (r.status < 300) { state.wedged[name].accepted = true; state.wedged[name].at = new Date().toISOString(); }
+        // The ask is now this job of this run, not the one it was first made for: a later sibling that shares the display name
+        // matches neither, so its own replacement is not mistaken for this ask's.
+        if (r.status < 300) { state.wedged[name].accepted = true; state.wedged[name].at = new Date().toISOString(); state.wedged[name].job = Number(jobId); state.wedged[name].run = Number(job.body?.run_id) || undefined; }
         // Only a re-run GitHub took is recorded as done: a refusal backs off and is asked again instead of leaving the head
         // marked as handled with its check run still wedged.
         state.reran[`${repo.toLowerCase()}:${head}:${jobId}`] = r.status < 300 ? new Date().toISOString() : `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}`;
@@ -740,14 +744,25 @@ export function startPrWatch(o: PrWatchOptions) {
       if (!state.abandoned[url] && opener) work = await kernel("GET", `/v1/work?task=${encodeURIComponent(opener.task)}`).catch((e) => (log("task read failed", { pr: pr.url, err: String(e.message).slice(0, 200) }), undefined));
       // A task read that failed says nothing about cancellation: that is not "cancelled", so the reports below still run.
       const taskLive = work?.status !== "cancelled";
+      // The PR that is about to be closed by the lifecycle rule below is not recovered or reported: a re-run there would spend
+      // CI on a branch about to go, and a wake would ask a task to fix it. This is the same decide-once the rule at the end
+      // makes, so the two cannot disagree within a pass. A PR nobody opened here (an outside author's) is not its subject.
+      const ours = !isDependabot(pr) && pr.isCrossRepository === false && !!opener && opener.branch === pr.headRefName;
+      let retiring = !taskLive;
+      if (ours && !state.abandoned[url]) {
+        if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
+        const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
+        const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
+        if (newer && work?.status && !merging) retiring = true;
+        if (work?.status === "done" && !merging && Date.now() - Date.parse(state.headAt[url].at) >= HALF_HOUR) retiring = true;
+      }
       // A check run still not completed while its Actions job has finished is re-run at its source (the job), for every same-repo
-      // PR: GitHub's branch rules read the check run, so the merge gate cannot pass until GitHub reposts it.
-      // A cancelled task's PR is closed and its branch deleted below: starting a recovery run first would only spend CI on a
-      // change that is about to go, so neither recovery path runs for it.
-      const wedged = taskLive ? await wedgedAfterJob(pr) : [];
+      // PR: GitHub's branch rules read the check run, so the merge gate cannot pass until GitHub reposts it. A retiring PR is left
+      // alone: it is closed below.
+      const wedged = retiring ? [] : await wedgedAfterJob(pr);
       // Any open PR whose title now passes but whose head still carries the title gate's red `policy`: clear it in place, before
       // the agent-only rules below (a wake would tell its task to fix a check no push can fix).
-      if (taskLive && await clearPolicy(pr)) continue;
+      if (!retiring && await clearPolicy(pr)) continue;
       // A check run still not completed well after its re-run was first asked: GitHub's branch rules read the check run too, so
       // the merge gate is held by it and no push fixes it. A PR with no task here (an outside author's) has nobody to tell, so
       // it is logged instead. The check's name is PR-controlled text: it never enters the wake, which points at `gh pr checks`.
@@ -787,7 +802,7 @@ export function startPrWatch(o: PrWatchOptions) {
       // A wedged check the rollup no longer shows (an old run replaced by a newer one) does not establish that this head has a
       // wedged check: only one the head itself shows pending counts for the mixed-state report.
       const wedgedOnHead = due.some((w) => !!w.nodeId && pendingIds.has(w.nodeId));
-      if (taskLive && held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
+      if (!retiring && held.length && state.wedgedTold[`${url}:merge`] !== pr.headRefOid) {
         const how = held.every((w) => w.accepted)
           ? "after its Actions job completed and the job had been re-run"
           : "after its Actions job completed, and the request to re-run the job was refused";
@@ -800,7 +815,7 @@ export function startPrWatch(o: PrWatchOptions) {
           save();
           log("wedged check run reported", { pr: pr.url, task: opened[url]?.task, head: pr.headRefOid });
         }
-      } else if (taskLive && wedgedOnHead && redNow.length && opener && opener.branch === pr.headRefName && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
+      } else if (!retiring && wedgedOnHead && redNow.length && opener && opener.branch === pr.headRefName && !pr.isDraft && pr.mergeable === "MERGEABLE" && pr.mergeStateStatus !== "BEHIND") {
         // A head behind main is the update rule's (GitHub updates the branch below), so it is not told to publish a head that is
         // about to be replaced: only a head this watcher will not move is the task's to fix.
         // The same eligibility the red-head path requires: a draft (or a head the watcher cannot merge) is not told to publish,
@@ -821,25 +836,21 @@ export function startPrWatch(o: PrWatchOptions) {
             }
           }
         }
-      } else if (taskLive && optional.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
+      } else if (!retiring && optional.length && state.wedgedTold[`${url}:optional`] !== pr.headRefOid) {
         state.wedgedTold[`${url}:optional`] = pr.headRefOid;
         save();
         log("wedged check run holds no required check", { pr: pr.url, head: pr.headRefOid, why: "still in_progress after its job completed and a re-run" });
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
-      if (isDependabot(pr) || pr.isCrossRepository !== false || !opener || opener.branch !== pr.headRefName) continue;
-      if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
-      // A cancelled task's PR is closed with its branch, once. A done task's unmerged PR is too, unless a merge of it may be in flight
-      // (an open github.merge record on the task) or its head is under half an hour old (a just-finished merge isn't raced).
-      if (!state.abandoned[url]) {
+      // The decision itself was made once, above, so nothing between there and here could recover or report a PR it closes.
+      if (!ours) continue;
+      if (retiring && !state.abandoned[url]) {
         const status = work?.status;
         if (!status) log("task status unknown: the cancelled-task rule cannot run", { pr: pr.url, task: opener.task });
         if (status === "cancelled") { await abandon(pr, opener.task, `Closed by the code host: ${opener.task}, the task this PR was for, is cancelled.`); continue; }
-        const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
-        // A task's older PR in this repo, once the task has published a newer one on another branch: closed as superseded (a merge in flight is left to land).
         const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
-        if (newer && status && !merging) { if (await abandon(pr, opener.task, `Closing: superseded by ${newer.url}, the newer PR ${opener.task} published for the same task.`)) superseded.add(url); continue; }
-        if (status === "done" && !merging && Date.now() - Date.parse(state.headAt[url].at) >= HALF_HOUR) {
+        if (newer && status) { if (await abandon(pr, opener.task, `Closing: superseded by ${newer.url}, the newer PR ${opener.task} published for the same task.`)) superseded.add(url); continue; }
+        if (status === "done") {
           await abandon(pr, opener.task, `Closing: its task ${opener.task} is done; its change landed elsewhere or isn't needed.`);
           continue;
         }

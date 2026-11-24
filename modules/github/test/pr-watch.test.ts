@@ -1207,3 +1207,28 @@ test("a wedged REST check the rollup no longer shows is never re-run", async (t)
   await c.watch.tick();
   assert.ok(!c.gh.some((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun"), "an obsolete check's job is not re-run");
 });
+
+// self-review: a typed `scope` refusal on the listing is permanent, exactly as the job probe treats it.
+test("an Actions scope refusal on the check-runs listing still reports the red head", async (t) => {
+  const c = await rig(t, { listingThrow: () => Object.assign(new Error("no Checks read"), { need: { cause: "scope", scope: "repo" } }) });
+  c.set([c.agentPr(91, redPr(91))]);
+  await c.watch.tick();
+  assert.equal(c.woke.length, 1, "a permanent scope refusal does not defer the failure forever");
+});
+
+// self-review: a PR the lifecycle rule is about to close as superseded spends no CI and wakes nobody.
+test("a superseded PR's wedged check is neither re-run nor reported", async (t) => {
+  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
+  const c = await rig(t);
+  // Both PRs belong to one task: 93 is the newer branch it published, so 92 is superseded.
+  notePrTask(c.cacheDir, "https://github.com/acme/app/pull/93", { task: "ACME-92", branch: "b93" });
+  c.set([c.agentPr(92, stuckPr(92)), pr(93, { author: { __typename: "Bot", login: "aidenhq" } })]);
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify({ "acme/app": {
+    wedged: { "acme/app:h92:500:image-changes": { at: asked, accepted: true, job: 77 } },
+    reran: { "acme/app:h92:77": asked },
+  } }));
+  await c.watch.tick();
+  assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/92"), "the older PR is closed as superseded");
+  assert.equal(c.woke.filter((w) => /pull\/92/.test(w.text ?? "")).length, 0, "a PR about to be closed is not woken for its checks");
+  assert.ok(!c.gh.some((g) => g.startsWith("POST /repos/acme/app/actions/jobs/")), "no recovery run is spent on it");
+});
