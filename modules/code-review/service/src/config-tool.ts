@@ -6,7 +6,8 @@
 // is one typed settings change the kernel writes to instance.yaml and files as a reviewed apply on the agent's own task
 // (POST /v1/settings/agent with the call's caller assertion: kernel/src/settings-change.ts asAgent), the same write the board's
 // Reviews page makes for the owner. The new value is checked whole here (config.ts) before it is filed: nothing half-valid lands.
-import { combos, ENGINES, MOMENTS, readConfig, type Combo } from "./config.ts";
+import { combos, ENGINES, MOMENTS, PRESETS, readConfig, type Combo } from "./config.ts";
+import { CONDITIONS, DEFAULT_RULES, REPO_CLASSES, TIERS } from "./aidenhq-sdk/tiers.ts";
 
 type Dict = Record<string, unknown>;
 export interface Tool {
@@ -21,7 +22,8 @@ export interface Tool {
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 export interface Change {
-  /** Repos to watch, or to change (their given fields replace those fields; the rest keep their values or defaults). */
+  /** Repos to watch, or to change (their given fields replace those fields, by_tier per tier (null drops a tier's own fields); the
+   * rest keep their values or defaults). */
   watch?: Dict[];
   /** Repos to stop watching. */
   unwatch?: string[];
@@ -43,16 +45,31 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
   }
   for (const w of ch.watch ?? []) {
     if (typeof w?.repo !== "string" || !REPO.test(w.repo)) throw new Error("each watched repo is { repo: owner/name, … }");
-    // Combos are stored whole as they run.
-    for (const k of MOMENTS) if (w[k] !== undefined) {
-      const c = combos(w[k], `${w.repo} ${k}`);
-      if ("error" in c) throw new Error(c.error);
-      // mandatory is written only where it is on: a combo saved without it stays as the owner wrote it.
-      w[k] = c.map(({ mandatory, ...x }) => (mandatory ? { ...x, mandatory } : x));
-    }
     const i = repos.findIndex((x) => key(x.repo) === key(w.repo));
+    // by_tier merges per tier over what the entry has: a tier given replaces that tier's own fields, null drops them (the preset's again).
+    if (w.by_tier !== undefined) {
+      if (!w.by_tier || typeof w.by_tier !== "object" || Array.isArray(w.by_tier)) throw new Error("by_tier is a map of tier to { on_open?, on_push?, push_rounds? }");
+      const by: Dict = { ...((i >= 0 ? repos[i]!.by_tier : undefined) as Dict | undefined ?? {}) };
+      for (const [t, v] of Object.entries(w.by_tier as Dict)) {
+        if (v === null) { delete by[t]; continue; }
+        const tier = { ...(v as Dict) };
+        // Combos are stored whole as they run; mandatory is written only where it is on (a combo saved without it stays as written).
+        for (const k of MOMENTS) if (tier[k] !== undefined) {
+          const c = combos(tier[k], `${w.repo} by_tier.${t}.${k}`);
+          if ("error" in c) throw new Error(c.error);
+          tier[k] = c.map(({ mandatory, ...x }) => (mandatory ? { ...x, mandatory } : x));
+        }
+        by[t] = tier;
+      }
+      w.by_tier = Object.keys(by).length ? by : undefined;
+    }
+    // rules: null goes back to the default rules; a by_tier left empty is dropped.
+    const dropped = [...(w.rules === null ? ["rules"] : []), ...("by_tier" in w && w.by_tier === undefined ? ["by_tier"] : [])];
+    for (const k of dropped) delete w[k];
     if (i >= 0) {
-      repos[i] = { ...repos[i], ...w, repo: repos[i]!.repo };
+      const was: Dict = { ...repos[i] };
+      for (const k of dropped) delete was[k];
+      repos[i] = { ...was, ...w, repo: repos[i]!.repo };
       summary.push(`${w.repo} updated`);
     } else {
       repos.push(w);
@@ -71,7 +88,7 @@ export function applyChange(raw: Dict, ch: Change): { value: Dict; summary: stri
  * already runs. Any other model is set in settings on
  * the board, whose one-off keeps full choice.
  */
-const watchedCombos = (repos: () => unknown) => ((repos() as { repos?: { on_open?: unknown[]; on_push?: unknown[] }[] })?.repos ?? []).flatMap((r) => [...(r.on_open ?? []), ...(r.on_push ?? [])]) as Combo[];
+const watchedCombos = (repos: () => unknown) => ((repos() as { repos?: { tiers?: Record<string, { on_open?: unknown[]; on_push?: unknown[] }> }[] })?.repos ?? []).flatMap((r) => Object.values(r.tiers ?? {}).flatMap((t) => [...(t.on_open ?? []), ...(t.on_push ?? [])])) as Combo[];
 
 /** A repo review's model for an agent: one an engine offers or a watched repo's combos already run; any other is the owner's, from the board. */
 export function agentRepoModel(combo: unknown, repos: () => unknown) {
@@ -99,13 +116,31 @@ const COMBOS = {
   description: `Combos, each its own review run and post: { engine, model, effort, mandatory? (its review gates the repo's merges; keep it as it is) }. Engines: ${Object.entries(ENGINES).map(([e, v]) => `${e} (efforts ${v.efforts.join("|")}; models such as ${v.models.join(", ")})`).join("; ")}. Any model id OpenRouter lists may be typed. [] runs none.`,
   items: { type: "object", properties: { engine: { type: "string", enum: Object.keys(ENGINES) }, model: { type: "string" }, effort: { type: "string" }, mandatory: { type: "boolean" } }, required: ["engine", "model", "effort"], additionalProperties: false },
 };
+const TIER = {
+  type: ["object", "null"],
+  properties: {
+    on_open: { ...COMBOS, description: `when a PR opens, or enters this tier (the whole PR). ${COMBOS.description}` },
+    on_push: { ...COMBOS, description: `on each push in this tier, only the new changes. ${COMBOS.description}` },
+    push_rounds: { type: ["integer", "null"], minimum: 0, maximum: 100, description: "how many pushes of a PR in this tier get an on_push review (null: every push); later pushes are gated by the findings still open" },
+  },
+  additionalProperties: false,
+};
+const RULE = {
+  type: "object",
+  properties: {
+    when: { type: "object", description: `every condition must hold (AND): ${CONDITIONS.join(", ")}. lines_*: changed lines (generated files and lockfiles don't count); files_*: files that count; paths: any changed path matches a glob; only_paths: every changed path matches one; author: member, bot or outsider; base: the base branch matches a glob; repo_class: critical, standard or sandbox. The last rule has no when.` },
+    tier: { type: "string", enum: [...TIERS] },
+  },
+  required: ["tier"], additionalProperties: false,
+};
 const REPO_ENTRY = {
   type: "object",
   properties: {
     repo: { type: "string", description: "owner/name" },
-    on_open: { ...COMBOS, description: `when a PR opens (default codex, ~deepseek/deepseek-flash-latest, medium). ${COMBOS.description}` },
-    on_push: { ...COMBOS, description: `on each push, only the new changes (default codex-native, openai/gpt-6.2-sol, low). ${COMBOS.description}` },
-    push_rounds: { type: ["integer", "null"], minimum: 0, maximum: 100, description: "how many pushes of a PR get an on_push review (default 1; null: every push); later pushes are gated by the findings still open" },
+    preset: { type: "string", enum: Object.keys(PRESETS), description: "what each tier runs before by_tier (default standard): light, standard or thorough" },
+    repo_class: { type: "string", enum: [...REPO_CLASSES], description: "an input to the tier rules (default standard): with the default rules critical makes every PR sensitive, sandbox every PR trivial unless it touches a sensitive path or comes from an outsider" },
+    rules: { type: ["array", "null"], items: RULE, description: `the tier rules in order, the first that holds names the tier (given whole; null: the default rules, ${DEFAULT_RULES.length} of them)` },
+    by_tier: { type: "object", properties: Object.fromEntries(TIERS.map((t) => [t, TIER])), additionalProperties: false, description: "per tier, its own fields over the preset's (null drops them); skip runs no review" },
     drafts: { type: "boolean" },
     forks: { type: "string", enum: ["manual", "auto"] },
     ignore: { type: "array", items: { type: "string" } },
@@ -197,7 +232,7 @@ export function configTools(d: {
       name: "code_review_configure",
       roles: ["reviewer-manager"],
       description:
-        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change (defaults: on_open codex ~deepseek/deepseek-flash-latest medium, on_push codex-native openai/gpt-6.2-sol low for one push (push_rounds 1), drafts off, forks when asked; on_open and on_push are lists of combos, given whole); unwatch: repos to stop watching. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Spend is bounded by the install-wide spend limits in Settings, not by code review: the owner changes those there. Reviewing forks or drafts automatically, a repo in a new org, a change to a moment's combos (engine or model; adding one is more spend), a repo's push_rounds, or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
+        "Change code review's setting in one reviewed settings change on your task (the kernel writes instance.yaml; the AI reviewer approves it; it applies within minutes). watch: repos to watch or change. Each PR head gets a risk tier (skip, trivial, standard, sensitive) from the repo's rules; each tier runs its own combos when a PR opens or enters it (on_open) and on each push (on_push, up to push_rounds). A repo starts from a preset (standard by default: trivial one cheap review, standard a cheap review and one push review, sensitive two strong reviewers), and by_tier changes a tier's fields over it (combos given whole). unwatch: repos to stop watching. A deeper look at one PR is code_review_run with the combos wanted, never a setting. Spend is bounded by the install-wide spend limits in Settings, not by code review: the owner changes those there. Reviewing forks or drafts automatically, a repo in a new org, any change to rules, repo_class, preset or by_tier (combos, push_rounds, a combo's mandatory: they decide what merges unattended), or a repo's ignore globs is the owner's to approve. Refused whole when the result wouldn't validate.",
       inputSchema: {
         type: "object",
         properties: {

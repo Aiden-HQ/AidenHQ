@@ -17,7 +17,8 @@ const gh = (async (input: URL | string) => {
     { id: 10, body: "an issue", created_at: "2026-01-03T00:00:00Z", html_url: "https://github.com/Acme/App/issues/5#issuecomment-10", issue_url: "https://api.github.com/repos/Acme/App/issues/5", user: { login: "dev" } },
   ]);
   if (u.pathname === `/repos/Acme/App/compare/${"a".repeat(40)}...${"b".repeat(40)}`) return Response.json({ status: "ahead", merge_base_commit: { sha: "a".repeat(40) } });
-  if (u.pathname === "/repos/Acme/App/pulls/1") return Response.json(pr(1, "Acme/App"));
+  if (u.pathname === "/repos/Acme/App/pulls/1") return Response.json({ ...pr(1, "Acme/App"), changed_files: 2, author_association: "MEMBER" });
+  if (u.pathname === "/repos/Acme/App/pulls/1/files") return Response.json([{ filename: "a.ts", additions: 3, deletions: 1 }, { filename: "b.ts", previous_filename: "old.ts", additions: 0, deletions: 0 }]);
   if (u.pathname === "/repos/Acme/App/pulls/5") return Response.json({ ...pr(5, "Acme/App"), state: "closed", merged_at: "2026-01-04T00:00:00Z", merge_commit_sha: "c".repeat(40) });
   if (u.pathname === `/repos/Acme/App/commits/${"c".repeat(40)}`) return Response.json({ parents: [{ sha: "d".repeat(40) }] });
   if (u.pathname === `/repos/Acme/App/compare/${"d".repeat(40)}...${"b".repeat(40)}`) return Response.json({ status: "ahead", merge_base_commit: { sha: "e".repeat(40) } });
@@ -55,6 +56,13 @@ it("only the code-review module may call; PRs, PR comments and permission come b
   expect((await codeReviewRoute(reader, "compare", new URLSearchParams({ repo: "Acme/App", base: "a".repeat(40), head: "b".repeat(40) }))).body).toEqual({ merge_base: "a".repeat(40), status: "ahead" });
   expect((await codeReviewRoute(reader, "repos", new URLSearchParams({ q: "app" }))).body).toEqual({ repos: [{ repo: "Acme/App", private: true, url: "https://github.com/Acme/App" }] });
   expect((await codeReviewRoute(reader, "pr", new URLSearchParams({ repo: "Acme/App", number: "x" }))).status).toBe(400);
+});
+
+it("a snapshot reads the PR, its files and the PR again: a consistent change for its risk tier; the own App's PR says so", async () => {
+  const own = new CodeReviewReader(reader["github"], async () => null, () => "dev");
+  const s = (await codeReviewRoute(own, "snapshot", new URLSearchParams({ repo: "Acme/App", number: "1" }))).body as { pr: { association: string; own: boolean }; changed_files: number; files: unknown[] };
+  expect([s.pr.association, s.pr.own, s.changed_files]).toEqual(["MEMBER", true, 2]);
+  expect(s.files).toEqual([{ path: "a.ts", additions: 3, deletions: 1 }, { path: "b.ts", previous: "old.ts", additions: 0, deletions: 0 }]);
 });
 
 it("a PR's change fingerprint: the same files and patches over another merge base match; an edit elsewhere or a missing patch doesn't", async () => {

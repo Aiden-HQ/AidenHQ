@@ -117,7 +117,7 @@ const tellOwner = (err: unknown) => void needs.tell(err);
 const poster = new ReviewPoster(github, access, tellOwner, reviewApp, reviewIdentity.record);
 // Code review's watcher reads (code-review-read.ts), through /internal/code-review below. Reviews post as the owner wherever
 // the owner's account reaches, once GitHub is connected.
-const crReader = new CodeReviewReader(github, async () => (access.connected() ? "owner" : null));
+const crReader = new CodeReviewReader(github, async () => (access.connected() ? "owner" : null), () => { const slug = reviewApp.slug(); return slug ? `${slug}[bot]` : undefined; });
 // GitHub's own MCP server (connection github_official) and the board's sign-in endpoints, on their own port.
 const authKeyFile = process.env.GITHUB_AUTH_TOKEN_FILE;
 const official = officialProxy({

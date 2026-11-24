@@ -147,7 +147,6 @@ test("grants entry: models, graded off by default; a removed spend key fails com
   assert.deepEqual(grantEntry("x", r.agents.x, { r1: { agent: "x", model: "m3" }, r2: { agent: "y", model: "m4" } }), { name: "X", models: ["m2", "m3"], graded: false, profile: "crew", reports_to: "boss", engine: "codex-openrouter", model: "m2", max_parallel: 1, routines: { r1: { model: "m3" } } });
   assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { caps: { day_usd: 5 } } } } })), /overrides\.agents\.x\.caps is gone: one install limit, spend_day_usd \/ spend_month_usd/);
   assert.throws(() => compile(mods, finst(["a"], { ...base, eval_day_usd: 5 })), /settings\.eval_day_usd is gone/);
-  assert.throws(() => compile(mods, finst(["a"], { ...base, code_review: { repos: [{ repo: "a/b", on_open: [{ engine: "codex", model: "m", effort: "low", run_usd: 5 }] }] } })), /code_review\.repos\.0\.on_open: run_usd is gone/);
 });
 test("jobcaps: compiled for the gateway, carried in the grants entry; unknown fails", () => {
   const out = compile(mods, finst(["jc"]));
@@ -470,12 +469,14 @@ test("teams: any module agent becomes a team record over named members (template
   assert.throws(bad({}, { overrides: { agents: { assistant: { max_parallel: 2 } } } }), /assistant is team research's record/);
 });
 
-test("code review gates a repo with a mandatory combo in on_open (on_push's optional); one only in on_push, or a repo-level flag, fails the compile", () => {
+test("code review: every watched repo asks its verdict; the kernel skips the AI reviewer only where every selectable tier gates; old shapes fail", () => {
   const c = (mandatory?: boolean) => ({ engine: "codex", model: "~a/b", effort: "low", ...(mandatory ? { mandatory } : {}) });
-  assert.deepEqual(codeReviewGated({ repos: [{ repo: "Acme/App", on_open: [c(true)], on_push: [c(), c(true)] }, { repo: "acme/lib" }] }), ["acme/app"]);
-  assert.deepEqual(codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)], on_push: [] }] }), ["acme/app"], "on_push's mandatory combo is optional");
-  assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c()], on_push: [c(true)] }] }), /needs a mandatory on_open one/);
-  assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", mandatory: true }] }), /a repo's mandatory is gone/);
+  const advice = { on_open: [c()], on_push: [] };
+  assert.deepEqual(codeReviewGated({ repos: [{ repo: "Acme/App" }, { repo: "acme/lib", by_tier: { trivial: advice } }] }), { watched: ["acme/app", "acme/lib"], mandatory: ["acme/app"] });
+  // A rule that can reach skip keeps the AI reviewer on: a skip head passes neither.
+  assert.deepEqual(codeReviewGated({ repos: [{ repo: "acme/app", rules: [{ when: { lines_max: 2 }, tier: "skip" }, { tier: "standard" }] }] }).mandatory, []);
+  assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", on_open: [c(true)] }] }), /per tier now: by_tier/);
+  assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", by_tier: { standard: { on_open: [c()], on_push: [c(true)] } } }] }), /needs a mandatory on_open one/);
 });
 
 test("check job limits: a recipe may run 180 minutes; a recipe's own model cap is gone", () => {
