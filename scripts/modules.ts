@@ -1535,7 +1535,7 @@ export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, 
     if (!s || typeof s !== "object" || Object.keys(s).some((k) => !["kinds", "resources"].includes(k))) fail(`${at}.${conn} is { kinds, resources }`);
     if (!Array.isArray(s.kinds) || !s.kinds.length) fail(`${at}.${conn}.kinds is a list`);
     for (const k of s.kinds) if (!(ev.kinds ?? []).includes(k)) fail(`${at}.${conn}.kinds: ${k} isn't one of ${conn}'s events.kinds`);
-    let resources: string[] | "*";
+    let resources: string[] | "*" = [];
     if (s.resources === "*") {
       if (!official) fail(`${at}.${conn}.resources: * is for product modules; name the resources`);
       resources = "*";
@@ -1549,7 +1549,7 @@ export function subscriptions(name: string, def: Obj, defs: Obj, settings: Obj, 
       }
       resources = vals.flatMap((v) => (Array.isArray(v) ? v : [v])).filter((v) => typeof v === "string" && v);
     } else fail(`${at}.${conn}.resources is "*", a list, or { setting, path }`);
-    out[conn] = { kinds: [...s.kinds], resources: resources === "*" ? "*" : [...new Set(resources.map((r) => r.toLowerCase()))] };
+    out[conn] = { kinds: [...s.kinds], resources: resources === "*" ? "*" : [...new Set((resources as string[]).map((r) => r.toLowerCase()))] };
   }
   return out;
 }
