@@ -16,20 +16,17 @@
 //
 // Each folder is checked and renamed into its root's .trash in one synchronous step (no admission can slip in between),
 // and the trash is then removed off the event loop, so a 100 GB first pass never stalls the gateway.
-import { execFile } from "node:child_process";
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statfsSync, statSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { lstatSync, mkdirSync, readdirSync, renameSync, statfsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { promisify } from "node:util";
 import { checkAttempt } from "./checkjobs.ts";
+import { removeTree, trashAway } from "./trash.ts";
 
 export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8;
 /** How long the closed rule waits on the control plane's answer before it counts as none. */
 export const LOOKUP_MS = 10_000;
 const DAY = 86_400_000;
 const CLOSED = new Set(["done", "cancelled"]);
-const execFileP = promisify(execFile);
 /** engineState's folder name for an agent's task (sandbox.ts; the launcher checks the same). */
 const homeName = (agent: string, task: string) => `${agent}/${task}`.replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_");
 
@@ -142,8 +139,7 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
       }
       // Off the event loop: chmod first (read-only Go module caches, an overlay's mode-000 work dir), then remove.
       try { statSync(trash); } catch { continue; }
-      await execFileP("chmod", ["-R", "u+rwx", trash]).catch(() => {});
-      await rm(trash, { recursive: true, force: true, maxRetries: 2 }).catch((e: Error) => log("trash not removed", { trash, err: e.message }));
+      await removeTree(trash).catch((e: Error) => log("trash not removed", { trash, err: e.message }));
     }
     return { removed, pressure };
   };
@@ -164,7 +160,7 @@ export function pruneSkillRuntimes({ companiesDir, log = () => {}, now = Date.no
     for (const agent of ls(root)) for (const hash of ls(join(root, agent))) {
       const dir = join(root, agent, hash);
       if (!statSync(dir).isDirectory() || newest(dir) > now() - RUNTIME_DAYS * 86_400_000) continue;
-      rmSync(dir, { recursive: true, force: true, maxRetries: 2 });
+      trashAway(dir, join(companiesDir, company, "codex-home", ".trash"), log);
       log("unused skill runtime removed", { dir });
     }
   }
