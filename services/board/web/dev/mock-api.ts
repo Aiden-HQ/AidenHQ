@@ -189,9 +189,10 @@ const chatDetail = (ref: string) => {
 };
 
 const kid = (n: number, title: string, agent: string, state: ReturnType<typeof st>, o: Record<string, unknown> = {}) => ({ identifier: `WOR-${n}`, title, agent, model: "deepseek-flash high", state: named(`WOR-${n}`, state), latest: { text: "Working through the export tests.", at: ago(4) }, tokens: 182_000, usd: 0.42, startedAt: ago(90), endedAt: state.kind === "done" ? ago(30) : null, children: [], approvals: [], ...o });
-// The task drawer's Done means by ref: WOR-795 grading down, WOR-796 closed without a verdict, WOR-797 a report not yet opened, else graded.
+// The task drawer's Done means by ref: WOR-798 no grade row, WOR-795 grading down, WOR-796 closed without a verdict, WOR-797 a report not yet opened, else graded.
 const gradeFor = (ref: string) =>
-  ref === "WOR-795" ? { state: "unavailable", rubric: [] }
+  ref === "WOR-798" ? { state: "none", rubric: [] }
+  : ref === "WOR-795" ? { state: "unavailable", rubric: [] }
   : ref === "WOR-796" ? { state: "ungraded_close", rubric: [{ text: "Export respects the current filter", met: "unknown" }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } }
   : ref === "WOR-797" ? { state: "open", rubric: [{ text: "Says what was found", met: "unknown" }, { text: "Cites sources", met: "unknown" }], deliverable: { kind: "pr", ref: "" } }
   : { state: "needs_revision", judgedAt: ago(30), version: "9f3a1c2e77b0", rubric: [{ text: "Export respects the current filter", met: "yes", evidence: "ExportButton passes the filter state; test covers it." }, { text: "Totals row uses the account currency", met: "no", evidence: "The total row is hard-coded to USD in export.ts line 88." }, { text: "Docs mention the new export", met: "unknown" }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } };
