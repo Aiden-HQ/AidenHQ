@@ -174,7 +174,8 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
   const diff = Object.keys(own).filter((f) => !same(own[f], f === "schedules" ? r.schedules.map((x) => ({ cron: x.cron, ...(x.timezone ? { timezone: x.timezone } : {}), ...(x.label ? { label: x.label } : {}) })) : (r as unknown as Record<string, unknown>)[f] ?? null) && own[f] !== null);
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
   const w = typeof r.wakes === "object" ? r.wakes : null;
-  const wakes = w && `wakes on ${w.connection}${w.resource && w.resource !== "*" ? ` ${w.resource}` : ""} events${w.filter ? `: ${Object.entries(w.filter).map(([k, v]) => `${k} ${Array.isArray(v) ? v.join(", ") : String(v)}`).join("; ")}` : ""}`;
+  const wakes = w && `wakes on ${w.connection}${w.resource && w.resource !== "*" ? ` ${w.resource}` : ""} events`;
+  const matching = w?.filter && Object.entries(w.filter).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : String(v)}`).join("; ");
   const when = r.schedules.length ? r.schedules.map((s) => cronText(s.cron)).join(", ") : wakes || (r.webhook ? "on an event" : "when asked");
   const [catalog, refreshCatalog] = useModelCatalog();
   const prefix = prefixOf(r.model ?? agentModel);
@@ -201,6 +202,7 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
           {filed && <ChangeProgress f={filed} after={busy ? <p className="ui-field-help">A filed change can't be cancelled from here yet: decline its card in Approvals to stop it.</p> : undefined} />}
           {!busy && (
             <div className="st-change">
+              {matching && <p className="ui-field-help">Wakes on events matching {matching}.</p>}
               {sched.map((s, i) => (
                 <div key={i} className="ui-field">
                   <span className="ui-field-label">Schedule{sched.length > 1 ? ` ${i + 1}` : ""}</span>
