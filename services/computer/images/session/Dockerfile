@@ -29,5 +29,14 @@ RUN cd /opt/opencode \
 COPY --chmod=755 session-stop /opt/aidenhq/bin/session-stop
 # Git and gh in the shell (lane G): the credential helper and a `gh` wrapper, first on PATH (/opt/aidenhq/bin precedes the real gh),
 # and the system gitconfig that points git at the helper.
+# The real gh (/usr/bin/gh, what the wrapper below runs): 2.105.0, the checksummed release .deb ops/vm/setup.sh installs on the host.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) sum=1dac939af3e84fb3861927c984b357531341be9403b889e4aa86e8822145a09d ;; \
+      arm64) sum=d17e9b089ce0356679c9fa1898f3a7d38dccf943d529acaa94c24e8a4584e0ae ;; \
+    esac \
+    && curl -fsSLo /tmp/gh.deb "https://github.com/cli/cli/releases/download/v2.105.0/gh_2.105.0_linux_$(dpkg --print-architecture).deb" \
+    && echo "$sum  /tmp/gh.deb" | sha256sum -c - \
+    && apt-get install -y --no-install-recommends /tmp/gh.deb && rm -f /tmp/gh.deb && rm -rf /var/lib/apt/lists/* \
+    && /usr/bin/gh --version | grep -q 2.105.0
 COPY --chmod=755 git-credential-aidenhq gh /opt/aidenhq/bin/
 COPY gitconfig /etc/gitconfig
