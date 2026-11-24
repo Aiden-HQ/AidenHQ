@@ -179,14 +179,18 @@ test("deepsec's set-up files are asked for once as a setup PR through the code h
   assert.equal(w.started[0].setup_files, undefined);
   assert.equal(w.started[0].combo.max_cost_usd, 150, "the catalog's cap rides in the combo to the box");
   assert.deepEqual(w.setups.map((s) => [s.repo, Object.keys(s.files)]), [[REPO, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"]]]);
-  await review(); // asked for, not on the code host yet: not asked again within the day
-  assert.equal(w.setups.length, 1);
   w.branch.setup = { tip: sha("9"), files: { ".deepsec/data/app/INFO.md": "# app", ".deepsec/package-lock.json": "{}" } };
+  await review(); // the branch has its open PR: scanned with, never asked again
+  assert.equal(w.setups.length, 1);
   w.later(2 * 24 * 3600_000);
-  await review(); // the branch exists (its PR pending or open): scanned with, never asked again
+  await review();
   assert.equal(w.setups.length, 1);
   assert.ok(w.branch.asked.length && w.branch.asked.every((b) => b === "aidenhq/setup-abcdef123456"), "reads the branch its PR is open on");
   assert.deepEqual(w.started[2].setup_files, { ".deepsec/data/app/INFO.md": "# app" });
+  assert.deepEqual(w.started[1].setup_files, { ".deepsec/data/app/INFO.md": "# app" });
+  w.branch.setup = undefined; // its PR was closed unmerged (the code host reports no open PR on the branch): a fresh one is asked for at once
+  await review();
+  assert.equal(w.setups.length, 2);
 });
 
 test("a data version 1 database keeps its PR runs, reviews and findings readable", () => {

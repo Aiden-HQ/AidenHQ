@@ -56,14 +56,16 @@ export function checkBoxes({ call, spawnRun = spawnDetached, sleep = (ms: number
       return await following(run, signal);
     },
   };
-  async function start({ check, image, workspace, cwd, argv, env, timeoutMs, readOnly, out }: Parameters<CheckBox["launch"]>[0], boxed: (container: string) => void): Promise<BoxRun> {
+  async function start({ check, image, workspace, cwd, argv, env: given, timeoutMs, readOnly, out, mint }: Parameters<CheckBox["launch"]>[0], boxed: (container: string) => void): Promise<BoxRun> {
     {
-      // The eval's model token is its only credential: the launcher's gateway passes calls on for this box's token alone.
-      const token = env.OPENROUTER_API_KEY || undefined;
+      // The eval's model token is its only credential: the launcher's gateway passes calls on for this box's token alone. It is
+      // minted here, once the slot is held (`mint`), so its lifetime never counts the wait in the pool or for a free computer.
+      let env = given, token = env.OPENROUTER_API_KEY || undefined;
       // Every computer busy (agent jobs hold them) is a wait, not a check that can't run: a merge gate gives up after a few of those.
       let box: { container: string } | undefined;
       for (let waited = 0; !box; waited += BUSY_RETRY_MS) {
         try {
+          if (mint) env = { ...given, OPENROUTER_API_KEY: (token = mint()) };
           box = (await call("/check", { check, image, workspace, out, readOnly: readOnly === true, timeoutMs, ...(token ? { token } : {}) })) as { container: string };
         } catch (e) {
           if ((e as { status?: number }).status !== 503 || waited >= BUSY_WAIT_MS) throw e;

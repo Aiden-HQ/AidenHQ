@@ -186,10 +186,10 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
       post_checks: post, latest_shard_jobs: latest } };
   }
   // prs: every open PR, newest page first up to 500.
-  const prs: { number: number; sha: string; base: string; head_repo: string | null; draft: boolean; created_at: string | null }[] = [];
+  const prs: { number: number; sha: string; base: string; head_repo: string | null; head_ref: string | null; draft: boolean; created_at: string | null }[] = [];
   for (let page = 1; page <= 5; page++) {
     const r = (await ok(ctx, "GET", `/repos/${s.slug}/pulls?state=open&per_page=100&page=${page}`)).body as any[];
-    for (const p of r) prs.push({ number: p.number, sha: p.head?.sha, base: p.base?.ref, head_repo: p.head?.repo?.full_name ?? null, draft: !!p.draft, created_at: p.created_at ?? null });
+    for (const p of r) prs.push({ number: p.number, sha: p.head?.sha, base: p.base?.ref, head_repo: p.head?.repo?.full_name ?? null, head_ref: p.head?.ref ?? null, draft: !!p.draft, created_at: p.created_at ?? null });
     if (r.length < 100) break;
   }
   return { status: 200, json: prs };

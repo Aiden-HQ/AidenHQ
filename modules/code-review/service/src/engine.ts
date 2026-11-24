@@ -907,7 +907,7 @@ export function createEngine(d: EngineDeps) {
   /**
    * deepsec set the repo up in a run: its set-up files (deepsec's allowlisted `.deepsec/` files only) are asked for as one setup PR
    * through the code host (github files and reviews its own write, on a new branch off the default branch's head; an earlier setup
-   * PR is closed). Never while the branch its last answer named exists (its PR is pending or open: runs scan with its files), and
+   * PR is closed). Never while the branch its last answer named has an open PR (runs scan with its files), and
    * once a day at most while it doesn't yet.
    */
   /** The branch the repo's last setup answer named (its PR is open on it), if any. */
@@ -917,11 +917,14 @@ export function createEngine(d: EngineDeps) {
   async function fileSetup(r: RunRow, raw: Record<string, string>) {
     const files = Object.fromEntries(Object.entries(raw ?? {}).filter(([p, c]) => SETUP_PATH.test(p) && typeof c === "string"));
     if (!Object.keys(files).length || batchRow(r.batch)?.setup_tip) return;
-    // The branch the last answer named still exists (its PR is pending or open; one that can't be read counts as there): no second request, which would close it.
+    // The branch the last answer named still has an open PR (one that can't be read counts as open): no second request, which would close it.
+    // A PR closed unmerged is asked for again at once; a request that was refused or is still with the reviewer waits out SETUP_RETRY.
     const named = setupBranchOf(r.repo);
     if (named && await d.codehost.setupBranch(r.repo, named).then((x) => x !== undefined, () => true)) return;
+    // A concurrent batch claimed the request while the lookup ran: its row is the one to follow.
+    if (setupBranchOf(r.repo) !== named) return;
     const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
-    if (asked !== undefined && now() - asked < SETUP_RETRY) return;
+    if (!named && asked !== undefined && now() - asked < SETUP_RETRY) return;
     // The slot is taken in the same step as the look above (a request takes minutes), so a concurrent batch asks for no second PR.
     run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, 'asking') ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now());
     let answer: string;

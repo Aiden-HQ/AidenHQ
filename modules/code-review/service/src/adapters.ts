@@ -300,7 +300,7 @@ const SETUP_BODY = "deepsec's own set-up files (`.deepsec/`), written by `deepse
 /**
  * The code host through the kernel (POST /v1/codehost/:op, this module's `codehost:` grant). A snapshot's tarball is read as it
  * streams (never held whole): `tree` lists its paths, `setupBranch` takes only deepsec's allowlisted files from the setup branch
- * (absent: no such branch). `setup` asks for the deepsec setup PR; github files its own Tier 1 write for it.
+ * (absent: no such branch, or none with an open PR). `setup` asks for the deepsec setup PR; github files its own Tier 1 write for it.
  */
 export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: KernelClient, fetcher: typeof fetch = fetch): CodeHost {
   const op = (name: string, body: unknown) => fetcher(`${kernelUrl.replace(/\/+$/, "")}/v1/codehost/${name}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10 * 60_000) });
@@ -343,6 +343,10 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
       return { sha: s.sha, paths: s.value };
     },
     async setupBranch(repo, branch) {
+      // The branch counts only while a PR is open on it: one closed unmerged leaves its branch behind, and is asked for again.
+      const prs = await op("read", { repo, kind: "prs" });
+      if (!prs.ok) throw new Error(`the open PRs of ${repo}: ${prs.status} ${(await prs.text().catch(() => "")).slice(0, 200)}`);
+      if (!((await prs.json()) as { head_ref?: string | null; head_repo?: string | null }[]).some((p) => p.head_ref === branch && p.head_repo?.toLowerCase() === repo.toLowerCase())) return undefined;
       // A first pass lists the branch; only its regular, allowlisted files are then unpacked, by exact name, from the commit the
       // listing named. A link member is never unpacked, so nothing a link points at can be written through.
       const listed = await snapshot(repo, branch, ["-tvzf", "-"], (out) => out.split("\n").flatMap((l) => {
