@@ -115,8 +115,16 @@ describe("app_page_canary", () => {
     // The submit control is the one in the form that owns the filled field, not the first submit-like button on the page.
     expect(script).toContain("a.closest && a.closest('form')");
     expect(script).toContain("data-aidenhq-canary-submit");
-    // An explicit submit wins; a type=button "Discard draft" is never clicked.
+    // An explicit submit wins, a native input[type=submit] included; a type=button "Discard draft" is never clicked, and a form
+    // with no identifiable control stops instead of clicking something else on the page.
+    expect(script).toContain("input[type=submit], input[type=image]");
     expect(script).toContain("(b.type || 'submit') === 'submit'");
+    expect(script).toContain("no submit control in the feedback form");
+    // The landing page's own feedback link is followed even when it has a search box: a feedback field is what ends the walk.
+    expect(script).toContain("for (let i = 0; i < 3 && !box; i++)");
+    expect(script).toContain("box = feedbackField(refs)");
+    // Evidence starts at the click: a POST a fill triggered is never read as the submission's intake.
+    expect(script.indexOf("const submittedAt = Date.now();")).toBeLessThan(script.indexOf('await ab("click", "[data-aidenhq-canary-submit]")'));
     // The handoff's code and state never come back in a URL or an error the tool returns.
     expect(script).toContain("const scrub =");
     expect(script).toContain("finalUrl: scrub(finalUrl)");
