@@ -29,10 +29,10 @@ export function kernelClient(url: string, token: string, f: typeof fetch = fetch
      * The calling job's own task waits on an answer (kernel idle.ts): `question` is recorded, not sent, when it goes to the owner
      * (`to: "owner"`: this message carries it); otherwise the kernel gives it to the chief of staff. It resumes on the answer.
      */
-    wait: async (task: string, assertion: string, question: string): Promise<{ to?: string; open?: boolean }> => {
+    wait: async (task: string, assertion: string, question: string): Promise<{ to?: string; open?: boolean; since?: string }> => {
       const r = await raw("POST", "/v1/wait", { task, reason: "the answer to my question", on: "the answer", for: "owner", asked: true, question }, { "x-aidenhq-caller": assertion });
       if (r.status !== 200) throw new Error(`POST /v1/wait -> ${r.status}`);
-      return { to: typeof r.json?.to === "string" ? r.json.to : undefined, ...(r.json?.asked === false ? { open: true } : {}) };
+      return { to: typeof r.json?.to === "string" ? r.json.to : undefined, ...(r.json?.asked === false ? { open: true } : {}), ...(typeof r.json?.since === "string" ? { since: r.json.since } : {}) };
     },
     /** A task for the agent holding `role` (the kernel's POST /v1/tasks, role kernel.tasks): one per `source`. */
     fileTask: async (b: { title: string; description: string; role: string; source: string }): Promise<{ id: string; deduplicated: boolean }> => call("POST", "/v1/tasks", b),

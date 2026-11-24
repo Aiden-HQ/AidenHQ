@@ -155,7 +155,7 @@ test("task_wait: the task waits (not orphaned) with its words, resumes at until,
   const w = world(t);
   const until = new Date(w.now() + 2 * 60 * MIN).toISOString();
   await assert.rejects(w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", until: new Date(w.now() + 8 * 864e5).toISOString() }), /at most 7 days/);
-  assert.deepEqual(await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until }), { waiting: true, until });
+  assert.deepEqual(await w.idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "PR #12 merges", until }), { waiting: true, until, since: new Date(w.now()).toISOString() });
   w.tick(60 * MIN);
   assert.deepEqual(await w.idle.sweep(), []);
   assert.equal(w.row("t1").reason, "agent_wait");
