@@ -284,6 +284,8 @@ export const UNTAR_SCRIPT = 'rm -rf "$1" && mkdir -p "$1" && tar -xz --no-same-o
 /** How long a box's model call waits for a model gateway that isn't listening (a kernel restart: the old one has closed its
  * listener and the next one hasn't bound it yet, a minute or more under load). */
 export const GATEWAY_WAIT_MS = 2 * 60_000;
+/** The largest model request the launcher holds to send again: the kernel gateway's own limit (gateway/lib.ts MAX_BODY). */
+export const MODEL_BODY_MAX = 32 * 1024 * 1024;
 
 /**
  * A box's model call, passed on to the model gateway (kernel/src/gateway) with the job token as its credential: the gateway
@@ -291,7 +293,7 @@ export const GATEWAY_WAIT_MS = 2 * 60_000;
  * cap_reached) goes back to the box as it is. The OpenRouter key is never here.
  * A refused connection is tried again every `retryMs` for up to `waitMs`: the request never reached the gateway, so nothing was
  * sent upstream or billed, and the box's call (a check's review, an agent's turn) survives a kernel restart instead of failing.
- * The request body is read whole first, so it can be sent again.
+ * The request body is read whole first (at most MODEL_BODY_MAX: a larger one is refused 413), so it can be sent again.
  */
 export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse, url: string, token: string, { waitMs = GATEWAY_WAIT_MS, retryMs = 1000 }: { waitMs?: number; retryMs?: number } = {}) {
   return new Promise<void>((resolve) => {
@@ -299,6 +301,7 @@ export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse
     // anthropic-version and anthropic-beta go on for the Anthropic format (the gateway keeps only the betas it allows).
     const anthropic = Object.fromEntries((["anthropic-version", "anthropic-beta"] as const).filter((h) => typeof req.headers[h] === "string").map((h) => [h, req.headers[h] as string]));
     const chunks: Buffer[] = [];
+    let size = 0, refused = false;
     let up: http.ClientRequest | undefined, hungUp = false;
     const send = (body: Buffer, until: number) => {
       if (hungUp) return;
@@ -320,9 +323,17 @@ export function forwardModel(req: http.IncomingMessage, res: http.ServerResponse
     };
     // The box hung up: drop our leg too (the gateway still reads OpenRouter's answer to the end and records it), and stop waiting.
     res.on("close", () => { if (!res.writableFinished) { hungUp = true; up?.destroy(); } resolve(); });
-    req.on("data", (c: Buffer) => chunks.push(c));
+    // Past the limit the rest is read and dropped (nothing more is held), and the call is answered 413 at its end.
+    req.on("data", (c: Buffer) => {
+      if (refused || (size += c.length) > MODEL_BODY_MAX) return void ((refused = true), (chunks.length = 0));
+      chunks.push(c);
+    });
     req.on("error", () => { res.destroy(); resolve(); });
-    req.on("end", () => send(Buffer.concat(chunks), Date.now() + waitMs));
+    req.on("end", () => {
+      if (!refused) return send(Buffer.concat(chunks), Date.now() + waitMs);
+      res.writeHead(413, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: 413, type: "request_too_large", message: `a model request is at most ${MODEL_BODY_MAX} bytes` } }));
+      resolve();
+    });
   });
 }
 

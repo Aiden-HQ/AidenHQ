@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { drainServers, forwardModel } from "../lib.ts";
+import { MODEL_BODY_MAX, drainServers, forwardModel } from "../lib.ts";
 
 const listen = (s: http.Server, port = 0) => new Promise<number>((ok) => s.listen(port, "127.0.0.1", () => ok((s.address() as AddressInfo).port)));
 /** A call: resolves on its first chunk, with the whole body to come. */
@@ -75,5 +75,27 @@ test("a kernel restart: a model call waits for the next gateway's listener inste
   } finally {
     launcher.close();
     next.close();
+  }
+});
+
+test("a model request over the gateway's limit is refused 413 and never held or sent", async () => {
+  let reached = false;
+  const gw = http.createServer((_req, res) => { reached = true; res.end("no"); });
+  const gp = await listen(gw);
+  const launcher = http.createServer((req, res) => void forwardModel(req, res, `http://127.0.0.1:${gp}/api/v1/responses`, "ahqj_t"));
+  const lp = await listen(launcher);
+  try {
+    const status = await new Promise<number>((ok, fail) => {
+      const req = http.request({ host: "127.0.0.1", port: lp, path: "/api/v1/responses", method: "POST", agent: false }, (res) => { res.resume(); ok(res.statusCode!); });
+      req.on("error", fail);
+      const chunk = Buffer.alloc(1 << 20);
+      for (let n = 0; n <= MODEL_BODY_MAX >> 20; n++) req.write(chunk);
+      req.end();
+    });
+    assert.equal(status, 413);
+    assert.equal(reached, false);
+  } finally {
+    launcher.close();
+    gw.close();
   }
 });
