@@ -297,6 +297,21 @@ export interface CommentView {
   createdAt: string;
 }
 
+export interface GradeShown {
+  state: "none" | "unavailable" | "ungraded_close" | "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
+  rubric: { text: string; met: "yes" | "no" | "unknown"; evidence?: string }[];
+  judgedAt?: string;
+  version?: string;
+  deliverable?: { kind: "pr" | "app" | "apply" | "file" | "report" | "issue"; ref: string; href?: string };
+}
+export interface Milestone {
+  at: string;
+  kind: "created" | "run_started" | "run_ended" | "asked_you" | "approved" | "applied" | "deployed" | "graded";
+  text: string;
+  href?: string;
+  runId?: string;
+}
+
 export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "working" | "crew"> {
   working: Working | null;
   description: string;
@@ -311,10 +326,12 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   comments: CommentView[];
   files: FileView[];
   parent: TaskRef | null;
-  /** The newest runs on this task, linked to their run pages. */
-  runs: RunLink[];
   /** The agents on this task, with each one's latest word. */
   crew: (CrewMember & { said: { text: string; at: string } | null })[];
+  /** What done means and whether it is met (src/task-truth.ts); `none` when the task has no grade row. */
+  grade: GradeShown;
+  /** The task's own recorded milestones, oldest first. */
+  milestones: Milestone[];
   /** After a reply: the agent's part a message that @-mentioned them went to, instead of this chat. */
   movedTo?: string;
 }
@@ -629,7 +646,7 @@ export interface LaneMessage {
 
 export type ChatMessage =
   | { kind: "owner"; id: string; text: string; at: string; via?: string; correction?: boolean; by?: string }
-  | { kind: "reply"; id: string; agent: string; text: string; at: string; actions?: string[]; questions?: Question[] }
+  | { kind: "reply"; id: string; agent: string; text: string; at: string; actions?: string[]; questions?: Question[]; /** The run behind this reply: how long it ran, what woke it. */ run?: { id: string; seconds: number; trigger?: string } }
   | { kind: "notes"; id: string; agent: string; at: string; notes: { by: string; text: string; at: string }[] }
   | { kind: "notice"; id: string; text: string; at: string };
 
