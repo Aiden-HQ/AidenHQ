@@ -6,6 +6,7 @@
 //                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
 //   POST /internal/ship/flow     {fn, args} -> Flow's fact for what the loop saw (flow.ts), or `authored`'s answer
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
+//   POST /internal/ship/decision {repo, number, head} -> an adopted PR's round decision (merges.ts decision: decide with ship's context)
 //   POST /internal/ship/decide   {data, head} -> the merge gate's rule on the loop's view of a PR (merge-gate.ts decide)
 //   GET  /internal/ship/openers  -> pr-tasks.json: which task opened each PR
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -30,6 +31,10 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
   ["PUT", new RegExp(`^/repos/${REPO}/pulls/\\d+/update-branch$`)],
   ["GET", new RegExp(`^/repos/${REPO}/compare/[0-9a-f]{4,40}\\.\\.\\.[0-9a-f]{4,40}$`)],
   ["GET", new RegExp(`^/repos/${REPO}/check-runs/\\d+$`)],
+  // Hand-offs (handoff.ts, rounds.ts): a trigger's author's role, and the assignees ship adds on a hold and removes on a resume.
+  ["GET", new RegExp(`^/repos/${REPO}/collaborators/[\\w-]+/permission$`)],
+  ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
+  ["DELETE", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
 ];
 /** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
  * variables, so no other query runs on the owner's sign-in. */
@@ -39,14 +44,14 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
 const FLOW = ["opened", "pushed", "merged", "closed", "checksStarted", "checksCompleted", "authored"] as const;
 
 export function shipRoutes(o: {
-  gh: Gh; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
+  gh: Gh; decision?: (repo: string, number: number, head: string) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
   allowed: (repo: string) => boolean;
   /** Whether a bearer is the ship module's own token (undefined: the kernel couldn't say now). */
@@ -93,6 +98,11 @@ export function shipRoutes(o: {
         return send(res, 200, { value: (await o.flow[b.fn as (typeof FLOW)[number]](...b.args.map((x: unknown) => (x === null ? undefined : x)))) ?? null }), true;
       }
       if (op === "verdict") return send(res, 200, (await o.gate(String(b.repo), Number(b.number), String(b.head))) ?? null), true;
+      if (op === "decision" && o.decision) {
+        const repo = String(b.repo);
+        if (!o.allowed(repo)) return send(res, 403, { error: `ship may not read ${repo.slice(0, 200)}` }), true;
+        return send(res, 200, await o.decision(repo, Number(b.number), String(b.head))), true;
+      }
       if (op === "decide") return send(res, 200, decide(b.data, String(b.head))), true;
       return send(res, 404, { error: "no such operation" }), true;
     } catch (e) {

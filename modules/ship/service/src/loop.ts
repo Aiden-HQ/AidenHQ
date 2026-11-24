@@ -75,6 +75,9 @@ export type LoopOptions = {
   flow?: Flow;
   /** Code review's verdict (the merge queue's): a green head waiting only on open important findings wakes its author's task. */
   reviewGate?: ReviewGate;
+  /** Every other PR's hand-off and rounds (adopted.ts): called for each open PR that isn't the fleet's own or Dependabot's, and
+   * with the open list, for adoptions whose PR left it. */
+  adopted?: { begin(): void; open(repo: string, main: { name: string; rollup: Json }, pr: Json): Promise<void>; gone(repo: string, defaultBranch: string, open: Set<number>): Promise<void> };
 };
 
 /** The pass runs every minute while a watched PR is open; with none open it waits twice as long each pass, up to 30 minutes. */
@@ -922,7 +925,10 @@ export function startLoop(o: LoopOptions) {
       }
       // Only an agent's own PR, by the task that opened it: a reused PR number (a recreated repository) belongs to nobody here.
       // The decision itself was made once, above, so nothing between there and here could recover or report a PR it closes.
-      if (!ours) continue;
+      if (!ours) {
+        if (o.adopted && !isDependabot(pr)) await o.adopted.open(repo, main, pr).catch((e) => log("hand-off pass failed", { pr: pr.url, err: String((e as Error).message).slice(0, 300) }));
+        continue;
+      }
       if (retiring && !state.abandoned[url]) {
         const status = work?.status;
         if (!status) log("task status unknown: the cancelled-task rule cannot run", { pr: pr.url, task: opener.task });
@@ -1014,6 +1020,7 @@ export function startLoop(o: LoopOptions) {
         if (w === "sent") log("red head wake", { pr: pr.url, task: opener.task, head: pr.headRefOid });
       }
     }
+    if (o.adopted) await o.adopted.gone(repo, main.name, new Set(open.map((p) => p.number))).catch((e) => log("landed check failed", { repo, err: String((e as Error).message).slice(0, 300) }));
     return open.length;
   }
 
@@ -1024,6 +1031,7 @@ export function startLoop(o: LoopOptions) {
     findingsWakes = 0;
     gateDown = false;
     probes = 0;
+    o.adopted?.begin();
     if ((o.connected && !o.connected()) || o.paused?.()) return open;
     for (const { repo, duties } of o.repos) {
       try { open += await scan(repo, duties, all); }

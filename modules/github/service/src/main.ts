@@ -71,7 +71,7 @@ handle.startFlow();
 startTidy({ cacheDir, log });
 const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const ship = shipRoutes({
-  gh: access.rest, flow: handle.flow, gate: watchGate, cacheDir,
+  gh: access.rest, decision: handle.shipDecision, flow: handle.flow, gate: watchGate, cacheDir,
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
   isShip: (auth) => isModule(kernelUrl, auth, "ship"),
 });

@@ -7,6 +7,8 @@ import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { configTools } from "./config-tool.ts";
+import { adoptedPass } from "./adopted.ts";
+import { shipEffects } from "./effects.ts";
 import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
 import { startLoop, type Flow } from "./loop.ts";
 import { createMcp, serveMcp } from "./mcp.ts";
@@ -78,6 +80,12 @@ startLoop({
   openers: () => github("GET", "openers"),
   decide: (data, head) => github("POST", "decide", { data, head }),
   reviewGate: async (repo, number, head) => (await github("POST", "verdict", { repo, number, head }, 20_000)) ?? undefined,
+  // Everyone else's PRs: the hand-off and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
+  adopted: adoptedPass({
+    gh, state, settings: settingsOf, paused, kernel, log,
+    decision: (repo, number, head) => github("POST", "decision", { repo, number, head }),
+    effects: shipEffects(kernel, { codeReview: "http://code-review:8098", key: token }),
+  }),
 });
 log("ship watch loop", { repos: [...repos].map(([r, d]) => `${r}:${d}`) });
 

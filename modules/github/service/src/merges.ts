@@ -575,6 +575,19 @@ export function createMerges(d: {
   for (const [id, q] of Object.entries(s.queues)) if (q.outcome && !q.reported) deliver(id, q);
 
   return {
+    /**
+     * Ship's round decision for an adopted PR at `head` (its watch loop asks through /internal/ship/decision): decide with ship's
+     * context, as an adoption's merge is judged here, and the required checks red on the head. No approval or queue yet (D2, D3).
+     */
+    async decision(repo: string, number: number, head: string) {
+      const data = await readPr(repo, number);
+      const g = await d.reviewGate(repo, number, head);
+      const required = await requiredOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
+      const checks = await allChecks(repo, head);
+      const v = decide(data, head, { queue: false, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
+      const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
+      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY" };
+    },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number): Promise<Outcome> {
       const had = s.queues[id];
