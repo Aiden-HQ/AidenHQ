@@ -228,6 +228,7 @@ export function stripSentinels(text: string): string {
     if (!hit || quoted(text, end - hit.length, end, Math.max(tailLine(end - hit.length), from), to)) break;
     to = end - hit.length;
   }
+  // The padding a removed sentinel left beside the reply goes with it: the reply is stored as its own text.
   return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
 }
 export function firstError(logPath: string): string {
@@ -520,7 +521,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
     const end = () => {
       const status = exitStatus(exitFile);
       const code = status === "" ? null : Number(status);
-      let lastMessage = stripSentinels(String(final ?? ""));
+      let lastMessage = stripSentinels(String(final ?? "")).trim();
       const startError = code === 127 && `couldn't start ${r.engine}: ENOENT`;
       if (!lastMessage && startError) {
         appendFileSync(logPath, `# ${startError}\n`);
