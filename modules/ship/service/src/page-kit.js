@@ -37,9 +37,9 @@ const openHelp = (btn, c) => {
   tipEl.replaceChildren(h("p", { textContent: c.text }), ...(c.options ? [h("dl", {}, ...Object.entries(c.options).flatMap(([v, m]) => [h("dt", { textContent: v, className: String(v) === String(c.current) ? "cur" : "" }), h("dd", { textContent: m })]))] : []), ...(c.note ? [h("p", { className: "fine", textContent: c.note })] : []));
   tipEl.hidden = false;
   const b = btn.getBoundingClientRect(), t = tipEl.getBoundingClientRect(), vw = innerWidth, vh = innerHeight;
-  const below = b.bottom + 6 + t.height <= vh || b.top - 6 - t.height < 0;
+  const below = b.bottom + 6 + t.height <= vh || (b.top - 6 - t.height < 0 && vh - b.bottom >= b.top);
   tipEl.style.left = `${Math.max(8, Math.min(b.left + b.width / 2 - t.width / 2, vw - t.width - 8))}px`;
-  tipEl.style.top = `${Math.max(4, below ? b.bottom + 6 : b.top - 6 - t.height)}px`;
+  tipEl.style.top = `${Math.max(4, Math.min(below ? b.bottom + 6 : b.top - 6 - t.height, vh - t.height - 4))}px`;
 };
 addEventListener("keydown", (e) => { if (e.key === "Escape") closeHelp(); });
 addEventListener("pointerdown", (e) => { if (tipFor && e.target !== tipFor.btn) closeHelp(); });

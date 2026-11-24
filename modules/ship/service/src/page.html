@@ -27,7 +27,7 @@
 <div class="card">
   <div class="head"><div><b>Repos</b> <small id="count"></small></div><div class="pause" id="pausebox"><span id="pausetxt">Running</span><button class="sw" id="pause" role="switch" aria-checked="true" aria-label="Ship is running"></button><span id="pausehelp"></span></div></div>
   <div id="rows"></div>
-  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><span id="addhelp"></span><button type="button" id="refresh" title="Reload the saved settings and drop edits you have not saved">Refresh</button></form>
+  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><span id="addhelp"></span><button type="button" id="refresh" title="Reload the saved settings. To drop proposed edits, use Discard in the bar above.">Refresh</button></form>
   <div class="note" id="note" role="status"></div>
 </div>
 <div class="card">
@@ -74,7 +74,7 @@
     closeHelp();
     $("pausehelp").replaceChildren(help("Pause", "The kill switch. While paused, Ship adopts, pushes, approves and merges nothing, and PRs resume where they were when you switch it back on.", { note: "It works whatever each repo is set to." }));
     $("addhelp").replaceChildren(help("Add repo", "Lists a repo as owner/name for Ship, the Maintainer and code review. It starts on the cautious preset.", { bare: true }));
-    $("holdhead").replaceChildren(help("On hold", "A hold means Ship stopped working a PR and is waiting for a person. It stays held until a member hands the PR off again: add the ship label or comment /ship.", { options: HOLDS, note: "A PR with the ship:stop label is left alone until the label is removed." }));
+    $("holdhead").replaceChildren(help("On hold", "A hold means Ship stopped working a PR and is waiting for a person. It stays held until a member hands the PR off again: add the ship label or comment /ship.", { options: HOLDS, note: "A PR carrying the stop label (ship:stop by default) is left alone until the label is removed." }));
     $("count").textContent = status.repos.length ? `${status.repos.length}` : "";
     const paused = pending.paused ?? status.paused;
     setSwitch($("pause"), !paused);
