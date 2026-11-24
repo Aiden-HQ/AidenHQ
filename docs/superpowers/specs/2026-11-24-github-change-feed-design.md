@@ -42,6 +42,14 @@ writer.
 - Routines, code review, ship and the Maintainer subscribe, and their GitHub timers are deleted.
 - The only timer left on GitHub elsewhere is the merge queue's read of a PR it is merging.
 
+**Scope of "only".** This covers the loops in the table below, all of the `github` process's own timers, and the
+`src_github` sync. A sweep of `setInterval`/`setTimeout` across modules found a few more timers:
+- **Not GitHub reads:** `tidy.ts` (local refs), `startHeld` (held writes), and the one-off `migrate.ts` retry, which is
+  deleted after #1065.
+- **GitHub reads through the code host:** apps-platform's 2-minute loops (`apps-mcp/src/loops.ts` `reconcileTick`, which
+  reads `remoteHead` per auto-deploy app, and `previews.ts`, which lists open PRs per app repo). These serve
+  codehost-local repos too. They are an owner question, below, not part of this design.
+
 **Poller, defined.** A poller is a timer that sweeps GitHub repos or lists. Two kinds of read stay:
 - **Event-triggered reads through the github service.** Examples: code review reading a merge base when it starts a review,
   the Maintainer reading one issue's label timeline to judge trust, ship's GraphQL read of the one PR an event named.
@@ -112,6 +120,17 @@ and every 5 minutes once settled.
 9. **Reviews.** `GET /repos/:r/pulls/:n/reviews?per_page=100` for each open PR. Every page is read, each conditional.
 
 **Per-pass cap.** A cursor list reads at most 10 pages a pass and goes on next pass.
+
+**Cursors.** Each cursor list's cursor holds the newest `updated_at` it read, because GitHub's `since` filters on
+`updated_at`. Items at exactly that time are read again, and their ids dedupe.
+
+**Assumptions about GitHub that lane 1 must check against a scratch repo before anything else is built.** If one fails, the
+read that depends on it changes and the spec is amended. Nothing switches at run time.
+- An authenticated `304` doesn't count against the primary limit.
+- Each page of a list has its own stable ETag.
+- `since` on `issues`, `issues/comments` and `pulls/comments` returns every item created or edited after it.
+- `check-runs?filter=all` lists re-runs.
+- `statuses` lists carry an id per status.
 
 **When a head is unsettled.** It is unsettled while any of its check runs is not completed, or its newest status in any
 context is pending, or the head is under 10 minutes old. A write the `github` process makes to a head unsettles it at once.
@@ -323,8 +342,7 @@ Every consumer gets the same five pieces:
 - a cursor in its own store;
 - a 5 s log read;
 - handlers that call the code its poller called, with events coalesced per object within one read;
-- **a bootstrap**: its existing read, run once, at start, on `gap`, on `github.resync` for a repo, and when its settings
-  change.
+- **a bootstrap**: its existing read, run once, in the cases listed under "Bootstrap scope" below.
 
 **Bootstrap scope.** A bootstrap covers only what was missed, and never throws away events already accepted.
 - **First start (no cursor).** The consumer takes the watermark (`GET /v1/events/log` with no `after`), reads every repo, and
@@ -333,7 +351,12 @@ Every consumer gets the same five pieces:
 - **`gap: true`.** It bootstraps every repo, then goes on from `next`.
 - **`github.resync` for a repo.** It bootstraps that repo only, as the event's handler. The cursor moves as for any other
   event.
-- **A settings change.** It bootstraps the repos the change touched.
+- **A settings change.** Settings reach a consumer through an apply, which restarts it. So the consumer keeps a digest of
+  its compiled subscription and its own settings beside its cursor. A start whose digest changed bootstraps only the repos
+  the change touched (added, or with changed gate settings), then resumes from the cursor.
+
+The reader silently baselines a newly watched repo. That needs no event, because the consumer's own bootstrap reads that
+repo directly.
 
 Events that overlap a bootstrap read are handled idempotently. This is catch-up, not a second path: the timers are deleted.
 
@@ -386,7 +409,7 @@ These run in the same process as the reader, so they take its events in-process,
 - the fix label for `issues`;
 - `agent-build` for `features`.
 
-`repoSince` reads every page and refuses incomplete coverage; `issueList` stops at 200. Each open, trusted, labelled issue is
+`repoSince` reads every page and refuses incomplete coverage; `issueList` silently stops after 10 pages. Each open, trusted, labelled issue is
 filed under its source key, and the kernel dedupes. So labelled issues are reconciled from the start, as today. Unlabelled
 triage starts at the watermark, as `untriaged` does today: issues already open are the daily triage's.
 
@@ -421,7 +444,8 @@ triage starts at the watermark, as `untriaged` does today: issues already open a
     poll would retry; with no poll, the redelivery is the retry. A reply that `claims` leaves unread on purpose (its finding's mandatory post hasn't settled) is read
   again when that post settles: a local trigger inside code review, no GitHub event.
 
-**Settings changes.** A changed gate, a repo added, a combo made mandatory: each runs the bootstrap for the affected repos.
+**Settings changes.** A changed gate, a repo added, a combo made mandatory: each changes the digest, so the next start
+bootstraps the affected repos.
 That is how `missing()` today reaches open heads with no new GitHub activity.
 
 **Bootstrap.** Three reads, each an existing one:
@@ -679,3 +703,9 @@ head, due now, and §1's conditional reads produce every event with the same ids
 2. **A 60 s cap even when quiet.** This keeps every consumer at least as fast as today, at about 3,400 free conditional
    requests an hour (about 6% of the REST secondary limit). A 5-minute quiet cap would cut that to about 700, but a quiet
    repo's first PR or issue would then wait up to 5 minutes for code review and ship.
+3. **Apps platform loops.** Its 2-minute deploy and preview loops read GitHub through the code host for GitHub-hosted app
+   repos. Switch them as a lane 5 (subscribe to `push` and `pull_request.*` for GitHub app repos, keep the local loop for
+   codehost-local repos), or leave them out of scope?
+4. **Two behaviour changes to OK.**
+   - A human re-run on a settled head is seen within 5 minutes (60 s today).
+   - Feed reads with an ETag skip the 20% background reserve.
