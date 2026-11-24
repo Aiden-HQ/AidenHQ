@@ -7,7 +7,7 @@ repo="${GH_REPO:-}"
 prev=
 for a in "$@"; do
   case "$prev" in -R|--repo) repo="$a";; esac
-  case "$a" in --repo=*) repo="${a#--repo=}";; -R?*) repo="${a#-R}";; https://github.com/*/*/*) case "$prev" in -*) ;; *) [ -n "$repo" ] || repo=$(printf '%s' "$a" | sed -n 's#^https://github.com/\([^/]*/[^/]*\)/.*#\1#p');; esac;; esac
+  case "$a" in --repo=*) repo="${a#--repo=}";; -R?*) repo="${a#-R}";; https://github.com/*/*/*) case "$prev" in -b|--body|-t|--title|-m|--message|-F|-f|--field|--raw-field|-q|--jq|--template|-H|--header|--comment|--body-file) ;; *) [ -n "$repo" ] || repo=$(printf '%s' "$a" | sed -n 's#^https://github.com/\([^/]*/[^/]*\)/.*#\1#p');; esac;; esac
   prev="$a"
 done
 repo="${repo#github.com/}"
