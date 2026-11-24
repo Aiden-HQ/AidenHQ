@@ -53,8 +53,9 @@ export function useLineage(refId: string, onSignIn: () => void): Lineage | null 
   return data;
 }
 
-/** What waits on the owner (an approval card or his answer) comes first; the rest keep their order. */
-const needsFirst = (rows: LineageRow[]) => [...rows].sort((a, b) => Number(waitsOnApproval(b) || needsOwner(b.state)) - Number(waitsOnApproval(a) || needsOwner(a.state)));
+/** What waits on the owner (an approval card or his answer, in the row or below it) comes first; the rest keep their order. */
+const needsYou = (r: LineageRow) => withKids(r).some((x) => x.approvals.length > 0 || needsOwner(x.state));
+const needsFirst = (rows: LineageRow[]) => [...rows].sort((a, b) => Number(needsYou(b)) - Number(needsYou(a)));
 
 /** A chat's Details: the delegated work as dense rows, Needs you first; each row opens the child. */
 export function DelegatedList({ lineage, go }: { lineage: Lineage | null; go: (hash: string) => void }) {
@@ -73,7 +74,7 @@ export function DelegatedList({ lineage, go }: { lineage: Lineage | null; go: (h
       </a>
     </li>
   );
-  return <ul className="handed-list">{rows.flatMap((r) => [row(r, false), ...r.children.map((g) => row(g, true))])}</ul>;
+  return <ul className="handed-list">{rows.flatMap((r) => [row(r, false), ...needsFirst(r.children).map((g) => row(g, true))])}</ul>;
 }
 
 export function LineageStrip({ data, refId, title, agent, crew, prefix, href, onSignIn }: { data: Lineage | null; refId: string; title: string; agent: string; crew: Assignee[]; prefix: string; href: (identifier: string) => string; onSignIn: () => void }) {

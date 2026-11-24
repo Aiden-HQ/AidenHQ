@@ -763,7 +763,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
-      grade: gradeShown(grades, issue.id, issue.status),
+      grade: gradeShown(grades, issue.id, issue.status, facts),
       milestones: milestonesOf(facts),
     };
   }

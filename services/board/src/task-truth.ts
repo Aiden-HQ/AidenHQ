@@ -27,15 +27,15 @@ const clip = (s: unknown, n: number) => {
 };
 const HOSTED = /^[\w.-]+\/[\w.-]+#\d+$/;
 
-/** A deliverable's link, only once its ref resolves: a URL, an `owner/repo#n` on GitHub, an app by name. */
+/** A deliverable's link, only once its ref resolves: a URL or an `owner/repo#n` on GitHub (an app's name is not checked against the registry, so it is text). */
 function hrefOf(d: Deliverable): string | undefined {
   if (/^https?:\/\//.test(d.ref)) return d.ref;
   if ((d.kind === "pr" || d.kind === "issue") && HOSTED.test(d.ref)) return `https://github.com/${d.ref.replace("#", d.kind === "pr" ? "/pull/" : "/issues/")}`;
-  return d.kind === "app" && d.ref ? `#/apps/${d.ref}` : undefined;
+  return undefined;
 }
 
 /** The grade as the drawer shows it. `view` undefined: the module couldn't be read (never read as passed). */
-export function gradeShown(view: GradesView | undefined, id: string, status: string): GradeShown {
+export function gradeShown(view: GradesView | undefined, id: string, status: string, w: Waterfall | null = null): GradeShown {
   if (!view || !Object.hasOwn(view.grades, id)) return { state: "unavailable", rubric: [] };
   const g = view.grades[id];
   if (!g) return { state: "none", rubric: [] };
@@ -48,11 +48,16 @@ export function gradeShown(view: GradesView | undefined, id: string, status: str
   const closed = status === "done" || g.closedReason !== null;
   // Met only on a satisfied (or owner-accepted) verdict: the module also closes a row satisfied when it gives up or lets unmet work through.
   const verified = v?.verdict === "satisfied" || v?.verdict === "accepted";
+  // A blank PR ref means the task's own PRs: the newest GitHub one it opened and that is not closed unmerged.
+  const gone = new Set<string>();
+  for (const f of w?.facts ?? []) if (f.type.startsWith("pr.")) f.type === "pr.closed" && f.data?.merged !== true ? gone.add(f.subject) : f.type === "pr.opened" || f.type === "pr.merged" ? gone.delete(f.subject) : undefined;
+  const own = g.deliverable.ref || g.deliverable.kind !== "pr" ? "" : (w?.facts.findLast((f) => f.type === "pr.opened" && HOSTED.test(f.subject.slice(3)) && !f.subject.startsWith("pr:local/") && !gone.has(f.subject))?.subject.slice(3) ?? "");
+  const deliverable = { ...g.deliverable, ref: g.deliverable.ref || own };
   return {
     state: (g.state === "satisfied" && !verified) || (!v && closed) ? "ungraded_close" : g.state,
     rubric,
     ...(v ? { judgedAt: v.at, version: v.version } : {}),
-    deliverable: { kind: g.deliverable.kind, ref: g.deliverable.ref, href: hrefOf(g.deliverable) },
+    deliverable: { kind: deliverable.kind, ref: deliverable.ref, href: hrefOf(deliverable) },
   };
 }
 
@@ -71,7 +76,7 @@ export function milestonesOf(w: Waterfall | null): Milestone[] {
       case "record.decided": if (d.decision === "approved") m("approved", `Card approved${d.decider === "reviewer" ? " by the AI reviewer" : d.decider === "owner" ? " by you" : ""}`, { href: record }); break;
       case "record.landed": m("applied", `Card applied${d.kind ? `: ${clip(d.kind, 60)}` : ""}`, { href: record }); break;
       case "pr.deployed": m("deployed", `Deployed${d.generation ? ` in generation ${d.generation}` : ""}`, { href: HOSTED.test(String(d.pr ?? "")) ? `https://github.com/${String(d.pr).replace("#", "/pull/")}` : undefined }); break;
-      case "grade.verdict": m("graded", d.pass === true ? "Graded: satisfied" : d.reason_code === "needs_revision" ? "Graded: sent back" : `Graded: ${String(d.reason_code ?? "not met").replaceAll("_", " ")}`); break;
+      case "grade.verdict": m("graded", d.pass === true ? "Graded: satisfied" : d.reason_code === "needs_revision" ? "Graded: criteria unmet" : `Graded: ${String(d.reason_code ?? "not met").replaceAll("_", " ")}`); break;
     }
   }
   return out.sort((a, b) => a.at.localeCompare(b.at));

@@ -204,7 +204,7 @@ const milestones = () => [
   { at: ago(60), kind: "approved", text: "Card approved by the AI reviewer", href: "#/approvals/k-00000000000000a1" },
   { at: ago(50), kind: "applied", text: "Card applied: pr", href: "#/approvals/k-00000000000000a1" },
   { at: ago(35), kind: "deployed", text: "Deployed in generation 7", href: "https://github.com/acme-agents/invoices/pull/41" },
-  { at: ago(30), kind: "graded", text: "Graded: sent back" },
+  { at: ago(30), kind: "graded", text: "Graded: criteria unmet" },
 ];
 const lineage = (identifier: string) => {
   if (identifier !== "WOR-818" || mock.empty) return { identifier, children: [], total: { tasks: 0, running: 0, needs: 0, failed: 0, tokens: 0, usd: 0, ms: 0 } };

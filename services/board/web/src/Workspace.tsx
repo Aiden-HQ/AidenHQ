@@ -1042,7 +1042,7 @@ function DetailsPanel({ chat, lineage, go }: { chat: ChatDetail; lineage: Lineag
   const done = plan.filter((p) => p.state === "done").length;
   const waiting = chat.approvals.filter((a) => a.state === "pending");
   const onYou = waiting.length ? `${waiting.length} approval${waiting.length > 1 ? "s" : ""}` : waitsForAnswer(chat.state) ? "a reply" : "";
-  const quiet = !chat.handedOut.length && !plan.length && chat.state?.kind !== "working" && !files.length;
+  const quiet = !chat.handedOut.length && !lineage?.children.length && !plan.length && chat.state?.kind !== "working" && !files.length;
   return (
     <div className="panel">
       <dl className="panel-context" aria-label="Context">
@@ -1075,12 +1075,12 @@ function DetailsPanel({ chat, lineage, go }: { chat: ChatDetail; lineage: Lineag
           </div>
         )}
       </dl>
-      {chat.handedOut.length > 0 && (
+      {(chat.handedOut.length > 0 || (lineage?.children.length ?? 0) > 0) && (
         <section className="panel-card">
           <h3>
-            Delegated<span className="panel-count">{chat.handedOut.length}</span>
+            Delegated{lineage && <span className="panel-count">{lineage.total.tasks}</span>}
           </h3>
-          <DelegatedList lineage={lineage} go={go} />
+          {lineage ? <DelegatedList lineage={lineage} go={go} /> : <p className="muted small">Loading…</p>}
         </section>
       )}
       {(plan.length > 0 || chat.state?.kind === "working") && (
