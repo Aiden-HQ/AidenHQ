@@ -97,12 +97,14 @@ export function createJobTools({ db, secret, engines, orgs = () => [], now = Dat
      * bundle of its default branch (every branch, on this server) the kernel serves under the job's dispatcher's clone grant
      * (codehost.ts bundle): the same repos its task's clones at admission come from (boxes.ts).
      */
-    clone(token: string, b: { repo?: unknown }): { repo: string; module: string } {
+    clone(token: string, b: { repo?: unknown; head?: unknown }): { repo: string; module: string; head?: string } {
       const r = db.prepare("SELECT module, authority FROM jobs WHERE id = ?").get(jobOf(token)) as { module: string; authority: string | null } | undefined;
       if ((r?.authority ? JSON.parse(r.authority).profile : undefined) !== "engineer") throw new JobToolError(403, "no-role", "aidenhq clone is an Engineer's");
       const m = /^([\w.-]+)\/([\w.-]+)$/.exec(String(b?.repo ?? "").trim());
       if (!m || /^\.+$/.test(m[1]!) || /^\.+$/.test(m[2]!) || m[2]!.endsWith(".git")) throw new JobToolError(400, "bad-repo", "give the repository as <org>/<name>");
-      return { repo: `${m[1]}/${m[2]}`, module: r!.module };
+      // `head`: one commit of the repo instead of its default branch (a fork PR's head, reachable as refs/pull/<n>/head).
+      if (b?.head !== undefined && !(typeof b.head === "string" && /^[0-9a-f]{40}$/.test(b.head))) throw new JobToolError(400, "bad-head", "head is a 40-character commit sha");
+      return { repo: `${m[1]}/${m[2]}`, module: r!.module, ...(typeof b?.head === "string" ? { head: b.head } : {}) };
     },
     /**
      * One of this live job's prechecks, counted before its reviewer call: at most PRECHECKS a job. Returns its refund, for a

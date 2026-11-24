@@ -15,15 +15,32 @@ contributes:
   board.pages:
     - { id: ship, title: Ship, icon: rocket, order: 10, connection: ship, view: "ui://ship/page", tools: [ ship_config, ship_configure, ship_status ], settings: [ ship, ship_paused, code_review, maintainer_repos ] }
 roles:
-  # kernel.settings: the config tool's settings changes (writers below).
-  requests: [ kernel.settings ]
+  # kernel.settings: the config tool's settings changes (writers below). kernel.tasks and kernel.wake: a hand-off's one Engineer
+  # task (module-task source ship:<repo>/<n>:<generation>) and its wakes (handoff.ts, rounds.ts).
+  requests: [ kernel.settings, kernel.tasks, kernel.wake ]
   declares:
     - { id: ship-admin, description: "Reads ship's settings and changes one repo's entry (ship_config, ship_configure) when the owner asks in words; a change that loosens anything is the owner's." }
+# The deterministic repair (recipe/repair.ts), no model and no credential: the PR's head merged with its base, generated paths
+# and conflicted lockfiles regenerated; it keeps the files that change, which github's `repair` effect (filed by ship) asks for
+# and writes as the App. base: the base branch's tip; merge_base: the head's merge base with it; base_ref: its name; plan:
+# { globs, commands } (rounds.ts repairPlan); attempt: 1, or 2 for the one retry of a run that didn't finish (a new check).
+check_jobs:
+  ship-repair:
+    dir: recipe
+    argv: [ node, /aidenhq-out/recipe/repair.ts ]
+    timeout_min: 30
+    title: ship's repair
+    spec: { base: sha, merge_base: sha, base_ref: text, plan: json, attempt: int }
+    result: true
+    keep: true
+# The report: one comment per adopted PR, edited in place (report.ts), on the repos ship covers.
+codehost:
+  comment: { repos: [ "@agents/*", "@product", "@maintained" ] }
 settings:
   # The per-repo ship settings: { defaults: cautious | full | { preset, …fields }, repos: { owner/name: cautious | full | { preset?,
   # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command },
   # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads,
-  # review_rounds, rounds, usd, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
+  # rounds, usd, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
   # safe: { max_lines, max_files, deny }, merge: off|ready, enabled: true|false, stop_label } } }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
   ship:

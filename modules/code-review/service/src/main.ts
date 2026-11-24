@@ -74,7 +74,7 @@ const github = env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086";
 const executor = reviewExecutor(githubReview(github, token), (id) => engine.binding(id));
 // A POST /reviews that carries the kernel's signed caller (the Reviewer Manager's tool, through the MCP connection below) says
 // whose task hears the batch's summary; the board's own calls send no assertion and the owner hears it instead. Never a body field.
-const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE), (auth) => isModule(kernelUrl, auth, "github"), async (req) => {
+const api = handler(engine, () => file(env.CODE_REVIEW_API_TOKEN_FILE), (auth, module) => isModule(kernelUrl, auth, module), async (req) => {
   if (!req.headers["x-aidenhq-caller"]) return undefined;
   try {
     const c = await verifyCaller(req, jwks, "code-review");

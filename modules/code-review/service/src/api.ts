@@ -8,6 +8,8 @@
 //                                        instance can read, one run per combo (default: the repo's on_open), each posted; with the
 //                                        kernel's signed caller (the Reviewer Manager's tool) its agent and task hear the batch's one
 //                                        summary, otherwise the owner does (the board)
+//   POST /reviews { pr_url, task? } with the ship module's own token → { runs }   ship's ask on a fork it adopted (one-off, summary on
+//                                        `task`, the adoption's)
 //   POST /reviews { target: { repo, commit? }, options?, combo?: { model, effort } } → { batch, sha, runs }   a repo
 //                                        review of the whole tree at a commit (default: the default branch's head, resolved now)
 //   GET  /reviews/:batch/report          → the repo review's report (text/markdown), once it ended
@@ -43,7 +45,7 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
 
 /** The reviewer of a request's caller: the kernel's signed assertion, checked by the service (main.ts's verifyCaller). */
 export type Ask = (req: IncomingMessage) => Promise<{ requester: string; task?: string } | undefined>;
-export function handler(engine: Engine, token: () => string, isGithub: (authorization: string) => Promise<boolean | undefined>, ask: Ask = async () => undefined) {
+export function handler(engine: Engine, token: () => string, isModule: (authorization: string, module: string) => Promise<boolean | undefined>, ask: Ask = async () => undefined) {
   const authorized = (req: IncomingMessage) => {
     const want = Buffer.from(token());
     const got = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
@@ -55,12 +57,23 @@ export function handler(engine: Engine, token: () => string, isGithub: (authoriz
     const route = `${req.method} ${url.pathname.replace(/\/+$/, "")}`;
     if (route === "GET /healthz") return send(res, 200, { ok: true });
     if (route === "GET /v1/verdict") {
-      const ok = await isGithub(String(req.headers.authorization ?? ""));
+      const ok = await isModule(String(req.headers.authorization ?? ""), "github");
       if (!ok) return send(res, ok === undefined ? 503 : 401, { error: "unauthorized", detail: ok === undefined ? "the kernel couldn't say whose token this is; try again" : "only the github module's token" });
       const q = url.searchParams;
       const repo = (q.get("repo") ?? "").toLowerCase(), pr = Number(q.get("pr")), head = q.get("head") ?? "";
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !Number.isInteger(pr) || pr < 1 || !/^[0-9a-f]{40}$/.test(head)) return send(res, 400, { error: "bad_request", detail: "repo, pr and head (a 40-character sha)" });
       return send(res, 200, engine.verdict(repo, pr, head));
+    }
+    // The ship module's ask for a fork it adopted (a member's hand-off): a one-off review of that PR, with its own token (the kernel
+    // says whose), its summary on the adoption's task.
+    if (route === "POST /reviews" && !authorized(req) && (await isModule(String(req.headers.authorization ?? ""), "ship"))) {
+      try {
+        const b = await body(req);
+        const task = typeof b.task === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(b.task) ? b.task : undefined;
+        return send(res, 200, { runs: await engine.oneoff({ pr_url: b.pr_url }, { requester: "Ship", ...(task ? { task } : {}) }) });
+      } catch (e) {
+        return send(res, e instanceof RequestError ? 400 : 500, { error: e instanceof RequestError ? "bad_request" : "internal", detail: String((e as Error).message).slice(0, 200) });
+      }
     }
     if (!authorized(req)) return send(res, 401, { error: "unauthorized", detail: "send the code-review API token" });
     try {
