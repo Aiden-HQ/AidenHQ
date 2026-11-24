@@ -60,6 +60,9 @@ export function repairPlan(s: ShipSettings, d?: Discovered) {
 /** One round for an adopted PR. Answers what it did: "stopped", "acted" or "nothing". */
 export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts = {}): Promise<"stopped" | "acted" | "nothing"> {
   const s = d.settings(pr.repo);
+  // Check names are set by whoever can push to the repo: no backtick or line break reaches a wake or the report.
+  const clean = (l?: string[]) => l?.map((n) => n.replace(/[`\r\n]/g, ""));
+  f = { ...f, failing: clean(f.failing), onBase: clean(f.onBase), groupFailing: clean(f.groupFailing) };
   let a = d.state.get(pr.repo, pr.number) as (Kept & { queue?: Queued }) | undefined;
   if (!a || !s) return "nothing";
   // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.

@@ -34,10 +34,11 @@ export async function queueNext(kernel: { call(method: string, path: string): Pr
   // Queued, and open and out of the queue again: removed.
   const onBase = new Set(f.onBase ?? []);
   const own = (f.groupFailing ?? []).filter((n) => !onBase.has(n));
-  if (own.length) return { act: "fix_ci", failing: own };
+  // Once re-queued for a base that was red too, its merge_group failures (the last run's, even after the base is fixed) are a wait.
+  if (own.length && !q.retried) return { act: "fix_ci", failing: own };
   if (f.groupFailing?.length) {
     return q.retried
-      ? { act: "wait", why: `removed from the merge queue again: ${f.groupFailing.map((n) => `\`${n}\``).join(", ")} fails on \`${pr.defaultBranch}\` too, so it waits for the base to be fixed` }
+      ? { act: "wait", why: `removed from the merge queue again: ${f.groupFailing.map((n) => `\`${n}\``).join(", ")} fails on \`${pr.defaultBranch}\` too: a person queues it again (or a push does) once the base is green` }
       : { act: "enqueue", attempt: q.attempt + 1, retried: true };
   }
   return { act: "wait", why: "removed from the merge queue and waiting for a person to queue it again or push" };
