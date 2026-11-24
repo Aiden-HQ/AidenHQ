@@ -26,7 +26,9 @@
 // (coverage.reviewed: the files it reports it analysed, else the eligible ones whose diff some finder read); a run that stopped
 // short, an unreadable file or a truncated list is `coverage.incomplete`, never a clean pass. Engines with their own scope
 // (deepsec: setup files and scan, spec.setup_files) return `setup`, the files to commit. Every finding carries the spec's option
-// and lens.
+// and lens. deepsec gets the check's whole time (less RESERVE_MINUTES to read its records and write the result) where the other
+// engines get REVIEW_MINUTES, and its records from earlier runs (spec.deepsec_data, laid at /aidenhq-out/deepsec_data); it leaves
+// the ones it changed at /aidenhq-out/keep for the service.
 // Exit 0 with a result; 1 with none (no finder finished: the run failed).
 import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -57,6 +59,8 @@ export interface Spec {
   option?: string; lens?: string;
   /** When a deepsec setup branch is pending, its files as JSON text (path to text). */
   setup_files?: string;
+  /** deepsec's records from earlier runs: the input's sha256 (its file is /aidenhq-out/deepsec_data), empty for none. */
+  deepsec_data?: string;
 }
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -80,6 +84,8 @@ const MAX_PRE = 5;
 const RECHECK_CHUNK = 15, RECHECK_PARALLEL = 3;
 /** The check's own limit (module.yaml check_jobs.code-review.timeout_min): no recheck wave starts that could outlast it. */
 export const CHECK_MINUTES = 180;
+/** What deepsec leaves of the check's time: reading its records, the findings' places and writing the result. */
+const RESERVE_MINUTES = 10;
 const LENSES = [
   "correctness: logic errors, wrong results, edge cases and inputs the code mishandles",
   "security and data: injection, authorisation, secrets, unsafe handling of untrusted input, data loss",
@@ -422,10 +428,13 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     target: spec.target ?? "pr", harness: combo.harness, skills: combo.skills, tools: combo.tools,
     ...(Number(combo.max_cost_usd) > 0 ? { max_cost_usd: Number(combo.max_cost_usd) } : {}),
     ...(spec.setup_files ? { setupFiles: setupFilesOf(spec.setup_files) } : {}),
+    ...(combo.engine === "deepsec" ? { carried: spec.deepsec_data ? join(out, "deepsec_data") : undefined, keep: join(out, "keep") } : {}),
   };
+  // deepsec batches itself over the whole repo: the check's time, not one engine allowance.
+  const finderMinutes = combo.engine === "deepsec" ? Math.max(1, CHECK_MINUTES - RESERVE_MINUTES - (Date.now() - started) / 60_000) : minutes;
   // The finders, in parallel, each with its own lens.
   const n = how.finders;
-  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes, scratch, own: true, files: reviewed, left: [...out_], ...engineSpec })
+  const answers = await Promise.all(Array.from({ length: n }, (_, i) => run(combo.engine, { prompt: finderPrompt(n === 1 ? LENSES.join("; ") : LENSES[i % LENSES.length]!), instructions, model: combo.model, effort: combo.effort, root: ws, base: h.from, trusted: h.base, minutes: finderMinutes, scratch, own: true, files: reviewed, left: [...out_], ...engineSpec })
     .catch((e): EngineResult => ({ message: "", read: false, cause: String(e.message).slice(0, 200) }))));
   // A finder's answer counts only with its findings list (no list is no answer, never a clean one).
   const good = answers.map((a) => { const j = a.read ? answer(a.message) : undefined; return j && Array.isArray(j.findings) ? j : undefined; });

@@ -792,6 +792,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // settings.exposure: one mode, never a list; unset is tailscale, the mode of every install made before the setting.
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
   if (!(Number.isInteger(settings.computers_max) && settings.computers_max >= 1 && settings.computers_max <= 64)) fail("settings.computers_max: a whole number, 1 to 64");
+  if (!(Number.isInteger(settings.check_computers_max) && settings.check_computers_max >= 1 && settings.check_computers_max <= 64)) fail("settings.check_computers_max: a whole number, 1 to 64");
   settings.exposure ??= "tailscale";
   // instance_name: a DNS label (agents commit as <key>@<instance_name>.aidenhq.ai).
   if (settings.instance_name != null && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(settings.instance_name))) fail("settings.instance_name: lowercase letters, digits and - (a DNS label)");
@@ -1355,7 +1356,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
   const secretPatterns = Object.fromEntries([...all.values()].flatMap((m) => [m.def.secrets?.provided ?? []].flat().filter((p: Obj) => p?.setup?.pattern).map((p: Obj) => [p.name, p.setup.pattern])));
-  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, computersMax: settings.computers_max, checkComputersMax: settings.check_computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -1612,8 +1613,8 @@ export function checkEntries(name: string, def: Obj) {
  * result is titled, the spec's fields (each a kind of CHECK_KINDS), the files of its `dir` (laid in the box at
  * /aidenhq-out/recipe, small text files) and, by field, what the kernel enforces: `declares` (a package.json script the base
  * keeps), `judged` (the reviewer eval's layout of judge files and cases, whose spec is exactly the judging commits'), `model`
- * (true: a model token of the check's own) and `result` (true: the
- * recipe writes a JSON result the receipt binds).
+ * (true: a model token of the check's own), `result` (true: the
+ * recipe writes a JSON result the receipt binds) and `keep` (true: one file it leaves is kept for its module to fetch).
  */
 /** The most a check job's model token may spend (USD); its time ceiling is the launcher's (MAX_CHECK_MIN). */
 export const MAX_CHECK_USD = 100;
@@ -1623,7 +1624,7 @@ export function checkJobs(name: string, def: Obj, root: string) {
   for (const [run, r] of Object.entries<Obj>(def.check_jobs ?? {})) {
     const where = `module ${name}: check_jobs.${run}`;
     if (!/^[a-z][a-z0-9_-]{0,30}$/.test(run)) fail(`${where}: the name is lowercase letters, digits, - and _`);
-    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result"].includes(f));
+    const extra = Object.keys(r ?? {}).filter((f) => !["dir", "argv", "timeout_min", "title", "spec", "declares", "cwd_from", "judged", "model", "result", "keep"].includes(f));
     if (extra.length) fail(`${where}: unknown field ${extra.join(", ")}`);
     if (!Array.isArray(r.argv) || !r.argv.length || r.argv.some((a: unknown) => typeof a !== "string" || !a)) fail(`${where}: argv is the command, a list of strings`);
     if (!Number.isInteger(r.timeout_min) || r.timeout_min < 1 || r.timeout_min > MAX_CHECK_MIN) fail(`${where}: timeout_min is whole minutes, 1 to ${MAX_CHECK_MIN}`);
@@ -1634,6 +1635,7 @@ export function checkJobs(name: string, def: Obj, root: string) {
     if (r.cwd_from != null && spec[r.cwd_from] !== "dir") fail(`${where}: cwd_from names a spec field of kind dir`);
     if (r.model != null && r.model !== true) fail(`${where}: model is true or absent (a recipe's own spend cap ${SPEND_GONE})`);
     if (r.result != null && r.result !== true) fail(`${where}: result is true or absent`);
+    if (r.keep != null && r.keep !== true) fail(`${where}: keep is true or absent`);
     if ((r.model != null || r.result != null) && r.judged != null) fail(`${where}: a judged run takes neither model nor result`);
     let judged;
     if (r.judged != null) {
@@ -1653,7 +1655,7 @@ export function checkJobs(name: string, def: Obj, root: string) {
         files[f.name] = readFileSync(join(dir, f.name), "utf8");
       }
     }
-    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}), ...(r.model ? { model: true } : {}), ...(r.result ? { result: true } : {}) };
+    out[run] = { module: name, argv: r.argv, timeout_min: r.timeout_min, title: r.title, spec, files, ...(r.declares ? { declares: r.declares } : {}), ...(r.cwd_from ? { cwd_from: r.cwd_from } : {}), ...(judged ? { judged } : {}), ...(r.model ? { model: true } : {}), ...(r.result ? { result: true } : {}), ...(r.keep ? { keep: true } : {}) };
   }
   return out;
 }

@@ -500,6 +500,28 @@ test("checks: a model recipe gets its own token, its spec and commits as files, 
   assert.throws(() => checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { ...spec, profile: "[1]" } }), /spec\.profile/);
 });
 
+test("checks: an uploaded input reaches the box by its sha256, and the file a keep recipe leaves is kept for its module", async () => {
+  const review = { module: "code-review", argv: ["node", "r.ts"], timeout_min: 30, title: "the review", spec: { base: "sha", data: "input" }, files: {}, model: true, result: true, keep: true };
+  const { checks, runs, done } = setup({ [A]: { "a.js": "head" } }, undefined, { "code-review": review }, (o) => {
+    o.seen = existsSync(join(o.out, "data")) ? readFileSync(join(o.out, "data"), "utf8") : null;
+    writeFileSync(join(o.out, "result.json"), JSON.stringify({ version: 1 }));
+    writeFileSync(join(o.out, "keep"), `kept after ${o.seen}`);
+    return { exit: 0, out: "", timedOut: false };
+  });
+  const { sha256 } = checks.putInput("github", Buffer.from("records v1"));
+  assert.equal(sha256, createHash("sha256").update("records v1").digest("hex"));
+  const v = await done(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { base: A, data: sha256 } }));
+  assert.equal(v.receipt?.verdict, "pass", v.error);
+  assert.equal(runs[0].seen, "records v1");
+  assert.equal(String(checks.kept("github", v.id)), "kept after records v1");
+  // None given: no file in the box; an input never uploaded can't run; another module's check isn't readable.
+  const none = await done(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { base: A, data: "" } }));
+  assert.equal(runs[1].seen, null);
+  const missing = await done(checks.start("github", { repo: "acme/app", head: A, run: "code-review", spec: { base: A, data: "f".repeat(64) } }));
+  assert.match(String(missing.error), /isn't uploaded/);
+  assert.throws(() => checks.kept("dispatch", none.id), /no check/);
+});
+
 test("checks: the compiler takes a model recipe as model: true, and names the removed cap", () => {
   const root = mkdtempSync(join(tmpdir(), "mod-"));
   mkdirSync(join(root, "recipe"));

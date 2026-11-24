@@ -48,7 +48,11 @@
     "doc": "On (a new install): a module's scheduled routines start paused and its agents' heartbeats off, until the owner turns one on (overrides.routines.<key>.status: active, overrides.agents.<key>.heartbeat). Unset or off: they run as their modules declare. docs/design/quiet-start.md."
   },
   "computers_max": {
-    "doc": "How many computers run at once, 1 to 64: the computer launcher's pool and the kernel's job admission both read it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled. Agent jobs and check jobs (code review, CI checks) are each guaranteed half the pool and may borrow the other's idle computers."
+    "doc": "How many computers agent jobs run at once, 1 to 64: the kernel's job admission reads it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled. Check jobs have their own number, check_computers_max."
+  },
+  "check_computers_max": {
+    "default": 32,
+    "doc": "How many computers check jobs (code review, CI checks) run at once, 1 to 64, apart from agent jobs' computers_max (config/computers.json checks); the computer launcher keeps both. A check's computer mostly waits on remote model calls (about 250 MB, no CPU), so a repo review's area checks run side by side; a check over it waits queued."
   },
   "auto_update": {
     "default": "on",

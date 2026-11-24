@@ -3,6 +3,7 @@
 // Its module token (code_review_token) is asked for fresh, so the token the kernel writes after start is picked up.
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { githubReview, githubSource, kernelCodeHost, kernelPoster, kernelRunner, reviewExecutor } from "./adapters.ts";
@@ -12,6 +13,7 @@ import { serveExecutor } from "./aidenhq-sdk/executor.ts";
 import { handler } from "./api.ts";
 import { readConfig } from "./config.ts";
 import { createEngine } from "./engine.ts";
+import { deepsecStore } from "./deepsec-store.ts";
 import { configTools } from "./config-tool.ts";
 import { createMcp, serveMcp } from "./mcp.ts";
 import { isModule } from "./module-caller.ts";
@@ -28,8 +30,11 @@ const kernel = new Proxy({} as ReturnType<typeof kernelClient>, { get: (_, k) =>
 const config = readConfig(env.CODE_REVIEW_SETTINGS);
 for (const e of config.errors) log("WARNING: settings.code_review", { error: e });
 const facts = factEmitter(kernel, log);
+const dbFile = env.CODE_REVIEW_DB ?? "/data/code-review.sqlite";
 const engine = createEngine({
-  db: new DatabaseSync(env.CODE_REVIEW_DB ?? "/data/code-review.sqlite"),
+  db: new DatabaseSync(dbFile),
+  // deepsec's records per repo, beside the database (never in the repo).
+  deepsec: deepsecStore(join(dirname(dbFile), "deepsec")),
   config: () => config,
   source: githubSource(env.CODE_REVIEW_GITHUB_URL ?? "http://github:8086", token),
   runner: kernelRunner(kernel),

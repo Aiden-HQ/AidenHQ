@@ -625,7 +625,7 @@ const moduleSecrets = createModuleSecrets({
 const moduleValidate = createModuleValidate({ registry: checksRegistry, services: (m) => { const s = modulesFile().services ?? {}; return Object.hasOwn(s, m) ? s[m] : undefined; }, secret, resolver, facts, log });
 // Admission (admission.ts) and the kernel's own computers for the jobs it admits (boxes.ts): capacity is settings.computers_max,
 // the number the launcher's pool reads too (config/computers.json `max`; missing, nothing is admitted).
-const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});
+const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; checks?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});
 // A job's requests for its task's next turn (`aidenhq reset|engine|cleanup`): boxes does the cleanup, admission the rest; and
 // its prechecks (`aidenhq review`, the precheck below), counted here.
 const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), orgs: () => repos().agentsOrgs, engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
@@ -660,8 +660,8 @@ boxes = createBoxes({
     may: (module, repo) => covers(repo, codehostGrants().find((g) => g.module === module)?.clone?.repos, codehostRepos()),
   },
 });
-// One pool for agent jobs and check jobs (pool.ts): each kind is guaranteed half of settings.computers_max.
-const pool = createPool({ capacity: () => Number(computers().max) || 0, agentLive: () => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get() as { n: number }).n });
+// The computer pool (pool.ts): agent jobs bounded by settings.computers_max, check jobs by settings.check_computers_max.
+const pool = createPool({ capacity: () => Number(computers().max) || 0, checkCapacity: () => Number(computers().checks) || 0, agentLive: () => (records.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('admitted', 'running')").get() as { n: number }).n });
 const admission = createAdmission({
   pool, db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,
   spend: (agent, task) => gw.exhausted(agent, task), mayDispatch, wakes: wakeInbox(records.db), nextTurn: jobTools,

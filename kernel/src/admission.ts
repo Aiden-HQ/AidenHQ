@@ -1,6 +1,6 @@
 // Admission (spec §4.2a): a dispatcher module asks for a job on a wake it claimed; the kernel admits it in one SQLite
-// transaction (the wake still claimed by this module, no live job on the task, a free computer within the pool's fair share
-// setting and the agent's max_parallel, the task's spend cap and the install's limits not used up), freezing the job's authority from its profile and grants at
+// transaction (the wake still claimed by this module, no live job on the task, a free computer among the agent jobs'
+// (settings.computers_max) and the agent's max_parallel, the task's spend cap and the install's limits not used up), freezing the job's authority from its profile and grants at
 // that instant (the job row's `authority`), and only then gets it a computer and starts it (`launch`, boxes.ts). A grant
 // edited later never changes a running job. Everything the job gets comes from the wake's task and agent, never the request.
 import { randomBytes } from "node:crypto";
@@ -84,7 +84,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
   kinds: () => Record<string, { module: string; floor: number; tools: string[]; filer?: string }>;
   /** settings.computers_max (config/computers.json `max`): the launcher's pool, so no job is admitted it can't box. */
   capacity: () => number;
-  /** The pool's fair share (pool.ts): agent jobs and check jobs are each guaranteed half of `capacity`; this admits within it. */
+  /** The computer pool (pool.ts): agent jobs take at most `capacity`, apart from check jobs' own number. */
   pool: Pool;
   /** The spend limits a new job of this agent on this task would start over (the gateway's `exhausted`). */
   spend: (agent: string, task: string) => { scope: string }[];
@@ -176,7 +176,7 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
       if (own.team) throw new JobError(409, "team-record", `agent ${agent} is team ${own.team.name}'s record: the kernel routes its tasks to a member, and it never runs`);
       // A member holds its team record's roles (heldRoles); the platform filter below still applies.
       const g: AgentGrant = { ...own, roles: heldRoles(grants(), agent) };
-      if (!pool.mayAgent(b.wake)) throw new JobError(429, "busy", `the computers agent jobs may take are taken (of ${capacity()}); try again shortly`);
+      if (!pool.mayAgent()) throw new JobError(429, "busy", `the computers agent jobs may take are taken (of ${capacity()}); try again shortly`);
       const mine = (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE agent = ? AND ${LIVE}`).get(agent) as { n: number }).n;
       if (mine >= (g.max_parallel ?? 1)) throw new JobError(429, "max-parallel", `agent ${agent} already runs ${mine} job(s), its max_parallel`);
       const over = spend(agent, task);

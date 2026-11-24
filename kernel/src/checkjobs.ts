@@ -52,8 +52,13 @@
 // RESULT_MAX bytes): it passes only when that came out, the kernel stamps a model recipe's with `cost_usd` (its token's spend,
 // from the gateway's ledger, never the box's say) and `tokens` (that attempt's input, cached and output tokens, the same ledger) and the receipt signs the exact bytes' sha256 (`result`). The result is the
 // recipe's output, made from the repo's text: data for its reader, never instructions.
+// Larger state a recipe carries from one run to the next (code review's deepsec records) travels as files, never in the spec or
+// the result: a spec field of kind `input` names a file its module uploaded first (POST /v1/checks/inputs: its sha256, so the
+// check's hash binds the bytes), laid at /aidenhq-out/<field>; a recipe with `keep: true` may leave one file at
+// /aidenhq-out/keep, which the kernel keeps after the run (a regular file of at most INPUT_MAX, never through a link) for its
+// module to fetch (GET /v1/checks/:check/kept). Both are the box's data, never read by the kernel; both go after FILES_DAYS.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { missKind, passes } from "../sdk/src/pass-rule.ts";
@@ -76,9 +81,14 @@ export const KINDS = {
   text: /^[^\x00-\x08\x0b-\x1f\x7f]{0,2000}$/,
   /** A JSON object of at most 16 KB (a reviewer profile). */
   json: { test: (v: string) => v.length <= 16_384 && isObject(v) },
+  /** An uploaded input file's sha256 (POST /v1/checks/inputs), or empty for none. */
+  input: /^([0-9a-f]{64})?$/,
 } satisfies Record<string, { test(v: string): boolean }>;
 /** The most a result artifact may be: larger, the recipe produced no result. */
 export const RESULT_MAX = 256 * 1024;
+/** The most an input or a kept file may be, and how long either is kept. */
+export const INPUT_MAX = 64 * 1024 * 1024;
+const FILES_DAYS = 2;
 /** A module's recipe (modules.ts checkJobs compiles it from `check_jobs:`). `files`: its folder, laid in the box; `declares`: a
  * package.json script the base must keep; `cwd_from`: the spec field naming the folder it runs in; `judged`: the eval's layout. */
 export type Recipe = {
@@ -89,6 +99,8 @@ export type Recipe = {
   model?: true;
   /** The recipe writes one JSON object to /aidenhq-out/result.json; the receipt binds its sha256. */
   result?: boolean;
+  /** The recipe may leave one file at /aidenhq-out/keep for its module to fetch after the run. */
+  keep?: true;
 };
 export type Recipes = Record<string, Recipe>;
 /** The eval's spec (the code host builds it): the product repo and its commits under test, judging and supplying the change's cases. */
@@ -394,6 +406,30 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     }
   };
   const row = (id: string) => db.prepare("SELECT * FROM checks WHERE id = ?").get(id) as Record<string, any> | undefined;
+  /** Where a module's uploaded inputs (by sha256) and a check's kept file are. */
+  const inputPath = (module: string, sha: string) => join(workDir, "check-inputs", module, sha);
+  const keptPath = (id: string) => join(workDir, "check-kept", id);
+  /** Inputs and kept files older than FILES_DAYS go (each upload and each check started sweeps). */
+  const sweepFiles = () => {
+    const old = now() - FILES_DAYS * 86_400_000;
+    for (const dir of [join(workDir, "check-kept"), ...(() => { try { return readdirSync(join(workDir, "check-inputs")).map((m) => join(workDir, "check-inputs", m)); } catch { return []; } })()])
+      for (const f of (() => { try { return readdirSync(dir); } catch { return []; } })()) { try { if (statSync(join(dir, f)).mtimeMs < old) rmSync(join(dir, f), { force: true }); } catch {} }
+  };
+  /** The run's kept file (a keep recipe's /aidenhq-out/keep: a regular file of at most INPUT_MAX, never through a link), copied
+   * from the descriptor it was checked on into a file of the kernel's own before the attempt's folder goes; anything else is none. */
+  const keepOut = (id: string, dir: string) => {
+    let fd: number | undefined;
+    try {
+      fd = openSync(join(dir, "out", "keep"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size > INPUT_MAX) return;
+      const buf = Buffer.alloc(st.size);
+      let n = 0;
+      for (let r; n < st.size && (r = readSync(fd, buf, n, st.size - n, n)); n += r);
+      mkdirSync(join(workDir, "check-kept"), { recursive: true, mode: 0o700 });
+      writeFileSync(keptPath(id), buf.subarray(0, n), { mode: 0o600 });
+    } catch { /* none */ } finally { if (fd !== undefined) closeSync(fd); }
+  };
   /** The checks this process is running (a drain waits for them). */
   const mine = new Set<string>();
   const versions = new Map<string, number>();
@@ -409,11 +445,12 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
 
   /** A run launched in a fresh box (its handle). `trees`: commit trees by spec field, moved into the out folder (the recipe's
    * history); `spec`: written to the out folder's spec.json. */
-  async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, trees: Record<string, string> = {}, spec?: Record<string, string>, mint?: () => string) {
+  async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, trees: Record<string, string> = {}, spec?: Record<string, string>, mint?: () => string, inputs: Record<string, string> = {}) {
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(out, "home"), { recursive: true });
     for (const [name, text] of Object.entries(r.files)) (mkdirSync(join(out, "recipe", dirname(name)), { recursive: true }), writeFileSync(join(out, "recipe", name), text));
     for (const [field, tree] of Object.entries(trees)) renameSync(tree, join(out, field));
+    for (const [field, file] of Object.entries(inputs)) copyFileSync(file, join(out, field));
     if (spec) writeFileSync(join(out, "spec.json"), JSON.stringify(spec));
     return box.launch({ check: id, image: "engineer", workspace, out, cwd, argv: r.argv, env, timeoutMs: r.timeout_min * 60_000, readOnly: r.judged !== undefined, mint, waiting: (w) => { if (w !== boxless.has(id)) { if (w) boxless.add(id); else boxless.delete(id); bump(id); } } });
   }
@@ -437,8 +474,15 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
 
   /** A recipe on `repo@head` (and its `base`, when the spec has one); passed on exit 0. Whether a declared check must run is the
    * base's to say, never the change's: a head that drops it, or whose package.json can't be read, fails. */
-  async function code(id: string, snapshot: Snapshot, r: Recipe, run: Run, repo: string, head: string, spec: Record<string, string>, dir: string, prior: number, minted: (runKey: string) => void, launched: Launch) {
+  async function code(id: string, module: string, snapshot: Snapshot, r: Recipe, run: Run, repo: string, head: string, spec: Record<string, string>, dir: string, prior: number, minted: (runKey: string) => void, launched: Launch) {
     const ws = join(dir, "ws"), was = join(dir, "base");
+    // Each uploaded input the spec names, before anything is fetched: one that isn't there (gone after FILES_DAYS) can't run.
+    const inputs: Record<string, string> = {};
+    for (const [field, kind] of Object.entries(r.spec)) {
+      if (kind !== "input" || !spec[field]) continue;
+      inputs[field] = inputPath(module, spec[field]!);
+      if (!existsSync(inputs[field]!)) throw new Error(`the check's input ${field} isn't uploaded (POST /v1/checks/inputs)`);
+    }
     mkdirSync(ws);
     await snapshot(repo, head, ws);
     // Each other commit the spec names, once: its tree for the recipe's history.
@@ -465,7 +509,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     const mint = r.model ? () => { token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000 }); minted(runKey(token)); return token; } : undefined;
     const env = r.model ? checkEnv("model", { gatewayUrl }) : checkEnv(r.result ? "result" : "plain");
     const step = { prior };
-    const o = await launched(await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head }, mint), step);
+    const o = await launched(await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head }, mint, inputs), step);
     return codeEnded(r, dir, o, token ? runKey(token) : undefined, step);
   }
   /** A code recipe's verdict from its run's end (this kernel's run, or one it followed after a restart): `key`, its model token's run key. */
@@ -614,8 +658,9 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
         rmSync(dir, { recursive: true, force: true });
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         const snap = snapshot(r.module);
-        v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir, launched, caps) : await code(attempt, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at), launched);
+        v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir, launched, caps) : await code(attempt, r.module, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at), launched);
       }
+      if (recipe.keep) keepOut(id, dir);
       const receipt = signReceipt(secret(), { check: id, repo: r.repo, head: r.head, run: r.run, judge: spec.judge_commit ?? null, policy: spec.policy_hash ?? null, hash: r.hash, verdict: v.verdict, ran: v.ran, summary: v.summary.slice(0, 12_000), at: new Date(now()).toISOString(), ...(v.result !== undefined ? { result: resultHash(v.result) } : {}) });
       // A judged run's spend is its ledger's, every pass of it: recorded with the verdict so the check's total doesn't drop back to
       // an earlier attempt's figure once it is no longer running (a code recipe reports its own).
@@ -665,6 +710,8 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (had && !again) return view(had);
       const id = had?.id ?? `c-${randomBytes(8).toString("hex")}`;
       // The task is the latest asker's: a re-run for another task is that task's evidence from here on.
+      rmSync(keptPath(id), { force: true });
+      sweepFiles();
       if (had) db.prepare("UPDATE checks SET task = COALESCE(?, task), state = 'running', receipt = NULL, error = NULL, result = NULL, retry = 0, capped = NULL, tries = tries + 1, run_key = NULL, follow = NULL, box_at = NULL, at = ?, ended = NULL WHERE id = ?").run((b.task as string | undefined) ?? null, now(), id);
       else db.prepare("INSERT INTO checks (id, module, repo, head, run, hash, spec, state, at, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)").run(id, module, repo.toLowerCase(), head, run, hash, JSON.stringify(spec), now(), (b.task as string | undefined) ?? null);
       log("check started", { check: id, module, repo, head, run });
@@ -724,6 +771,22 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       return view(row(id)!);
     },
     verify: (receipt: unknown, want: Binding) => verifyReceipt(secret(), receipt, want),
+    /** A module's input file for a later check (at most INPUT_MAX): its sha256, the value of a spec field of kind input. */
+    putInput(module: string, data: Buffer): { sha256: string } {
+      if (data.length > INPUT_MAX) throw new CheckError(413, "too-large", `an input is at most ${INPUT_MAX} bytes`);
+      sweepFiles();
+      const sha256 = createHash("sha256").update(data).digest("hex"), file = inputPath(module, sha256);
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      const tmp = `${file}.${randomBytes(4).toString("hex")}`;
+      writeFileSync(tmp, data, { mode: 0o600 });
+      renameSync(tmp, file);
+      return { sha256 };
+    },
+    /** A finished check's kept file (the box's data, never read here), or undefined when it left none. */
+    kept(module: string, id: string): Buffer | undefined {
+      own(module, id);
+      try { return readFileSync(keptPath(id)); } catch { return undefined; }
+    },
   };
 }
 export type Checks = ReturnType<typeof createChecks>;

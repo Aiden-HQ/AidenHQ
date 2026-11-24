@@ -1,6 +1,7 @@
 // The one client a module uses to call the kernel (and, through its /v1/cp/read route, the control plane): its own token as
 // a bearer, a timeout, JSON in and out. `call` returns the body and throws a KernelError (with the status) on a non-2xx;
-// `raw` returns {status, json} for a caller that reads the status itself; `bytes` returns a GET's raw body. Copied into each
+// `raw` returns {status, json} for a caller that reads the status itself; `bytes` returns a GET's raw body and `upload` POSTs
+// raw bytes (a JSON answer back). Copied into each
 // module that calls the kernel (scripts/sync-shared.ts).
 /** The kernel's own error body (`error.type`, `error.message`), when it sent one (admission.ts names each refusal). */
 export type KernelRefusal = { type?: string; message?: string };
@@ -33,6 +34,12 @@ export function kernelClient(url: string, token: string, { timeoutMs = 30_000, f
       const r = await send("GET", path);
       if (!r.ok) throw new KernelError(r.status, `kernel GET ${path} → ${r.status}`);
       return Buffer.from(await r.arrayBuffer());
+    },
+    upload: async (path: string, data: Buffer): Promise<any> => {
+      const r = await fetcher(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" }, body: new Uint8Array(data), signal: AbortSignal.timeout(timeoutMs) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new KernelError(r.status, `kernel POST ${path} → ${r.status}: ${JSON.stringify(j).slice(0, 200)}`, refusalBody(j));
+      return j;
     },
   };
 }

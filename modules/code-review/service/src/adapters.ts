@@ -92,7 +92,7 @@ export function checkSpec(s: ReviewSpec): Record<string, string> {
   if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}), run: s.run ?? "" };
   return {
     base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
-    option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}),
+    option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}), deepsec_data: s.deepsec_data ?? "",
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),
@@ -114,6 +114,10 @@ export function kernelRunner(kernel: KernelClient): ReviewRunner {
       if (v.state === "done" && v.receipt?.verdict === "pass" && v.result?.version === 1) return { state: "done", review: v.result, ...billed };
       // A check that failed before it got a box (its snapshot couldn't be read, a restart) ran nothing, so spent nothing.
       return { state: "failed", why: (v.error ?? v.receipt?.summary ?? `the check ended ${v.state}`).slice(0, 300), ...billed, ...(!v.box_at && billed.billed_usd === undefined ? { billed_usd: 0 } : {}) };
+    },
+    async input(data) { return String((await kernel.upload("/v1/checks/inputs", data)).sha256); },
+    async kept(check) {
+      try { return await kernel.bytes(`/v1/checks/${check}/kept`); } catch (e) { if ((e as { status?: number }).status === 404) return undefined; throw e; }
     },
   };
 }

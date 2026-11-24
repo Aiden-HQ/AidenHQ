@@ -2,10 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { deepsec, said } from "../recipe/deepsec.ts";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { deepsec, layCarried, leave, said } from "../recipe/deepsec.ts";
 import { review } from "../recipe/review.ts";
 
 const A = "a".repeat(40), E = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -102,6 +104,36 @@ test("deepsec scans when INFO.md is committed and sets up (init) when it isn't; 
   const r4 = await withEnv({ ...gw, PATH: `${bin4}:${process.env.PATH}` }, () => deepsec({ root: repoRoot(), target: "tree", model: "~deepseek/deepseek-flash-latest", effort: "low", max_cost_usd: 7, scratch }));
   assert.deepEqual([r4.review.covered, r4.review.findings.length, !!r4.setup], [["src/a.js"], 2, true]);
   assert.match(r4.review.incomplete, /^deepsec init: the engine stopped \(exit 1\); it said «AI processing completed with 1 failed batch\(es\)»/);
+});
+
+test("deepsec starts from the records earlier runs left, analyses a file again once its content changed, and leaves only what it changed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cr-ds-carry-")), files = join(dir, "files"), keep = join(dir, "keep"), root = repoRoot({ "src/d.js": "d\n" });
+  const hash = (p) => createHash("sha256").update(readFileSync(join(root, p), "utf8")).digest("hex");
+  const rec = (p, o) => ({ filePath: p, status: "analyzed", fileHash: hash(p), findings: [{ severity: "HIGH", title: `old in ${p}` }], lastScannedAt: "t0", ...o });
+  // src/b.js changed since its record (another hash); src/c.js is gone from this commit; ../evil.js is out of the data folder.
+  writeFileSync(join(dir, "carried"), gzipSync(JSON.stringify({ records: { "src/a.js": rec("src/a.js"), "src/b.js": rec("src/b.js", { fileHash: "old" }), "src/d.js": rec("src/d.js", { status: "processing", lockedByRunId: "r0" }), "src/c.js": { ...rec("src/a.js"), filePath: "src/c.js" }, "../evil.js": rec("src/a.js") } })));
+  // A path that is a link now (src/l.js) is never read through: as good as gone.
+  symlinkSync("/etc/hosts", join(root, "src/l.js"));
+  const withLink = gzipSync(JSON.stringify({ records: { ...JSON.parse(gunzipSync(readFileSync(join(dir, "carried"))).toString("utf8")).records, "src/l.js": { ...rec("src/a.js"), filePath: "src/l.js" } } }));
+  writeFileSync(join(dir, "carried"), withLink);
+  const carried = layCarried(join(dir, "carried"), files, root);
+  assert.deepEqual([[...carried.was.keys()].sort(), carried.gone.map(([p]) => p).sort()], [["src/a.js", "src/b.js", "src/d.js"], ["src/c.js", "src/l.js"]]);
+  const read = (p) => JSON.parse(readFileSync(join(files, `${p}.json`), "utf8"));
+  // Unchanged stays analysed; a changed file is pending with its findings dropped (deepsec's scan would keep it analysed); a
+  // record a stopped run left mid-processing is pending again.
+  assert.deepEqual([read("src/a.js").status, read("src/b.js").status, read("src/b.js").findings, read("src/d.js").status], ["analyzed", "pending", [], "pending"]);
+  // The scan stamps every record it reads; process analyses src/b.js again and finds a new file.
+  const write = (p, r) => writeFileSync(join(files, `${p}.json`), JSON.stringify(r));
+  write("src/a.js", { ...read("src/a.js"), lastScannedAt: "t1" });
+  write("src/b.js", { ...read("src/b.js"), status: "analyzed", findings: [{ severity: "LOW", title: "new" }] });
+  write("src/e.js", rec("src/a.js", { filePath: "src/e.js" }));
+  leave(carried, files, keep, true);
+  const left = JSON.parse(gunzipSync(readFileSync(keep)).toString("utf8"));
+  assert.deepEqual([Object.keys(left.records).sort(), left.removed.map(([p]) => p).sort()], [["src/b.js", "src/d.js", "src/e.js"], ["src/c.js", "src/l.js"]]);
+  // A record under a path that is now a file's folder (src/a.js/x) is gone, never a failed review.
+  assert.deepEqual(layCarried(join(dir, "carried2"), files, root).gone, []);
+  writeFileSync(join(dir, "carried2"), gzipSync(JSON.stringify({ records: { "src/a.js/x.js": { ...rec("src/a.js"), filePath: "src/a.js/x.js" } } })));
+  assert.deepEqual(layCarried(join(dir, "carried2"), files, root).gone.map(([p]) => p), ["src/a.js/x.js"]);
 });
 
 test("a failed deepsec says why in the run's reason: its own error, from its jsonl on stdout, as data", async () => {

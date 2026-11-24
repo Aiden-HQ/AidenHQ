@@ -89,11 +89,12 @@ const resolvConf = path.join(stateDir, "resolv.conf");
 writeFileSync(resolvConf, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 const DEBUG = env("AIDENHQ_COMPUTERS_DEBUG") === "1"; // log every exec, with its env keys (never values)
-/** The pool's size: settings.computers_max (compile writes it to computers.json; the kernel admits jobs against the same number). */
+/** The pool's size: settings.computers_max plus settings.check_computers_max (compile writes both to computers.json; the kernel
+ * admits agent jobs and check jobs each against its own). */
 const maxBoxes = () => {
-  const n = readJson(CFG.computersFile).max;
-  if (!Number.isInteger(n) || n < 1) throw fail(500, "computers.json has no max (run scripts/compile.ts)");
-  return n;
+  const { max, checks } = readJson(CFG.computersFile);
+  if (!Number.isInteger(max) || max < 1 || !Number.isInteger(checks) || checks < 1) throw fail(500, "computers.json has no max or checks (run scripts/compile.ts)");
+  return max + checks;
 };
 const boxes = new Map<string, Box>(); // container → { agentId, lastUsed, busy }
 // Jobs' records (lease, task, token hash), saved as a 0600 file: a restart reloads them before it admits or reaps.

@@ -26,9 +26,10 @@ test("the instance switches one agent on; the launcher learns the image tag and 
   // The browser image is always built (apps-mcp renders in it), and agents can't name it.
   assert.match(c.images.browser, /^aidenhq\/computer-browser:[0-9a-f]{12}$/);
   assert.match(computersConfig(compile(product, inst({})).paperclip, product).images.browser, /^aidenhq\/computer-browser:/);
-  // One capacity setting: the launcher's pool and the kernel's admission both read computers.json `max`.
+  // Agent jobs' computers (`max`) and check jobs' own (`checks`, 32 unset): the kernel admits each kind against its own, the launcher keeps both.
   assert.equal(r.computersMax, defaultComputersMax());
-  assert.equal(computersConfig(r.paperclip, product, r.computersMax).max, r.computersMax);
+  assert.deepEqual([computersConfig(r.paperclip, product, r.computersMax, r.checkComputersMax).max, r.checkComputersMax], [r.computersMax, 32]);
+  assert.equal(compile(product, inst({}, { check_computers_max: 12 })).checkComputersMax, 12);
   // Unset, the pool follows the host's RAM (one box per 1.5 GB, 4 to 64); a setting wins.
   const GB = 2 ** 30;
   assert.deepEqual([1, 8, 16, 32, 64, 128].map((g) => defaultComputersMax(g * GB)), [4, 5, 10, 21, 42, 64]);
