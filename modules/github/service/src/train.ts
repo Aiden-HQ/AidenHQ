@@ -1,4 +1,6 @@
-// The release train's loop (W3; the runner's runReleases, moved): once a minute, the instance target's bump decided by
+// The release train's loop (W3; the runner's runReleases, moved): once a minute, over cached inputs (no GitHub read on the
+// timer: instance.yaml read at start and on each push to the instance repo, `refresh`; the product tip and whether it is green
+// from the change feed's snapshot of that head, `github.tip`), the instance target's bump decided by
 // release.ts trainStep, written by code and filed as a kernel.apply through the kernel's /v1/writes with this module's own
 // token (role kernel.apply). The kernel plans it (kernel/src/apply-tier.ts) and tiers it like any apply, with no branch for who
 // filed it. Its task is one the kernel
@@ -27,8 +29,8 @@ export type TrainOptions = {
   /** The kernel with this module's token: POST /v1/tasks, /v1/tasks/:id/close, /v1/writes; GET /v1/work?task=, /v1/tasks?source=. */
   kernel(method: "GET" | "POST", path: string, body?: unknown): Promise<any>;
   github: {
-    /** A repo's default branch head and whether every check on it passed. */
-    tip(repo: string): Promise<{ tip?: string; green: boolean }>;
+    /** A repo's default branch head and whether every check on it passed; undefined while not known yet. */
+    tip(repo: string): Promise<{ tip?: string; green: boolean } | undefined>;
     /** A file at the default branch's head, undefined when it isn't there. */
     text(repo: string, path: string): Promise<string | undefined>;
     commits(repo: string, from: string, to: string): Promise<Commit[]>;
@@ -50,6 +52,9 @@ const REFILE = /moved on since this commit's base|not landed: .*(eval|isn't at)/
 
 export function createReleaseTrain(o: TrainOptions) {
   const log = o.log ?? (() => {});
+  /** instance.yaml as last read (refresh): at start, then on each push to the instance repo. */
+  let instanceText: Promise<string | undefined> | undefined;
+  const refresh = () => { const p = o.github.text(o.instanceRepo, "instance.yaml"); instanceText = p; p.catch(() => { if (instanceText === p) instanceText = undefined; }); return p; };
   const now = o.now ?? (() => new Date());
   mkdirSync(o.dir, { recursive: true });
   const file = join(o.dir, "release-instance.json");
@@ -187,11 +192,13 @@ export function createReleaseTrain(o: TrainOptions) {
       if (s.flight) await follow(s);
       // A bump whose task this process never had in hand is still settled: before the train decides whether it has work at all.
       await sweep(flown);
-      const instance = await o.github.text(o.instanceRepo, "instance.yaml");
+      const instance = await (instanceText ?? refresh());
       // An instance that installs releases (a `release:` key) is the kernel's updater's: the train stays idle.
       if (pinOwner(instance ?? "") !== "train") return;
       const pinned = /^product:[ \t]*["']?([0-9a-f]{40})["']?[ \t]*(?:#.*)?$/m.exec(instance ?? "")?.[1];
-      const { tip, green } = await o.github.tip(o.productRepo);
+      const head = await o.github.tip(o.productRepo);
+      if (!head) return;
+      const { tip, green } = head;
       const d = trainStep({ tip, green, pinned, lastTried: s.lastTried, open: s.open, flight: s.flight, now: now().toISOString(), windowMinutes: o.windowMinutes });
       if (d.do === "open") s.open = { since: now().toISOString() };
       else if (d.do === "close") delete s.open;
@@ -215,6 +222,8 @@ export function createReleaseTrain(o: TrainOptions) {
   }
   return {
     step,
+    /** Reads instance.yaml again (a push to the instance repo). */
+    refresh: () => refresh().then(() => undefined),
     start(everyMs = 60_000) {
       let busy = false;
       const tick = () => { if (busy) return; busy = true; step().catch((e: Error) => log("release train step failed", { err: e.message.slice(0, 300) })).finally(() => { busy = false; }); };

@@ -138,9 +138,13 @@ connections:
     # The host's health probe (kernel/src/health.ts): the owner's sign-in answers a read.
     health_probes:
       github: { tool: github_whoami }
-    # Routines' events (kernel events.ts), polled from each subscribed repo's events feed on the code host's churn pass
-    # (best-effort: GitHub can delay its feed): a routine subscribes to a repo its agent's github_issue_read reaches.
-    events: { resource: "owner/repo", kinds: [ issues.opened, issue_comment.created, pull_request.opened ], filter: [ kind, author, contains ], reads: [ github_issue_read ] }
+    # The change feed's events (service/src/feed.ts, kernel events.ts; GitHub's webhook names): routines subscribe to a repo their
+    # agent's github_issue_read reaches, code services through `subscribes:`. Seen within a minute of the change.
+    events:
+      resource: "owner/repo"
+      kinds: [ pull_request.opened, pull_request.synchronize, pull_request.ready_for_review, pull_request.converted_to_draft, pull_request.edited, pull_request.closed, pull_request.reopened, pull_request.labeled, pull_request.unlabeled, issues.opened, issues.labeled, issues.unlabeled, issues.closed, issues.reopened, issue_comment.created, pull_request_review_comment.created, pull_request_review.submitted, check_run.completed, status, push, github.resync ]
+      filter: [ kind, author, contains ]
+      reads: [ github_issue_read ]
   # GitHub's own MCP server (its default toolsets), passed through as the signed-in owner (src/vendor/proxy.ts), read-only
   # (spec §4): every tool not tagged `read` here is refused in github-mcp (official.ts denyExcept, from GITHUB_OFFICIAL_READ).
   # Mutations go only through AidenHQ's typed tools, which sign them and file their write records.
