@@ -34,9 +34,11 @@ export type Kept = Adoption & {
   /** The report comment's id (edited in place). */
   report?: number;
   /** Counters for the caps: per head (wakes), per PR (rounds, ci, review) and the heads each required check was red on. */
-  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string };
+  counters?: { head: string; wakes: number; rounds: number; ci: number; review: number; red: Record<string, string[]>; lastRound?: string; /** The fixes already asked for at this head (a `wait` between two of them never repeats one). */ acted?: string[] };
   /** The direct merge filed for a head: its kernel record and attempt (a failed one is filed again with the next attempt). */
   merge?: { head: string; attempt: number; record: string };
+  /** A fork's code review was asked for (retried each pass until it was). */
+  asked?: boolean;
   /** A quiet task that holds the adoption's records (a merge, a repair, a fork's review summary) while no Engineer task exists:
    * the kernel files a reviewed write only on a task. It wakes nobody. */
   holder?: string;
@@ -45,7 +47,7 @@ export type Kept = Adoption & {
   /** The App's approval filed for a head (github's `approve`): its record and attempt, and why it ended without one (no App). */
   approve?: { head: string; attempt: number; record: string; why?: string };
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
-  asked?: string;
+  freshAsked?: string;
   /** What ship did, for the report: one short code-written line each, newest last. */
   did?: string[];
 };
@@ -110,6 +112,8 @@ export async function intake(d: HandoffDeps, pr: PrView): Promise<Kept | undefin
     for (const t of tasksOf(was)) await closeTask(d, t, `${pr.url} was handed back: ship stopped working on it.`);
     return d.state.get(pr.repo, pr.number) as Kept;
   }
+  // A fork's review ask that failed (code review down, a timeout) is asked again each pass until it lands.
+  if (was && pr.fork && !was.asked && !was.hold && was.holder) return ask(d, pr, was);
   if (was) return was;
   // Never adopted: under `handoff: all`, a non-draft PR by a writer (never a fork: that waits for a member), unless a member has
   // already handed it back (the hand-back is the newest trusted event).
@@ -129,7 +133,7 @@ async function adopt(d: HandoffDeps, pr: PrView, was: Kept | undefined, trigger:
   if (pr.fork) a.holder = await recordTask(d.kernel, pr, a);
   d.state.put(a);
   d.log("adopted", { pr: pr.url, generation, trigger: trigger.kind, actor: trigger.actor });
-  if (pr.fork) await d.askReview(pr.url, a.holder!).catch((e) => d.log("code review ask failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
+  if (pr.fork) return ask(d, pr, a);
   return a;
 }
 
@@ -145,6 +149,17 @@ export async function fileTask(kernel: HandoffDeps["kernel"], pr: PrView, genera
     source: `ship:${pr.repo.toLowerCase()}/${pr.number}:${generation}`,
   });
   return String(t.id);
+}
+
+/** Code review's ask for a fork (its summary on the records task), marked once it landed. */
+async function ask(d: HandoffDeps, pr: PrView, a: Kept): Promise<Kept> {
+  try { await d.askReview(pr.url, a.holder!); } catch (e) {
+    d.log("code review ask failed; asked again next pass", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
+    return a;
+  }
+  const done: Kept = { ...a, asked: true };
+  d.state.put(done);
+  return done;
 }
 
 /** The adoption's tasks ship filed (never a fleet PR's opener's). */

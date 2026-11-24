@@ -1,0 +1,34 @@
+// The contributor_prs duty (moved from the Maintainer's watcher): a quiet human PR is nudged, then closed after another quiet spell.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { prTick } from "../service/src/contributor.ts";
+
+const kv = () => {
+  const m = new Map();
+  return { meta: (k) => m.get(k), setMeta: (k, v) => void m.set(k, v) };
+};
+const logs = () => ({ info() {}, warn() {} });
+const R = "acme/product";
+const DAY = 86_400_000;
+const NOW = Date.parse("2026-03-20T00:00:00Z");
+const ago = (days) => new Date(NOW - days * DAY).toISOString();
+const pr = (o = {}) => ({ number: 1, author_kind: "human", draft: false, review_requested: false, waiting_on_author: "failing check lint", last_author_activity: ago(8), ...o });
+
+test("a quiet PR is nudged, then closed after another quiet spell; an active author after the nudge is not closed", async () => {
+  const store = kv(), log = logs(), tasks = [];
+  let now = NOW, rows = [pr({ number: 1 }), pr({ number: 2 })];
+  const prs = async () => ({ repos: [{ repo: R, stale_days: 7, prs: rows }] });
+  const firePr = async (_r, t) => (tasks.push(`${t.kind}:${t.number}`), true);
+  const look = () => prTick({ prs, firePr, store, log, now });
+  assert.equal(await look(), 2);
+  // Within the hour nothing is read again.
+  assert.equal(await look(), 0);
+  // A week on: PR 1 stayed silent, PR 2's author replied (the head is unchanged).
+  now = NOW + 8 * DAY;
+  rows = [pr({ number: 1 }), pr({ number: 2, last_author_activity: new Date(NOW + 2 * DAY).toISOString() })];
+  assert.equal(await look(), 1);
+  assert.deepEqual(tasks, ["nudge:1", "nudge:2", "close:1"]);
+  // A close is filed once.
+  now += 2 * 3600_000;
+  assert.equal(await look(), 0);
+});
