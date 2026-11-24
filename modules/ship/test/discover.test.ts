@@ -49,3 +49,9 @@ test("discover: more generated files than the repair request holds are capped an
   assert.ok(d.globs.includes("**/package-lock.json"));
   assert.ok(d.ambiguous.some((a) => /left out of the repair/.test(a)));
 });
+
+test("discover: a nested .gitattributes pattern with no slash matches at any depth under it", () => {
+  const d = discover({ "backend/.gitattributes": "*.pb.go linguist-generated\napi/x.go linguist-generated\n" });
+  assert.ok(d.globs.includes("backend/**/*.pb.go"));
+  assert.ok(d.globs.includes("backend/api/x.go"));
+});
