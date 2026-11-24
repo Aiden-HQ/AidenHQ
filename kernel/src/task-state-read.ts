@@ -69,12 +69,13 @@ export function createTaskStateRead({ file, stages, agent, polled = () => true, 
 
   const known = new Map<string, { at: number; agent: Agent | undefined }>();
   return {
-    /** The issue mirror's rows (wakes.ts) for `ids` (ids or identifiers, ≤ 200): no Paperclip read. */
+    /** The issue mirror's rows (wakes.ts) for `ids` (ids or identifiers, ≤ 200): no Paperclip read. A task confirmed deleted (its
+     *  row cleared by the poll's two misses) or never read whole has no row: it is no ref. */
     issues(ids: string[]): { issues: IssueRow[] } {
       ids = ids.slice(0, 200);
       if (!ids.length) return { issues: [] };
       const m = ids.map(() => "?").join(",");
-      const rows = db.prepare(`SELECT task AS id, identifier, title, NULLIF(status, '') AS status, json_extract(issue, '$.assigneeAgentId') AS assignee, parent, updated_at FROM task_facts_seen WHERE task IN (${m}) OR identifier IN (${m})`).all(...ids, ...ids) as unknown as IssueRow[];
+      const rows = db.prepare(`SELECT task AS id, identifier, title, NULLIF(status, '') AS status, json_extract(issue, '$.assigneeAgentId') AS assignee, parent, updated_at FROM task_facts_seen WHERE (task IN (${m}) OR identifier IN (${m})) AND issue IS NOT NULL`).all(...ids, ...ids) as unknown as IssueRow[];
       return { issues: rows };
     },
     /** A read with the removed agents' holders named, each from its own record (the company agent lists leave terminated agents out): read once per 5 minutes per holder, and a bad read leaves that row as it is. */

@@ -119,4 +119,7 @@ test("the issue mirror serves a task's identifier, title, status and parent by i
   const want = { id: "t1", identifier: "WOR-1", title: "Ship it", status: "in_progress", assignee: AGENT, parent: "p-1", updated_at: w.issue.updatedAt };
   assert.deepEqual(reader.issues(["WOR-1"]).issues.map((r) => ({ ...r })), [want]);
   assert.deepEqual(reader.issues(["t1", "nope"]).issues.map((r) => ({ ...r })), [want]);
+  // A task the poll confirmed deleted (its row cleared) is no ref.
+  w.db.prepare("UPDATE task_facts_seen SET status = 'cancelled', identifier = NULL, title = NULL, issue = NULL WHERE task = 't1'").run();
+  assert.deepEqual(reader.issues(["t1"]).issues, []);
 });

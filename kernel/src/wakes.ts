@@ -1020,6 +1020,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           missing.delete(task);
           if (r.status !== 200) { seen(task); log("wake reconcile failed", { task, err: `control plane GET issue → ${r.status}` }); continue; }
           const issue = r.json as Issue;
+          // An older read than the mirror's changes nothing, the wake cursor included (see `changed`).
+          if (stale(issue)) continue;
           taskFacts(issue, "poll", "unknown");
           if (issue.status === "done" || issue.status === "cancelled") q("UPDATE wake_tasks SET status = ?, blocked = NULL, blocked_names = NULL, blocked_deleted = NULL, blocked_exists = NULL WHERE task = ?").run(issue.status, task);
         } catch (e) { log("wake reconcile failed", { task, err: (e as Error).message }); }

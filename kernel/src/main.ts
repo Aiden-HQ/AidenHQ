@@ -506,7 +506,7 @@ let polling = false;
 every(() => {
   if (polling) return;
   polling = true;
-  void wakes.poll().catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
+  void wakes.poll(drainSignal.signal).catch((e: Error) => log("wake poll failed", { err: String(e.message ?? e).slice(0, 300) })).finally(() => { polling = false; });
 }, (Number(env("AIDENHQ_WAKE_POLL_SECONDS", "")) || 60) * 1000);
 // No idle agent-held task (idle.ts): agents' own waits (POST /v1/wait), and the idle sweep every 5 minutes.
 const idle = createIdle({ db: records.db, facts, state: taskStates, wakes, owner: ownerApi, team: (id) => Boolean(grantsTable().agents?.[id]?.team), escalate, log });
@@ -939,6 +939,7 @@ drain = () => {
   stopTending();
   for (const t of timers) clearTimeout(t);
   drainSignal.abort();
+  wakes.close(); // events still gathering are the next kernel's poll's
   // The ledger's own timers stop now; it closes once the calls it holds and the true-up in flight have settled.
   let truedUp = false;
   void gw.stop().finally(() => { truedUp = true; });

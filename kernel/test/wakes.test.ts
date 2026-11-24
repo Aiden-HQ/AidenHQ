@@ -1294,3 +1294,16 @@ test("a full page of unread comments is not a complete read: the next scan goes 
   assert.ok(w.calls.includes("GET /api/issues/t1/comments"), "read again with no change to the task");
   assert.ok(w.rows("t1").includes("comment:c500 open"));
 });
+
+test("a closure read before a reopen the kernel already recorded leaves the wake cursor where the reopen put it", async () => {
+  const w = world();
+  w.issue("t1", { status: "in_progress" });
+  await w.wakes.poll();
+  w.tick();
+  // Paperclip's list still serves the close; the reopen after it was already observed (newer).
+  Object.assign(w.issues.t1, { status: "done", statusVersion: 2, updatedAt: iso(Date.parse(w.issues.t1.updatedAt) + 1000) });
+  await w.wakes.observe({ ...w.issues.t1, status: "in_progress", statusVersion: 3, updatedAt: iso(Date.parse(w.issues.t1.updatedAt) + 5000) }, "kernel");
+  await w.wakes.poll();
+  assert.equal(w.db.prepare("SELECT status FROM wake_tasks WHERE task = 't1'").get().status, "in_progress");
+  assert.equal(w.wakes.mirror("t1").status, "in_progress");
+});
