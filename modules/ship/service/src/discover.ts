@@ -73,7 +73,7 @@ export function discover(files: Record<string, string>): Discovered {
 function jobsOf(yaml: string) {
   type Step = { dir?: string; runs: string[] };
   const jobs: { id: string; name: string; dir: string; steps: Step[]; runs: { cmd: string; dir: string }[] }[] = [];
-  let inJobs = false, jobIndent = -1, cur: (typeof jobs)[number] | undefined, step: Step | undefined, stepIndent = -1, block: { indent: number } | undefined;
+  let inJobs = false, jobIndent = -1, cur: (typeof jobs)[number] | undefined, step: Step | undefined, stepIndent = -1, inSteps = false, block: { indent: number } | undefined;
   const clean = (d: string) => d.replace(/^\.\//, "").replace(/\/$/, "") || ".";
   for (const raw of yaml.split("\n")) {
     const indent = raw.length - raw.trimStart().length;
@@ -88,11 +88,13 @@ function jobsOf(yaml: string) {
     if (indent === 0) { inJobs = false; continue; }
     if (jobIndent < 0 || indent === jobIndent) {
       const m = /^([\w-]+):\s*$/.exec(line);
-      if (m) { jobIndent = indent; cur = { id: m[1]!, name: "", dir: ".", steps: [], runs: [] }; jobs.push(cur); step = undefined; stepIndent = -1; continue; }
+      if (m) { jobIndent = indent; cur = { id: m[1]!, name: "", dir: ".", steps: [], runs: [] }; jobs.push(cur); step = undefined; stepIndent = -1; inSteps = false; continue; }
     }
     if (!cur) continue;
-    // A new step: a list item at the steps' indent.
-    if (line.startsWith("- ") && (stepIndent < 0 || indent <= stepIndent) && indent > jobIndent + 2) { stepIndent = indent; step = { runs: [] }; cur.steps.push(step); }
+    // The job's own keys: `steps:` opens its steps; any other key at that indent (needs, defaults, …) closes them.
+    if (indent === jobIndent + 2 && !line.startsWith("- ")) { inSteps = /^steps:\s*$/.test(line); step = undefined; stepIndent = -1; }
+    // A new step: a list item at the steps' indent, inside `steps:`.
+    if (inSteps && line.startsWith("- ") && (stepIndent < 0 || indent <= stepIndent) && indent > jobIndent + 2) { stepIndent = indent; step = { runs: [] }; cur.steps.push(step); }
     const name = /^name:\s*["']?(.+?)["']?\s*$/.exec(line);
     if (name && !cur.name && indent === jobIndent + 2) cur.name = name[1]!;
     const wd = /^(?:-\s+)?working-directory:\s*["']?(.+?)["']?\s*$/.exec(line);

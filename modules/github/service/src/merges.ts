@@ -270,7 +270,8 @@ export function createMerges(d: {
       if (q.ship && p.base && data.repository.pullRequest && data.repository.pullRequest.baseRefName !== p.base) return fail(`its base changed to \`${data.repository.pullRequest.baseRefName}\` since the merge was filed`);
       // On a repo code review gates, an approval on the head is needed before the merge (the gate answers undefined elsewhere).
       const checks = open ? await allChecks(p.repo, p.head) : [];
-      // Required checks unreadable: every check on the head is judged, as a merge outside ship is.
+      // Only the checks the rules require are judged, and none required counts as green (a merge outside ship needs a check on
+      // the head); when the rules can't be read (403), every check on the head is judged instead.
       const ship = open ? { queue: false, approve: false, review: (await d.reviewGate(p.repo, p.number, p.head)) !== undefined, required: (await requiredOf(p.repo, String(data.repository.defaultBranchRef?.name ?? ""))) ?? [...new Set(checks.map((c) => c.name))], checks } : undefined;
       const v = decide(data, p.head, ship);
       if (q.ship && !["merge", "done", "wait", "fail"].includes(v.do)) return fail(`not ready to merge (${v.do}): ${v.why}`);

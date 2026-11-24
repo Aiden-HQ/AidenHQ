@@ -1021,12 +1021,14 @@ export function createService(o: Options) {
    */
   async function stillApproved(r: Held): Promise<boolean> {
     if (!r.asker) return false;
-    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
-      .then(({ state, facts }) => planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }>)
+    const planned = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
+      .then(({ state, facts }) => ({ branches: (state as { branches?: { branch: string }[] }).branches ?? [], targets: planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }> }))
       .catch((e) => { if (disconnected(e)) throw e; return undefined; });
-    if (!targets) return false;
+    if (!planned) return false;
+    const { targets, branches } = planned;
     const want = [
-      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b) => [`${slugOf(b.repo).slug} ${b.branch}`, b.sha] as const),
+      // Keyed as the plan keys its targets: the planned branch (an adopted PR's push lands on its head ref, not the box's branch).
+      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b, i) => [`${slugOf(b.repo).slug} ${branches[i]?.branch ?? b.branch}`, b.sha] as const),
       ...((r.args?.prs ?? []) as { repo: string; number: number; head?: string }[]).filter((p) => p.head).map((p) => [`${slugOf(p.repo).slug}#${Number(p.number)}`, p.head!] as const),
     ];
     return want.every(([k, sha]) => targets[k]?.commit === sha);
