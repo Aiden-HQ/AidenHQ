@@ -212,12 +212,13 @@ export function needQueue(o: {
       if (pending.get(k) === kept && pending.delete(k)) save();
     },
     flush,
-    /** A call to `org` succeeded: any kept sso/restricted need for it is the owner's fix already made, not a report to replay. */
-    forget: (org: string): void => {
+    /** A call to `org` succeeded: any kept sso/restricted need for it is the owner's fix already made, not a report to replay. With
+     * no org, the sign-in works again (the recheck): any kept not_connected or expired need goes the same way. */
+    forget: (org?: string): void => {
       let changed = false;
-      const lower = org.toLowerCase();
+      const lower = org?.toLowerCase();
       for (const [k, p] of pending) {
-        if ((p.need.cause === "sso" || p.need.cause === "restricted") && p.need.org?.toLowerCase() === lower) {
+        if (lower === undefined ? SIGN_IN_CAUSES.has(p.need.cause) : (p.need.cause === "sso" || p.need.cause === "restricted") && p.need.org?.toLowerCase() === lower) {
           pending.delete(k);
           changed = true;
         }
