@@ -52,8 +52,15 @@ const STATIC = [/^\/api\/agents\/[^/]+$/, /^\/api\/companies\/[^/]+$/, /^\/api\/
 const STATIC_MS = 15_000;
 type Held = { status: number; statusText: string; headers: [string, string][]; body: Buffer };
 const statics = new Map<string, { at: number; v: Held }>();
+// Eras: a read joins only a flight started in its own era, and caches only if its era held. Any write starts a new read era
+// (before and after it), so a read made after a write never shares an answer begun before it; a write to a static path also
+// starts a new static era, which drops the kept reads and stops a flight that began before it from being kept.
+let readEra = 0, staticEra = 0;
 /** Every cached static read goes: a write that may change one (an agent, a label, a project) was made. */
-export const forgetStatic = () => statics.clear();
+export const forgetStatic = () => { staticEra++; statics.clear(); };
+/** A write made outside these wrappers (the events plugin's `post`): reads after it never share an answer begun before it. */
+export const wrote = () => { readEra++; };
+const STATIC_WRITE = /^\/api\/(agents\/|companies\/[^/]+\/(agents|labels|projects)$)/;
 
 /**
  * `f` with identical GETs shared: one in flight per URL, credential and accept (each caller gets its own copy of the answer),
@@ -61,14 +68,16 @@ export const forgetStatic = () => statics.clear();
  * every answer read under MAX_ANSWER while it streams. Attachment content passes through untouched.
  */
 export function shareReads(f: typeof fetch, now = Date.now): typeof fetch {
-  const flying = new Map<string, Promise<Held>>();
+  const flying = new Map<string, { era: number; p: Promise<Held> }>();
   const answer = (h: Held) => new Response(h.status === 204 || h.status === 304 ? null : new Uint8Array(h.body), { status: h.status, statusText: h.statusText, headers: h.headers });
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     if (method !== "GET") {
-      if (/^\/api\/(agents\/|companies\/[^/]+\/(agents|labels|projects)$)/.test(url.pathname)) forgetStatic();
-      return f(input, init);
+      const touches = STATIC_WRITE.test(url.pathname);
+      readEra++;
+      if (touches) forgetStatic();
+      try { return await f(input, init); } finally { readEra++; if (touches) forgetStatic(); }
     }
     if (url.pathname.endsWith("/content")) return f(input, init);
     const h = new Headers(init?.headers);
@@ -76,17 +85,21 @@ export function shareReads(f: typeof fetch, now = Date.now): typeof fetch {
     const isStatic = STATIC.some((re) => re.test(url.pathname));
     const hit = isStatic ? statics.get(key) : undefined;
     if (hit && now() - hit.at < STATIC_MS) return answer(hit.v);
-    let p = flying.get(key);
-    if (!p) {
-      p = (async () => {
+    let flight = flying.get(key);
+    if (!flight || flight.era !== readEra) {
+      const era = readEra, kept = staticEra;
+      const p = (async () => {
         const r = await f(input, init);
-        return { status: r.status, statusText: r.statusText, headers: [...r.headers], body: await readCapped(r) };
+        return { status: r.status, statusText: r.statusText, headers: [...r.headers], body: await readCapped(r) } as Held;
       })();
-      flying.set(key, p);
-      const mine = p;
-      void p.then((v) => { if (isStatic && v.status === 200) { if (statics.size > 1000) statics.clear(); statics.set(key, { at: now(), v }); } }, () => {}).finally(() => { if (flying.get(key) === mine) flying.delete(key); });
+      const mine = { era, p };
+      flight = mine;
+      flying.set(key, mine);
+      void p.then((v) => {
+        if (isStatic && v.status === 200 && kept === staticEra) { if (statics.size > 1000) statics.clear(); statics.set(key, { at: now(), v }); }
+      }, () => {}).finally(() => { if (flying.get(key) === mine) flying.delete(key); });
     }
-    return answer(await p);
+    return answer(await flight.p);
   }) as typeof fetch;
 }
 

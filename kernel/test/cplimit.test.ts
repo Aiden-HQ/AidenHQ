@@ -48,3 +48,13 @@ test("an answer over the cap is refused while it streams; a 2xx that isn't JSON 
   const missing = jsonApi(async () => new Response("not found", { status: 404 }));
   assert.deepEqual(await missing("GET", "/api/issues/gone"), { status: 404, json: {} });
 });
+
+test("a read made after a write never shares an answer begun before it", async () => {
+  const { hits, f } = plane();
+  const get = shareReads(f);
+  const before = get("http://cp/api/issues/t1");
+  await get("http://cp/api/issues/t1", { method: "PATCH", body: "{}" });
+  const after = get("http://cp/api/issues/t1");
+  await Promise.all([before, after]);
+  assert.equal(hits.filter((h) => h === "GET /api/issues/t1").length, 2);
+});

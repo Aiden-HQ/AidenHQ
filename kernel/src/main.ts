@@ -536,8 +536,13 @@ every(() => {
 // The disk stays bounded (workspaces.ts): closed and idle tasks' workspaces, cache layers, engine homes and left check folders
 // go, sooner when a disk is over PRESSURE. Every 15 minutes, and once soon after start; one pass at a time.
 const sweepFolders = createDiskSweep({ db: records.db, workDir: sandbox.workDir, stateDir: sandbox.stateDir, stopping: () => draining,
-  // From the issue mirror (wakes.ts): a task gone from Paperclip is recorded cancelled there; one it has never seen is kept.
-  stillClosed: async (task) => { const st = wakes.mirror(task)?.status; return st ? ["done", "cancelled"].includes(st) : undefined; },
+  // A task the issue mirror (wakes.ts) reports open keeps its folder with no read; deleting one is decided on a live read only.
+  stillClosed: async (task) => {
+    const seen = wakes.mirror(task)?.status;
+    if (seen && !["done", "cancelled"].includes(seen)) return false;
+    const r = await ownerApi("GET", `/api/issues/${encodeURIComponent(task)}`);
+    return r.status === 404 ? true : r.status === 200 ? ["done", "cancelled"].includes(String((r.json as { status?: string }).status)) : undefined; // 404: the task is gone, so is its workspace's reason to stay
+  },
   engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.state === "task").map(([k]) => k), log });
 let diskSweeping = false;
 const sweepDisk = () => {

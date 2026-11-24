@@ -254,7 +254,15 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
     return r.status === 200 ? (r.json as Issue) : issue;
   };
-  const taskFacts = (issue: Issue, source: "live" | "poll", actor: string) => inTx(db, "task_facts", () => recordTaskFacts(issue, source, actor));
+  /**
+   * An observation older than the mirror's (a list read before an event's newer read was recorded) changes nothing: neither
+   * the facts nor the mirror go back to what it saw. Equal is the same state, recorded again harmlessly.
+   */
+  const stale = (issue: Issue) => {
+    const at = (q("SELECT updated_at FROM task_facts_seen WHERE task = ?").get(issue.id) as { updated_at: string | null } | undefined)?.updated_at;
+    return Boolean(at && issue.updatedAt && ms(issue.updatedAt) < ms(at));
+  };
+  const taskFacts = (issue: Issue, source: "live" | "poll", actor: string) => inTx(db, "task_facts", () => { if (!stale(issue)) recordTaskFacts(issue, source, actor); });
   function recordTaskFacts(issue: Issue, source: "live" | "poll", actor: string) {
     const last = lastFacts(issue.id);
     const base = { subject: `task:${issue.id}`, task: issue.id, actor, source };
@@ -288,8 +296,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       statusVersion: issue.statusVersion, completedAt: issue.completedAt, cancelledAt: issue.cancelledAt, originKind: issue.originKind, originId: issue.originId, companyId: issue.companyId, createdByAgentId: issue.createdByAgentId };
     q(`INSERT INTO task_facts_seen (task, holder, status, blocked, at, identifier, title, parent, updated_at, issue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(task) DO UPDATE SET holder = excluded.holder, status = excluded.status, blocked = COALESCE(excluded.blocked, blocked), at = excluded.at,
-      identifier = COALESCE(excluded.identifier, identifier), title = COALESCE(excluded.title, title), parent = COALESCE(excluded.parent, parent), updated_at = COALESCE(excluded.updated_at, updated_at), issue = excluded.issue`)
-      .run(issue.id, holder, String(issue.status ?? ""), blocked, now(), issue.identifier ?? null, issue.title ?? null, issue.parentId ?? null, issue.updatedAt ?? null, JSON.stringify(row));
+      identifier = COALESCE(excluded.identifier, identifier), title = COALESCE(excluded.title, title), parent = CASE WHEN ? THEN excluded.parent ELSE parent END, updated_at = COALESCE(excluded.updated_at, updated_at), issue = excluded.issue`)
+      // A parent the read leaves out is kept; one it reports as null (the task was detached) is cleared.
+      .run(issue.id, holder, String(issue.status ?? ""), blocked, now(), issue.identifier ?? null, issue.title ?? null, issue.parentId ?? null, issue.updatedAt ?? null, JSON.stringify(row), issue.parentId !== undefined ? 1 : 0);
   }
   /** The polled agents, each with when its dispatcher joined. */
   const polled = () => {
@@ -329,7 +338,12 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       // Re-placed (and scanned under its new member) when it never started on a busy member; the scan that follows a placement
       // runs inside the lock, so it never asks (`rehome`).
       if (rehome && mayMove(issue.id, agent) && await serial(() => move(issue, agent))) return;
-      named(issue, agent);
+      // Its first record names its repos from its text: a mirror row carries no description, so that one is read whole.
+      if (issue.description === undefined && !q("SELECT 1 FROM team_routes WHERE task = ?").get(issue.id)) {
+        const r = await owner("GET", `/api/issues/${encodeURIComponent(issue.id)}`);
+        if (r.status !== 200 || typeof r.json?.id !== "string") throw new Error(`control plane GET issue → ${r.status}`);
+        named({ ...issue, description: (r.json as Issue).description ?? null, title: (r.json as Issue).title ?? issue.title }, agent);
+      } else named(issue, agent);
     }
     const prev = seen?.polled ? { agent: seen.agent, status: seen.status, comment: seen.comment } : undefined;
     // The comments are read when the task changed since they were last read whole (its updatedAt or lastActivityAt moved: a
@@ -785,7 +799,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           });
           return true;
         }
-        if (facts && !lastFacts(row.id).has("task.created")) { mirror(row); return true; }
+        if (facts && !lastFacts(row.id).has("task.created")) { if (!stale(row)) mirror(row); return true; }
         taskFacts(row, "poll", "unknown");
         // A closed task is before `blocked`: its blocker history must not outlive the period it was recorded for.
         q("UPDATE wake_tasks SET status = ?, blocked = NULL, blocked_names = NULL, blocked_deleted = NULL, blocked_exists = NULL WHERE task = ? AND status IS NOT ?").run(st, row.id, st);
@@ -805,9 +819,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
    *  the pass runs moves to the end of the order, where a later page or the next pass reads it, so none is skipped. */
   async function changes(company: string, joined: Map<string, number>, signal?: AbortSignal) {
     const cur = cursorOf(company), started = now();
-    let since = cur.since, complete = false, last: string | undefined, failedAt: number | undefined;
+    let since = cur.since, offset = 0, complete = false, last: string | undefined, failedAt: number | undefined;
     for (let page = 0; page < PAGES && !signal?.aborted; page++) {
-      const query = new URLSearchParams({ updatedSince: since, sortField: "updated", sortDir: "asc", limit: String(PAGE) });
+      const query = new URLSearchParams({ updatedSince: since, sortField: "updated", sortDir: "asc", limit: String(PAGE), ...(offset ? { offset: String(offset) } : {}) });
       const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
       if (l.status !== 200 || !Array.isArray(l.json)) { log("wake changes failed", { company, status: l.status }); break; }
       const rows = l.json as Issue[];
@@ -820,8 +834,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       if (cut) break;
       if (rows.length < PAGE) { complete = true; break; }
       const next = iso(ms(rows.at(-1)!.updatedAt) - 1);
-      if (ms(next) <= ms(since)) { log("wake changes stuck: a whole page shares one instant", { company, at: next }); break; }
-      since = next;
+      // A whole page inside one instant (a bulk update): the same `since` is paged on by offset until the instant is passed.
+      if (ms(next) <= ms(since)) offset += PAGE;
+      else { since = next; offset = 0; }
     }
     // The cursor moves only past what was processed: to the pass's start on a complete pass, else to the last row it reached,
     // and never past a row whose record failed. Always with the overlap, never backwards.
@@ -938,9 +953,14 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         const mine = Boolean(agent && joined.has(agent));
         if (!mine && !waits.has(issue.id)) continue;
         await lane(issue.id, async () => {
-          await scan(issue, { source: "poll", joined }).catch((e: Error) => log("wake scan failed", { task: issue.id, err: e.message }));
+          // Read again inside the lane: an event scanned while this poll waited may have moved the task on (another assignee, closed).
+          const now2 = mirrored((q("SELECT issue FROM task_facts_seen WHERE task = ?").get(issue.id) as { issue: string | null } | undefined)?.issue ?? null);
+          if (!now2) return;
+          const holder = now2.assigneeAgentId, still = Boolean(holder && joined.has(holder)) && ["todo", "in_progress", "in_review", "blocked"].includes(String(now2.status));
+          if (!still && !waits.has(now2.id)) return;
+          await scan(now2, { source: "poll", joined }).catch((e: Error) => log("wake scan failed", { task: now2.id, err: e.message }));
           // A blocked task hears its comments too (a sub-task's question to its delegator, which it is blocked on), then is released.
-          if (mine && issue.status === "blocked") await unblock(issue, agent!).catch((e: Error) => log("wake unblock failed", { task: issue.id, err: e.message }));
+          if (still && now2.status === "blocked") await unblock(now2, holder!).catch((e: Error) => log("wake unblock failed", { task: now2.id, err: e.message }));
         });
       }
       // A reopen the control plane refused, or a finished chat's comment read that failed, waits here until it succeeds: the scan

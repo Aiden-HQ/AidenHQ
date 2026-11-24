@@ -1236,3 +1236,16 @@ test("an event whose issue read answers 200 with no body scans nothing and throw
   w.stale.t1 = {};
   assert.deepEqual(await w.wakes.event({ issueId: "t1" }), { scanned: false });
 });
+
+test("an older read never takes the mirror or the facts back past a newer one", async () => {
+  const w = world();
+  w.issue("t1", { status: "todo" });
+  await w.wakes.poll();
+  // The kernel's own write was observed (newer); Paperclip's list still serves the row from before it.
+  const later = iso(Date.parse(w.issues.t1.updatedAt) + 5000);
+  await w.wakes.observe({ ...w.issues.t1, status: "done", statusVersion: 2, updatedAt: later, completedAt: later }, "kernel");
+  w.tick(10 * 60_000); // the full listing returns the older row
+  await w.wakes.poll();
+  assert.equal(w.wakes.mirror("t1").status, "done");
+  assert.equal(w.facts.forTask("t1").filter((f) => f.type === "task.status_changed").at(-1).data.to, "done");
+});
