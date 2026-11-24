@@ -303,6 +303,11 @@ Without it there is no `aidenhq-canary` bridge, the gate cannot bind `10.231.6.1
 browser: the canary stays unavailable (nothing opens or serves) rather than running on an unguarded network. The
 setting's own apply card says so.
 
+With the host's `ufw` active, `ops/vm/ufw-rules.sh` also opens the listener to the canary bridge only
+(`10.231.6.1:3132` from `ahq-canary`); `ops/vm/setup.sh` runs it on a new host. On an upgraded host, run it once the
+same way (`sudo bash ops/vm/ufw-rules.sh tailscale`, or `public` for a public exposure), or `ufw`'s default deny keeps
+the browser from reaching the listener.
+
 Negative checks are part of the acceptance, not polish: no setting means the mint refuses and the listener serves no
 page; an unauthenticated browser gets 401; another app's host gets 403/404; an expired or revoked session gets 401; the
 public app URL refuses the test cookie; a test account is not an admin and has no board access.
