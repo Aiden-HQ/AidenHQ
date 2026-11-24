@@ -104,7 +104,9 @@ export function shipRoutes(o: {
         const v = b.body?.variables ?? {};
         const read = method === "POST" && path === "/graphql";
         // No `.` or `..` segment (raw or percent-encoded) and no other escape: a path that normalises elsewhere is never sent.
-        const dotted = String(path).split("?")[0]!.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(String(path));
+        // The query may carry an encoded slash (a `head=owner:feat/x` filter): it never changes which path GitHub serves.
+        const bare = String(path).split("?")[0]!;
+        const dotted = bare.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(bare) || /%(2e|5c)/i.test(String(path).slice(bare.length));
         const call = dotted ? undefined : CALLS.find(([m, re]) => m === method && re.test(String(path)));
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
         if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;

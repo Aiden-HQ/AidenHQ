@@ -47,6 +47,8 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
     assert.equal((await gh({ method, path, body })).status, 200, path);
   // A GET goes out with no body (fetch refuses a GET with one).
   assert.equal(sent[called.indexOf("GET /repos/acme/app/git/trees/main?recursive=1")], undefined, "a GET sends no body");
+  // A branch with a slash in the cleanup query (head=owner:feat/x) is allowed: the query never changes the path.
+  assert.equal((await gh({ method: "GET", path: "/repos/acme/app/pulls?state=open&head=acme%3Afeat%2Fx" })).status, 200, "encoded slash in the query");
   for (const [method, path, body] of [["POST", "/repos/acme/app/actions/workflows/pr-rebase.yml/dispatches", { ref: "b1", extra: 1 }],
     ["GET", "/repos/acme/app/git/trees/..?recursive=1"], ["GET", "/repos/acme/app/git/trees/%2e%2e?recursive=1"], ["GET", "/repos/acme/app/git/trees/a%2fb?recursive=1"],
     ["GET", "/repos/acme/app/actions/workflows/x.yml/runs?a=%5c"], ["POST", "/repos/acme/app/actions/workflows/../../../other/repo/actions/workflows/x.yml/dispatches", { ref: "b1" }],
