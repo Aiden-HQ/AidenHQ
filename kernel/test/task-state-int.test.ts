@@ -35,7 +35,11 @@ function world(t: any) {
     const u = new URL(p, "http://cp");
     if (u.pathname === "/api/issues/b1") return { status: 200, json: blocker };
     if (u.pathname === "/api/agents/" + AGENT) return { status: 200, json: { id: AGENT, companyId: "c-1", status: "idle", lifecycleHolds: [] } };
-    if (u.pathname === "/api/companies/c-1/issues") return { status: 200, json: u.searchParams.get("assigneeAgentId") === AGENT ? [issue] : [] };
+    if (u.pathname === "/api/companies/c-1/issues") {
+      const q = u.searchParams, since = q.get("updatedSince");
+      const listed = (!q.has("assigneeAgentId") || q.get("assigneeAgentId") === AGENT) && (!q.has("status") || q.get("status")!.split(",").includes(issue.status)) && (!since || Date.parse(issue.updatedAt) > Date.parse(since));
+      return { status: 200, json: listed ? [issue] : [] };
+    }
     if (u.pathname === "/api/issues/t1") return { status: 200, json: issue };
     if (u.pathname === "/api/issues/t1/comments" && method === "POST") {
       const c = { id: `c${comments.length + 1}`, body: body.body, authorUserId: "u-board", authorAgentId: null, createdAt: iso(clock) };
@@ -96,7 +100,7 @@ for (const [via, name] of [["viaBoard", "the board's proxy"], ["viaChannel", "a 
 test("a task blocked in Paperclip with no blocked fact reads waiting, blocked after one reconcile, and a second writes nothing", async (t) => {
   const w = world(t);
   await w.wakes.poll();
-  Object.assign(w.issue, { status: "blocked", statusVersion: 2, blockedBy: [{ id: "b1", identifier: "WOR-9", status: "in_progress" }] });
+  Object.assign(w.issue, { status: "blocked", statusVersion: 2, updatedAt: w.at(), blockedBy: [{ id: "b1", identifier: "WOR-9", status: "in_progress" }] });
   const count = () => (w.db.prepare("SELECT COUNT(*) AS n FROM facts WHERE type = 'task.blocked_changed'").get() as any).n;
   w.tick();
   await w.wakes.poll();

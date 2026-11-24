@@ -819,7 +819,9 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (!wakes) throw fail(503, "unavailable", "the wake inbox is off");
           if (!keyIs(req, eventsKey())) throw fail(401, "unauthorized", "the events plugin's key is required");
           const b = await json(req);
-          return send(res, 200, await wakes.event(b));
+          // Answered at once: the scan runs once the task's events have gathered (wakes.ts event); the poll is the backstop.
+          void wakes.event(b);
+          return send(res, 200, { queued: true });
         }
         const w = await moduleOf(req);
         if (hit.path === "/v1/wakes") {

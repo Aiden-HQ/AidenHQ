@@ -28,6 +28,68 @@ export function limitIssueLists(f: typeof fetch, max = 6): typeof fetch {
   }) as typeof fetch;
 }
 
+/** The largest answer the kernel reads from the control plane: refused while it streams in, never buffered past this. */
+export const MAX_ANSWER = 32 * 1024 * 1024;
+export class TooLarge extends Error { status = 502; code = "too_large"; constructor() { super("the control plane's answer is too large"); } }
+
+/** A response's body, read up to `max` bytes: a longer one is cancelled where it stands and refused (TooLarge). */
+export async function readCapped(r: Response, max = MAX_ANSWER): Promise<Buffer> {
+  if (Number(r.headers.get("content-length") ?? 0) > max) { await r.body?.cancel().catch(() => {}); throw new TooLarge(); }
+  if (!r.body) return Buffer.alloc(0);
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for await (const c of r.body) {
+    n += c.length;
+    if (n > max) throw new TooLarge(); // leaving the loop cancels the stream
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks);
+}
+
+// The reads that rarely change (an agent, a company, its agents, labels and projects): kept a few seconds, shared by every
+// caller of every shareReads wrapper (each entry keyed by its credential, so one caller never reads another's answer).
+const STATIC = [/^\/api\/agents\/[^/]+$/, /^\/api\/companies\/[^/]+$/, /^\/api\/companies\/[^/]+\/(agents|labels|projects)$/];
+const STATIC_MS = 15_000;
+type Held = { status: number; statusText: string; headers: [string, string][]; body: Buffer };
+const statics = new Map<string, { at: number; v: Held }>();
+/** Every cached static read goes: a write that may change one (an agent, a label, a project) was made. */
+export const forgetStatic = () => statics.clear();
+
+/**
+ * `f` with identical GETs shared: one in flight per URL, credential and accept (each caller gets its own copy of the answer),
+ * the static reads above kept STATIC_MS (any write to an agent or a company's labels, projects or agents drops them), and
+ * every answer read under MAX_ANSWER while it streams. Attachment content passes through untouched.
+ */
+export function shareReads(f: typeof fetch, now = Date.now): typeof fetch {
+  const flying = new Map<string, Promise<Held>>();
+  const answer = (h: Held) => new Response(h.status === 204 || h.status === 304 ? null : new Uint8Array(h.body), { status: h.status, statusText: h.statusText, headers: h.headers });
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+    if (method !== "GET") {
+      if (/^\/api\/(agents\/|companies\/[^/]+\/(agents|labels|projects)$)/.test(url.pathname)) forgetStatic();
+      return f(input, init);
+    }
+    if (url.pathname.endsWith("/content")) return f(input, init);
+    const h = new Headers(init?.headers);
+    const key = `${url}\n${h.get("authorization") ?? ""}\n${h.get("accept") ?? ""}`;
+    const isStatic = STATIC.some((re) => re.test(url.pathname));
+    const hit = isStatic ? statics.get(key) : undefined;
+    if (hit && now() - hit.at < STATIC_MS) return answer(hit.v);
+    let p = flying.get(key);
+    if (!p) {
+      p = (async () => {
+        const r = await f(input, init);
+        return { status: r.status, statusText: r.statusText, headers: [...r.headers], body: await readCapped(r) };
+      })();
+      flying.set(key, p);
+      const mine = p;
+      void p.then((v) => { if (isStatic && v.status === 200) { if (statics.size > 1000) statics.clear(); statics.set(key, { at: now(), v }); } }, () => {}).finally(() => { if (flying.get(key) === mine) flying.delete(key); });
+    }
+    return answer(await p);
+  }) as typeof fetch;
+}
+
 /** A request header the owner's own typed words carry to the owner-key caller (stripped before the control plane). */
 export const TYPED = "x-aidenhq-typed";
 /** The marker every other comment written with the owner key carries: code wrote it, so it is never the owner's words. */

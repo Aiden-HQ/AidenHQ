@@ -101,7 +101,7 @@ import { sandboxConfig } from "./sandbox-config.ts";
 import { createCertWatch } from "./front-door.ts";
 import { createUpdates, runCheck, runMain, runVerify, updateTask } from "./updates.ts";
 import { BOX_EXEC_WRAP } from "../../services/computer/lib.ts";
-import { TYPED, limitIssueLists, markCode } from "./cplimit.ts";
+import { TYPED, limitIssueLists, markCode, readCapped, shareReads } from "./cplimit.ts";
 
 const log = (msg: string, fields: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(fields));
 
@@ -112,8 +112,9 @@ const grantsTable = watched(grantsFile, (j) => j as { agents?: Record<string, Gr
 const connections = watched(path.join(configDir, "kernel", "connections.json"), (j) => j as Record<string, Connection>, {});
 // The control plane with the owner key (paperclip_board_key: only the kernel holds it; the board reaches it through cp.ts createBoardCp): a record's task.
 // One owner-key caller to the control plane, kept under its issue-list cap (cplimit.ts).
-// Every comment it writes is marked as code's unless it carries the owner's typed words (cplimit.ts markCode).
-const ownerFetch = markCode(limitIssueLists(fetch));
+// Every comment it writes is marked as code's unless it carries the owner's typed words (cplimit.ts markCode), and identical
+// reads share one request (static ones a few seconds), each read under the answer cap (cplimit.ts shareReads).
+const ownerFetch = markCode(shareReads(limitIssueLists(fetch)));
 const cpApi = (p: string, init: RequestInit = {}, typed = false) => ownerFetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json", ...(typed ? { [TYPED]: "owner" } : {}) }, signal: init.signal ?? AbortSignal.timeout(15_000) });
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
 const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { snapshot?: string; reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]>; check_jobs?: Recipes }, {});
@@ -247,9 +248,16 @@ replay = proxy.replay as never;
 const healthProbe = createHealthProbe({ grants: () => grantsTable().agents ?? {}, connections, kindOf: writes.kindOf, callAs: proxy.callAs, log });
 // JSON both ways: the control plane as the owner (only the kernel holds the board key), and the board's internal listener with
 // the kernel's key (gateway_board_key).
+// A 2xx whose body can't be read whole or isn't JSON (a read cut off by the timeout) is a failure, never an empty answer: an
+// empty `{}` read as the task would put an undefined id into every caller's queries.
 const asApi = (call: (p: string, init: RequestInit) => Promise<Response>): Api => async (method, p, body) => {
   const r = await call(p, { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
-  return { status: r.status, json: await r.json().catch(() => ({})) };
+  const text = (await readCapped(r)).toString("utf8");
+  if (!text.trim()) return { status: r.status, json: {} };
+  try { return { status: r.status, json: JSON.parse(text) }; } catch {
+    if (r.ok) throw new Error(`${method} ${p.split("?")[0]} answered ${r.status} with a body that isn't JSON`);
+    return { status: r.status, json: {} };
+  }
 };
 const ownerApi = asApi(cpApi);
 // Projects (projects.ts): repos map into products; a PR's repo fills in its task's project, agents tag one by name.
