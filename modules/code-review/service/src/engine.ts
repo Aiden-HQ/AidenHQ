@@ -183,8 +183,8 @@ CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, repo TEXT NOT NULL, sha
   status TEXT NOT NULL, verdict TEXT, report TEXT, report_url TEXT, report_version INTEGER, report_why TEXT, created INTEGER NOT NULL, ended TEXT,
   author TEXT NOT NULL DEFAULT '', deepsec INTEGER NOT NULL DEFAULT 0, setup_tip TEXT, setup_files TEXT, report_write TEXT);
 CREATE TABLE IF NOT EXISTS setups (repo TEXT PRIMARY KEY, asked INTEGER NOT NULL, answer TEXT);
--- Incremental repo reviews: per repo and option, each file's blob sha at the last area review that read it, the run, commit and time of that review.
-CREATE TABLE IF NOT EXISTS area_seen (repo TEXT NOT NULL, option TEXT NOT NULL, path TEXT NOT NULL, blob TEXT NOT NULL, run TEXT NOT NULL, sha TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (repo, option, path));
+-- Incremental repo reviews: per repo, option and its model and effort (combo), each file's blob sha and mode at the last area review that read it, the run, commit and time of that review.
+CREATE TABLE IF NOT EXISTS area_seen (repo TEXT NOT NULL, option TEXT NOT NULL, combo TEXT NOT NULL, path TEXT NOT NULL, blob TEXT NOT NULL, run TEXT NOT NULL, sha TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (repo, option, combo, path));
 -- Who asked for a one-off review: their task and the agent or owner's name, and the runs their own request was answered with
 -- (its run set: the same ask twice by two askers shares them, and each hears the summary of the runs it asked for).
 -- \`text\` is that summary, stored before it is sent; \`pending\` the stamp it was written from and \`sent\` the one delivered, so
@@ -626,7 +626,7 @@ export function createEngine(d: EngineDeps) {
       const fits = JSON.stringify(boxed).length <= SETUP_FILES_MAX;
       if (!fits) log("deepsec's setup files are too big for a check's spec: it sets up itself", { run: r.id });
       // A rerun's due area is read from the files not covered yet (changed first), the rest of it staying in the checkout as context.
-      const unseen = o && o.scope !== "map" && o.scope !== "repo" && plan && b.blobs ? unseenOf(b, o.id, filesOf(plan, JSON.parse(b.blobs) as Record<string, string>, r.area), JSON.parse(b.blobs) as Record<string, string>) : undefined;
+      const unseen = o && o.scope !== "map" && o.scope !== "repo" && plan && b.blobs ? unseenOf(b, r, filesOf(plan, JSON.parse(b.blobs) as Record<string, string>, r.area), JSON.parse(b.blobs) as Record<string, string>) : undefined;
       const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: tools ? "code-review-tools" : "code-review",
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skills: o.run.skills, tools: o.run.tools } : {}), ...(o?.run.max_cost_usd ? { max_cost_usd: o.run.max_cost_usd } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
@@ -922,19 +922,19 @@ export function createEngine(d: EngineDeps) {
     await batchEnded(r.batch);
   }
 
-  /** An area run that finished: its files are seen by its option at the blob sha of this commit, for the next review to compare. Only the files it
-   * says it read count (coverage.reviewed); a skill that reads its own way and reports none (it says so) counts the whole area. A whole-repo option
-   * (deepsec keeps its own records) and the tools run have none. */
+  /** An area run that finished: the files it confirms reading (coverage.reviewed) are seen by its option, model and effort at this commit's blob and mode, for
+   * the next review to compare. A run that reports gaps (incomplete) or no reads marks nothing: its area stays due. A whole-repo option (deepsec keeps its own
+   * records) and the tools run have none. Rows of deleted files go once no surviving file is last seen by the same run. */
   function markSeen(r: RunRow, review: Review) {
     const b = batchRow(r.batch), o = catalog().find((x) => x.id === r.option);
-    if (!b?.plan || !b.blobs || r.profile !== "code-review" || !o || o.scope === "repo") return;
-    const blobs = JSON.parse(b.blobs) as Record<string, string>, read = review.coverage?.reviewed ?? [];
-    const files = filesOf(JSON.parse(b.plan) as Plan, blobs, r.area);
-    const covered = read.length ? files.filter((p) => read.includes(p)) : (review as { coverage_note?: string }).coverage_note && !review.coverage?.incomplete ? files : [];
-    // A deleted file's mark goes only once the whole scope is reviewed again (a partial review leaves the area due).
-    if (covered.length === files.length) for (const p of vanished(r.repo, r.option!, blobs, files, r.area === null)) run("DELETE FROM area_seen WHERE repo = ? AND option = ? AND path = ?", r.repo, r.option, p);
-    for (const p of covered) if (blobs[p]) run("INSERT OR REPLACE INTO area_seen (repo, option, path, blob, run, sha, at) VALUES (?, ?, ?, ?, ?, ?, ?)", r.repo, r.option, p, blobs[p], r.id, r.head, iso());
+    if (!b?.plan || !b.blobs || r.profile !== "code-review" || !o || o.scope === "repo" || review.coverage?.incomplete) return;
+    const blobs = JSON.parse(b.blobs) as Record<string, string>, read = new Set(review.coverage?.reviewed ?? []), combo = comboKey(r);
+    for (const p of filesOf(JSON.parse(b.plan) as Plan, blobs, r.area)) if (read.has(p) && blobs[p]) run("INSERT OR REPLACE INTO area_seen (repo, option, combo, path, blob, run, sha, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", r.repo, r.option, combo, p, blobs[p], r.id, r.head, iso());
+    const rows = all<{ path: string; run: string }>("SELECT path, run FROM area_seen WHERE repo = ? AND option = ? AND combo = ?", r.repo, r.option, combo), live = new Set(rows.filter((x) => x.path in blobs).map((x) => x.run));
+    for (const x of rows) if (!(x.path in blobs) && !live.has(x.run)) run("DELETE FROM area_seen WHERE repo = ? AND option = ? AND combo = ? AND path = ?", r.repo, r.option, combo, x.path);
   }
+  /** What a run's option was reviewed with: area_seen's rows count only for the same model and effort. */
+  const comboKey = (r: { model: string; effort: string }) => `${r.model}|${r.effort}`;
 
   // ---- repo reviews: the batch, its report, deepsec's setup PR ----------------------------------------------------------------
 
@@ -972,8 +972,9 @@ export function createEngine(d: EngineDeps) {
         const c = combos[o.id] ?? optionCombo(o), engine = engineOf(o);
         const areas = o.scope === "map" || one ? [null] : plan.areas.filter((a) => !o.stack || a.tags.includes(o.stack)).map((a) => a.id);
         if (!areas.length) addTree(b, engine, c.model, c.effort, o.id, "code-review", null, { status: "skipped", why: `${NO_CODE}${o.stack} code in any of the ${plan.areas.length} areas` });
+        const index = b.full ? undefined : seenIndex(b.repo, o.id, comboKey(c), blobs);
         for (const a of areas) {
-          const same = b.full ? undefined : unchanged(b.repo, o.id, filesOf(plan, blobs, a), blobs, a === null);
+          const same = index && unchanged(index, filesOf(plan, blobs, a), blobs);
           addTree(b, engine, c.model, c.effort, o.id, "code-review", a, same && { status: "skipped", why: `unchanged since ${same.sha.slice(0, 7)} (${same.at.slice(0, 10)})` }, same && JSON.stringify(same));
         }
       }
@@ -984,29 +985,33 @@ export function createEngine(d: EngineDeps) {
     const a = area ? plan.areas.find((x) => x.id === area) : undefined;
     return a ? Object.entries(a.files).flatMap(([d, names]) => names.map((n) => (d ? `${d}/${n}` : n))) : Object.keys(blobs);
   };
-  /** Files this option has seen that the commit no longer has, within the files' scope: the whole repo, or an area (a deleted file in one of the area's folders). */
-  function vanished(repo: string, option: string, blobs: Record<string, string>, files: string[], whole: boolean) {
-    const dirs = new Set(files.map((p) => p.slice(0, Math.max(0, p.lastIndexOf("/")))));
-    return all<{ path: string }>("SELECT path FROM area_seen WHERE repo = ? AND option = ?", repo, option).map((x) => x.path).filter((p) => !(p in blobs) && (whole || dirs.has(p.slice(0, Math.max(0, p.lastIndexOf("/"))))));
+  /** An option's seen files (for its model and effort), read once for a plan's areas: each file's row, and the runs that last read a file this commit no longer has (their other files are
+   * affected by the deletion). */
+  function seenIndex(repo: string, option: string, combo: string, blobs: Record<string, string>) {
+    const rows = new Map(all<{ path: string; blob: string; run: string; sha: string; at: string }>("SELECT path, blob, run, sha, at FROM area_seen WHERE repo = ? AND option = ? AND combo = ?", repo, option, combo).map((x) => [x.path, x]));
+    const hit = new Set([...rows.values()].filter((x) => !(x.path in blobs)).map((x) => x.run));
+    return { rows, hit };
   }
-  /** The files' last review by this option when none has changed (every file seen at its blob sha now, none of the area's folders lost a file): where
-   * it was, and the findings of the runs that read them, each for its own files only. Else undefined: the area is reviewed. */
-  function unchanged(repo: string, option: string, files: string[], blobs: Record<string, string>, whole: boolean) {
-    const seen = new Map(all<{ path: string; blob: string; run: string; sha: string; at: string }>("SELECT path, blob, run, sha, at FROM area_seen WHERE repo = ? AND option = ?", repo, option).map((x) => [x.path, x]));
-    const rows = files.map((p) => seen.get(p));
-    if (!files.length || rows.some((x, k) => !x || x.blob !== blobs[files[k]!]) || vanished(repo, option, blobs, files, whole).length) return undefined;
+  type SeenIndex = ReturnType<typeof seenIndex>;
+  /** The files' last review by this option when none has changed (every file seen at its blob sha and mode now, none last read by a run that read a file since deleted): where
+   * it was, and the findings of the runs that read them that are still open, each for its own files only. Else undefined: the area is reviewed. */
+  function unchanged(idx: SeenIndex, files: string[], blobs: Record<string, string>) {
+    const rows = files.map((p) => idx.rows.get(p));
+    if (!files.length || rows.some((x, k) => !x || x.blob !== blobs[files[k]!] || idx.hit.has(x.run))) return undefined;
     const last = rows.reduce((a, x) => (x!.at > a.at ? x! : a), rows[0]!);
     const findings = [...new Set(rows.map((x) => x!.run))].flatMap((id) => {
       const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id), mine = new Set(rows.filter((x) => x!.run === id).map((x) => x!.path)), from = rows.find((x) => x!.run === id)!.sha;
-      return v ? (JSON.parse(v.json) as Review).findings.filter((f) => mine.has(f.path)).map((f) => ({ ...f, from })) : [];
+      return v ? (JSON.parse(v.json) as Review).findings.filter((f) => mine.has(f.path)).map((f) => ({ ...f, from, src: id })) : [];
     });
     return { sha: last.sha, at: last.at, findings };
   }
-  /** A due area's files to read first on a rerun (what the run's focus is): those changed since this option last read them, then those it never read,
+  /** Carried findings the owner or a later review has not closed: a finding with a recorded outcome in the run it came from is no longer open. */
+  const openCarried = <T extends { id: string; src?: string }>(fs: T[]) => fs.filter((f) => !f.src || !one<{ outcome: string | null }>("SELECT outcome FROM findings WHERE run = ? AND id = ? AND outcome IS NOT NULL", f.src, f.id));
+  /** A due area's files to read first on a rerun (what the run's focus is): those changed since this option last read them (with this model and effort), then those it never read,
    * cut to what a check's spec field holds. None on a Full review, a first review (nothing seen: all of it is new) or when nothing is unseen. */
-  function unseenOf(b: BatchRow, option: string, files: string[], blobs: Record<string, string>) {
+  function unseenOf(b: BatchRow, r: RunRow, files: string[], blobs: Record<string, string>) {
     if (b.full) return undefined;
-    const seen = new Map(all<{ path: string; blob: string }>("SELECT path, blob FROM area_seen WHERE repo = ? AND option = ?", b.repo, option).map((x) => [x.path, x.blob]));
+    const seen = new Map(all<{ path: string; blob: string }>("SELECT path, blob FROM area_seen WHERE repo = ? AND option = ? AND combo = ?", b.repo, r.option, comboKey(r)).map((x) => [x.path, x.blob]));
     if (!seen.size) return undefined;
     const changed = files.filter((p) => seen.has(p) && seen.get(p) !== blobs[p]), fresh = files.filter((p) => !seen.has(p)), all_ = [...changed, ...fresh];
     const kept: string[] = [];
@@ -1039,7 +1044,7 @@ export function createEngine(d: EngineDeps) {
     }
     // The eligible files' blob shas (their content, what an incremental review compares); a file without one is always reviewed.
     const blobs: Record<string, string> = {};
-    if (v.blobs && typeof v.blobs === "object") for (const [p, h] of Object.entries(v.blobs)) if (typeof h === "string" && /^[0-9a-f]{40,64}$/.test(h)) blobs[p] = h;
+    if (v.blobs && typeof v.blobs === "object") for (const [p, h] of Object.entries(v.blobs)) if (typeof h === "string" && /^\d{6}:[0-9a-f]{40,64}$/.test(h)) blobs[p] = h;
     return { blobs, plan: { eligible: Number(v.eligible) || 0, lines: Number(v.lines) || 0, planned_by: v.planned_by === "model" || v.planned_by === "folders" ? v.planned_by : "one", note: typeof v.note === "string" ? v.note.slice(0, 500) : null, areas } };
   }
   /** The option catalog: the one way it is read, a bad one a request error (a run that needs it fails, or waits, loudly). */
@@ -1058,7 +1063,7 @@ export function createEngine(d: EngineDeps) {
         const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
         const tools = r.profile === "code-review-tools", a = r.area ? areas.get(r.area) : undefined;
         return { option: tools ? "tools" : r.option!, ...(tools ? { options: r.option!.split(",") } : {}), lens: tools ? null : lens.get(r.option!) ?? null, status: r.status, why: r.why, cost_usd: r.cost_usd, review: v ? (JSON.parse(v.json) as Review) : null,
-          ...(a ? { area: { name: a.name, files: a.count } } : {}), ...(r.profile === PLAN ? { plan: true as const } : {}), ...(r.status === "skipped" && r.why?.startsWith(NO_CODE) ? { none: true as const } : {}), ...(r.carried ? { unchanged: JSON.parse(r.carried) as { sha: string; at: string; findings: Finding[] } } : {}) };
+          ...(a ? { area: { name: a.name, files: a.count } } : {}), ...(r.profile === PLAN ? { plan: true as const } : {}), ...(r.status === "skipped" && r.why?.startsWith(NO_CODE) ? { none: true as const } : {}), ...(r.carried ? { unchanged: ((c) => ({ ...c, findings: openCarried(c.findings) }))(JSON.parse(r.carried) as { sha: string; at: string; findings: (Finding & { src?: string })[] }) } : {}) };
       });
       out = render({ repo: b.repo, sha: b.sha, created: new Date(b.created).toISOString(), runs, lensOf: (o) => lens.get(o) ?? "correctness",
         plan: plan && { planned_by: plan.planned_by, note: plan.note, eligible: plan.eligible, lines: plan.lines, areas: plan.areas.map((x) => ({ name: x.name, count: x.count, lines: x.lines, tags: x.tags })) } });
@@ -2108,7 +2113,7 @@ export function createEngine(d: EngineDeps) {
       const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", id);
       const findings = all<{ id: string; severity: string; path: string; line: number; title: string; outcome: string | null }>("SELECT id, severity, path, line, title, outcome FROM findings WHERE run = ? ORDER BY rowid", id).map((f) => ({ ...f }));
       // An area skipped as unchanged shows the findings of the review it carries them from.
-      if (r.carried) findings.push(...(JSON.parse(r.carried) as { findings: Finding[] }).findings.map((f) => ({ id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title, outcome: null })));
+      if (r.carried) findings.push(...openCarried((JSON.parse(r.carried) as { findings: (Finding & { src?: string })[] }).findings).map((f) => ({ id: f.id, severity: f.severity, path: f.path, line: f.line, title: f.title, outcome: null })));
       // On a gated repo, the PR's merge verdict at its current head and its open gating findings (what the owner may dismiss).
       const cfg = repoCfg(r.repo), p = prRow(r.repo, r.number);
       const gate = cfg && gated(cfg) && p?.open ? { ...verdict(r.repo, r.number, p.head), head: p.head, open: openGating(r.repo, r.number).map((f) => ({ id: f.id, path: f.path, line: f.line, title: f.title })) } : null;

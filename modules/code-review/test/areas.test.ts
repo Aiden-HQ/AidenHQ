@@ -163,7 +163,7 @@ test("a failed plan fails every option that waited for it; the whole-repo ones k
 
 test("a rerun reviews only the areas with a changed file and shows the rest as unchanged with their findings; a full review reviews them all", async () => {
   const started = [], results = new Map(), kept = new Map();
-  let t = Date.parse("2026-11-24T10:00:00Z"), head = sha("1"), blob = { "svc/a.ts": sha("a"), "svc/b.ts": sha("b"), "web/c.tsx": sha("c") };
+  let t = Date.parse("2026-11-24T10:00:00Z"), head = sha("1"), blob = { "svc/a.ts": `100644:${sha("a")}`, "svc/b.ts": `100644:${sha("b")}`, "web/c.tsx": `100644:${sha("c")}` };
   const engine = createEngine({
     db: new DatabaseSync(":memory:"), config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t, source: { open: async () => [] }, poster: {}, catalog: () => CATALOG,
     runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async (c) => kept.get(c) },
@@ -172,9 +172,9 @@ test("a rerun reviews only the areas with a changed file and shows the rest as u
   });
   const finding = (path) => ({ id: `f-${path}`, severity: "important", path, line: 1, title: `bug in ${path}`, why: "w", evidence: "e", fix_brief: "f" });
   // One review of cor.review to its end: the plan (with the files' blobs), then each area's run reading every file of it.
-  const review = async (full) => {
+  const review = async (full, combo) => {
     const first = started.length;
-    const b = await engine.repoReview({ target: { repo: REPO }, options: ["cor.review"], ...(full ? { full: true } : {}) });
+    const b = await engine.repoReview({ target: { repo: REPO }, options: ["cor.review"], ...(full ? { full: true } : {}), ...(combo ? { combo } : {}) });
     await engine.tick({ github: false });
     const plan = { version: 1, repo: REPO, head, blobs: blob, eligible: 3, lines: 40, planned_by: "model", note: null };
     kept.set(`c-${first + 1}`, Buffer.from(JSON.stringify({ ...plan, areas: AREAS })));
@@ -189,7 +189,7 @@ test("a rerun reviews only the areas with a changed file and shows the rest as u
   };
   assert.deepEqual((await review(false)).ran, ["a01", "a02"], "the first review reads everything");
   // Only web/c.tsx changes: service is unchanged.
-  t += 86_400_000; head = sha("2"); blob = { ...blob, "web/c.tsx": sha("d") };
+  t += 86_400_000; head = sha("2"); blob = { ...blob, "web/c.tsx": `100644:${sha("d")}` };
   const again = await review(false);
   assert.deepEqual(again.ran, ["a02"], "only the changed area is reviewed again");
   assert.equal(started[2].unseen, undefined, "a first review has nothing to focus on");
@@ -206,6 +206,9 @@ test("a rerun reviews only the areas with a changed file and shows the rest as u
   // Nothing changed at all: every area is unchanged; a full review reads them all anyway.
   t += 86_400_000; head = sha("3");
   assert.deepEqual((await review(false)).ran, []);
+  // Seen by one model and effort is no review by another.
+  t += 1000;
+  assert.deepEqual((await review(false, { model: "~other/model", effort: "high" })).ran, ["a01", "a02"]);
   t += 1000;
   assert.deepEqual((await review(true)).ran, ["a01", "a02"]);
   assert.equal(engine.batches({})[0].full, true);

@@ -30,7 +30,7 @@ const PROMPT_MAX = 400_000;
 export type Item = { path: string; lines: number };
 /** An area: its id and name, stack tags, files (by folder: { "src/api": ["a.ts"] }, "" the root) and size. */
 export type Area = { id: string; name: string; tags: string[]; files: Record<string, string[]>; count: number; lines: number };
-/** `blobs`: each eligible file's git blob sha at the head (its content: an incremental review compares them). */
+/** `blobs`: each eligible file's git mode and blob sha at the head (its content and mode: an incremental review compares them). */
 export type Plan = { version: 1; repo?: string; head: string; blobs?: Record<string, string>; eligible: number; lines: number; planned_by: "one" | "model" | "folders"; note: string | null; areas: Area[] };
 
 /** Paths as an area's file list: grouped by folder, sorted (a folder named like an Object property is a key like any other). */
@@ -151,12 +151,12 @@ Answer only this JSON: {"areas": [{"name": "...", "include": ["src/api/", "READM
   }
 }
 
-/** The blob sha of each wanted path from `git ls-tree -r -z` output ("<mode> blob <sha>\t<path>", NUL-separated). */
+/** The mode and blob sha ("100755:<sha>": a mode change is a change) of each wanted path from `git ls-tree -r -z` output ("<mode> blob <sha>\t<path>", NUL-separated). */
 export function blobsOf(listing: string, want: Set<string>) {
   const out: Record<string, string> = {};
   for (const l of listing.split("\0")) {
-    const m = /^\d+ blob ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(l);
-    if (m && want.has(m[2]!)) out[m[2]!] = m[1]!;
+    const m = /^(\d{6}) blob ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(l);
+    if (m && want.has(m[3]!)) out[m[3]!] = `${m[1]}:${m[2]}`;
   }
   return out;
 }
