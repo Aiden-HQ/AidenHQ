@@ -1,47 +1,41 @@
 # Ship: every PR, from open to merged
 
 Status: direction approved by the owner, 2026-11-24 (no further design review asked). Owner decisions are marked
-**(owner)**; everything else is the designer's call. The research behind it (other teams' bots, merge queues,
-post-mortems) lives in the instance repo's product history.
+**(owner)**; everything else is the designer's call. The research behind it lives in the instance repo's product history:
+other teams' bots, merge queues and post-mortems.
 
 ## Why
 
-A PR waits hours to days for review. It collides with generated files, is ejected from the merge queue, loses its approval
-on every rebase, and needs a person to rebase, regenerate, re-run and re-queue it each time. Merge queues only rebase: they
-eject a PR that conflicts and never run a repo's code generation.
+A PR waits hours to days for review, collides with generated files and is ejected from the merge queue. It loses its
+approval on every rebase, and a person has to rebase, regenerate, re-run and re-queue it each time. Merge queues only rebase:
+they eject a PR that conflicts and never run a repo's code generation. The fleet already takes its own PRs to merge, but that
+loop lives inside the github module (`pr-watch.ts` and its automatic merge filing). Its caps are fixed, and nothing takes a PR
+someone else opened.
 
-The fleet already takes its own PRs to merge, but that loop lives inside the github module (`pr-watch.ts`, with its
-automatic merge filing). It has fixed caps, and nothing takes a PR someone else opened.
-
-The goal: a member hands a PR to the fleet, and it reaches merge with no person in the loop, within the repo's own rules.
-On the way it is:
-- kept current;
-- resolved of conflicts;
-- given freshly regenerated generated files;
-- fixed for any CI failures it caused;
-- answered on every review finding;
-- approved by the App;
-- merged through the repo's own path.
-
-Safe PRs lose the human now, and every PR eventually **(owner)**.
+Goal: a member hands a PR to the fleet and it reaches merge with no person in the loop, inside the repo's own rules. On the
+way it is kept current, its conflicts are resolved and its generated files regenerated. CI failures it caused are fixed,
+review findings answered, the App approves it where approval is required, and it merges through the repo's own path. Safe
+PRs lose the human now; every PR does eventually **(owner)**.
 
 ## Goals
 
-- **One PR lifecycle for every PR.** Fleet-authored and handed-over PRs share one state machine and one set of per-repo
-  settings.
-- **Every knob is a per-repo setting, with no hard limits in code (owner).** A test repo may run fully unguarded while
-  another runs cautious. Guards ship as named presets, never as floors.
+- **One PR lifecycle for every PR.** Fleet-authored and handed-over PRs share one state machine and per-repo settings.
+- **Every knob is a per-repo setting, with no hard limits in code (owner).** A test repo may run fully unguarded and another
+  cautious. Guards ship as named presets, never as floors.
 - **Deterministic work before any model call.** The model is used only for judgment.
+- **Zero configuration for a typical repo.** Checks, rules, generated files and the generator are discovered. A setting is
+  asked for only when discovery is ambiguous.
 - **A report a code owner can approve from** without opening the diff.
-- **Settings an agent can change from the owner's words**, validated and filed as a settings change.
+- **Settings editable from the owner's words or a Fleet page**, with the same validation for both.
 - **An optional module behind one interface.** Nothing in the core needs it.
 
 ## Non-goals
 
-- A user-defined rules engine ("if Y then X") **(owner: not now)**.
-- Replacing code-owner review. A code-owner-gated PR waits for its human owner, and the report makes that approval quick
-  **(owner)**.
-- Reviewing code. The code-review module does that; ship reads its verdict.
+- **A user-defined rules engine** ("if Y then X") **(owner: not now)**.
+- **Replacing code-owner review.** A code-owner-gated PR waits for its human owner **(owner)**.
+- **Reviewing code.** The code-review module does that; ship reads its verdict.
+- **Hosts other than GitHub (owner: GitHub only for now).** `codehost-local` keeps its own loop (`kernel/src/localmerge.ts`).
+- **Credited replacement PRs for forks.** A fork is adopted on a member's trigger; nothing else.
 
 ## Structure (module split)
 
@@ -49,346 +43,387 @@ Each module owns one part of the lifecycle:
 
 | Module | Owns |
 |---|---|
-| `maintainer` | The issue lifecycle only: triage, validate, dedupe, resolved-check, send fixes to an Engineer, feature labels. It borrows Gardener's rules: be sceptical of confident agent-written reports, and "a wrong close costs more than a miss". |
-| `ship` (new) | The PR lifecycle for every PR: adoption, rounds, fix dispatch, App approval, enqueue, confirming the merge landed, metrics, per-repo settings and presets. It absorbs everything `pr-watch.ts` does today. |
-| `github` | Typed effects only: push with compare-and-swap on the head, update-branch, approve, enqueue, merge, comment, label. Also `merges.ts` and `merge-gate.ts` as the merge primitive. No PR policy. |
-| `code-review` | Unchanged: a gate that ship reads (`review-gate.ts`). |
+| `maintainer` | The issue lifecycle only: triage, validate, dedupe, resolved-check, send fixes to an Engineer, feature labels. It borrows Gardener's rules: be sceptical of confident agent-written reports; "a wrong close costs more than a miss". |
+| `ship` (new) | The PR lifecycle for every PR: adoption, rounds, fix dispatch, approval, the merge path, confirming the merge landed, metrics, per-repo settings and presets, and the Fleet → Ship page. It absorbs everything `pr-watch.ts` does today and the Maintainer watcher's `contributor_prs` nudge/close duty. |
+| `github` | Typed effects only: commit with compare-and-swap, update-branch, approve, enqueue, merge, comment, label. Plus `merges.ts` and `merge-gate.ts` as the merge primitive. No PR policy. |
+| `code-review` | Unchanged: a gate ship reads (`review-gate.ts`), and the ask path ship calls on a fork hand-off. |
 | `engineering` | Unchanged except for one skill, `ship`, that the Engineer reads on a ship task. |
 
-**Moving pr-watch.ts into ship (one way).** Ship's service takes over every duty of
+**Moving pr-watch into ship (one way).** The ship service takes over every duty of
 `modules/github/service/src/pr-watch.ts`:
+
 - the agent-PR loop and automatic merge filing;
 - update-branch;
-- re-running never-started and wedged checks;
-- the title gate re-run;
+- re-running checks that never started or got wedged;
+- the title-gate re-run;
 - the CI breaker;
 - Dependabot task filing;
 - closing abandoned PRs.
 
-`pr-watch.ts` is deleted in the same PR that switches ship on. The github service keeps the effects ship calls through the
-kernel.
+`pr-watch.ts` is deleted in the same PR that switches ship on, and so is the Maintainer watcher's PR pass. github keeps the
+effects ship calls through the kernel.
 
-**Without ship.** With the module off, no PR is watched: Engineers request merges themselves (`aidenhq merge`, a `github.merge`
-record), as they can today. Ship is in the default bundle.
+**Without ship.** No PR is watched. Engineers request merges themselves (`aidenhq merge`, a `github.merge` record), as they
+can today. This is confirmed to work before ship replaces pr-watch. Ship is in the default bundle.
 
 ## Design
 
 ### 1. Settings (ship module)
 
-Ship's settings live in one setting, `ship`, declared in `modules/ship/module.yaml`:
+One setting, `ship`, declared in `modules/ship/module.yaml`:
 
 ```yaml
 ship:
-  defaults: cautious            # applies to every repo ship covers that has no entry of its own
+  defaults: cautious           # every repo ship covers that has no entry of its own
   repos:
-    acme/api: { preset: cautious, approve: safe, handoff: label, generated: { globs: ["schema/**"], command: "make generate" } }
+    acme/api: { preset: cautious, approve: safe }
     acme/sandbox: full
-  paused: false                 # the kill switch: stops every adoption, push, approval and merge; PRs resume where they were
+    acme/legacy: off
+  paused: false                # the kill switch: no adoption, push, approval or merge; PRs resume where they were
 ```
 
-**Coverage.**
-- Ship covers the fleet's own repos (the agents org and the product repo) and every repo in `maintainer_repos` (the github
-  module's list of repos the fleet may merge in).
-- An entry for any other repo is refused when the setting is validated.
-- Every PR the fleet opens is adopted at open. A handed-over PR is adopted per `handoff`.
+**Coverage.** Ship covers:
+
+- the fleet's own repos: the agents org and the product repo;
+- every repo in `maintainer_repos`, the github module's list of repos the fleet may merge in.
+
+An entry for any other repo is refused at validation.
 
 **Fields.** Every field may take any value its type allows, including `null` caps **(owner)**.
 
 | field | `cautious` | `full` | meaning |
 |---|---|---|---|
 | `handoff` | `label` | `all` | `label`: a trusted `ship` label, a `/ship` comment, or the `ship` tool. `all`: every non-draft PR by an author with write access. `none`: fleet PRs only |
-| `external` | `member` | `member` | A PR whose author lacks write access, or a fork, starts nothing (ship, code review, CI re-runs) until a trusted member hands it off. `any` admits it like a member's PR |
-| `forks` | `replace` | `replace` | A fork's PR is carried on a credited branch in the base repo (`replace`), or skipped (`skip`) |
-| `rebase` | `conflict` | `behind` | Update only on a conflict or a failing guard, or whenever the branch is behind |
-| `generated` | unset | unset | `{ globs, command }`: generated files and the command that regenerates them |
+| `rebase` | `conflict` | `behind` | Update only on a conflict or failing guard, or whenever the branch is behind |
+| `generated` | discovered | discovered | `{ globs, commands }` overrides; see §3 |
 | `fix` | `[conflicts, ci, review]` | same | What the Engineer may work on |
-| `protected` | lockfiles, `.github/**`, test and lint config, CODEOWNERS | `[]` | A fix that touches these is handed back to a person, not pushed |
-| `caps` | `{ wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, reasks_per_head: 2, review_rounds: 3, rounds: 30, usd: 5, silence_min: 15, requeue_on_timeout: 1 }` | all `null` except `silence_min` | Per PR. `null` means unlimited. Past a cap, the PR stalls (§3) |
-| `approve` | `safe` | `all` | `off`, `observe` (the report says what it would do), `safe`, `all` |
-| `safe` | `{ max_lines: 1200, max_files: 50, deny: [<protected>, "**/migrations/**", "**/auth/**"] }` | n/a | The safe class. It counts substantive lines, excluding generated, lock, test and docs files |
+| `protected` | lockfiles, `.github/**`, test and lint config, CODEOWNERS | `[]` | A model fix touching these goes on `hold`. Deterministic repair may still regenerate lockfiles |
+| `caps` | `{ wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, review_rounds: 3, rounds: 30, usd: 5, requeue_on_timeout: 1 }` | all `null` | Per PR; `null` means unlimited. Past a cap the PR goes on `hold` |
+| `approve` | `safe` | `all` | `off`; `observe` (the report says what it would do); `safe`; `all` |
+| `safe` | `{ max_lines: 1200, max_files: 50, deny: [<protected>, migrations, auth, config, infra globs] }` | n/a | The safe class (§5) |
 | `merge` | `ready` | `ready` | `off`: stop at ready. `ready`: merge when every gate passes |
-| `stop_label` | `ship:stop` | `ship:stop` | While present, the PR is left alone. Removing it resumes the PR |
+| `stop_label` | `ship:stop` | `ship:stop` | While present, the PR is left alone; removing it resumes |
 
-**Parity with today.** `cautious` carries today's `pr-watch.ts` constants unchanged, so the cutover changes nothing for the
-fleet's own PRs:
-- `caps.wakes_per_head: 3` (today's `MAX_WAKES`, counting wakes of every cause);
-- `caps.ci_rounds: 3` (`BREAKER_ROUNDS`);
-- `caps.same_check_heads: 2` (the breaker's same named check red on two heads).
+**`full` is unguarded at the ship layer.** The host's rules, human code-owner requirements and the kernel's authority still
+apply.
 
-`caps.reasks_per_head: 2` and `caps.requeue_on_timeout: 1` are new and apply to the new paths only. The fleet's own repos
-resolve to `defaults`.
+**Parity with today.** `cautious` carries today's `pr-watch.ts` constants unchanged:
 
-**Approval needs a gated repo.** `approve` above `off` needs code review gating that repo. Where it doesn't, the effective
-value is `off` and the report says why. This is a dependency, not a floor: gating the repo restores the setting.
+| setting | today's constant |
+|---|---|
+| `wakes_per_head: 3` | `MAX_WAKES`, counting wakes of every cause |
+| `ci_rounds: 3` | `BREAKER_ROUNDS` |
+| `same_check_heads: 2` | the breaker's same named check red on two heads |
 
-**Who may change what.** The validator (`modules/ship/src/settings.ts`) normalises the old and new values to their effective
-settings, presets resolved, and compares them:
-- **Loosening goes to the owner.** That is any change that:
-  - admits more PRs (`handoff`, `external`, `forks: replace`);
-  - lets ship do more without a person (`approve`, `merge`, a wider `fix`);
-  - raises or removes a cap;
-  - widens `safe` or narrows `protected`;
-  - sets or changes `generated.command` (it runs repo code);
-  - clears `paused`.
+The fleet's own PRs behave the same after the move.
 
-  The comparison is enforced when the settings change is applied, not only when it is filed.
-- **Everything else** is an ordinary settings change.
-- Spelling the same policy differently (`full` versus `{ preset: full }`) is the same change.
+**Loosening goes to the owner.** The validator (`modules/ship/src/settings.ts`) compares the effective settings before and
+after the change, with presets resolved. A change is a loosening if it:
 
-**Agent-editable.** The settings tools are `ship_config` (read the effective settings per repo) and `ship_configure(repo,
-change)`. They are built like `modules/code-review/service/src/config-tool.ts`:
-1. Apply the change to the raw entry and validate the whole result.
-2. Refuse a stale edit: the raw value it was read from must still be current.
-3. File one typed settings change (`POST /v1/settings/agent`).
+- admits more PRs (`handoff`);
+- lets ship do more without a person (`approve`, `merge`, a wider `fix`);
+- raises or removes a cap;
+- widens `safe` or narrows `protected`;
+- clears `paused`.
 
-They are granted to the Maintainer and to Aiden's delegate. For example, "ship everything on acme/sandbox, no limits"
-becomes `acme/sandbox: full`, filed on an owner card.
+A loosening goes through the signed owner-save path. Everything else is an ordinary settings change. Spelling the same policy
+differently is the same change.
+
+**One card for a new repo.** `ship_configure(repo, change)` builds one owner card for a repo that isn't covered yet. The card
+writes all three entries together: the repo's `maintainer_repos` entry, its `code_review` entry if approval needs gating, and
+its `ship` entry. This uses a cross-module settings grant. The tools are
+`ship_config`, which reads each repo's effective settings plus the discovered facts, and `ship_configure`. They are granted to
+the Maintainer and to Aiden's delegate.
+
+**Fleet → Ship page.** A module view declared in `module.yaml`, never board code; the board's view host is lane H.
+
+- **Settings:** per repo, on or off with a preset, `handoff` (label, all or none), `approve` (off, observe, safe or all) and
+  `merge` (off or ready). Globally, `paused`.
+- **Read-only facts:** the discovered checks, generator and current blockers.
+- **Validation:** the same as the English edits.
 
 ### 2. Adoption
 
-**One durable record per adoption.** Ship's state, `data/ship/state.json` (atomic rename), holds one record per PR:
+**One durable record per adoption.** `data/ship/state.json`, with atomic rename, holds:
 
-```
-{ repo, number, generation, trigger: { kind: "fleet"|"label"|"comment"|"tool"|"all", event, actor }, task, status }
-```
+`{ repo, number, generation, trigger: { kind, event, actor, head }, task, hold?: { reason, at }, counters }`
 
-Status is one of `working`, `waiting`, `stalled`, `queued`, `merged`, `handed_back` or `stopped`.
+**Statuses.**
+
+- Only `hold` is stored. It covers stall, hand-back and stop, is sticky, and carries its reason.
+- Everything else is derived from `decide` and the kernel's records each pass: working, waiting, queued, merged.
 
 **Triggers.**
-- A fleet PR is adopted at open, and its task is the task that opened it.
-- A handed-over PR needs a trusted trigger: a label or comment event by a role in the repo's trusted roles (the
-  `agent-build` trust rule in `github-mcp/src/maintainer.ts`), or the `ship` tool. The App never counts.
-- Each trigger is consumed once, by its event id.
 
-**Generations and hand-back.**
-- Hand-back and stall are sticky. A label left on the PR, or `handoff: all`, never re-adopts it.
-- Only a fresh trusted trigger (re-adding the label, a new `/ship`) starts a new generation.
-- Every write carries its generation, and a write from an older generation is refused.
+- A fleet PR is adopted at open. Its task is the task that opened it.
+- A handed-over PR needs a trusted trigger: a label or comment event by a role in the repo's trusted roles (the `agent-build`
+  trust rule in `github-mcp/src/maintainer.ts`), or the `ship` tool. The App never counts.
+- Each trigger is consumed once, by its event id.
+- A `hold` and a hand-back are sticky: a label still on the PR, or `handoff: all`, never re-adopts it. A fresh trusted trigger
+  starts a new generation. A stale ship pass re-reads the PR before it files anything.
 
 **Task.**
-- A handed-over PR gets one task with the marker `ship:<repo>/<n>` and fixed text, never the PR's own words. It goes to the
-  role `platform-engineer`, the Engineer's.
-- If the PR already has a task (the fleet's own, or Dependabot's), that task is reused.
-- Task creation is reconciled by its marker after a crash, so one adoption never files two tasks.
 
-**Authorship stays separate.** Adoption is not authorship:
-- github keeps opener provenance: which task opened a PR (`pr-tasks.json`, read through a typed op). Merge credit and grading
-  read it, as today.
-- Ship's adoption records live in ship's own state.
-- Closing an abandoned PR and deleting its branch apply only to PRs a fleet task opened. Cancelling a ship task for a
-  handed-over PR ends the adoption, and never closes the PR or touches its ref.
-- Dependabot tasks that github filed move to ship at the cutover (task ownership transferred in the migration), so ship may
-  close them.
+- One task per adopted PR, filed through the kernel module-task API with the `source` idempotency key
+  `ship:<repo>/<n>:<generation>`, so a crash or a retry never files two. A live task is reused: the fleet's own, or
+  Dependabot's.
+- It goes to the role `platform-engineer`, the Engineer's.
+- The task text is fixed, never the PR's own words.
 
-**Admission before spend.**
-- For a repo ship covers, code review starts its automatic reviews only once ship admits the PR. Code review asks ship's
-  `GET /v1/admitted?repo&pr`:
-  - no ship module installed (or ship off) means admitted;
-  - ship installed but unreachable means deferred, and the start is retried later.
-- The same admission governs code review's backfill of mandatory reviews, work already queued, and Dependabot filing.
-- Handing off an unchanged head starts its review exactly once.
-- For `external: member`, nothing runs on an external PR until a member hands it off: no ship work, no code review, no CI
-  re-runs **(owner)**.
+**Authorship stays separate.** github keeps opener provenance: which task opened a PR (`pr-tasks.json`, through a typed read).
+Merge credit and grading read it, as today. Closing an abandoned PR and deleting its branch apply only to PRs a fleet task
+opened. Cancelling a ship task for a handed-over PR ends the adoption and never closes the PR or touches its ref. Dependabot
+tasks that github filed move to ship in the move's data migration, with task ownership transferred.
+
+**Forks (owner).** An external PR is a fork. Nothing runs on it until a member triggers it, under any `handoff` mode:
+- **Trigger.** A member's `ship` label or `/ship` comment adopts the fork PR. Only members' triggers count: write access, by the
+  existing trusted-role check.
+- **Review.** Adoption calls code review's existing ask path, so the review starts too. Code review's `forks: manual` holds
+  every fork until then. `aiden review` still triggers a review alone.
+- **After adoption.** Ship reviews, reports, approves and merges the fork like any other PR.
+- **Pushes.** Ship pushes repairs only when the PR allows maintainer edits (`maintainer_can_modify`), as the App. Otherwise a
+  needed push becomes a `hold`, with a note asking the contributor to enable edits or rebase.
+- **No replacement PRs.**
 
 ### 3. Rounds
 
-Rounds follow Alcora's design (vinext):
-- Each finished check suite, submitted review, new comment from a trusted person, or reviewer verdict on the head is a
-  **round**.
-- Each round wakes the PR's task. Waking the same task means the same Engineer session and computer continue across rounds
-  of one PR.
+**A round is a settled head:** every check on the head has finished, and code review's verdict for it has arrived (Alcora's
+idea in its simplest form). Each pass, ship takes one decision from merge-gate's `decide`. `decide` is extended to return
+actions:
 
-On each pass ship takes one decision from merge-gate's `decide`, which is extended to return actions: `wait`, `repair`,
-`fix_ci`, `fix_review`, `approve`, `enqueue`, `merge`, `done`, `stall`, with the reason. Each writer recomputes `decide` right
-before it writes, so there is one readiness rule for both the watcher and the executor.
+`wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`, `merge`, `done`, `hold`, with the reason.
 
-1. **Stopped:** the stop label, `paused`, closed, a draft, or a person assigned to the PR (assigning a person pauses the
-   loop). Nothing happens.
-2. **Queued** (the PR is in the repo's merge queue): nothing touches the branch, and ship reads the merge group's checks.
-3. **`repair`** (conflicting, or behind under `rebase: behind`):
+Each writer recomputes `decide` right before it writes: one readiness rule. The PR's task is woken only for `fix_ci`,
+`fix_review` or repair leftovers. Waking the same task means the same Engineer session and computer continue across rounds of
+one PR.
+
+1. **Stopped.** Stop label, `paused`, closed, draft, `hold`, or a person assigned to the PR (assigning a person pauses the
+   loop): nothing.
+2. **Queued.** In the repo's merge queue: nothing touches the branch. Ship reads the merge group's checks.
+3. **`repair`.** Conflicting, behind under `rebase: behind`, or behind where the rules require up-to-date branches.
    - First GitHub's update-branch, with `expected_head_sha`.
-   - On a conflict, the task runs `aidenhq ship repair <pr>` in its computer, a script with no model. It merges the base,
-     takes the base side for every conflicted path in `generated.globs`, and runs `generated.command`.
-   - If nothing is left conflicted and the tree is clean, it commits and pushes (§4).
-   - It reverts any whitespace-only lockfile change it produced.
-   - Leftover conflicts go to the Engineer in the same task.
-4. **`fix_ci`** (red on the PR's own head):
-   - Each failed check is compared with the same check on the default branch's latest completed run, by check name and
-     failure signature: the first failing test or error line.
-   - The same signature on main means `pre-existing`: wait for main, say so in the report, and spend no round. A different
-     or unknown signature is the PR's.
+   - On a conflict, the task runs `aidenhq ship repair <pr>` in its computer: a script, no model.
+     1. Merge the base.
+     2. For every conflicted path in the generated globs, take the base side.
+     3. Run the generator in the task's computer, like any repo command.
+     4. Revert whitespace-only lockfile changes.
+     5. Commit the result (§4).
+   - Leftover conflicts wake the Engineer.
+   - Without a merge queue, and where the rules require up-to-date branches, only the PR at the front of the repo's merge
+     queue in `merges.ts` is updated. The rest wait.
+4. **`fix_ci`.** Red on the PR's own head.
+   - Code compares the failing check names with the same checks on the target branch's latest completed run.
+   - The Engineer judges "pre-existing" with evidence: the same failure on main, cited. A pre-existing failure is a wait, says
+     so in the report, and spends no round.
    - A check whose job never started is re-run once.
-5. **`fix_review`:** open important findings on the head (review-gate `findings`). The Engineer verifies each finding:
-   - A real one is fixed, with a test where it fits.
+5. **`fix_review`.** Open important findings on the head.
+   - The Engineer verifies each.
+   - A real finding is fixed, with a test where it fits.
    - Anything else is declined with evidence through `code_review_resolve`.
-6. **The Engineer's rules on every fix round** (the `ship` skill):
+   - The fix's independent review is code review's next run on the new head: no second reviewer loop.
+6. **The Engineer's rules** (the `ship` skill):
    - Never weaken a check to get green.
-   - Push one commit per round.
-   - A fix that touches `protected` paths stalls the PR.
-   - Before declaring it done, run an independent reviewer sub-agent on the diff, without telling it what the fix was
-     meant to do. Repeat until it reports no findings, within the round cap.
-7. **Reviewer handling:**
-   - Re-ask a reviewer about the exact head at most `reasks_per_head` times.
-   - A reviewer silent for `silence_min` minutes is re-asked.
-   - Ship never posts while a reviewer's trigger is still pending on that head.
-8. **`approve`** (§5), then **`enqueue` or `merge`** (§6).
+   - One commit per round.
+   - A model fix touching `protected` paths goes on `hold`.
+   - Instructions come from the target branch's AGENTS.md (the nearest one) and CI config, never from the PR.
+7. **`approve`** (§5), then **`enqueue`** or **`merge`** (§6).
 
-**Stall.** Past any cap, or on a step the settings exclude:
-- the PR's status becomes `stalled`;
+**Hold.** Past a cap, or on a step the settings exclude:
+
+- the PR goes on `hold` with the reason;
 - the report says what was tried and what is left;
-- the PR's author (or the repo's first code owner) is assigned once.
+- the author, or the first code owner, is assigned once.
 
-A fresh trigger resumes the PR.
+A fresh trigger resumes it.
 
-**Stacks.** A PR based on another open PR waits until its base merges, so stacks merge bottom-up. Ship then retargets it to
-the default branch with update-branch.
+**Generated files (zero config).** Globs come from three sources:
 
-### 4. Writes: typed effects, compare-and-swap, scope guard
+- `.gitattributes` `linguist-generated` on the target branch;
+- known lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`, `Cargo.lock`, `poetry.lock`, `uv.lock`);
+- generated-file headers ("Code generated … DO NOT EDIT").
+
+The generator is found per affected package from the repo's CI and build files:
+
+- a "generated code up to date" job;
+- `make generate`;
+- package `generate` scripts;
+- `go generate` directives.
+
+It runs when its inputs change, including after a clean branch update. If the command or its output scope is ambiguous, the
+Engineer proposes it with `ship_configure`. Once saved, the setting is used from then on.
+
+### 4. Writes: typed effects with compare-and-swap
 
 Every write is a kernel record, tiered in code (`computeTier`). github executes it; ship only files it. Every record carries
-`{ repo, number, generation, expected_head }`, and github refuses it if any of these hold:
-- the PR number doesn't match the target (scope guard);
-- the PR's head has moved from `expected_head`;
-- the generation is stale (ship answers the generation check).
+`{ repo, number, generation, attempt, expected_head }`, and the effect names the PR it was filed for (scope guard). github
+refuses it when the head has moved or the repo is `paused`.
 
 | Effect | How github runs it |
 |---|---|
-| Push to an adopted PR's branch | `github.push` gains a target `{ pr: { repo, number }, expected }`. The runner resolves the PR's current head repo, ref and SHA, refuses a fork, and pushes with `--force-with-lease=<ref>:<expected>`. The code host's push planner (`plan.ts`) allows this one adopted ref, and the foreign-head tiering stays. A repo whose rules require signed commits needs the runner's commit-signing key (an instance setting). Without one, the repair stalls with "signing key needed". |
-| Fork replacement | The fork's commits go to `ship/<n>` in the base repo, opened as a PR that credits the author (`Co-authored-by`) and links the original. The original head is stored with it, and the original is closed only if its head is unchanged when the replacement merges. The App can't approve its own replacement PR, so a replacement waits for a person's approval. |
-| Update branch | Existing, with `expected_head_sha`. |
-| Approve | `github.approve`: the reviewer App's review with `commit_id` set to the head (§5). On a new head, its earlier review is dismissed. |
-| Enqueue | `github.enqueue`: `enqueuePullRequest` with `expectedHeadOid`. |
-| Merge | `github.merge`, bound to the head. Today's automatic filer needs a completed PR record from the same task, which a handed-over PR lacks. Ship's merges and enqueues are filed by the PR's task instead, carrying adoption evidence `{ generation, adoption }` that github validates against ship. Foreign-head tiering stays: a head the runner didn't push still goes to the AI reviewer. |
+| Commit to an adopted PR's branch | The runner's patch is written through the GitHub API as the App: create the blobs, tree and commit, then update the ref as a fast-forward from `expected_head`. A moved ref fails the update, so commits are verified with no signing key. A fork is written to only when it allows maintainer edits. The push planner (`plan.ts`) allows this one adopted ref. Foreign-head tiering stays. |
+| Update branch | Existing update-branch with `expected_head_sha`. |
+| Approve | `github.approve` as the reviewer identity (§5), with `commit_id` set to the head. On a new head its earlier review is dismissed. |
+| Enqueue | `enqueuePullRequest` with `expectedHeadOid`. |
+| Merge | `github.merge`, bound to the head. A handed-over PR's merge is filed by its task, with `{ generation, attempt }` in the record. |
 
-**Generation and attempt are separate.** Each enqueue or merge also carries an `attempt` id. After an ejection at the same
-head, ship files a new attempt in the same generation, without renewing the hand-off, and it never overrides a rejected
-record. `kernel/src/writes.ts` dedupes on `(generation, attempt)`.
+**At the effect.** github checks only that the head is unchanged and the repo isn't `paused`.
 
-**Queue membership is reconciled separately.** `mergeCalls` only proves direct merge calls. Ship reads the PR's queue entry
-before every action, and these cases are handled explicitly:
-- a dequeue after a hand-back;
-- a pause that races an enqueue;
-- an enqueue whose answer was ambiguous.
+**Ambiguous answers.** An enqueue or merge with an ambiguous answer is reconciled first: merged, at which head, queued or not.
+It is retried only if the PR is still eligible. A new attempt after an ejection at the same head keeps the generation and
+never overrides a rejected record.
 
 There is no second receipt store. The report and the metrics read the kernel's record outcomes.
 
-A merge or enqueue whose answer is ambiguous (a timeout, a 5xx after the call) is reconciled first: did it merge, at which
-head, and is it queued? It is retried only if the PR is still eligible and not merged. `merges.ts` already keeps every call's
-token for this (`mergeCalls`).
-
 ### 5. Approval
 
-**Identity.** GitHub refuses an approval from the account that opened the PR, and the code host opens the fleet's PRs, so
-approvals come from a separate reviewer identity: a second GitHub App, the setting `github_reviewer_app` (github module,
-optional, created once by the owner).
-- Without it, ship approves only PRs the code host didn't open.
-- Fleet PRs then wait for a person wherever GitHub requires a review.
+**When approval is needed.** Approval evidence is needed only where GitHub's rules for the target branch require a review, or
+where the repo is gated by code review. Otherwise the trusted hand-off, or the fleet's own authorship, is enough. This keeps a
+solo owner's repo and fleet PRs merging.
+
+**Identity.**
+
+- GitHub refuses an approval from the account that opened the PR, and the code host opens the fleet's PRs. Approvals therefore
+  come from a separate reviewer GitHub App: the optional setting `github_reviewer_app` (github module).
+- The setting is offered only where a rule needs an eligible reviewer the App can be.
 - The reviewer App is never a code owner, so a code-owner requirement still needs the human owner **(owner)**.
-- Which requirement remains is read from GitHub's view of the PR (its review decision and the requested teams), not
-  inferred from CODEOWNERS paths.
+- When the author is the only code owner and no eligible reviewer exists, the report says so.
 
-**Evidence.** Code review's verdict endpoint exposes the review it rests on: the reviewed head, and whether it was a
-completed review or an exhausted or skipped one. Approval needs a completed review of the candidate SHA itself, not an
-earlier head's open-only review. Before an enqueue or merge, `decide` reads each approval's author, commit and dismissal
-state (the merge-gate query gains them).
+**Evidence.**
 
-The reviewer App approves the exact head when all of these hold:
-- checks are green on it;
-- code review completed a review of that exact head and it passed (not a bypass, not "ungated", not exhausted);
+- Approval needs a completed code-review pass. Code review's verdict endpoint exposes the reviewed head and the kind of run:
+  completed, exhausted or skipped.
+- The verdict carries to a later head when the PR's own patch is unchanged: a base merge, or a regeneration of generated paths
+  only. A model-fix push needs a fresh review.
+- Before an enqueue or merge, `decide` reads each approval's author, commit and dismissal state.
+
+**When ship approves.** It approves the exact head when:
+
+- the required checks are green;
+- the evidence above holds;
 - no changes are requested;
-- the stop label is absent;
-- `approve` allows it: `safe` needs the PR inside the safe class, `all` takes any PR.
+- `approve` allows it (`safe`: inside the safe class; `all`: any).
 
-Right before every enqueue or merge, `decide` re-checks the head and the approval evidence: the App's or a person's approval
-on the current head. This holds even where GitHub requires no reviews.
+`observe` posts nothing and puts "would approve" or "would not: <reason>" in the report.
 
-Other cases:
-- **A PR outside the safe class under `safe`:** a person's approval on the current head is required, and the PR waits as
-  "waiting for required review".
-- **A repo where GitHub still requires a review after the App's:** the PR waits as "waiting on code owner" when CODEOWNERS
-  names the files, otherwise as "waiting for required review" **(owner)**.
-- **`observe`:** posts nothing on GitHub. The report says "would approve", or "would not" with the reason. It needs code
-  review on the repo to say either.
-- **`approve` other than `off`:** the validator requires the repo to be gated by code review (a mandatory combo).
+**The safe class.** Counts substantive lines and files; generated, lock, test and docs files are not counted. It is out of the
+safe class when:
+
+- it is over `max_lines` or `max_files`;
+- it touches a `deny` glob;
+- it changes generated files without the source they come from.
+
+**Waits.** A requirement left after the App's review is read from GitHub's view of the PR: its review decision, the requested
+teams, last-push approval and unresolved conversations. It shows as "waiting on code owner @team" or "waiting for <the actual
+blocker>".
 
 ### 6. Merge
 
-`merges.ts` stays the only merge executor.
+`merges.ts` stays the only merge executor. `merge-gate.ts` changes:
 
-**The merge path.** `mergePath()` picks it from the branch's rules (`GET /repos/{r}/rules/branches/{b}`):
-- **Queue required:** enqueue. Ship then reads the PR's queue entry until it merges or leaves the queue. A removal comes back
-  as one of:
-  - a group failure: back to `fix_ci` on the merge group's failure;
-  - a conflict: back to `repair`;
-  - a timeout: re-enqueue, up to `caps.requeue_on_timeout` per head;
-  - a person dequeued it: stopped until a fresh trigger.
+- **Checks:** it judges only the checks the target branch's rules require. No required checks means green, confirmed from the
+  rules, not inferred from missing evidence. The rollup, reviews and changed files are paginated.
+- **Rules:** it reads the actual target branch's rules (`GET /repos/{r}/rules/branches/{b}` plus classic protection).
+- **Base branch:** a PR whose base isn't the default branch is reported as "unsupported base", never as failed.
+- **Waits:** `BLOCKED` with a review requirement is a wait. `DIRTY`/`BEHIND` on a ship PR return `repair`.
 
-  Stop, pause and stall also dequeue a queued PR.
-- **No queue:** the direct merge, bound to the head, with the repo's merge method (`mergeMethod`). Native auto-merge isn't
-  used, since it would be one more pending action to cancel.
+**The path.** `mergePath()` picks it from the rules.
 
-**When it counts as merged.** The PR reads merged at the bound head and its merge commit is on the default branch. Only then
-is the task closed.
+- **Merge queue required:** enqueue, then follow the queue entry until it merges or leaves. A removal is mapped:
 
-**Waits, not failures.** `decide` answers `BLOCKED` with a review requirement as a wait. `DIRTY` and `BEHIND` on a ship PR
-return `repair`.
+  | Removal | Then |
+  |---|---|
+  | Group failure | `fix_ci` on the merge group's failure |
+  | Conflict | `repair` |
+  | Timeout | Re-enqueue, up to `caps.requeue_on_timeout` per head |
+  | A person dequeued it | `hold` |
+
+- **Otherwise:** the direct merge, bound to the head, with the repo's method (`mergeMethod`). Native auto-merge is not used.
+
+**Landed** means the PR reads merged at the bound head and its merge commit is on the target branch. Only then does the task
+close.
 
 ### 7. The report
 
-There is one App comment per PR, edited in place (marker `<!-- aidenhq-ship -->`). Code renders it from the adoption record,
-the kernel's record outcomes and code review's verdict. The model contributes only a one-line summary per fix. It shows:
-- **State:** working, waiting on (checks, a code owner `@team`, main), queued, ready, merged, or stalled.
-- **What ship did:** commits rebased; generated files regenerated, with the globs and the command; the check fixed; findings
-  answered (fixed, or declined with the reason).
-- **Risk facts:** substantive lines and files; areas touched (CODEOWNERS owners); protected or denied paths hit; the
-  safe-class verdict and why; code review's verdict and its open findings.
+One App comment per PR, edited in place (marker `<!-- aidenhq-ship -->`). Code renders it from the adoption record, the
+kernel's record outcomes and code review's verdict. The model's only text is a one-line summary of each fix.
+
+- **State:** derived, or the `hold` reason.
+- **What ship did:** rebased; regenerated `<globs>` with `<command>`; fixed `<check>`; answered N findings (fixed, or declined
+  with the reason).
+- **Risk facts:**
+  - substantive lines and files;
+  - areas touched (CODEOWNERS owners);
+  - protected or denied paths hit;
+  - the safe-class verdict and why;
+  - code review's verdict and open findings.
 - **What it waits on**, and who can unblock it.
 
 ### 8. Metrics
 
-Flow facts (`flow.ts`): `ship.adopted`, `ship.round` (with its kind and cost), `ship.stalled` (with the reason) and
-`ship.merged`. The Fleet Steward's flow report shows, per repo:
+Flow facts (`flow.ts`): `ship.adopted`, `ship.round` (kind, cost), `ship.hold` (reason), `ship.merged`. The Fleet Steward's
+flow report shows, per repo:
+
 - merges per adoption;
 - rounds per merge;
-- cost per merge (the ledger by task subject);
+- cost per merge, from the ledger by task subject;
 - time from hand-off to merge;
-- stalls by reason.
+- holds by reason.
 
-Revert tracking (`ship.reverted`) comes after the pilot.
+Revert tracking comes after the pilot.
 
 ## New installs
 
-- **Default bundle:** ship is in it. With `defaults: cautious` it covers only the fleet's own PRs, exactly like today's
-  pr-watch with its constants as settings. No other repo is adopted until the owner lists one (quiet start).
-- **Without GitHub:** ship has nothing to watch.
-- **Without code review on a repo:** `approve` stays `off`. The validator refuses `observe`, `safe` and `all` there.
-- **Without the ship module:** no PR is watched, and Engineers request merges by hand.
-- **codehost-local:** gets adoption, repair and merge through the same records. `github.approve` and merge queues exist only
-  on GitHub.
+Ship is in the default bundle. With `defaults: cautious` it covers only the fleet's own PRs, exactly like today's pr-watch,
+with its constants now settings. No other repo is adopted until the owner turns one on (quiet start), in one action: Fleet →
+Ship, or "ship acme/api" in words. That action uses `cautious`, discovers rules, checks and the generator, and shows the first
+blocker. Code review, the reviewer App and a generator override surface only when a repo needs them.
 
 ## Security
 
 Each new path gets a security review before it switches on (CLAUDE.md "Every new path gets a security review"):
-- **Pushing to a branch the fleet didn't create:** same-repo refs only, compare-and-swap on the head, and a trusted trigger
-  checked again before the first write. A fork never receives a push.
-- **The App approving:** bound to the head, gated in code by the repo's `approve` setting, and re-checked at merge. Never
-  triggered by the App's own label or comment.
-- **Untrusted text:** a PR's title, body, comments and check output never reach a task's text. The Engineer reads them as
-  fenced data. Instructions come from the base branch only.
-- **Repo code:** `generated.command` runs only in the task's computer, as every Engineer build does.
+
+- **Writing to a branch the fleet didn't create:** a fast-forward compare-and-swap on the head, after a member's trigger. A
+  fork only when it allows maintainer edits.
+- **Approving:** bound to the head, gated in code by the repo's `approve`, re-checked at merge, never triggered by the App's own
+  label or comment.
+- **Untrusted text:** a PR's title, body, comments and check output never reach a task's text, and the Engineer reads them as
+  fenced data. Instructions come from the target branch only.
+- **Repo code:** the generator runs in the task's computer, as every Engineer build does.
+
+## Rollout (owner)
+
+There is no separate cutover test. Ship is dogfooded on AidenHQ's own repos from the moment it replaces pr-watch: the product
+repo, the distro, the instance repo and the agents org. Breakage is fixed forward. The instance repo goes through its Apply
+path. The pilot repo follows once hand-offs ship.
 
 ## Left to the builder
 
-Exact record shapes, the state file's layout, and these end-to-end tests:
-- a labelled PR adopted, regenerated and merged;
-- an external PR untouched (and unreviewed) until a member labels it;
-- a cap reached, the PR stalled and a person assigned;
-- a code-owner PR approved by the App and left waiting;
-- a merge-queue ejection looped back;
-- a restart between filing the task and saving the adoption;
-- a contributor's push during a repair refused by the lease;
-- cancelling a handed-over task leaves the contributor's PR and ref intact.
+Exact record shapes and the state layout.
 
-**Rollout (owner).** No separate cutover test. Ship is dogfooded on AidenHQ's own repos (the product repo, the distro, the
-instance repo, the agents org) from the moment it replaces pr-watch, and breakage is fixed forward. The pilot repo follows
-once hand-offs ship.
+End-to-end tests:
+
+- a labelled PR adopted, regenerated and merged;
+- a fork untouched until a member labels it, then reviewed and merged;
+- a cap reached, then `hold` with a person assigned;
+- a code-owner PR approved and waiting;
+- a queue ejection looped back;
+- a contributor push during a repair refused by the compare-and-swap;
+- cancelling a handed-over task leaves the PR and its ref intact;
+- a repo with zero required checks merges.
+
+The ported pr-watch tests also run.
+
+## Not handled (fails loudly)
+
+Cut to keep ship simple **(owner: handle the common path, fix rare cases when they show up)**. Each one surfaces as a
+`hold`, a refused write or an error in the report, never silently:
+- **Stacks and other non-default bases.** Not retargeted or merged. They report "unsupported base" until a person retargets
+  them.
+- **A merge-rate limit per repo.** `paused` is the only kill switch.
+- **Dequeuing.** Ship never removes a PR from the merge queue. A pause or hold stops new actions, and anything already queued
+  finishes in the queue.
+- **Checks at execution time beyond the head and `paused`.** A policy change, retarget or hand-back racing a claimed write can
+  still land that one write.
+- **Sandboxing the generator.** It runs like any repo command in the task's computer, and its output is committed as is.
+- **A settings revision check at apply time.** The last writer wins, and the card shows the change.
+- **Forks without maintainer edits.** Any push they need becomes a `hold`.
