@@ -204,16 +204,8 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
     CREATE INDEX IF NOT EXISTS calls_held ON calls (status, task_subject) WHERE ${HELD};
     DROP INDEX IF EXISTS calls_task; DROP INDEX IF EXISTS calls_subject; DROP INDEX IF EXISTS calls_day; DROP INDEX IF EXISTS calls_all_day; DROP INDEX IF EXISTS calls_status;
   `);
-  // TODO(next PR): drop calls_final, its triggers and calls_open. Only the kernel before this one reads them (its monthSpend,
-  // INDEXED BY calls_open), and it may still be draining beside this one for one deploy; they stay until then.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS calls_final (day TEXT PRIMARY KEY, n INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS calls_open ON calls (day) WHERE ${HELD};
-    CREATE TRIGGER IF NOT EXISTS calls_final_add AFTER INSERT ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
-      INSERT INTO calls_final (day, n) VALUES (NEW.day, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1; END;
-    CREATE TRIGGER IF NOT EXISTS calls_final_set AFTER UPDATE ON calls WHEN NEW.status NOT IN ('reserved', 'unsettled') BEGIN
-      INSERT INTO calls_final (day, n) VALUES (NEW.day, 1) ON CONFLICT (day) DO UPDATE SET n = n + 1; END;
-  `);
+  // calls_final and calls_open belonged to the month counters this replaced: gone once the kernel that read them had drained.
+  db.exec(`DROP TRIGGER IF EXISTS calls_final_add; DROP TRIGGER IF EXISTS calls_final_set; DROP INDEX IF EXISTS calls_open; DROP TABLE IF EXISTS calls_final;`);
   spendTotals(db);
   return { db, moved: moveLedger(db, legacy) };
 }
@@ -536,7 +528,6 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   const prune = () => {
     const cut = new Date(now() - 40 * DAY_MS).toISOString();
     db.prepare("DELETE FROM calls WHERE at < ?").run(cut);
-    db.prepare("DELETE FROM calls_final WHERE day < ?").run(cut.slice(0, 10));
     db.prepare("DELETE FROM filed WHERE at < ?").run(cut);
     db.prepare("DELETE FROM runs WHERE at < ?").run(new Date(now() - 7 * DAY_MS).toISOString());
     db.prepare("DELETE FROM ci_tokens WHERE exp < ?").run(new Date(now() - 2 * DAY_MS).toISOString());
