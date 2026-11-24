@@ -1,6 +1,6 @@
 // The one control for answering an agent's questions: chat replies, asks from delegated work and My day's Needs-you rows.
-// A single single-choice question answers on one tap; several questions or a multi-select pick, then Send; a typed reply sends on
-// Enter. Answers are only words: they never approve anything. The control is locked while sending; a failure keeps the typed
+// A single single-choice question answers on one tap and its typed reply sends on Enter; several questions or a multi-select
+// pick, then Send (Enter there sends nothing). Answers are only words: they never approve anything. The control is locked while sending; a failure keeps the typed
 // text and shows under the control.
 import { useState } from "react";
 import type { Question } from "./types";
@@ -57,7 +57,7 @@ export function AnswerForm({ questions, onAnswer, autoFocus, askedAbove }: { que
             value={own[n]}
             autoFocus={autoFocus && !q.options.length && n === 0}
             onChange={(e) => setOwn((p) => p.map((x, i) => (i === n ? e.target.value : x)))}
-            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && ready && (one ? submit(reply(0)) : send())}
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && (tap || typed) && ready && submit(reply(0))}
           />
         </fieldset>
       ))}
