@@ -26,7 +26,7 @@ settings:
   maintainer_poll_minutes: { default: 5 }
 agents:
   maintainer:
-    skills: [ maintainer.report-product-bug, tasks.delegate-work ]
+    skills: [ maintainer.report-product-bug, maintainer.triage, maintainer.resolved-check, tasks.delegate-work ]
     department: platform
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
