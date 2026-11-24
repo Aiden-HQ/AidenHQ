@@ -83,7 +83,8 @@ test("a feed gap, a resync and a changed repo setting each bootstrap again, and 
   assert.equal(w.boots, 2);
   w.gap = false; w.log.push(ev(2, "github.resync", {}));
   await w.look();
-  assert.equal(w.boots, 3);
+  await w.look();
+  assert.equal(w.boots, 3, "a resync marks the repo; the next look bootstraps it");
   w.repos = [repo({ features: true })];
   w.bootstrap = { repos: [{ repo: R, issues: [issue(3)], builds: [issue(4)], featured: [9] }] };
   await w.look();
@@ -193,4 +194,19 @@ test("a filed fix issue emits issue.triaged at its label time, on the filed task
   await w.look({ fire: async () => ({ id: "task-7" }), emit: (f) => facts.push(f) });
   assert.deepEqual(facts, [{ type: "issue.triaged", subject: `issue:${R}#7`, version: "1", at: "2026-01-02T03:04:05Z", task: "task-7",
     data: { issue_url: `https://github.com/${R}/issues/7`, issue_created_at: "2026-01-01T00:00:00Z", labels: ["fix"], trusted: true } }]);
+});
+
+test("one repo's incomplete bootstrap files what it read and is read again, and holds up no other repo's events", async () => {
+  const w = world({ repos: [repo(), repo({ repo: "acme/other" })], ones: { "9:agent-fix": { ...issue(9) } } });
+  w.bootstrap = { repos: [{ repo: R, issues: [issue(1)], incomplete: "1 issue(s) whose label events couldn't be read" }, { repo: "acme/other", issues: [issue(2)] }] };
+  await w.look();
+  assert.deepEqual(w.fired.map((f) => f[0]).sort(), [1, 2]);
+  assert.equal(w.state().feed.digest[R], undefined, "not committed: read again");
+  assert.ok(w.state().feed.digest["acme/other"]);
+  w.log.push({ ...ev(1, "issues.labeled", { number: 9, label: "agent-fix" }), resource: "acme/other" }, ev(2, "github.resync", {}, { resource: "acme/other" }));
+  w.bootstrap = { repos: [{ repo: R, issues: [issue(1)] }, { repo: "acme/other", issues: [issue(2)] }] };
+  w.ones["9:agent-fix"] = issue(9);
+  assert.equal(await w.look(), 1, "the other repo's label is handled while the first repo is still pending");
+  assert.ok(w.state().feed.digest[R], "the next look's bootstrap finished it");
+  assert.equal(w.state().feed.after, 2);
 });

@@ -58,6 +58,8 @@ export interface BootstrapRow {
   /** The agent-build issues and the trusted feature-request numbers (duty `features`). */
   builds?: MaintainerIssue[];
   featured?: number[];
+  /** Some issues' label events couldn't be read (a failed call): what was read is here, and the repo is read again. */
+  incomplete?: string;
 }
 /** One event of the kernel's log (kernel/src/events.ts LoggedEvent): what this service reads of it. */
 export interface FeedEvent { seq: number; resource: string; id: string; kind: string; author?: string; labels?: string[]; data?: Record<string, unknown> }
@@ -152,22 +154,26 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
     // The first look's watermark is kept at once, so a bootstrap that fails and is retried still handles what was opened since it.
     if (first) { after = page.next; save(); }
     const stale = first || page.gap ? [...cfg.keys()] : [...cfg.keys()].filter((k) => committed[k] !== digest[k]);
+    // Each repo is bootstrapped on its own: one that fails is retried on the next look (its digest is not committed) and holds up no other.
+    for (const k of stale) delete committed[k];
+    const failed: string[] = [];
     for (const k of stale) {
-      await bootstrap([k]);
-      committed = { ...committed, [k]: digest[k]! };
+      try { await bootstrap([k]); committed = { ...committed, [k]: digest[k]! }; } catch (e) { failed.push(String((e as Error).message ?? e)); }
     }
     // An issue opened and then left closed within one read is not triaged: its last close or reopen in the page decides.
     const closed = new Map<string, number>();
     for (const ev of page.events) if (ev.kind === "issues.closed" || ev.kind === "issues.reopened") { const key = `${ev.resource.toLowerCase()}#${ev.data?.number}`; ev.kind === "issues.closed" ? closed.set(key, ev.seq) : closed.delete(key); }
     for (const ev of page.events) {
       const r = cfg.get(ev.resource.toLowerCase());
-      if (r) count += await handle(d, r, ev, of(r.repo), () => bootstrap([r.repo.toLowerCase()]).then(() => 0), (closed.get(`${ev.resource.toLowerCase()}#${ev.data?.number}`) ?? 0) > ev.seq);
+      if (r) count += await handle(d, r, ev, of(r.repo), () => { delete committed[r.repo.toLowerCase()]; return Promise.resolve(0); }, (closed.get(`${ev.resource.toLowerCase()}#${ev.data?.number}`) ?? 0) > ev.seq);
     }
     for (const r of cfg.values()) count += await releaseHeld(d, r, of(r.repo));
     for (const k of Object.keys(repos)) if (!cfg.has(k)) delete repos[k];
     for (const k of Object.keys(committed)) if (!cfg.has(k)) delete committed[k];
     after = page.next;
-    save();
+    const message = failed.join("; ").slice(0, 300);
+    if (message && message !== state.error) d.log.warn({ err: message }, "maintainer bootstrap not finished for a repo; the next look reads it again");
+    save(message || undefined);
   } catch (err) {
     const message = String(err instanceof Error ? err.message : err).slice(0, 300);
     if (message !== state.error) d.log.warn({ err: message }, "maintainer feed not handled; the next look redelivers it");
@@ -176,13 +182,14 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
   return count;
 }
 
-/** Files what a repo's bootstrap read found, and rebuilds its featured set. A repo that couldn't be read throws, so it is read again. */
+/** Files what a repo's bootstrap read found, and rebuilds its featured set. A repo that couldn't be read, or only in part, throws once what was read is filed, so it is read again. */
 async function bootRepo(d: PumpDeps, r: MaintainedRepo, row: BootstrapRow, st: RepoState): Promise<number> {
   if (row.error) throw new Error(`${r.repo}: ${row.error}`);
   let count = 0;
   for (const i of row.issues ?? []) count += await file(d, r, i, "fix", st);
   for (const i of row.builds ?? []) count += await file(d, r, i, "build", st);
-  if (r.features && row.featured) st.featured = keep(row.featured);
+  if (r.features && row.featured && !row.incomplete) st.featured = keep(row.featured);
+  if (row.incomplete) throw new Error(`${r.repo}: ${row.incomplete}`);
   return count;
 }
 
@@ -300,7 +307,7 @@ export function maintainerReads(env: NodeJS.ProcessEnv = process.env): Pick<Pump
   const url = (env.MAINTAINER_ISSUES_URL ?? "http://github:8086/internal/maintainer/issues").replace(/\/+$/, "");
   if (!token(env)) return undefined;
   const get = async (u: string) => {
-    const res = await fetch(u, { headers: { authorization: `Bearer ${token(env)}` }, signal: AbortSignal.timeout(60_000) });
+    const res = await fetch(u, { headers: { authorization: `Bearer ${token(env)}` }, signal: AbortSignal.timeout(300_000) });
     if (!res.ok) throw new Error(`github-mcp: ${res.status} ${(await res.text()).slice(0, 200)}`);
     return (await res.json()) as any;
   };

@@ -1110,7 +1110,7 @@ it("the bootstrap covers every listed repo, and one repo's failure holds up no o
   expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, error: expect.stringMatching(/couldn't list acme\/product's issues/) });
   f.opts.failList = undefined;
   f.opts.failTimeline = [2];
-  expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, error: expect.stringMatching(/1 issue\(s\) whose label events couldn't be read/) });
+  expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, issues: [expect.objectContaining({ number: 1 })], incomplete: expect.stringMatching(/1 issue\(s\) whose label events couldn't be read/) });
 });
 it("a comment on a maintained repo keeps that repo's own org, while other owner terms are still redacted", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });

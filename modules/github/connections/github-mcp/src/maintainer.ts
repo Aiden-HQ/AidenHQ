@@ -849,24 +849,27 @@ export class Maintainer {
   async bootstrap(only?: string[]) {
     if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
     type Read = Awaited<ReturnType<Maintainer["repoSince"]>>;
-    const whole = (r: Read, what: string) => {
-      const unread = r.skipped.filter((s) => s.unread);
-      if (unread.length) throw new Error(`${what}: ${unread.length} issue(s) whose label events couldn't be read (${unread[0]!.reason})`);
-      return r.issues;
-    };
-    const out: ({ repo: string; error: string } | { repo: string; issues?: Read["issues"]; builds?: Read["issues"]; featured?: number[] })[] = [];
+    type Row = { repo: string; issues?: Read["issues"]; builds?: Read["issues"]; featured?: number[]; incomplete?: string; error?: string };
+    const out: Row[] = [];
     for (const r of this.repos.filter((x) => !only || only.some((o) => same(o, x.repo)))) {
+      const row: Row = { repo: r.repo };
+      // What was read is always handed over; an issue whose label events failed to read marks the repo `incomplete`, so it is read again.
+      const part = async (label: string | undefined) => {
+        const read = await this.repoSince(r.repo, label);
+        const unread = read.skipped.filter((s) => s.unread);
+        if (unread.length) row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${label ?? r.label}: ${unread.length} issue(s) whose label events couldn't be read (${unread[0]!.reason})`.slice(0, 300);
+        return read.issues;
+      };
       try {
-        const row: { repo: string; issues?: Read["issues"]; builds?: Read["issues"]; featured?: number[] } = { repo: r.repo };
-        if (r.issues) row.issues = whole(await this.repoSince(r.repo), `${r.repo} ${r.label}`);
+        if (r.issues) row.issues = await part(undefined);
         if (r.features) {
-          row.builds = whole(await this.repoSince(r.repo, BUILD_LABEL), `${r.repo} ${BUILD_LABEL}`);
-          row.featured = whole(await this.repoSince(r.repo, FEATURE_LABEL), `${r.repo} ${FEATURE_LABEL}`).map((i) => i.number);
+          row.builds = await part(BUILD_LABEL);
+          row.featured = (await part(FEATURE_LABEL)).map((i) => i.number);
         }
-        out.push(row);
       } catch (err) {
-        out.push({ repo: r.repo, error: (err as Error).message.slice(0, 300) });
+        row.error = (err as Error).message.slice(0, 300);
       }
+      out.push(row);
     }
     return { repos: out };
   }
