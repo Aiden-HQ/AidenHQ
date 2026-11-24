@@ -300,3 +300,38 @@ test("a scheduled wake's note reaches the agent as a notice", async () => {
   await k.dispatch.tick();
   assert.match(k.started[0].prompt, /check the deploy/);
 });
+
+test("a run whose task moved to another agent is stopped, and its refused reply is dropped without telling the owner", async () => {
+  const task = { id: "t1", identifier: "WOR-9", title: "Build", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: "asker", createdByUserId: null };
+  const k = fake({ task, comments: [] });
+  k.inbox.push(wake("issue:t1:1", "assigned"));
+  await k.dispatch.tick();
+  assert.equal(k.started.length, 1);
+  task.assigneeAgentId = "dara"; // re-routed while the run goes on
+  await k.dispatch.tick();
+  assert.deepEqual(k.stopped, ["j1"], "the run is stopped");
+  Object.assign(k.jobs.get("j1"), { state: "cancelled", exit: null, cancelled: true, ended: Date.now() });
+  await k.dispatch.tick();
+  assert.equal(k.jobs.get("j1").acked, true, "its end is acknowledged");
+  assert.deepEqual([k.posts.length, k.filed.length, k.commented.length, k.notified.length], [0, 0, 0, 0], "nothing posted, reported or told");
+  // A run that ended on its own after the move: its refused reply goes quietly while another agent holds the task, and reaches
+  // the owner when nobody does.
+  k.inbox.push(wake("issue:t1:2", "assigned"));
+  task.assigneeAgentId = "eng";
+  await k.dispatch.tick();
+  task.assigneeAgentId = "dara";
+  Object.assign(k.jobs.get("j2"), { state: "done", exit: 0, final: "Done.", ended: Date.now() });
+  k.kernel.post = async () => { throw new KernelError(422, "refused", { type: "refused", message: "the task isn't assigned to this agent" }); };
+  await k.dispatch.tick();
+  assert.equal(k.jobs.get("j2").acked, true);
+  assert.equal(k.notified.length, 0, "another agent holds it: quiet");
+  k.inbox.push(wake("issue:t1:3", "assigned"));
+  task.assigneeAgentId = "eng";
+  k.kernel.post = async () => {};
+  await k.dispatch.tick();
+  task.assigneeAgentId = null;
+  Object.assign(k.jobs.get("j3"), { state: "done", exit: 0, final: "Done.", ended: Date.now() });
+  k.kernel.post = async () => { throw new KernelError(422, "refused", { type: "refused", message: "the task isn't assigned to this agent" }); };
+  await k.dispatch.tick();
+  assert.equal(k.notified.length, 1, "nobody holds it: the owner hears the drop");
+});
