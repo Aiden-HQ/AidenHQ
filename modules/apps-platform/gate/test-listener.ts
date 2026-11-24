@@ -247,8 +247,16 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     }
   };
   const RECHECK_MS = 60_000;
+  // The minute re-check serves both kinds of long-lived connection, and is started with the listener below, not only once a
+  // WebSocket opens: an event feed with no socket must lose its session too.
   let ticker: NodeJS.Timeout | undefined;
+  /** Starts the minute re-check on the first long-lived connection; it ends with the listener. */
+  const watch = () => {
+    ticker ??= setInterval(() => void recheck(), RECHECK_MS);
+    ticker.unref();
+  };
   const server = createServer((req, res) => {
+    watch();
     serve(req, res).catch((e) => {
       log({ msg: "test listener request failed", err: String((e as Error).message).slice(0, 300) });
       if (res.headersSent) res.destroy();
@@ -285,7 +293,6 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       if (left <= 0) return refuse(socket, 401, "sign in first");
       sockets.get(socket)!.until = setTimeout(() => drop(socket), Math.min(left, 2 ** 31 - 1));
     }
-    ticker ??= setInterval(() => void recheck(), RECHECK_MS).unref();
     let token: IdentityToken;
     try {
       const iat = Math.floor(Date.now() / 1000);
@@ -297,6 +304,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     }
     const headers = upstreamHeaders(req, token, { upgrade: true, proto: "http" });
     for (const k of Object.keys(headers)) if (STRIP.test(k) && k.toLowerCase() !== IDENTITY_HEADER) delete headers[k];
+    watch();
     const up = httpRequest({ host: "127.0.0.1", port: t.site.port, method: req.method, path: req.url, headers });
     // The browser may leave before the app answers the handshake: cancel the upstream request then, so no late 101 leaves an
     // app socket open behind a tunnel this listener already stopped tracking.
@@ -339,6 +347,7 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     });
   });
   // The reconciler closes the tunnels with the listener: `server.close()` leaves an upgraded socket open.
+  server.on("close", () => { if (ticker) clearInterval(ticker); ticker = undefined; });
   return Object.assign(server, {
     closeTunnels: (allowed?: (app: string) => boolean) => {
       for (const [s, t] of sockets) if (!allowed || !allowed(t.app)) drop(s);
