@@ -231,6 +231,8 @@ export function createEngine(d: EngineDeps) {
   // overwrote the first's runs and its summary. It holds only summaries not yet delivered, so it starts fresh: each ask is recorded again.
   if ((db.prepare("SELECT count(*) n FROM sqlite_master WHERE type = 'table' AND name = 'askers'").get() as { n: number }).n
     && !(db.prepare("PRAGMA table_info(askers)").all() as { name: string }[]).some((c) => c.name === "setkey")) db.exec("DROP TABLE IF EXISTS askers");
+  // An area_seen table of the first shape (no model and effort in its key) holds only a cache: rebuilt.
+  if ((db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).length && !(db.prepare("PRAGMA table_info(area_seen)").all() as { name: string }[]).some((c) => c.name === "combo")) db.exec("DROP TABLE area_seen");
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
@@ -1011,9 +1013,10 @@ export function createEngine(d: EngineDeps) {
    * cut to what a check's spec field holds. None on a Full review, a first review (nothing seen: all of it is new) or when nothing is unseen. */
   function unseenOf(b: BatchRow, r: RunRow, files: string[], blobs: Record<string, string>) {
     if (b.full) return undefined;
-    const seen = new Map(all<{ path: string; blob: string }>("SELECT path, blob FROM area_seen WHERE repo = ? AND option = ? AND combo = ?", b.repo, r.option, comboKey(r)).map((x) => [x.path, x.blob]));
+    const idx = seenIndex(b.repo, r.option!, comboKey(r), blobs), seen = idx.rows;
     if (!seen.size) return undefined;
-    const changed = files.filter((p) => seen.has(p) && seen.get(p) !== blobs[p]), fresh = files.filter((p) => !seen.has(p)), all_ = [...changed, ...fresh];
+    // Changed since read, or last read by a run that also read a file since deleted (the deletion may break them).
+    const changed = files.filter((p) => seen.has(p) && (seen.get(p)!.blob !== blobs[p] || idx.hit.has(seen.get(p)!.run))), fresh = files.filter((p) => !seen.has(p)), all_ = [...changed, ...fresh];
     const kept: string[] = [];
     let size = 100;
     for (const p of all_) { size += JSON.stringify(p).length + 1; if (size > 15_000) break; kept.push(p); }
