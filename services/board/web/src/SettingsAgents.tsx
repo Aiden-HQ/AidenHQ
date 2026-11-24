@@ -141,7 +141,22 @@ export function AgentDetails({ a, data }: { a: AgentSettings; data: SettingsData
         {routines.map((r) => (
           <RoutineField key={r.key} r={r} models={data.choices.models} agentModel={a.model} />
         ))}
-        {!routines.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
+        {a.recurring.map((r) => (
+          <Row
+            key={r.title}
+            title={<a href={`#/t/${r.task}`}>{r.title}</a>}
+            meta={
+              <>
+                <span>
+                  {r.summary}
+                  {!r.paused && r.next && ` · next ${at(r.next)}`}
+                </span>
+                {r.paused && <StatusDot tone="idle">Paused</StatusDot>}
+              </>
+            }
+          />
+        ))}
+        {!routines.length && !a.recurring.length && !a.canHeartbeat && !a.heartbeatHours && <p className="fleet-empty">No heartbeat or routines: it runs when asked.</p>}
       </Group>
       <Recent a={a} />
     </div>

@@ -17,7 +17,7 @@ import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
-import { RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
+import { ROUTINE_PREFIX, RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, hasMarker, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
@@ -1343,7 +1343,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const nextRunOf = (r: { status: string; triggers?: { enabled?: boolean; nextRunAt?: string | null }[] }) => (r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled !== false).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? undefined : undefined);
 
   async function settingsData() {
-    const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);
+    const [pending, live, agents] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => []), pc.agents().catch(() => [])]);
     // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
     const rows = new Map(live.filter((x) => x.status !== "archived").map((x) => [x.id, x]));
     const { routine_keys = {}, routine_events = {} } = grantsTable();
@@ -1354,9 +1354,18 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       const next = r && nextRunOf(r);
       return r || ev ? [[k, { ...(r ? { id, paused: r.status === "paused" } : {}), ...(next ? { next } : {}), ...(ev ? { wakes: { connection: ev.connection, resource: ev.resource, filter: ev.filter } } : {}) }]] : [];
     }));
+    // Recurring tasks are routines the board made (recurring.ts): listed on the agent that runs them, beside its compiled routines.
+    const recurring = [...store.allRecurring().values()].flatMap((rec) => {
+      const r = rows.get(rec.routineId);
+      const agent = agents.find((x) => x.id === r?.assigneeAgentId)?.metadata?.setupKey?.toString().replace(/^aidenhq:/, "");
+      if (!r || !agent) return [];
+      const v = recurringView(rec, r);
+      return [{ agent, title: r.title, task: r.title.replace(ROUTINE_PREFIX, ""), summary: v.summary, paused: v.paused, ...(v.nextRun ? { next: v.nextRun } : {}) }];
+    });
     return settingsView({
       ...readSources(settingsFiles()),
       live: byKey,
+      recurring,
       boardTimezone: opts.timezone,
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),

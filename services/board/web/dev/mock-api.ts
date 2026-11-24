@@ -237,6 +237,7 @@ const settingsData = () => ({
     { key: "quiet_start", module: "core", value: false, set: true, known: true, switch: true, doc: "Nothing runs on a schedule until you turn it on." },
   ],
   agents: [{
+    recurring: [],
     key: "aiden", name: "Aiden", module: "core", model: "deepseek-flash", models: [], effort: "high", heartbeatHours: 4, canHeartbeat: true, efforts: ["low", "medium", "high"], department: OPS, graded: false, roles: [], connections: [], defaults: {},
     // A schedule with its next run, a paused one, an event routine and one setup hasn't applied yet.
     routines: [
@@ -244,6 +245,13 @@ const settingsData = () => ({
       { key: "weekly-digest", title: "Weekly digest", schedules: [{ cron: "0 17 * * 5", timezone: "Asia/Dubai", label: "" }], id: "r2", paused: true, defaults: {} },
       { key: "linear-issues", title: "Triage new Linear issues", schedules: [], id: "r3", paused: false, wakes: { connection: "linear", resource: "ENG", filter: { kind: ["issue"], contains: ["urgent", "outage"] } }, defaults: {} },
       { key: "slack-mentions", title: "Answer Slack mentions", schedules: [], wakes: "not_applied", defaults: {} },
+    ],
+  }, {
+    key: "researcher", name: "Researcher", module: "core", model: "deepseek-flash", models: [], effort: "high", heartbeatHours: null, canHeartbeat: false, efforts: ["low", "medium", "high"], department: OPS, graded: false, roles: [], connections: [], defaults: {}, routines: [],
+    // Recurring tasks the Researcher runs: one active with its next run, one paused.
+    recurring: [
+      { title: "Repeats: WOR-812", task: "WOR-812", summary: "Every Monday 09:00", paused: false, next: ahead(2000) },
+      { title: "Repeats: WOR-790", task: "WOR-790", summary: "Every 2 weeks on Friday 17:00", paused: true },
     ],
   }], choices: { heartbeatHours: [1, 4, 24], models: ["deepseek-flash", "gpt-luna"] }, approvals: { pending: 2 },
   updates: { current: { name: "2026.11.19", product: "9c1496b" }, auto: true, timezone: "Asia/Dubai", checkedAt: ago(60), available: null, error: null, last: { release: "2026.11.19", outcome: "installed", at: ago(1300), by: "auto" } },

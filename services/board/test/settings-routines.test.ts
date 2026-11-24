@@ -35,7 +35,7 @@ writeFileSync(grants, JSON.stringify({ agents: {}, routine_keys: { r1: "brief", 
 const trigger = { enabled: true, nextRunAt: "2026-11-25T09:00:00.000Z" };
 const pc = {
   me: async () => "me-1",
-  agents: async () => [],
+  agents: async () => [{ id: "ag1", status: "idle", metadata: { setupKey: "aidenhq:aiden" } }],
   labels: async () => [],
   company: async () => ({ issuePrefix: "WOR" }),
   routines: async () => [
@@ -43,9 +43,12 @@ const pc = {
     { id: "r2", title: "Digest", status: "paused", triggers: [trigger] },
     { id: "r3", title: "Issues", status: "active", triggers: [] },
     { id: "r4", title: "Later", status: "active", triggers: [] },
+    { id: "r5", title: "Repeats: WOR-9", status: "paused", assigneeAgentId: "ag1", triggers: [{ kind: "schedule", label: "repeats", enabled: true, nextRunAt: trigger.nextRunAt }] },
   ],
 } as unknown as Paperclip;
-const app = createApp({ paperclip: pc, records: fakeRecords(), store: new Store(":memory:"), log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "Europe/London", session: () => ({ accountId: "owner", role: "admin" as const }), signIns: [] });
+const store = new Store(":memory:");
+store.setRecurring("issue-9", { routineId: "r5", cadence: { kind: "weekly", weekday: "monday", interval: 1 }, time: "09:00", anchor: 1, repos: [] });
+const app = createApp({ paperclip: pc, records: fakeRecords(), store, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "Europe/London", session: () => ({ accountId: "owner", role: "admin" as const }), signIns: [] });
 let port = 0;
 beforeAll(async () => {
   process.env.BOARD_PAPERCLIP_CONFIG = compiled;
@@ -72,4 +75,6 @@ it("joins each routine's next run, pause and wake source", async () => {
   expect(rows.digest.next).toBeUndefined();
   expect(rows.issues.wakes).toMatchObject({ connection: "linear", resource: "team-1" });
   expect(rows.later.wakes).toBe("not_applied");
+  expect(JSON.parse(text).agents[0].recurring).toEqual([expect.objectContaining({ title: "Repeats: WOR-9", task: "WOR-9", paused: true })]);
+  expect(JSON.parse(text).agents[0].recurring[0].next).toBeUndefined();
 });
