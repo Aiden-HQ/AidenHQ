@@ -1,5 +1,5 @@
 {
-  "title": "github.push: these branches of the task's workspace (task identifier), each at exactly this commit.",
+  "title": "github.push: these branches of the task's workspace (task identifier), each at exactly this commit. With `pr`, the one branch is that adopted PR's head branch, pushed only while it is still at `expected` (a lease) and the adoption is at `generation`.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -40,6 +40,32 @@
           }
         }
       }
+    },
+    "pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "number"
+      ],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[\\w.-]+/[\\w.-]+$"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "expected": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
     }
   }
 }

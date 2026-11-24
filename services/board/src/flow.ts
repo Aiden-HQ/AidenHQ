@@ -136,6 +136,8 @@ export interface Flow {
   summary(q: FlowQuery): Promise<FlowSummary>;
   idle(): Promise<IdleItem[]>;
   item(id: string): Promise<Waterfall | null>;
+  /** One task's own facts (the kernel's ?task=), never its descendants'. */
+  task(id: string): Promise<Waterfall | null>;
   journeys(): Promise<JourneyInfo[]>;
   journey(q: JourneyQuery): Promise<JourneyList | null>;
 }
@@ -150,6 +152,7 @@ export function kernelFlow(k: { url: string; token: string }): Flow {
   return {
     summary: async ({ since, to, scope, journey }) => (await get(new URLSearchParams({ since, to, by: "stage", ...(scope && scope !== "all" ? { scope } : {}), ...(journey ? { insights: journey } : {}) }))) as FlowSummary,
     idle: async () => ((await get(new URLSearchParams({ idle: "1" }))) as { items: IdleItem[] }).items,
+    task: async (id) => (await get(new URLSearchParams({ task: id }))) as Waterfall | null,
     item: async (id) => (await get(new URLSearchParams({ item: id }))) as Waterfall | null,
     journeys: async () => ((await get(new URLSearchParams({ journeys: "1" }))) as { journeys: JourneyInfo[] } | null)?.journeys ?? [],
     journey: async ({ journey, since, to, author, sort, limit }) =>

@@ -846,6 +846,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // Derived: the repos whose merges wait for code review (a mandatory combo), for the github module's merge queue and the kernel.
   const reviewGated = enabled.includes("code-review") ? codeReviewGated(settings.code_review) : [];
   settings.code_review_gated = reviewGated.join(",");
+  // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
+  settings.ship_enabled = enabled.includes("ship") ? "1" : "";
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
   // sets, with whether instance.yaml sets it. Snapshotted before the derived keys below; never a secret-looking key.

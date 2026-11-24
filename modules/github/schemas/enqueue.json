@@ -1,0 +1,41 @@
+{
+  "title": "github.enqueue: this adopted PR into its branch's merge queue, only at exactly this head; `attempt` tells a new try at the same head from a repeat.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo",
+    "number",
+    "head",
+    "generation",
+    "attempt",
+    "base"
+  ],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "pattern": "^[\\w.-]+/[\\w.-]+$"
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "base": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[\\w./-]+$"
+    }
+  }
+}

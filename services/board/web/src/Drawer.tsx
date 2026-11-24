@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FeatureCostStrip } from "./FeatureCost";
-import { LineageStrip } from "./Lineage";
+import { LineageStrip, useLineage } from "./Lineage";
 import { api } from "./api";
 import { Avatar, Chips, CloseIcon, CrewAvatar, MergeMenu, MoveMenu, Plan, SnoozeMenu, memberIssue } from "./components";
 import { Markdown } from "./markdown";
 import { SkeletonLines } from "./Skeleton";
-import { BUCKETS, BUCKET_NAMES, WEEKDAYS, type Assignee, type Board, type Bucket, type Cadence, type CommentView, type CrewState, type IssueView, type Label, type Models, type Update, type Weekday } from "./types";
+import { BUCKETS, BUCKET_NAMES, WEEKDAYS, type Assignee, type Board, type Bucket, type Cadence, type CommentView, type CrewState, type IssueView, type Label, type Milestone, type Models, type Update, type Weekday } from "./types";
 import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, runTime, handleOf, shortName, todayIn, when } from "./util";
 import { ModelPicker, StatusDot, type StatusTone } from "./ui";
 import { bare, prefixOf, shortId } from "../../src/model-catalog";
 import { useModelCatalog } from "./useModelCatalog";
+
+const signedOut = () => undefined;
 
 interface Props {
   refId: string;
@@ -126,6 +128,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
   const closed = issue.status === "done" || issue.status === "cancelled";
   const editable = issue.editable;
   const mine = issue.assignee === "me";
+  const lineage = useLineage(issue.identifier, signedOut);
   const [bucket, setBucket] = useState<Bucket | null>(issue.bucket);
   useEffect(() => setBucket(issue.bucket), [issue.bucket]);
   const focused = focus && issue.crew.find((m) => m.issues.some((i) => i.identifier === focus))?.agent;
@@ -228,13 +231,6 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
           Part of <a href={`#/t/${issue.parent.identifier}`}>{issue.parent.identifier}{issue.parent.title ? `: ${issue.parent.title}` : ""}</a>
         </div>
       )}
-      {issue.runs.length > 0 && (
-        <div className="part-of">
-          Runs: {issue.runs.map((r, i) => (
-            <span key={r.id}>{i ? " · " : ""}<a href={`#/r/${r.id}`} title={r.at ?? ""}>{r.agent} ({r.status})</a></span>
-          ))}
-        </div>
-      )}
       <div className="task-top">
         <Title issue={issue} editable={editable} save={(title) => update({ title })} />
         <div className="head-chips">
@@ -256,7 +252,7 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
           )}
         </div>
       </div>
-      <LineageStrip refId={issue.identifier} title={issue.title} agent={(issue.assignee && who(issue.assignee)?.name) || "you"} crew={board.assignees} prefix={board.prefix} href={(id) => `#/t/${id}`} onSignIn={() => undefined} />
+      <LineageStrip data={lineage} refId={issue.identifier} title={issue.title} agent={(issue.assignee && who(issue.assignee)?.name) || "you"} crew={board.assignees} prefix={board.prefix} href={(id) => `#/t/${id}`} onSignIn={signedOut} />
       <FeatureCostStrip refId={issue.identifier} />
       {(issue.crew.length > 0 || (mine && editable && !closed)) && (
         <nav className="task-tabs" aria-label="The crew on this task">
@@ -355,6 +351,7 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
   return (
     <>
       <div className="drawer-scroll" {...scroll}>
+        <DoneMeans grade={issue.grade} />
         <Description issue={issue} prefix={board.prefix} editable={editable} save={(description) => update({ description })} />
         <Files issue={issue} />
         {issue.crew.length > 0 ? (
@@ -495,6 +492,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
             )}
           </div>
         )}
+        {part && <DoneMeans grade={part.grade} />}
         {part && agent?.kind === "engineer" && <ModelLine part={part} agent={agent} toast={toast} reload={self ? reload : load} />}
         {part && !self && part.description && (
           <details className="instructions" open={!part.comments.length}>
@@ -634,7 +632,7 @@ function useFollow(comments: CommentView[], openAtEnd = true, tail = "") {
   const latest = comments.at(-1);
   useLayoutEffect(() => {
     const el = ref.current;
-    const last = el?.querySelector<HTMLElement>(".thread > .comment:last-child");
+    const last = el && [...el.querySelectorAll<HTMLElement>(".thread > .comment")].at(-1);
     if (!el || !last || latest?.id === seen.current) return;
     const first = seen.current === undefined;
     seen.current = latest?.id;
@@ -653,10 +651,15 @@ function useFollow(comments: CommentView[], openAtEnd = true, tail = "") {
 /** The latest comments stay open; older ones fold into one-line rows that open on a click. */
 const OPEN_COMMENTS = 2;
 
+type Entry = { at: string } & ({ comment: CommentView } | { milestone: Milestone });
+
 function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: IssueView; board: Board; agent?: Assignee; prefix: string; title?: string }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
+  // Comments and the task's recorded milestones, oldest first; only comments fold (a milestone is already one line).
+  const entries: Entry[] = [...issue.comments.map((comment) => ({ at: comment.createdAt, comment })), ...issue.milestones.map((milestone) => ({ at: milestone.at, milestone }))].sort((a, b) => a.at.localeCompare(b.at));
   const comments = issue.comments;
   const older = comments.slice(0, Math.max(0, comments.length - OPEN_COMMENTS));
+  const olderIds = new Set(older.map((c) => c.id));
   const allOpen = older.every((c) => open.has(c.id));
   const toggle = (id: string) => setOpen((s) => (s.has(id) ? new Set([...s].filter((x) => x !== id)) : new Set([...s, id])));
   // Agents by their crew name.
@@ -664,9 +667,9 @@ function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: Is
     if (c.author.kind === "agent") return shortName(board.assignees.find((a) => a.name === c.author.name)) || c.author.name;
     return c.author.name;
   };
-  const time = (c: CommentView) => (
-    <span className="muted small" title={new Date(c.createdAt).toLocaleString()}>
-      {ago(c.createdAt)}
+  const time = (at: string) => (
+    <span className="muted small" title={new Date(at).toLocaleString()}>
+      {ago(at)}
     </span>
   );
   return (
@@ -679,15 +682,31 @@ function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: Is
           </button>
         )}
       </div>
-      {comments.length === 0 && <p className="muted small">No comments yet.</p>}
-      {comments.map((c, i) => {
-        const old = i < older.length;
+      {entries.length === 0 && <p className="muted small">No activity yet.</p>}
+      {entries.map((e, i) => {
+        if ("milestone" in e) {
+          const m = e.milestone;
+          const link = m.runId ? `#/r/${m.runId}` : m.href;
+          return (
+            <div key={`m${i}`} className={`milestone milestone-${m.kind}`}>
+              {time(m.at)}
+              <span className="milestone-text">{m.text}</span>
+              {link && (
+                <a href={link} {...(link.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
+                  {m.runId ? "Run ›" : "Open ›"}
+                </a>
+              )}
+            </div>
+          );
+        }
+        const c = e.comment;
+        const old = olderIds.has(c.id);
         if (old && !open.has(c.id))
           return (
             <button key={c.id} className={`comment folded comment-${c.author.kind}`} title="Show the whole comment" onClick={() => toggle(c.id)}>
               <span className={`who who-${c.author.kind}`}>{who(c)}</span>
               <span className="preview">{preview(c.body)}</span>
-              {time(c)}
+              {time(c.createdAt)}
             </button>
           );
         return (
@@ -695,12 +714,69 @@ function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: Is
             <div className={`comment-head${old ? " foldable" : ""}`} title={old ? "Fold" : undefined} onClick={old ? () => toggle(c.id) : undefined}>
               <span className={`who who-${c.author.kind}`}>{who(c)}</span>
               {c.by && <span className="by">by {c.by}</span>}
-              {time(c)}
+              {time(c.createdAt)}
             </div>
             <Markdown text={c.body} prefix={prefix} />
           </article>
         );
       })}
+    </section>
+  );
+}
+
+const GRADE_WORDS: Record<string, [StatusTone, string]> = {
+  satisfied: ["ok", "Met"],
+  needs_revision: ["needs", "Sent back"],
+  pending: ["working", "Being graded"],
+  open: ["idle", "Not graded yet"],
+  awaiting_evidence: ["idle", "Waiting for evidence"],
+  grading_failed: ["failed", "Grading failed"],
+  not_graded: ["idle", "Not graded"],
+  ungraded_close: ["idle", "Closed without verification"],
+  unavailable: ["failed", "Grade unavailable"],
+};
+const MET: Record<string, [StatusTone, string]> = { yes: ["ok", "Met"], no: ["failed", "Unmet"], unknown: ["idle", "Unknown"] };
+const DELIVERABLE = { pr: "PR", app: "App", apply: "Apply", file: "File", report: "Report", issue: "Issue" };
+
+/** What done means for this task and whether the grader finds it met: the rubric with each verdict's evidence, and the deliverable. */
+function DoneMeans({ grade }: { grade: IssueView["grade"] }) {
+  if (grade.state === "none") return null;
+  const [tone, word] = GRADE_WORDS[grade.state]!;
+  const d = grade.deliverable;
+  return (
+    <section className="done-means" aria-label="Done means">
+      <div className="dm-head">
+        <h3>Done means</h3>
+        <StatusDot tone={tone}>{word}</StatusDot>
+        {grade.judgedAt && (
+          <span className="muted small" title={new Date(grade.judgedAt).toLocaleString()}>
+            version {grade.version?.slice(0, 8)} · {ago(grade.judgedAt)}
+          </span>
+        )}
+        {d && (
+          <span className="dm-deliverable small">
+            {d.href ? (
+              <a href={d.href} {...(d.href.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
+                {DELIVERABLE[d.kind]}: {d.ref} ›
+              </a>
+            ) : (
+              <span className="muted">{d.ref || (d.kind === "pr" ? (grade.version ? "PR: the task's own" : "PR not opened yet") : `${DELIVERABLE[d.kind]} not ready yet`)}</span>
+            )}
+          </span>
+        )}
+      </div>
+      {grade.state === "unavailable" && <p className="muted small">The grading module can't be read, so this task's grade is not known.</p>}
+      {grade.rubric.length > 0 && (
+        <ul className="dm-rubric">
+          {grade.rubric.map((r, i) => (
+            <li key={i}>
+              <StatusDot tone={MET[r.met]![0]}>{MET[r.met]![1]}</StatusDot>
+              <span className="dm-text">{r.text}</span>
+              {r.evidence && <span className="dm-evidence muted small">{r.evidence}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

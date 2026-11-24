@@ -1102,13 +1102,13 @@ test("a red default branch takes no merge on top, except the PR that already hol
     files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] }, commits: { nodes: [{ commit: { statusCheckRollup: rollup("SUCCESS") } }] },
     baseRef: { compare: { behindBy }, target: { oid: "b".repeat(40), statusCheckRollup: base } },
   } } });
-  assert.deepEqual(decide(data(rollup("FAILURE"), 2), HEAD, { uiReview: false }), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" });
-  assert.deepEqual(decide(data(rollup("FAILURE"), 0), HEAD, { uiReview: false }), { do: "merge" }, "the fix for a red base lands");
-  assert.equal(decide(data(rollup("PENDING"), 2), HEAD, { uiReview: false }).do, "wait");
-  assert.deepEqual(decide(data(rollup("PENDING"), 0), HEAD, { uiReview: false }), { do: "merge" }, "at the tip, its own green checks proved the tree");
-  assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a cancelled run never judged the base");
-  assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD, { uiReview: false }), { do: "merge" });
-  assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD, { uiReview: false }), { do: "merge" }, "a base whose CI runs on PRs only");
+  assert.deepEqual(decide(data(rollup("FAILURE"), 2), HEAD), { do: "wait", why: "`main` is red at `bbbbbbbbbbbb`: merged once it is green again" });
+  assert.deepEqual(decide(data(rollup("FAILURE"), 0), HEAD), { do: "merge" }, "the fix for a red base lands");
+  assert.equal(decide(data(rollup("PENDING"), 2), HEAD).do, "wait");
+  assert.deepEqual(decide(data(rollup("PENDING"), 0), HEAD), { do: "merge" }, "at the tip, its own green checks proved the tree");
+  assert.deepEqual(decide(data(rollup("CANCELLED", { names: ["build", "ci-required"] }), 2), HEAD), { do: "merge" }, "a cancelled run never judged the base");
+  assert.deepEqual(decide(data(rollup("SUCCESS"), 2), HEAD), { do: "merge" });
+  assert.deepEqual(decide(data(rollup("SUCCESS", { names: [] }), 2), HEAD), { do: "merge" }, "a base whose CI runs on PRs only");
 });
 
 test("a maintained repo merges as the owner; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {

@@ -28,6 +28,7 @@ import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import type { AuthorKind, Flow } from "./flow.js";
+import { gradeShown, milestonesOf, runLineOf } from "./task-truth.js";
 import { searchView, type TaskSearch } from "./search.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
@@ -727,7 +728,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   async function issueView(ref: string) {
     const { ctx, issue, assigned } = await ownIssue(ref);
-    const [comments, busy, files, parent, kids, names, runs] = await Promise.all([
+    const [comments, busy, files, parent, kids, names, grades, facts] = await Promise.all([
       pc.comments(issue.id),
       working(ctx),
       pc.attachments(issue.id).catch(() => []),
@@ -735,7 +736,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // The crew works in sub-tasks of the user's task.
       issue.assigneeUserId === ctx.me ? pc.children(issue.id).catch(() => []) : Promise.resolve([] as Issue[]),
       bylines(),
-      runLinks(issue.id, ctx.agents),
+      gradesOf([issue.id]),
+      opts.flow?.task(issue.id).catch((err) => (log.warn({ err: String(err) }, "kernel facts unreachable; the task shows no milestones"), null)) ?? null,
     ]);
     const kidStates = await statesOf(taskStates, [issue.id, ...kids.map((k) => k.id)]);
     const crew = crewOf(issue, kids, { assignees: ctx.assignees, working: busy.map, state: (id) => kidStates.get(id) });
@@ -775,7 +777,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
-      runs,
+      grade: gradeShown(grades, issue.id, issue.status, facts),
+      milestones: milestonesOf(facts),
     };
   }
 
@@ -815,7 +818,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    */
   async function chatView(ref: string, peek = false) {
     const { ctx, issue } = await editableIssue(ref, "this chat isn't yours");
-    const [comments, files, busy, live, kids, parent, names, cards, runs] = await Promise.all([
+    const [comments, files, busy, live, kids, parent, names, cards, runs, facts] = await Promise.all([
       pc.comments(issue.id),
       pc.attachments(issue.id).catch(() => []),
       working(ctx),
@@ -825,6 +828,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       bylines(),
       cardsOf("recent", { limit: 50 }),
       runLinks(issue.id, ctx.agents),
+      opts.flow?.task(issue.id).catch(() => null) ?? null,
     ]);
     const [said, states, jobs] = await Promise.all([chatMessages(issue, ctx, comments), stateRows([issue.id, ...kids.map((k) => k.id)]), work.task(issue.id).catch(() => [])]);
     // A reply's `answers`: the newest owner message its run had read. The reply's own kernel tag names the run (a model can't write
@@ -847,7 +851,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       }
       return last;
     };
-    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? "") } : m));
+    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? ""), run: runLineOf(bodies.get(m.id) ?? "", facts, ctx.agents) } : m));
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));

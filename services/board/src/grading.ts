@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 export type GradeState = "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
 export interface Deliverable {
-  kind: "pr" | "app" | "apply" | "file" | "report";
+  kind: "pr" | "app" | "apply" | "file" | "report" | "issue";
   ref: string;
 }
 export interface Verdict {
@@ -34,6 +34,8 @@ export interface Grade {
  */
 export interface GradesView {
   grades: Record<string, Grade | null>;
+  /** The module's standard criteria for each deliverable kind a returned row with an empty rubric uses. */
+  templates?: Record<string, string[]>;
 }
 
 /** True when the module said the task has no row, or its row is satisfied. Unknown: false (fail closed). */
@@ -65,6 +67,7 @@ export function createGrading({ url = process.env.GRADING_URL ?? "http://grading
       for (let i = 0; i < ids.length; i += GRADES_BATCH) {
         const v = await call<GradesView>("POST", "/board/grades", { ids: ids.slice(i, i + GRADES_BATCH) });
         Object.assign(out.grades, v.grades);
+        Object.assign((out.templates ??= {}), v.templates);
       }
       return out;
     },
