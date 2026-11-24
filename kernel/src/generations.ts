@@ -52,19 +52,21 @@ const SHA = /^[0-9a-f]{40}$/;
 const CHECKS = 200;
 /**
  * Whether commit `a` is in `b` in the product checkout, git run off the event loop; undefined when git could not say (a commit this
- * checkout has not fetched yet: asked again at the next look). An answer git gave (exit 0 or 1) is final, since ancestry between two
+ * checkout has not fetched yet: asked again after RETRY_MS, so failures never use up a look's runs for good). An answer git gave (exit 0 or 1) is final, since ancestry between two
  * commits never changes, so it is remembered and costs no run; `runs` counts the runs made.
  */
-const known = new Map<string, boolean>();
+const known = new Map<string, boolean>(), failed = new Map<string, number>();
+const RETRY_MS = 5 * 60_000;
 const contains = (repo: string, a: string, b: string, runs: { n: number }): Promise<boolean | undefined> => {
   if (!SHA.test(a) || !SHA.test(b)) return Promise.resolve(false);
   const key = `${a}:${b}`, hit = known.get(key);
   if (hit !== undefined) return Promise.resolve(hit);
+  if (Date.now() - (failed.get(key) ?? 0) < RETRY_MS) return Promise.resolve(undefined);
   runs.n++;
   return new Promise((resolve) => {
     execFile("git", ["-C", repo, "merge-base", "--is-ancestor", "--end-of-options", a, b], (err) => {
       const code = err ? (err as { code?: unknown }).code : 0;
-      if (code === 0 || code === 1) { if (known.size >= 50_000) known.clear(); known.set(key, code === 0); resolve(code === 0); } else resolve(undefined);
+      if (code === 0 || code === 1) { if (known.size >= 50_000) known.clear(); known.set(key, code === 0); resolve(code === 0); } else { failed.set(key, Date.now()); resolve(undefined); }
     });
   });
 };
@@ -110,8 +112,8 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
   // any module may declare pr.merged, and none other can claim a deploy.
   const host = `${hostOf(slug)}/`;
   const deployed = new Set((db.prepare("SELECT lower(subject) AS s FROM facts WHERE type = 'pr.deployed'").all() as { s: string }[]).map((r) => r.s));
-  const merged = (db.prepare("SELECT subject, at, json_extract(data, '$.sha') AS sha FROM facts WHERE type = 'pr.merged' AND substr(version, 1, ?) = ? AND at > ? AND lower(subject) LIKE ? ORDER BY at DESC")
-    .all(host.length, host, since, `pr:${slug}#%`) as { subject: string; at: string; sha: unknown }[])
+  const merged = (db.prepare("SELECT subject, at, task, json_extract(data, '$.sha') AS sha FROM facts WHERE type = 'pr.merged' AND substr(version, 1, ?) = ? AND at > ? AND lower(subject) LIKE ? ORDER BY at DESC")
+    .all(host.length, host, since, `pr:${slug}#%`) as { subject: string; at: string; task: string | null; sha: unknown }[])
     .filter((m) => typeof m.sha === "string" && SHA.test(m.sha) && !deployed.has(m.subject.toLowerCase()));
   const good = gens.filter((g) => g.health === "good" && g.product && SHA.test(g.product)).sort((a, b) => a.n! - b.n!);
   const runs = { n: 0 };
@@ -126,7 +128,7 @@ export function createDeploys({ db, file, repo, days = 30 }: { db: DatabaseSync;
       if (c === undefined) complete = false;
       else if (c) { g = x; break; }
     }
-    if (g && facts.record({ type: "pr.deployed", subject: m.subject, version: "deployed", at: g.at!, actor: "kernel", source: "poll", data: { pr: m.subject.slice(3), generation: g.n } })) n++;
+    if (g && facts.record({ type: "pr.deployed", subject: m.subject, version: "deployed", task: m.task, at: g.at!, actor: "kernel", source: "poll", data: { pr: m.subject.slice(3), generation: g.n } })) n++;
   }
   if (complete) looked = state;
   return n;

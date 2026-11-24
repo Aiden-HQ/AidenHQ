@@ -23,7 +23,7 @@ test("a merged PR is deployed at the first good generation containing it, once",
   const db = new DatabaseSync(":memory:");
   const facts = openFacts(db);
   const t0 = Date.now();
-  facts.record({ type: "pr.merged", subject: "pr:o/r#1", version: `${CODEHOST}/1`, at: new Date(t0 - 1000).toISOString(), actor: "kernel", data: { sha: b } });
+  facts.record({ type: "pr.merged", subject: "pr:o/r#1", version: `${CODEHOST}/1`, task: "t-1", at: new Date(t0 - 1000).toISOString(), actor: "kernel", data: { sha: b } });
   const file = join(dir, "generations.jsonl");
   const line = (n: number, product: string) => JSON.stringify({ n, at: new Date(t0 + n).toISOString(), product, health: "good" }) + "\n";
   writeFileSync(file, line(1, a)); // the generation before the merge's commit: not it
@@ -34,5 +34,6 @@ test("a merged PR is deployed at the first good generation containing it, once",
   assert.equal(await deploys(), 2); // deploy.applied 2 (generation 1 not written again) and pr.deployed
   const d = db.prepare("SELECT at, json_extract(data, '$.generation') AS g FROM facts WHERE type = 'pr.deployed'").all() as { g: number }[];
   assert.deepEqual(d.map((r) => r.g), [2]);
+  assert.equal(db.prepare("SELECT task FROM facts WHERE type = 'pr.deployed'").get()!.task, "t-1"); // the merge's task rides along
   assert.equal(await deploys(), 0);
 });
