@@ -79,6 +79,15 @@ it("a refused token is an expired need; the client sends nothing to the owner it
   expect(access.connected()).toBe(false);
 });
 
+it("a stray 401 on a token GitHub still accepts is an answer: the sign-in stays ok", async () => {
+  const a = { ...auth(), refused: async () => false };
+  const access = createAccess({ auth: a, fetchImpl: async () => answer(401, { message: "Requires authentication" }) });
+  const r = await access.rest("GET", "/orgs/acme/projects").catch((e) => e);
+  expect(r).not.toBeInstanceOf(GitHubNeed);
+  expect(a.status().state).toBe("ok");
+  expect(access.connected()).toBe(true);
+});
+
 it("rate_limited and write_busy stay plain errors with their codes", () => {
   const busy = needResult(new GitHubNeed({ cause: "write_busy" }));
   expect(busy.isError).toBe(true);
