@@ -113,6 +113,14 @@
       "source": "./orphan"
     },
     {
+      "name": "pagebad",
+      "source": "./pagebad"
+    },
+    {
+      "name": "pageok",
+      "source": "./pageok"
+    },
+    {
       "name": "roleopt",
       "source": "./roleopt"
     },

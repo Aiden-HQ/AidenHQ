@@ -4,9 +4,12 @@ description: "The owner's board (still the root compose's board service): the po
 # (…/auth/start, …/auth/finish) with the module's `<id>_auth_token`, mounted on the board.
 # A guided setup the board renders at #/setup/<module> (modules/board/schemas/setup_flows.json): the secrets to paste, a
 # sign-in to connect and a pairing code from the module's own service.
+# A module's page in the Fleet sidebar (modules/board/schemas/pages.json): a sandboxed module view (MCP Apps) that calls only the
+# module's own declared tools, as the owner.
 points:
   signins: { schema: schemas/signins.json }
   setup_flows: { schema: schemas/setup_flows.json }
+  pages: { schema: schemas/pages.json }
 # The board's buckets and markers.
 labels:
   - { name: needs-review, color: "#d97706" }

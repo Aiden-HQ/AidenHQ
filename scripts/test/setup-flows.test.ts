@@ -43,3 +43,10 @@ test("organisations: listed clients reach the board for enabled modules, and onl
 test("slack-live sends the manifest in slack-app-manifest.yml (node scripts/slack-manifest.ts --write)", () => {
   assert.equal(readFileSync(MANIFESTS_JSON, "utf8"), manifestsJson());
 });
+
+test("board.pages: a module's Fleet page compiles onto its own connection, and a destructive view tool is refused", () => {
+  const out = compile(mods, inst(["pageok"]));
+  assert.deepEqual(out.points.board.pages, [{ id: "notes", title: "Notes", icon: "list", order: 10, connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_notes", "pageok_configure"], module: "pageok" }]);
+  assert.deepEqual(out.connections["pageok-mcp"].views, { "ui://pageok/page": ["pageok_notes", "pageok_configure"] });
+  assert.throws(() => compile(mods, inst(["pagebad"])), /pagebad_wipe isn't a read or write tool of pagebad-mcp/);
+});

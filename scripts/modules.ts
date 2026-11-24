@@ -656,6 +656,28 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
 }
 
 /**
+ * board.pages (modules/board/schemas/pages.json): each page's view and tools sit on one of its own module's connections, as
+ * read or write tools (never destructive). Each tool is named <module>_… (the owner MCP serves every page's tools side by side,
+ * under their own names). What each view may reach goes onto its connection in the kernel's table (`views`: view -> tools),
+ * where the kernel's view route enforces it (kernel/src/views.ts).
+ */
+export function modulePages(pages: Obj[], connections: Obj) {
+  for (const p of pages) {
+    const where = `module ${p.module}: board.pages ${p.id}`;
+    const c = Object.hasOwn(connections, p.connection) ? connections[p.connection] : undefined;
+    if (c?.module !== p.module) fail(`${where}: connection ${p.connection} isn't one of its own`);
+    if (!p.view.startsWith(`ui://${p.module}/`)) fail(`${where}: view must be ui://${p.module}/<path>`);
+    if (c.views?.[p.view]) fail(`${where}: another page already shows ${p.view}`);
+    for (const t of p.tools) {
+      if (![...c.tools.read, ...c.tools.write].includes(t) || c.tools.destructive.includes(t)) fail(`${where}: ${t} isn't a read or write tool of ${p.connection}`);
+      if (!t.startsWith(`${p.module.replace(/-/g, "_")}_`)) fail(`${where}: tool ${t} must be named ${p.module.replace(/-/g, "_")}_…`);
+    }
+    c.views = { ...c.views, [p.view]: [...p.tools] };
+  }
+  pages.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+
+/**
  * The board calls a flow's pair_url, so it shares a network with that service: the same one a board link makes
  * (aidenhq-mod-<module>-board, internal), and `board` joins the service's aidenhq.links label (scripts/verify-security.sh).
  * The host must be one of the declaring module's own services (its compose name or alias).
@@ -1260,6 +1282,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     ...(c.health_probes ? { health_probes: c.health_probes } : {}),
     ...(c.events ? { events: c.events } : {}),
   }]));
+  modulePages(points.board?.pages ?? [], connections);
 
   // Prompt contributions (spec §3.1 `prompts`): each crew agent's handbook gets the sections whose `when` holds and
   // whose `unless` doesn't, after the kernel's own, in order first, normal, last, then module, then id. An Engineer gets
