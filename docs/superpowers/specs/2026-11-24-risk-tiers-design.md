@@ -109,7 +109,8 @@ facts, no NOT. Each fact appears at most once in a rule.
 | `base: [globs]` | the base branch matches any glob |
 | `repo_class: critical\|standard\|sandbox` | the repo's class is that |
 
-Globs are `posix.matchesGlob`, case-sensitive, on repo-relative paths. `repo_class` is only an input to the rules: what a
+Globs are `posix.matchesGlob`, case-sensitive, on repo-relative paths; a dot-file or dot-folder matches like any other name
+(`.github/**` covers `.github/.release.yml`). `repo_class` is only an input to the rules: what a
 class means is whatever the rules say about it.
 
 **Validation.** Every rule names a known tier and only known, well-typed conditions; the last rule has no `when` and no other

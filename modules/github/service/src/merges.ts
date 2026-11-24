@@ -357,7 +357,8 @@ export function createMerges(d: {
       if (v.do === "fail") return fail(v.why ?? "");
       if (v.do === "wait") return wait(v.why ?? "");
       if (v.do !== "merge") return;
-      const review = await d.reviewGate(p.repo, p.number, p.head);
+      // The live base branch and author association go along: a risk tier computed from other ones is stale (code review: pending).
+      const review = await d.reviewGate(p.repo, p.number, p.head, { base: String(data.repository.pullRequest?.baseRefName ?? ""), association: String(data.repository.pullRequest?.authorAssociation ?? "") });
       // A Tier 0 product merge rests on its eligibility at this head now, by the same rule the plan used.
       if (q.tier0 && d.productRepo && same(p.repo, d.productRepo) && !productMergeEligible({ repo: p.repo, head: p.head, checks: named, verdict: review, productRepo: d.productRepo })) return fail("eligibility lost at merge: file the merge again");
       if (review && "bypass" in review) p.bypass = review.bypass;

@@ -19,7 +19,8 @@ export const LOCKS = ["**/package-lock.json", "**/npm-shrinkwrap.json", "**/*.lo
 export const GENERATED = ["**/generated/**", "**/__generated__/**", "**/node_modules/**", "**/dist/**", "**/*.min.js", "**/*.min.css", "**/*.map", "**/*.snap"];
 /** Package manifests: a bot's PR that changes only these and lockfiles (Dependabot) is standard, not sensitive. */
 export const MANIFESTS = ["**/package.json", "**/go.mod", "**/Cargo.toml", "**/pyproject.toml"];
-const RISKY = ["auth", "secur", "token", "session", "permission"].flatMap((w) => [`**/*${w}*`, `**/*${w}*/**`]);
+// Globs are case-sensitive, so the default list spells the common capitalised forms too (Auth, Session…).
+const RISKY = ["auth", "secur", "token", "session", "permission"].flatMap((w) => [w, w[0]!.toUpperCase() + w.slice(1)]).flatMap((w) => [`**/*${w}*`, `**/*${w}*/**`]);
 /** The default sensitive paths: what CI's critical-path regex and ship's safe.deny meant, in one list. */
 export const SENSITIVE = [
   ".github/**", "**/Dockerfile*", "**/package.json", "**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE.md", "**/.codex/**", "**/codex.toml", ...RISKY,
@@ -42,7 +43,10 @@ export type FileChange = { path: string; previous?: string; additions: number; d
 /** A GitHub files list stops at this many files: a PR with more is sensitive, unread. */
 export const TOO_MANY_FILES = 3000;
 
-export const matches = (path: string, globs: readonly string[]) => globs.some((g) => posix.matchesGlob(path, g));
+/** A path's segments without their leading dot: a glob's wildcards skip dot-files and dot-folders, so `.github/**` would miss
+ * `.github/.release.yml`. Each glob is also tried with both sides undotted, so a dot-name matches like any other name. */
+const undot = (s: string) => s.replace(/(^|\/)\.(?=[^/])/g, "$1");
+export const matches = (path: string, globs: readonly string[]) => globs.some((g) => posix.matchesGlob(path, g) || posix.matchesGlob(undot(path), undot(g)));
 
 export function factsOf(files: FileChange[], o: { author: AuthorKind; base: string; repo_class: RepoClass }): Facts {
   const counted = files.filter((f) => !matches(f.path, GENERATED) && !matches(f.path, LOCKS));
