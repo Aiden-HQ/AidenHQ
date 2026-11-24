@@ -107,6 +107,8 @@
 //                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
+//   POST /v1/views/<module>/mcp (the board's key) {view, method, params}: a module view's resources/read of itself or tools/call of a
+//                              tool its page lists (board.pages), sent to the module as the owner (views.ts) -> {result} | {error}
 import type { Projects } from "./projects.ts";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";

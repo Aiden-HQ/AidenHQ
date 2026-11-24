@@ -24,10 +24,10 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
   ([design](../docs/superpowers/specs/2026-11-20-owner-mcp-design.md)), so a module adds no owner-facing code of its own.
 - **Secrets go through a board field, never chat.** Declare each with `setup:`. The board stores it in the vault and the
   module reads it as a file.
-- **A richer page is a module view.** When declarations can't express a page, a module ships it as a view in the MCP Apps
-  format: a sandboxed HTML resource on the design system that calls only the module's own tools, so it works on the board
-  and in the owner's Claude alike. No module has needed one yet; the first module that does builds the board's view host
-  (owner, 2026-11-20). Board code stays the board's.
+- **A richer page is a module view.** A module's Fleet page is a `board.pages` entry and an MCP Apps view its own connection
+  serves: sandboxed HTML themed by the host's variables that calls only the tools its page lists, so it works on the board and
+  in the owner's Claude alike. The shape, the bridge and how settings are saved:
+  [board-ui.md](../docs/design/board-ui.md) "Modules". Board code stays the board's.
 - **Every setting is explained.** Put a comment above each setting in `module.yaml`; it is the help the board and the MCP
   show. Add `pattern` for a value's shape, and `when` for a setting that applies only in one mode.
 - **Every sign-in can be tested.** Its service answers `/auth/check` with ok, or what's wrong and how to fix it. The SDK

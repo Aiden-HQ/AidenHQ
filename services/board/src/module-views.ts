@@ -9,6 +9,8 @@ import { existsSync, readFileSync } from "node:fs";
 export interface PagePoint { id: string; title: string; icon: string; order: number; module: string; connection: string; view: string; tools: string[] }
 
 export const VIEW_MIME = "text/html;profile=mcp-app";
+/** How the frame route sends a module's view (never HTML of the board's own). */
+export const FRAME_TYPE = "text/html; charset=utf-8";
 
 /** The frame's own policy (it replaces the board's): inline script and style only, nothing loaded, nothing sent. */
 export const FRAME_CSP = "sandbox allow-scripts allow-forms; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
@@ -18,8 +20,10 @@ export function pagePoints(file: string): PagePoint[] {
 }
 
 export class ViewError extends Error {
-  constructor(public status: number, message: string) {
+  status: number;
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 

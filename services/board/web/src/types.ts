@@ -1,5 +1,6 @@
 import type { Lane } from "../../src/aidenhq-sdk/task-state-types";
 import type { ShownState } from "../../src/task-state";
+import type { IconName } from "./ui/icons";
 export type Bucket = "triage" | "today" | "tomorrow" | "later" | "backlog";
 export const BUCKETS: Bucket[] = ["triage", "today", "tomorrow", "later", "backlog"];
 export const BUCKET_NAMES: Record<Bucket, string> = { triage: "Triage", today: "Today", tomorrow: "Tomorrow", later: "Later", backlog: "Backlog" };
@@ -396,6 +397,15 @@ export interface Advisory {
   fixed: string;
   summary: string;
   url: string;
+}
+
+/** A module's Fleet page (board.pages): its view is the module's, shown in a sandboxed frame (ModuleView.tsx). */
+export interface PageRow {
+  id: string;
+  title: string;
+  icon: IconName;
+  order: number;
+  module: string;
 }
 
 export interface ModuleRow {

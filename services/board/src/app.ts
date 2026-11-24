@@ -50,7 +50,7 @@ import { GoogleAuthFailed, loopbackPort, type GoogleAuth } from "./google.js";
 import { Swr } from "./swr.js";
 import { CLOSED_WINDOW_MS, OPEN, Paperclip, PaperclipError, actingAccount, type Agent, type Attachment, type Comment, type Issue, type Label, type Routine } from "./paperclip.js";
 import { createMcp, WRITE_TOOLS } from "./mcp.js";
-import { FRAME_CSP, ViewError, type ViewHost } from "./module-views.js";
+import { FRAME_CSP, FRAME_TYPE, ViewError, type ViewHost } from "./module-views.js";
 import { createMcpAuth } from "./mcp-auth.js";
 import { accountSession, type BoardSession, type SessionOf } from "./session.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
@@ -2101,7 +2101,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "GET", path: /^\/api\/pages$/, handle: async () => ({ pages: (opts.views?.pages() ?? []).map(({ id, title, icon, order, module }) => ({ id, title, icon, order, module })) }) },
     {
       method: "POST",
-      path: /^\/api\/views\/([a-z][a-z0-9-]{0,30})\/call$/,
+      path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/call$/,
       handle: async (m, body) => {
         const { name, arguments: args } = parse(ViewCallSchema, body);
         return viewCall(() => opts.views!.call(m[1]!, name, args));
@@ -2109,7 +2109,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     },
     {
       method: "POST",
-      path: /^\/api\/views\/([a-z][a-z0-9-]{0,30})\/save$/,
+      path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/save$/,
       maxBody: 200_000,
       handle: async (m, body) => {
         const page = await viewCall(async () => opts.views!.page(m[1]!));
@@ -2537,10 +2537,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     return perRequest.run({ session, req }, async () => {
       const file = req.method === "GET" ? /^\/api\/issues\/([^/]+)\/files\/([0-9a-f-]{36})$/.exec(path) : null;
       if (file) return download(res, dec(file[1]!), file[2]!);
-      const frame = req.method === "GET" ? /^\/api\/views\/([a-z][a-z0-9-]{0,30})\/frame$/.exec(path) : null;
+      const frame = req.method === "GET" ? /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/frame$/.exec(path) : null;
       if (frame) {
         const html = await viewCall(() => opts.views!.html(frame[1]!));
-        res.writeHead(200, { ...SECURITY_HEADERS, "content-security-policy": FRAME_CSP, "x-frame-options": "SAMEORIGIN", "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store" });
+        res.writeHead(200, { ...SECURITY_HEADERS, "content-security-policy": FRAME_CSP, "x-frame-options": "SAMEORIGIN", "content-type": FRAME_TYPE, "cache-control": "private, no-store" });
         return void res.end(html);
       }
       // Live updates (events.ts): an event stream, behind the same gate.
@@ -2727,7 +2727,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const mcpAuth = opts.accounts && opts.adminUrl ? createMcpAuth(opts.accounts, opts.adminUrl) : undefined;
   /** The same dispatch with the bearer's own session (checked per request), for the tools' `callRoute`. */
   const sessions = new WeakMap<IncomingMessage, { session: BoardSession; credential: SettingsCredential }>();
-  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [], setupStates: async () => (await setupFlows?.states()) ?? [] });
+  const mcp = mcpAuth && createMcp({ callRoute: (m, p, b, req) => { const s = sessions.get(req)!; return callRoute(m, p, b, s.session, req, s.credential); }, decide: (t, r, c) => opts.accounts!.mcpDecide(t, r, c), update: (t, r, to) => opts.accounts!.mcpUpdate(t, r, to), flows: () => opts.setupFlows?.flows ?? [], setupStates: async () => (await setupFlows?.states()) ?? [], pages: () => opts.views?.pages() ?? [], viewHtml: (id) => viewCall(() => opts.views!.html(id)) });
 
   /** /mcp and its discovery document: bearer only (never a cookie), before the board's own request checks. */
   async function handleMcp(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -2751,7 +2751,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     }
     const body = await readJson(req, 1_000_000);
     const calls = (Array.isArray(body) ? body : [body]) as { method?: string; params?: { name?: string } }[];
-    const writes = calls.some((m) => m?.method === "tools/call" && WRITE_TOOLS.has(String(m.params?.name)));
+    const writes = calls.some((m) => m?.method === "tools/call" && (WRITE_TOOLS.has(String(m.params?.name)) || (opts.views?.pages() ?? []).some((p) => p.tools.includes(String(m.params?.name)))));
     let code: string | undefined;
     // The kernel restarts in every apply: a token it couldn't be asked about is not a token it refused. A 401 makes the client
     // sign the owner in again, a 503 makes it retry. Only the kernel being unavailable (no answer, a timeout, a 5xx) is a 503;
