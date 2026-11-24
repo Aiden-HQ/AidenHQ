@@ -242,7 +242,7 @@ export function startLoop(o: LoopOptions) {
      * `generation`): that one waits for an approval on a code-review-gated repo, which App approval (a later lane) posts.
      */
     async function fileMerge(pr: Json, task: string, work: Json): Promise<"filed" | "merging" | "wake" | "failed"> {
-      if (!work?.status) return "failed"; // without the task's records a second merge can't be ruled out
+      if (!work) return "failed"; // without the task's records a second merge can't be ruled out
       if (["done", "cancelled"].includes(work.status)) return "wake";
       const names = (r: Json) => (r.args?.prs ?? []).filter((p: Json) => String(p.repo).toLowerCase() === repo.toLowerCase() && p.number === pr.number);
       const merges = (work.records ?? []).filter((r: Json) => r.kind === "github.merge" && names(r).length);
@@ -827,7 +827,7 @@ export function startLoop(o: LoopOptions) {
       const ours = !isDependabot(pr) && pr.isCrossRepository === false && !!opener && opener.branch === pr.headRefName;
       let retiring = !taskLive;
       if (ours && !state.abandoned[url]) {
-        if (work?.status) adopt(pr, taskId(work, opener.task));
+        if (work) adopt(pr, taskId(work, opener.task));
         if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
         const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
         const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);

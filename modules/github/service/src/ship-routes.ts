@@ -89,7 +89,8 @@ export function shipRoutes(o: {
       }
       if (op === "flow") {
         if (!FLOW.includes(b.fn) || !Array.isArray(b.args)) return send(res, 400, { error: `fn: one of ${FLOW.join(", ")}; args: a list` }), true;
-        return send(res, 200, { value: (await o.flow[b.fn as (typeof FLOW)[number]](...b.args)) ?? null }), true;
+        // JSON turns an omitted argument into null: it is undefined again here, so flow.ts's defaults (the time, the PR's task) apply.
+        return send(res, 200, { value: (await o.flow[b.fn as (typeof FLOW)[number]](...b.args.map((x: unknown) => (x === null ? undefined : x)))) ?? null }), true;
       }
       if (op === "verdict") return send(res, 200, (await o.gate(String(b.repo), Number(b.number), String(b.head))) ?? null), true;
       if (op === "decide") return send(res, 200, decide(b.data, String(b.head))), true;
