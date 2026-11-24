@@ -49,8 +49,8 @@ export type Wakes = {
   /** The admitted job is this wake's (at most one job per wake). */
   bind(key: string, job: string): void;
   /** A job that started on the task ends the agent's own wait (idle.ts): its open timed wakes are dropped, and their keys
-   * returned. Only once the job is running: a deferred job leaves the waits armed. */
-  endWaits(key: string): string[];
+   * returned. Only once the job is running: a deferred job leaves the waits armed. `keep`: a session agent's own waits stay. */
+  endWaits(key: string, keep?: string): string[];
   /** No job came of it (deferred): no job bound, claimable again by the same module at once. */
   unclaim(key: string): void;
 };
@@ -59,8 +59,8 @@ export type Wakes = {
 export const wakeInbox = (db: DatabaseSync): Wakes => ({
   claimed: (module, key) => db.prepare("SELECT task, agent, cause, at FROM wakes WHERE key = ? AND state = 'claimed' AND claimed_by = ? AND job IS NULL").get(key, module) as Wake | undefined,
   bind: (key, job) => { db.prepare("UPDATE wakes SET job = ? WHERE key = ?").run(job, key); },
-  endWaits: (key) => {
-    const waits = db.prepare("SELECT key FROM wakes WHERE task = (SELECT task FROM wakes WHERE key = ?) AND state = 'open' AND key LIKE 'wait:%' AND key != ?").all(key, key) as { key: string }[];
+  endWaits: (key, keep) => {
+    const waits = db.prepare("SELECT key FROM wakes WHERE task = (SELECT task FROM wakes WHERE key = ?) AND state = 'open' AND key LIKE 'wait:%' AND key != ? AND agent IS NOT ?").all(key, key, keep ?? null) as { key: string }[];
     for (const w of waits) db.prepare("UPDATE wakes SET state = 'dropped', until = NULL WHERE key = ?").run(w.key);
     return waits.map((w) => w.key);
   },
@@ -245,10 +245,11 @@ export function createAdmission({ db, grants, kinds, capacity, pool, spend, mayD
     }
     launching.delete(id);
     nextTurn.taken(task);
-    // The job is running: its waits and their facts end together, and a failure here never fails the admission. A session's
-    // waits are its own to keep: a job resumed after its box was replaced still waits on them (wakes.ts claim delivers them live).
-    if (job.profile !== "session") try {
-      inTx(db, "waits_end", () => { for (const k of wakes.endWaits(b.wake)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } }); });
+    // The job is running: its waits and their facts end together, and a failure here never fails the admission. A session
+    // agent's own waits are its to keep: a job resumed after its box was replaced still waits on them (wakes.ts claim delivers
+    // them live). Another agent's (the task's last assignee's) end here.
+    try {
+      inTx(db, "waits_end", () => { for (const k of wakes.endWaits(b.wake, job.profile === "session" ? agent : undefined)) fact({ type: "wake.dropped", subject: `wake:${k}`, version: "dropped", at: iso(Date.now()), actor: "kernel", task, data: { why: "the task's next job started" } }); });
     } catch (e) {
       log("a started job's waits stay armed", { job: id, task, err: (e as Error).message });
     }

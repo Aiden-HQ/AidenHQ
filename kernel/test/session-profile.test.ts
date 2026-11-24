@@ -86,13 +86,15 @@ test("sessions don't take computer slots: max_parallel bounds them", async () =>
 test("session authority: the code host's merge and close, the session role only on a session profile; its waits outlive a resume", async () => {
   const k = admitting({ capacity: 4 });
   // Each task's own wait, armed before this job (a session's, before its box was replaced).
-  for (const task of ["t-session-1", "t-crew-1"]) k.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state, until) VALUES (?, ?, 'a', 'wait: x', ?, 'open', ?)").run(`wait:${task}:9`, task, Date.now() + 3600_000, Date.now() + 3600_000);
+  // Each task's waits, armed before this job: the session agent's own (before its box was replaced) and a last assignee's.
+  const arm = (task, agent) => k.db.prepare("INSERT INTO wakes (key, task, agent, cause, at, state, until) VALUES (?, ?, ?, 'wait: x', ?, 'open', ?)").run(`wait:${task}:${agent}`, task, agent, Date.now() + 3600_000, Date.now() + 3600_000);
+  arm("t-session-1", "ag-session"), arm("t-session-1", "ag-old"), arm("t-crew-1", "ag-crew");
   const s = (await k.admit("t-session-1")).authority;
   assert.deepEqual([s.profile, s.image, s.writes, s.roles], ["session", "session", ["github.close", "github.merge", "slack.post"], ["session"]], "the code host's merge and close, and every kind its tools reach; never push, pr, create_repo or an apply");
   const c = (await k.admit("t-crew-1")).authority;
   assert.deepEqual([c.writes, c.roles], [[], []], "a crew agent listing the role holds nothing of it");
-  const waits = Object.fromEntries(k.db.prepare("SELECT task, state FROM wakes WHERE key LIKE 'wait:%'").all().map((w) => [w.task, w.state]));
-  assert.deepEqual(waits, { "t-session-1": "open", "t-crew-1": "dropped" });
+  const waits = Object.fromEntries(k.db.prepare("SELECT key, state FROM wakes WHERE key LIKE 'wait:%'").all().map((w) => [w.key, w.state]));
+  assert.deepEqual(waits, { "wait:t-session-1:ag-session": "open", "wait:t-session-1:ag-old": "dropped", "wait:t-crew-1:ag-crew": "dropped" });
 });
 
 test("a session's merge runs at once on a head the plan raises; an Engineer's goes to review", async () => {

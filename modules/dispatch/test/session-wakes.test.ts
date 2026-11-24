@@ -69,3 +69,11 @@ test("a session that keeps exiting on its own still meets the retry limit", asyn
   await k.dispatch.tick();
   assert.deepEqual(k.scheduled, []);
 });
+
+test("an interrupted session resumes even after earlier runs used up the retry limit", async () => {
+  // Six silent exits used the cap; the owner woke it, and that run's box was replaced (exit 143).
+  const silent = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "done", exit: 0, final: "", at: 10 - i, ended: 10 - i, acked: true });
+  const k = fake({ jobs: [{ id: "j0", task: "t1", agent: "ses", profile: "session", state: "failed", exit: 143, final: "", at: 11, ended: 11, acked: false }, ...[1, 2, 3, 4, 5, 6].map(silent)] });
+  await k.dispatch.tick();
+  assert.deepEqual(k.scheduled.map((s) => s.id), ["retry.j0"]);
+});

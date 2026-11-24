@@ -267,8 +267,8 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
           const t = await kernel.task(v.task);
           const open = neverStarted(v) ? !CLOSED.has(String(t.status)) && Boolean(t.assigneeAgentId) : ["todo", "in_progress", "in_review"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
           // A session is resumed for as long as its task is open when the machinery ended it (its box replaced again and again
-          // by applies and image updates): those runs never count (interrupted); one that exits on its own does.
-          if (open && (neverStarted(v) || ran < MAX_RAN_TRIES)) {
+          // by applies and image updates), whatever ran before; those runs never count toward a later run's own cap.
+          if (open && (neverStarted(v) || interrupted(v) || ran < MAX_RAN_TRIES)) {
             // The agent whose run stopped, named: a task reassigned before this tick must not hand the retry to its new agent. A
             // refusal (400) leaves the run to report its outcome below, as any other un-retried run.
             const armed = await kernel.schedule({ task: v.task, agent: v.agent, at: Date.now() + retryIn(tries), cause: "retry", id: `retry.${v.id}` })
