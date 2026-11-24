@@ -121,10 +121,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front && !f.queue) return "nothing";
   // A queue branch: the removal is read here. A red required check on the merge_group run that is this PR's own is a fix_ci round.
-  let qn: QueueNext | undefined;
+  let qn: QueueNext | undefined, viaQueue = false;
   if (v.do === "enqueue" && s.merge !== "off") {
     qn = await queueNext(d.kernel, a.queue, pr, f);
-    if (qn.act === "fix_ci") { v = { do: "fix_ci", why: "a required check failed on its merge queue run" }; f = { ...f, failing: qn.failing }; qn = undefined; }
+    if (qn.act === "fix_ci") { v = { do: "fix_ci", why: "a required check failed on its merge queue run" }; f = { ...f, failing: qn.failing }; facts.failing = qn.failing; facts.onBase = f.onBase ?? []; viaQueue = true; qn = undefined; }
   }
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
   const key = `${pr.head}:${v.do}`;
@@ -191,6 +191,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         }
         return wake("fix_ci", [
           `${pr.url}: required checks are red at head ${pr.head}: ${failing.map((n) => `\`${n}\``).join(", ") || "(see the PR's checks)"}.`,
+          viaQueue ? "They passed on the PR's head but failed on the merge queue's run for it (the `merge_group` run): read that run's logs, the failure is in the PR merged onto the base." : "",
           onBase.size ? `These fail on \`${pr.defaultBranch}\`'s latest run too: ${[...onBase].map((n) => `\`${n}\``).join(", ")}. If the failure is the same there, it is pre-existing: say so on the task with the run you compared, and change nothing for it.` : "",
           "Fix what this PR broke as the `ship` skill says: one commit, never weaken a check.",
           push(),
