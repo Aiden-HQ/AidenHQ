@@ -195,6 +195,20 @@ daemon=/etc/docker/daemon.json
 jq --arg p "$(command -v runsc)" '.runtimes.runsc.path = $p' "$daemon" >"$daemon.new"
 if cmp -s "$daemon" "$daemon.new"; then rm "$daemon.new"; else mv "$daemon.new" "$daemon"; systemctl restart docker; fi
 
+# Journald: cap the journals (the system journal reached 3.2 GB, the user journal 1.3 GB). A drop-in, so the distro file stays.
+mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=1G\nRuntimeMaxUse=256M\nMaxRetentionSec=2week\n' >/etc/systemd/journald.conf.d/aidenhq.conf
+systemctl restart systemd-journald
+journalctl --vacuum-size=1G >/dev/null 2>&1 || true
+
+# Kernel writeback and THP. Dirty limits in bytes (the 10% default of a 64 GB host is 6 GB of dirty pages flushed in one
+# burst); THP defrag=defer (madvise stalled on compaction, 62% failures) set at every boot by a unit, as sysfs is not persistent.
+printf 'vm.dirty_background_bytes = 268435456\nvm.dirty_bytes = 1073741824\n' >/etc/sysctl.d/90-aidenhq.conf
+sysctl -q -p /etc/sysctl.d/90-aidenhq.conf
+install -m 0644 "$src/../units/aidenhq-thp.service" /etc/systemd/system/aidenhq-thp.service
+systemctl daemon-reload
+systemctl enable --now aidenhq-thp
+
 # Agent computers: the boxes' Docker network and the host rule keeping them off the LAN, the tailnet and the
 # host (ops/vm/computer-net.sh), re-applied whenever Docker starts.
 install -m 0755 "$src/computer-net.sh" /usr/local/sbin/aidenhq-computer-net
