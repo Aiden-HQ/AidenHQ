@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NO
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
   state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
 CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS wake_cursor (company TEXT PRIMARY KEY, since TEXT NOT NULL, floor INTEGER NOT NULL, full_at INTEGER NOT NULL DEFAULT 0);`;
+CREATE TABLE IF NOT EXISTS wake_cursor (company TEXT PRIMARY KEY, since TEXT NOT NULL, floor INTEGER NOT NULL, full_at INTEGER NOT NULL DEFAULT 0, after TEXT);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
 /** A grants-table entry as the router reads it (compile's grantEntry): a team record lists its members; a member names its record. */
@@ -771,13 +771,14 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   /**
    * `since`: the next pass reads rows updated after it (Paperclip's `updatedSince` is strictly after). It starts at the epoch, so
    * the first pass fills the mirror with every task. `floor`: a finished chat is scanned for a reply only if it changed after
-   * it (set once: a first pass over old chats files nothing for words long answered). `full_at`: the last full listing.
+   * it (set once: a first pass over old chats files nothing for words long answered). `full_at`: the last full listing. `after`:
+   * where a by-id pass (see changes) cut short resumes ('' from the start), null when the pass goes by time.
    */
   const legacyFloor = (() => { try { return (q("SELECT MIN(at) AS at FROM chat_cursor").get() as { at: number | null } | undefined)?.at ?? null; } catch { return null; } })();
   const cursorOf = (company: string) => {
-    const row = q("SELECT since, floor, full_at FROM wake_cursor WHERE company = ?").get(company) as { since: string; floor: number; full_at: number } | undefined;
+    const row = q("SELECT since, floor, full_at, after FROM wake_cursor WHERE company = ?").get(company) as { since: string; floor: number; full_at: number; after: string | null } | undefined;
     if (row) return row;
-    const fresh = { since: iso(0), floor: legacyFloor ?? now() - 10 * 60_000, full_at: 0 };
+    const fresh = { since: iso(0), floor: legacyFloor ?? now() - 10 * 60_000, full_at: 0, after: null as string | null };
     q("INSERT INTO wake_cursor (company, since, floor, full_at) VALUES (?, ?, ?, 0)").run(company, fresh.since, fresh.floor);
     db.exec("DROP TABLE IF EXISTS chat_cursor"); // its window is the floor now
     return fresh;
@@ -821,7 +822,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     const cur = cursorOf(company), started = now();
     // `afterId`: a whole page inside one instant (a bulk update) can't be passed by time, so the rest of the pass reads every row
     // changed since then by id instead (stable: a row updated meanwhile keeps its place, and a deleted one shifts nothing).
-    let since = cur.since, afterId: string | undefined, complete = false, last: string | undefined, failedAt: number | undefined;
+    let since = cur.since, afterId: string | undefined = cur.after ?? undefined, complete = false, last: string | undefined, failedAt: number | undefined;
     for (let page = 0; page < PAGES && !signal?.aborted; page++) {
       const query = new URLSearchParams({ updatedSince: since, limit: String(PAGE), ...(afterId === undefined ? { sortField: "updated", sortDir: "asc" } : { sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) }) });
       const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
@@ -830,7 +831,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       let cut = false;
       for (const row of rows) {
         if (signal?.aborted) { cut = true; break; }
-        if (!(await changed(row, joined, cur.floor)) && failedAt === undefined) failedAt = ms(row.updatedAt);
+        if (!(await changed(row, joined, cur.floor))) failedAt = Math.min(failedAt ?? Infinity, ms(row.updatedAt));
         // By id, rows come in no time order: a pass cut short resumes from where the id pass began.
         if (afterId === undefined) last = row.updatedAt;
       }
@@ -846,6 +847,9 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     let to = complete ? started - OVERLAP_MS : last ? ms(last) - OVERLAP_MS : ms(cur.since);
     if (failedAt !== undefined) to = Math.min(to, failedAt - 1);
     if (to > ms(cur.since)) q("UPDATE wake_cursor SET since = ? WHERE company = ?").run(iso(to), company);
+    // A by-id pass cut short resumes past the pages it finished (its `since` held), so a backlog larger than one pass is crossed.
+    // A row whose record failed restarts the by-id pass from its start, so the failed row is read again.
+    q("UPDATE wake_cursor SET after = ? WHERE company = ?").run(!complete && afterId !== undefined ? (failedAt === undefined ? afterId : "") : null, company);
     if (!complete) log("wake changes cut short", { company, reads_to: last ?? null });
   }
   /** How often every open task is listed whole: the backstop for a change the cursor missed, and what "gone" is judged against. */
