@@ -653,23 +653,32 @@ export function createService(o: Options) {
       if (r.status >= 300 || r.body?.errors?.length || !pr) throw fail(502, `GitHub couldn't read ${url}'s queue entry: ${r.body?.errors?.[0]?.message ?? r.status}`);
       return pr;
     };
+    // A bypass of code review (unreachable too long) is recorded once the queue has the PR, as a direct merge's is.
+    let bypass: string | undefined;
     const settled = (pr: any) => {
+      if (pr.baseRefName !== a.base) return undefined;
+      if (bypass && (pr.state === "MERGED" || pr.isInMergeQueue)) flow.reviewBypassed(s.slug, n, a.head, bypass);
       if (pr.state === "MERGED" && pr.headRefOid === a.head) return { ok: true, text: `${url} is merged at \`${String(a.head).slice(0, 12)}\`.` };
-      if (pr.isInMergeQueue && pr.baseRefName === a.base && pr.mergeQueueEntry?.headCommit?.oid === a.head) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
+      if (pr.isInMergeQueue && pr.mergeQueueEntry?.headCommit?.oid === a.head) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
       return undefined;
     };
+    // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass (or its audited bypass) queues.
+    // Asked first, so the PR read below is the last one before the mutation.
+    const review = await o.reviewGate(s.slug, n, a.head);
+    if (review && "wait" in review) return { ok: false, text: `not queued: ${review.wait}` };
     const pr = await read();
     const now = settled(pr);
     if (now) return now;
     if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
     if (pr.baseRefName !== a.base) return { ok: false, text: `ship-target: ${url} now targets \`${pr.baseRefName}\`, not \`${a.base}\`: not queued.` };
-    // Code review's gate holds a queued merge as it holds a direct one (merges.ts): only its pass (or its audited bypass) queues.
-    const review = await o.reviewGate(s.slug, n, a.head);
-    if (review && "wait" in review) return { ok: false, text: `not queued: ${review.wait}` };
+    if (review && "bypass" in review) bypass = review.bypass;
     if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     let r: { status: number; body: any } | undefined;
     try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
-    if (r && r.status < 300 && !r.body?.errors?.length) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
+    if (r && r.status < 300 && !r.body?.errors?.length) {
+      if (bypass) flow.reviewBypassed(s.slug, n, a.head, bypass);
+      return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
+    }
     // GitHub's own refusal (a GraphQL error, a 4xx): the PR wasn't queued.
     if (r && r.status < 500) return { ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.errors?.[0]?.message ?? r.body?.message ?? r.status).slice(0, 300)}` };
     const again = await read().catch(() => undefined);
