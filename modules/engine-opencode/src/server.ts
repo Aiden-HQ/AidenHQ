@@ -32,9 +32,11 @@ export async function serve(o: { bin?: string; port: number; password: string; e
   }
   const events: Server["events"] = (onEvent) => {
     let connected!: () => void;
-    const ready = new Promise<void>((r) => (connected = r));
+    let failed!: (e: Error) => void;
+    const ready = new Promise<void>((r, j) => { connected = r; failed = j; });
     void (async () => {
       while (!stopped) {
+        if (dead) { failed(new Error("opencode serve exited before its event stream connected")); return; }
         try {
           const r = await fetch(url + "/event", { headers: { authorization: auth } });
           connected();

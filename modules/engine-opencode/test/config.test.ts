@@ -29,5 +29,7 @@ test("builds the config from the job", () => {
 test("every plugin in plugins.json is pinned exactly", () => {
   const { plugins } = JSON.parse(readFileSync(join(import.meta.dirname, "../plugins.json"), "utf8"));
   assert.ok(plugins.length > 0);
+  const deps = JSON.parse(readFileSync(join(import.meta.dirname, "../package.json"), "utf8")).dependencies;
+  assert.deepEqual(Object.fromEntries(plugins.map((p: string) => [p.slice(0, p.lastIndexOf("@")), p.slice(p.lastIndexOf("@") + 1)])), deps, "package.json (and its lock) pin exactly plugins.json");
   for (const p of plugins) assert.match(p, /^(@[a-z0-9-]+\/)?[a-z0-9.-]+@\d+\.\d+\.\d+$/, `${p} is not name@x.y.z`);
 });

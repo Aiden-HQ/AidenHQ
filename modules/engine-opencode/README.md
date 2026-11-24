@@ -20,7 +20,7 @@ state folder on every start:
   `OPENCODE_CONFIG_DIR`: opencode lists the skills (name and description) and loads `AGENTS.md` through `instructions`.
 - Self-update, sharing, model-list fetching and plugin self-updates are off; nothing is fetched at run time.
 
-`named_only: true`: only an agent that names `engine: opencode` runs on it; every other agent keeps the default engine.
+Not the default engine (engine-codex is `default: true`): only an agent that names `engine: opencode` runs on it.
 
 ## Checked on opencode 1.19.6
 
@@ -49,8 +49,8 @@ at least 7 days old, pinned exactly. Reviewed 2026-11-25 (weekly downloads from 
 | `opencode-shell-strategy` | n/a | n/a | n/a | not an npm package (a markdown guide) | out |
 | `opencode-scheduler`, `opencode-supermemory`, `*-auth`, `opencode-notifier`, `opencode-wakatime`, `opencode-daytona`, `opencode-helicone-session`, `oh-my-opencode`, `opencode-morph-*`, `opencode-firecrawl`, `@tavily/opencode-plugin` | | | | | out: duplicate kernel waits or memory, bypass the gateway, or are desktop, third-party or paid |
 
-Supply chain: opencode is `1.19.6` (2026-11-17), both plugins are older than 7 days, and every version is exact. Transitive
-dependencies of the plugins come from the image build's `npm install`.
+Supply chain: opencode is `1.19.6` (2026-11-17), both plugins are older than 7 days, and every version is exact. `package.json` and `package-lock.json` pin the plugins' whole dependency tree (synced into the image, which runs `npm ci`), so
+`scripts/supply-chain/npm-age.ts` checks every transitive version too.
 
 ## Tests
 

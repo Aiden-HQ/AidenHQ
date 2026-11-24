@@ -56,22 +56,32 @@ async function run() {
   } else session = (await server.call("POST", "/session", { title: basename(process.cwd()) })).id;
   io.emit({ t: "session", id: session });
 
+  let stopping = false;
+  server.child.on("exit", (code) => { if (stopping) return; console.error(`opencode serve exited (${code})`); process.exit(code || 1); });
   const sse = sseEvents(spec, io.emit, () => session);
   await server.events((ev) => sse.take(ev));
 
   const busy = async () => Boolean((await server.call("GET", "/session/status"))?.[session]);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  // One turn at a time: a prompt goes in once the session is idle, and the next waits for that turn to end.
-  const queue: string[] = [spec.prompt];
+  // One turn at a time: a prompt goes in once the session is idle, and the next waits for that turn to end. Dispatch counts a
+  // comment delivered once it is in the inbox, so a comment not yet accepted by opencode is kept on disk (pending.json in the
+  // state folder) and replayed by the next job of this session if the box is replaced first.
+  const pendingFile = join(state, "pending.json");
+  const queue: { text: string; comment: boolean }[] = [];
+  try { for (const text of JSON.parse(readFileSync(pendingFile, "utf8")) as string[]) queue.push({ text, comment: true }); } catch {}
+  queue.push({ text: spec.prompt, comment: false });
+  const save = () => writeFileSync(pendingFile, JSON.stringify(queue.filter((q) => q.comment).map((q) => q.text)));
   void (async () => {
-    for await (const c of io.comments()) queue.push(c.text);
+    for await (const c of io.comments()) { queue.push({ text: c.text, comment: true }); save(); }
   })();
   void (async () => {
     for (;;) {
-      const text = queue.shift();
-      if (text === undefined) { await sleep(200); continue; }
+      const next = queue[0];
+      if (!next) { await sleep(200); continue; }
       while (await busy()) await sleep(300);
-      await server.call("POST", `/session/${session}/prompt_async`, { parts: [{ type: "text", text }] });
+      await server.call("POST", `/session/${session}/prompt_async`, { parts: [{ type: "text", text: next.text }] });
+      queue.shift();
+      save();
       for (let i = 0; i < 20 && !(await busy()); i++) await sleep(150);
       while (await busy()) await sleep(300);
     }
@@ -81,12 +91,10 @@ async function run() {
   const ttyd = startTerminal({ lease, leaseDir, port: Number(need("AIDENHQ_TERM_PORT")), sessionPort: port, session, credential: need("AIDENHQ_TERM_CREDENTIAL"), cwd: process.cwd(), env: ocEnv });
   process.on("exit", () => { ttyd.kill("SIGKILL"); spawnSync("tmux", ["kill-session", "-t", lease], { stdio: "ignore" }); });
 
-  let stopping = false;
   process.on("SIGTERM", async () => {
     stopping = true;
     try { await server.call("POST", `/session/${session}/abort`); } catch {}
     await server.stop();
     process.exit(143);
   });
-  server.child.on("exit", (code) => { if (stopping) return; console.error(`opencode serve exited (${code})`); process.exit(code || 1); });
 }

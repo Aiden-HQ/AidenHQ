@@ -15,6 +15,8 @@ providers:
       model_prefix: openrouter/
       gateway: true
       box: true
+      # The engine an agent without `engine:` takes (another box engine, such as opencode, is used only by an agent that names it).
+      default: true
       state: task
       reset: [AGENTS.md, AGENTS.override.md, skills, config.toml, auth.json, hooks.json, rules, plugins, .agents]
       # The job's skills (skills/) are its agent's module skills and AGENTS.md its compiled handbook, both placed by the kernel.

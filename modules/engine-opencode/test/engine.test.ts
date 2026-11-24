@@ -10,10 +10,11 @@ const bin = join(import.meta.dirname, "bin");
 const engine = join(import.meta.dirname, "../bin/engine");
 let port = 24000 + (process.pid % 1000) * 4;
 
-function setup(session?: string, known = session ?? "") {
+function setup(session?: string, known = session ?? "", pending?: string[]) {
   const root = mkdtempSync(join(tmpdir(), "oc-engine-"));
   const lease = join(root, "l-test"), job = join(lease, "job-1"), state = join(root, "state"), work = join(root, "work", "PEN-1"), plug = join(root, "opt");
   for (const d of [job, state, work, join(plug, "node_modules")]) mkdirSync(d, { recursive: true });
+  if (pending) writeFileSync(join(state, "pending.json"), JSON.stringify(pending));
   writeFileSync(join(plug, "plugins.json"), JSON.stringify({ plugins: ["opencode-pty@0.4.0"] }));
   const spec = { contract: "engine@1", job: "j1", agent: "a", task: "t1", prompt: "first prompt", ...(session ? { session } : {}), model: { base_url: "http://gw/v1", token_env: "AIDENHQ_RUN_TOKEN", id: "m1", effort: "" }, mcp: [], env: [], limits: { timeout_s: 0 }, web: true, state, sandbox: { kind: "box", writable: [], network: true } };
   writeFileSync(join(job, "job.json"), JSON.stringify(spec));
@@ -70,6 +71,15 @@ test("a session opencode no longer has ends as the kernel's stale session", asyn
   assert.equal(code, 1);
   assert.match(e.err(), /no rollout found for thread id gone/);
   assert.ok(!e.calls().some((c: any) => c.create || c.prompt));
+});
+
+test("a comment opencode never accepted before a box replacement is sent by the next job, first", async () => {
+  const e = setup(undefined, "", ["lost comment"]);
+  try {
+    await e.until(() => e.calls().filter((c: any) => c.prompt).length === 2);
+    assert.deepEqual((e.calls().filter((c: any) => c.prompt) as any[]).map((p) => p.text), ["lost comment", "first prompt"]);
+    assert.equal(readFileSync(join(e.state, "pending.json"), "utf8"), "[]");
+  } finally { e.child.kill("SIGTERM"); await e.exited; }
 });
 
 test("a comment during a turn waits, in order, and never overlaps a turn", async () => {

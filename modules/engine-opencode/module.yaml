@@ -14,7 +14,5 @@ providers:
       live_input: true
       gateway: true
       box: true
-      # Only an agent that names it (`engine: opencode`, the session agent) runs on it; every other agent keeps the default engine.
-      named_only: true
       state: task
       reset: [opencode.json, AGENTS.md, skills, dcp.jsonc]

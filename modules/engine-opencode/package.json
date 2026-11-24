@@ -1,1 +1,2 @@
-{ "name": "engine-opencode", "private": true, "type": "module", "license": "MIT" }
+{ "name": "engine-opencode", "private": true, "type": "module", "license": "MIT",
+  "dependencies": { "@tarquinen/opencode-dcp": "3.2.1", "opencode-pty": "0.4.0" } }
