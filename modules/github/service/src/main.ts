@@ -6,16 +6,16 @@
 //   CACHE_DIR               the bare cache clones and the held writes (its data dir)
 //   GITHUB_FLEET_ORG        github_fleet_org: where the fleet's repos live on GitHub ("" while unset)
 //   INSTANCE_REPO, PRODUCT_REPO
-//   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there; those with dependabot on get
-//                           the PR watch's Dependabot duty
+//   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there
 //   GITHUB_MIGRATE_FROM_APP  the retired App's id, for the one release that moves the repos' rules off it (migrate.ts)
 //   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict,
 //                           asked with the module's own token
-// Its loops start here: the merge queue, the held writes, the release train, the PR watch, the design reviews' sweep and the
-// reviewed refs' tidying.
+// Its loops start here: the merge queue, the held writes, the release train, the design reviews' sweep and the reviewed refs'
+// tidying. The PR watch is the ship module's (modules/ship): it reaches GitHub, Flow, code review's verdict and pr-tasks.json
+// through /internal/ship/* here (ship-routes.ts), with its own module token.
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { inOrg } from "./git-auth.ts";
+import { mergeable } from "./git-auth.ts";
 // github-mcp's built entry (the image builds it beside this tree): it starts both connections and hands back the owner's access.
 import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
@@ -25,7 +25,8 @@ import { join } from "node:path";
 import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
 import { startAppMigration } from "./migrate.ts";
-import { startPrWatch } from "./pr-watch.ts";
+import { shipRoutes } from "./ship-routes.ts";
+import { isModule } from "../../connections/github-mcp/dist/src/module-caller.js";
 import { startTidy } from "./tidy.ts";
 
 const env = process.env;
@@ -45,7 +46,8 @@ const migration = retiredAppId > 0
   : undefined;
 const gateOptions = { gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key };
 const reviewGate = createReviewGate(gateOptions);
-// The watcher's own gate: its outage timer is separate, so a PR the merge queue never sees can't age the queue's bypass.
+// Ship's own gate (its watch loop asks through /internal/ship/verdict): its outage timer is separate, so a PR the merge queue
+// never sees can't age the queue's bypass.
 const watchGate = createReviewGate(gateOptions);
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
@@ -67,15 +69,12 @@ handle.startReleases();
 handle.startDesignReviews();
 handle.startFlow();
 startTidy({ cacheDir, log });
-// The fleet's own PRs (the product repo; Dependabot's tasks, an agent's PR that conflicts) and the Dependabot PRs of every maintained
-// repo with dependabot on: whenever the product repo is set. A maintained repo in the fleet org is the fleet's own.
-if (env.PRODUCT_REPO) {
-  const repos = new Map<string, "all" | "dependabot">([[env.PRODUCT_REPO, "all"]]);
-  for (const m of maintained) {
-    if (m.dependabot && !repos.has(m.repo)) repos.set(m.repo, inOrg(fleetOrg, m.repo) ? "all" : "dependabot");
-  }
-  startPrWatch({ repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", key, cacheDir, gh: access.rest, connected: () => access.connected(), log, flow: handle.flow, reviewGate: watchGate });
-}
-const server = createServer((req, res) => void handle(req, res));
+const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
+const ship = shipRoutes({
+  gh: access.rest, flow: handle.flow, gate: watchGate, cacheDir,
+  allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
+  isShip: (auth) => isModule(kernelUrl, auth, "ship"),
+});
+const server = createServer((req, res) => void ship(req, res).then((done) => done || handle(req, res)));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => server.close(() => process.exit(0)));

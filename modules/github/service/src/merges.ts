@@ -65,7 +65,7 @@ export function createMerges(d: {
   reviewGate: ReviewGate;
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
   flow?: Flow;
-  /** The task that opened a PR (pr-tasks.json, pr-watch.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
+  /** The task that opened a PR (pr-tasks.json, pr-tasks.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
   taskOf?: (repo: string, n: number) => string | null;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
   identifierOf?: (record: string) => Promise<string | undefined>;
@@ -417,7 +417,7 @@ export function createMerges(d: {
     const ok = q.prs.every(settled);
     const n = q.prs.filter(settled).length;
     const headline = ok ? `**Done:** ${n} merged.` : `**Merges finished:** ${n} merged, ${q.prs.length - n} not.`;
-    // pr-tasks.json names the task's identifier (pr-watch.ts notePrTask: the job's workspace), the record its id: a match on
+    // pr-tasks.json names the task's identifier (pr-tasks.ts notePrTask: the job's workspace), the record its id: a match on
     // either is this task, and neither is another task's PR. A row naming another task is a veto. Only when there is no row is
     // the task's own record the proof (`bound`, read by `step` from prBound): the commit its own plan named.
     const linked = (p: Pr) => {

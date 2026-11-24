@@ -1,16 +1,20 @@
 name: ship
-description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you list in maintainer_repos): per-repo settings and presets (cautious, full), who may hand a PR over, and, in later releases, rounds, repair, App approval and the merge itself. Idle until a repo is listed."
+description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you list in maintainer_repos): per-repo settings and presets (cautious, full), the fleet's PR loop (wakes for conflicts and red checks, update-branch, check re-runs, the CI breaker, the automatic merge), Dependabot tasks and quiet contributor PRs; in later releases, hand-offs, repair and App approval."
 license: MIT
 # Design: docs/superpowers/specs/2026-11-24-ship-design.md. The service (service/) holds the per-repo settings (`ship`), the
-# adoption records (data/ship/state.json, holds only: the rest is derived from the PR). Its tools
+# adoption records (data/ship/state.json, holds only: the rest is derived from the PR) and the watch loop (service/src/loop.ts, moved
+# from github's pr-watch.ts; its own table in data/ship/loop.json), which reaches GitHub, Flow, code review's verdict and
+# pr-tasks.json through github's /internal/ship/* routes with this module's token. Its tools
 # (ship_config, ship_configure) read and change the setting like code-review's config tool: validated whole,
 # one typed settings change filed as the calling job; a change that loosens anything is the owner's, made from the Fleet page
 # (the Fleet page).
 requires:
-  - github # the covered repos' reads and the effects ship files (later releases)
+  - github # the covered repos' reads (/internal/ship/*) and the effects ship files (github.merge, approve, enqueue)
 roles:
-  # kernel.settings: the config tool's settings changes (writers below).
-  requests: [ kernel.settings ]
+  # kernel.settings: the config tool's settings changes (writers below). kernel.tasks: Dependabot tasks (closed again when their
+  # PR is gone) and the Maintainer's contributor-PR nudge and close tasks. kernel.wake: an agent's PR wakes the task that opened
+  # it. kernel.work-read: that task's status and records (a cancelled task's PR is closed; a merge already open isn't filed twice).
+  requests: [ kernel.settings, kernel.tasks, kernel.wake, kernel.work-read ]
   declares:
     - { id: ship-admin, description: "Reads ship's settings and changes one repo's entry (ship_config, ship_configure) when the owner asks in words; a change that loosens anything is the owner's." }
 settings:
@@ -55,6 +59,9 @@ services:
         SHIP_FLEET_ORG: "${settings.github_fleet_org}"
         SHIP_PRODUCT_REPO: "${settings.product_repo}"
         SHIP_MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        # github's routes for ship (service/src/ship-routes.ts) and github-mcp's contributor-PR read.
+        SHIP_GITHUB_URL: http://github:8100
+        SHIP_CONTRIBUTOR_PRS_URL: http://github:8086/internal/ship/contributor-prs
         SHIP_TOKEN_FILE: ${secrets.ship_token}
         SHIP_SERVICE_KEY_FILE: ${secrets.ship_service_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130

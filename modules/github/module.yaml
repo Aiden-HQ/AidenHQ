@@ -69,8 +69,8 @@ settings:
   # for a fix (default agent-fix). `trusted` is who may vouch for it (the owner's login is an admin): admin, maintain or write (default
   # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. Duties, each per repo: `issues` (default true: validate `label` issues and see
   # fixes through), `features` (default false: triage feature requests, label feature-request, and build those the owner or
-  # a trusted collaborator labels agent-build), `dependabot` (default false: every open Dependabot PR has an Engineer task),
-  # `contributor_prs` (default false: nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
+  # a trusted collaborator labels agent-build), `dependabot` (default false: every open Dependabot PR has an Engineer task, filed by
+  # the ship module), `contributor_prs` (default false: the ship module has the Maintainer nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
   # days before the nudge and again before the close; drafts wait twice as long). A listed repo is also where the fleet's
   # work may merge and close, with no duty on. Read by github-mcp (maintainer.ts), which the Maintainer's tools and the
   # Maintainer's watcher go through (kernel/sdk/src/maintained-repos.ts parses it).
@@ -158,9 +158,8 @@ connections:
 # Check jobs read the repos the code host lands through the kernel's snapshot.
 codehost:
   snapshot: { repos: [ "*/*" ] }
-# The PR watch (service/src/pr-watch.ts, W5) files the Platform Engineer's Dependabot tasks and closes them
-# (kernel.tasks), wakes the task that opened a PR (kernel.wake) and reads that task's status from the kernel's work read (kernel.work-read) to close a cancelled
-# task's PR. It holds only its module token.
+# The PR watch is the ship module's (modules/ship/service/src/loop.ts): it reaches GitHub, Flow, code review's verdict and
+# pr-tasks.json through this service's /internal/ship/* routes (service/src/ship-routes.ts), with ship's own token.
 # The design review's tasks (service/src/design-review.ts, W6) are filed for the UI Reviewer's role and cancelled when
 # superseded (kernel.tasks).
 # The release train (service/src/train.ts, W3) files the instance's pin bump as a kernel.apply, which the
@@ -170,7 +169,7 @@ codehost:
 # whose process is gone. That listing reads no other source and closes no other family (kernel/src/modtasks.ts).
 # All of them go with the code host's own token (codehost_github_token), never with github-mcp's service key.
 roles:
-  requests: [ kernel.tasks, kernel.wake, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice, kernel.events ]
+  requests: [ kernel.tasks, kernel.apply, kernel.work-read, kernel.facts, kernel.owner-notice, kernel.events ]
 # Flow (docs/design/flow.md): the facts the code host emits through the kernel (service/src/flow.ts), each carrying the task that opened
 # the PR (pr-tasks.json). pr.opened and issue.opened carry the author (author_kind: agent, owner or outside, from GitHub's author_association); pr.pushed is a head
 # change after opening (version = the head); pr.closed is a close without a merge. CI is one interval per head (subject pr:<repo>#<n>@<head>); a merge-queue wait and its end are
@@ -244,7 +243,7 @@ services:
   run:
     # The GitHub process (spec 2026-11-20-github-owner-identity §1): both connections (8086 AidenHQ's tools, 8087 GitHub's own
     # MCP and the board's sign-in at /auth/*) and the code host (8100: the executor of the write kinds below, the merge queue,
-    # the release train, the PR watch, design reviews and tidying, and the typed GitHub operations other modules get through the
+    # the release train, design reviews and tidying, ship's GitHub calls (/internal/ship/*), and the typed GitHub operations other modules get through the
     # kernel, /v1/codehost/:op), in one Node process on the owner's one sign-in. Its token stays in this container's /state; it
     # mounts the job workspaces. It starts with the module and answers "GitHub isn't connected" until the owner connects.
     github:
@@ -321,14 +320,15 @@ writes:
   # platform check on them (writes.ts).
   push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
   pr: { args: schemas/pr.json, floor: 0, card: *card }
-  merge: { args: schemas/merge.json, floor: 0, card: *card }
+  # merge: the ship module files an adopted PR's merge itself (its watch loop, with `generation`), so it is named in `filed_by`.
+  merge: { args: schemas/merge.json, floor: 0, filed_by: [ship], card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }
   # approve and enqueue: the ship module's effects on one adopted PR, each bound to its head, target and generation (plan.ts
   # refuses any other filer and any mismatch). An adoption's records carry `generation` (and `attempt` for enqueue and merge) in
   # their args, so a new try at the same head is a new record.
-  approve: { args: schemas/approve.json, floor: 0, card: *card }
-  enqueue: { args: schemas/enqueue.json, floor: 0, card: *card }
+  approve: { args: schemas/approve.json, floor: 0, filed_by: [ship], card: *card }
+  enqueue: { args: schemas/enqueue.json, floor: 0, filed_by: [ship], card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
   # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).
   setup: { args: schemas/setup.json, floor: 1, card: *card }

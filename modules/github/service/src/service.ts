@@ -39,7 +39,7 @@ import { fileContext, numstat } from "./review-files.ts";
 type Changed = { path: string; add?: number; del?: number };
 import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
-import { notePrTask } from "./pr-watch.ts";
+import { notePrTask } from "./pr-tasks.ts";
 
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
@@ -301,7 +301,7 @@ export function createService(o: Options) {
   const pushedHeads = (): string[] => (existsSync(pushed) ? JSON.parse(readFileSync(pushed, "utf8")) : []);
   const pushedKey = (repo: string, sha: string) => `${repo.toLowerCase()} ${sha}`;
   const notePushed = (repo: string, sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), pushedKey(repo, sha)]));
-  // Which task opened each PR this code host opened (pr-watch.ts notePrTask): the task's sibling PRs for the reviewer.
+  // Which task opened each PR this code host opened (pr-tasks.ts notePrTask): the task's sibling PRs for the reviewer.
   const prTasks = (): Record<string, { task?: string; branch?: string }> => { try { return JSON.parse(readFileSync(join(o.cacheDir, "pr-tasks.json"), "utf8")); } catch { return {}; } };
   const isPlatform = (requester?: { roles?: string[] }) => (requester?.roles ?? []).includes("platform-engineer");
 
@@ -542,7 +542,7 @@ export function createService(o: Options) {
               : await api("POST", `/repos/${s.slug}/pulls`, { ...opened, head: b.branch, base: def });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
-            if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
+            if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // ship wakes the task that opened it
             if (pr.number) {
               // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
               const n = Number(pr.number);
