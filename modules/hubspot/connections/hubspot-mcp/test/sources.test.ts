@@ -110,11 +110,17 @@ it("more than a page of records at one modified time (a bulk edit) are read by i
   // A budget that runs out inside the tie saves "<time>#<id>"; the next pass starts after that id.
   const part = fakeStore();
   part.scopes.set("contacts", { baselined: true, cursor: TIE });
-  const slowTie = async (tool: string, args: Record<string, any>) => (args.filterGroups[0].filters[0].operator === "EQ" && (await new Promise((r) => setTimeout(r, 40))), call(tool, args));
+  // The first id page completes (so the checkpoint is a real id); the next id request runs past the deadline.
+  let ties = 0;
+  const slowTie = async (tool: string, args: Record<string, any>) => {
+    if (args.filterGroups[0].filters[0].operator === "EQ" && ties++ > 0) await new Promise((r) => setTimeout(r, 40));
+    return call(tool, args);
+  };
   await syncObject(part.store, slowTie, "contacts", opts({ deadline: Date.now() + 20 }));
   const first = part.scopes.get("contacts")!.cursor!;
   expect(first).toMatch(/^2026-09-01T04:00:00.000Z#\d+$/);
   const done = Number(first.split("#")[1]);
+  expect(done).toBe(200); // the page read before the budget ran out
   calls.length = 0;
   part.writes.length = 0;
   await syncObject(part.store, call, "contacts", opts());
@@ -353,4 +359,40 @@ it("a resumed pass takes its newer range's total from the retry that resolved th
   expect(newer).toBe(2);
   expect(scopes.get("contacts")?.cursor).toBe(new Date(Date.parse(NEW) - 10 * 60_000).toISOString()); // caught up, no id checkpoint
   expect(pass.complete).toBeUndefined(); // a resumed pass never reports a whole-search comparison
+});
+
+it("a malformed result listed again on an overlapping page counts once, not twice", async () => {
+  const T1 = new Date(NOW - 120_000).toISOString();
+  const T2 = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const noId = (time: string) => ({ properties: { email: "broken@example.com", lastmodifieddate: time } }); // listed, unusable
+  // 400 contacts matched; 398 were indexed. Each full page also lists one result with no id.
+  let calls = 0;
+  const call = async () => {
+    calls++;
+    if (calls === 1) return answer([...Array.from({ length: 199 }, (_, k) => contact(k + 1, T1)), noId(T1)], 200, 400);
+    if (calls === 2) return answer([...Array.from({ length: 199 }, (_, k) => contact(k + 200, T1)), noId(T1)], 200, 400);
+    return answer([], 0, 0); // past both times: nothing left in the narrower window
+  };
+  const { store, writes } = fakeStore();
+  const pass = {} as any;
+  await withRetries(() => syncObject(store, call, "contacts", opts({ pass })));
+  expect(new Set(writes.map((w) => w.row.contact_id)).size).toBe(398);
+  // 398 ids and one malformed row, counted once: still short of 400, so the cursor stays at the pass start. Counting that
+  // row on both pages would read as 400 of 400 and release a cursor past two contacts that were never indexed.
+  expect(pass.complete).toEqual({ total: 400, fetched: 399 });
+  expect((await store.scope("contacts")).cursor).toBe(new Date(NOW - 30 * 86_400_000).toISOString());
+});
+
+it("a short page whose retry has no budget for its delay still writes the rows it holds", async () => {
+  const T = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const page = Array.from({ length: 100 }, (_, i) => contact(i + 1, T));
+  const { store, writes } = fakeStore();
+  const pass = {} as any;
+  // 1 s left: not enough for the 2 s retry delay, but the pass itself is not spent.
+  await withRetries(() => syncObject(store, async () => answer(page, page.length, 150), "contacts", opts({ pass, deadline: NOW + 1_000 })));
+  expect(writes.length).toBe(100); // the rows in hand land; the 50 unindexed keep the cursor where it began
+  expect(pass.complete).toEqual({ total: 150, fetched: 100 });
+  expect((await store.scope("contacts")).cursor).toBe(new Date(NOW - 30 * 86_400_000).toISOString());
 });

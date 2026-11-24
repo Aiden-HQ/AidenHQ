@@ -70,14 +70,23 @@ export function parseRecords(o: any): CrmRecord[] {
   return list.filter((r) => r?.id != null).map((r) => ({ id: String(r.id), properties: r.properties ?? {}, ...(template ? { url: template.replace("{id}", String(r.id)) } : {}) }));
 }
 
-/** A search answer's `total` (null when it gave none) and how many results it listed, malformed ones included. */
-const counts = (o: any) => ({ total: Number.isInteger(o?.total) && o.total >= 0 ? o.total : null, returned: Array.isArray(o?.results) ? o.results.length : 0 });
+/** A search answer's `total` (null when it gave none), how many results it listed, malformed ones included, and those
+ * listed results that carry no id: unusable, and identified by their content so a page re-issued at the same time can't count
+ * one of them twice. */
+const counts = (o: any) => {
+  const list: unknown[] = Array.isArray(o?.results) ? o.results : [];
+  return {
+    total: Number.isInteger(o?.total) && o.total >= 0 ? o.total : null,
+    returned: list.length,
+    unusable: list.filter((r: any) => r?.id == null).map((r) => JSON.stringify(r)),
+  };
+};
 
 /**
  * One page of records modified at or after `sinceMs`, oldest first, with HubSpot's `total` for the whole search (null when it
  * gave none) and how many results it listed (one with no id is unusable, so it must not read as a page HubSpot truncated).
  */
-export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number): Promise<{ records: CrmRecord[]; total: number | null; returned: number }> {
+export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: number): Promise<{ records: CrmRecord[]; total: number | null; returned: number; unusable: string[] }> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,
@@ -96,7 +105,7 @@ export async function searchPage(call: CallHubSpot, def: ObjectDef, sinceMs: num
  * filter (the records left from `afterId` on; null when it gave none). A time shared by more than one page of records (a bulk
  * edit) can't be passed by time, so it is read by id instead.
  */
-export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string): Promise<{ records: CrmRecord[]; total: number | null; returned: number }> {
+export async function searchTie(call: CallHubSpot, def: ObjectDef, ms: number, afterId: string): Promise<{ records: CrmRecord[]; total: number | null; returned: number; unusable: string[] }> {
   const o = toolJson(
     await call("search_crm_objects", {
       objectType: def.objectType,

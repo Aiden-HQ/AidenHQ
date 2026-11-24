@@ -188,7 +188,7 @@ export function selected(setting: string[]): string[] {
  * with the cursor left where the pass began. The same holds for an id page (by its own total) and a resumed pass (whose first
  * time query has its own total).
  */
-async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowDropped?: number }, deadline: number): AsyncGenerator<CrmRecord> {
+async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; unusable: Set<string>; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowUnusable: Set<string>; windowDropped?: number }, deadline: number): AsyncGenerator<CrmRecord> {
   let since = Date.parse(from.sinceIso);
   let afterId = from.afterId;
   // A page shorter than the limit while its own query's total says more matched is a page HubSpot has not published whole (its
@@ -209,12 +209,12 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
   let newerWindowFirst = resumed;
   for (;;) {
     if (afterId === undefined) {
-      const droppedBefore = state.dropped;
       const shortBefore = state.shortfall; // this window's gap must not erase an earlier one when it resolves
       const partialBefore = state.partial;
       let page: CrmRecord[] = [],
         total: number | null = null,
         returned = 0,
+        unusable: string[] = [],
         answered = false,
         spent = false,
         gap = false, // the last accepted page was short of its own total
@@ -232,8 +232,11 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
           break;
         }
         answered = true;
-        ({ records: page, total, returned } = answer);
-        state.dropped = droppedBefore + (returned - page.length);
+        ({ records: page, total, returned, unusable } = answer);
+        // A result listed without an id is unusable but was returned; identified by its content, so the same one listed again
+        // on an overlapping page (a re-read time) can't count twice toward the total.
+        for (const u of unusable) state.unusable.add(u);
+        state.dropped = state.unusable.size;
         if (total !== null) gapTotal = total;
         // The count comes from the answer the page is accepted with — a retry reporting a smaller total may count a record
         // HubSpot has since archived — but a retry that omits it keeps the count its predecessor gave: a full replacement page
@@ -255,7 +258,10 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
             : { total: gapTotal, fetched: new Set(page.map((r) => r.id)).size };
         if (!gap) break;
         if (attempt + 1 >= SHORT_PAGE_ATTEMPTS) break;
-        if (!(await wait()) || Date.now() >= deadline) {
+        // No budget left for another retry's delay: the page in hand is written now (the shortfall keeps the cursor), so a
+        // lagging index doesn't leave every pass with nothing ingested. Past the deadline nothing new is started.
+        if (!(await wait())) break;
+        if (Date.now() >= deadline) {
           spent = true;
           break;
         }
@@ -264,7 +270,10 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       // Past the budget no new write is started: the page is re-read next pass from the held cursor instead of a long batch of
       // upserts running past the pass's share.
       if (spent) return void (state.ended = false);
-      if (state.windowRead) state.windowDropped = (state.windowDropped ?? 0) + (returned - page.length); // unusable, but returned
+      if (state.windowRead) {
+        for (const u of unusable) state.windowUnusable.add(u);
+        state.windowDropped = state.windowUnusable.size; // returned but unusable, deduped like the pass's count
+      }
       for (const r of page) {
         state.windowRead?.add(r.id);
         state.seen.add(r.id);
@@ -289,12 +298,13 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
     let id = afterId;
     // A page kept as the fallback while its retry is in flight; cleared once a page is accepted, so a later timeout can't replay
     // rows that are already written.
-    let last: { records: CrmRecord[]; total: number | null; returned: number } | undefined;
+    let last: { records: CrmRecord[]; total: number | null; returned: number; unusable: string[] } | undefined;
     const tieShortBefore = state.shortfall;
     // The first id query's total covers the whole range left from `afterId`, the pages after it only their own slice: the range
     // is read whole only when what it returned reaches that count (a lower id still unindexed is otherwise invisible).
     let tieTotal: number | null = null;
     let tieDropped = 0;
+    const tieUnusable = new Set<string>(); // malformed results this range listed, by content
     let short = false; // the last id page was short of its own total
     let idTotal: number | null = null; // the last total that filter gave (a retry may omit it)
     const tieRead = new Set<string>();
@@ -364,9 +374,14 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       idTotal = null; // the next page is a new boundary, with its own total
       // A result listed without an id can't be written on an id page either; it is returned, not missing. It counts toward the
       // resumed pass's newer-window coverage too, or one such row would look like a gap forever.
-      state.dropped += returned - page.length;
-      tieDropped += returned - page.length;
-      if (state.windowRead) state.windowDropped = (state.windowDropped ?? 0) + (returned - page.length);
+      for (const u of answer.unusable) state.unusable.add(u);
+      state.dropped = state.unusable.size;
+      for (const u of answer.unusable) tieUnusable.add(u);
+      tieDropped = tieUnusable.size;
+      if (state.windowRead) {
+        for (const u of answer.unusable) state.windowUnusable.add(u);
+        state.windowDropped = state.windowUnusable.size;
+      }
       if (returned < SEARCH_LIMIT) break; // the tie time is read whole
       if (Date.now() >= deadline) return void (state.ended = false);
     }
@@ -406,7 +421,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
   const from = newest;
   let tieId = cursorId || undefined;
-  const state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowDropped?: number } = { ended: false, shortfall: false, dropped: 0, seen: new Set() };
+  const state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; unusable: Set<string>; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowUnusable: Set<string>; windowDropped?: number } = { ended: false, shortfall: false, dropped: 0, unusable: new Set(), seen: new Set(), windowUnusable: new Set() };
   try {
     for await (const r of records(call, def, { sinceIso: newest, afterId: tieId }, state, o.deadline)) {
       let row: Row;
