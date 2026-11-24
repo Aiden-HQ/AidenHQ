@@ -208,6 +208,8 @@ export function createAccess(o: {
   log?: (msg: string, f: Record<string, unknown>) => void;
   /** The owner's GraphQL org query answered with no errors: the org's sso/restricted need is the owner's fix made. */
   onOrgOk?: (org: string) => void;
+  /** An expired sign-in works again (the recheck): the kernel's need clears and its waiters wake. */
+  onSignInOk?: () => void;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
@@ -247,7 +249,7 @@ export function createAccess(o: {
       if (o.auth.status().state !== "expired") return;
       try {
         const res = await fetchImpl(`${API}/user`, { headers: { ...(await o.auth.headers()), accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(15_000) });
-        if (res.ok) return o.auth.mark("ok");
+        if (res.ok) { o.auth.mark("ok"); try { o.onSignInOk?.(); } catch { /* a report never breaks the recheck */ } return; }
       } catch { /* unreachable or refused: try again next time */ }
       recheck();
     })());

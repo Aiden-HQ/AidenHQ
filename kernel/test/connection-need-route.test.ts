@@ -55,7 +55,9 @@ test("POST /v1/connections/ok clears one org's need for its module, and refuses 
   assert.equal((await post({ connection: "github", org: "ACME" })).status, 200);
   assert.equal(k.records.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get()!.n, 0, "the org's row is gone, whatever its casing");
   assert.equal((await post({ connection: "github", org: "Acme" })).json.woken, 0);
-  assert.equal((await post({ connection: "github" })).status, 400, "no org");
+  assert.equal((await k.v1("POST", "/v1/connections/need", { connection: "github", need: { cause: "expired" } }, "github-key")).status, 200);
+  assert.equal((await post({ connection: "github" })).status, 200, "no org: the sign-in works again");
+  assert.equal(k.records.db.prepare("SELECT COUNT(*) AS n FROM connection_state").get()!.n, 0, "the expired row is gone");
   assert.equal((await post({ connection: "github", org: "not an org" })).status, 400, "a malformed org");
   assert.equal((await post({ org: "acme" })).status, 400, "no connection");
   assert.equal((await post({ connection: "slack", org: "acme" })).status, 400, "a connection of another module");

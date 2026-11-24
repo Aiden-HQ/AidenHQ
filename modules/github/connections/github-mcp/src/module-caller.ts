@@ -78,6 +78,13 @@ export function reportOrgOk(kernelUrl: string, key: string, connection: "github"
     .catch((e: Error) => log.warn({ err: e.message, org }, "a connection success report failed; the org's next query reports it again")));
 }
 
+/** The owner's sign-in works again after GitHub refused it (client.ts recheck): the kernel clears the expired need and wakes its waiters. */
+export function reportSignInOk(kernelUrl: string, key: string, connection: "github", log: WarnLog = { warn: () => {} }, fetcher: typeof fetch = fetch, timeoutMs = 5_000): void {
+  void fetcher(new URL("/v1/connections/ok", kernelUrl), { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify({ connection }), signal: AbortSignal.timeout(timeoutMs) })
+    .then((r) => { if (!r.ok) log.warn({ status: r.status }, "the kernel refused a sign-in success report"); })
+    .catch((e: Error) => log.warn({ err: e.message }, "a sign-in success report failed; the next tool call that works clears it"));
+}
+
 /** How long a reply waits for the kernel to take a need: the route answers within its 1 s even when the kernel is slow. */
 const NEED_WAIT_MS = 1_000;
 const PENDING_MAX = 20;

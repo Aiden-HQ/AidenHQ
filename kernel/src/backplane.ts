@@ -90,7 +90,8 @@
 //   POST /v1/connections/need  (a module with role kernel.owner-notice) {connection, need}: its own call (not a tool call through the proxy)
 //                              that only the owner can fix, recorded as that connection's need (needs.ts) and routed like a tool call's -> {ok}
 //   POST /v1/connections/ok    (a module with role kernel.owner-notice) {connection, org}: a call to that org succeeded, so its sso
-//                              and restricted rows clear and their waiters wake -> {woken}
+//                              and restricted rows clear and their waiters wake; with no org, the sign-in works again, so its
+//                              not_connected and expired rows clear and their waiters wake -> {woken}
 //   GET  /v1/connections/down?agent=  (a module with role kernel.jobs) the agent's granted connections that are down ->
 //                              {down: [{connection, module, cause, since}]}: names, causes and dates only (the dispatch preamble)
 //   GET  /v1/connections/needs (the module with role kernel.notify) {lines}: the owner's digest lines for every connection need confirmed
@@ -691,9 +692,9 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (!w.roles.includes("kernel.owner-notice")) throw fail(403, "forbidden", `${w.module} may not report a connection success (role kernel.owner-notice)`);
           if (!connectionState) throw fail(503, "unavailable", "connection state is off");
           const b = await json(req);
-          if (typeof b?.connection !== "string" || typeof b?.org !== "string" || !NAME.test(b.org)) throw fail(400, "bad_request", "send {connection, org}");
+          if (typeof b?.connection !== "string" || (b.org !== undefined && (typeof b.org !== "string" || !NAME.test(b.org)))) throw fail(400, "bad_request", "send {connection, org?}");
           if (!connectionState.owns(w.module!, b.connection)) throw fail(400, "bad_request", `${w.module} has no connection ${b.connection}`);
-          return send(res, 200, { woken: connectionState.ok(b.connection, { org: b.org }) });
+          return send(res, 200, { woken: connectionState.ok(b.connection, b.org === undefined ? { fullOnly: true } : { org: b.org }) });
         }
         case "GET /v1/connections/down": {
           const w = await moduleOf(req);
