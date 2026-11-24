@@ -36,7 +36,7 @@ function world() {
       const since = u.searchParams.get("updatedSince");
       lists.push(u.search);
       // The nth change-list page fails (`fail.changesAt`, counted from 1): a control plane answering 503 mid-pass.
-      if (u.searchParams.get("sortField") === "updated" && fail.changesAt && ++fail.changesSeen === fail.changesAt) return { status: 503, json: {} };
+      if (u.searchParams.has("updatedSince") && !u.searchParams.has("status") && fail.changesAt && ++fail.changesSeen === fail.changesAt) return { status: 503, json: {} };
       let rows = Object.values(issues).filter((i) => ((agentCompanies[i.assigneeAgentId] ?? "c-1") === m[1] || !i.assigneeAgentId) && (!u.searchParams.has("status") || u.searchParams.get("status").split(",").includes(i.status)) && (!u.searchParams.has("assigneeAgentId") || i.assigneeAgentId === u.searchParams.get("assigneeAgentId")) && (!since || Date.parse(i.updatedAt) > Date.parse(since)));
       if (u.searchParams.get("sortField") === "updated") rows = rows.sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt));
       // `sortField=id&afterId=` is the poll's stable cursor; a plain list keeps insertion order (the offset it may page by).
@@ -1174,7 +1174,7 @@ test("a change-list page that fails holds the cursor short of the rows it didn't
   w.tick(60_000);
   await w.wakes.poll();
   assert.equal(w.issues["chat-504"].status, "done", "the row past the failed page was not read");
-  assert.equal(w.issues["chat-001"].status, "done", "nor was the reply on the row re-sorted to the end with it");
+  assert.equal(w.issues["chat-001"].status, "todo", "a reply on the page that was read reopens its chat");
   await w.wakes.poll();
   assert.equal(w.issues["chat-504"].status, "todo", "the held cursor reaches it on the next poll");
   assert.equal(w.issues["chat-001"].status, "todo");
@@ -1222,8 +1222,8 @@ test("a steady poll reads one change list and no comments; a change reads that t
   w.calls.length = 0;
   await w.wakes.event({ issueId: "t4", updatedAt: w.issues.t4.updatedAt });
   assert.deepEqual(w.calls, []);
-  // Ten minutes on, every open task is listed whole, and each is read again once anyway.
-  w.tick(10 * 60_000);
+  // Ten to fifteen minutes on (each task's refresh is spread by its id), every open task is listed whole and read again once anyway.
+  w.tick(15 * 60_000);
   w.calls.length = 0;
   await w.wakes.poll();
   assert.equal(w.calls.filter((c) => c.endsWith("/comments")).length, 20);
@@ -1250,7 +1250,7 @@ test("an older read never takes the mirror or the facts back past a newer one", 
   assert.equal(w.facts.forTask("t1").filter((f) => f.type === "task.status_changed").at(-1).data.to, "done");
 });
 
-test("a bulk update that gives more than a page of tasks one instant is read through by id", async () => {
+test("a change list longer than a page, every row of one instant, is read through by id", async () => {
   const w = world();
   w.issue("seed", { status: "todo" });
   await w.wakes.poll();
@@ -1261,5 +1261,18 @@ test("a bulk update that gives more than a page of tasks one instant is read thr
   w.tick(5000);
   await w.wakes.poll();
   assert.equal(w.issues["chat-503"].status, "todo", "the reply past the first page reopened its chat");
-  assert.ok(w.lists.some((q) => q.includes("sortField=id") && q.includes("updatedSince")), "the instant was read by id");
+  assert.ok(w.lists.some((q) => q.includes("afterId") && q.includes("updatedSince")), "the second page went on by id");
+});
+
+test("a task deleted in Paperclip, confirmed by two misses, is no longer a ref the mirror resolves", async () => {
+  const w = world();
+  w.issue("t1", { status: "todo", identifier: "WOR-1", title: "Doomed" });
+  await w.wakes.poll();
+  delete w.issues.t1;
+  w.tick(15 * 60_000);
+  await w.wakes.poll(); // first miss
+  w.tick(15 * 60_000);
+  await w.wakes.poll(); // second miss: gone
+  const m = w.db.prepare("SELECT status, identifier, title FROM task_facts_seen WHERE task = 't1'").get();
+  assert.deepEqual({ ...m }, { status: "cancelled", identifier: null, title: null });
 });

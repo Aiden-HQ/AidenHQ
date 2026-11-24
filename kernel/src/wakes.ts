@@ -31,6 +31,8 @@ const LIVE = "('admitted','running')";
 /** A task unchanged since its comments were last read whole has them read again at least this often anyway. */
 const READ_EVERY_MS = 10 * 60_000;
 /** The state a comment read covers: a new comment moves the task's updatedAt (and its lastActivityAt). */
+/** Up to half of READ_EVERY_MS more per task (fixed by its id), so the refreshes of tasks first seen together spread out. */
+const jitter = (id: string) => parseInt(createHash("sha256").update(id).digest("hex").slice(0, 8), 16) % (READ_EVERY_MS / 2);
 const stampOf = (i: { updatedAt?: string; lastActivityAt?: string }) => `${i.updatedAt ?? ""}|${i.lastActivityAt ?? ""}`;
 /** A claimed row with no job comes back to its claimer after this (a dispatcher crash, a busy admission). */
 export const LEASE_MS = 60_000;
@@ -350,7 +352,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     // comment moves both), on first sight, and at least every READ_EVERY_MS; otherwise the cursor's last read stands and
     // everything below that needs no comment (a deferred move, a routine re-arm, a wait) still runs.
     const stamp = stampOf(issue);
-    const read = fresh || !prev || seen?.seen_stamp !== stamp || now() - (seen?.read_at ?? 0) >= READ_EVERY_MS;
+    const read = fresh || !prev || seen?.seen_stamp !== stamp || now() - (seen?.read_at ?? 0) >= READ_EVERY_MS + jitter(issue.id);
     let all: Comment[] = [];
     if (read) {
       const path = `/api/issues/${encodeURIComponent(issue.id)}/comments?${prev?.comment ? `order=asc&limit=500&after=${encodeURIComponent(prev.comment)}` : "order=desc&limit=500"}`;
@@ -793,6 +795,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     try {
       const st = String(row.status ?? "");
       if (st === "done" || st === "cancelled") {
+        // A closure older than what the mirror holds (a reopen the event path already recorded) changes nothing, the wake cursor included.
+        if (stale(row)) return true;
         const holder = row.assigneeAgentId;
         if (st === "done" && holder && joined.has(holder) && ms(row.updatedAt) > floor && isChat(row)) {
           await lane(row.id, () => scan(row, { source: "poll", joined })).catch((e: Error) => {
@@ -801,7 +805,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
           });
           return true;
         }
-        if (facts && !lastFacts(row.id).has("task.created")) { if (!stale(row)) mirror(row); return true; }
+        if (facts && !lastFacts(row.id).has("task.created")) { mirror(row); return true; }
         taskFacts(row, "poll", "unknown");
         // A closed task is before `blocked`: its blocker history must not outlive the period it was recorded for.
         q("UPDATE wake_tasks SET status = ?, blocked = NULL, blocked_names = NULL, blocked_deleted = NULL, blocked_exists = NULL WHERE task = ? AND status IS NOT ?").run(st, row.id, st);
@@ -817,15 +821,18 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
   /** Rows changed since a pass this far back are read again: a write commits after the time it is stamped with. */
   const OVERLAP_MS = 2 * 60_000;
   const PAGE = 500, PAGES = 25;
-  /** Every company's changes since its cursor, paged by `updatedSince` (re-reading the boundary instant): a row updated while
-   *  the pass runs moves to the end of the order, where a later page or the next pass reads it, so none is skipped. */
+  /**
+   * Every company's changes since its cursor, paged by id over `updatedSince` (Paperclip sorts `sortField=updated` by last
+   * activity, not by the updatedAt it filters on, so only the id order is a stable cursor: a row updated during the pass keeps
+   * its place, a deleted one shifts nothing). A pass the page budget cuts short resumes from its last page on the next poll
+   * (`after`), its start (`after_at`) held: a complete pass moves `since` to that start, with the overlap, never past a row
+   * whose record failed and never backwards.
+   */
   async function changes(company: string, joined: Map<string, number>, signal?: AbortSignal) {
-    const cur = cursorOf(company), started = now();
-    // `afterId`: a whole page inside one instant (a bulk update) can't be passed by time, so the rest of the pass reads every row
-    // changed since then by id instead (stable: a row updated meanwhile keeps its place, and a deleted one shifts nothing).
-    let since = cur.since, afterId: string | undefined = cur.after ?? undefined, idAt = cur.after_at ?? started, complete = false, last: string | undefined, failedAt: number | undefined;
+    const cur = cursorOf(company), began = cur.after_at ?? now();
+    let afterId = cur.after ?? "", complete = false, failedAt: number | undefined;
     for (let page = 0; page < PAGES && !signal?.aborted; page++) {
-      const query = new URLSearchParams({ updatedSince: since, limit: String(PAGE), ...(afterId === undefined ? { sortField: "updated", sortDir: "asc" } : { sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) }) });
+      const query = new URLSearchParams({ updatedSince: cur.since, sortField: "id", sortDir: "asc", limit: String(PAGE), ...(afterId ? { afterId } : {}) });
       const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
       if (l.status !== 200 || !Array.isArray(l.json)) { log("wake changes failed", { company, status: l.status }); break; }
       const rows = l.json as Issue[];
@@ -833,27 +840,22 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       for (const row of rows) {
         if (signal?.aborted) { cut = true; break; }
         if (!(await changed(row, joined, cur.floor))) failedAt = Math.min(failedAt ?? Infinity, ms(row.updatedAt));
-        // By id, rows come in no time order: a pass cut short resumes from where the id pass began.
-        if (afterId === undefined) last = row.updatedAt;
       }
       if (cut) break;
       if (rows.length < PAGE) { complete = true; break; }
-      if (afterId !== undefined) { afterId = rows.at(-1)!.id; continue; }
-      const next = iso(ms(rows.at(-1)!.updatedAt) - 1);
-      if (ms(next) <= ms(since)) { afterId = ""; idAt = now(); }
-      else since = next;
+      afterId = rows.at(-1)!.id;
     }
-    // The cursor moves only past what was processed: to the pass's start on a complete pass, else to the last row it reached,
-    // and never past a row whose record failed. Always with the overlap, never backwards.
-    let to = complete ? (afterId !== undefined ? idAt : started) - OVERLAP_MS : last ? ms(last) - OVERLAP_MS : ms(cur.since);
-    if (failedAt !== undefined) to = Math.min(to, failedAt - 1);
-    if (to > ms(cur.since)) q("UPDATE wake_cursor SET since = ? WHERE company = ?").run(iso(to), company);
-    // A by-id pass cut short resumes past the pages it finished (its `since` held), so a backlog larger than one pass is crossed.
-    // A row whose record failed restarts the by-id pass from its start, so the failed row is read again.
-    const resume = !complete && afterId !== undefined;
-    q("UPDATE wake_cursor SET after = ?, after_at = ? WHERE company = ?").run(resume ? (failedAt === undefined ? afterId! : "") : null, resume ? (failedAt === undefined ? idAt : now()) : null, company);
-    if (!complete) log("wake changes cut short", { company, reads_to: last ?? null });
+    if (complete) {
+      let to = began - OVERLAP_MS;
+      if (failedAt !== undefined) to = Math.min(to, failedAt - 1);
+      q("UPDATE wake_cursor SET since = ?, after = NULL, after_at = NULL WHERE company = ?").run(iso(Math.max(to, ms(cur.since))), company);
+      return;
+    }
+    // Cut short: resume past the finished pages, or from the start when a row failed (so it is read again).
+    q("UPDATE wake_cursor SET after = ?, after_at = ? WHERE company = ?").run(failedAt === undefined ? afterId : "", began, company);
+    log("wake changes cut short", { company, after: afterId || null });
   }
+
   /** How often every open task is listed whole: the backstop for a change the cursor missed, and what "gone" is judged against. */
   const FULL_MS = 10 * 60_000;
   /** Every open, blocked and parked task of a company (paged by id): their facts and mirror rows, and the ids, or undefined when the listing failed. */
@@ -930,7 +932,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
     async poll(signal?: AbortSignal) {
       try { q(`UPDATE wakes SET state = 'done' WHERE state = 'claimed' AND job IS NOT NULL AND job NOT IN (SELECT id FROM jobs WHERE state IN ${LIVE})`).run(); } catch (e) { log("wake poll failed", { step: "close ended wakes", err: (e as Error).message }); }
       const joined = polled();
-      for (const agent of joined.keys()) {
+      // Every agent's company, polled or not: the mirror serves the board on an install with no dispatcher yet too.
+      for (const agent of new Set([...Object.keys(grants()), ...joined.keys()])) {
         if (companies.has(agent) || signal?.aborted) continue;
         try {
           const a = await owner("GET", `/api/agents/${encodeURIComponent(agent)}`);
@@ -1001,7 +1004,8 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
             missing.delete(task);
             inTx(db, "task_gone", () => {
               fact({ type: "task.status_changed", subject: `task:${task}`, task, version: "missing", at: iso(now()), actor: "kernel", source: "poll", data: { from: str(lastFacts(task).get("task.status_changed")?.data.to), to: "cancelled" } });
-              q("UPDATE task_facts_seen SET status = 'cancelled' WHERE task = ?").run(task);
+              // Gone, not just cancelled: no longer a ref the board can resolve (its facts keep the history).
+              q("UPDATE task_facts_seen SET status = 'cancelled', identifier = NULL, title = NULL, issue = NULL WHERE task = ?").run(task);
               // A closed task is before `blocked`: its blocker history must not outlive the period it was recorded for.
               q("UPDATE wake_tasks SET status = 'cancelled', blocked = NULL, blocked_names = NULL, blocked_deleted = NULL, blocked_exists = NULL WHERE task = ?").run(task);
               seen(task);

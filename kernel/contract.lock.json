@@ -106,6 +106,7 @@
     "route GET /v1/notify/take": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/objects": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/tasks": {"state":"experimental","fp":"auth=module"},
+    "route GET /v1/tasks/issues": {"state":"experimental","fp":"auth=module|board"},
     "route GET /v1/tasks/state": {"state":"experimental","fp":"auth=module|board"},
     "route GET /v1/wakes/pending": {"state":"experimental","fp":"auth=module"},
     "route GET /v1/whoami": {"state":"experimental","fp":"auth=bearer"},
