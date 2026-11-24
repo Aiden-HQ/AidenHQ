@@ -262,7 +262,7 @@ const REASK = `Your last message wasn't the single JSON object asked for, or its
 /** The retry's statements on the first restate's own answer: its findings (the retry was asked only for the statement) are kept. */
 const withSaid = (first: unknown, retry: unknown) => {
   const a = answer(first), b = answer(retry);
-  return a && b ? JSON.stringify({ ...b, ...a, skills: b.skills }) : String(retry ?? "");
+  return a && b ? JSON.stringify({ ...b, ...(Array.isArray(a.findings) ? { findings: a.findings, ...(a.stale_guidance !== undefined ? { stale_guidance: a.stale_guidance } : {}) } : {}), skills: b.skills }) : String(retry ?? "");
 };
 export function skillOutcome(r: EngineResult, names: string[], idle = new Set<number>(), cut?: number): EngineResult {
   const said = skillsSaid(r.message, names, cut);
