@@ -160,6 +160,8 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     if (!own) return out({ error: "no submit control in the feedback form (not sending anything else)", finalUrl: scrub(landed), pageTitle: title });
     // Nothing was submitted yet: evidence starts at the click, so a validation POST a fill triggered is never read as the
     // submission's intake.
+    // The page as it stands before submitting: a reference already on it belongs to an earlier submission, never this one.
+    const beforeText = String((await within(ab("eval", "document.body.innerText"), 4000, {})).result ?? "");
     const submittedAt = Date.now();
     await ab("click", "[data-aidenhq-canary-submit]");
     // The page's own notify (and its intake call) happen in its click handler: wait for them, bounded, from the submission.
@@ -201,7 +203,14 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // own answer is the first hop when it redirected, never the redirect target's 200; a request that never answered is none.
     const last = intakeAnswer ?? (intake.length === 1 ? intake[0] : null);
     const intakeStatus = last ? (last.hop ?? last.status) : null;
-    if (!reference) reference = (shown.match(/(?:reference|ref(?:erence)?\s*(?:id|no\.?)?)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,80})/i) || [])[1] || null;
+    // A reference read off the page only counts when the page did not already show it before the click: an earlier
+    // submission's "Reference ABC-123" would otherwise make a broken save look successful. A response body's reference (above)
+    // is already tied to this submission's own POST.
+    const before = String(beforeText);
+    if (!reference) {
+      const fromPage = (shown.match(/(?:reference|ref(?:erence)?\s*(?:id|no\.?)?)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,80})/i) || [])[1] || null;
+      if (fromPage && !before.includes(fromPage)) reference = fromPage;
+    }
     let png;
     if (await within(ab("screenshot", "/tmp/canary.png"), 8000, null)) png = readFileSync("/tmp/canary.png").toString("base64");
     // fired is the gate answering the notify POST itself with 204: a redirect's target's 204 is not the gate taking it, and a
@@ -209,7 +218,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const notifyStatus = notify && !notify.synthetic ? (notify.hop ?? notify.status) : null;
     const notifyState = notifyStatus === 204 ? "fired" : notifyStatus ? "not-fired" : notify ? "unknown" : "not-fired";
     out({
-      status: intakeStatus ?? 0, finalUrl: scrub(finalUrl), pageTitle, notify: notifyState,
+      status: intakeStatus ?? 0, intake: Boolean(last), finalUrl: scrub(finalUrl), pageTitle, notify: notifyState,
       notifyStatus, reference, submittedAt: new Date(submittedAt).toISOString(), png,
     });
   } catch (e) {
@@ -238,7 +247,7 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
   };
   try {
     const raw = await d.run(CANARY_NETWORK, CANARY_SCRIPT, input, CANARY_TIMEOUT_MS, mint);
-    const r = JSON.parse(raw) as { error?: string; status?: number; finalUrl?: string; pageTitle?: string; notify?: CanaryResult["notify"]; notifyStatus?: number | null; reference?: string | null; submittedAt?: string; png?: string };
+    const r = JSON.parse(raw) as { error?: string; status?: number; finalUrl?: string; pageTitle?: string; notify?: CanaryResult["notify"]; notifyStatus?: number | null; reference?: string | null; intake?: boolean; submittedAt?: string; png?: string };
     if (r.error) {
       // A failed run still carries whatever the browser proved before it stopped (never the code or the cookie).
       return { ...base, ...(r.finalUrl ? { finalUrl: scrub(r.finalUrl) } : {}), ...(r.pageTitle ? { pageTitle: r.pageTitle } : {}), session: session ?? base.session, error: scrub(r.error) };
@@ -247,9 +256,11 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
     // 2xx, and the page itself displayed the reference that answer carried. A successful-looking POST with no reference (an
     // analytics call, say) is not evidence the feedback was saved: status and notify are still reported, `ok` is false.
     const accepted = typeof r.status === "number" && r.status >= 200 && r.status < 300;
+    // `intake` (the renderer's) is false when no single POST could be named as the form's save; a page reference alone is
+    // then a display, not proof. Only a reference tied to the intake's own answer makes a canary a success.
     return {
       ...base,
-      ok: r.notify === "fired" && accepted && Boolean(r.reference),
+      ok: r.notify === "fired" && accepted && Boolean(r.intake) && Boolean(r.reference),
       status: r.status ?? 200,
       finalUrl: scrub(r.finalUrl ?? ""),
       pageTitle: r.pageTitle ?? "",

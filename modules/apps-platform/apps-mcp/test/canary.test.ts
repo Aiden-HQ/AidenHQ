@@ -34,7 +34,7 @@ function deps(o: { mintStatus?: number; run?: object | (() => Promise<string>); 
 
 describe("app_page_canary", () => {
   it("mints for the app, runs the page on the canary network, and returns notify: fired with the reference and screenshot", async () => {
-    const { d, calls, runs } = deps({ run: { status: 200, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap Keeper", notify: "fired", notifyStatus: 204, reference: "TEST-RT-2026-11-24-1", submittedAt: "2026-11-24T09:00:00.000Z", png: "iVBORw0KGgo=" } });
+    const { d, calls, runs } = deps({ run: { status: 200, intake: true, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap Keeper", notify: "fired", notifyStatus: 204, reference: "TEST-RT-2026-11-24-1", submittedAt: "2026-11-24T09:00:00.000Z", png: "iVBORw0KGgo=" } });
     const r = await pageCanary(app, { app: "roadmap-keeper", text: "TEST-RT-2026-11-24-1 canary", path: "/intake" }, d);
     expect(r).toMatchObject({ ok: true, status: 200, notify: "fired", notifyStatus: 204, reference: "TEST-RT-2026-11-24-1", screenshot: "iVBORw0KGgo=", session: { id: "sess-1", revoked: true } });
     // The session was minted for this app only, and revoked by id after the run.
@@ -55,6 +55,14 @@ describe("app_page_canary", () => {
     const { d } = deps({ run: { status: 200, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
     const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
     expect(r).toMatchObject({ ok: false, status: 200, notify: "fired", notifyStatus: 204, reference: null, session: { revoked: true } });
+  });
+
+  it("a reference the page showed before the click is never proof this submission saved", async () => {
+    // The page already says "Reference ABC-123"; a regression posts only analytics and still calls notify. No intake POST can
+    // be named, so the canary stays unverified even though the old reference is on screen.
+    const { d } = deps({ run: { status: 200, intake: false, finalUrl: `${canaryOrigin("roadmap-keeper")}/intake`, pageTitle: "Roadmap", notify: "fired", notifyStatus: 204, reference: null } });
+    const r = await pageCanary(app, { app: "roadmap-keeper", text: "x" }, d);
+    expect(r).toMatchObject({ ok: false, notify: "fired", notifyStatus: 204, session: { revoked: true } });
   });
 
   it("an intake the app refused is not a successful submission, even when the page still fires notify", async () => {
