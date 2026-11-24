@@ -89,10 +89,11 @@ export function adoptedPass(o: AdoptedOptions) {
     /** The adoptions of `repo` (not the fleet's) whose PR left the open list: a merged one closes its hand-off's task once. */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
       for (const a of o.state.all() as Kept[]) {
-        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || a.trigger.kind === "fleet" || a.hold || a.counters?.lastRound?.endsWith(":done")) continue;
+        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || a.trigger.kind === "fleet" || a.hold?.reason === "its PR was closed" || a.counters?.lastRound?.endsWith(":done")) continue;
         const r = await o.gh("GET", `/repos/${repo}/pulls/${a.number}`);
         if (r.status >= 300) continue;
-        if (!r.body?.merged_at) { if (r.body?.state === "closed") handBack(o.state, repo, a.number, "its PR was closed"); continue; }
+        // A held adoption is still finished when someone merges its PR (round closes the hand-off's task); a closed one is handed back.
+        if (!r.body?.merged_at) { if (r.body?.state === "closed" && !a.hold) handBack(o.state, repo, a.number, "its PR was closed"); continue; }
         const view: PrView = { repo, number: a.number, url: String(r.body.html_url), head: String(r.body.head?.sha), base: String(r.body.base?.ref), defaultBranch, author: String(r.body.user?.login ?? ""), authorBot: r.body.user?.type !== "User", fork: false, canModify: false, draft: false, state: "merged", labels: [], assignees: [], events: [] };
         await round(rounds, view, { do: "done" });
       }

@@ -103,12 +103,13 @@ setInterval(() => { if (!paused() && token()) void prTick({ prs, firePr, store: 
 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;
-  // github's check before each adopted-PR write: the adoption's generation, hold and task, to the github module's token only.
+  // github's check before each adopted-PR write: the adoption's generation, hold and task, to the github module's token only. A
+  // repo switched off reads as paused, so a write already in flight for it is refused too.
   if (req.method === "GET" && req.url?.startsWith("/v1/generation?")) {
     const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "github");
     if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end();
     const q = new URL(req.url, "http://x").searchParams;
-    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(generationOf(state, raw().paused === true, q.get("repo") ?? "", Number(q.get("pr")))));
+    return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(generationOf(state, raw().paused === true || !settingsOf(q.get("repo") ?? ""), q.get("repo") ?? "", Number(q.get("pr")))));
   }
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));
