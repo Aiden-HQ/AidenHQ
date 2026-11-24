@@ -149,7 +149,7 @@ test("an owner's PR records its CI per head and its merge once it leaves the ope
 
 // The behaviours ported from the runner, against one fake GitHub and kernel: each case is one agent PR (acme/app#N, task ACME-N).
 const redChecks = (extra = {}) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", databaseId: 77, name: "test", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } }, ...extra }] } });
-async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
+async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name: "Build" }], job, jobRerun = () => 201, update = 202, updateBody, updateByMethod, wakeFails = 0, closeFails = 0, records = [], merge = () => [422, { message: "refused" }], record = () => ({}), settings, reviewGate = undefined, mainBefore, rerun = () => 204, restRuns, jobRead = () => undefined, gigRun, listingStatus, listingThrow } = {}) {
   const woke = [], gh = [], merges = [];
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -218,7 +218,7 @@ async function rig(t, { taskStatus = "in_progress", behind = 0, steps = [{ name:
     return { status: 200, body: {} };
   };
   const cacheDir = mkdtempSync(join(tmpdir(), "pr-watch-"));
-  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate });
+  const watch = startPrWatch({ repos: [{ repo: "acme/app", duties: "all" }], kernelUrl: kernel.url, key: "k", cacheDir, gh: api, reviewGate, ...(settings ? { settings } : {}) });
   t.after(() => watch.stop());
   const agentPr = (n, o = {}) => { notePrTask(cacheDir, `https://github.com/acme/app/pull/${n}`, { task: `ACME-${n}`, branch: `b${n}` }); return pr(n, { author: { __typename: "Bot", login: "aidenhq" }, ...o }); };
   return { woke, gh, merges, watch, cacheDir, agentPr, jobProbeOpts, headRunsOpts, set: (v) => { open = v; }, behind: (v) => { behind = v; update = 422; } };
@@ -535,7 +535,7 @@ test("a green agent PR is adopted and its merge filed by ship on its task, once 
   const c = await rig(t, { merge: () => [200, { id: "r1", tier: 0, state: "claimed" }], record: () => landed });
   c.set([c.agentPr(3)]);
   await c.watch.tick(); await c.watch.tick();
-  assert.deepEqual(c.merges, [{ kind: "github.merge", task: "ACME-3", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }], generation: 1, attempt: 1 } }], "filed once at this head");
+  assert.deepEqual(c.merges, [{ kind: "github.merge", task: "ACME-3", args: { prs: [{ repo: "acme/app", number: 3, head: "h3" }] } }], "filed once at this head");
   assert.equal(c.woke.length, 0, "no agent turn between green and the merge");
   const adopted = openState(join(c.cacheDir, "state.json")).get("acme/app", 3);
   assert.deepEqual([adopted.generation, adopted.task, adopted.trigger.kind, adopted.hold], [1, "ACME-3", "fleet", null], "adopted at first sight, on its task");
@@ -550,6 +550,10 @@ test("a green agent PR is adopted and its merge filed by ship on its task, once 
   merging.set([merging.agentPr(4)]);
   await merging.watch.tick(); await merging.watch.tick();
   assert.deepEqual([merging.merges.length, merging.woke.length], [0, 0], "a merge already open on the task: nothing more");
+  const off = await rig(t, { merge: () => [200, { id: "r9", tier: 0, state: "claimed" }], settings: () => ({ ...PRESETS.cautious, merge: "off" }) });
+  off.set([off.agentPr(9)]);
+  await off.watch.tick(); await off.watch.tick();
+  assert.deepEqual([off.merges.length, off.woke.length], [0, 0], "Auto-merge off: no merge filed and none asked for");
   const refused = await rig(t);
   refused.set([refused.agentPr(5)]);
   await refused.watch.tick(); await refused.watch.tick();

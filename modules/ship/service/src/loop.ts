@@ -114,17 +114,7 @@ const NEVER_STARTED_RESERVE = 2;
 const FINDINGS_WAKES_PER_TICK = 3;
 /** The kernel's POST /v1/wakes keeps this many characters of a wake's text (backplane.ts). */
 const WAKE_TEXT = 2000;
-const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { id databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
-const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
-  repository(owner: $owner, name: $repo) {
-    defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
-    pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
-      pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
-    }
-  }
-}`;
-
+/** The open PRs' read is github's one fixed query (ship-routes.ts): ship sends only its variables. */
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json) {
@@ -169,7 +159,7 @@ export function startLoop(o: LoopOptions) {
     let r: Json;
     const open: Json[] = [];
     for (let after: string | null = null; ;) {
-      const g = await gh("POST", "/graphql", { query: OPEN_PRS_QUERY, variables: { owner, repo: name, after } });
+      const g = await gh("POST", "/graphql", { variables: { owner, repo: name, after } });
       const page = g.body?.data?.repository;
       if (g.status >= 300 || !page?.pullRequests) throw new Error(`GitHub /graphql: ${g.status} ${g.body?.errors?.[0]?.message ?? "no pull requests"}`);
       r ??= page;
@@ -230,9 +220,11 @@ export function startLoop(o: LoopOptions) {
       save();
       return "sent";
     }
+    /** A task's id as the kernel keeps records by it: its jobs carry it; pr-tasks.json holds the identifier (WOR-12). */
+    const taskId = (work: Json, task: string): string => work?.jobs?.find((j: Json) => typeof j.task === "string" && j.task)?.task ?? task;
     /**
      * The adoption of an agent's own PR (state.ts): made at first sight, generation 1, trigger `fleet`, on the task that opened
-     * it. github's write checks (GET /v1/generation) and the merge it files name it.
+     * it (its id). github's write checks for an adopted PR (GET /v1/generation) read it.
      */
     function adopt(pr: Json, task: string) {
       const had = o.state.get(repo, pr.number);
@@ -243,10 +235,11 @@ export function startLoop(o: LoopOptions) {
       return a;
     }
     /**
-     * File a green PR's merge for its task (POST /v1/writes github.merge, bound to its head and base, with the adoption's generation):
-     * "filed", "merging" (a merge of this PR is open on the task, or one was filed at this head), "wake" (a refusal, or a closed
-     * task: the agent decides), or "failed" (the kernel didn't answer, the task's records couldn't be read, or the adoption is on
-     * hold: asked again next tick).
+     * File a green PR's merge on its task (POST /v1/writes github.merge at its head, as ship: github's `filed_by`), the merge an
+     * agent's `aidenhq merge` files, tiered by the same plan: "filed", "merging" (a merge of this PR is open on the task, or one was
+     * filed at this head), "wake" (a refusal, or a closed task: the agent decides), or "failed" (the kernel didn't answer, the
+     * task's records couldn't be read, or the adoption is on hold: asked again next tick). Not an adoption's merge (no
+     * `generation`): that one waits for an approval on a code-review-gated repo, which App approval (a later lane) posts.
      */
     async function fileMerge(pr: Json, task: string, work: Json): Promise<"filed" | "merging" | "wake" | "failed"> {
       if (!work?.status) return "failed"; // without the task's records a second merge can't be ruled out
@@ -254,10 +247,9 @@ export function startLoop(o: LoopOptions) {
       const names = (r: Json) => (r.args?.prs ?? []).filter((p: Json) => String(p.repo).toLowerCase() === repo.toLowerCase() && p.number === pr.number);
       const merges = (work.records ?? []).filter((r: Json) => r.kind === "github.merge" && names(r).length);
       if (merges.some((r: Json) => ["review", "owner", "approved", "claimed"].includes(r.state) || names(r).some((p: Json) => p.head === pr.headRefOid))) return "merging";
-      const a = adopt(pr, task);
-      if (a.hold) return "failed";
+      if (adopt(pr, taskId(work, task)).hold) return "failed";
       try {
-        const r = await kernel("POST", "/v1/writes", { kind: "github.merge", task, args: { prs: [{ repo, number: pr.number, head: pr.headRefOid, base: pr.baseRefName }], generation: a.generation, attempt: 1 } });
+        const r = await kernel("POST", "/v1/writes", { kind: "github.merge", task: taskId(work, task), args: { prs: [{ repo, number: pr.number, head: pr.headRefOid }] } });
         // The kernel tells the task a reviewed record's outcome itself; a Tier 0 one's is told by `tellOutcomes`.
         if (r?.id && r.tier === 0) { state.filings[pr.url.toLowerCase()] = { id: String(r.id), task }; save(); }
         return "filed";
@@ -835,7 +827,7 @@ export function startLoop(o: LoopOptions) {
       const ours = !isDependabot(pr) && pr.isCrossRepository === false && !!opener && opener.branch === pr.headRefName;
       let retiring = !taskLive;
       if (ours && !state.abandoned[url]) {
-        adopt(pr, opener.task);
+        if (work?.status) adopt(pr, taskId(work, opener.task));
         if (state.headAt[url]?.head !== pr.headRefOid) state.headAt[url] = { head: pr.headRefOid, at: new Date().toISOString() };
         const merging = (work?.records ?? []).some((r: Json) => r.kind === "github.merge" && ["review", "owner", "approved", "claimed"].includes(r.state) && (r.args?.prs ?? []).some((p: Json) => p.number === pr.number));
         const newer = open.find((p) => p.number > pr.number && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName);
@@ -967,6 +959,8 @@ export function startLoop(o: LoopOptions) {
         }
       }
       if (pr.mergeable === "MERGEABLE" && !pr.isDraft && named.length && named.every((c) => c.ok) && state.greened[url] !== pr.headRefOid) {
+        // The repo's Auto-merge off (`merge: off`): ship files no merge and asks for none; the agent's own `aidenhq merge` still works.
+        if (o.settings(repo)?.merge !== "ready") { state.greened[url] = pr.headRefOid; save(); continue; }
         // The task's only open PR, green at the head its approved PR record pushed: the kernel files its merge, as its agent.
         const only = open.filter((p) => !superseded.has(p.url.toLowerCase()) && opened[p.url.toLowerCase()]?.task === opener.task && opened[p.url.toLowerCase()]?.branch === p.headRefName).length === 1;
         const asked = only ? await fileMerge(pr, opener.task, work) : "wake";

@@ -3,6 +3,7 @@
 //   POST /internal/ship/gh       {method, path, body?, deadline?} -> {status, body} | {thrown: {message, cause}}: one GitHub call as
 //                                the owner, background, from a fixed list (the loop's reads, check re-runs, update-branch, closing
 //                                an abandoned PR and deleting its branch, its comment), on a repo the fleet merges in. No merge.
+//                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
 //   POST /internal/ship/flow     {fn, args} -> Flow's fact for what the loop saw (flow.ts), or `authored`'s answer
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
 //   POST /internal/ship/decide   {data, head} -> the merge gate's rule on the loop's view of a PR (merge-gate.ts decide)
@@ -30,6 +31,18 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
   ["GET", new RegExp(`^/repos/${REPO}/compare/[0-9a-f]{4,40}\\.\\.\\.[0-9a-f]{4,40}$`)],
   ["GET", new RegExp(`^/repos/${REPO}/check-runs/\\d+$`)],
 ];
+/** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
+ * variables, so no other query runs on the owner's sign-in. */
+const ROLLUP = "statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { id databaseId name status conclusion startedAt completedAt checkSuite { workflowRun { databaseId } } } ... on StatusContext { context state } } } }";
+export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
+    pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+    }
+  }
+}`;
 const FLOW = ["opened", "pushed", "merged", "closed", "checksStarted", "checksCompleted", "authored"] as const;
 
 export function shipRoutes(o: {
@@ -61,12 +74,13 @@ export function shipRoutes(o: {
       for await (const c of req) { raw += c; if (raw.length > 4_000_000) return send(res, 413, { error: "too large" }), true; }
       const b = JSON.parse(raw || "{}");
       if (op === "gh") {
-        const { method, path, body, deadline } = b;
+        const { method, path, deadline } = b;
+        const v = b.body?.variables ?? {};
+        const read = method === "POST" && path === "/graphql";
         const call = CALLS.find(([m, re]) => m === method && re.test(String(path)));
-        const repo = call ? String(path).match(call[1])![1]! : method === "POST" && path === "/graphql" ? `${b.body?.variables?.owner}/${b.body?.variables?.repo}` : "";
-        // A read of the open PRs is the one query (no mutation); every other call is one of CALLS.
-        const query = method === "POST" && path === "/graphql" && typeof body?.query === "string" && !/\bmutation\b/i.test(body.query);
-        if ((!call && !query) || (call?.[2] && !call[2](body)) || !o.allowed(repo)) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
+        const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
+        if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
+        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body;
         try { return send(res, 200, await o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) })), true; }
         catch (e) {
           const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: unknown }).cause;
