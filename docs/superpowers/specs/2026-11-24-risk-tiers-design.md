@@ -165,9 +165,10 @@ writes anything, and derives everything below from the resolved entries, never f
 
 **Which repos are gated.** Two compiled lists replace today's one:
 
-- `GITHUB_REVIEW_GATED` (the merge queue asks code review's verdict): repos where **any** tier has a mandatory combo. It only
-  says whom to ask; the verdict says per head whether a review is required (`requires_review`, §6), and the merge executor
-  uses that bit to decide whether ship's approval is needed.
+- `GITHUB_REVIEW_GATED` (the merge queue asks code review's verdict): **every watched repo**. It only says whom to ask; the
+  verdict says per head whether a review is required (`requires_review`, §6) and whether the repo is watched at all (§5). So a
+  watched repo whose tier has no mandatory combo (roadmap-keeper, §11) is told apart from an unwatched one, and findings still
+  open from an earlier mandatory run keep gating after the owner removes the last mandatory combo.
 - `code_review_mandatory` (the kernel's `ai_review_code: unless_code_review_mandatory` skips the AI reviewer): repos where
   **every tier but `skip`** has a mandatory combo. Otherwise a `standard` PR on a repo that gates only `sensitive` would pass
   neither the AI reviewer nor code review.
@@ -225,7 +226,7 @@ and the verdict serves the tier.
 - `{ state: "pending" }` while that head has no snapshot yet (not polled, a moved snapshot, a failed read);
 - `{ state: "unwatched" }` when code review doesn't watch the repo.
 
-Ship acts only on `classified` or `unwatched`. On `pending` it waits, whatever the step: approve, enqueue or merge. A
+Ship acts only on `classified` or `unwatched`, and honours `unwatched.merge` only on `unwatched`. On `pending` it waits, whatever the step: approve, enqueue or merge. A
 pending head is never treated as some tier. Ship never reads the fact store.
 
 ## 6. Code review uses the tier
@@ -234,14 +235,18 @@ pending head is never treated as some tier. Ship never reads the fact store.
 `push_rounds` plus the repo-level fields). `trigger()`, `missing()`, `gateRuns()`, `capped()`, `verdict()`, `aiden review` and
 #1687's `fresh()` take it instead of the entry.
 
-**The review policy.** A tier's *policy* is a hash of its mandatory combos (engine, model, effort, moment). Each run records
+**The review policy.** A head's *policy* is a hash of its tier's mandatory combos (engine, model, effort, moment), the PR's
+merge base and the repo's effective `ignore` globs: everything that changes what a review covered. Each run records
 the policy it ran under, and so does each `covered` row (the column exists). A head counts as covered, for the verdict and
 for #1687's `evidence()`, only by runs and coverage under the head's current policy. So adding a mandatory model on the Fleet
-page, or a head moving to another tier, asks for a review under the new policy; old open important findings still gate.
+page, removing an ignore glob, a retarget, or a head moving to another tier, asks for a review under the new policy; old open
+important findings still gate.
 
-**A tier change is its own branch**, ahead of the ordinary push trigger in `poll()`: when a new head's policy differs from the
-policy of the PR's last opening review, the head gets its tier's `on_open` batch with `full: true` (the whole PR from its
-merge base, never the last covered head), queued once per head and policy. Going down (sensitive to trivial) costs one cheap
+**A policy change is its own branch**, ahead of the ordinary push trigger in `poll()`: until the PR has a *completed* full
+opening batch under the current head's policy (every mandatory `on_open` combo done or failed past its retries), the head gets
+that batch with `full: true` (the whole PR from its merge base, never the last covered head), queued once per head and policy.
+A push while that batch is queued supersedes it with the same batch at the new head, never with an `on_push` run. The same
+check runs on an unchanged head after a settings edit. Going down (sensitive to trivial) costs one cheap
 opening review; going up gets every opening reviewer of the higher tier over the whole PR. Later pushes get the tier's
 `on_push`, up to its `push_rounds`. `missing()` keeps its job of filling a head with no mandatory run.
 
@@ -251,6 +256,9 @@ opening review; going up gets every opening reviewer of the higher tier over the
 - a tier with none (`skip`, or advice-only): `requires_review: false`, `pass` unless an important finding from an earlier
   mandatory run is still open; `evidence()` answers `kind: none`;
 - a pending head: `wait` ("classifying"), `requires_review: true`.
+
+`productMergeEligible()` (the product repo's Tier 0 merge, which skips the AI reviewer) also requires `requires_review: true`
+at planning and at execution: a head no mandatory review covered never takes that shortcut.
 
 **Repos code review doesn't watch** get no tier and no verdict, as today.
 
@@ -262,9 +270,11 @@ opening review; going up gets every opening reviewer of the higher tier over the
 - **Merge.** `decide` takes `by_tier[tier].merge` (or `unwatched.merge`) instead of the repo field, and reads the tier even
   when the PR needs no approval. The merge executor (`merges.ts`) sets `ship.review` from the verdict's `requires_review`, not
   from "the gate answered", so a skip-tier PR on a gated repo isn't held for an approval ship will never give.
-- **At the effect.** The executor's final call to ship before a merge or an enqueue (today it re-checks the adoption's
-  generation) also asks: is this head classified, and does its tier still allow `merge`? A label-free tier changes only with
-  the head or the settings, so this catches an owner turning `merge` off while a merge waits. Pending or unreachable is no.
+- **At the effect.** github's final call to ship before an approve, a merge or an enqueue (today it re-checks the head and the
+  adoption's generation) also asks for the current tier state and policy: an approve needs the tier's `approve: on` and a
+  passing verdict covering the head; a merge or enqueue needs the tier's `merge: ready` (or `unwatched.merge` on an unwatched
+  repo). A tier changes only with the head, the base or the settings, so this catches an owner turning approve or merge off
+  while a write waits. Pending or unreachable is no.
 - **Carry-over.** A verdict carries to a later head when the PR's own change is the same (`carries()`: a base merge, or only
   generated paths regenerated) **and** both heads have the same policy. A base-merge-only head re-classifies the same, because
   the facts come from the PR's own diff over its merge base. A regenerated lockfile can change `paths` and so the tier; then
@@ -290,8 +300,9 @@ means nothing in the facts needs provenance):
    before any tier shortcut, reuse or token failure, so a trivial or reused PR still gets it.
 3. **Classify the whole PR** (merge base to head: `git diff --numstat`, the event's author and base).
 4. **Then choose the range.** The prior-review step (`codegenie-prior.ts`) runs after classification and gets the tier and
-   effort. Its green status records the tier and effort it reviewed at; `reuse` or `delta` is allowed only when that status
-   names the same tier and an effort at least as high. Otherwise the review is full.
+   effort. Its green status records the tier, model and effort it reviewed at; `reuse` or `delta` is allowed only when that
+   status names the same tier and model and an effort at least as high. Otherwise the review is full. The workflow's trigger
+   swaps `labeled` for `edited`, so a retarget (the `base` fact) re-classifies; an edit that changes nothing reuses the review.
 5. **Depth by tier**, fixed in the template:
 
    | Tier | CI review |
