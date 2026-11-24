@@ -229,7 +229,7 @@ test("an apply that adds or changes settings.edge.test_user plans a Tier 2 raise
   const r = await kernel({ texts: add }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.deepEqual([r.merit, r.rule], [2, "test-user-identity"], "the plan's raise");
   assert.match(r.card.reason!, /adds or changes the instance's agent sign-in identity \(settings\.edge\.test_user\)/);
-  assert.match(r.card.changes, /Adds a test sign-in identity: canary@aidenhq\.test as a member of roadmap-keeper; 15-minute sessions; every mint and revoke audited\./);
+  assert.match(r.card.changes, /Adds a test sign-in identity: canary@aidenhq\.test as a member of roadmap-keeper; 15-minute sessions; every mint and revoke audited\.\nAn apply doesn't install the canary network: on an upgraded host, install ops\/vm\/canary-net\.sh and its aidenhq-canary-net\.service once/);
   // Changing the setting (another email, another app) raises it too, the line naming the new values.
   const changed = { base: add.head, head: edge({ email: "canary2@aidenhq.test", apps: ["roadmap-keeper", "notes"] }) };
   const c = await kernel({ texts: changed }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
@@ -241,8 +241,11 @@ test("an apply that adds or changes settings.edge.test_user plans a Tier 2 raise
     assert.deepEqual([plain.tier, plain.merit, plain.rule], [1, 1, null]);
     assert.doesNotMatch(plain.card.changes, /test sign-in identity/);
   }
-  // Removing it: the head has no test_user, so neither the raise nor the line.
-  const removed = await kernel({ texts: { base: add.head, head: edge() } }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
-  assert.deepEqual([removed.tier, removed.merit, removed.rule], [1, 1, null]);
-  assert.doesNotMatch(removed.card.changes, /test sign-in identity/);
+  // Removing it: the head has no test_user (or a null one), so neither the raise nor the line.
+  const nulled = `${yaml(OLD)}settings:\n  edge:\n    test_user: ~\n`;
+  for (const texts of [{ base: add.head, head: edge() }, { base: add.head, head: nulled }]) {
+    const removed = await kernel({ texts }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
+    assert.deepEqual([removed.tier, removed.merit, removed.rule], [1, 1, null]);
+    assert.doesNotMatch(removed.card.changes, /test sign-in identity/);
+  }
 });

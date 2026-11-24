@@ -60,6 +60,16 @@ const REVIEW_WORDS: Record<string, string> = {
 
 const capWords = (c: NonNullable<RecordWhole["cap"]>) => `Autonomy is ${c.value}.`;
 const models = (by: string) => (by.startsWith("reviewer:") && by !== "reviewer:kernel/code" ? [by.slice("reviewer:".length)] : []);
+/**
+ * The tier the record actually filed at, in words: the tier itself, raised by a cap (autonomy) above its merits, or above its
+ * merits (any raise above 0 is the AI reviewer's, tier.ts), so the history never calls a reviewer's record the owner's.
+ */
+const tierWords = (r: { tier: number; merit?: number | null; cap?: { by: "autonomy"; value: string } | null }) => {
+  const merit = r.merit ?? r.tier;
+  if (merit === r.tier) return `at Tier ${r.tier}`;
+  if (merit < r.tier) return `at Tier ${merit}, raised to Tier ${r.tier}${r.cap ? ` (${capWords(r.cap).replace(/\.$/, "").toLowerCase()})` : ""}`;
+  return `at Tier ${r.tier} (Tier ${merit} on its merits; every raise above 0 is the AI reviewer's)`;
+};
 const verdict = (state: string) => (["approved", "claimed", "done", "failed", "unknown"].includes(state) ? "approved it" : state === "stale" ? "closed it: its head moved, so nothing ran" : "rejected it");
 
 export function explain(r: RecordWhole, asked: string | null): Explanation {
@@ -74,7 +84,7 @@ export function explain(r: RecordWhole, asked: string | null): Explanation {
     : `${deciderWords(by)![0]!.toUpperCase()}${deciderWords(by)!.slice(1)}.`;
   const note = r.review ?? "";
   const rule = r.rule ?? null;
-  const path: string[] = [`Filed by ${r.requester.name || r.requester.key || "an agent"} at Tier ${r.merit ?? r.tier}${r.merit != null && r.merit < r.tier ? `, raised to Tier ${r.tier}` : ""}.`];
+  const path: string[] = [`Filed by ${r.requester.name || r.requester.key || "an agent"} ${tierWords(r)}.`];
   if (r.tier === 0 && !waiting) path.push("Its tier rule let it run at once.");
   else if (r.review || by.startsWith("reviewer:") || r.state === "review") {
     const who = "The AI reviewer";

@@ -187,16 +187,19 @@ export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marke
 /**
  * The apply that names or changes the instance's test-user sign-in identity (settings.edge.test_user): it lets an agent sign
  * in as a named account (docs/design/access.md, "Test-user sign-in"), so the plan carries a Tier 2 raise (merit 2; tier.ts
- * decides who sees it, as for every raise) and the line its card reads. Nothing for an apply that leaves the setting alone,
- * or removes it.
+ * decides who sees it, as for every raise) and the lines its card reads: the identity it adds, and the host setup an apply
+ * does not do (the canary network's unit, installed once on an upgraded host). Nothing for an apply that leaves the setting
+ * alone, or removes it.
  */
 export function testUserIdentity(baseText: string | undefined, headText: string | undefined): { raise?: Raise; line?: string } {
   const after = parse(headText)?.settings?.edge?.test_user;
-  if (after === undefined || eq(parse(baseText)?.settings?.edge?.test_user, after)) return {};
+  // No test_user in the head, or a null one (`test_user: ~`), is a removal: no raise and no line.
+  if (after == null || eq(parse(baseText)?.settings?.edge?.test_user, after)) return {};
   const email = typeof after?.email === "string" && after.email.trim() ? after.email.trim() : undefined;
   const apps = (Array.isArray(after?.apps) ? after.apps : []).filter((x: unknown): x is string => typeof x === "string" && x.length > 0);
-  const line = `Adds a test sign-in identity${email ? `: ${email}` : ""}${apps.length ? ` as a member of ${apps.join(", ")}` : ""}; 15-minute sessions; every mint and revoke audited.`;
-  return { raise: { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" }, line };
+  const identity = `Adds a test sign-in identity${email ? `: ${email}` : ""}${apps.length ? ` as a member of ${apps.join(", ")}` : ""}; 15-minute sessions; every mint and revoke audited.`;
+  const host = "An apply doesn't install the canary network: on an upgraded host, install ops/vm/canary-net.sh and its aidenhq-canary-net.service once, and open the listener with ops/vm/ufw-rules.sh where ufw is active (docs/design/access.md, \"Test-user sign-in\"), or app_page_canary can't start a browser.";
+  return { raise: { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" }, line: `${identity}\n${host}` };
 }
 
 /**
