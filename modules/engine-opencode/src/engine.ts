@@ -3,7 +3,7 @@
 // It never emits `final` and never exits by itself: the session lives until the kernel stops the job (SIGTERM: the turn is
 // aborted and the exit is 143, which the kernel reads as machinery, so a box replacement resumes the same session).
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { engineIO } from "../sdk/engine-io.ts";
 import { opencodeConfig } from "./config.ts";
@@ -70,7 +70,7 @@ async function run() {
   const queue: { text: string; comment: boolean }[] = [];
   try { for (const text of JSON.parse(readFileSync(pendingFile, "utf8")) as string[]) queue.push({ text, comment: true }); } catch {}
   queue.push({ text: spec.prompt, comment: false });
-  const save = () => writeFileSync(pendingFile, JSON.stringify(queue.filter((q) => q.comment).map((q) => q.text)));
+  const save = () => { writeFileSync(`${pendingFile}.tmp`, JSON.stringify(queue.filter((q) => q.comment).map((q) => q.text))); renameSync(`${pendingFile}.tmp`, pendingFile); };
   void (async () => {
     for await (const c of io.comments()) { queue.push({ text: c.text, comment: true }); save(); }
   })();
