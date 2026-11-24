@@ -321,7 +321,6 @@ writes:
   # platform check on them (writes.ts).
   push: { args: schemas/push.json, floor: 0, card: &card { target: "{{target}}", sentence: "{{sentence}}", details: "{{diff}}" } }
   pr: { args: schemas/pr.json, floor: 0, card: *card }
-  # ship files an adopted PR's merge (args `generation`, `attempt`) on the adoption's task; plan.ts checks the adoption.
   merge: { args: schemas/merge.json, floor: 0, filed_by: [ ship ], card: *card }
   close: { args: schemas/close.json, floor: 0, card: *card }
   create_repo: { args: schemas/create_repo.json, floor: 0, card: *card }

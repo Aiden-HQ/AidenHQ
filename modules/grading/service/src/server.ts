@@ -215,7 +215,10 @@ export function createGrading({ db, kernel, keys, kernelUrl = "", jwks = kernelJ
       const ids = (body as { ids?: unknown })?.ids;
       if (!Array.isArray(ids) || ids.length > 500) throw new HttpError(400, "send {ids} (at most 500)");
       // Every id asked about: its row, or null for none (the board reads an id it wasn't answered as unknown).
-      return { grades: Object.fromEntries(ids.map((id) => [String(id), grades.get(String(id)) ?? null])) };
+      const rows = Object.fromEntries(ids.map((id) => [String(id), grades.get(String(id)) ?? null]));
+      // The standard criteria for a row filed without its own, so the board shows what the grader judges against.
+      const bare = Object.values(rows).filter((g) => g && !g.rubric.length);
+      return { grades: rows, templates: Object.fromEntries(bare.map((g) => [g!.deliverable.kind, template(g!.deliverable.kind)])) };
     }
     const m = /^\/board\/grades\/([^/]+)\/settle$/.exec(path);
     if (method === "POST" && m) return { grade: grades.settle(decodeURIComponent(m[1]!), String((body as { reason?: unknown })?.reason ?? "the task closed").slice(0, 300)) ?? null };

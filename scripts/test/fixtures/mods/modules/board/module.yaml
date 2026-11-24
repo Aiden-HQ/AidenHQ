@@ -3,3 +3,4 @@ description: owner of the setup_flows point (the schema is a copy of the modules
 points:
   setup_flows: { schema: schemas/setup_flows.json }
   signins: { schema: schemas/signins.json }
+  pages: { schema: schemas/pages.json }

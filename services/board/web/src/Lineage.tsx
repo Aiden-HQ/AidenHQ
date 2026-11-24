@@ -9,7 +9,7 @@ import { CloseIcon } from "./components";
 import { useLive } from "./events";
 import { Markdown } from "./markdown";
 import type { AsideMessage, Assignee, Lineage, LineageRow } from "./types";
-import { TaskState, stateWords } from "./ui/TaskState";
+import { TaskState, needsOwner, stateWords } from "./ui/TaskState";
 
 const tokens = (n: number | null) => (n === null ? "—" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 const usd = (n: number | null) => (n === null ? "—" : `$${n.toFixed(2)}`);
@@ -30,7 +30,8 @@ interface Target {
   agent: string;
 }
 
-export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn }: { refId: string; title: string; agent: string; crew: Assignee[]; prefix: string; href: (identifier: string) => string; onSignIn: () => void }) {
+/** The delegated tasks, kept fresh: task changes and approvals (throttled: each read walks two levels of children) and a 15s poll; not every progress tick. */
+export function useLineage(refId: string, onSignIn: () => void): Lineage | null {
   const [data, setData] = useState<Lineage | null>(null);
   const load = useCallback(
     () =>
@@ -39,7 +40,6 @@ export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn
       }),
     [refId, onSignIn],
   );
-  // Task changes and approvals (throttled: each read walks two levels of children) and a 15s poll; not every progress tick.
   const last = useRef(0);
   const later = useRef<ReturnType<typeof setTimeout>>(undefined);
   const throttled = useCallback(() => {
@@ -50,11 +50,39 @@ export function LineageStrip({ refId, title, agent, crew, prefix, href, onSignIn
   }, [load]);
   useEffect(() => () => clearTimeout(later.current), []);
   useLive(["tasks", "approvals"], throttled, 15_000);
+  return data;
+}
+
+/** What waits on the owner (an approval card or his answer, in the row or below it) comes first; the rest keep their order. */
+const needsYou = (r: LineageRow) => withKids(r).some((x) => x.approvals.length > 0 || needsOwner(x.state));
+const needsFirst = (rows: LineageRow[]) => [...rows].sort((a, b) => Number(needsYou(b)) - Number(needsYou(a)));
+
+/** A chat's Details: the delegated work as dense rows, Needs you first; each row opens the child. */
+export function DelegatedList({ lineage, go }: { lineage: Lineage | null; go: (hash: string) => void }) {
+  const rows = needsFirst(lineage?.children ?? []);
+  if (!rows.length) return null;
+  const row = (r: LineageRow, grand: boolean) => (
+    <li key={r.identifier}>
+      <a className={`handed-row${grand ? " lin-sub" : ""}`} href={`#/c/${r.identifier}`} title={`${r.agent}: ${r.title}`} onClick={(e) => (e.preventDefault(), go(`#/c/${r.identifier}`))}>
+        <span className="handed-title">{r.title}</span>
+        <span className="handed-agent">
+          {r.agent} · {took(r)}
+        </span>
+        <span className="handed-state">
+          <TaskState state={r.state} bare />
+        </span>
+      </a>
+    </li>
+  );
+  return <ul className="handed-list">{rows.flatMap((r) => [row(r, false), ...needsFirst(r.children).map((g) => row(g, true))])}</ul>;
+}
+
+export function LineageStrip({ data, refId, title, agent, crew, prefix, href, onSignIn }: { data: Lineage | null; refId: string; title: string; agent: string; crew: Assignee[]; prefix: string; href: (identifier: string) => string; onSignIn: () => void }) {
   const [table, setTable] = useState<boolean | null>(null);
   const [unfolded, setUnfolded] = useState<Set<string>>(new Set());
   const [ask, setAsk] = useState<{ target: Target; anchor: DOMRect; drawer: boolean } | null>(null);
   const threads = useRef(new Map<string, AsideMessage[]>());
-  const rows = data?.children ?? [];
+  const rows = needsFirst(data?.children ?? []);
   // A pending approval anywhere below opens the table (unless the owner closed it) and unfolds the row that holds it.
   const pending = rows.filter(waitsOnApproval).map((r) => r.identifier).join();
   useEffect(() => {

@@ -9,7 +9,8 @@ it("the board's server builds no HTML pages, and allows no form submissions", ()
   const dir = join(import.meta.dirname, "../src");
   const offenders = readdirSync(dir, { recursive: true })
     .map(String)
-    .filter((f) => f.endsWith(".ts"))
+    // module-views.ts relays a module's own view (MCP Apps) into its sandboxed frame: the module's HTML, never the board's.
+    .filter((f) => f.endsWith(".ts") && f !== "module-views.ts")
     .flatMap((f) => {
       const text = readFileSync(join(dir, f), "utf8");
       // text/html only as the static files' type (TYPES[".html"], the app's index).

@@ -107,6 +107,23 @@ export function pendingText(r: Rec): string {
   return `${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nFiled for approval (${r.kind}): ${r.tier === 1 ? "the AI reviewer decides" : "the AI reviewer, then the owner, decide"}. It runs once approved, and the outcome lands on your task. Don't say it is done until then.`;
 }
 
+/**
+ * One JSON-RPC request (id 1) to a connection's module, outside any session: its service key, and the caller assertion `caller`.
+ * The answer as it came (bounded); the caller reads it with mapMessages. The kernel's own calls (callAs, views.ts) go this way.
+ */
+export async function postOnce({ conn, name, resolver, secret, caller, method, params }: { conn: Connection; name: string; resolver: Resolver; secret: (name: string) => string; caller: string; method: string; params: unknown }): Promise<{ status: number; sse: boolean; text: string }> {
+  const to = await resolver.resolve(conn.url);
+  const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
+  return new Promise((resolve, reject) => {
+    const out = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: ((conn.tool_timeout_s ?? 300) + 30) * 1000, headers: { host: new URL(conn.url).host, authorization: `Bearer ${secret(conn.auth_secret)}`, "x-aidenhq-caller": caller, accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": body.length } }, async (ur) => {
+      try { resolve({ status: ur.statusCode ?? 502, sse: String(ur.headers["content-type"] ?? "").includes("text/event-stream"), text: (await readAll(ur, MAX_ANSWER)).toString("utf8") }); } catch (e) { reject(e); }
+    });
+    out.on("timeout", () => out.destroy(new Error(`${name} didn't answer in time`)));
+    out.on("error", (e) => { resolver.forget(conn.url); reject(e); });
+    out.end(body);
+  });
+}
+
 /** The account a served answer named (SIGNED_IN), if it named one. */
 const servedAccount = (r: unknown) => {
   const v = (r as { _meta?: Record<string, unknown> } | null)?._meta?.[SIGNED_IN];
@@ -153,16 +170,7 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
     // The module acts at /v1/cp/agent as the requester (cp.ts: a kernel job's agent on its task, with the kernel-held agent key).
     asserter.begin(signed.jti, { credential: "", aud: conn.module, kind: q.kind }, conn.tool_timeout_s ?? 300);
     try {
-      const to = await resolver.resolve(conn.url);
-      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }));
-      const { status, sse, text } = await new Promise<{ status: number; sse: boolean; text: string }>((resolve, reject) => {
-        const out = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: ((conn.tool_timeout_s ?? 300) + 30) * 1000, headers: { host: new URL(conn.url).host, authorization: `Bearer ${secret(conn.auth_secret)}`, "x-aidenhq-caller": signed.jwt, accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": body.length } }, async (ur) => {
-          try { resolve({ status: ur.statusCode ?? 502, sse: String(ur.headers["content-type"] ?? "").includes("text/event-stream"), text: (await readAll(ur, MAX_ANSWER)).toString("utf8") }); } catch (e) { reject(e); }
-        });
-        out.on("timeout", () => out.destroy(new Error(`${connection} didn't answer in time`)));
-        out.on("error", (e) => { resolver.forget(conn.url); forgetSetup(connection); reject(e); });
-        out.end(body);
-      });
+      const { status, sse, text } = await postOnce({ conn, name: connection, resolver, secret, caller: signed.jwt, method: "tools/call", params: { name: tool, arguments: args } }).catch((e) => { forgetSetup(connection); throw e; });
       if (status >= 300) return { ok: false, text: `${connection} answered ${status}: ${text.slice(0, 2000)}` };
       let ok = true, objects: unknown, need: Need | undefined, success = false, account: string | undefined;
       const answer = mapMessages(text, sse, (m) => {

@@ -58,8 +58,10 @@ async function setup(t, { generation = 2, queue = {}, enqueueAnswer = () => ({ s
     calls.push({ method, path, body });
     if (path === "/graphql" && body.query.includes("enqueuePullRequest")) return enqueueAnswer(queue);
     if (path === "/graphql") return { status: 200, body: { data: { repository: { pullRequest: { id: "PR_7", state: "OPEN", headRefOid: pr.head, baseRefName: "main", isInMergeQueue: Boolean(queue.head), mergeQueueEntry: queue.head ? { headCommit: { oid: queue.head } } : null } } } } };
+    if (method === "GET" && /\/commits\/[0-9a-f]{40}\/check-runs/.test(path)) return { status: 200, body: { total_count: 0, check_runs: [] } };
+    if (method === "GET" && /\/commits\/[0-9a-f]{40}\/status/.test(path)) return { status: 200, body: { total_count: 0, statuses: [] } };
     if (method === "GET" && path === `/repos/${REPO}`) return { status: 200, body: { default_branch: "main" } };
-    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author } } };
+    if (method === "GET" && path === `/repos/${REPO}/pulls/7`) return { status: 200, body: { number: 7, state: pr.state ?? "open", head: { sha: pr.head, ref: "contrib", repo: pr.fork ? { full_name: "someone/widget" } : { full_name: REPO } }, base: { ref: pr.base ?? "main", sha: main }, user: { login: pr.author } } };
     if (method === "POST" && path === `/repos/${REPO}/pulls/7/reviews`) return { status: 200, body: { id: 99 } };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1" }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]" }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
@@ -140,10 +142,16 @@ test("a push onto an adopted PR's branch is written through the API as the App, 
   assert.match(lost.text, /^ship-head-moved/);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), theirs, "the contributor's push is never overwritten");
 
-  // Back at c1, the App's commit lands: the repair's tree on top of c1, made by the App (GitHub signs it), not the box's commit.
+  // Back at c1, the leased push lands, but never after the contributor closed the PR.
   sh(scratch, "push", "--quiet", "--force", origin, `${c1}:refs/heads/contrib`);
+  pr.state = "closed";
+  const closed = await run("k-00000000000000b3", "github.push", args);
+  assert.match(closed.text, /^ship-scope: .* is closed/);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1);
+  pr.state = "open";
   const ok = await run("k-00000000000000b2", "github.push", args);
   assert.equal(ok.ok, true, ok.text);
+  // The App's commit: the repair's tree on top of c1, made by the App (GitHub signs it), not the box's commit.
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(ws, "rev-parse", `${fix}^{tree}`));
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^"), c1);
   assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "app");
@@ -237,12 +245,13 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
 });
 
 test("plan: an adopted PR's merge is refused when the generation is stale or ship isn't installed", () => {
-  const ship = { number: 3, generation: 2, expected: "a".repeat(40), head: "a".repeat(40), headRepo: "acme-agents/x", current: 2, filedOn: ["t1"] };
+  const ship = { number: 3, generation: 2, expected: "a".repeat(40), head: "a".repeat(40), headRepo: "acme-agents/x", current: 2, filedOn: ["t1"], byShip: true };
   const pr = (s) => ({ repo: "acme-agents/x", number: 3, head: "a".repeat(40), files: ["a.ts"], checks: [{ name: "b", ok: true }], headMatches: true, ownHead: true, ship: s });
   const st = { agentsOrgs: ["acme-agents"], productRepo: "acme/aidenhq" };
   assert.deepEqual(planParts("merge", { ...st, prs: [pr(ship)] })[0].map((p) => p.rule), ["agents-org-merge"]);
   assert.deepEqual(planParts("merge", { ...st, prs: [pr({ ...ship, current: 3 })] })[0].map((p) => p.rule), ["ship-generation"]);
   assert.deepEqual(planParts("merge", { ...st, prs: [pr({ ...ship, current: undefined })] })[0].map((p) => p.rule), ["ship-generation"]);
+  assert.deepEqual(planParts("merge", { ...st, prs: [pr({ ...ship, byShip: false })] })[0].map((p) => p.rule), ["ship-only"], "an adoption's merge is ship's alone");
 });
 
 test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
