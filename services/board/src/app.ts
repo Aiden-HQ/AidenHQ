@@ -2062,6 +2062,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         return agentGrants(compiled, catalog, m[1]!) ?? Promise.reject(new HttpError(404, "no such agent"));
       },
     },
+    // The model picker's list (OpenRouter's text models, from the kernel's gateway); 503 when it can't be read: the picker then offers each engine's short list.
+    { method: "GET", path: /^\/api\/model-catalog$/, handle: async () => { const models = await modelCatalog(opts.gateway); if (!models) throw new HttpError(503, "OpenRouter's model list isn't available yet"); return { models }; } },
     // Module pages (module-views.ts): the Fleet sidebar's entries, a view's tool calls through the kernel, and the owner's Save of the
     // settings a view proposed (shown to him outside the view; only its own module's settings).
     { method: "GET", path: /^\/api\/pages$/, handle: async () => ({ pages: (opts.views?.pages() ?? []).map(({ id, title, icon, order, module }) => ({ id, title, icon, order, module })) }) },

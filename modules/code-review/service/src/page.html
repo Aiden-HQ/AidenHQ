@@ -127,7 +127,7 @@
   const sevMarks = (v, words) => h("span", { className: "sev", ariaLabel: SEV.map(([k, n]) => `${v[k]} ${n.toLowerCase()}`).join(", ") }, ...SEV.map(([k, n]) => h("span", { className: `${k}${v[k] ? "" : " zero"}`, title: `${v[k]} ${n.toLowerCase()}` }, h("i"), `${v[k]}${words ? " " + n.toLowerCase() : ""}`)));
   const status = (s) => { const [tone, word] = STATUS[s] ?? ["", s]; return h("span", {}, h("span", { className: `dot ${tone}` }), word); };
   const card = (title, aside, ...kids) => h("div", { className: "card" }, title ? h("div", { className: "head" }, h("b", { textContent: title }), aside ?? h("span")) : null, ...kids);
-  const go = (r) => { route = r; detail = null; report = null; render(); window.scrollTo?.(0, 0); if (r.page === "run") loadDetail(); if (r.page === "batch") loadReport(); };
+  const go = (r) => { route = r; detail = null; report = null; render(); window.scrollTo?.(0, 0); if (r.page === "run") loadDetail(); if (r.page === "batch" && ov.batches.find((b) => b.id === r.id)?.status === "done") loadReport(); };
   const back = () => h("div", { className: "bar" }, btn("← Reviews", () => go({ page: "list" })));
 
   /* -------------------------------------------------------------------------------- reads */
@@ -139,20 +139,20 @@
     } catch (e) { fail(e); }
   }
   async function loadDetail() { const id = route.id; try { const d = await tool("code_review_run_detail", { id }); if (route.id === id) { detail = d; render(); } } catch (e) { fail(e); } }
-  async function loadReport() { const id = route.id; try { const r = await tool("code_review_report", { batch: id }); if (route.id === id) { report = r.markdown; render(); } } catch (e) { if (route.id === id) { report = ""; say(e.message, true); render(); } } }
+  async function loadReport() { const id = route.id; try { const r = await tool("code_review_report", { batch: id }); if (route.id === id) { report = r.markdown; render(); } } catch (e) { if (route.id === id) fail(e); } }
   // Runs under way are followed.
   setInterval(() => {
     if (!ov) return;
     if (route.page === "run" && detail && live(detail.run)) loadDetail();
     else if (route.page === "batch") { const b = ov.batches.find((x) => x.id === route.id); if (!b || b.status === "running" || (b.status === "done" && !b.published)) { loadOverview(); if (b?.status === "done" && report === null) loadReport(); } }
-    else if (route.page === "list" && (ov.runs.some(live) || ov.batches.some(live))) loadOverview();
+    else if (route.page === "list" && !(tab === "repos" && (open.size || Object.keys(pending.watch).length)) && (ov.runs.some(live) || ov.batches.some(live))) loadOverview();
   }, 6000);
 
   /* -------------------------------------------------------------------------------- the owner's settings proposal */
   async function propose() {
     const watch = Object.entries(pending.watch).map(([repo, f]) => ({ repo, ...f })), unwatch = [...pending.unwatch];
     render();
-    if (!watch.length && !unwatch.length) return;
+    if (!watch.length && !unwatch.length) return say("Nothing is proposed now. If the bar above still shows an earlier proposal, press its Discard.");
     await inOrder(async () => { try { proposed(await tool("code_review_configure", { ...(watch.length ? { watch } : {}), ...(unwatch.length ? { unwatch } : {}) })); } catch (e) { say(e.message, true); } });
   }
   const edit = (repo, fields) => { pending.watch[repo] = { ...(pending.watch[repo] ?? {}), ...fields }; pending.unwatch = pending.unwatch.filter((r) => r !== repo); return propose(); };
@@ -173,7 +173,7 @@
       box.append(h("div", { className: "combo" },
         select(Object.entries(ov.engines).map(([k, v]) => [k, v.label]), c.engine, swap, `${label} ${i + 1} engine`), model,
         select(e.efforts.map((x) => [x, x]), c.effort, (x) => set({ effort: x }), `${label} ${i + 1} effort`),
-        gates ? h("label", {}, check(c.mandatory, `${label} ${i + 1} mandatory`, (on) => { const { mandatory: _m, ...rest } = c; set(on ? { ...rest, mandatory: true } : rest); }), "Mandatory", tip("Mandatory: the PR can merge only after this reviewer has looked at its latest version and every important finding is fixed, answered or dismissed. Leave it off for an advisory review.")) : h("span"),
+        gates ? h("label", {}, check(c.mandatory, `${label} ${i + 1} mandatory`, (on) => { const { mandatory: _m, ...rest } = c; onChange(list.map((x, j) => (j === i ? (on ? { ...rest, mandatory: true } : rest) : x))); }), "Mandatory", tip("Mandatory: the PR can merge only after this reviewer has looked at its latest version and every important finding is fixed, answered or dismissed. Leave it off for an advisory review.")) : h("span"),
         btn("Remove", () => onChange(list.filter((_, j) => j !== i)), "", { ariaLabel: `Remove ${label} ${i + 1}` })));
     });
     if (list.length < 4) box.append(h("div", {}, btn("Add", () => onChange([...list, { engine: "codex", model: ov.engines.codex.models[0], effort: "medium" }]))));
@@ -335,13 +335,14 @@
   function treeForm() {
     form ??= { repo: "", commit: "", model: "", effort: "medium", full: false, ticked: new Set() };
     const repo = h("input", { type: "text", value: form.repo, placeholder: "owner/name", ariaLabel: "Repository", autocomplete: "off", spellcheck: false }), commit = h("input", { type: "text", value: form.commit, placeholder: "Default branch head", ariaLabel: "Commit", autocomplete: "off", spellcheck: false });
-    repo.setAttribute("list", "repos"); repo.addEventListener("input", () => { form.repo = repo.value; catalog = null; if (/^[\w.-]+\/[\w.-]+$/.test(repo.value.trim())) pick(); }); commit.addEventListener("input", () => (form.commit = commit.value));
+    repo.setAttribute("list", "repos"); const stale = () => { const rb = $("app").querySelector(".runbtn"); if (rb) rb.disabled = true; };
+    repo.addEventListener("input", () => { form.repo = repo.value; catalog = null; stale(); if (/^[\w.-]+\/[\w.-]+$/.test(repo.value.trim())) pick(); }); commit.addEventListener("input", () => { form.commit = commit.value; stale(); });
     const find = btn("Find checks", () => load(), "", { disabled: false });
     const load = async () => {
       if (!/^[\w.-]+\/[\w.-]+$/.test(form.repo.trim())) return say("A repository is owner/name.", true);
       if (form.commit.trim() && !/^[0-9a-f]{40}$/i.test(form.commit.trim())) return say("A commit is a full 40-character SHA.", true);
       find.disabled = true; say("Reading the repository…");
-      try { catalog = await tool("code_review_catalog", { repo: form.repo.trim(), ...(form.commit.trim() ? { commit: form.commit.trim() } : {}) }); form.ticked = new Set(catalog.options.filter((o) => o.recommended).map((o) => o.id)); say(""); render(); } catch (e) { find.disabled = false; fail(e); }
+      try { const asked = `${form.repo.trim()}|${form.commit.trim()}`; const got = await tool("code_review_catalog", { repo: form.repo.trim(), ...(form.commit.trim() ? { commit: form.commit.trim() } : {}) }); if (asked !== `${form.repo.trim()}|${form.commit.trim()}`) { find.disabled = false; return; } catalog = got; form.ticked = new Set(catalog.options.filter((o) => o.recommended).map((o) => o.id)); say(""); render(); } catch (e) { find.disabled = false; fail(e); }
     };
     const pick = () => { clearTimeout(pick.t); pick.t = setTimeout(async () => { try { const r = await tool("code_review_available", { q: repo.value.trim().slice(0, 100) }); $("lists").querySelector("#repos")?.replaceChildren(...r.repos.slice(0, 40).map((x) => h("option", { value: x.repo }))); } catch {} }, 250); };
     const out = [back(), card("Review a whole repository", null, h("div", { className: "pad" },
@@ -364,7 +365,7 @@
           const r = await tool("code_review_run", { repo: form.repo.trim(), commit: catalog.sha, options: [...form.ticked], ...(over ? { combo: { model: form.model, effort: eng.efforts.includes(form.effort) ? form.effort : "medium" } } : {}), ...(form.full ? { full: true } : {}) });
           say(""); form = null; catalog = null; await loadOverview(); go({ page: "batch", id: r.batch });
         } catch (e) { run.disabled = false; fail(e); }
-      }, "primary"); run.disabled = !form.ticked.size;
+      }, "primary runbtn"); run.disabled = !form.ticked.size;
       out.push(list, card("Options", null, h("div", { className: "pad" },
         h("div", { className: "grid2" }, field("Model for the checks that call one", model), field("Effort", select(eng.efforts.map((x) => [x, x]), form.effort, (v) => (form.effort = v), "Effort"))),
         h("label", { className: "actions" }, check(form.full, "Full review", (on) => (form.full = on)), "Full review: every area, not only those changed since each check's last review"),
@@ -401,10 +402,10 @@
       const v = name.value.trim();
       if (!/^[\w.-]+\/[\w.-]+$/.test(v)) return say("A repo is owner/name.", true);
       if (ov.repos.repos.some((r) => r.repo.toLowerCase() === v.toLowerCase()) || Object.keys(pending.watch).some((r) => r.toLowerCase() === v.toLowerCase())) return say(`${v} is already watched.`, true);
-      open.add(v); edit(v, {});
+      open.add(v); edit(v, { on_open: [{ engine: "codex", model: "~deepseek/deepseek-flash-latest", effort: "medium" }], on_push: [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "low" }], push_rounds: 1, max_nits: 5 });
     };
     return [card("Watched repos", h("small", { textContent: String(ov.repos.repos.length) }),
-      ...(body.length ? body : [t("div", "empty", "No repo is watched yet. Type owner/name below and press Watch repo: new PRs there are then reviewed with the default reviewers, which you can change by pressing Edit.")]), add),
+      ...(body.length ? body : [t("div", "empty", "No repo is watched yet. Code review needs GitHub connected (Settings, Connections). Type owner/name below and press Watch repo: new PRs there are then reviewed with the default reviewers, which you can change by pressing Edit.")]), add),
       ...(ov.problems?.length ? [t("div", "banner warn", `The setting has problems: ${ov.problems.slice(0, 3).join("; ")}`)] : [])];
   }
   function editor(r, raw) {
@@ -453,7 +454,7 @@
     if (!ov) return app.replaceChildren(t("div", "empty", "Loading…"));
     const parts = route.page === "run" ? runPage() : route.page === "batch" ? batchPage() : route.page === "pr" ? prForm() : route.page === "tree" ? treeForm() : [
       h("div", { className: "bar" }, h("div", { className: "tabs", role: "tablist" }, ...[["reviews", "Reviews"], ["repos", "Repos"], ["insights", "Insights"]].map(([k, name]) => { const b = btn(name, () => { tab = k; render(); }, "", { role: "tab" }); b.setAttribute("aria-selected", String(tab === k)); return b; })),
-        btn("Review a PR", () => { form = null; go({ page: "pr" }); }), btn("Review a repo", () => { form = null; catalog = null; go({ page: "tree" }); }), btn("Refresh", () => { pending = { watch: {}, unwatch: [] }; say(""); loadOverview(); })),
+        btn("Review a PR", () => { form = null; go({ page: "pr" }); }), btn("Review a repo", () => { form = null; catalog = null; go({ page: "tree" }); }), btn("Refresh", () => { const had = Object.keys(pending.watch).length || pending.unwatch.length; pending = { watch: {}, unwatch: [] }; say(had ? "Edits dropped here. If the bar above still shows a proposal, press its Discard." : ""); loadOverview(); })),
       ...(tab === "repos" ? reposTab() : tab === "insights" ? insights() : reviewsTab())];
     app.replaceChildren(...(route.page === "list" ? [t("div", "card intro", "Code review reads each pull request on the repos you watch. When a PR opens, and again when it is pushed to, each reviewer you chose (an AI engine with a model) looks at the changes and posts its findings on the PR: important ones that should be fixed, and smaller nits. Watch a repo under Repos, or review any PR or whole repository by hand with the buttons here. Nothing runs until you do.")] : []), ...parts);
     if (!$("lists").querySelector("#repos")) $("lists").append(h("datalist", { id: "repos" }));
