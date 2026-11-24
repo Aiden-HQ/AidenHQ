@@ -76,6 +76,7 @@ async function run() {
   // A failed loop ends the job loudly (the kernel reads a non-zero exit as a failure and retries), never an unhandled rejection.
   const fail = (e: unknown) => { console.error(`engine failed: ${(e as Error)?.message ?? e}`); process.exit(1); };
   void (async () => {
+    // The text is kept exactly as dispatch delivered it (fenced when it is not the owner's): never stripped or re-wrapped here.
     for await (const c of io.comments()) { queue.push({ text: c.text, comment: true }); save(); }
   })().catch(fail);
   void (async () => {

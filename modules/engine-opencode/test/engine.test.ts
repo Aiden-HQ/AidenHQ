@@ -20,7 +20,7 @@ function setup(session?: string, known = session ?? "", pending?: string[]) {
   writeFileSync(join(job, "job.json"), JSON.stringify(spec));
   const log = join(root, "fake.log");
   writeFileSync(log, "");
-  const child = spawn(engine, [job], { cwd: work, stdio: ["ignore", "inherit", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: log, AIDENHQ_OPENCODE_BIN: join(bin, "opencode"), AIDENHQ_OPENCODE_PLUGINS: plug, AIDENHQ_SESSION_PORT: String(port++), AIDENHQ_TERM_PORT: String(port++), OPENCODE_SERVER_PASSWORD: "pw", AIDENHQ_TERM_CREDENTIAL: "u:p", AIDENHQ_RUN_TOKEN: "ahqj_tok", FAKE_SESSIONS: known, FAKE_BUSY_MS: "1500" } });
+  const child = spawn(engine, [job], { cwd: work, stdio: ["ignore", "inherit", "pipe"], env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: log, AIDENHQ_OPENCODE_BIN: join(bin, "opencode"), AIDENHQ_OPENCODE_PLUGINS: plug, AIDENHQ_SESSION_PORT: String(port++), AIDENHQ_TERM_PORT: String(port++), OPENCODE_SERVER_PASSWORD: "pw", AIDENHQ_TERM_CREDENTIAL: "sekret", AIDENHQ_RUN_TOKEN: "ahqj_tok", FAKE_SESSIONS: known, FAKE_BUSY_MS: "1500" } });
   let stderr = "";
   child.stderr!.on("data", (d) => (stderr += d));
   const exited = new Promise<{ code: number | null }>((r) => child.on("close", (code) => r({ code })));
@@ -51,7 +51,7 @@ test("first turn: session, progress and usage; one prompt; no final", async () =
     // the terminal
     const raw = readFileSync(e.log, "utf8");
     assert.match(raw, /tmux new-session -d -s l-test -c \S+ -e OPENCODE_SERVER_PASSWORD=pw opencode attach http:\/\/127\.0\.0\.1:\d+ --session ses_new/);
-    assert.match(raw, /ttyd --port \d+ --credential u:p --writable tmux attach -t l-test/);
+    assert.match(raw, /ttyd --port \d+ --credential aidenhq:sekret --writable tmux attach -t l-test/);
   } finally { e.child.kill("SIGTERM"); await e.exited; }
 });
 
