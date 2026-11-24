@@ -23,10 +23,19 @@ function world(settings = {}) {
   // A post this fake refuses directly (the executor's answer), by the run it is for: { state: "refused", why, need }.
   const refusals = new Map();
   const threads = new Map(), commits = new Map(), patches = new Map(), bases = new Map();
+  const snaps = { files: new Map(), down: 0 };
   const readsDown = settings.readsDown ?? [];
   const { db: _db, readsDown: _rd, ...rest } = settings;
-  // Every push is reviewed here (push_rounds null) unless a test sets the cap.
-  const cfg = readConfig(JSON.stringify({ ...rest, repos: (rest.repos ?? [{ repo: REPO }]).map((r) => ({ push_rounds: null, ...r })) }));
+  // Every push is reviewed here (push_rounds null) unless a test sets the cap. A test's repo given as one set of combos (on_open,
+  // on_push, push_rounds: the shape before risk tiers) runs them in every reviewed tier, with the old advisory defaults.
+  const tiered = (r) => {
+    if (r.by_tier || r.rules || r.preset) return r;
+    const { on_open = [CODEX], on_push = [{ engine: "codex-native", model: "openai/gpt-6.2-sol", effort: "low" }], push_rounds = null, ...e } = r;
+    const t = { on_open, on_push, push_rounds };
+    return { ...e, by_tier: { trivial: t, standard: t, sensitive: t } };
+  };
+  const cfg = readConfig(JSON.stringify({ ...rest, repos: (rest.repos ?? [{ repo: REPO }]).map(tiered) }));
+  if (cfg.errors.length) throw new Error(cfg.errors.join("; "));
   const db = settings.db ?? new DatabaseSync(":memory:");
   const deps = {
     db,
@@ -35,6 +44,8 @@ function world(settings = {}) {
     source: {
       open: async () => [...prs.values()].filter((p) => p.open),
       get: async (_r, n) => { const f = readsDown.shift(); if (f) throw Object.assign(new Error(`github-mcp pr: ${f}`), { status: f }); return prs.get(n); },
+      // A PR's own change for its risk tier: five lines in a.ts by a member (trivial) unless the test sets its files.
+      snapshot: async (_r, n) => { if (snaps.down) return void snaps.down--, { moved: true }; const p = prs.get(n); const f = snaps.files.get(n) ?? [{ path: "a.ts", additions: 5, deletions: 0 }]; return { pr: { association: "MEMBER", ...p }, changed_files: f.length, files: f }; },
       comments: async (_r, since) => ({ comments: comments.filter((c) => c.created_at > since), cursor: new Date(t).toISOString() }),
       permission: async (_r, login) => { if (perms.down) { perms.down = false; throw new Error("GitHub 502"); } if (perms.refuse) { perms.refuse = false; throw Object.assign(new Error("github-mcp permission: 400"), { status: 400 }); } return perms[login] ?? "none"; },
       // The merge base is sha("m"); a head is "ahead" of an earlier one unless the test force-pushed past it.
@@ -64,7 +75,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  const w = { db, engine, posts, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
+  const w = { db, engine, posts, snaps, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, tick: (o) => w.engine.tick(o), restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
   // `w` is returned after createEngine's deps, so the fake's ack can read acksDown from it.
   return w;
 }
@@ -1355,7 +1366,8 @@ test("single-commit PR: on_open mandatory combos done, nothing open → pass; a 
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("2"))), ["running"]);
   w.finish(0, NONE); // the mandatory codex run; claude-code (advice) still runs
   await w.tick();
-  assert.deepEqual(w.engine.verdict(REPO, 2, sha("2")), { verdict: "pass", reasons: [] });
+  const v = w.engine.verdict(REPO, 2, sha("2"));
+  assert.deepEqual([v.verdict, v.reasons, v.requires_review, v.tier.state, v.tier.tier], ["pass", [], true, "classified", "trivial"]);
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("9"))), ["moved"]);
   assert.deepEqual(codes(w.engine.verdict(REPO, 3, sha("3"))), ["not_started"]);
   // Its findings are advice: an important one from claude-code never gates.
@@ -1449,19 +1461,54 @@ test("a partial mandatory review still lets the head pass, but never makes it a 
   }
 });
 
-test("a changed setting or a deploy never re-reviews an open head: the owner adds a mandatory reviewer and it reviews from the next push", async () => {
+test("a settings edit that changes a head's policy asks for a review under it: the owner adds a mandatory reviewer and the open head gets the full opening batch", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST, CLAUDE], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));
   w.finish(0, NONE); w.finish(1, NONE); await w.tick();
   assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
-  // Old rows as an earlier version left them (2026-11-21: columns added later were NULL), then a restart with a new mandatory set.
-  w.db.exec("UPDATE runs SET moment = NULL");
+  // A restart with a new mandatory set: the head's policy changed, so what reviewed it under the old one no longer counts.
   const g = world({ db: w.db, repos: [{ repo: REPO, on_open: [MUST, { ...CLAUDE, mandatory: true }], on_push: [{ ...CLAUDE, mandatory: true }] }] });
-  g.pr(2, sha("2")); await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
-  assert.deepEqual(g.started, [], "nothing re-reviewed");
+  g.pr(2, sha("2"));
+  assert.deepEqual(codes(g.engine.verdict(REPO, 2, sha("2"))), ["not_started"], "nothing has reviewed it under the new policy yet");
+  await g.tick();
+  assert.deepEqual(g.started.map((s) => [label(s), s.incremental_from]), [["codex/medium", null], ["claude-code/high", null]], "the tier's full opening batch");
+  g.finish(0, NONE); g.finish(1, NONE); await g.tick();
   assert.equal(g.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
   g.pr(2, sha("3")); await g.tick(); g.later(DEBOUNCE + 1); await g.tick();
-  assert.deepEqual(g.started.map((s) => [label(s), s.incremental_from]), [["claude-code/high", sha("2")]], "the next push: the new reviewer, incremental");
+  assert.deepEqual(g.started.slice(2).map((s) => [label(s), s.incremental_from]), [["claude-code/high", sha("2")]], "the next push: the tier's push reviewer, incremental");
+});
+
+test("risk tiers: each head runs its tier's reviewers; a pending head waits; a tier change gets the new tier's full opening batch, coming back too; a skip tier needs no review", async () => {
+  const w = world({ repos: [{ repo: REPO, preset: "standard" }] });
+  const tierOf = (head) => w.engine.verdict(REPO, 2, head).tier;
+  await opened(w, 2, sha("2")); // 5 lines in a.ts by a member: trivial, one cheap review
+  assert.deepEqual(w.started.map((s) => [label(s), s.incremental_from]), [["codex/medium", null]]);
+  assert.deepEqual([tierOf(sha("2")).tier, tierOf(sha("2")).why], ["trivial", "by a member, 5 lines, 1 file"]);
+  w.finish(0, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 2, sha("2")).verdict, "pass");
+  // A push that touches an auth file: pending until its files are read whole (never a guessed tier), then sensitive.
+  w.snaps.files.set(2, [{ path: "a.ts", additions: 5, deletions: 0 }, { path: "src/auth.ts", additions: 3, deletions: 0 }]);
+  w.snaps.down = 1;
+  w.pr(2, sha("3")); await w.tick();
+  assert.equal(w.started.length, 1, "nothing runs on a pending head");
+  assert.deepEqual([codes(w.engine.verdict(REPO, 2, sha("3"))), tierOf(sha("3")).state], [["not_started"], "pending"]);
+  w.later(1000); await w.tick();
+  assert.equal(tierOf(sha("3")).tier, "sensitive");
+  assert.deepEqual(w.started.slice(1).map((s) => [label(s), s.incremental_from]), [["codex-native/medium", null], ["claude-code/medium", null]], "both sensitive opening reviewers read the whole PR");
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
+  w.finish(1, NONE); w.finish(2, NONE); await w.tick();
+  assert.deepEqual([w.engine.verdict(REPO, 2, sha("3")).verdict, w.engine.evidence(REPO, 2, sha("3")).kind], ["pass", "completed"]);
+  // Trimmed back to trivial: a new run of heads under trivial's policy, so its opening review runs again over the whole PR.
+  w.snaps.files.delete(2);
+  w.pr(2, sha("4")); await w.tick();
+  assert.deepEqual(w.started.slice(3).map((s) => [label(s), s.incremental_from]), [["codex/medium", null]]);
+  assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("4"))), ["running"]);
+
+  // A repo whose rules send small PRs to skip: nothing runs, and the verdict passes needing no review.
+  const s = world({ repos: [{ repo: REPO, rules: [{ when: { lines_max: 10 }, tier: "skip" }, { tier: "standard" }] }] });
+  await opened(s, 5, sha("5"));
+  const v = s.engine.verdict(REPO, 5, sha("5"));
+  assert.deepEqual([s.started.length, v.verdict, v.requires_review, v.tier.tier, s.engine.evidence(REPO, 5, sha("5")).kind], [0, "pass", false, "skip", "none"]);
 });
 
 test("a bare rebase carries the review and its verdict unrun; a push on the same merge base is incremental, a rebase with changes whole", async () => {
@@ -1821,8 +1868,8 @@ test("a reply on a finding's thread posted before the service recorded its threa
 });
 
 test("a gated repo with no mandatory on_push: a push needs no review of its own, so the PR merges once nothing is open", async () => {
-  assert.deepEqual(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] })).errors, []);
-  assert.match(readConfig(JSON.stringify({ repos: [{ repo: REPO, on_open: [CODEX], on_push: [MUST_PUSH] }] })).errors[0], /needs a mandatory on_open one/);
+  assert.deepEqual(readConfig(JSON.stringify({ repos: [{ repo: REPO, by_tier: { standard: { on_open: [MUST], on_push: [] } } }] })).errors, []);
+  assert.match(readConfig(JSON.stringify({ repos: [{ repo: REPO, by_tier: { standard: { on_open: [CODEX], on_push: [MUST_PUSH] } } }] })).errors[0], /needs a mandatory on_open one/);
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [] }] });
   await opened(w, 2, sha("2"));
   w.finish(0); await w.tick(); // f1 open, gating
