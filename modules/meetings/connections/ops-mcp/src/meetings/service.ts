@@ -752,12 +752,14 @@ export class MeetingService {
     if (!meeting) throw new UserFacingError(`No published meeting for calendar event ${input.calendar_event_id}`, "not_found");
     const marker = meetingMarker(meeting.calendar_event_id);
     const changed: { path: string; replacements: number }[] = [];
-    // Wiki links keep their destination (the file is not renamed); the text around them and a link's `|alias` are corrected.
-    const walk = (hay: string, on: (t: string) => string): string =>
-      hay.split(/(\[\[[^\]|]*)((?:\|[^\]]*)?\]\])/).map((p, k) => (k % 3 === 0 ? on(p) : k % 3 === 2 ? on(p.slice(0, -2)) + "]]" : p)).join("");
+    // A correction rewrites human prose only: never frontmatter, HTML comments (the meeting marker), URLs or a wiki link's
+    // destination (the file is not renamed); a link's `|alias` is prose.
+    const walk = (hay: string, on: (t: string) => string): string => {
+      const fm = /^---\n[\s\S]*?\n---\n/.exec(hay)?.[0] ?? "";
+      return fm + hay.slice(fm.length).split(/(<!--[\s\S]*?-->|https?:\/\/(?:[^\s()\]>]|\([^\s()]*\))+|\[\[[^\]|\n]*(?=\||\]\])\|?)/).map((p, k) => (k % 2 ? p : on(p))).join("");
+    };
     const count = (hay: string) => { let c = 0; walk(hay, (t) => { c += t.split(find).length - 1; return t; }); return c; };
-    const swap = (t: string) => t.split(find).join(replace);
-    const fix = (hay: string) => walk(hay, swap);
+    const fix = (hay: string) => walk(hay, (t) => t.split(find).join(replace));
 
     if (meeting.canonical_note_path && this.vault.exists(meeting.canonical_note_path)) {
       let n = 0;
@@ -794,10 +796,23 @@ export class MeetingService {
       });
       if (snap) changed.push({ path: snap.path, replacements: n });
     }
-    // Keep the stored extraction consistent so a later re-publish keeps the correction.
-    if (meeting.extraction_json?.includes(find)) {
-      const deep = (v: unknown): unknown => (typeof v === "string" ? fix(v) : Array.isArray(v) ? v.map(deep) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x)])) : v);
-      this.db.prepare("UPDATE meetings SET extraction_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(deep(JSON.parse(meeting.extraction_json))), nowIso(), meeting.id);
+    // Keep the stored extraction consistent so a later re-publish keeps the correction: only its free-text fields, matched on
+    // the decoded values (ids, kinds, dates and keys stay as they are).
+    if (meeting.extraction_json) {
+      const x = JSON.parse(meeting.extraction_json) as Extraction;
+      const text = (v: string | null | undefined) => (typeof v === "string" ? fix(v) : v);
+      const next: Extraction = {
+        ...x,
+        summary: fix(x.summary),
+        decisions: x.decisions.map((d) => ({ ...d, text: fix(d.text) })),
+        actions: x.actions.map((a) => ({ ...a, owner: text(a.owner) ?? null, action: fix(a.action), ...(a.source_quote === undefined ? {} : { source_quote: fix(a.source_quote) }) })),
+        open_questions: x.open_questions.map(fix),
+        context: x.context.map(fix),
+        people: x.people.map(fix),
+        topics: x.topics.map(fix),
+      };
+      const json = JSON.stringify(next);
+      if (json !== JSON.stringify(x)) this.db.prepare("UPDATE meetings SET extraction_json = ?, updated_at = ? WHERE id = ?").run(json, nowIso(), meeting.id);
     }
     if (!changed.length) throw new UserFacingError(`"${find}" was not found in the notes AidenHQ wrote for this meeting`, "not_found");
     this.log.info({ tool: "meeting_note_correct", event_id: meeting.calendar_event_id, notes: changed.map((c) => c.path) }, "meeting notes corrected");
