@@ -45,7 +45,7 @@ export function appsExecutor(p: Platform): Executor {
           return {
             ...base,
             raise: { tier: 1, rule: migration ? "deploy-migration" : "deploy-stateful", reason: migration ? "a stateful deploy that touches a migration or schema file" : "a stateful deploy with no migration or schema change" },
-            card: { ...base.card, details: `app: ${a.name}\ncommit: ${com.sha}\n\nChanges since the running commit:\n${com.diff || "(none: a recovery deploy of the last healthy commit)"}${DEPLOY_CLAIM}${oneLine(com.subject, 120)}` },
+            card: { ...base.card, details: `app: ${a.name}\ncommit: ${com.sha}\n\nChanges since the running commit:\n${com.diff || "(none in the app's directory: a redeploy of its last healthy commit, or a commit that changed only other files)"}${DEPLOY_CLAIM}${oneLine(com.subject, 120)}` },
           };
         }
         case "apps-platform.run": {

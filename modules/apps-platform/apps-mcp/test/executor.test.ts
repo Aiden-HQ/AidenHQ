@@ -52,7 +52,7 @@ describe("apps-platform write kinds", () => {
     expect(stateful.card!.details).toMatch(/\n\nCommit message \(written by the app's author\): fix: thing$/);
     expect((await plan(platform({ diff: diff("migrations/002.sql") }).ex, "deploy", { name: "db", sha: SHA })).raise).toMatchObject({ tier: 1, rule: "deploy-migration" });
     expect((await plan(platform({ running: { sha: SHA, healthy: true } }).ex, "deploy", { name: "db", sha: SHA })).satisfied?.evidence).toMatch(/db already runs aaaaaaaaaaaa and is healthy/);
-    expect((await plan(platform({ diff: "" }).ex, "deploy", { name: "db", sha: SHA })).card!.details).toMatch(/recovery deploy/);
+    expect((await plan(platform({ diff: "" }).ex, "deploy", { name: "db", sha: SHA })).card!.details).toMatch(/none in the app's directory/);
     await expect(plan(platform({ diff: "", truncated: true }).ex, "deploy", { name: "db", sha: SHA })).rejects.toThrow(/too large \(or couldn't be read\) to review/);
     await expect(plan(platform().ex, "rollback", { name: "db" })).rejects.toThrow(/stateful: rollback needs the owner's approval/);
   });
