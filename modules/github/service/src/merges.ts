@@ -196,10 +196,10 @@ export function createMerges(d: {
     return { required: requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
   }
   /** The required checks red on the PR's latest merge_group run (GitHub's `gh-readonly-queue/<base>/pr-<n>-…` branch). */
-  async function groupFailing(repo: string, number: number, required: string[]) {
+  async function groupFailing(repo: string, number: number, base: string, required: string[]) {
     const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);
     if (r.status >= 300) throw new Error(`GitHub GET merge_group runs: ${r.status}`);
-    const run = (r.body?.workflow_runs ?? []).find((x: any) => new RegExp(`^gh-readonly-queue/.+/pr-${number}-[0-9a-f]+$`).test(String(x.head_branch ?? "")));
+    const run = (r.body?.workflow_runs ?? []).find((x: any) => String(x.head_branch ?? "").startsWith(`gh-readonly-queue/${base}/pr-${number}-`));
     if (!run) return [];
     const checks = await allChecks(repo, String(run.head_sha));
     return [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
@@ -626,7 +626,7 @@ export function createMerges(d: {
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
       const v = decide(data, head, { queue, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
-      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, required) } : {}) };
+      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number, byShip?: boolean): Promise<Outcome> {
