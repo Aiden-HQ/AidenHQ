@@ -1939,7 +1939,7 @@ export function createEngine(d: EngineDeps) {
         past.set(r.option, [...(past.get(r.option) ?? []), { model: r.model, effort: r.effort, n: r.n, usd: r.usd }]);
       }
       // Every option, the ones that can't run here with why (the board lists them last, greyed).
-      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(o.model ? { model: o.model } : {}), ...(o.effort ? { effort: o.effort } : {}), ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
+      return { repo, sha: tree.sha, recommended, options: catalog().map((o) => ({ id: o.id, name: o.name, description: o.description, lens: o.lens, kind: o.kind, runs_code: o.runs_code, cost: o.cost, recommended: recommended.includes(o.id), source: o.source, ...(o.kind !== "tool" ? optionCombo(o) : {}), ...(past.has(o.id) ? { past: past.get(o.id) } : {}), ...(whyNot(o, tree.paths, "one_off") ? { unavailable: whyNot(o, tree.paths, "one_off") } : {}) })) };
     },
     /**
      * A repo review: `target` { repo, commit? } (no commit: the default branch's head, resolved once now and kept), its options
@@ -1950,7 +1950,7 @@ export function createEngine(d: EngineDeps) {
       const c = (b.combo ?? {}) as { model?: unknown; effort?: unknown };
       // An explicit combo overrides every model option; without one each option runs its own catalog default.
       const asked = { ...(c.model !== undefined ? { model: c.model } : {}), ...(c.effort !== undefined ? { effort: c.effort } : {}) };
-      const comboFor = (o: Option) => ({ model: asked.model ?? o.model ?? DEFAULT_MODEL, effort: asked.effort ?? o.effort ?? "medium" });
+      const comboFor = (o: Option) => ({ ...optionCombo(o), ...asked });
       if ((asked.model !== undefined && (typeof asked.model !== "string" || !/^~?[\w.-]+\/[\w.:~-]+$/.test(asked.model))) || (asked.effort !== undefined && !EFFORTS.includes(asked.effort as string))) throw new RequestError(`combo is { model: an OpenRouter id, effort: ${EFFORTS.join("|")} }`);
       if (b.options !== undefined && !(Array.isArray(b.options) && b.options.length <= 50 && b.options.every((o) => typeof o === "string"))) throw new RequestError("options lists catalog option ids");
       const { repo, tree } = await readTree(t.repo, t.commit);
@@ -2013,6 +2013,8 @@ export function createEngine(d: EngineDeps) {
 }
 export type Engine = ReturnType<typeof createEngine>;
 
+/** The model and effort a repo review runs a model option on unless the request names its own: the one resolver for the run and the catalog. */
+const optionCombo = (o: Option) => ({ model: o.model ?? DEFAULT_MODEL, effort: o.effort ?? "medium" });
 const round = (n: number) => Math.round(n * 10_000) / 10_000;
 /** A run as the API shows it: the contract's fields (its engine, model and effort, billed cost, tokens, duration), the PR's title (a stranger's words:
  * plain text only) and, once posted, the review's link and the threads it resolved. */

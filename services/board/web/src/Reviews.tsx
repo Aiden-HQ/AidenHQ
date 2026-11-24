@@ -899,7 +899,8 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   const efforts = Object.values(engines).map((x) => x.efforts).reduce((a, b) => a.filter((x) => b.includes(x)));
   // A check's cost on the chosen model comes from what it cost before (the service's `past`); none yet: no number.
   const effort = c ? efforts.includes(c.effort) ? c.effort : "medium" : "medium";
-  const guess = (o: CatalogOption) => (override ? (c ? estimate(o.past, c.model, effort, models ?? []) : null) : o.model ? estimate(o.past, o.model, o.effort ?? "medium", models ?? []) : c ? estimate(o.past, c.model, "medium", models ?? []) : null);
+  // An override runs every model check; else each runs the model and effort the service resolved for it (a tool has none).
+  const guess = (o: CatalogOption) => (override ? (c ? estimate(o.past, c.model, effort, models ?? []) : null) : o.model ? estimate(o.past, o.model, o.effort ?? "medium", models ?? []) : null);
   const known = paid.filter((o) => guess(o) !== null);
   const total = known.reduce((n, o) => n + guess(o)!, 0);
   const e = c ? engines[c.engine] : undefined;
@@ -993,8 +994,8 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
             <span className="ui-field-label">Model for the checks that call one</span>
             {c && e && (
               <div className="rv-model-row">
-                <ModelPicker label="Review model" value={c.model} catalog={models} recommended={e.models} accepts={e.accepts} onOpen={refreshModels} onChange={(m) => (setOverride(true), setCombos([{ ...c, model: m }]))} />
-                <Select aria-label="Effort" value={efforts.includes(c.effort) ? c.effort : "medium"} options={efforts.map((x) => [x, x] as const)} onChange={(x) => (setOverride(true), setCombos([{ ...c, effort: x }]))} />
+                <ModelPicker label="Review model" value={override ? c.model : ""} none="Each check's default" catalog={models} recommended={e.models} accepts={e.accepts} onOpen={refreshModels} onChange={(m) => (setOverride(m !== ""), m && setCombos([{ ...c, model: m }]))} />
+                <Select aria-label="Effort" value={efforts.includes(c.effort) ? c.effort : "medium"} options={efforts.map((x) => [x, x] as const)} disabled={!override} onChange={(x) => setCombos([{ ...c, effort: x }])} />
               </div>
             )}
             <span className="ui-field-help">{override ? "Runs every check that calls a model. " : "Untouched, each check runs its own default model; pick one to run them all on it. "}Free checks don't use it. Effort is how hard the model thinks.</span>

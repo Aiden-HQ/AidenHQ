@@ -124,7 +124,7 @@ export interface CatalogOption {
   /** The words the form shows: a proper name, and what it finds. */
   name: string;
   description: string;
-  /** The option's own default model and effort in a repo review (a model option; absent: the repo-review default). */
+  /** The model and effort a repo review runs this option on unless the owner overrides them, as the service resolves them (a model option; absent for a tool). */
   model?: string;
   effort?: string;
   /** What past repo reviews of this option cost, by model and effort: the average of `n` finished runs (absent: none yet). */
