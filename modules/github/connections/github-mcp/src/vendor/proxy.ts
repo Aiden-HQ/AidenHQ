@@ -150,7 +150,7 @@ export function createVendorProxy(o: ProxyOptions): VendorProxy {
         await reset(true);
         return await fn(upstream ?? (await connect()));
       } catch (again) {
-        if (isAuthFailure(again)) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
+        if (isAuthFailure(again) && (await auth.refused?.() ?? true)) auth.mark("expired", `${o.name} rejected a freshly refreshed token`);
         throw again;
       }
     }
