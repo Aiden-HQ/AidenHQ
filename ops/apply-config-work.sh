@@ -938,7 +938,8 @@ switchOver() {
   if [ "$staged" = 0 ]; then build_files="$(composeFiles)"; stepRun images imageInputs env COMPOSE_FILE="$build_files" docker compose build; fi
   # Paperclip's embedded Postgres settings (jit, random_page_cost, shared_buffers) are read only at start: a changed file restarts
   # Paperclip once after the recreate (a fresh host has no file until its first start, so its second apply restarts it).
-  pgtuned=0; ops/paperclip-pg-tune.sh || pgtuned=$?
+  # A rollback to a product from before the script has none to run.
+  pgtuned=0; if [ -x ops/paperclip-pg-tune.sh ]; then ops/paperclip-pg-tune.sh || pgtuned=$?; fi
   [ "$pgtuned" = 0 ] || [ "$pgtuned" = 10 ] || exit "$pgtuned"
   ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   if [ "$pgtuned" = 10 ]; then docker compose restart paperclip; fi
