@@ -442,10 +442,16 @@ export function createAccess(o: {
     // The owner's 401 is a refusal only when GitHub refuses the token itself: a stray 401 (another resource, a blip) is an answer.
     let stray = false;
     if (!as && res.status === 401) {
-      // Another call already replaced the token this one was sent with: its 401 is the old token's, so send again with the new one.
-      const current = String((await o.auth.headers().catch(() => ({}) as Record<string, string>)).authorization ?? "").replace(/^Bearer\s+/i, "");
-      if (current && current !== t && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
-      if (o.auth.refused && !(await o.auth.refused())) {
+      // Another call (or a reconnect) replaced the token this one was sent with: its 401 is the old token's, so send again with the new one.
+      const replaced = async () => {
+        const now = String((await o.auth.headers().catch(() => ({}) as Record<string, string>)).authorization ?? "").replace(/^Bearer\s+/i, "");
+        return !retried && now !== "" && now !== t;
+      };
+      const again = () => attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
+      if (await replaced()) return again();
+      const refusedNow = o.auth.refused ? await o.auth.refused() : true;
+      if (await replaced()) return again(); // replaced while the probe was out: its verdict is on the old token
+      if (!refusedNow) {
         stray = true;
         o.log?.("github 401 on a token GitHub still accepts; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
       } else if (!retried) {
@@ -454,7 +460,7 @@ export function createAccess(o: {
         try { await o.auth.refresh(); } catch (err) {
           if (o.auth.status().state !== "expired") throw err;
         }
-        return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
+        return again();
       }
     }
     const need = classify(p, path, res, parsed, Boolean(as) || stray);
