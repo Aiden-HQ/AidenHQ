@@ -1241,3 +1241,23 @@ test("a permanent refusal to re-run a never-started job still reports the red he
   assert.equal(c.woke.length, 1, "the refusal is permanent, so the failure is reported rather than retried forever");
   assert.match(c.woke[0].text, /checks failed at/);
 });
+
+// self-review: a run GitHub already took a re-run for is not asked again when another run at the head was refused.
+test("an accepted re-run is remembered per run, so a refused sibling run's retry never re-posts it", async (t) => {
+  const c = await rig(t, { steps: [], gigRun: (id) => (id === 77 ? 500 : 600), rerun: () => 502 });
+  const twoRuns = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "a", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
+    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "b", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 600 } } },
+  ] } };
+  c.set([c.agentPr(95, { commits: { nodes: [{ commit: { statusCheckRollup: twoRuns } }] } })]);
+  await c.watch.tick();
+  const posts = (run) => c.gh.filter((g) => g === `POST /repos/acme/app/actions/runs/${run}/rerun-failed-jobs`).length;
+  assert.deepEqual([posts(500), posts(600)], [1, 1], "the first pass asks each run once");
+  // 500 was accepted; 600 was refused, so only 600 is retried after its backoff.
+  const db = JSON.parse(readFileSync(join(c.cacheDir, "pr-watch.json"), "utf8"));
+  db["acme/app"].reranRuns = { "acme/app:h95:500": new Date().toISOString() };
+  db["acme/app"].reran = { "https://github.com/acme/app/pull/95:h95": `retry:${new Date(Date.now() - 60_000).toISOString()}` };
+  writeFileSync(join(c.cacheDir, "pr-watch.json"), JSON.stringify(db));
+  await c.watch.tick();
+  assert.deepEqual([posts(500), posts(600)], [1, 2], "the accepted run is never posted again; the refused one is retried");
+});

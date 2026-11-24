@@ -341,8 +341,12 @@ export function startPrWatch(o: PrWatchOptions) {
       const runOfCheck = (n: Json) => judged[String(n.id ?? `${n.name}:${n.databaseId ?? ""}`)]?.run;
       const runs = new Set(unstarted.map(runOfCheck).filter((v): v is number => typeof v === "number" && Number.isFinite(v)));
       if (!runs.size) return false;
-      let refused = false, permanent = false;
+      let refused = false, permanent = false, accepted = false;
+      // Per-run memory: a run GitHub already took a re-run for is never asked again at this head, so a later pass that still
+      // sees another run's refusal does not re-post the one that succeeded.
+      const took = state.reranRuns ??= {};
       for (const run of runs) {
+        if (took[`${repo.toLowerCase()}:${pr.headRefOid}:${run}`]) { accepted = true; continue; }
         // A re-run that cannot be sent (a timeout, a quota refusal) is this head's problem: backing off and asking again is
         // the fix, never aborting the repo's scan and skipping a later PR's merge for the tick.
         let r: { status: number };
@@ -352,17 +356,19 @@ export function startPrWatch(o: PrWatchOptions) {
           // goes to the red-head rules, which tell the task the recovery needs a person. Anything else backs off and retries.
           const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: string }).cause;
           log("never-started re-run failed to send", { pr: pr.url, head: pr.headRefOid, run, cause, err: String((e as Error).message).slice(0, 200) });
-          if (cause === "scope") { permanent = true; continue; }
+          if (cause === "scope" || cause === "unreachable") { permanent = true; continue; }
           refused = true;
           continue;
         }
         log(r.status < 300 ? "checks re-run" : "check re-run refused", { pr: pr.url, head: pr.headRefOid, run, status: r.status });
+        if (r.status < 300) { took[`${repo.toLowerCase()}:${pr.headRefOid}:${run}`] = new Date().toISOString(); accepted = true; continue; }
         if (permanentRefusal(r.status)) { permanent = true; continue; } // 401/403/404: never clears, the red-head rules report it
         if (r.status >= 300) refused = true;
       }
       // A re-run GitHub can never accept is not this rule's any more: the red-head rules must report the head, not the scan
       // retry a refused write forever.
-      if (permanent && !refused) return false;
+      if (permanent && !refused && !accepted) return false;
+      if (accepted && !refused) { state.reran[key] = new Date().toISOString(); save(); return true; }
       // Only a re-run GitHub took is recorded as done: one it refused would otherwise leave the head marked as handled with its
       // jobs still never started, so it backs off and is asked again instead of being lost.
       state.reran[key] = refused ? `retry:${new Date(Date.now() + 5 * 60_000).toISOString()}` : new Date().toISOString();
