@@ -1,146 +1,72 @@
 <!doctype html>
-<!-- The Maintainer's Fleet page: an MCP Apps view (text/html;profile=mcp-app) the maintainer connection serves as ui://maintainer/page. One file, inline
-     script and style only (the frame loads and sends nothing), themed by the host's style variables, calling only maintainer_config
-     and maintainer_configure through the host. maintainer_configure only proposes: the board shows the change and
-     files it on his Save. docs/design/board-ui.md "Modules". -->
+<!-- The Maintainer's Fleet page: an MCP Apps view (text/html;profile=mcp-app) the maintainer connection serves as ui://maintainer/page.
+     Its own parts only: the shared kit (services/shared/page-kit.css and .js) is inlined where the markers sit (mcp.ts pageHtml).
+     Calls only maintainer_config and maintainer_configure; maintainer_configure only proposes (the board files it on the owner's Save).
+     docs/design/board-ui.md "Modules". -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: light dark; font-family: var(--font-sans, system-ui, sans-serif); font-size: 13.5px; line-height: 1.45; color: var(--color-text-primary, CanvasText); background: transparent;
-    --line: var(--color-border-primary, GrayText); --soft: var(--color-text-secondary, GrayText); --accent: var(--color-ring-primary, Highlight); --r: var(--border-radius-md, 8px); }
-  * { box-sizing: border-box; }
-  body { margin: 0; display: grid; gap: 14px; }
-  .card { border: 1px solid var(--line); border-radius: calc(var(--r) + 2px); background: var(--color-background-secondary, Canvas); overflow: hidden; }
-  .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-  .head b { font-size: 13.5px; font-weight: 600; }
-  .head small, .soft { color: var(--soft); }
-  .row { display: grid; grid-template-columns: minmax(150px, 1.6fr) repeat(4, minmax(84px, 1fr)) 72px; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); }
-  .row.cols { border-top: 0; padding-top: 7px; padding-bottom: 7px; color: var(--soft); font-size: 12px; background: color-mix(in srgb, var(--line) 12%, transparent); }
-  .row:not(.cols):hover { background: color-mix(in srgb, var(--line) 10%, transparent); }
-  .row.unsaved { box-shadow: inset 2px 0 0 var(--accent); }
-  .repo { font-weight: 560; overflow-wrap: anywhere; }
-  .repo i { font-style: normal; font-weight: 400; color: var(--soft); margin-left: 6px; }
-  select, input[type=text] { font: inherit; width: 100%; min-width: 0; padding: 4px 8px; height: 28px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; }
-  select:focus-visible, input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  select:disabled { opacity: .45; }
-  button { font: inherit; height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--color-text-inverse, HighlightText); }
-  button:disabled { opacity: .5; cursor: default; }
-  .sw { position: relative; width: 34px; height: 20px; padding: 0; border-radius: 10px; background: color-mix(in srgb, var(--line) 55%, transparent); border: 0; transition: background .16s; }
-  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--color-background-primary, Canvas); box-shadow: 0 1px 2px rgb(0 0 0 / .3); transition: transform .16s; }
-  .sw[aria-checked=true] { background: var(--accent); }
-  .sw[aria-checked=true]::after { transform: translateX(14px); }
-  .pause { display: flex; align-items: center; gap: 8px; }
-  .pause.on { color: var(--color-text-danger, red); }
-  .add { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
-  .add input { max-width: 320px; }
+/*kit:css*/
+  .row { grid-template-columns: minmax(150px, 1.6fr) repeat(4, minmax(84px, 1fr)) 72px; }
   .duty { display: grid; gap: 4px; justify-items: start; }
   .trig { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; }
   .trig p { margin: 2px 0 0; color: var(--soft); max-width: 62ch; }
-  .hold { display: grid; grid-template-columns: minmax(150px, 1fr) 110px 2fr; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line); }
-  .hold:first-of-type { border-top: 0; }
-  .empty { padding: 14px; color: var(--soft); }
-  .tag { display: inline-block; justify-self: start; padding: 0 6px; border-radius: 5px; border: 1px solid var(--line); font-size: 12px; color: var(--soft); }
-  .note { padding: 8px 14px; border-top: 1px solid var(--line); color: var(--soft); }
-  .note:empty { display: none; }
-  .note.err { color: var(--color-text-danger, red); }
-  .lab { display: none; color: var(--soft); font-size: 12px; }
-  @media (max-width: 760px) {
-    .row.cols { display: none; }
-    .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
-    .row .repo { grid-column: 1 / -1; }
-    .lab { display: block; margin-bottom: 2px; }
-    }
+  @media (max-width: 860px) { .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; } .row .repo { grid-column: 1 / -1; } }
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="head"><div><b>Repos</b> <small id="count"></small></div><small>What the Maintainer does on each</small></div>
+  <div class="head"><div><b>Repos</b> <small id="count"></small></div><small>What the Maintainer does on each. Add a repo from the Ship page.</small></div>
   <div id="rows"></div>
-  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><button type="button" id="refresh">Refresh</button></form>
   <div class="note" id="note" role="status"></div>
 </div>
 <div class="card">
-  <div class="head"><b>Triage</b></div>
+  <div class="head"><b>Triage</b><button type="button" id="refresh">Refresh</button></div>
   <div class="trig"><div><b>Triage unlabelled issues</b><p>Each new issue from someone outside gets a triage run within minutes of its filing, and the backlog gets the daily run. Off, only issues carrying the fix label are worked.</p></div><button class="sw" id="triage" role="switch" aria-checked="false" aria-label="Triage unlabelled issues"></button></div>
 </div>
 <script>
-  // The view's half of the MCP Apps bridge: JSON-RPC 2.0 over postMessage to the host (window.parent).
-  let next = 1;
-  const waiting = new Map();
-  const send = (method, params) => new Promise((ok, ko) => { const id = next++; waiting.set(id, { ok, ko }); parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*"); });
-  const notify = (method, params) => parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
-  const theme = (ctx) => { for (const [k, v] of Object.entries(ctx?.styles?.variables ?? {})) if (v) document.documentElement.style.setProperty(k, v); if (ctx?.theme) document.documentElement.style.colorScheme = ctx.theme; };
-  addEventListener("message", (e) => {
-    if (e.source !== parent) return;
-    const w = waiting.get(e.data?.id);
-    if (!w) return;
-    waiting.delete(e.data.id);
-    e.data.error ? w.ko(new Error(e.data.error.message)) : w.ok(e.data.result);
-  });
-  // In the owner's Claude the host fences every string the tool answers as untrusted data: read the value out of the fence (it still only ever reaches the page as text).
-  const unfence = (v) => typeof v === "string" ? (v.match(/^<untrusted-data[^>]*>([\s\S]*)<\/untrusted-data>$/)?.[1] ?? v).replace(/&lt;(\/?untrusted-data)/gi, "<$1") : Array.isArray(v) ? v.map(unfence) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unfence(x)])) : v;
-  const tool = async (name, args) => { const r = await send("tools/call", { name, arguments: args }); if (r?.isError) throw new Error(r.content?.[0]?.text ?? "failed"); return unfence(r.structuredContent ?? {}); };
-  new ResizeObserver(() => { const r = document.body.getBoundingClientRect(); notify("ui/notifications/size-changed", { width: Math.ceil(r.width), height: Math.ceil(r.height) }); }).observe(document.body);
-
-  const $ = (id) => document.getElementById(id);
-  const h = (tag, props, ...kids) => { const el = Object.assign(document.createElement(tag), props); el.append(...kids.filter((k) => k !== null)); return el; };
-  const say = (t, err) => { $("note").textContent = t; $("note").className = err ? "note err" : "note"; };
+/*kit:js*/
   const DUTIES = [["issues", "Fix issues"], ["features", "Features"], ["dependabot", "Dependabot"], ["contributor_prs", "Contributor PRs"]];
   let cfg = { repos: [], external_triage: false };
-  // The one edit the owner hasn't saved yet: the board holds a single proposal, so each edit replaces the last (and a Discard there leaves no draft here).
-  let pending = null;
-  const shown = (r) => (pending && pending.repo === r.repo ? { ...r, ...pending.duties } : r);
-  const saveHint = "Save it in the bar above.";
+  // The edits the owner hasn't saved yet, one proposal for the page: duty changes per repo, and the triage switch. Each edit merges into it.
+  let pending = { repos: {}, external_triage: undefined };
+  const fresh = () => ({ repos: {}, external_triage: undefined });
+  const shown = (r) => ({ ...r, ...(pending.repos[r.repo] ?? {}) });
 
   async function propose(repo, duties) {
-    try {
-      const r = await tool("maintainer_configure", { repo, duties });
-      pending = { repo, duties };
-      say(`Proposed: ${(r.changes ?? []).join("; ")}. ${saveHint}`);
-    } catch (e) { say(e.message, true); }
+    const next = { repos: { ...pending.repos }, external_triage: pending.external_triage };
+    if (repo) next.repos[repo] = { ...(next.repos[repo] ?? {}), ...duties };
+    else next.external_triage = duties.external_triage;
+    pending = next; // at once, so a second edit before the answer comes back keeps this one
     render();
+    try { proposed(await tool("maintainer_configure", { edits: { ...(Object.keys(next.repos).length ? { repos: next.repos } : {}), ...(next.external_triage === undefined ? {} : { external_triage: next.external_triage }) } })); } catch (e) { say(e.message, true); }
   }
-  const toggle = (on, label, fn) => { const b = h("button", { className: "sw", role: "switch", ariaLabel: label }); b.setAttribute("aria-checked", String(!!on)); b.addEventListener("click", fn); return b; };
 
   function render() {
     $("count").textContent = cfg.repos.length ? `${cfg.repos.length}` : "";
     const rows = cfg.repos.map((raw) => {
       const r = shown(raw);
       const remove = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
-      remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { repo: r.repo, remove: true }); pending = null; say(`Proposed: ${(x.changes ?? []).join("; ")}. ${saveHint}`); } catch (e) { say(e.message, true); } });
-      return h("div", { className: pending && pending.repo === r.repo ? "row unsaved" : "row" },
+      remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = fresh(); proposed(x); render(); } catch (e) { say(e.message, true); } });
+      return h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
         h("div", { className: "repo" }, r.repo, h("i", { textContent: `label ${r.label}` })),
-        ...DUTIES.map(([k, label]) => h("div", { className: "duty" }, h("span", { className: "lab", textContent: label }), toggle(r[k], `${label} on ${r.repo}`, () => propose(r.repo, { [k]: !r[k] })))),
+        ...DUTIES.map(([k, label]) => { const sw = toggle(r[k], `${label} on ${r.repo}`, () => propose(r.repo, { [k]: !r[k] })); sw.classList.toggle("unsaved", k in (pending.repos[raw.repo] ?? {})); return h("div", { className: "duty" }, h("span", { className: "lab", textContent: label }), sw); }),
         remove);
     });
     const cols = h("div", { className: "row cols" }, ...["Repo", ...DUTIES.map((d) => d[1]), ""].map((t) => h("span", { textContent: t })));
-    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty", textContent: "No repo is listed. Add one and the Maintainer works its labelled issues; switch on the duties you want per repo." })]));
-    $("triage").setAttribute("aria-checked", String(!!cfg.external_triage));
+    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty", textContent: "No repo is listed. Add one from the Ship page and the Maintainer works its labelled issues; switch on the duties you want here." })]));
+    setSwitch($("triage"), pending.external_triage ?? cfg.external_triage);
+    $("triage").classList.toggle("unsaved", pending.external_triage !== undefined);
   }
 
   async function load() {
     try { cfg = await tool("maintainer_config", {}); render(); } catch (e) { say(e.message, true); }
   }
-  $("triage").addEventListener("click", async () => {
-    try { const r = await tool("maintainer_configure", { external_triage: !cfg.external_triage }); say(`Proposed: ${(r.changes ?? []).join("; ")}. ${saveHint}`); } catch (e) { say(e.message, true); }
-  });
-  $("refresh").addEventListener("click", () => { pending = null; say(""); load(); });
-  $("add").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const repo = $("newrepo").value.trim();
-    if (!repo) return;
-    try { const r = await tool("maintainer_configure", { repo }); say(`Proposed: ${(r.changes ?? []).join("; ")}. ${saveHint}`); } catch (err) { say(err.message, true); }
-  });
-
-  (async () => {
-    const init = await send("ui/initialize", { appInfo: { name: "maintainer", version: "1" }, appCapabilities: {}, protocolVersion: "2026-01-26" });
-    theme(init.hostContext);
-    notify("ui/notifications/initialized", {});
-    load();
-  })();
+  $("triage").addEventListener("click", () => propose(null, { external_triage: !(pending.external_triage ?? cfg.external_triage) }));
+  $("refresh").addEventListener("click", () => { pending = fresh(); say(""); load(); });
+  start("maintainer", load);
 </script>
 </body>
 </html>

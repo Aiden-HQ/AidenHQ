@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { configTools } from "./config-tool.ts";
-import { createMcp, serveMcp } from "./mcp.ts";
+import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { maintainerIssues, maintainerPrs, maintainerPrWake, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./watcher.ts";
 
 const stateFile = process.env.MAINTAINER_STATE_FILE ?? "/data/state.json";
@@ -43,7 +43,7 @@ startMaintainer({
 const readKey = () => { try { return readFileSync(process.env.MAINTAINER_SERVICE_KEY_FILE ?? "", "utf8").trim(); } catch { return ""; } };
 const jwks = kernelJwks(`${process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130"}/v1/jwks`);
 const mcp = serveMcp(
-  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", externalTriage: () => process.env.MAINTAINER_EXTERNAL_TRIAGE === "true" }), [{ uri: "ui://maintainer/page", html: readFileSync(new URL("./page.html", import.meta.url), "utf8") }]),
+  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", externalTriage: () => process.env.MAINTAINER_EXTERNAL_TRIAGE === "true" }), [{ uri: "ui://maintainer/page", html: pageHtml(new URL("./", import.meta.url)) }]),
   readKey, (req) => verifyCaller(req, jwks, "maintainer"),
 );
 createServer(async (req, res) => {

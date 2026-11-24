@@ -16,20 +16,22 @@ export function rawRepos(text: string): Dict[] {
   return list.map((e) => (typeof e === "string" ? { repo: e } : { ...(e as Dict) }));
 }
 
-/** The list after a change: a repo's duties switched (it is listed when it wasn't), or the repo removed. Throws with the reason. */
-export function applyRepoChange(list: Dict[], c: { repo: string; duties?: Dict; remove?: boolean }): { value: Dict[]; summary: string } {
-  const at = list.findIndex((e) => String(e.repo).toLowerCase() === c.repo.toLowerCase());
-  let value: Dict[], summary: string;
+/** The list after duty changes ({ repo: { duty: true | false } }), or a repo removed. Only a listed repo changes: adding is the Ship page's one change. Throws with the reason. */
+export function applyRepoChange(list: Dict[], c: { duties?: Record<string, Dict>; remove?: string }): { value: Dict[]; summary: string[] } {
+  const at = (repo: string) => list.findIndex((e) => String(e.repo).toLowerCase() === repo.toLowerCase());
+  let value = list;
+  const summary: string[] = [];
   if (c.remove) {
-    if (at < 0) throw new Error(`${c.repo} isn't listed`);
-    value = list.filter((_, i) => i !== at); summary = `${c.repo}: removed from the Maintainer`;
-  } else {
-    const duties = c.duties ?? {};
-    for (const [k, v] of Object.entries(duties)) if (!(DUTIES as readonly string[]).includes(k) || typeof v !== "boolean") throw new Error(`duties: ${DUTIES.join(", ")} each true or false`);
-    if (at < 0 && !Object.keys(duties).length) duties.issues = true;
-    value = at < 0 ? [...list, { repo: c.repo, ...duties }] : list.map((e, i) => (i === at ? { ...e, ...duties } : e));
-    summary = `${c.repo}: ${at < 0 ? "listed" : "duties"} ${Object.entries(duties).map(([k, v]) => `${k} ${v ? "on" : "off"}`).join(", ")}`;
+    if (at(c.remove) < 0) throw new Error(`${c.remove} isn't listed`);
+    value = list.filter((_, i) => i !== at(c.remove!)); summary.push(`${c.remove}: removed from the Maintainer`);
   }
+  for (const [repo, duties] of Object.entries(c.duties ?? {})) {
+    for (const [k, v] of Object.entries(duties)) if (!(DUTIES as readonly string[]).includes(k) || typeof v !== "boolean") throw new Error(`duties: ${DUTIES.join(", ")} each true or false`);
+    if (at(repo) < 0) throw new Error(`${repo} isn't listed: add it from the Ship page`);
+    value = value.map((e) => (String(e.repo).toLowerCase() === repo.toLowerCase() ? { ...e, ...duties } : e));
+    summary.push(`${repo}: ${Object.entries(duties).map(([k, v]) => `${k} ${v ? "on" : "off"}`).join(", ")}`);
+  }
+  if (!summary.length) throw new Error("say what to change: duties, or a repo to remove");
   parseRepos(JSON.stringify(value)); // the whole list checked as the github module will read it
   return { value, summary };
 }
@@ -45,14 +47,20 @@ export function configTools(d: { repos: () => string; externalTriage: () => bool
     },
     {
       name: "maintainer_configure",
-      description: "Propose one change to the Maintainer's setup: { repo, duties: { issues, features, dependabot, contributor_prs: true | false } } (lists the repo if it isn't), { repo, remove: true } (a repo ship also covers is removed from the Ship page, which clears both), or { external_triage: true | false }. It returns the typed settings change; the owner saves it from the Fleet page.",
-      inputSchema: { type: "object", properties: { repo: { type: "string" }, duties: { type: "object" }, remove: { type: "boolean" }, external_triage: { type: "boolean" } }, additionalProperties: false },
+      description: "Propose changes to the Maintainer's setup, as one typed settings change: { edits: { repos: { <repo>: { issues, features, dependabot, contributor_prs: true | false } }, external_triage?: true | false } }, or { remove: <repo> } (a repo Ship also covers is removed from the Ship page, which clears both). Only listed repos change: adding one is the Ship page's. The owner saves the change from the Fleet page.",
+      inputSchema: { type: "object", properties: { edits: { type: "object" }, remove: { type: "string" } }, additionalProperties: false },
       run: async (a, who) => {
         ownerOnly(who.kind);
-        if (typeof a.external_triage === "boolean") return { changes: [`external triage ${a.external_triage ? "on" : "off"}`], _aidenhq: { settings_change: [{ kind: "setting", key: "external_triage", value: a.external_triage }] } };
-        if (typeof a.repo !== "string" || !/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(a.repo)) throw new Error("repo is owner/name");
-        const { value, summary } = applyRepoChange(rawRepos(d.repos()), { repo: a.repo, duties: a.duties as Dict | undefined, remove: a.remove === true });
-        return { changes: [summary], _aidenhq: { settings_change: [{ kind: "setting", key: "maintainer_repos", value }] } };
+        const edits = (a.edits ?? {}) as { repos?: Record<string, Dict>; external_triage?: boolean };
+        const changes: Dict[] = [];
+        const summary: string[] = [];
+        if (typeof edits.external_triage === "boolean") { changes.push({ kind: "setting", key: "external_triage", value: edits.external_triage }); summary.push(`external triage ${edits.external_triage ? "on" : "off"}`); }
+        if (edits.repos || typeof a.remove === "string") {
+          const r = applyRepoChange(rawRepos(d.repos()), { duties: edits.repos, remove: typeof a.remove === "string" ? a.remove : undefined });
+          changes.push({ kind: "setting", key: "maintainer_repos", value: r.value }); summary.push(...r.summary);
+        }
+        if (!changes.length) throw new Error("say what to change");
+        return { changes: summary, _aidenhq: { settings_change: changes } };
       },
     },
   ];

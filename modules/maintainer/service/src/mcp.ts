@@ -1,6 +1,7 @@
 // The module's MCP connection (a stateless JSON-RPC subset: initialize, tools/list, tools/call) for the kernel's
 // proxy: the module's tools and its Fleet page view. Every call carries the kernel's caller assertion, whose signed roles gate
 // each tool; the connection returns untrusted (a PR's title is a stranger's text).
+import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { Caller } from "./aidenhq-sdk/caller.ts";
@@ -14,6 +15,12 @@ type Msg = { id?: unknown; method?: string; params?: { name?: string; arguments?
 const text = (v: unknown, isError = false, structured = false) => ({ content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v) }], ...(structured && v && typeof v === "object" ? { structuredContent: v } : {}), ...(isError ? { isError: true } : {}) });
 /** The Fleet page: an MCP Apps view (text/html;profile=mcp-app) the module serves as a resource. */
 export interface View { uri: string; html: string }
+
+// A page.html with the shared kit (page-kit.css, page-kit.js: services/shared) inlined at its kit:css and kit:js markers.
+export function pageHtml(dir: URL): string {
+  const read = (f: string) => readFileSync(new URL(f, dir), "utf8");
+  return read("./page.html").replace("/*kit:css*/", () => read("./page-kit.css")).replace("/*kit:js*/", () => read("./page-kit.js"));
+}
 
 export function createMcp(name: string, tools: Tool[], views: View[] = []) {
   const byName = new Map(tools.map((t) => [t.name, t]));

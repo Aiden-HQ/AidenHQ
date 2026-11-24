@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { configTools } from "./config-tool.ts";
-import { createMcp, serveMcp } from "./mcp.ts";
+import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
 
@@ -29,7 +29,7 @@ const mcp = serveMcp(createMcp("ship", configTools({
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
     return r.json;
   },
-}), [{ uri: "ui://ship/page", html: readFileSync(new URL("./page.html", import.meta.url), "utf8") }]), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
+}), [{ uri: "ui://ship/page", html: pageHtml(new URL("./", import.meta.url)) }]), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;

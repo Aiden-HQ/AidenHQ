@@ -58,3 +58,10 @@ test("removing a listed repo is one change across maintainer_repos, code_review 
   assert.deepEqual(r._aidenhq.settings_change.map((c: any) => c.value), [["c/d"], { repos: [] }, { repos: {} }]);
   await assert.rejects(tool.run({ repo: "a/b", remove: true }, { agent: "x", roles: ["ship-admin"] }), /owner's/);
 });
+
+test("ship_configure merges several edits (a repo's fields, another repo, the pause) into one proposal", async () => {
+  const tool = configTools({ raw: () => ({ repos: { "a/b": "cautious" } }), scope: () => ({ fleet: [], listed: ["a/b", "c/d"] }), state: state(), maintainerRepos: () => [], codeReview: () => ({}), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
+  const r = (await tool.run({ edits: { repos: { "a/b": { preset: "full", approve: "safe" }, "c/d": { merge: "off" } }, paused: true } }, { agent: "", roles: [], kind: "owner" })) as any;
+  const v = r._aidenhq.settings_change[0].value;
+  assert.deepEqual([v.repos["a/b"], v.repos["c/d"], v.paused], [{ preset: "full", approve: "safe" }, { merge: "off" }, true]);
+});
