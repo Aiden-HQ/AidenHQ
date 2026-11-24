@@ -174,7 +174,10 @@ const beforeHeader = (text: string, from: number, to: number) => {
  * True when the sentinel from `from` to `to` is the whole of a Markdown blockquote line ("> <|im_end|>"): the reply shows the
  * marker on purpose, so it stays. A marker anywhere else is a leak, however it is indented.
  */
+const QUOTE_PREFIX = 64;
 const quoted = (text: string, from: number, to: number, lineStart: number, limit: number) => {
+  // A blockquote's own marks are a handful of characters: a longer prefix is reply text, and is not walked at all.
+  if (from - lineStart > QUOTE_PREFIX) return false;
   const prefix = text.slice(lineStart, from);
   if (!/^[ \t]*>[ \t>]*$/.test(prefix)) return false;
   let i = to;
