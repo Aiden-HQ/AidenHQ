@@ -15,6 +15,7 @@ import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
 import { UPDATER, canonical, type Requester } from "./records.ts";
 import { DEFAULT_WEIGHTS, teamProblems } from "./team-routing.ts";
+import type { Raise } from "./tier.ts";
 
 export const parse = (text: any) => {
   try {
@@ -184,6 +185,20 @@ export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marke
 }
 
 /**
+ * The apply that names or changes the instance's test-user sign-in identity (settings.edge.test_user): the owner's Tier 2
+ * card, because it lets an agent sign in as a named account (docs/design/access.md, "Test-user sign-in"), and the line its
+ * card carries so the owner reads what it adds. Nothing for an apply that leaves the setting alone, or removes it.
+ */
+export function testUserIdentity(baseText: string | undefined, headText: string | undefined): { raise?: Raise; line?: string } {
+  const after = parse(headText)?.settings?.edge?.test_user;
+  if (after === undefined || eq(parse(baseText)?.settings?.edge?.test_user, after)) return {};
+  const email = typeof after?.email === "string" && after.email.trim() ? after.email.trim() : undefined;
+  const apps = (Array.isArray(after?.apps) ? after.apps : []).filter((x: unknown): x is string => typeof x === "string" && x.length > 0);
+  const line = `Adds a test sign-in identity${email ? `: ${email}` : ""}${apps.length ? ` as a member of ${apps.join(", ")}` : ""}; 15-minute sessions; every mint and revoke audited.`;
+  return { raise: { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" }, line };
+}
+
+/**
  * The product commits a pin move brings, as its own labelled block: code's account of commits already merged on the product's
  * main, never the change under review. It rides in the card's details (the owner reads it) and is handed to the reviewer in
  * the same words as its own field (ReviewContext.productCommits), so the reviewer shows it as PRODUCT_COMMITS, never as the
@@ -221,6 +236,8 @@ export async function productBump(from: string | undefined, to: string | undefin
 /** What an apply plan returns to writes.ts (its executor@1 plan's shape, planned by the kernel itself). */
 export type ApplyPlan = {
   args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; release?: string };
+  /** A raise above the kind's floor (writes.ts): the owner's own card for the identity an agent signs in as. */
+  raise?: Raise;
   targets: { diff: string; content: string }; card: Record<string, string>;
   /** The reviewer's extra input (executor.ts ReviewContext): a pin move's product-commit roll-up. */
   review?: { productCommits: string };
@@ -306,9 +323,11 @@ export function createApplyPlanner(h: {
     const commits = bump ? productCommits(bump) : "";
     const details = [notes, c.diff, commits, reviewerFacts(full), st.remote, enabledText].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
-    const card = applyCard(full, details);
+    const identity = testUserIdentity(baseI, headI);
+    const card = applyCard(full, details, identity.line);
     return {
       args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
+      ...(identity.raise ? { raise: identity.raise } : {}),
       // The reviewer reads the roll-up as its own field, never as part of the change (issue #1639).
       ...(commits ? { review: { productCommits: commits } } : {}),
     };
