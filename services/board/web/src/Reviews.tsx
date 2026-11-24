@@ -562,7 +562,7 @@ function RunPage({ id, config, engines, onSignIn }: { id: string; config: CodeRe
         }
       />
       {error && <Banner tone="danger">{error}</Banner>}
-      {run.status === "skipped" && (run.target === "tree" ? <Banner tone="warn">{skipWords(run.why)}. {findings.length ? "Its open findings from that review are listed here." : "Nothing was open in it."}</Banner> : <Banner tone="warn">Skipped: {skipWords(run.why)}. A skip is said on the PR too, in the review's acknowledgement comment.</Banner>)}
+      {run.status === "skipped" && (run.target === "tree" ? <Banner tone="warn">{skipWords(run.why)}.{run.why?.startsWith("unchanged") ? (findings.length ? " Its open findings from that review are listed here." : " Nothing was open in it.") : ""}</Banner> : <Banner tone="warn">Skipped: {skipWords(run.why)}. A skip is said on the PR too, in the review's acknowledgement comment.</Banner>)}
       {run.status === "failed" && <Banner tone="danger">The review didn't finish{run.why ? `: ${run.why}` : ""}. Nothing was posted. Ask again with “Review again”, or comment “aiden review” on the PR.</Banner>}
       {review?.coverage.incomplete && <Banner tone="warn">Partial review: {review.coverage.incomplete}. Files outside the reviewed set weren't checked, so fewer findings here doesn't mean clean.</Banner>}
       <div className="ui-split">

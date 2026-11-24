@@ -929,7 +929,8 @@ export function createEngine(d: EngineDeps) {
     const blobs = JSON.parse(b.blobs) as Record<string, string>, read = review.coverage?.reviewed ?? [];
     const files = filesOf(JSON.parse(b.plan) as Plan, blobs, r.area);
     const covered = read.length ? files.filter((p) => read.includes(p)) : (review as { coverage_note?: string }).coverage_note && !review.coverage?.incomplete ? files : [];
-    for (const p of vanished(r.repo, r.option!, blobs, filesOf(JSON.parse(b.plan) as Plan, blobs, r.area), r.area === null)) run("DELETE FROM area_seen WHERE repo = ? AND option = ? AND path = ?", r.repo, r.option, p);
+    // A deleted file's mark goes only once the whole scope is reviewed again (a partial review leaves the area due).
+    if (covered.length === files.length) for (const p of vanished(r.repo, r.option!, blobs, files, r.area === null)) run("DELETE FROM area_seen WHERE repo = ? AND option = ? AND path = ?", r.repo, r.option, p);
     for (const p of covered) if (blobs[p]) run("INSERT OR REPLACE INTO area_seen (repo, option, path, blob, run, sha, at) VALUES (?, ?, ?, ?, ?, ?, ?)", r.repo, r.option, p, blobs[p], r.id, r.head, iso());
   }
 
