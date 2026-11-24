@@ -49,4 +49,5 @@ test("ship_configure for the owner returns the settings change and files nothing
   assert.deepEqual(added._aidenhq.settings_change.map((c: any) => c.key), ["maintainer_repos", "code_review", "ship"]);
   assert.deepEqual(added._aidenhq.settings_change[0].value, ["a/b", { repo: "x/y", issues: false }]);
   assert.deepEqual(filed, []);
+  await assert.rejects(tool.run({ repo: "x/y", change: "cautious" }, { agent: "x", roles: ["ship-admin"], assertion: "jwt" }), /owner's/);
 });

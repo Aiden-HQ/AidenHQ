@@ -47,7 +47,7 @@ const same = (a: unknown, b: string) => String(typeof a === "string" ? a : (a as
 
 /**
  * A repo ship doesn't cover yet: one settings change that lists it for the Maintainer (maintainer_repos, no duty on) and code review
- * (code_review, its defaults) and gives it its ship entry, so the three land or none does. It is always the owner's.
+ * (code_review, its defaults) and gives it its ship entry, so the three land or none does. Only the owner's Fleet page calls it.
  */
 export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string, change: unknown) {
   if (!REPO.test(repo)) throw new Error(`${repo.slice(0, 100)} isn't owner/name`);
@@ -87,18 +87,20 @@ export function configTools(d: {
     },
     {
       name: "ship_configure", roles: ["ship-admin"],
-      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry }, or { paused: true | false } for the kill switch. A repo ship doesn't cover yet is listed for the Maintainer and code review in the same change, and the owner decides it. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
+      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry }, or { paused: true | false } for the kill switch. A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {}, paused: { type: "boolean" } }, additionalProperties: false },
       run: async (a, caller) => {
         const raw = d.raw(), scope = d.scope();
-        let changes: Dict[], summary: string[], l: string[], fresh = false;
+        let changes: Dict[], summary: string[], l: string[];
         if (typeof a.paused === "boolean") {
           const value = { ...raw, paused: a.paused };
           const errors = validate(value, scope);
           if (errors.length) throw new Error(`that setting wouldn't work: ${errors.join("; ")}`);
           changes = [{ kind: "setting", key: "ship", value }]; summary = [a.paused ? "ship paused" : "ship resumed"]; l = loosens(raw, value, scope);
         } else if (typeof a.repo === "string" && a.repo !== "defaults" && !covers(a.repo, scope)) {
-          ({ changes, summary } = addRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, a.repo, a.change)); l = []; fresh = true;
+          ({ changes, summary } = addRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, a.repo, a.change)); l = [];
+          // One change across the github, code-review and ship settings: the board saves it for the owner; an agent's filing is per module.
+          if (caller.kind !== "owner") throw new Error(`${a.repo} isn't covered yet: adding a repo (its maintainer_repos, code_review and ship entries together) is the owner's: ask them to add it from the Fleet page`);
         } else {
           const r = applyShipChange(raw, { repo: String(a.repo), change: a.change, scope });
           changes = [{ kind: "setting", key: "ship", value: r.value }]; summary = r.summary; l = r.loosens;
@@ -106,7 +108,7 @@ export function configTools(d: {
         // The owner's own call (the Fleet page) only proposes: the board shows it and files it on his Save.
         if (caller.kind === "owner") return { changes: summary, _aidenhq: { settings_change: changes } };
         if (l.length) throw new Error(`that change loosens ${l.join(", ")}: the owner's to approve; ask them to make it from the Fleet page`);
-        return { filed: await d.file(changes, caller.assertion ?? ""), changes: summary, ...(fresh ? { owner: "a new repo is the owner's to approve" } : {}) };
+        return { filed: await d.file(changes, caller.assertion ?? ""), changes: summary };
       },
     },
   ];
