@@ -105,6 +105,7 @@ const cases = [
   ["a chat's job ended with no agent comment reads failed · no_reply", [created(0, { chat: true }), assignee("kai", 0), job("job.started", 1), job("job.ended", 2, { state: "done", acted: false })], 120,
     { kind: "idle", reason: "failed", ref: "no_reply", since: iso(2), attention: [{ who: "agent", why: "failed", ref: "no_reply" }] }],
   ["a chat's reply within the run clears no_reply", [created(0, { chat: true }), assignee("kai", 0), job("job.started", 1), comment("agent:kai", 2), job("job.ended", 2, { state: "done", acted: false })], 120, { kind: "waiting", reason: "chat_turn" }],
+  ["a chat's job that answered NO_REPLY is an answered turn", [created(0, { chat: true }), assignee("kai", 0), job("job.started", 1), job("job.ended", 2, { state: "done", acted: false, no_reply: true })], 120, { kind: "waiting", reason: "chat_turn" }],
   ["no_reply waits out the reply's grace", [created(0, { chat: true }), assignee("kai", 0), job("job.started", 1), job("job.ended", 2, { state: "done", acted: false })], 2.5, { reason: "chat_turn" }],
   ["a failed job outranks a module wait", [created(), assignee("kai", 0), prWait("checks", 1), job("job.ended", 2, { state: "failed" })], NOW, { kind: "idle", reason: "failed", ref: "job:j1" }],
   ["an owner wait's start shows under a running job", [created(), assignee("kai", 0), wait("owner_wait", 1, { question: "q" }), job("job.started", 3)], NOW, { kind: "working", reason: "job_running", wait_since: iso(1), question: "q" }],
