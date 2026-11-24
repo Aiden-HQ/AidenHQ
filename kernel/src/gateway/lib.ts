@@ -550,8 +550,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const key = secret("openrouter_key");
     if (!key) return;
     for (const row of q.cutOff.all(new Date(now() - TRUE_UP_MS).toISOString()) as { key: string; gen: string }[]) {
+      // A drain ends the pass: what is left is the next kernel's (its true-ups read the same rows).
+      if (stopping.signal.aborted) return;
       try {
-        const res = await fetch(`${upstream}/generation?id=${encodeURIComponent(row.gen)}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+        const res = await fetch(`${upstream}/generation?id=${encodeURIComponent(row.gen)}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(15_000), stopping.signal]) });
         if (!res.ok) continue;
         const g = ((await res.json()) as { data?: Record<string, unknown> }).data ?? {};
         if (typeof g.total_cost !== "number") continue;
@@ -861,7 +863,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
 
   async function model(req: IncomingMessage, res: ServerResponse, routeKind: string, path: string, ci = false) {
     let t0 = now();
-    const who = await identify((!ci && (await asCaller?.(req))) || bearer(req), routeKind, ci);
+    const cred = (!ci && (await asCaller?.(req))) || bearer(req);
+    let who = await identify(cred, routeKind, ci);
     let body: Record<string, unknown>, raw = "";
     try { body = JSON.parse((raw = await readBody(req, ci ? CI_MAX_BODY : MAX_BODY))); } catch (e) { throw (e as GatewayError).status ? e : fail(400, "bad_request", "the body must be JSON"); }
     if (!body || typeof body !== "object" || typeof body.model !== "string") throw fail(400, "bad_request", "a model call needs a model");
@@ -885,7 +888,8 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const asked = [body[field], body.max_completion_tokens].filter((n): n is number => Number.isInteger(n) && (n as number) > 0);
     const id = `gw:${randomUUID()}`;
     // A model cooling down after a rate limit: waited out before the call holds anything; its periods are the time it goes.
-    if (await cooledDown(body.model, res)) t0 = now();
+    // A wait may outlive the credential (a job that ended meanwhile): it is checked again.
+    if (await cooledDown(body.model, res)) { t0 = now(); who = await identify(cred, routeKind, ci); }
     const inUsd = (Math.ceil(Buffer.byteLength(raw) / 3) * price.in) / 1e6;
     const r = reserve(who, t0, id, body.model, inUsd, path === "embeddings" ? 0 : price.out / 1e6, Math.min(price.max_output, ...asked));
     if ("over" in r) {
@@ -1011,7 +1015,9 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
           q.settle.run(held, new Date(now()).toISOString(), String(body.model).slice(0, 120), ku?.input ?? 0, ku?.cached ?? 0, ku?.output ?? 0, spent, now() - t0, billable ? "unsettled" : "stream_error", g || null, held);
         }
         const after = Number(up?.headers.get("retry-after"));
-        const wait = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000);
+        // Never sooner than the model's shared cooldown (this answer's own, or one a peer kernel extended).
+        const cooling = ((q.cooldown.get(body.model) as { until: number } | undefined)?.until ?? 0) - now();
+        const wait = Math.min(Math.max(Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : retryDelaysMs[n]! * (0.75 + Math.random() / 2), 20_000), cooling), COOLDOWN_MAX_MS);
         log("upstream retry", { model: body.model, attempt: n + 1, ...(failed ? { stream_error: failed.reason } : { status: up?.status ?? String((err as Error).message).slice(0, 100) }), wait_ms: Math.round(wait) });
         await reader?.cancel().catch(() => {});
         await new Promise((r) => setTimeout(r, wait));
@@ -1094,12 +1100,21 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       out.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
       for (const [labels, v] of rows) out.push(`${name}${Object.keys(labels).length ? `{${Object.entries(labels).map(([k, x]) => `${k}="${esc(x)}"`).join(",")}}` : ""} ${Math.round(v * 1e4) / 1e4}`);
     };
-    const rows = q.dayRows.all(today) as { agent: string; kind: string; billed: number; refused: number }[];
-    metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", rows.map((r) => [{ agent: keyOf(r.agent || null), kind: r.kind }, r.billed / 1e9]));
+    // Summed by the labels shown (ids no grant names all read `unknown`): one sample per series.
+    const by = (pick: (r: { billed: number; refused: number }) => number) => {
+      const m = new Map<string, [Record<string, unknown>, number]>();
+      for (const r of q.dayRows.all(today) as { agent: string; kind: string; billed: number; refused: number }[]) {
+        if (!pick(r)) continue;
+        const labels = { agent: keyOf(r.agent || null), kind: r.kind }, k = JSON.stringify(labels);
+        m.set(k, [labels, (m.get(k)?.[1] ?? 0) + pick(r)]);
+      }
+      return [...m.values()];
+    };
+    metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", by((r) => r.billed / 1e9));
     const install = limits({ agentId: null, issueId: null, perpetual: false }, now());
     metric("aidenhq_gateway_install_spend_usd", "The install's spend in the limit's period (UTC day or month), in flight included.", install.map((l) => [{ period: l.scope }, l.spent]));
     metric("aidenhq_gateway_install_limit_usd", "The install's spend limit for the period (settings.spend_day_usd, spend_month_usd).", install.map((l) => [{ period: l.scope }, l.cap]));
-    metric("aidenhq_gateway_cap_refusals_today", "Runs refused over a spend limit or task cap since 00:00 UTC (one per run, limit and period).", rows.filter((r) => r.refused > 0).map((r) => [{ agent: keyOf(r.agent || null), kind: r.kind }, r.refused]));
+    metric("aidenhq_gateway_cap_refusals_today", "Runs refused over a spend limit or task cap since 00:00 UTC (one per run, limit and period).", by((r) => r.refused));
     metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, (q.ciSpent.get(today) as Nano).n / 1e9]]);
     metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, (q.inflight.get() as { n: number }).n]]);
     return out.join("\n") + "\n";
