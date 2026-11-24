@@ -304,7 +304,7 @@ const jobControl = {
         if (b) b.lastUsed = Date.now();
         return { container: name, envFile, outDir: path.join(jobEnvDir, name), gen: before.gen, warm: true };
       }
-      await retire(name, "doesn't fit the task's next job");
+      if (!(await retire(name, "doesn't fit the task's next job"))) throw fail(409, `the task's last box ${name} is still being removed`);
     }
     await builtImage(tag, docker, log);
     await makeRoom();
@@ -403,7 +403,7 @@ async function checkout(who: { container: string }, token: string, raw: string) 
   const sha = r.headers.get("x-aidenhq-commit") ?? "";
   if (p.sha && sha !== String(p.sha).toLowerCase()) throw fail(502, `the snapshot is of ${sha.slice(0, 12)}, not ${String(p.sha).slice(0, 12)}`);
   // The snapshot took a while: the box must still be this job's (a parked and re-leased box is the next job's).
-  if (liveBox(token)?.container !== who.container) throw fail(409, "the job's lease on its box has ended");
+  if (liveBox(token)?.container !== who.container) { await r.body?.cancel().catch(() => {}); throw fail(409, "the job's lease on its box has ended"); }
   const b = boxes.get(who.container);
   if (b) { b.busy++; b.lastUsed = Date.now(); }
   try {
@@ -519,19 +519,22 @@ const gatewayServer = http.createServer(async (req, res) => {
 const existing = await docker(["ps", "-a", "--filter", "label=aidenhq.computer=1", "--format", "{{.Names}}"]);
 // A failed scan is not an empty one: starting would prune every saved lease, so fail and let the supervisor restart us.
 if (existing.exitCode !== 0) throw new Error(`docker ps failed: ${existing.stderr.trim() || existing.signal}`);
-const orphans = [];
+const orphans: string[] = [], retiring: string[] = [];
 for (const name of existing.stdout.trim().split("\n").filter(Boolean)) {
   if (!ours(name)) continue;
   // A box without its job record has lost its binding: nothing may run in it.
-  // A parked box keeps its idle age (its WARM_MS runs from when it was parked); a retired one goes.
+  // A parked box keeps its idle age (its WARM_MS runs from when it was parked). A retired one keeps its record and slot (it
+  // still holds its task) until Docker has removed it.
   const rec = jobs.get(name);
-  if (rec && !rec.retired) boxes.set(name, { agentId: rec.agentId, lastUsed: rec.parked ?? Date.now(), busy: 0 });
-  else orphans.push(name);
+  if (rec) boxes.set(name, { agentId: rec.agentId, lastUsed: rec.parked ?? Date.now(), busy: 0 });
+  if (rec?.retired) retiring.push(name);
+  else if (!rec) orphans.push(name);
 }
 // A job record whose box is gone never comes back; its lease goes with it.
 for (const name of jobs.containers()) if (!boxes.has(name)) jobs.delete(name);
 saveJobs();
-for (const name of orphans) await retire(name, "a box without a live job record");
+for (const name of orphans) await destroy(name, "a box without its job record");
+for (const name of retiring) await destroy(name, "retired before the restart");
 // What a launcher stopped mid-removal left in its trash goes.
 for (const n of (() => { try { return readdirSync(outTrash); } catch { return []; } })()) void rm(path.join(outTrash, n), { recursive: true, force: true }).catch(() => {});
 if (boxes.size) log(`found ${boxes.size} job box(es) from before`);
