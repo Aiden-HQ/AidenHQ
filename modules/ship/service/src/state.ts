@@ -10,7 +10,7 @@ export interface Adoption {
   trigger: { kind: "fleet" | "label" | "comment" | "tool" | "all"; event: string; actor: string };
   task?: string;
   /** The one sticky state: set on a stall, a hand-back or a stop; only a fresh trusted trigger (a new generation) clears it. */
-  hold: { kind: (typeof HOLDS)[number]; reason: string } | null;
+  hold: { kind: (typeof HOLDS)[number]; reason: string; at?: string } | null;
 }
 const key = (repo: string, n: number) => `${repo.toLowerCase()}#${n}`;
 
