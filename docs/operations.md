@@ -248,7 +248,9 @@ Every job of a task runs in `<work_dir>/tasks/<identifier>` (default `~/aidenhq-
 (deleting it on 2026-11-22 failed every Engineer job with EACCES until it was restored). The kernel's disk sweep (`kernel/src/workspaces.ts`, every 15 minutes) removes each
 of those folders, and check folders a dead kernel left in `checks/`, once nothing live uses it (no running job, no box not yet released) and its task has been done or
 cancelled for a day, or it has been idle for 3 days whatever the task's state (a resumed task clones again and starts a fresh
-session). When a disk is over 80% used the limits drop to a day idle and closed at all. Docker is bounded by
+session). When a disk is over 80% used the limits drop to a day idle and closed at all. Every job box shares one npm cache,
+`<work_dir>/.cache/npm` (packages filed by their integrity hash; `node_modules` and build output stay in the task folder); the
+sweep starts it afresh weekly, or at once over 80%, while no job runs. Docker is bounded by
 `prune-docker.timer` (Backups above); Paperclip's dumps, journald (its default cap), `~/checkpoints` (the last generations)
 and the skill runtimes are bounded where they are made. `DiskSpaceLow` (80%) and `DiskNearlyFull` (95%) file Fleet Ops
 tasks for the Fleet Steward; neither tells the owner.

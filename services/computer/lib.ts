@@ -230,13 +230,24 @@ export const COMMIT_MSG_HOOK = '#!/bin/sh\nexec git interpret-trailers --in-plac
  * is created by Docker as root, and a hook then can't be written into it (EACCES on every repo command).
  */
 export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir, roles = [] }: { resolvConf: string; workspace: string; outDir: string; codexHome: string; runnerWork: string; repo: string; engineDir: string; roles?: string[] }) {
+  // The shared npm cache: made here as the launcher's user (Docker would make a missing bind source as root).
+  mkdirSync(npmCacheDir(runnerWork), { recursive: true });
   const hooks = path.join(runnerWork, ".guard-hooks");
   mkdirSync(hooks, { recursive: true });
   writeFileSync(path.join(hooks, "commit-msg"), COMMIT_MSG_HOOK, { mode: 0o755 });
   // `repo-checkout` is in the box only for a job frozen with its role: a command the box can't use is a dead end.
   const checkout = mayCheckout({ roles }) ? [`${path.join(repo, "services/computer/images/agent-base/repo-checkout")}:/usr/local/bin/repo-checkout:ro`] : [];
-  return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
+  return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`, `${npmCacheDir(runnerWork)}:${NPM_CACHE}`];
 }
+
+/**
+ * Every job box's npm cache (npm_config_cache), shared by all tasks: npm's content-addressed store, where a package is filed
+ * under its integrity hash and checked against it on every read, so a task's install takes what any task fetched before
+ * instead of downloading it again, and the task folders stop carrying a copy each. `node_modules` and build output stay in the
+ * task's own folder. The disk sweep (kernel/src/workspaces.ts) starts it afresh weekly, and at once under disk pressure.
+ */
+export const npmCacheDir = (runnerWork: string) => path.join(runnerWork, ".cache", "npm");
+const NPM_CACHE = "/opt/aidenhq/npm-cache";
 
 /** A job box's HOME (outside every clone); its wrappers (the image's /opt/aidenhq/bin) first on its PATH. */
 export const JOB_HOME = "/workspace/.aidenhq/home";
@@ -244,7 +255,7 @@ const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/loca
 
 /** Every name a job box's env file may hold: the job's revocable token and plain settings. */
 export const JOB_ENV_NAMES = [
-  "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH", "npm_config_cache",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
 ];
@@ -264,6 +275,7 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }: { token: s
     HOME: JOB_HOME, AIDENHQ_TASK_WORKTREE: "/workspace", // the task folder, as on the host (its .aidenhq/out/ is attached)
     CODEX_HOME: "/codex-home",
     PATH: JOB_PATH,
+    npm_config_cache: NPM_CACHE,
     GIT_AUTHOR_NAME: clean(identity.name), GIT_AUTHOR_EMAIL: clean(identity.email),
     GIT_COMMITTER_NAME: clean(identity.name), GIT_COMMITTER_EMAIL: clean(identity.email),
     GIT_TERMINAL_PROMPT: "0",

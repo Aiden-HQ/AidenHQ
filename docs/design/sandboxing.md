@@ -35,14 +35,24 @@ host: a repo's checks are check jobs.
 - **Network.** `ops/vm/computer-net.sh` isolates the network: no traffic between boxes (`enable_icc=false`), and an
   nft table that drops anything addressed to the host (its LAN, tailnet and bridge addresses) except the launcher's
   gateway port. Boxes keep the public Internet.
-- **Mounts.** The task workspace, an out folder, the per-task Codex home, read-only guard hooks and the engine module
-  (read-only). `repo-checkout` is mounted only for a job whose roles include it. A check box gets only its snapshot (no
+- **Mounts.** The task workspace, an out folder, the per-task Codex home, read-only guard hooks, the engine module
+  (read-only) and the npm cache every job box shares (`npm_config_cache`: npm's content-addressed store, each package
+  checked against its integrity hash on read; a job's own `node_modules` and build output stay in its task folder). The
+  shared cache is writable by every job box, so one task's box could plant metadata another task's lockfile-less
+  `npm install` reads: the same trust as the agents themselves (own agents are trusted; the box is the boundary). `repo-checkout` is mounted only for a job whose roles include it. A check box gets only its snapshot (no
   `.git`, no credentials; read-only when the recipe says so) and its out folder.
 - **Codex inside.** The box is the boundary, so Codex's own sandbox is off (`danger-full-access`, approval `never`;
   [codex-openrouter-engine.md](codex-openrouter-engine.md)). A job whose agent sets `web_search: disabled` gets no web search.
 - **Lifecycle.** The kernel owns the box: it asks the launcher (`POST /job`, bearer `launcher_kernel_key`), renews the
   lease every 5 minutes (the launcher's lease is 15), and releases it when the job ends; a kernel restart re-adopts from
-  the job rows. A box with a lapsed lease is destroyed. Check jobs use `POST /check`.
+  the job rows. A box with a lapsed lease is destroyed. One box per task, leased to one job at a time (the lease is the job
+  id and a generation, kept in the launcher's `jobs.json` and the job row, so a late renew or release of an earlier job
+  never touches the next one's). A released box is parked for the task's next job: its token is revoked, it is restarted
+  (nothing the job started runs on; files and mounts stay) and its env file and out folder are cleared. The task's next job
+  leases it when its `docker run` line and mounted folders are the same (`compatKey`: image, engine, roles, the very
+  workspace and Codex home folders), else it goes and a new box starts. A job that never ran, or asked for its workspace to
+  go (`aidenhq cleanup`), destroys its box. A parked box goes after 30 minutes idle (`WARM_MS`). Check jobs use
+  `POST /check`, one box per run, always destroyed.
 - **Pool.** `settings.computers_max` (1 to 64; unset, the host's RAM in GB divided by 1.5, 4 to 64, worked out at compile
   time: boxes mostly wait on model calls and use 0.3 to 0.45 GB each) is how many agent jobs run at once, and
   `settings.check_computers_max` (1 to 64, default 32) how many check jobs (code review, CI checks) do: a check's box mostly

@@ -38,7 +38,7 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_CHECK_MIN, WARM_MS, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
+import { MAX_CHECK_MIN, WARM_MS, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, npmCacheDir, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 
 type Failure = Error & { status?: number };
@@ -277,7 +277,7 @@ const jobControl = {
     jobFolder(state, path.join(CFG.runnerState, engine), `${agentId}/${issueId}`.replace(/[^\w.-]/g, "_"));
     const codexHome = state;
     const runArgs = (name: string, outDir: string) => dockerRunArgs({ name, image: tag, agentId, network: CFG.network, limits: CFG.limits, mounts: jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork: CFG.runnerWork, repo, engineDir: entry.dir, roles }), user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME });
-    const compat = compatKey(runArgs("", "/aidenhq-out"), [workspace, codexHome]);
+    const compat = compatKey(runArgs("", "/aidenhq-out"), [workspace, codexHome, npmCacheDir(CFG.runnerWork)]);
     const envText = jobEnvFile({ token, mcp, gatewayUrl: GATEWAY_URL, identity });
     // One box per task, leased to one job at a time. A box still parking is waited for; a box leased to a job is never shared.
     let before = jobs.byIssue(issueId);

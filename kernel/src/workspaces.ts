@@ -6,7 +6,10 @@
 //                                        engines with per-task state. stateDir (default ~/.local/state/aidenhq-runner) is the
 //                                        kernel's LIVE job state despite its name: it and each engine folder in it are never
 //                                        removed, only these per-task homes, which the next job's engineState makes again;
-//   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left by a kernel that died mid-check.
+//   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left by a kernel that died mid-check;
+//   <workDir>/.cache/npm                 every job box's shared npm cache (services/computer/lib.ts npmCacheDir): started
+//                                        afresh once it is CACHE_DAYS old, or under pressure, while no job is live (a parked
+//                                        box still mounting the old one never fits a job again: its folder is gone).
 // A folder goes when nothing live uses it (no admitted or running job, no box released less than a day ago; no running check
 // of that attempt) and either its task has been done or cancelled for CLOSED_DAYS with no job started since (and the control plane confirms it), or it has been
 // idle (its last job's end, or the folder's mtime when no job names it) for IDLE_DAYS whatever the task's state: an idle task
@@ -19,10 +22,11 @@
 import { lstatSync, mkdirSync, readdirSync, renameSync, statfsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { npmCacheDir } from "../../services/computer/lib.ts";
 import { checkAttempt } from "./checkjobs.ts";
 import { removeTree, trashAway } from "./trash.ts";
 
-export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8;
+export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8, CACHE_DAYS = 7;
 /** How long the closed rule waits on the control plane's answer before it counts as none. */
 export const LOOKUP_MS = 10_000;
 const DAY = 86_400_000;
@@ -140,6 +144,11 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
       // Off the event loop: chmod first (read-only Go module caches, an overlay's mode-000 work dir), then remove.
       try { statSync(trash); } catch { continue; }
       await removeTree(trash).catch((e: Error) => log("trash not removed", { trash, err: e.message }));
+    }
+    // The shared npm cache, started afresh (the next job's box makes it again).
+    const cache = npmCacheDir(workDir), born = (() => { try { return statSync(cache).birthtimeMs; } catch { return undefined; } })();
+    if (born !== undefined && (pressure || now() - born > CACHE_DAYS * DAY) && !stopping() && !db.prepare("SELECT 1 FROM jobs WHERE state IN ('admitted', 'running') LIMIT 1").get()) {
+      try { trashAway(cache, join(workDir, ".cache", ".trash"), log); log("shared npm cache started afresh", { cache, ...(pressure ? { pressure: true } : {}) }); } catch (e) { log("shared npm cache not removed", { cache, err: (e as Error).message }); }
     }
     return { removed, pressure };
   };
