@@ -234,13 +234,14 @@ R='rsync -aHAX --numeric-ids --info=progress2'
 $R <you>@old:aidenhq/ ~/aidenhq/                       # checkout, .env, config/, data/ (Paperclip's db/ only as a basis)
 $R <you>@old:aidenhq-instance/ ~/aidenhq-instance/
 $R <you>@old:aidenhq-work/ ~/aidenhq-work/
+mkdir -p ~/.local/state
 $R <you>@old:.local/state/aidenhq-runner/ ~/.local/state/aidenhq-runner/
 $R <you>@old:.local/state/aidenhq-computers/ ~/.local/state/aidenhq-computers/
 $R --exclude=/authorized_keys <you>@old:.ssh/ ~/.ssh/
 $R <you>@old:.gitconfig ~/.gitconfig
 $R <you>@old:.codex/ ~/.codex/
 $R <you>@old:.config/gh/ ~/.config/gh/
-$R <you>@old:.local/state/gh/ ~/.local/state/
+$R <you>@old:.local/state/gh/ ~/.local/state/gh/
 $R <you>@old:notes/ ~/notes/                             # the folders VAULT_DIR and TRANSCRIPTS_DIR name
 ```
 
@@ -334,6 +335,7 @@ On the new host:
    $R --exclude=/.env --exclude=/compose.override.yaml <you>@old:aidenhq/ ~/aidenhq/   # edited below (or ahead)
    $R <you>@old:aidenhq-work/ ~/aidenhq-work/
    $R <you>@old:.local/state/aidenhq-runner/ ~/.local/state/aidenhq-runner/
+   $R <you>@old:.local/state/gh/ ~/.local/state/gh/
    # the remaining step 4 paths too
    ```
 

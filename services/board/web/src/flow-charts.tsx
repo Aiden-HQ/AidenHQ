@@ -70,18 +70,18 @@ export function TipBody({ head, rows, foot }: { head: React.ReactNode; rows?: [R
 }
 
 /* ----------------------------------------------------------------------------- sizing and scales */
-export function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
-  const ref = useRef<T>(null);
+/** A callback ref plus the node's width: it measures whenever the node appears (a chart that mounted empty gets its plot later). */
+export function useWidth<T extends HTMLElement>(): [(el: T | null) => void, number] {
+  const [el, setEl] = useState<T | null>(null);
   const [w, setW] = useState(0);
   useLayoutEffect(() => {
-    const el = ref.current;
     if (!el) return;
     setW(el.clientWidth);
     const ro = new ResizeObserver(() => setW(el.clientWidth));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
-  return [ref, w];
+  }, [el]);
+  return [setEl, w];
 }
 
 /** Round axis ticks from 0 to a little over `max`. */

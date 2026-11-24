@@ -8,6 +8,8 @@
 #   volumes   every app volume (app-*), with its labels so the app's next deploy adopts it. A Postgres cluster that a
 #             running container uses is skipped: its app's dumps carry it (the warehouse dumps nightly into
 #             app-warehouse_backups, which is copied).
+#   (A running Postgres cluster or Paperclip without a fresh dump is listed as `unrecoverable=` in MANIFEST: the rest is still
+#    written, then the script exits 1.)
 #   config    system, routing, paperclip and runner YAML, and the instance repo as a git bundle.
 # Every SQLite database in data and runner is also copied online (SQLite's backup API); restore puts that copy over the
 # file copy. Files are read through a container, so root-owned ones (the apps node's state) are included without sudo.
@@ -31,7 +33,7 @@ config="$(cd "${AIDENHQ_CONFIG_DIR:-./config}" && pwd)"
 state=; [ ! -f "$config/runner.yaml" ] || state="$(sed -n 's/^state_dir:[[:space:]]*//p' "$config/runner.yaml" | tr -d "\"'" | head -1)"
 state="${state:-~/.local/state/aidenhq-runner}"; state="${state/#\~/$HOME}"
 out_dir="${args[0]:-$repo/backups}"
-mkdir -p "$out_dir"
+mkdir -p "$out_dir"; out_dir="$(cd "$out_dir" && pwd)" # absolute: git -C below resolves paths against the instance checkout
 stamp="$(date +%Y%m%d-%H%M%S)"
 final="$out_dir/aidenhq-$stamp"
 work="$out_dir/.aidenhq-$stamp.part"
@@ -44,13 +46,24 @@ IMG=postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292
 running="$(docker compose --env-file "$env_file" ps --status running --services 2>/dev/null || true)"
 paperclip_running=no; echo "$running" | grep -qx paperclip && paperclip_running=yes
 
-# Volumes to copy: a Postgres cluster that a running container uses is skipped.
+# Volumes to copy. A Postgres cluster (a PG_VERSION file anywhere in the volume) that a running container uses is skipped when
+# its app's <project>_backups volume holds a non-empty *.dump from the last two days. Without one it is still copied (best
+# effort, not consistent) and recorded in `unrecoverable`: the backup completes, then this script exits 1 so nobody reads it as a success.
+unrecoverable=()
 vols=()
 app_vols="$(docker volume ls -q --filter name='^app-')"
 for v in $app_vols; do
-  if [ -n "$(docker ps -q --filter volume="$v")" ] && docker run --rm -v "$v:/v:ro" "$IMG" test -f /v/PG_VERSION; then
-    echo "  volume $v: a live Postgres cluster, skipped (its app's dumps carry it)"
-  else vols+=("$v"); fi
+  if [ -n "$(docker ps -q --filter volume="$v")" ] && [ -n "$(docker run --rm -v "$v:/v:ro" "$IMG" find /v -name PG_VERSION -print -quit)" ]; then
+    bv="$(docker volume inspect -f '{{index .Labels "com.docker.compose.project"}}' "$v")_backups"
+    if docker volume inspect "$bv" >/dev/null 2>&1 \
+      && docker run --rm -v "$bv:/b:ro" "$IMG" sh -c "find /b -name '*.dump' -size +0 -mtime -2 | grep -q ." 2>/dev/null; then
+      echo "  volume $v: a live Postgres cluster, skipped (its app's dumps carry it)"
+      continue
+    fi
+    echo "  WARNING: volume $v is a live Postgres cluster with no fresh dump in $bv; copied as is, not recoverable" >&2
+    unrecoverable+=("$v")
+  fi
+  vols+=("$v")
 done
 
 # Refuse to start without room: the sources' size (read in a container, so root-owned files count) x1.2 plus 20 GB.
@@ -126,9 +139,12 @@ if [ -n "$primer_db" ]; then
 fi
 if [ "$paperclip_running" = yes ]; then
   snapshot data "$data" ${skip[@]+"${skip[@]}"}
-  latest_dump="$(ls -1t "$data"/paperclip/instances/*/data/backups/* 2>/dev/null | head -1 || true)"
-  [ -n "$latest_dump" ] && echo "  Paperclip is running: its database comes from dump $(basename "$latest_dump")" \
-    || echo "  WARNING: Paperclip is running and has no DB dump yet; stop the stack for a full backup"
+  latest_dump="$(find "$data"/paperclip/instances/*/data/backups -type f -size +0 -mtime -2 2>/dev/null | head -1 || true)"
+  if [ -n "$latest_dump" ]; then echo "  Paperclip is running: its database comes from dump $(basename "$latest_dump")"
+  else
+    echo "  WARNING: Paperclip is running and has no fresh DB dump (under two days old); its database is not in this backup (stop the stack for a full one)" >&2
+    unrecoverable+=("paperclip")
+  fi
 else
   snapshot data "$data" ${skip[@]+"${skip[@]}"}
 fi
@@ -154,6 +170,10 @@ for f in system.yaml routing.yaml paperclip.yaml runner.yaml; do
   [ -f "$config/$f" ] && cp "$config/$f" "$work/config/"
 done
 
-printf 'format=3\ncreated=%s\nhost=%s\npaperclip_running=%s\nrunner_state=%s\n' "$stamp" "$(hostname)" "$paperclip_running" "$state" >"$work/MANIFEST"
+printf 'format=3\ncreated=%s\nhost=%s\npaperclip_running=%s\nrunner_state=%s\nunrecoverable=%s\n' "$stamp" "$(hostname)" "$paperclip_running" "$state" "${unrecoverable[*]:-}" >"$work/MANIFEST"
 mv "$work" "$final"
 echo "Done: $final ($(du -sh "$final" | cut -f1))"
+if [ "${#unrecoverable[@]}" -gt 0 ]; then
+  echo "error: INCOMPLETE backup, no recoverable database for: ${unrecoverable[*]} (listed in MANIFEST as unrecoverable=)" >&2
+  exit 1
+fi
