@@ -4,7 +4,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGate } from "../gate.ts";
@@ -96,6 +96,23 @@ const hit = (port: number, host: string, path: string, { method = "GET", cookie,
     q.on("error", no);
     q.end(method === "POST" ? "{}" : undefined);
   });
+
+test("the image ships every file the gate imports at runtime (main.ts's own imports included)", () => {
+  // The gate runs the TypeScript directly: a module main.ts imports that the Dockerfile's COPY list omits is an image that
+  // exits on start with ERR_MODULE_NOT_FOUND, taking ordinary app access down with it.
+  const dir = new URL("..", import.meta.url).pathname;
+  const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf8");
+  const copied = new Set((dockerfile.match(/^COPY\s+([^\n]+?)\s+\.\/?$/gm) ?? []).flatMap((l) => l.trim().split(/\s+/).slice(1, -1)));
+  const seen = new Set<string>(), queue = ["main.ts", "gate.ts"];
+  while (queue.length) {
+    const f = queue.pop()!;
+    if (seen.has(f)) continue;
+    seen.add(f);
+    const src = readFileSync(join(dir, f), "utf8");
+    for (const m of src.matchAll(/from\s+"(\.\/[^"]+)"/g)) queue.push(m[1]!.replace(/^\.\//, ""));
+  }
+  for (const f of seen) assert.ok(copied.has(f), `${f} is imported at runtime but the Dockerfile doesn't copy it`);
+});
 
 test("with no settings.edge.test_user the capability is inert: nothing binds, and a bound listener serves no page", async () => {
   assert.equal(testListenerOn({ ...cfg, test_user: undefined }), false);
@@ -241,14 +258,15 @@ test("a revoked or expired session is 401 and no page; the app's own cookie is n
   try {
     assert.equal((await hit(port, `roadmap.${CANARY_BASE}`, "/", { cookie: `${CANARY_COOKIE}=${COOKIE}` })).status, 401);
   } finally { deny.close(); deny.closeAllConnections?.(); }
-  // An app trying to plant the listener's cookie (or any __Host- cookie) has it stripped.
-  const plant = createServer((q, s) => s.writeHead(200, { "set-cookie": [`${CANARY_COOKIE}=planted; Path=/; Secure`, "theme=dark"] }).end("ok"));
+  // An app trying to plant the listener's own cookie has it stripped; its own cookies (a __Host- CSRF token included) pass,
+  // as they do at the public gate, so a form's own check works on the canary.
+  const plant = createServer((q, s) => s.writeHead(200, { "set-cookie": [`${CANARY_COOKIE}=planted; Path=/; Secure`, "__Host-csrf=app-token; Path=/; Secure", "theme=dark"] }).end("ok"));
   const plantPort = await listen(plant);
   const roadmapPort = cfg.hosts[`roadmap.${CANARY_BASE}`].port;
   cfg.hosts[`roadmap.${CANARY_BASE}`] = { app: "roadmap", port: plantPort };
   try {
     const r = await hit(lPort, `roadmap.${CANARY_BASE}`, "/", { cookie: `${CANARY_COOKIE}=${COOKIE}` });
     assert.equal(r.status, 200);
-    assert.deepEqual(r.cookies, ["theme=dark"]);
+    assert.deepEqual(r.cookies, ["__Host-csrf=app-token; Path=/; Secure", "theme=dark"]);
   } finally { cfg.hosts[`roadmap.${CANARY_BASE}`] = { app: "roadmap", port: roadmapPort }; plant.close(); plant.closeAllConnections?.(); }
 });

@@ -9,10 +9,17 @@ import { createTestListenerReconciler } from "./test-listener.ts";
 const file = process.env.GATE_CONFIG ?? "/config/gate.json";
 let cfg: GateConfig, mtime = -1;
 const config = (): GateConfig => {
-  const m = statSync(file).mtimeMs;
-  if (m !== mtime) {
-    cfg = JSON.parse(readFileSync(file, "utf8")) as GateConfig; // compiled by scripts/edge.ts at the owner's apply
-    mtime = m;
+  // The compile writes gate.json in place, so a read can land mid-write. A partial file keeps the last good config (the gate
+  // never serves from half a file), and `mtime` is left alone so the next call reads the finished one. Before the first good
+  // read there is nothing to fall back to, and that error is the gate's to raise.
+  try {
+    const m = statSync(file).mtimeMs;
+    if (m !== mtime) {
+      cfg = JSON.parse(readFileSync(file, "utf8")) as GateConfig; // compiled by scripts/edge.ts at the owner's apply
+      mtime = m;
+    }
+  } catch (e) {
+    if (!cfg) throw e;
   }
   return cfg;
 };
