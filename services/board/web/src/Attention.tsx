@@ -1,6 +1,8 @@
 // The fleet header on Tasks: how many tasks need you, failed, or sit idle with nothing to wake them (the kernel's counts), and
 // the tasks themselves, oldest first. Every row shows the kernel's task state and nothing the board worked out.
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { AnswerForm } from "./AnswerForm";
+import { api } from "./api";
 import { useLive } from "./events";
 import { QUERIES, useQuery } from "./queries";
 import { ago } from "./util";
@@ -27,23 +29,47 @@ const toYou = (i: Item) => {
 
 /**
  * `compact` (Agent work, whose lanes already show these tasks): one line of counts, each opening its list in place; the
- * list starts closed. Otherwise (My day) the counts and the list, open.
+ * list starts closed. Otherwise (My day) the counts and the list, open on Needs you: a row with an open question answers it in place.
  */
 export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; compact?: boolean }) {
   const q = useQuery(QUERIES.needsYou, onSignIn);
   useLive(["approvals", "chat", "tasks"], q.reload, 30_000);
   const [chosen, setChosen] = useState<Which | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const headRef = useRef<HTMLElement>(null);
   const d = q.data;
   if (!d) return null;
   const n: Record<Which, number> = { needs: d.counts.needs_you, failed: d.counts.failed, idle: d.counts.unexplained_idle };
-  const which = chosen ?? (n.needs ? "needs" : n.failed ? "failed" : n.idle ? "idle" : "needs");
+  const which = chosen ?? (compact ? (n.needs ? "needs" : n.failed ? "failed" : n.idle ? "idle" : "needs") : "needs");
   const rows = d.items.filter(IN[which]);
+  /** After an answer: the next row's first control, else the heading, so the keyboard never lands on a removed row. */
+  const moveOn = (identifier: string) => {
+    const els = [...(listRef.current?.querySelectorAll<HTMLElement>(".attn-row") ?? [])];
+    const next = els[els.findIndex((e) => e.dataset.task === identifier) + 1];
+    (next?.querySelector<HTMLElement>("button, input") ?? headRef.current)?.focus();
+  };
   const list = rows.length > 0 && (
-    <div className="attn-list">
+    <div className={`attn-list${rows.some((i) => i.ask) ? " asks" : ""}`} ref={listRef}>
       <ListRows>
-        {rows.map((i) => (
-          <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />
-        ))}
+        {rows.map((i) => {
+          const ask = needsOwner(i.state) ? i.ask : undefined;
+          if (!ask) return <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} note={toYou(i) || undefined} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />;
+          return (
+            <div key={i.identifier} className="attn-row" data-task={i.identifier}>
+              <b className="attn-q">{ask.question || i.title}</b>
+              <div className="attn-meta">
+                <span>{i.agent}</span>
+                <a href={`#/t/${i.identifier}`}>{i.identifier}</a>
+                <time title={new Date(ask.waitSince).toLocaleString()}>{ago(ask.waitSince)}</time>
+              </div>
+              <AnswerForm
+                questions={ask.questions}
+                askedAbove
+                onAnswer={(text) => api.answer(i.identifier, text, ask.waitSince).then(() => (void q.reload(), moveOn(i.identifier)))}
+              />
+            </div>
+          );
+        })}
       </ListRows>
     </div>
   );
@@ -67,7 +93,7 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
   return (
     <section className="attn" aria-label="What needs attention">
       <div className="attn-head">
-        <b className="attn-title">Fleet attention</b>
+        <b className="attn-title" tabIndex={-1} ref={headRef}>Fleet attention</b>
         <Segmented
           label="Needs attention"
           value={which}
@@ -76,7 +102,7 @@ export function AttentionStrip({ onSignIn, compact }: { onSignIn: () => void; co
         />
         <span className="attn-order">oldest first</span>
       </div>
-      {list}
+      {list || <p className="attn-none">{EMPTY[which]}</p>}
     </section>
   );
 }
