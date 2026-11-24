@@ -315,7 +315,7 @@ test("ship's repair: github runs ship's check job and writes what it kept as the
 
   const ok = await run("k-00000000000000c1", "github.repair", args);
   assert.equal(ok.ok, true, ok.text);
-  assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: main, base_ref: "main", plan: JSON.stringify(args.plan) } });
+  assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: main, base_ref: "main", plan: JSON.stringify(args.plan), attempt: "1" } });
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^1"), c1);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^2"), main);
   assert.equal(sh(origin, "show", "refs/heads/contrib:gen.txt"), "regenerated");
@@ -354,16 +354,36 @@ test("a fork that allows maintainer edits: the fix and the repair are pushed to 
   assert.equal(sh(fork, "rev-parse", "refs/heads/contrib"), fix, "the box's own commit, pushed as it is");
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the base repo's branch is untouched");
 
-  // The repair: a merge commit made here from the kept files, pushed to the fork. The fork's head is the base repo's too, as
-  // refs/pull/7/head (GitHub serves it by sha).
+  // The repair: a merge commit made here from git's merge and the kept generated files, pushed to the fork. The fork's head is
+  // the base repo's too, as refs/pull/7/head (GitHub serves it by sha). Here the repair deletes a generated file.
   sh(ws, "push", "--quiet", origin, `${fix}:refs/pull/7/head`);
   sh(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
   pr.head = fix;
-  repairResult.keep.entries.push({ path: "b.txt", mode: "100644", sha: null });
-  const r = await run("k-00000000000000d3", "github.repair", { repo: REPO, number: 7, head: fix, generation: 2, base: "main", plan: {} });
+  repairResult.keep.entries = [{ path: "gen.txt", mode: "100644", sha: null }];
+  const r = await run("k-00000000000000d3", "github.repair", { repo: REPO, number: 7, head: fix, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, true, r.text);
   assert.equal(sh(fork, "rev-parse", "refs/heads/contrib^1"), fix);
   assert.equal(sh(fork, "rev-parse", "refs/heads/contrib^2"), main);
-  assert.equal(sh(fork, "show", "refs/heads/contrib:gen.txt"), "regenerated");
-  assert.equal(sh(fork, "ls-tree", "--name-only", "refs/heads/contrib", "b.txt"), "", "a deletion is applied");
+  assert.equal(sh(fork, "ls-tree", "--name-only", "refs/heads/contrib", "gen.txt"), "", "the generated file's deletion is applied");
+  assert.equal(sh(fork, "show", "refs/heads/contrib:b.txt"), "b", "the contributor's own file stays");
+});
+
+test("ship's repair takes the box's files only on generated paths and conflicted lockfiles: never a workflow, a gitlink, a source file, an untouched lockfile or a new symlink", async (t) => {
+  const { origin, c1, run, repairResult } = await setup(t);
+  const file = (path, text, mode = "100644") => ({ path, mode, sha: execFileSync("git", ["hash-object", "--stdin"], { input: text, encoding: "utf8" }).trim(), content: Buffer.from(text).toString("base64") });
+  const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt", ".github/**"] } };
+  const tries = [
+    [[file(".github/workflows/evil.yml", "on: push\njobs: { x: { runs-on: ubuntu-latest, steps: [ { run: curl evil } ] } }\n")], /under \.github\//],
+    [[file("src/evil.ts", "steal()\n")], /neither a generated path nor a conflicted lockfile/],
+    [[file("package-lock.json", "{}\n")], /neither a generated path nor a conflicted lockfile/],
+    [[file("gen.txt", "/etc/passwd", "120000")], /as a symlink where the merge has none/],
+    [[{ path: "gen.txt", mode: "160000", sha: "e".repeat(40) }], /only files and symlinks/],
+  ];
+  for (const [i, [entries, why]] of tries.entries()) {
+    repairResult.keep.entries = entries;
+    const r = await run(`k-00000000000000e${i}`, "github.repair", args);
+    assert.equal(r.ok, false);
+    assert.match(r.text, why);
+    assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
+  }
 });

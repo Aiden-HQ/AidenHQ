@@ -41,6 +41,24 @@ interface Schedule {
   timezone?: string;
   label?: string;
 }
+/** A recurring task's schedule on its agent's Settings: its cadence in words, the next run (none when paused) and the task to manage it on. */
+export interface RecurringRow {
+  agent: string;
+  title: string;
+  task: string;
+  summary: string;
+  paused: boolean;
+  /** The zone its schedule runs in (Paperclip's trigger). */
+  zone?: string;
+  next?: string;
+}
+
+/** What wakes an event routine: its connection's events (resource) that match the filter. */
+export interface Wakes {
+  connection: string;
+  resource?: string;
+  filter?: Record<string, unknown>;
+}
 interface CompiledRoutine {
   title?: string;
   agent?: string;
@@ -48,6 +66,7 @@ interface CompiledRoutine {
   model?: string;
   status?: string;
   webhook?: boolean;
+  event?: Wakes;
 }
 interface CompiledAgent {
   name?: string;
@@ -90,8 +109,10 @@ export interface Grants {
 }
 
 export interface Sources {
-  /** Each routine's live Paperclip row by its compiled key (setup's ids): pause and resume are Paperclip's, shown as they are. */
-  live?: Record<string, { id: string; paused: boolean }>;
+  /** Each routine's live Paperclip row by its compiled key (setup's ids): pause and resume are Paperclip's, shown as they are; `next` is an active schedule's next run, `wakes` an event routine's applied subscription. */
+  live?: Record<string, { id?: string; paused?: boolean; next?: string; wakes?: Wakes }>;
+  /** The board's recurring tasks by the agent key that runs them (the view's `recurring` rows). */
+  recurring?: RecurringRow[];
   /** config/paperclip.yaml, parsed; null when the board can't read it (not mounted yet). */
   compiled: Compiled | null;
   catalog: CatalogEntry[];
@@ -192,7 +213,7 @@ export function settingsView(s: Sources) {
     const g = grantsByKey.get(key);
     const routines = Object.entries(c.routines ?? {})
       .filter(([, r]) => r.agent === key)
-      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.webhook ? { webhook: true } : {}), ...(s.live?.[rk] ?? {}), defaults: defaultsOf("routines", rk, ["schedules", "model"]) }));
+      .map(([rk, r]) => ({ key: rk, title: r.title ?? rk, schedules: (r.schedules ?? []).map((x) => ({ cron: x.cron ?? "", timezone: x.timezone ?? "", label: x.label ?? "" })), ...(r.model ? { model: r.model } : {}), ...(r.webhook ? { webhook: true } : {}), ...(r.event ? { wakes: "not_applied" as Wakes | "not_applied" } : {}), ...(s.live?.[rk] ?? {}), defaults: defaultsOf("routines", rk, ["schedules", "model"]) }));
     return {
       key,
       name: a.name ?? key,
@@ -211,6 +232,7 @@ export function settingsView(s: Sources) {
       ...(a.team ? { team: a.team.name } : {}),
       ...(a.member_of ? { memberOf: a.member_of } : {}),
       routines,
+      recurring: (s.recurring ?? []).filter((x) => x.agent === key).map(({ agent: _a, ...r }) => r),
       graded: Boolean(g?.graded),
       roles: a.roles ?? [],
       defaults: defaultsOf("agents", key, ["model", "reasoning_effort", "heartbeat"]),

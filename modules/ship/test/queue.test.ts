@@ -46,6 +46,8 @@ test("a ready PR on a queue branch is enqueued once, bound to head and base, and
   assert.equal(w.of("POST /v1/writes")[0]!.body.kind, "github.enqueue");
   assert.deepEqual(w.of("POST /v1/writes")[0]!.body.args, { repo: "a/b", number: 7, head: H1, base: "main", generation: 1, attempt: 1 });
   assert.equal(w.of("POST /v1/writes").length, 1, "no direct merge");
+  assert.equal(w.of("POST /v1/writes")[0]!.body.task, "task-1", "filed on the adoption's quiet records task");
+  assert.equal(w.of("POST /v1/tasks").length, 1);
   // Queued: decide says wait while it is in the queue; then it lands.
   w.records["rec-1"] = { state: "done" };
   await round(w.deps as any, w.pr(), { do: "wait", why: "in the merge queue" }, { queue: true });
@@ -71,7 +73,7 @@ test("removed from the queue: a conflict is repaired and queued again; its own r
   w.records["rec-3"] = { state: "done" };
   // Removed for a red required check on the merge_group run that is the PR's own: a CI fix round.
   await round(w.deps as any, w.pr({ head: H2 }), ready, { queue: true, groupFailing: ["test"], onBase: [] });
-  assert.equal(of(w, "POST /v1/tasks").length + of(w, "POST /v1/wakes").length, 1);
+  assert.equal(of(w, "POST /v1/tasks").filter((c) => !/:records$/.test(c.body.source)).length + of(w, "POST /v1/wakes").length, 1, "one Engineer job beside the records task");
   // Failing on the base too: queued once more, then a visible wait.
   const x = world();
   await round(x.deps as any, x.pr(), ready, { queue: true });

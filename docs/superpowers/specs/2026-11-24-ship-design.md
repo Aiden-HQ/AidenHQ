@@ -178,14 +178,19 @@ Merge credit and grading read it, as today. Closing an abandoned PR and deleting
 opened. Cancelling a ship task for a handed-over PR ends the adoption and never closes the PR or touches its ref. Dependabot
 tasks that github filed move to ship in the move's data migration, with task ownership transferred.
 
-**Forks (owner).** An external PR is a fork. Nothing runs on it until a member triggers it, under any `handoff` mode:
+**Forks (owner).** An external PR is a fork. Nothing runs on it until a member triggers it (under `handoff: label` or `all`;
+`none` is the fleet's own PRs only):
 - **Trigger.** A member's `ship` label or `/ship` comment adopts the fork PR. Only members' triggers count: write access, by the
   existing trusted-role check.
 - **Review.** Adoption calls code review's existing ask path, so the review starts too. Code review's `forks: manual` holds
   every fork until then. `aiden review` still triggers a review alone.
 - **After adoption.** Ship reviews, reports, approves and merges the fork like any other PR.
-- **Pushes.** Ship pushes repairs only when the PR allows maintainer edits (`maintainer_can_modify`), as the App. Otherwise a
-  needed push becomes a `hold`, with a note asking the contributor to enable edits or rebase.
+- **Code.** A fork's head is read from the base repo (`refs/pull/<n>/head`): the repair snapshots it by sha, and the Engineer's
+  `aidenhq ship checkout` fetches it the same way.
+- **Pushes.** Ship pushes only when the PR allows maintainer edits (`maintainer_can_modify`): a `git push --force-with-lease`
+  onto the fork's head branch with the base repo's App installation token. These commits are unsigned; a repo whose rules
+  require signed commits refuses them, and the PR holds with GitHub's reason. Without maintainer edits a needed push becomes a
+  `hold`, with a note asking the contributor to enable edits or rebase.
 - **No replacement PRs.**
 
 ### 3. Rounds
@@ -207,13 +212,18 @@ one PR.
 2. **Queued.** In the repo's merge queue: nothing touches the branch. Ship reads the merge group's checks.
 3. **`repair`.** Conflicting, behind under `rebase: behind`, or behind where the rules require up-to-date branches.
    - First GitHub's update-branch, with `expected_head_sha`.
-   - On a conflict, the task runs `aidenhq ship repair <pr>` in its computer: a script, no model.
-     1. Merge the base.
-     2. For every conflicted path in the generated globs, take the base side.
-     3. Run the generator in the task's computer, like any repo command.
-     4. Revert whitespace-only lockfile changes.
-     5. Commit the result (§4).
-   - Leftover conflicts wake the Engineer.
+   - On a conflict, ship files `github.repair`: ship's `ship-repair` check job (a kernel check job: a credential-free box, no
+     model, no task) and github's write of its result.
+     1. In the box, merge the base into the head (from the head, base and merge-base snapshots).
+     2. For every conflicted path in the generated globs that a generate command covers, take the base side; a conflicted
+        npm, pnpm or Go lockfile takes the base side and its package manager rewrites it.
+     3. Run the generators, and revert whitespace-only lockfile changes.
+     4. Keep the files that change on top of the head.
+     5. github re-makes the merge itself (`git merge-tree`) and takes the box's files only where they differ from it on a
+        generated path or a known lockfile, as regular files or symlinks, never under `.github/` unless they are the base's;
+        every conflict must be on such a path. It writes one merge commit (§4).
+   - Leftover conflicts, or a failed generator, wake the Engineer once per head. A run that didn't finish is asked for once
+     more; any other refusal holds the PR.
    - Without a merge queue, and where the rules require up-to-date branches, only the PR at the front of the repo's merge
      queue in `merges.ts` is updated. The rest wait.
 4. **`fix_ci`.** Red on the PR's own head.
@@ -265,7 +275,7 @@ refuses it when the head has moved or the repo is `paused`.
 
 | Effect | How github runs it |
 |---|---|
-| Commit to an adopted PR's branch | The runner's patch is written through the GitHub API by the code host's existing installation of the instance's GitHub App (the identity its fleet commits already use; not the reviewer App): create the blobs, tree and commit, then update the ref as a fast-forward from `expected_head`. A moved ref fails the update, so commits are verified with no signing key. A fork is written to only when it allows maintainer edits and GitHub accepts the App's write; a refused write becomes a `hold`. The push planner (`plan.ts`) allows this one adopted ref. Foreign-head tiering stays. |
+| Commit to an adopted PR's branch | The runner's patch is written through the GitHub API by the code host's existing installation of the instance's GitHub App (the identity its fleet commits already use; not the reviewer App): create the blobs, tree and commit, then update the ref as a fast-forward from `expected_head`. A moved ref fails the update, so commits are verified with no signing key. A fork is written to only when it allows maintainer edits: a leased `git push` (`--force-with-lease=<branch>:<expected head>`) as the base repo's App installation, unsigned; a refused write becomes a `hold`. The push planner (`plan.ts`) allows this one adopted ref. Foreign-head tiering stays. |
 | Update branch | Existing update-branch with `expected_head_sha`. |
 | Approve | `github.approve` as the reviewer identity (§5), with `commit_id` set to the head. On a new head its earlier review is dismissed. |
 | Enqueue | `enqueuePullRequest` with `expectedHeadOid`, tiered exactly like Merge. |
@@ -393,7 +403,8 @@ Each new path gets a security review before it switches on (CLAUDE.md "Every new
   label or comment.
 - **Untrusted text:** a PR's title, body, comments and check output never reach a task's text, and the Engineer reads them as
   fenced data. Instructions come from the target branch only.
-- **Repo code:** the generator runs in the task's computer, as every Engineer build does.
+- **Repo code:** the generator runs in a check job's box (no credential, no model). Its output is untrusted: github takes it
+  only on generated paths and lockfiles, never a workflow or a gitlink.
 
 ## Rollout (owner)
 
@@ -429,7 +440,7 @@ Cut to keep ship simple **(owner: handle the common path, fix rare cases when th
   finishes in the queue.
 - **Checks at execution time beyond the head and `paused`.** A policy change, retarget or hand-back racing a claimed write can
   still land that one write.
-- **Sandboxing the generator.** It runs like any repo command in the task's computer, and its output is committed as is.
+- **A generator's output beyond the paths.** On generated paths and lockfiles it is committed as the box left it.
 - **A settings revision check at apply time.** The last writer wins, and the card shows the change.
 - **Forks without maintainer edits.** Any push they need becomes a `hold`.
 - **A contributor rewinding the branch during a repair.** The ref update is a fast-forward from `expected_head`, and GitHub's
