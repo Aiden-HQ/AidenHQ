@@ -303,8 +303,12 @@ test("the owner stops a running job from the board; a module or agent token cann
   assert.equal((await stop("the-boards-key", {})).status, 400, "the admin who stops it is named");
   assert.equal((await jobs.get("acme-dispatch", s.id)).state, "running");
   assert.deepEqual((await stop("the-boards-key")).json, { stopped: [s.id] });
+  // Dispatch's own stop, arriving on the same still-running job with no account, never erases the owner's attribution.
+  await k.v1("DELETE", `/v1/jobs/${s.id}`, undefined, "disp-key");
   const v = await finished(jobs, s.id);
-  assert.deepEqual([v.state, v.cancelled, v.stoppedBy], ["cancelled", true, "acct-1"]);
+  assert.deepEqual([v.state, v.cancelled, v.stoppedBy], ["cancelled", true, "acct-1"], "a later anonymous stop keeps the account recorded");
+  const ended = jobs.facts.forTask("task-1").find((f) => f.type === "job.ended" && f.subject === `job:${s.id}`);
+  assert.equal(ended.data.stopped_by, "acct-1", "the job.ended fact names the stopping account, so a machinery stop (null) is told apart");
   assert.deepEqual(posts, [[s.id, "task-1", "notice", "**Stopped by the owner.** Say **continue** to pick up where it stopped."]]);
   assert.deepEqual((await stop("the-boards-key")).json, { stopped: [] }, "nothing running is left to stop");
 });

@@ -129,7 +129,9 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
         break;
       case "job.ended":
         job!.ended = f; silent = undefined;
-        if (FAILED.has(String(f.data.state))) failure = f;
+        // A run the machinery stopped (no account: dispatch's progress judge, a closed task) is as unresolved as a failed one; the
+        // owner's own Stop records its account and is not. `=== null` only: an older cancelled fact has no field, so never flips.
+        if (FAILED.has(String(f.data.state)) || (f.data.state === "cancelled" && f.data.stopped_by === null)) failure = f;
         else if (isChat && f.data.state === "done" && f.data.acted !== true && f.data.no_reply !== true) silent = f;
         break;
       case "task.assignee_changed": if (f.subject === self) failure = silent = undefined; break;

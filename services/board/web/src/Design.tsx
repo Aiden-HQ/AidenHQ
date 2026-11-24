@@ -23,7 +23,7 @@ const STATUS = ["working", "warn", "urgent", "danger", "ok-text", "warn-text", "
 const SCALE: [string, string][] = [["3xl", "Stat value"], ["2xl", "Page title"], ["xl", "Dialog title"], ["lg", "Section title"], ["row", "List row"], ["body", "Body"], ["md", "Control"], ["base", "Secondary"], ["sm", "Help, facts"], ["xs", "Tag"], ["2xs", "Axis label"]];
 
 const at = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
-const st = (o: Partial<ShownState> & Pick<ShownState, "kind" | "reason" | "lane">): ShownState => ({ task: "t", identifier: null, idle_wakes: 0, since: at(10), holder: null, attention: [], ...o });
+const st = (o: Partial<ShownState> & Pick<ShownState, "kind" | "reason" | "lane">): ShownState => ({ task: "t", identifier: null, idle_wakes: 0, origin: null, since: at(10), holder: null, attention: [], ...o });
 const TASK_STATES: ShownState[] = [
   st({ kind: "waiting", reason: "owner_wait", lane: "needs_you", question: "keep v1?", attention: [{ who: "owner", why: "owner_wait", ref: "wait:t", since: at(10) }] }),
   st({ kind: "working", reason: "job_running", lane: "needs_you", stage: "CI running", attention: [{ who: "owner", why: "card", ref: "record:k", since: at(10) }] }),

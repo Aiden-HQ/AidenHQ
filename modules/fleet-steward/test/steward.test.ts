@@ -279,7 +279,7 @@ test("gate activity counts only the holder's or a fleet-audit agent's comment, n
   // The task t1 is held by "eng"; the Steward is the fleet-audit agent "audit"; "reviewer" just left a note.
   // The kernel's row holds the holder by its key ("eng"); Paperclip names comment authors by agent ID ("a-eng").
   const kernel = {
-    call: async (m, p) => (p.startsWith("/v1/tasks/state") ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0 }] } : { agents: { "a-eng": { key: "eng" }, "a-audit": { roles: ["fleet-audit"] }, "a-reviewer": {} } }),
+    call: async (m, p) => (p.startsWith("/v1/tasks/state") ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0, origin: null }] } : { agents: { "a-eng": { key: "eng" }, "a-audit": { roles: ["fleet-audit"] }, "a-reviewer": {} } }),
     read: async () => [
       { authorType: "agent", authorAgentId: "a-reviewer", body: "looks odd", createdAt: minsAgo(1) },
       { authorType: "agent", authorAgentId: "a-eng", body: "on it", createdAt: minsAgo(6) },
@@ -293,7 +293,7 @@ test("gate activity counts only the holder's or a fleet-audit agent's comment, n
   kernel.read = async () => [{ authorType: "agent", authorAgentId: "a-reviewer", body: "looks odd", createdAt: minsAgo(1) }];
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), undefined);
   // A job running on the task is activity now, whatever the comments say.
-  kernel.call = async () => ({ tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "job_running", holder: "eng", attention: [], idle_wakes: 0 }] });
+  kernel.call = async () => ({ tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "job_running", holder: "eng", attention: [], idle_wakes: 0, origin: null }] });
   assert.equal(await gateActivity({ kernel, now: () => NOW })("t1"), new Date(NOW).toISOString());
   // A task that can't be read is a failed lookup (undefined activity would hide the failure), so tick can defer on it.
   kernel.call = async () => { throw new Error("kernel 503"); };
@@ -304,7 +304,7 @@ test("a run that started and ended between two ticks is activity the comment and
   // No comment, no running job: only the job history says the task was worked. Its end is the newest activity.
   const kernel = {
     call: async (m, p) => p.startsWith("/v1/tasks/state")
-      ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0 }] }
+      ? { tasks: [{ task: "t1", identifier: "WOR-1", since: ago(5), reason: "module_wait", holder: "eng", attention: [], idle_wakes: 0, origin: null }] }
       : p.startsWith("/v1/work")
         ? { jobs: [{ id: "j1", agent: "a-eng", task: "t1", state: "done", started_at: minsAgo(40), ended_at: minsAgo(20) }] }
         : { agents: { "a-eng": { key: "eng" }, "a-audit": { roles: ["fleet-audit"] } } },
@@ -453,4 +453,16 @@ test("an open spend incident's evidence is refreshed by the next poll", async ()
   await tick(kv, { spend }, file, async () => {}, new Date(t + 60_000));
   assert.match(detectorState(kv).open["spend:spike"].reason, /\$130\.00/);
   assert.equal(detectorState(kv).recovered.length, 0);
+});
+test("the stuck-work rule exempts a routine run by the row's own origin, and still raises a person's orphaned task", async () => {
+  const rows = [
+    { task: "t1", identifier: "RTN-1", since: ago(5), reason: "orphaned", holder: "eng", attention: [], idle_wakes: 3, origin: "routine_execution" },
+    { task: "t2", identifier: "WOR-2", since: ago(5), reason: "orphaned", holder: "eng", attention: [], idle_wakes: 3, origin: null },
+  ];
+  const kernel = {
+    read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : []),
+    call: async (m, p) => (p.startsWith("/v1/tasks/state") ? { tasks: rows } : {}),
+  };
+  const found = await checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW }).stuck();
+  assert.deepEqual(found.map((i) => i.key), ["t2:idle-capped"], "the routine's own run is exempt; the agent's task still raises it");
 });

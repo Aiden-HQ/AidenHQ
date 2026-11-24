@@ -513,7 +513,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         inTx(db, "job_end", () => {
           db.prepare("UPDATE jobs SET state = ?, exit = ?, final = ?, why = ?, offset = ?, session = ?, ended = ? WHERE id = ?")
             .run(state, exit, lastMessage, JSON.stringify({ timedOut, cancelled, ...(stoppedBy ? { by: stoppedBy } : {}) }), offset, session, Date.now(), id);
-          jobFact(r, "job.ended", { state, exit, why: state === "done" ? "" : state === "cancelled" ? `stopped${stoppedBy ? ` by ${stoppedBy}` : ""}` : state === "timeout" ? `ran past ${cfg.timeout_minutes} minutes` : clip(lastMessage, 200) });
+          // `stopped_by`: the account that stopped it (the owner's Stop), null for one the machinery stopped, so the task's state
+          // and its dispatcher can tell a Stop from a run that never got to finish.
+          jobFact(r, "job.ended", { state, exit, stopped_by: stoppedBy ?? null, why: state === "done" ? "" : state === "cancelled" ? `stopped${stoppedBy ? ` by ${stoppedBy}` : ""}` : state === "timeout" ? `ran past ${cfg.timeout_minutes} minutes` : clip(lastMessage, 200) });
         });
       } catch (e) {
         log("job end not recorded; tried again next tick", { job: id, task: r.task, state, err: (e as Error).message });
@@ -564,7 +566,9 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
           }
         }
       : undefined;
-    watchers.set(id, { stop: () => (clearInterval(timer), save()), send, cancel: (by) => { cancelled = true; stoppedBy = by; kill(); } });
+    // A later cancel with no account (dispatch's progress stop racing the owner's Stop) keeps the account already recorded: only the
+    // owner's Stop names one, and it is what tells the two apart downstream.
+    watchers.set(id, { stop: () => (clearInterval(timer), save()), send, cancel: (by) => { cancelled = true; if (by) stoppedBy = by; kill(); } });
     timer = setInterval(tick, POLL_MS);
     tick();
   }
@@ -743,7 +747,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
           inTx(db, "job_stopped_early", () => {
             if (!db.prepare("UPDATE jobs SET state = 'cancelled', final = 'Stopped before it started.', why = ?, ended = ? WHERE id = ? AND state = 'admitted'").run(JSON.stringify({ cancelled: true, by }), Date.now(), r.id).changes) return;
             queued(r);
-            jobFact(r, "job.ended", { state: "cancelled", exit: null, why: `stopped by ${by}` });
+            jobFact(r, "job.ended", { state: "cancelled", exit: null, stopped_by: by, why: `stopped by ${by}` });
           });
           return [view(row(r.id)!)];
         }

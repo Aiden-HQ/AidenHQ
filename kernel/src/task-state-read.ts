@@ -62,7 +62,7 @@ export function createTaskStateRead({ file, stages, agent, polled = () => true, 
       const s = taskState(id, [...fs, ...ctx], t, all, polled);
       const created = fs.find((f) => f.type === "task.created" && f.subject === `task:${id}`);
       const idleWakes = fs.filter((f) => f.type === "wake.opened" && f.data.cause === "idle" && Date.parse(f.at) > t - DAY && Date.parse(f.at) <= t).length;
-      out.push({ ...s, task: id, identifier: typeof created?.data.identifier === "string" ? created.data.identifier : null, idle_wakes: idleWakes });
+      out.push({ ...s, task: id, identifier: typeof created?.data.identifier === "string" ? created.data.identifier : null, idle_wakes: idleWakes, origin: typeof created?.data.origin === "string" ? created.data.origin : null });
     }
     return out;
   }

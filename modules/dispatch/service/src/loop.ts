@@ -36,8 +36,9 @@ const RESUME: Record<string, string> = {
   reopen: "This task was reopened",
   status: "This task was moved back to todo",
   assigned: "This task was handed to you",
-  // follow() below: the retry of a run that didn't get to finish (kernel wakes.ts schedule prefixes a module's cause).
-  "scheduled: retry": "Your last run on this task ended before finishing (its computer or the kernel went away)",
+  // follow() below: the retry of a run that didn't get to finish. Neutral on cause: a machinery stop is the kernel's computer
+  // going away or dispatch's own progress judge, and the prompt can't tell them apart.
+  "scheduled: retry": "Your last run on this task ended before finishing (it was stopped before the turn was done)",
 };
 // A job that didn't get to finish for want of its machinery is retried each time later (doubling, up to MAX_RETRY_MS), and whoever asked is not told, for as long as its task is open when it
 // never started (that costs nothing), else up to MAX_RAN_TRIES: one that never started (the kernel couldn't launch it: no box, a launcher error), one lost while
@@ -55,7 +56,9 @@ const neverStarted = (j: { state: string; exit: number | null }) => j.state === 
 /** A job its machinery ended (above): never started, lost, or killed by a signal (an exit above 128, jobs.ts adopt's rule). */
 /** A run that ended cleanly with no final message at all (the model returned nothing): tried again like one that didn't finish. */
 const silent = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean }) => j.state === "done" && !j.exit && !j.timedOut && !j.cancelled && !String(j.final ?? "").trim();
-export const unfinished = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || silent(j);
+/** A run the machinery cancelled (the progress judge, a closed task): no account stopped it. The owner's own Stop records one, and is not this. */
+export const machineryStop = (j: { state: string; stoppedBy?: string | null }) => j.state === "cancelled" && j.stoppedBy === null;
+export const unfinished = (j: { state: string; exit: number | null; final?: string; timedOut?: boolean; cancelled?: boolean; stoppedBy?: string | null }) => neverStarted(j) || j.state === "lost" || (j.state === "failed" && j.exit != null && j.exit > 128) || silent(j) || machineryStop(j);
 
 /** The newest comments one read returns (kernel.ts comments). */
 const COMMENT_WINDOW = 200;
@@ -178,16 +181,35 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
       if (stopped) await asker.tell(task, `**${task.identifier} stopped:** ${stopped}`, "was stopped");
       return;
     }
+    await batch(task, v);
+  }
+
+  /**
+   * The one summary of a parent's sub-task batch, once each (`summarized`). A child with no work left calls this alone: its
+   * parent hears the batch, and nothing (a blocked notice, a stop notice) is written on a finished child.
+   */
+  /** `except`: the wake this call is dropping, which no longer holds the batch (a key, so only that one wake is left out). */
+  async function batch(task: Issue, v: JobView, except?: string) {
+    if (!agentMade(task) || !task.parentId) return;
+    const job = v.id;
     // The kernel's ledger: a task's runs that are done with (acknowledged, or this one) are its ended runs; any other is still busy.
     const ended = async (t: string) => {
       const j = (await kernel.jobsOf(t)).find((x) => ENDED.has(x.state) && (x.acked || x.id === job));
       return j && { seq: j.ended ?? j.at, state: j.state };
     };
-    const live = async (t: string) => (await kernel.jobsOf(t)).some((j) => !j.acked && j.id !== job);
+    // A run still going, or one that stopped and whose retry is armed: that child's work is not finished, so its parent's summary
+    // waits for the fresh attempt instead of reporting the stopped run as the child's result. Only that child's own newest run
+    // counts: an older run's armed retry is dropped by the kernel once a newer run took the task.
+    const live = async (t: string) => {
+      const runs = await kernel.jobsOf(t);
+      if (runs.some((j) => !j.acked && j.id !== job)) return true;
+      const last = t === task.id ? runs.find((j) => j.id === job) : runs[0];
+      return Boolean(last && unfinished(last) && (await kernel.wakePending(t, { retry: last.id, except })));
+    };
     const last = (q("SELECT batch FROM summarized WHERE parent = ?").get(task.parentId) as { batch: number } | undefined)?.batch ?? 0;
     if (last >= ((await ended(task.id))?.seq ?? 0)) return;
-    const batch = await asker.summarize(task, { ended, live, dir: await kernel.directory() });
-    if (batch) q("INSERT INTO summarized (parent, batch) VALUES (?, ?) ON CONFLICT DO UPDATE SET batch = excluded.batch").run(task.parentId, batch);
+    const key = await asker.summarize(task, { ended, live, dir: await kernel.directory() });
+    if (key) q("INSERT INTO summarized (parent, batch) VALUES (?, ?) ON CONFLICT DO UPDATE SET batch = excluded.batch").run(task.parentId, key);
   }
 
   /** Each ended job's outcome, once: its reply (none for NO_REPLY), or how it stopped; a run whose task was closed is stopped. */
@@ -215,25 +237,41 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
         // A run stopped because its task moved has nothing to say or report: the task's new agent answers it.
         if (stopped === MOVED) { await kernel.ack(v.id); q("DELETE FROM stopped WHERE job = ?").run(v.id); log("job ended: its task had moved", { job: v.id, task: v.task }); continue; }
         // A job that didn't get to finish is tried again by a scheduled wake (the wake it was admitted on is spent), a few times.
-        if (!stopped && unfinished(v)) {
+        // A recorded stop reason (the progress judge) is exactly the run that needs its retry, never a reason to skip it: past
+        // MAX_RAN_TRIES it falls through to the `**Stopped:**` notice.
+        if (unfinished(v)) {
           const runs = await kernel.jobsOf(v.task);
           let tries = 0, ran = 0;
           for (const j of runs) { if (!unfinished(j)) break; tries++; if (!neverStarted(j)) ran++; }
           // A run that ran is retried only on a task still in its agent's hands (todo or in progress, an agent assigned): one it
           // left blocked or handed back to the owner waits on them, not on a retry.
           const t = await kernel.task(v.task);
-          const open = neverStarted(v) ? !CLOSED.has(String(t.status)) : ["todo", "in_progress"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
+          const open = neverStarted(v) ? !CLOSED.has(String(t.status)) && Boolean(t.assigneeAgentId) : ["todo", "in_progress", "in_review"].includes(String(t.status)) && Boolean(t.assigneeAgentId);
           if (open && (neverStarted(v) || ran < MAX_RAN_TRIES)) {
-            await kernel.schedule({ task: v.task, at: Date.now() + retryIn(tries), cause: "retry", id: `retry.${v.id}` });
-            await kernel.ack(v.id);
-            log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
-            continue;
+            // The agent whose run stopped, named: a task reassigned before this tick must not hand the retry to its new agent. A
+            // refusal (400) leaves the run to report its outcome below, as any other un-retried run.
+            const armed = await kernel.schedule({ task: v.task, agent: v.agent, at: Date.now() + retryIn(tries), cause: "retry", id: `retry.${v.id}` })
+              .then(() => true, (e: Error) => {
+                if (e instanceof KernelError && e.status === 400) return log("retry not armed: the task moved", { job: v.id, task: v.task, err: e.message.slice(0, 200) }), false;
+                throw e;
+              });
+            if (armed) {
+              await kernel.ack(v.id);
+              q("DELETE FROM stopped WHERE job = ?").run(v.id);
+              log("job didn't finish: retried later", { job: v.id, task: v.task, state: v.state, exit: v.exit, tries, why: v.final.slice(0, 200) });
+              continue;
+            }
           }
         }
+        const task0 = await kernel.task(v.task);
         const o = outcome({ ...v, stopped });
-        if (o) await kernel.post(v.id, o);
-        const task = await kernel.task(v.task);
-        if (!CLOSED.has(String(task.status))) await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
+        // A closed task takes no notice (a stop, a failure): a comment on a finished task would reopen it. A reply it posted under
+        // its run is left as it is; only the batch summary below is still said, and that wakes the parent, never the child.
+        const closed = CLOSED.has(String(task0.status));
+        if (o && !(closed && o.kind === "notice")) await kernel.post(v.id, o);
+        const task = task0;
+        if (closed) await batch(task, v);
+        else await report(task, v, o?.kind === "notice" ? o.body : undefined, o?.body);
         await kernel.ack(v.id);
         q("DELETE FROM stopped WHERE job = ?").run(v.id);
         backoff.delete(v.id);
@@ -278,6 +316,27 @@ export function createDispatch({ kernel, db, owner, log = () => {}, now = Date.n
     for (const id of new Set([task.assigneeAgentId, task.createdByAgentId, ...comments.map((c) => c.authorAgentId)])) if (id && !agents.has(id)) { const a = await kernel.agent(id); if (a) agents.set(id, a); }
 
     if (/^routine(:|$)/.test(w.cause) && (await routines.coalesce(task))) return kernel.drop(w.key, "folded into an earlier run of its routine");
+    // A scheduled retry is a fresh attempt only if the task is still open and still at work for the agent whose run stopped: the
+    // owner may have put it on hold (blocked, backlog) since the retry was armed, and admission would start a run on either.
+    if (w.cause === "scheduled: retry") {
+      const retried = /^wake_at:[^.]+\.retry\.(.+)$/.exec(w.key)?.[1];
+      const jobs = retried ? await kernel.jobsOf(task.id) : [];
+      const stopped = jobs.find((j) => j.id === retried);
+      const dropped = stopped && jobs.some((j) => j.id !== retried && j.at > stopped.at) ? "a newer run already picked the task up"
+        : CLOSED.has(String(task.status)) ? "the task is closed"
+        : (task.assigneeAgentId ?? null) !== w.agent ? "the task is no longer this agent's"
+        : ["blocked", "backlog"].includes(String(task.status)) ? `the task is ${String(task.status)}`
+        : stopped && !neverStarted(stopped) && !["todo", "in_progress", "in_review"].includes(String(task.status)) ? `the task is ${String(task.status)}`
+        : undefined;
+      if (dropped) {
+        // The child has nothing left running now: its parent's summary, held while this retry was pending, is said (once per
+        // batch) before the retry goes, so a parent whose children all finished still hears its batch. Said first: a transient
+        // failure keeps the wake for its lease, and the next attempt says it then, rather than losing it with the dropped wake.
+        if (task.parentId && jobs[0]) await batch(task, jobs[0], w.key);
+        await kernel.drop(w.key, `nothing to retry: ${dropped}`);
+        return;
+      }
+    }
     if (w.cause === "comment") {
       const c = comments.find((x) => `comment:${x.id}` === w.key);
       const who = c ? speaker(c, task, dir) : "ours";

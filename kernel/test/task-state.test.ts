@@ -51,7 +51,13 @@ const cases = [
   ["a failure stays through comments", [created(), assignee("kai", 0), job("job.ended", 1, { state: "failed" }), comment("account:o1", 2)], NOW,
     { kind: "idle", reason: "failed", ref: "job:j1", since: iso(1), attention: [{ who: "agent", why: "failed", ref: "job:j1" }] }],
   ["a retry clears the failure", [created(), job("job.ended", 1, { state: "timeout" }), job("job.queued", 2, {}, "j2")], NOW, { kind: "waiting", reason: "job_queued", attention: [] }],
-  ["a cancelled job is not a failure", [created(), job("job.ended", 1, { state: "cancelled" })], 5, { kind: "idle", reason: "orphaned" }],
+  ["an older cancelled fact (no stopping account field) is not a failure", [created(), job("job.ended", 1, { state: "cancelled" })], 5, { kind: "idle", reason: "orphaned" }],
+  // A run the machinery stopped (no account: dispatch's progress judge, a closed task) is an unresolved failure, so it leaves
+  // idle · orphaned and the idle sweep stops re-waking it; the owner's own Stop records its account and stays not a failure.
+  ["a cancelled job with no stopping account is a failure", [created(), assignee("kai", 0), job("job.ended", 1, { state: "cancelled", stopped_by: null })], 5,
+    { kind: "idle", reason: "failed", ref: "job:j1", since: iso(1), attention: [{ who: "agent", why: "failed", ref: "job:j1" }] }],
+  ["the owner's Stop is not a failure", [created(), assignee("kai", 0), job("job.ended", 1, { state: "cancelled", stopped_by: "acct-1" })], 5, { kind: "idle", reason: "orphaned" }],
+  ["a retry clears a machinery stop's failure", [created(), assignee("kai", 0), job("job.ended", 1, { state: "cancelled", stopped_by: null }), job("job.started", 2, {}, "j2")], NOW, { kind: "working", reason: "job_running" }],
   ["a stage hint never hides a failure", [created(), stageOpen(1), job("job.ended", 2, { state: "lost" })], NOW, { kind: "idle", reason: "failed", stage: undefined }],
   ["a failure is attention while something else waits", [created(), job("job.ended", 1, { state: "failed" }), wait("owner_wait", 2, { question: "keep v1?" })], NOW,
     { kind: "waiting", reason: "owner_wait", attention: [{ who: "owner", why: "owner_wait" }, { who: "agent", why: "failed" }] }],
