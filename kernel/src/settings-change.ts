@@ -48,7 +48,7 @@ type Sources = {
   self?: { key: string; roles: string[] };
   /** The module other than library that ships a skill named `name` in the module trees (a disabled module counts), and
    * whether that module is the instance's own (a local module, whose file is in the instance repo). */
-  skillModule?: (name: string) => { module: string; local: boolean } | undefined;
+  skillModule?: (name: string) => { module: string; local: boolean; source?: string } | undefined;
 };
 /** The kinds an agent files about itself (self_change). */
 export const SELF_KINDS = ["rules", "skill", "skills", "routine_def", "profile"];
@@ -194,8 +194,9 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
       // of any marketplace; skillModule reads the product's and the instance's module trees, so a disabled module refuses too.
       const name = String(c.name);
       const owner = Object.keys(compiled?.skills ?? {}).map((id) => id.split(".")).find(([m, n]) => m !== "library" && n === name)?.[0];
-      const found = owner ? { module: owner, local: catalog.some((m) => m.name === owner && m.tier === "local") } : skillModule?.(name);
-      if (found) refuse(`skill ${name} is module ${found.module}'s: modules/${found.module}/skills/${name}/SKILL.md is a module skill, and ${found.local ? "a local module's skills change through an Engineer PR on the instance repo" : "module skills change through an Engineer PR on the product repo"} (a self_change writes library skills only)`);
+      const entry = owner ? catalog.find((m) => m.name === owner) : undefined;
+      const found = owner ? { module: owner, local: entry?.tier === "local", source: entry?.source?.url } : skillModule?.(name);
+      if (found) refuse(`skill ${name} is module ${found.module}'s: modules/${found.module}/skills/${name}/SKILL.md is a module skill, and ${found.local ? "a local module's skills change through an Engineer PR on the instance repo" : found.source ? `module skills change in the module's own repository (${found.source}), through an Engineer PR there` : "module skills change through an Engineer PR on the product repo"} (a self_change writes library skills only)`);
       text(c.text, RULES_MAX);
       return;
     }
@@ -623,7 +624,7 @@ export function createSettingsChanges(d: SettingsDeps) {
 }
 
 /** The module other than library whose tree ships `name` as a skill (`modules/<module>/skills/<name>/SKILL.md`), if any. */
-function moduleSkillOwner(roots: { dir: string; local: boolean }[]): (name: string) => { module: string; local: boolean } | undefined {
+function moduleSkillOwner(roots: { dir: string; local: boolean }[]): (name: string) => { module: string; local: boolean; source?: string } | undefined {
   return (name) => {
     for (const { dir, local } of roots) {
       if (!existsSync(dir)) continue;
