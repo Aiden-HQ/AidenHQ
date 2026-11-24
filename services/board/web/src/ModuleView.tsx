@@ -86,7 +86,12 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
             return { error: { code: -32000, message: err.message } };
           });
           const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
-          if (Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
+          if (Array.isArray(changes) && changes.length) {
+            // Shown to the owner as it would be saved: a malformed proposal is named, never half-shown.
+            const ok = changes.every((c) => c && typeof c === "object" && c.kind === "setting" && typeof c.key === "string" && "value" in c);
+            if (ok) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
+            else setProposal(null), setSaid("The page proposed a change the board can't read, so there's nothing to save.");
+          }
           return answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
         }
         default:
@@ -131,9 +136,9 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
           <div className="mv-proposal-text">
             <b>Save this change to {page.module}'s settings?</b>
             {proposal.changes.map((c) => (
-              <code key={c.key}>
-                {c.key} = {JSON.stringify(c.value).slice(0, 300)}
-              </code>
+              <pre key={c.key}>
+                {c.key} = {JSON.stringify(c.value, null, 2)}
+              </pre>
             ))}
           </div>
           <div className="mv-proposal-actions">

@@ -662,15 +662,21 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
  * where the kernel's view route enforces it (kernel/src/views.ts).
  */
 export function modulePages(pages: Obj[], connections: Obj) {
+  // One page per view, and one page per MCP name (the owner MCP serves each page's tools and its `<id>_page` opener side by side).
+  const views = new Set<string>(), names = new Map<string, string>();
+  const name = (n: string, p: Obj) => (names.has(n) ? fail(`module ${p.module}: board.pages ${p.id}: the name ${n} is already page ${names.get(n)}'s`) : names.set(n, p.id));
   for (const p of pages) {
     const where = `module ${p.module}: board.pages ${p.id}`;
     const c = Object.hasOwn(connections, p.connection) ? connections[p.connection] : undefined;
     if (c?.module !== p.module) fail(`${where}: connection ${p.connection} isn't one of its own`);
     if (!p.view.startsWith(`ui://${p.module}/`)) fail(`${where}: view must be ui://${p.module}/<path>`);
-    if (c.views?.[p.view]) fail(`${where}: another page already shows ${p.view}`);
+    if (views.has(p.view)) fail(`${where}: another page already shows ${p.view}`);
+    views.add(p.view);
+    name(`${p.id.replace(/-/g, "_")}_page`, p);
     for (const t of p.tools) {
       if (![...c.tools.read, ...c.tools.write].includes(t) || c.tools.destructive.includes(t)) fail(`${where}: ${t} isn't a read or write tool of ${p.connection}`);
       if (!t.startsWith(`${p.module.replace(/-/g, "_")}_`)) fail(`${where}: tool ${t} must be named ${p.module.replace(/-/g, "_")}_…`);
+      name(t, p);
     }
     c.views = { ...c.views, [p.view]: [...p.tools] };
   }

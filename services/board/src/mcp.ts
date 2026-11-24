@@ -147,8 +147,9 @@ export function createMcp(d: McpDeps) {
       return { origin: ctx.origin, known: new Set([...(roster.roster as any[]).flatMap((r) => [r.key, r.id]), ...(modules.modules as any[]).map((m) => m.name)].filter(Boolean)) };
     };
     const out = (text: string, data: Record<string, unknown>) => ({ content: [{ type: "text" as const, text }], structuredContent: data });
+    const own = new Set<string>();
     const tool = (name: string, description: string, input: z.ZodRawShape, output: z.ZodRawShape, hint: "read" | "write" | "destructive", fn: (a: any) => Promise<ReturnType<typeof out>>) =>
-      server.registerTool(name, { description, inputSchema: input, outputSchema: output, annotations: { readOnlyHint: hint === "read", destructiveHint: hint === "destructive", openWorldHint: false }, _meta: MODEL_ONLY }, async (a: any) => {
+      own.add(name) && server.registerTool(name, { description, inputSchema: input, outputSchema: output, annotations: { readOnlyHint: hint === "read", destructiveHint: hint === "destructive", openWorldHint: false }, _meta: MODEL_ONLY }, async (a: any) => {
         try {
           const r = await fn(a);
           return { ...r, structuredContent: fenceAll(r.structuredContent, await fenceCtx(r.structuredContent)) as Record<string, unknown> };
@@ -491,17 +492,20 @@ export function createMcp(d: McpDeps) {
     // `_meta.ui.csp` of the module's, so the strict default holds) and the page's tools, visible to the view only. A view's calls
     // run the board's own route, as the board page's do; their answers go to the view as the module sent them.
     for (const p of d.pages()) {
-      try {
-        server.registerResource(p.id, p.view, { title: p.title, mimeType: VIEW_MIME }, async () => ({ contents: [{ uri: p.view, mimeType: VIEW_MIME, text: await d.viewHtml(p.id) }] }));
-        server.registerTool(`${p.id.replace(/-/g, "_")}_page`, { description: `Show the owner the ${p.title} page of the ${p.module} module, where its features are configured.`, inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: p.view, visibility: ["model"] } } }, async () => ({ content: [{ type: "text" as const, text: `The ${p.title} page is open: ${ctx.origin}/#/fleet/${p.id}` }] }));
-        for (const t of p.tools)
-          server.registerTool(t, { description: `${p.title} page: ${t}`, inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ["app"] } } }, async (a: Record<string, unknown>) => {
-            const r = await call("POST", `/api/pages/${p.id}/call`, { name: t, arguments: a });
-            return r.error ? { isError: true, content: [{ type: "text" as const, text: String(r.error.message ?? "failed") }] } : r.result;
-          });
-      } catch (e) {
-        console.error(`module page ${p.id} (${p.module}) isn't served on the MCP: ${(e as Error).message}`);
+      const opener = `${p.id.replace(/-/g, "_")}_page`;
+      // Compile keeps pages' names apart; a name of the board's own would shadow it, so that page isn't served here at all.
+      const taken = [opener, ...p.tools].filter((n) => own.has(n));
+      if (taken.length) {
+        console.error(`module page ${p.id} (${p.module}) isn't served on the MCP: ${taken.join(", ")} is the board's own tool`);
+        continue;
       }
+      server.registerResource(p.id, p.view, { title: p.title, mimeType: VIEW_MIME }, async () => ({ contents: [{ uri: p.view, mimeType: VIEW_MIME, text: await d.viewHtml(p.id) }] }));
+      server.registerTool(opener, { description: `Show the owner the ${p.title} page of the ${p.module} module, where its features are configured.`, inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false }, _meta: { ui: { resourceUri: p.view, visibility: ["model"] } } }, async () => ({ content: [{ type: "text" as const, text: `The ${p.title} page is open: ${ctx.origin}/#/fleet/${p.id}` }] }));
+      for (const t of p.tools)
+        server.registerTool(t, { description: `${p.title} page: ${t}`, inputSchema: z.object({}).passthrough(), _meta: { ui: { visibility: ["app"] } } }, async (a: Record<string, unknown>) => {
+          const r = await call("POST", `/api/pages/${p.id}/call`, { name: t, arguments: a });
+          return r.error ? { isError: true, content: [{ type: "text" as const, text: String(r.error.message ?? "failed") }] } : r.result;
+        });
     }
 
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

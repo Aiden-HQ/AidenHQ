@@ -5,7 +5,6 @@ import { z } from "zod";
 import { organisationPoints, type OrganisationPoint } from "./organisations.js";
 import { setupFlowPoints, type SetupFlowPoint } from "./setup-flows.js";
 import { WEEKDAYS, type Weekday } from "./dates.js";
-import { pagePoints, type PagePoint } from "./module-views.js";
 
 const SystemSchema = z.object({
   timezone: z.string().default("UTC"),
@@ -44,8 +43,6 @@ export interface Config {
   setupFlows: { flows: (SetupFlowPoint & { token?: string })[] };
   /** Organisations that run internal apps (modules/marketplace.json, compiled with each client's module secret). */
   organisations: OrganisationPoint[];
-  /** The modules' Fleet pages (board.pages, module-views.ts). */
-  pages: PagePoint[];
   /** Where Paperclip keeps its Codex session logs (read-only mount), and the computer launcher for agents in their own computers. */
   sessions?: { dir?: string; launcher?: { url: string; token: string } };
   /** The kernel's admin listener at its front door (AIDENHQ_ADMIN_URL): sign-in, the handoff to the board, admin links. */
@@ -73,7 +70,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     google: signIn(env.GOOGLE_AUTH_TOKEN_FILE ?? "/run/secrets/google_auth_token", env.GOOGLE_WORKSPACE_URL ?? "http://google-workspace-mcp:8081"),
     signIns: signInPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json", env.BOARD_SECRETS_DIR ?? "/run/secrets"),
     organisations: organisationPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json"),
-    pages: pagePoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json"),
     setupFlows: { flows: setupFlowPoints(env.BOARD_POINTS_FILE ?? "/config/points/board.json", env.BOARD_SECRETS_DIR ?? "/run/secrets") },
     sessions: sessionsConfig(env),
     gateway: env.AIDENHQ_GATEWAY_URL && keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key") ? { url: env.AIDENHQ_GATEWAY_URL.replace(/\/+$/, ""), token: keyFile(env.GATEWAY_BOARD_KEY_FILE ?? "/run/secrets/gateway_board_key")! } : undefined,

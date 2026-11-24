@@ -2115,8 +2115,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const page = await viewCall(async () => opts.views!.page(m[1]!));
         const { changes } = parse(ChangesSchema, body);
         const { catalog } = readSources(settingsFiles());
-        const own = catalog.find((x) => x.enabled && x.name === page.module)?.settings ?? {};
-        if (changes.some((c) => c.kind !== "setting" || !Object.hasOwn(own, c.key))) throw new HttpError(400, `a ${page.title} page saves only ${page.module}'s own settings`);
+        // Only a setting the page's module alone declares: never one another module or the kernel uses too.
+        const owners = (key: string) => catalog.filter((x) => x.enabled && Object.hasOwn(x.settings ?? {}, key)).map((x) => x.name);
+        if (changes.some((c) => c.kind !== "setting" || owners(c.key).join() !== page.module)) throw new HttpError(400, `a ${page.title} page saves only settings ${page.module} alone declares`);
         return fileSettingsChange(changes);
       },
     },
