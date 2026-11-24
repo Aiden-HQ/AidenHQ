@@ -165,7 +165,11 @@ test("check box: a restart adopts a running check, which ends with its result, r
   assert.match(boxAt, /^\d{4}-\d\d-\d\dT/, "the check records when it got its box");
 
   const next = kernel({ ...review, files: { "review.ts": "// the deploy's newer recipe" } });
-  await next.recover();
+  const recovering = next.recover();
+  // Asked again under the newer recipe while the adopted run goes on: the same check, never a second box run.
+  assert.equal(next.start("github", ask).id, id);
+  assert.equal(next.find("github", ask)?.id, id);
+  await recovering;
   const v = await next.get("github", id);
   assert.equal(v.state, "done", v.error ?? "");
   assert.equal(v.box_at, boxAt, "an adopted check keeps the box time its first kernel recorded");

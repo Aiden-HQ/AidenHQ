@@ -693,6 +693,12 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     }
   }
 
+  /** The running row of this spec under another recipe hash (a code run recover() adopted after a deploy changed its recipe). */
+  const sameSpec = (spec: Record<string, string>) => JSON.stringify(Object.keys(spec).sort().map((k) => [k, spec[k]]));
+  const adoptedRun = (module: string, repo: string, head: string, run: string, spec: Record<string, string>, hash: string) =>
+    (db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash != ? AND state = 'running'").all(module, repo.toLowerCase(), head, run, hash) as Record<string, any>[])
+      .find((r) => sameSpec(JSON.parse(r.spec)) === sameSpec(spec));
+
   const own = (module: string, id: string) => {
     const r = row(id);
     if (!r || r.module !== module) throw new CheckError(404, "no-check", `no check ${id}`);
@@ -708,6 +714,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) throw new CheckError(400, "bad-request", `send {repo: owner/name, head: <commit sha>, run: ${Object.keys(recipes()).join("|") || "(no module declares one)"}, spec}`);
       const spec = checkSpec(run, recipe, b.spec);
       const hash = specHash(spec, recipe);
+      // A run of this very spec still running under an earlier recipe (one recover() adopted across a deploy) is the check: an
+      // ask joins it, never a second box run beside it.
+      const running = adoptedRun(module, repo, head, run, spec, hash);
+      if (running) return view(running);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
       // A check that couldn't run (error, lost) runs again when asked again; a result recipe that ended without its result runs
       // again only after a provider error or crash (not a timeout): spend is the gateway's limits', never a tries count.
@@ -761,8 +771,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (!KINDS.slug.test(repo) || !KINDS.sha.test(head) || !recipe) return undefined;
       // A spec that doesn't fit the recipe (a change with no base, say) is no check at all: this is a read, so it answers
       // "none" rather than throwing at a sweep that only wanted to know what is green.
-      let hash: string;
-      try { hash = specHash(checkSpec(run, recipe, b.spec), recipe); } catch { return undefined; }
+      let hash: string, spec: Record<string, string>;
+      try { spec = checkSpec(run, recipe, b.spec); hash = specHash(spec, recipe); } catch { return undefined; }
+      const running = adoptedRun(module, repo, head, run, spec, hash);
+      if (running) return view(running);
       const had = db.prepare("SELECT * FROM checks WHERE module = ? AND repo = ? AND head = ? AND run = ? AND hash = ?").get(module, repo.toLowerCase(), head, run, hash) as Record<string, any> | undefined;
       return had && ["running", "done", "error", "lost"].includes(had.state) ? view(had) : undefined;
     },

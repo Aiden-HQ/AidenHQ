@@ -99,3 +99,32 @@ test("a model request over the gateway's limit is refused 413 and never held or 
     gw.close();
   }
 });
+
+test("while the gateway restarts, the launcher holds at most its limit of model requests in all: past it a call is answered 503", async () => {
+  const probe = http.createServer();
+  const port = await listen(probe);
+  await new Promise((r) => probe.close(r));
+  const next = http.createServer((req, res) => { req.resume(); req.on("end", () => res.end("answered")); });
+  const launcher = http.createServer((req, res) => void forwardModel(req, res, `http://127.0.0.1:${port}/api/v1/responses`, "ahqj_t", { retryMs: 50, heldMax: 3 }));
+  const lp = await listen(launcher);
+  const call = (body: string) => new Promise<{ status: number; body: string }>((ok, fail) => {
+    const req = http.request({ host: "127.0.0.1", port: lp, path: "/api/v1/responses", method: "POST", agent: false }, (res) => {
+      let b = "";
+      res.on("data", (d) => (b += d));
+      res.on("end", () => ok({ status: res.statusCode!, body: b }));
+    });
+    req.on("error", fail);
+    req.end(body);
+  });
+  try {
+    const first = call("{}");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal((await call("{}")).status, 503, "two waiting calls would hold more than the launcher's limit");
+    await listen(next, port);
+    assert.deepEqual(await first, { status: 200, body: "answered" });
+    assert.deepEqual(await call("{}"), { status: 200, body: "answered" }, "the first call's hold was given back");
+  } finally {
+    launcher.close();
+    next.close();
+  }
+});
