@@ -195,7 +195,12 @@ export function createEvents(o: {
       if (!s) throw new EventsError(403, `${module} doesn't subscribe to ${connection.slice(0, 100)}'s events`);
       const end = Number((db.prepare("SELECT max(seq) AS m FROM event_log WHERE connection = ?").get(connection) as { m: number | null }).m ?? 0);
       const pruned = Number((db.prepare("SELECT through FROM event_log_pruned WHERE connection = ?").get(connection) as { through: number } | undefined)?.through ?? 0);
-      if (after === undefined) return { events: [], next: Math.max(end, pruned), gap: false };
+      // The watermark registers a new reader where it starts (an existing one keeps its committed cursor), so one that never
+      // reads past it still shows as lagging.
+      if (after === undefined) {
+        db.prepare("INSERT INTO event_readers (module, connection, after, at) VALUES (?, ?, ?, ?) ON CONFLICT (module, connection) DO NOTHING").run(module, connection, Math.max(end, pruned), now());
+        return { events: [], next: Math.max(end, pruned), gap: false };
+      }
       db.prepare("INSERT INTO event_readers (module, connection, after, at) VALUES (?, ?, ?, ?) ON CONFLICT (module, connection) DO UPDATE SET after = excluded.after, at = excluded.at").run(module, connection, after, now());
       const kinds = s.kinds.map(() => "?").join(","), res = s.resources === "*" ? "" : ` AND resource IN (${s.resources.map(() => "?").join(",")})`;
       const rows = db.prepare(`SELECT seq, body, at FROM event_log WHERE connection = ? AND seq > ? AND kind IN (${kinds})${res} ORDER BY seq LIMIT ?`)

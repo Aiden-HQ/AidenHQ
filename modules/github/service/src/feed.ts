@@ -42,6 +42,8 @@ type RepoState = {
   pages: Record<string, Page>; prs: Record<string, Pr>; closed: number[];
   cursors: { issues: string; comments: string; review_comments: string }; cursorTags: Record<string, string>;
   sent: Record<string, number>; top: string; branch?: string; tip?: string; heads: Record<string, Head>;
+  /** The last pass that completed; when the repo's metadata was last read. */
+  okAt?: number; metaAt?: number;
 };
 type State = { gen: string; k: Record<string, number>; outbox: (FeedEvent & { at: number })[]; repos: Record<string, RepoState> };
 type Window = { passes: number; ok: number; sent: number; loss?: string; err?: string };
@@ -93,8 +95,15 @@ export function createFeed(o: FeedOptions) {
 
   /** One conditional GET: a 304 answers undefined. Never sleeps on a limit: a rate-limited refusal throws (the scheduler pauses). */
   async function get(path: string, etag?: string): Promise<{ body: any; etag: string } | undefined> {
-    const r = await o.gh("GET", path, undefined, { background: true, caller: "feed", deadline: now(), ...(etag ? { etag } : {}) });
+    const r = await o.gh("GET", path, undefined, { background: true, caller: "feed", deadline: now(), ...(etag ? { etag } : {}) }).catch((e) => {
+      // A conditional read skips the reserve, so its refusal is GitHub's own limit: the whole scheduler waits. Any other read's may
+      // be the reserve: only this repo waits.
+      if (e?.need?.cause === "rate_limited") e.global = Boolean(etag);
+      throw e;
+    });
     if (r.status === 304) return undefined;
+    // A feature the repo has turned off (Issues: 410 Gone) is an empty list, not a failed pass.
+    if (r.status === 410) return { body: [], etag: "" };
     if (r.status >= 300) throw new Error(`GitHub GET ${path.split("?")[0]}: ${r.status} ${String(r.body?.message ?? "").slice(0, 120)}`.trim());
     return { body: r.body, etag: r.headers?.get("etag") ?? "" };
   }
@@ -237,7 +246,13 @@ export function createFeed(o: FeedOptions) {
     });
 
     // 6. The default branch.
-    if (!rs.branch) rs.branch = String((await get(`/repos/${repo}`))?.body?.default_branch ?? "");
+    // The repo itself (its default branch), conditional, every 5 minutes: a renamed or switched default is followed.
+    used.add(`repo:${repo}`);
+    if (!rs.branch || t - (rs.metaAt ?? 0) >= SETTLED_MS) {
+      const m = await get(`/repos/${repo}`, rs.pages[`repo:${repo}`]?.etag);
+      if (m) { rs.pages[`repo:${repo}`] = { etag: m.etag, items: [], full: false }; const b = String(m.body?.default_branch ?? ""); if (b !== rs.branch) { rs.branch = b; delete rs.pages[`branch:${repo}`]; } }
+      rs.metaAt = t;
+    }
     if (rs.branch) {
       const key = `branch:${repo}`;
       used.add(key);
@@ -271,7 +286,7 @@ export function createFeed(o: FeedOptions) {
       for (const n of prs) {
         const reviews = await snapshot(h.pages, `/repos/${repo}/pulls/${n}/reviews`, (v): Review => ({ id: v.id, n, state: String(v.state), commit: String(v.commit_id ?? ""), author: String(v.user?.login ?? "ghost"), url: String(v.html_url ?? "") }));
         for (const v of reviews) {
-          if (!h.reviews[v.id] && v.state !== "PENDING") emit({ id: `review:${v.id}`, kind: "pull_request_review.submitted", author: v.author, bot: bot(v.author), url: v.url, data: { number: n, state: v.state, head: v.commit } });
+          if ((!h.reviews[v.id] || h.reviews[v.id]!.state === "PENDING") && v.state !== "PENDING") emit({ id: `review:${v.id}`, kind: "pull_request_review.submitted", author: v.author, bot: bot(v.author), url: v.url, data: { number: n, state: v.state, head: v.commit } });
           h.reviews[v.id] = v;
         }
       }
@@ -285,12 +300,15 @@ export function createFeed(o: FeedOptions) {
     if (first) emitAlways(out, { resource: repo, id: `${repo}:resync:${iso}`, kind: "github.resync" });
     rs.every = out.length ? QUICK_MS : Math.min((rs.every || QUICK_MS) * 2, QUIET_MAX_MS);
     rs.due = now() + rs.every;
-    state.repos[repo] = rs;
-    state.outbox.push(...out.map(({ ev }) => ({ ...ev, at: t })));
-    save();
+    // The in-process consumers first (each is idempotent: Flow's fact ids, the sweep, a re-read), so a crash before the save
+    // repeats this diff and its hooks, never loses them.
     for (const { ev, ctx } of out) for (const h of o.hooks ?? []) {
       try { await h(ev, ctx); } catch (e) { log("feed: a hook failed", { kind: ev.kind, id: ev.id, err: String((e as Error).message).slice(0, 200) }); }
     }
+    rs.okAt = now();
+    state.repos[repo] = rs;
+    state.outbox.push(...out.map(({ ev }) => ({ ...ev, at: t })));
+    save();
     return out.map((x) => x.ev);
   }
   const emitAlways = (out: { ev: FeedEvent; ctx: FeedContext }[], ev: FeedEvent) => void out.push({ ev, ctx: {} });
@@ -312,8 +330,12 @@ export function createFeed(o: FeedOptions) {
 
   /** The watched set: the managed repos and every subscribed resource ("*": the managed ones), lower case. */
   async function watch() {
-    const managed = (await o.managed()).map((r) => r.toLowerCase());
-    const wanted: string[] = (await o.kernel.call("GET", "/v1/events/sources?connection=github").catch((e: Error) => { log("feed: sources unreadable", { err: String(e.message).slice(0, 200) }); return { resources: [] }; })).resources ?? [];
+    // Only a set read whole replaces the last one: a failed read keeps watching (and keeps the state of) what was watched.
+    let managed: string[], wanted: string[];
+    try {
+      managed = (await o.managed()).map((r) => r.toLowerCase());
+      wanted = (await o.kernel.call("GET", "/v1/events/sources?connection=github")).resources ?? [];
+    } catch (e) { log("feed: the watched set couldn't be read; kept", { err: String((e as Error).message).slice(0, 200) }); return; }
     watched = [...new Set([...managed, ...wanted.filter((r) => r !== "*" && /^[\w.-]+\/[\w.-]+$/.test(r)).map((r) => r.toLowerCase())])];
     for (const r of Object.keys(state.repos)) if (!watched.includes(r)) delete state.repos[r];
   }
@@ -342,19 +364,20 @@ export function createFeed(o: FeedOptions) {
       w.ok++;
     } catch (e) {
       const need = (e as { need?: { cause?: string; until?: string } }).need;
-      if (need?.cause === "rate_limited" && need.until) { pausedUntil = Math.max(pausedUntil, Date.parse(need.until)); log("feed: paused for GitHub's rate limit", { until: need.until }); }
+      const until = need?.cause === "rate_limited" && need.until ? Date.parse(need.until) : 0;
+      if (until && (e as { global?: boolean }).global) { pausedUntil = Math.max(pausedUntil, until); log("feed: paused for GitHub's rate limit", { until: need!.until }); }
       w.err = String((e as Error).message).slice(0, 300);
       const rs = state.repos[repo];
-      if (rs) rs.due = now() + QUIET_MAX_MS;
+      if (rs) rs.due = Math.max(now() + QUIET_MAX_MS, until);
       log("feed: pass failed", { repo, err: w.err });
-      if (!rs) failedFirst.set(repo, now() + QUIET_MAX_MS);
+      if (!rs) failedFirst.set(repo, Math.max(now() + QUIET_MAX_MS, until));
     }
     await send();
   }
   const failedFirst = new Map<string, number>();
 
   let stopped = false;
-  const timers = { watch: 0, health: now() + HEALTH_MS, bg: new Map((o.background ?? []).map((b) => [b.name, now() + b.first])) };
+  const timers = { watch: 0, send: 0, health: now() + HEALTH_MS, bg: new Map((o.background ?? []).map((b) => [b.name, now() + b.first])) };
   const running = new Set<string>();
   /** One step of the scheduler: the job due first, if any is due. Answers how long until the next one. */
   async function step(): Promise<number> {
@@ -367,7 +390,10 @@ export function createFeed(o: FeedOptions) {
         void b.run().catch((e) => log(`feed: ${b.name} failed`, { err: String((e as Error).message ?? e).slice(0, 300) })).finally(() => running.delete(b.name));
       }
     }
-    if (timers.watch <= t) { timers.watch = t + WATCH_MS; await watch(); }
+    // The watched set lists the fleet org through the reserve: it never holds up a repo's pass.
+    if (timers.watch <= t && !running.has("watch")) { timers.watch = t + WATCH_MS; running.add("watch"); void watch().finally(() => running.delete("watch")); }
+    // The outbox has its own retry, whether or not a repo is due.
+    if (state.outbox.length && timers.send <= t) { timers.send = t + QUICK_MS; await send(); }
     if (timers.health <= t) { timers.health = t + HEALTH_MS; await health(); }
     const due = watched.map((r) => [r, state.repos[r]?.due ?? failedFirst.get(r) ?? 0] as const).sort((a, b) => a[1] - b[1]);
     if (due[0] && due[0][1] <= t) { await runRepo(due[0][0]); return 0; }
@@ -398,7 +424,8 @@ export function createFeed(o: FeedOptions) {
     /** The default branch's head and whether every check on it passed (undefined until the repo is read). */
     tip(repo: string): { tip?: string; green: boolean } | undefined {
       const rs = state.repos[repo.toLowerCase()];
-      if (!rs?.tip) return undefined;
+      // Only a recent read is evidence (the settled head itself is read every 5 minutes).
+      if (!rs?.tip || now() - (rs.okAt ?? 0) > SETTLED_MS) return undefined;
       const h = rs.heads[rs.tip];
       const checks = h ? namedChecks(rollup(h)) : [];
       return { tip: rs.tip, green: checks.length > 0 && checks.every((c) => c.ok && !c.pending) };

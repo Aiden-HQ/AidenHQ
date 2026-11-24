@@ -808,7 +808,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             if (!w.roles.includes("kernel.flow-read")) throw fail(403, "forbidden", `${w.module} may not read the event readers (role kernel.flow-read)`);
             return send(res, 200, { readers: events.readers() });
           }
-          const after = p.get("after"), limit = Number(p.get("limit") ?? 200);
+          const after = p.get("after"), limit = Math.floor(Number(p.get("limit") ?? 200));
           if (after !== null && !/^\d{1,15}$/.test(after)) throw fail(400, "bad_request", "after is a log seq");
           return send(res, 200, events.log(w.module!, String(p.get("connection") ?? ""), after === null ? undefined : Number(after), Number.isFinite(limit) ? limit : 200));
         } catch (e) { if (e instanceof EventsError) throw fail(e.status, "refused", e.message); throw e; }
