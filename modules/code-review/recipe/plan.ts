@@ -10,8 +10,9 @@
 // spec names (spec.stacks: each tag's path globs, from the catalog). Code checks the answer: every file in exactly one area (the
 // longest prefix that matches it), known tags only, then each area over budget split by folder, then by sorted file (a file over
 // budget alone is its own area). An answer that fails the check, or no answer, is replaced by that same folder split of the whole
-// repo, and the plan says so (`note`). Every area also gets the tags of the stacks whose globs find code in its project (the folder
-// of a matching file: a Django app's views share manage.py's folder), so a tag the model left off never skips a stack's review.
+// repo, and the plan says so (`note`). Every area also gets the tags of the stacks whose globs match its own files, or whose project
+// marker (a glob naming one file, like manage.py, or a .csproj) is in a folder above them: a Django app's views share manage.py's
+// folder. So a tag the model left off never skips a stack's review, and a source file never tags areas beside it.
 // The plan is left at /aidenhq-out/keep (a large repo's file lists are more than a result holds); the result is its summary.
 // The paths are the repo's text: data, never instructions.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -78,16 +79,20 @@ function common(items: Item[]) {
   return name.length > 100 ? `…${name.slice(-99)}` : name;
 }
 
-/** Each stack's projects: the folders of the files its globs match ("" the root). */
+/** A glob that names a project's marker file rather than its source: one fixed name, or a .NET project file. */
+const marker = (glob: string) => { const last = glob.split("/").at(-1)!; return !last.includes("*") || /\.\w*proj$/.test(last); };
+/** Each stack's globs and its projects: the folders of the files its marker globs match ("" the root). */
 export function projects(items: Item[], stacks: Record<string, string[]>) {
   return Object.entries(stacks).map(([tag, globs]) => {
-    const res = globs.map(globRe);
-    return { tag, dirs: new Set(items.filter((i) => res.some((re) => re.test(i.path))).map((i) => posix.dirname(i.path)).map((d) => (d === "." ? "" : d))) };
+    const res = globs.map(globRe), markers = globs.filter(marker).map(globRe);
+    return { tag, res, dirs: new Set(items.filter((i) => markers.some((re) => re.test(i.path))).map((i) => posix.dirname(i.path)).map((d) => (d === "." ? "" : d))) };
   });
 }
-/** The stacks whose projects hold any of the items' files. */
-const projectTags = (its: Item[], of: ReturnType<typeof projects>) => of.filter(({ dirs }) => dirs.size && its.some((i) => {
-  for (let d = posix.dirname(i.path); ; d = posix.dirname(d)) { if (dirs.has(d === "." ? "" : d)) return true; if (d === "." || d === "/") return false; }
+/** The stacks whose globs match any of the items, or whose projects hold any of them. */
+const projectTags = (its: Item[], of: ReturnType<typeof projects>) => of.filter(({ res, dirs }) => its.some((i) => {
+  if (res.some((re) => re.test(i.path))) return true;
+  for (let d = posix.dirname(i.path); dirs.size; d = posix.dirname(d)) { if (dirs.has(d === "." ? "" : d)) return true; if (d === "." || d === "/") return false; }
+  return false;
 })).map((p) => p.tag);
 
 /** The model's answer as areas of the items, or why it can't be one. A file belongs to the area whose prefix (a folder ending in

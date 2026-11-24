@@ -49,6 +49,9 @@ test("planner: an answer that misses a file, names an unknown tag or isn't one i
   const appAreas = d.areas.filter((a) => decode(a.files).some((f) => f.startsWith("app/")));
   assert.ok(appAreas.length >= 2 && appAreas.every((a) => a.tags.includes("django")), JSON.stringify(d.areas.map((a) => [a.name, a.tags])));
   assert.ok(d.areas.filter((a) => decode(a.files).every((f) => f.startsWith("docs/"))).every((a) => !a.tags.length));
+  // A source file tags its own area only: a root App.tsx never gives React to the backend's areas.
+  const mixed = await plan([{ path: "App.tsx", lines: 5 }, ...items(150, "api"), ...items(150, "db")], STACKS, "m", async () => "no answer");
+  assert.deepEqual(mixed.areas.filter((a) => a.tags.includes("react")).map((a) => decode(a.files).includes("App.tsx")), [true]);
   {
   }
 });
