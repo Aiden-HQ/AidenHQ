@@ -665,12 +665,16 @@ export function createService(o: Options) {
     const fork = !pr.head?.repo || !same(String(pr.head.repo.full_name), s.slug);
     if (fork && (!pr.head?.repo || pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainer edits: nothing was changed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
-    const app = await o.reviewer?.(s.slug);
-    if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${s.slug}: nothing was changed.` };
+    // The App writes where the head lives: on a fork, its installation there (as an adopted PR's push).
+    const app = await o.reviewer?.(into);
+    if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${into}: nothing was changed.` };
     const baseSha = String(pr.base.sha);
     const cmp = await api("GET", `/repos/${s.slug}/compare/${baseSha}...${a.head}`);
     const mergeBase = String(cmp.merge_base_commit?.sha ?? "");
     if (!/^[0-9a-f]{40}$/.test(mergeBase)) return { ok: false, text: `GitHub didn't give ${url}'s merge base: nothing was changed.` };
+    // The box's snapshots carry no submodules: a base that changes one can't be merged there without dropping it.
+    const { dir } = await fetchRemote(s, baseSha);
+    if ((await git(dir, ["diff-tree", "-r", "--no-renames", mergeBase, baseSha])).split("\n").some((l) => l.split(" ").slice(0, 2).some((m) => m.replace(/^:/, "") === "160000"))) return { ok: false, text: `ship-refused: \`${a.base}\` changes a submodule since ${url}'s merge base, which ship's repair can't carry: nothing was changed.` };
     // The box's run, followed to its end (the kernel answers each read within 25 s).
     let check = await kernel("POST", "/v1/checks", { repo: s.slug, head: a.head, run: "ship-repair", spec: { base: baseSha, merge_base: mergeBase, base_ref: String(a.base), plan: JSON.stringify(a.plan ?? {}) } });
     for (let i = 0; check.state === "running" && i < 200; i++) check = await kernel("GET", `/v1/checks/${check.id}?after=${Number(check.version ?? 0)}&wait=25000`);
@@ -711,9 +715,14 @@ export function createService(o: Options) {
     if (ended) return { ok: false, text: ended };
     pr = await read();
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+    if (pr.state !== "open" || pr.base?.ref !== a.base || !pr.head?.repo || !same(String(pr.head.repo.full_name), into) || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-scope: ${url} was closed, retargeted or stopped allowing maintainer edits during the repair: nothing was changed.` };
     const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made, force: false });
-    if (r.status === 422 || r.status === 409) return { ok: false, text: `ship-head-moved: ${url} moved during the repair (not a fast-forward any more): nothing was changed.` };
-    if (r.status >= 300) return { ok: false, text: `ship-refused: GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    if (r.status >= 300) {
+      // Moved, or a refusal of GitHub's own (a rule, a validation): the branch read back tells them apart.
+      const now = await app.rest("GET", `/repos/${into}/git/ref/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`);
+      if (now.status < 300 && now.body?.object?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+      return { ok: false, text: `ship-refused: GitHub refused the update of ${url}'s branch: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    }
     flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
     flow.checksStarted(s.slug, n, made, undefined, undefined);
     return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
