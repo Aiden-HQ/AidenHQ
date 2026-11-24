@@ -15,6 +15,7 @@ import { needsOwner } from "./vendor/needs.js";
 import type { Auth } from "./vendor/oauth.js";
 
 const API = "https://api.github.com";
+const RECHECK_MS = 60_000;
 
 export type Need =
   | { cause: "not_connected" }
@@ -234,6 +235,23 @@ export function createAccess(o: {
     try { o.onOrgOk?.(org); } catch { /* a report never breaks the call it reports */ }
   };
 
+  /** An expired mark stops every call, so no call can clear it. GitHub also answers 401 for a while in an incident: while the
+   * mark stands, the token is tried on GET /user each RECHECK_MS, and an answer that works settles it ok without a reconnect. */
+  let rechecking = false;
+  function recheck(): void {
+    if (rechecking) return;
+    rechecking = true;
+    timer(RECHECK_MS, () => void (async () => {
+      rechecking = false;
+      if (o.auth.status().state !== "expired") return;
+      try {
+        const res = await fetchImpl(`${API}/user`, { headers: { ...(await o.auth.headers()), accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(15_000) });
+        if (res.ok) return o.auth.mark("ok");
+      } catch { /* unreachable or refused: try again next time */ }
+      recheck();
+    })());
+  }
+
   async function token(): Promise<string> {
     if (!o.auth.signedIn()) fail({ cause: "not_connected" });
     if (o.auth.status().state === "expired") fail({ cause: "expired" });
@@ -441,7 +459,7 @@ export function createAccess(o: {
     if (as && res.status === 401 && !retried) return attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
     const need = classify(p, path, res, parsed, Boolean(as));
     if (need?.cause === "rate_limited") need.by = "github";
-    if (need?.cause === "expired") o.auth.mark("expired", "GitHub refused the token (401)");
+    if (need?.cause === "expired") { o.auth.mark("expired", "GitHub refused the token (401)"); recheck(); }
     if (need) fail(need);
     if (as) {
       // Its writes' answers are its health (a permission the installation hasn't granted is a 403 here, not at the token).

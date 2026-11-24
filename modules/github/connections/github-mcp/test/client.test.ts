@@ -79,6 +79,21 @@ it("a refused token is an expired need; the client sends nothing to the owner it
   expect(access.connected()).toBe(false);
 });
 
+it("an expired mark is rechecked each minute and clears once the token works again, without a reconnect", async () => {
+  const time = fakeTime();
+  let refuse = true;
+  const access = createAccess({ auth: auth(), now: time.now, timer: time.timer, sleep: time.sleep, fetchImpl: async () => refuse ? answer(401, { message: "Bad credentials" }) : answer(200, { login: "owner" }) });
+  await access.rest("GET", "/user").catch(() => {});
+  expect(access.connected()).toBe(false);
+  await time.sleep(60_000);
+  await new Promise((r) => setTimeout(r, 0));
+  expect(access.connected()).toBe(false); // still refused: it keeps checking
+  refuse = false;
+  await time.sleep(60_000);
+  await new Promise((r) => setTimeout(r, 0));
+  expect(access.connected()).toBe(true);
+});
+
 it("rate_limited and write_busy stay plain errors with their codes", () => {
   const busy = needResult(new GitHubNeed({ cause: "write_busy" }));
   expect(busy.isError).toBe(true);
