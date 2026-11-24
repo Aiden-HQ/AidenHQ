@@ -24,6 +24,8 @@ import { codeHostOps, isLocal, localChanges, localRepos, localRoot, readFleetOrg
 import { previewApp, previewName } from "./previews.js";
 import { appsReader, appsReaderIdentity, bearerIs } from "./readers.js";
 import { scopeIssues, sourceHealth } from "./sources.js";
+import { pageCanary } from "./canary.js";
+import type { Canary } from "./mcp.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "apps-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
 const need = (n: string): string => process.env[n] || (() => { throw new Error(`${n} is required`); })();
@@ -251,7 +253,20 @@ const http = createServer(async (req, res) => {
         return send(res, 200, Array.isArray(body) ? msgs.map(refusal) : refusal(msgs[0]!));
       }
     }
-    const server = buildServer(p, caller, repo, reconcile, board);
+    // The test-user canary (canary.ts): its kernel calls carry this tool call's own in-flight assertion, never a body's say-so.
+    const assertion = String(req.headers["x-aidenhq-caller"] ?? "");
+    const canary: Canary = (app, a) => pageCanary(app, a, {
+      kernel: async (path, body) => {
+        const r = await fetch(`${kernelUrl}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${serviceKey}`, ...(assertion ? { "x-aidenhq-caller": assertion } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch((e: Error) => { throw new Error(`the kernel is unreachable (${e.message})`); });
+        const text = await r.text();
+        let json: any = null;
+        try { json = text ? JSON.parse(text) : null; } catch { json = { error: text.slice(0, 300) }; }
+        return { status: r.status, json };
+      },
+      run: (network, script, input, timeout) => p.canaryRun(network, script, input, timeout),
+      log: (o) => log.info(o, "app_page_canary"),
+    });
+    const server = buildServer(p, caller, repo, reconcile, board, canary);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

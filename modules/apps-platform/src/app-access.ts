@@ -37,6 +37,11 @@ export interface AppAccessDeps {
   gate: () => { password: boolean; apps?: Record<string, SharedApp> } | undefined;
   /** The account with this (lowercase) email, if any. */
   account: (email: string) => MemberAccount | undefined;
+  /**
+   * Whether this email is the instance's test user (settings.edge.test_user) and this app one it names. The test account is
+   * never in accounts.json, so its role is resolved here: a member of exactly those apps, never admin and never blocked.
+   */
+  testMember?: (app: string, email: string) => boolean;
   /** apps-mcp's manifest endpoint for one app; throws when it can't answer. */
   manifest?: (app: string) => Promise<Manifest>;
   /** Writes accounts.json and resolves once the gate's file has every change made before the call; throws if it can't. */
@@ -102,6 +107,9 @@ export function createAppAccess(d: AppAccessDeps) {
    */
   function effectiveRole(app: string, email: string): string {
     appOf(app);
+    // The test user is a member of the apps the owner named, and nothing else: it is not in accounts.json, so a default of
+    // blocked (or an assignment) never decides for it.
+    if (d.testMember?.(app, email)) return "member";
     const acct = d.account(email);
     if (acct?.disabled || (d.gate()?.password && !acct)) return "blocked";
     if (acct?.role === "admin") return "admin";

@@ -4,7 +4,8 @@
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CHECK_SCRIPT, judgePage, type PageFacts } from "../src/checks.js";
-import { BROWSER_IMAGE, renderArgs, VIEW_SCRIPT, WEB_NETWORK, type ViewResult } from "../src/view.js";
+import { BROWSER_IMAGE, CANARY_NETWORK, renderArgs, VIEW_SCRIPT, WEB_NETWORK, type ViewResult } from "../src/view.js";
+import { CANARY_SCRIPT } from "../src/canary.js";
 
 const IMAGE = process.env.AIDENHQ_BROWSER_IMAGE ?? BROWSER_IMAGE;
 const docker = (args: string[], input?: string) => execFileSync("docker", args, { input, encoding: "utf8", timeout: 90_000, stdio: ["pipe", "pipe", "pipe"] });
@@ -85,5 +86,62 @@ describe.runIf(process.env.AIDENHQ_BROWSER_E2E)("the browser image renders (end 
     expect(r).toMatchObject({ status: 200, url: "https://example.com/", title: "Example Domain", timed_out: false });
     expect(r.snapshot).toMatch(/This domain/);
     expect(r.png).toBeTruthy();
+  });
+
+  // The test-user page canary, end to end: a real fixture page with a real "Send feedback" form whose own JavaScript posts
+  // /api/intake (returning a reference) and then /.aidenhq/notify, a real handoff that sets the listener's host-only cookie,
+  // and the real renderer on the canary network. The page's own JS is what runs; nothing calls the app on its behalf.
+  it("app_page_canary: the page's own JS posts /.aidenhq/notify, and the canary reads notify: fired with the reference", () => {
+    try { docker(["network", "inspect", CANARY_NETWORK]); } catch { docker(["network", "create", CANARY_NETWORK]); }
+    const fixture = String.raw`
+const http = require("node:http");
+const seen = [];
+const app = http.createServer((req, res) => {
+  seen.push({ method: req.method, url: req.url, cookie: req.headers.cookie || "" });
+  if (req.url === "/.auth/handoff") {
+    res.writeHead(302, { location: "/intake", "set-cookie": ["__Host-aidenhq-canary.session=tok.sig; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=900"] });
+    return res.end();
+  }
+  if (req.url === "/.aidenhq/notify") { res.writeHead(204); return res.end(); }
+  if (req.url === "/api/intake") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ reference: "TEST-RT-2026-11-24-9" }));
+  }
+  if (req.url === "/__seen") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify(seen)); }
+  if (req.url === "/intake") {
+    res.writeHead(200, { "content-type": "text/html" });
+    return res.end("<!doctype html><title>Roadmap Keeper</title><h1>Send feedback</h1>" +
+      "<form id=f><textarea name=text aria-label=\"Your feedback\"></textarea><button type=\"submit\">Send feedback</button></form><div id=out></div>" +
+      "<script>document.getElementById('f').addEventListener('submit', async (e) => { e.preventDefault();" +
+      "const t = document.querySelector('textarea').value;" +
+      "const r = await fetch('/api/intake', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({text:t}) });" +
+      "const j = await r.json(); await fetch('/.aidenhq/notify', { method: 'POST' });" +
+      "document.getElementById('out').textContent = 'Thanks. Reference ' + j.reference; });</script>");
+  }
+  res.writeHead(404); res.end();
+});
+app.listen(8080, "0.0.0.0");
+`;
+    const page = docker(["run", "-d", "--rm", "--user", "65534:65534", IMAGE, "node", "-e", fixture]).trim();
+    try {
+      // The "listener" is the fixture itself, on the canary network's own bridge address: the browser reaches it at
+      // <app>.canary.localhost through the resolver rule, and at nothing else.
+      docker(["network", "connect", CANARY_NETWORK, page]);
+      const ip = docker(["inspect", "-f", "{{(index .NetworkSettings.Networks \"aidenhq-canary\").IPAddress}}", page]).trim();
+      execFileSync("sleep", ["1"]);
+      const input = { listener: "http://roadmap-keeper.canary.localhost:8080", listenerAddress: ip, code: "c".repeat(43), state: "0".repeat(32), path: "/intake", text: "TEST-RT-2026-11-24-9 canary", width: 1280 };
+      const r = JSON.parse(docker(renderArgs(CANARY_NETWORK, IMAGE, CANARY_SCRIPT), JSON.stringify(input))) as { error?: string; notify?: string; notifyStatus?: number | null; reference?: string | null; finalUrl?: string; pageTitle?: string; png?: string };
+      console.log(JSON.stringify({ ...r, png: r.png ? `${r.png.length} b64 chars` : undefined }));
+      expect(r.error).toBeUndefined();
+      expect(r).toMatchObject({ notify: "fired", notifyStatus: 204, reference: "TEST-RT-2026-11-24-9", pageTitle: "Roadmap Keeper" });
+      expect(r.finalUrl).toMatch(/roadmap-keeper\.canary\.localhost:8080\/intake/);
+      expect(Buffer.from(r.png!, "base64").subarray(1, 4).toString()).toBe("PNG");
+      // The page's own requests reached it, with the host-only cookie the handoff set; the canary never calls the app itself.
+      const seen = JSON.parse(docker(["exec", page, "node", "-e", "fetch('http://127.0.0.1:8080/__seen').then(r=>r.text()).then(t=>process.stdout.write(t))"])) as { method: string; url: string; cookie: string }[];
+      expect(seen.find((x) => x.method === "POST" && x.url === "/.aidenhq/notify")).toMatchObject({ cookie: "__Host-aidenhq-canary.session=tok.sig" });
+      expect(seen.find((x) => x.method === "POST" && x.url === "/api/intake")).toBeTruthy();
+    } finally {
+      docker(["rm", "-f", page]);
+    }
   });
 });

@@ -3,7 +3,8 @@ description: "The apps platform: the DevOps Engineer, apps-mcp (the apps connect
 roles:
   # kernel.work-read: GET /v1/objects, the PRs the fleet opened in any repo (apps-mcp /internal/open-prs).
   # kernel.owner-notice: apps-mcp tells the owner the apps node needs its one-time Tailscale sign-in (platform.ts edgeLogin).
-  requests: [ kernel.work-read, kernel.owner-notice ]
+  # kernel.test-session: app_page_canary mints, checks and revokes the test user's session (kernel/src/test-session.ts).
+  requests: [ kernel.work-read, kernel.owner-notice, kernel.test-session ]
   declares:
     - { id: app-incidents, description: "Change any app with an open incident." }
     - { id: app-requests, description: "In-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)." }
@@ -18,7 +19,7 @@ connections:
     tools:
       # warehouse_query, source_new, source_ack: the shared warehouse's sources (modules/apps-platform/apps-mcp/src/sources.ts).
       # source_ack only moves the caller's own cursor. finding_verdict needs the security-verdict role (Security Watch).
-      read: [ app_list, app_status, app_logs, app_view, app_check, web_view, warehouse_query, source_new, app_requests, app_roles ]
+      read: [ app_list, app_status, app_logs, app_view, app_page_canary, app_check, web_view, warehouse_query, source_new, app_requests, app_roles ]
       write: [ app_deploy, app_restart, app_rollback, app_create, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
       # Granted only by name (the `write` shorthand never includes it): it stops an app and drops its registry entry.
       destructive: [ app_remove ]

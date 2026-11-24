@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { createAppAccess, type Manifest, type SharedApp } from "../../modules/apps-platform/src/app-access.ts";
+import { createTestSessions } from "./test-session.ts";
 import { AccountError, authCore, authSecret, forwardedProto, GATE_HEADER, inboundCookies, openAuthDb, outboundCookie, readBody, secretIs, EDGE_HEADER, type Log } from "./auth-rules.ts";
 
 export { AccountError };
@@ -55,6 +56,10 @@ export interface GateInfo {
   door?: { base: string; scheme: "http" | "https"; port?: number };
   /** The module door (docs/design/app-doors.md): its exact origin (the board's host on the door port) → the gate's host for it. */
   moduleDoors?: Record<string, string>;
+  /** settings.edge.test_user: the one non-owner account an allowlisted agent may sign in as, for these shared apps only. */
+  test?: { email: string; apps: string[] };
+  /** The gate's test listener (loopback/bridge only, never proxied): its address and the apps' hosts it may serve. */
+  testListener?: { address: string; port: number };
 }
 
 export function readGate(file: string): GateInfo | undefined {
@@ -66,7 +71,16 @@ export function readGate(file: string): GateInfo | undefined {
     const shared = entries.filter(([, h]) => h.door !== true);
     const moduleDoors = Object.fromEntries(entries.filter(([, h]) => h.door === true && typeof h.origin === "string").map(([host, h]) => [String(h.origin), host.toLowerCase()]));
     const apps = Object.fromEntries(shared.map(([host, h]) => [String(h.app), { host: host.toLowerCase(), ...(h.default_role ? { defaultRole: h.default_role } : {}) }]));
-    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: shared.map(([h]) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}), ...(Object.keys(moduleDoors).length ? { moduleDoors } : {}) };
+    // The test user is only ever a shared app's identity: an app or address the gate doesn't serve is never in the block.
+    const rawTest = (g as { test_user?: unknown }).test_user;
+    const test = rawTest && typeof rawTest === "object" && typeof (rawTest as { email?: unknown }).email === "string" && Array.isArray((rawTest as { apps?: unknown }).apps)
+      ? { email: String((rawTest as { email: string }).email).trim().toLowerCase(), apps: ((rawTest as { apps: unknown[] }).apps).filter((a): a is string => typeof a === "string") }
+      : undefined;
+    const rawListener = (g as { test_listener?: unknown }).test_listener;
+    const testListener = rawListener && typeof rawListener === "object" && typeof (rawListener as { address?: unknown }).address === "string" && Number.isInteger((rawListener as { port?: unknown }).port)
+      ? { address: String((rawListener as { address: string }).address), port: Number((rawListener as { port: number }).port) }
+      : undefined;
+    return { password: g.login === "password", myAppsHost: g.my_apps?.host?.toLowerCase(), appHosts: shared.map(([h]) => h.toLowerCase()), previews: !!g.previews, apps, ...(door ? { door } : {}), ...(Object.keys(moduleDoors).length ? { moduleDoors } : {}), ...(test ? { test } : {}), ...(testListener ? { testListener } : {}) };
   } catch {
     return undefined;
   }
@@ -143,6 +157,8 @@ export interface AccountsOptions {
   wake?: (app: string, count: number) => Promise<boolean>;
   /** Runs an app's "App feedback: <app>" routine (app-access.ts notify). */
   feedbackWake?: (app: string, count: number) => Promise<boolean>;
+  /** A task as the control plane has it now (the test user's own task check). */
+  task?: (id: string) => Promise<{ id: string; identifier?: string | null; status?: string; assigneeAgentId?: string | null } | undefined>;
   log: Log;
   now?: () => number;
 }
@@ -179,6 +195,7 @@ export async function openAccounts(o: AccountsOptions) {
   const writeGate = async () => {
     if (!o.gateAccountsFile || !o.gate?.()) return;
     const file = o.gateAccountsFile;
+    // `list` leaves the test account out (it is never a board account), so the gate's map has it by absence, never as a row.
     const accountRows = (await accounts.list()).map((a) => ({ email: a.email, name: a.name, role: a.role, disabled: a.disabled }));
     const text = JSON.stringify({ accounts: accountRows, apps: apps.exportApps() }, null, 2) + "\n";
     if (!existsSync(dirname(file))) throw new Error(`the gate's accounts.json directory isn't there (${dirname(file)})`);
@@ -228,6 +245,11 @@ export async function openAccounts(o: AccountsOptions) {
       const disabled = Boolean(u.banned) && (!u.banExpires || new Date(u.banExpires).getTime() > Date.now());
       return { role: u.role === "admin" ? "admin" : "user", disabled };
     },
+    // The test user's own membership (test-session.ts): a member of the apps settings.edge.test_user names, never admin.
+    testMember: (app, email) => {
+      const t = o.gate?.()?.test;
+      return Boolean(t && t.email === email && t.apps.includes(app));
+    },
     ...(o.manifest ? { manifest: o.manifest } : {}),
     exported: changed,
     ...(o.wake ? { wake: o.wake } : {}),
@@ -236,6 +258,51 @@ export async function openAccounts(o: AccountsOptions) {
   });
   const auth = betterAuth(rules.options);
   const ctx = await auth.$context;
+  /**
+   * The test-user page canary (test-session.ts): a real Better Auth session for one non-owner account, minted only by the
+   * kernel's own route for an allowlisted agent's open task, and accepted only by the gate's test listener. Its account is
+   * never in the gate's map, so no other surface can use it.
+   */
+  const testSessions = createTestSessions({
+    db,
+    createSession: async (userId, ttlMs, userAgent) => {
+      // Better Auth's own row (never a hand-rolled token): the admin plugin's ban and the session table still apply. The TTL
+      // is ours, so it goes in `overrideAll`: the third argument's expiresAt is overwritten by Better Auth's own default.
+      const expiresAt = new Date(Date.now() + ttlMs);
+      // The installed Better Auth types omit the fourth (overrideAll) argument though its runtime adapter takes it.
+      const createSession = ctx.internalAdapter.createSession as unknown as (
+        userId: string,
+        dontRememberMe: boolean,
+        session?: { expiresAt: Date; userAgent?: string },
+        overrideAll?: { expiresAt: Date },
+      ) => Promise<{ id: string; token: string; expiresAt: Date | string }>;
+      const s = await createSession(userId, false, { expiresAt, userAgent }, { expiresAt });
+      return { id: s.id, token: s.token, expiresAt: new Date(s.expiresAt).toISOString() };
+    },
+    deleteSession: async (id) => {
+      const row = db.prepare("SELECT token FROM session WHERE id = ?").get(id) as { token: string } | undefined;
+      if (row) await ctx.internalAdapter.deleteSession(row.token);
+    },
+    cookie: (token) => `${token}.${createHmac("sha256", ctx.secret).update(token).digest("base64")}`,
+    testAccount: async (email) => {
+      // First use makes it: no password, no invite, no mailbox, and never an account that already exists (an existing row is
+      // refused rather than adopted, so the test user can never be the owner or an admin).
+      const found = await ctx.internalAdapter.findUserByEmail(email);
+      if (found) throw new AccountError(409, "that email is already an account: settings.edge.test_user.email must be its own");
+      const user = await ctx.internalAdapter.createUser({ email, name: "AidenHQ test user", emailVerified: true, role: "user", owner: false }, { method: "admin" });
+      // No credential at all: no password row, so no sign-in form, reset link or MCP consent can ever use this account. The
+      // only way in is a minted test session, and only the gate's test listener accepts one.
+      return { id: user.id, email };
+    },
+    testUser: () => o.gate?.()?.test,
+    appHost: (app) => o.gate?.()?.apps?.[app]?.host,
+    task: async (id) => {
+      const r = await o.task?.(id);
+      return r;
+    },
+    log,
+    ...(o.now ? { now: o.now } : {}),
+  });
 
   const toAccount = (u: Record<string, unknown>): Account => {
     const banExpires = u.banExpires ? new Date(u.banExpires as string | Date) : null;
@@ -318,13 +385,19 @@ export async function openAccounts(o: AccountsOptions) {
   const accounts = {
     db,
     secret,
+    /** The test-user page canary's own store (test-session.ts): mint, redeem, check, revoke, audit. */
+    test: testSessions,
+
+    /** Whether this email is the test user's (never a board account; app-access resolves its one membership). */
+    isTestAccount: (email: string) => testSessions.isTestAccount(email),
 
     /** The account behind a request's cookie, or null (no, expired or revoked session; disabled account; an app host's session). */
     async sessionOf(req: Pick<IncomingMessage, "headers">): Promise<AdminSession | null> {
       const cookie = cookieOf(req);
       if (!cookie) return null;
       const s = await auth.api.getSession({ headers: new Headers({ cookie, host: String(req.headers.host ?? "") }) }).catch(() => null);
-      if (!s || isHandoffSession(s.session.token)) return null;
+      // A test-user session is never an admin's, whatever cookie jar it reaches: only the gate's test listener accepts it.
+      if (!s || isHandoffSession(s.session.token) || testSessions.isTestToken(s.session.token)) return null;
       const account = toAccount(s.user as unknown as Record<string, unknown>);
       if (account.disabled) return null;
       return { account, session: { id: s.session.id, expiresAt: new Date(s.session.expiresAt).toISOString() }, ready: account.role === "admin" && account.twoFactorEnabled };
@@ -399,6 +472,8 @@ export async function openAccounts(o: AccountsOptions) {
       if (!cookie) return null;
       const s = await auth.api.getSession({ headers: new Headers({ cookie, host }) }).catch(() => null);
       if (!s) return null;
+      // The test user's sessions live only on the test listener: the sign-in host and the front door never see one.
+      if (testSessions.isTestToken(s.session.token)) return null;
       const row = db.prepare("SELECT parent_id, host FROM handoff_session WHERE token = ?").get(s.session.token) as { parent_id: string; host: string } | undefined;
       // An app host's session counts only on the host it was handed to (`appHost`: the gate's X-Forwarded-Host). Cookies ignore
       // ports, so on plain-http *.localhost doors another host can be sent it (docs/design/app-doors.md).
@@ -628,7 +703,9 @@ export async function openAccounts(o: AccountsOptions) {
 
     async list(): Promise<Account[]> {
       const rows = await ctx.adapter.findMany<Record<string, unknown>>({ model: "user", sortBy: { field: "createdAt", direction: "asc" } });
-      return rows.map(toAccount);
+      // The test user (test-session.ts) is not a board account: it is on no Accounts page, gets no invite, and can't be
+      // promoted. Its own membership is app-access's (testMember), never an accounts.json row.
+      return rows.map(toAccount).filter((a) => !testSessions.isTestAccount(a.email));
     },
 
     /** Bootstrap (ops/setup.sh, operator key): the owner's account and its link, only while no owner exists. */
@@ -657,10 +734,11 @@ export async function openAccounts(o: AccountsOptions) {
       return { url: linkFor(a, await mintLink(id)) };
     },
 
-    /** Promote or demote; the account's sessions end. Never the owner. */
+    /** Promote or demote; the account's sessions end. Never the owner, never the test user. */
     async setRole(by: Account, id: string, role: Role): Promise<Account> {
       const a = await find(id);
       if (a.owner) throw new AccountError(403, "the owner's account can't be changed here");
+      if (testSessions.isTestAccount(a.email)) throw new AccountError(403, "the test user isn't an account to manage");
       await ctx.internalAdapter.updateUser(id, { role });
       await ctx.internalAdapter.deleteUserSessions(id);
       endMcp(id);
@@ -673,6 +751,7 @@ export async function openAccounts(o: AccountsOptions) {
     async setDisabled(by: Account, id: string, disabled: boolean): Promise<Account> {
       const a = await find(id);
       if (a.owner) throw new AccountError(403, "the owner's account can't be disabled");
+      if (testSessions.isTestAccount(a.email)) throw new AccountError(403, "the test user isn't an account to manage");
       await ctx.internalAdapter.updateUser(id, disabled ? { banned: true, banReason: "disabled", banExpires: null } : { banned: false, banReason: null, banExpires: null });
       if (disabled) { await ctx.internalAdapter.deleteUserSessions(id); endMcp(id); }
       log.info({ account: id, disabled, by: by.id }, disabled ? "account disabled" : "account enabled");
@@ -687,6 +766,8 @@ export async function openAccounts(o: AccountsOptions) {
     async reset(email: string): Promise<{ url: string | null }> {
       const found = await ctx.internalAdapter.findUserByEmail(email.trim().toLowerCase());
       if (!found) throw new AccountError(404, "no account with this email");
+      // Never the test user: it has no credential to recover, and a link would be a way into it that no setting names.
+      if (testSessions.isTestAccount(found.user.email)) throw new AccountError(403, "the test user isn't an account to manage");
       const a = toAccount(found.user as unknown as Record<string, unknown>);
       await ctx.internalAdapter.updateUser(a.id, { banned: false, banReason: null, banExpires: null, ...(a.role === "admin" ? { twoFactorEnabled: false } : {}) });
       if (a.role === "admin") await ctx.adapter.deleteMany({ model: "twoFactor", where: [{ field: "userId", value: a.id }] });
