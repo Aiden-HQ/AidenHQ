@@ -115,10 +115,15 @@ test("a reopened issue is read afresh, an unlabelled feature-request leaves the 
   w.log.push(ev(2, "issues.unlabeled", { number: 7, label: "feature-request" }));
   await w.look();
   assert.deepEqual(w.state().repos[R.toLowerCase()].featured, []);
-  const opened = (seq, number) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] });
-  w.log.push(opened(3, 8), ev(4, "issues.closed", { number: 8 }), opened(5, 9));
+  const opened = (seq, number) => ev(seq, "issues.opened", { number, author_kind: "outside", created_at: new Date().toISOString() }, { author: `u${number}`, labels: [] });
+  w.log.push(opened(3, 8), ev(4, "issues.closed", { number: 8 }), opened(5, 9), opened(6, 10), ev(7, "issues.closed", { number: 10 }), ev(8, "issues.reopened", { number: 10 }));
   await w.look();
-  assert.deepEqual(w.triaged, [9]);
+  assert.deepEqual(w.triaged, [9, 10]);
+  const gone = world({ log: [] });
+  await gone.look();
+  gone.repos = [repo(), repo({ repo: "acme/other" })];
+  assert.equal(await gone.look(), 0);
+  assert.equal(gone.state().feed.digest["acme/other"], undefined, "a repo the read lacks is not marked bootstrapped");
 });
 
 test("agent-build and feature-request need features on; a trusted feature request joins the valid reports", async () => {

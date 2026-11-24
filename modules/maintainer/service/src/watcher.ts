@@ -138,9 +138,10 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
   const of = (repo: string): RepoState => (repos[repo.toLowerCase()] ??= {});
   const bootstrap = async (keys: string[]) => {
     const read = await d.bootstrap(keys);
-    for (const row of read.repos) {
-      const k = row.repo.toLowerCase();
-      if (keys.includes(k)) count += await bootRepo(d, cfg.get(k)!, row, of(k));
+    for (const k of keys) {
+      const row = read.repos.find((x) => x.repo.toLowerCase() === k);
+      if (!row) throw new Error(`${k} is not in the bootstrap read (github-mcp lists other repos: retried)`);
+      count += await bootRepo(d, cfg.get(k)!, row, of(k));
     }
   };
   try {
@@ -155,9 +156,9 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
       await bootstrap([k]);
       committed = { ...committed, [k]: digest[k]! };
     }
-    // An issue opened and closed within one read is not triaged.
+    // An issue opened and then left closed within one read is not triaged: its last close or reopen in the page decides.
     const closed = new Map<string, number>();
-    for (const ev of page.events) if (ev.kind === "issues.closed") closed.set(`${ev.resource.toLowerCase()}#${ev.data?.number}`, ev.seq);
+    for (const ev of page.events) if (ev.kind === "issues.closed" || ev.kind === "issues.reopened") { const key = `${ev.resource.toLowerCase()}#${ev.data?.number}`; ev.kind === "issues.closed" ? closed.set(key, ev.seq) : closed.delete(key); }
     for (const ev of page.events) {
       const r = cfg.get(ev.resource.toLowerCase());
       if (r) count += await handle(d, r, ev, of(r.repo), () => bootstrap([r.repo.toLowerCase()]).then(() => 0), (closed.get(`${ev.resource.toLowerCase()}#${ev.data?.number}`) ?? 0) > ev.seq);
