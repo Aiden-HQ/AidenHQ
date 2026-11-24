@@ -6,7 +6,10 @@
 //                                        engines with per-task state. stateDir (default ~/.local/state/aidenhq-runner) is the
 //                                        kernel's LIVE job state despite its name: it and each engine folder in it are never
 //                                        removed, only these per-task homes, which the next job's engineState makes again;
-//   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left by a kernel that died mid-check.
+//   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left by a kernel that died mid-check;
+//   <workDir>/.cache/npm                 every job box's shared npm cache (services/computer/lib.ts npmCacheDir): started
+//                                        afresh once it is CACHE_DAYS old while no job is live, or under pressure once it is
+//                                        an hour old (a parked box still mounting the old one never fits a job again).
 // A folder goes when nothing live uses it (no admitted or running job, no box released less than a day ago; no running check
 // of that attempt) and either its task has been done or cancelled for CLOSED_DAYS with no job started since (and the control plane confirms it), or it has been
 // idle (its last job's end, or the folder's mtime when no job names it) for IDLE_DAYS whatever the task's state: an idle task
@@ -16,20 +19,18 @@
 //
 // Each folder is checked and renamed into its root's .trash in one synchronous step (no admission can slip in between),
 // and the trash is then removed off the event loop, so a 100 GB first pass never stalls the gateway.
-import { execFile } from "node:child_process";
-import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statfsSync, statSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { lstatSync, mkdirSync, readdirSync, renameSync, statfsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { promisify } from "node:util";
+import { npmCacheDir } from "../../services/computer/lib.ts";
 import { checkAttempt } from "./checkjobs.ts";
+import { emptyTrash, removeTree, trashAway } from "./trash.ts";
 
-export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8;
+export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8, CACHE_DAYS = 7;
 /** How long the closed rule waits on the control plane's answer before it counts as none. */
 export const LOOKUP_MS = 10_000;
-const DAY = 86_400_000;
+const DAY = 86_400_000, HOUR = 3_600_000;
 const CLOSED = new Set(["done", "cancelled"]);
-const execFileP = promisify(execFile);
 /** engineState's folder name for an agent's task (sandbox.ts; the launcher checks the same). */
 const homeName = (agent: string, task: string) => `${agent}/${task}`.replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_");
 
@@ -142,8 +143,16 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
       }
       // Off the event loop: chmod first (read-only Go module caches, an overlay's mode-000 work dir), then remove.
       try { statSync(trash); } catch { continue; }
-      await execFileP("chmod", ["-R", "u+rwx", trash]).catch(() => {});
-      await rm(trash, { recursive: true, force: true, maxRetries: 2 }).catch((e: Error) => log("trash not removed", { trash, err: e.message }));
+      await removeTree(trash).catch((e: Error) => log("trash not removed", { trash, err: e.message }));
+    }
+    // The shared npm cache, started afresh (the next job's box makes it again); an earlier one a restart left half removed goes.
+    emptyTrash(join(workDir, ".cache", ".trash"), log);
+    const cache = npmCacheDir(workDir), born = (() => { try { return statSync(cache).birthtimeMs; } catch { return undefined; } })();
+    // Its age: weekly while no job runs. Under pressure it goes even beside running jobs (an install mid-way may fail; a full disk
+    // fails everything), once it is an hour old so a sustained pressure doesn't empty it every pass.
+    const age = born === undefined ? 0 : now() - born;
+    if (born !== undefined && !stopping() && (pressure ? age > HOUR : age > CACHE_DAYS * DAY && !db.prepare("SELECT 1 FROM jobs WHERE state IN ('admitted', 'running') LIMIT 1").get())) {
+      try { trashAway(cache, join(workDir, ".cache", ".trash"), log); log("shared npm cache started afresh", { cache, ...(pressure ? { pressure: true } : {}) }); } catch (e) { log("shared npm cache not removed", { cache, err: (e as Error).message }); }
     }
     return { removed, pressure };
   };
@@ -160,11 +169,12 @@ export function pruneSkillRuntimes({ companiesDir, log = () => {}, now = Date.no
   const ls = (d: string) => { try { return readdirSync(d); } catch { return []; } };
   const newest = (d: string): number => Math.max(statSync(d).mtimeMs, ...ls(d).map((n) => statSync(join(d, n)).mtimeMs));
   for (const company of ls(companiesDir)) {
+    emptyTrash(join(companiesDir, company, "codex-home", ".trash"), log);
     const root = join(companiesDir, company, "codex-home", "skill-runtimes");
     for (const agent of ls(root)) for (const hash of ls(join(root, agent))) {
       const dir = join(root, agent, hash);
       if (!statSync(dir).isDirectory() || newest(dir) > now() - RUNTIME_DAYS * 86_400_000) continue;
-      rmSync(dir, { recursive: true, force: true, maxRetries: 2 });
+      trashAway(dir, join(companiesDir, company, "codex-home", ".trash"), log);
       log("unused skill runtime removed", { dir });
     }
   }

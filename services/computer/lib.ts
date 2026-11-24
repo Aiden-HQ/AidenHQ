@@ -13,8 +13,13 @@ export const MAX_CHECK_MIN = 180;
 
 /** A box the launcher holds: busy while a call runs in it, lastUsed for eviction. */
 export interface Box { busy: number; lastUsed: number; agentId?: string }
-/** A job's box record (see Jobs). */
-export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number }
+/**
+ * A job's box record (see Jobs). A kernel job's box is leased to one job at a time: `job` and `gen` (the lease generation,
+ * bumped at every lease) bind it, so a late renew or release of an earlier job never touches its successor's lease. Between
+ * its task's jobs the box is parked (`parked`: when): no job, no token, kept warm for the task's next job when that job's box
+ * would be the same (`compat`, compatKey).
+ */
+export interface JobRec { container: string; agentId?: string; issueId?: string; identifier?: string; workspace?: string; codexHome?: string; kernel?: boolean; check?: string; tokenHash?: string; roles?: string[]; leaseUntil: number; job?: string; gen?: number; compat?: string; parked?: number; retired?: boolean }
 
 const RUN_TOKEN_ENV = "AIDENHQ_RUN_TOKEN";
 const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
@@ -71,11 +76,14 @@ export const CODEX_CONFIG_SCRUB = [
 export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
 
 /**
- * compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next). Until it
- * exists the launch is refused with a 503: the kernel retries it (an agent job on its next tick, a check every 30s up to its busy wait).
+ * The image a tag names now, by its ID: a box runs that exact image, so a tag rebuilt later is a different image (warm boxes
+ * key on it). compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next).
+ * Until it exists the launch is refused with a 503: the kernel retries it (an agent job on its next tick, a check every 30s up
+ * to its busy wait).
  */
 export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}) {
-  if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
+  const r = await docker(["image", "inspect", "-f", "{{.Id}}", tag]);
+  if (r.exitCode === 0 && /^sha256:[0-9a-f]{64}$/.test(r.stdout.trim())) return r.stdout.trim();
   log("image", tag, "not built yet; launch deferred");
   throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 503 });
 }
@@ -120,11 +128,27 @@ export function boxOf(boxes: Map<string, Box>, agentId: string) {
 /** Last lines of the newest Codex session log in a job's box (its Codex home is /codex-home; sh -c). */
 export const PROGRESS_SCRIPT = 'f=$(ls -t $(find /codex-home/sessions -name "rollout-*.jsonl" 2>/dev/null) 2>/dev/null | head -1); [ -n "$f" ] && tail -n 400 "$f"';
 
-/** Boxes idle longer than idleMs; a held one (a job's live lease) never is. */
+/** Boxes idle longer than idleMs (a parked box since it was parked); a held one (a job's live lease) never is. */
 export const stale = (boxes: Map<string, Box>, idleMs: number, now = Date.now(), held: (name: string) => boolean = () => false) => [...boxes].filter(([n, b]) => !b.busy && !held(n) && now - b.lastUsed > idleMs).map(([n]) => n);
 
 /** A job's lease: renewed by the kernel while it follows the job. Lapsed (the kernel gone this long), the box goes. */
 export const LEASE_MS = 15 * 60_000;
+/** How long a parked box waits for its task's next job before it goes (any idle box: the one idle-reaping limit). */
+export const WARM_MS = 30 * 60_000;
+
+/**
+ * What makes a box fit a job: its exact `docker run` line (the image by ID, user, limits, network, labels, every mount) and
+ * the identity (device, inode, birth) of every mount's source. Anything replaced since the box started (an image rebuilt
+ * under its tag, the engine module or repo-checkout updated by an apply, a folder the disk sweep, `aidenhq cleanup` or a cache
+ * reset made again) is a different key, so the box, which still holds the old one, no longer fits. A source that can't be
+ * read throws: no fit.
+ */
+export function compatKey(runArgs: string[]) {
+  const sources = runArgs.flatMap((a, i) => (runArgs[i - 1] === "-v" ? [a.slice(0, a.indexOf(":"))] : []));
+  // The birth time too: ext4 hands a freed inode number straight to the next file made.
+  const ids = sources.map((d) => { const st = statSync(d); return `${st.dev}:${st.ino}:${st.birthtimeMs}`; });
+  return createHash("sha256").update(JSON.stringify([runArgs, ids])).digest("hex");
+}
 
 /** Whether a box may use repo-checkout: by the roles its job's admission froze (the launcher's job record). */
 export const mayCheckout = (who?: { roles?: string[] }) => (who?.roles ?? []).includes("repo-checkout");
@@ -145,6 +169,37 @@ export class Jobs {
   has(container: string) { return this.#by.has(container); }
   delete(container: string) { return this.#by.delete(container); }
   byIssue(issueId: string | undefined) { return [...this.#by.values()].find((r) => r.issueId === issueId); }
+  /** Whether `gen` is the box's current lease (a record from before leases had generations is generation 0). */
+  current(container: string, gen: unknown) { const r = this.#by.get(container); return Boolean(r) && (r!.gen ?? 0) === (gen ?? 0); }
+  /** The job's lease ends and the box is parked: its token opens nothing from now on. */
+  park(container: string, now = Date.now()) {
+    const r = this.#by.get(container);
+    if (!r || r.retired) return false;
+    delete r.tokenHash; delete r.job;
+    r.parked = now; r.leaseUntil = 0;
+    return true;
+  }
+  /** Revokes the box's token now (its job is over), before the box is parked or goes. */
+  revoke(container: string) { const r = this.#by.get(container); if (r) { delete r.tokenHash; delete r.job; } }
+  /**
+   * The box is going: no token, no lease, never leased again. The record stays (holding the task) until Docker has removed the
+   * box, so the task's next job waits for that rather than starting beside it.
+   */
+  retire(container: string) {
+    const r = this.#by.get(container);
+    if (!r) return false;
+    this.revoke(container);
+    delete r.parked;
+    r.retired = true; r.leaseUntil = 0;
+    return true;
+  }
+  /** A parked box leased to the task's next job: a new generation, the new job's token and roles. */
+  lease(container: string, { job, tokenHash, roles }: { job?: string; tokenHash: string; roles: string[] }, now = Date.now()) {
+    const r = this.#by.get(container)!;
+    delete r.parked;
+    Object.assign(r, { job, tokenHash, roles, gen: (r.gen ?? 0) + 1, leaseUntil: now + LEASE_MS });
+    return r;
+  }
   /** A kernel job's box by its job token (the kernel minted it; only its hash is kept): its container and agent, else undefined. */
   byKernelToken(token: unknown) {
     if (typeof token !== "string" || !token.startsWith("ahqj_")) return undefined;
@@ -153,17 +208,17 @@ export class Jobs {
     return r && { container: r.container, agentId: r.agentId, roles: [...(r.roles ?? [])] };
   }
   containers() { return [...this.#by.keys()]; }
-  /** A live lease: admission and idle reaping leave the box alone. */
-  leased(container: string, now = Date.now()) { return (this.#by.get(container)?.leaseUntil ?? 0) > now; }
-  /** The kernel still follows the job (after its own restart too): a new lease. Undefined: no such job. */
-  renew(container: string, { issueId }: { issueId?: string } = {}, now = Date.now()) {
+  /** A live lease: admission and idle reaping leave the box alone (a parked box has none). */
+  leased(container: string, now = Date.now()) { const r = this.#by.get(container); return Boolean(r && !r.parked && r.leaseUntil > now); }
+  /** The kernel still follows the job (after its own restart too): a new lease. Undefined: no such job, or not this lease. */
+  renew(container: string, { issueId, gen }: { issueId?: string; gen?: number } = {}, now = Date.now()) {
     const r = this.#by.get(container);
-    if (!r || r.issueId !== issueId || r.leaseUntil <= now) return undefined;
+    if (!r || r.parked || r.issueId !== issueId || r.leaseUntil <= now || !this.current(container, gen)) return undefined;
     r.leaseUntil = now + LEASE_MS;
     return r;
   }
   /** Jobs whose lease ran out: the kernel has been gone too long. */
-  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => r.leaseUntil <= now).map((r) => r.container); }
+  lapsed(now = Date.now()) { return [...this.#by.values()].filter((r) => !r.parked && !r.retired && r.leaseUntil <= now).map((r) => r.container); }
   dump() { return [...this.#by.values()]; }
   load(rows: JobRec[] | undefined) { for (const r of rows ?? []) if (r?.container && r.issueId) this.#by.set(r.container, r); }
 }
@@ -192,13 +247,24 @@ export const COMMIT_MSG_HOOK = '#!/bin/sh\nexec git interpret-trailers --in-plac
  * is created by Docker as root, and a hook then can't be written into it (EACCES on every repo command).
  */
 export function jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork, repo, engineDir, roles = [] }: { resolvConf: string; workspace: string; outDir: string; codexHome: string; runnerWork: string; repo: string; engineDir: string; roles?: string[] }) {
+  // The shared npm cache: made here as the launcher's user (Docker would make a missing bind source as root).
+  mkdirSync(npmCacheDir(runnerWork), { recursive: true });
   const hooks = path.join(runnerWork, ".guard-hooks");
   mkdirSync(hooks, { recursive: true });
   writeFileSync(path.join(hooks, "commit-msg"), COMMIT_MSG_HOOK, { mode: 0o755 });
   // `repo-checkout` is in the box only for a job frozen with its role: a command the box can't use is a dead end.
   const checkout = mayCheckout({ roles }) ? [`${path.join(repo, "services/computer/images/agent-base/repo-checkout")}:/usr/local/bin/repo-checkout:ro`] : [];
-  return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`];
+  return [...checkout, `${resolvConf}:/etc/resolv.conf:ro`, `${workspace}:/workspace`, `${outDir}:/aidenhq-out`, `${codexHome}:/codex-home`, `${hooks}:/opt/aidenhq/hooks:ro`, `${path.join(repo, engineDir)}:/opt/aidenhq/engine:ro`, `${npmCacheDir(runnerWork)}:${NPM_CACHE}`];
 }
+
+/**
+ * Every job box's npm cache (npm_config_cache), shared by all tasks: npm's content-addressed store, where a package is filed
+ * under its integrity hash and checked against it on every read, so a task's install takes what any task fetched before
+ * instead of downloading it again, and the task folders stop carrying a copy each. `node_modules` and build output stay in the
+ * task's own folder. The disk sweep (kernel/src/workspaces.ts) starts it afresh weekly, and at once under disk pressure.
+ */
+export const npmCacheDir = (runnerWork: string) => path.join(runnerWork, ".cache", "npm");
+const NPM_CACHE = "/opt/aidenhq/npm-cache";
 
 /** A job box's HOME (outside every clone); its wrappers (the image's /opt/aidenhq/bin) first on its PATH. */
 export const JOB_HOME = "/workspace/.aidenhq/home";
@@ -206,7 +272,7 @@ const JOB_PATH = "/opt/aidenhq/bin:/opt/rust/cargo/bin:/usr/local/sbin:/usr/loca
 
 /** Every name a job box's env file may hold: the job's revocable token and plain settings. */
 export const JOB_ENV_NAMES = [
-  "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH",
+  "AIDENHQ_RUN_TOKEN", "AIDENHQ_AGENT_NAME", "AIDENHQ_GATEWAY_URL", "AIDENHQ_MCP_B64", "AIDENHQ_TASK_WORKTREE", "HOME", "CODEX_HOME", "PATH", "npm_config_cache",
   "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_TERMINAL_PROMPT",
   "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2",
 ];
@@ -226,6 +292,7 @@ export function jobEnvFile({ token, mcp, gatewayUrl, identity = {} }: { token: s
     HOME: JOB_HOME, AIDENHQ_TASK_WORKTREE: "/workspace", // the task folder, as on the host (its .aidenhq/out/ is attached)
     CODEX_HOME: "/codex-home",
     PATH: JOB_PATH,
+    npm_config_cache: NPM_CACHE,
     GIT_AUTHOR_NAME: clean(identity.name), GIT_AUTHOR_EMAIL: clean(identity.email),
     GIT_COMMITTER_NAME: clean(identity.name), GIT_COMMITTER_EMAIL: clean(identity.email),
     GIT_TERMINAL_PROMPT: "0",

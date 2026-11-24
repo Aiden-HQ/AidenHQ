@@ -4,9 +4,10 @@
 // under a small `sh` that records its exit status, writing straight to its log: nothing ties it to the kernel, so a kernel
 // restart (KillMode=process) leaves it running and the next kernel adopts it from kernel.db (its pid and events offset). The
 // watcher follows events.jsonl (untrusted: regular files only, no links, capped lines), the exit file, the deadline and a
-// cancel. Judging a run's progress (no work for too long) is its dispatcher's: it stops the run (dispatch progress.ts).
+// cancel: woken by file events (its job folder, the logs folder) with a slow poll behind them for a missed event and a run
+// that died without its shell. Judging a run's progress (no work for too long) is its dispatcher's: it stops the run (dispatch progress.ts).
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, watch as fsWatch, writeFileSync, type FSWatcher } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
@@ -55,9 +56,13 @@ const BOX_ENV = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT
 const ID = /^[\w.-]{1,100}$/;
 
 // The run (its `docker exec` client) under a `sh` of builtins only that records its exit status and outlives a stop's SIGTERM
-// to record it. Stopping the client stops nothing in the box: the dispatcher releases the box (the launcher destroys it).
+// to record it. Stopping the client stops nothing in the box: the dispatcher releases the box (the launcher restarts or destroys
+// it, which ends every process in it).
 const WRAP = 'trap : TERM INT HUP; "$@"; echo "$?" > "$0"';
-const POLL_MS = 250;
+/** The slow poll behind the file events: a missed event, and a run that died without writing its status (silent death). */
+const POLL_MS = 2_000;
+/** File events are coalesced: at most one read of a busy run's events per this long (the old fixed poll's rate). */
+const NUDGE_MS = 250;
 // Setup's retry on a lock another opener holds, while it makes the same schema (below): about five seconds in all.
 const SETUP_TRIES = 200;
 const SETUP_RETRY_MS = 25;
@@ -358,6 +363,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         db.exec("CREATE INDEX IF NOT EXISTS jobs_identifier ON jobs (identifier, state)"); // workspaces.ts: a folder's liveness
         db.exec("CREATE INDEX IF NOT EXISTS jobs_agent_at ON jobs (agent, at DESC)"); // work.ts: an agent's newest jobs first
         db.exec("CREATE INDEX IF NOT EXISTS jobs_ended ON jobs (ended)"); // work.ts activity(): the jobs that ended lately
+        db.exec("CREATE INDEX IF NOT EXISTS jobs_state ON jobs (state)"); // the pool, admission and adopt: live jobs by state
         // `acked`: the dispatcher's completion acknowledgement. Runs that ended before the column existed were dealt with by the old ledger.
         if (!cols.has("acked")) db.exec("ALTER TABLE jobs ADD COLUMN acked INTEGER; UPDATE jobs SET acked = COALESCE(ended, at) WHERE state NOT IN ('admitted', 'running')");
         db.exec("COMMIT");
@@ -372,6 +378,25 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
   };
   setup();
   const refusal = (id: string) => refusalOf(db, id);
+  /**
+   * One watcher on the logs folder for every followed run's exit file (by its full path): a run's end is seen when its shell
+   * writes the status, not at the next poll. A watcher that errors is dropped; the next run's follow makes it again.
+   */
+  const exits = new Map<string, () => void>();
+  let logsWatch: { dir: string; w: FSWatcher } | undefined;
+  const onExit = (exitFile: string, fn: () => void) => {
+    const dir = dirname(exitFile);
+    if (!logsWatch) {
+      try {
+        const w = fsWatch(dir, (_e, name) => { if (name) exits.get(join(dir, String(name)))?.(); });
+        w.on("error", () => { w.close(); if (logsWatch?.w === w) logsWatch = undefined; });
+        w.unref();
+        logsWatch = { dir, w };
+      } catch {}
+    }
+    exits.set(exitFile, fn);
+    return () => { if (exits.get(exitFile) === fn) exits.delete(exitFile); };
+  };
   const watchers = new Map<string, { stop: () => void; send?: (text: string, from: string, comment?: string) => boolean; cancel: (by?: string) => void }>();
   const versions = new Map<string, number>();
   const waiters = new Map<string, Set<() => void>>();
@@ -480,6 +505,10 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       } catch {}
     };
     let timer: NodeJS.Timeout;
+    let deadlineTimer: NodeJS.Timeout | undefined, soon: NodeJS.Timeout | undefined;
+    let dirWatch: FSWatcher | undefined, offExit = () => {};
+    /** Every way this follow is woken stops: the poll, the deadline, the file watchers. */
+    const quiet = () => { clearInterval(timer); clearTimeout(deadlineTimer); clearTimeout(soon); dirWatch?.close(); offExit(); };
     let ending: { state: string; exit: number | null; lastMessage: string } | undefined;
     const done = () => {
       read();
@@ -492,7 +521,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         const code = status === "" ? null : Number(status);
         if (code !== null && code !== 0 && !timedOut && !cancelled && STALE_SESSION.test(logTail(logPath))) {
           retried = true;
-          clearInterval(timer);
+          quiet();
           watchers.delete(id);
           db.prepare("UPDATE jobs SET session = NULL WHERE agent = ? AND task = ? AND engine = ? AND authority IS NOT NULL").run(r.agent, r.task, r.engine);
           log("session not found: the turn runs again on a fresh session", { job: id, task: r.task, session: r.session });
@@ -521,7 +550,7 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
         log("job end not recorded; tried again next tick", { job: id, task: r.task, state, err: (e as Error).message });
         return;
       }
-      clearInterval(timer);
+      quiet();
       watchers.delete(id);
       log("job finished", { job: id, task: r.task, state, exit });
       bump(id);
@@ -568,8 +597,19 @@ export function createJobs({ db, cfg, cp, mayDispatch, log, boxWrap, onEnd = () 
       : undefined;
     // A later cancel with no account (dispatch's progress stop racing the owner's Stop) keeps the account already recorded: only the
     // owner's Stop names one, and it is what tells the two apart downstream.
-    watchers.set(id, { stop: () => (clearInterval(timer), save()), send, cancel: (by) => { cancelled = true; if (by) stoppedBy = by; kill(); } });
+    watchers.set(id, { stop: () => (quiet(), save()), send, cancel: (by) => { cancelled = true; if (by) stoppedBy = by; kill(); } });
     timer = setInterval(tick, POLL_MS);
+    // The deadline on its own timer, so a run is stopped when it runs out, not up to a poll later.
+    deadlineTimer = setTimeout(tick, Math.max(0, deadline - Date.now()) + 5);
+    // A file event (an engine event appended, the exit status written) reads at most once per NUDGE_MS. A job that removes or
+    // replaces its own folder only loses the watch: the poll still follows it.
+    const nudge = () => { soon ??= setTimeout(() => { soon = undefined; if (!over) tick(); }, NUDGE_MS); };
+    try {
+      dirWatch = fsWatch(jobDir, nudge);
+      dirWatch.on("error", () => { dirWatch?.close(); dirWatch = undefined; });
+      dirWatch.unref();
+    } catch {}
+    offExit = onExit(exitFile, nudge);
     tick();
   }
 

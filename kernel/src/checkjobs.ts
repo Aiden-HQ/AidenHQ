@@ -62,10 +62,12 @@
 // module to fetch (GET /v1/checks/:check/kept). Both are the box's data, never read by the kernel; both go after FILES_DAYS.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { missKind, passes } from "../sdk/src/pass-rule.ts";
 import { noteFact, openFacts } from "./facts.ts";
+import { trashAway } from "./trash.ts";
 
 /** A recipe's name (`fast`, `tests`, `eval`, `contract`, …): whatever the installed modules declare. */
 export type Run = string;
@@ -415,12 +417,19 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   /** Where a module's uploaded inputs (by sha256) and a check's kept file are. */
   const inputPath = (module: string, sha: string) => join(workDir, "check-inputs", module, sha);
   const keptPath = (id: string) => join(workDir, "check-kept", id);
-  /** Inputs and kept files older than FILES_DAYS go (each upload and each check started sweeps). */
+  /** Inputs and kept files older than FILES_DAYS go (each upload and each check started sweeps), off the event loop, one pass at a time. */
+  let sweeping: Promise<void> | undefined;
   const sweepFiles = () => {
-    const old = now() - FILES_DAYS * 86_400_000;
-    for (const dir of [join(workDir, "check-kept"), ...(() => { try { return readdirSync(join(workDir, "check-inputs")).map((m) => join(workDir, "check-inputs", m)); } catch { return []; } })()])
-      for (const f of (() => { try { return readdirSync(dir); } catch { return []; } })()) { try { if (statSync(join(dir, f)).mtimeMs < old) rmSync(join(dir, f), { force: true }); } catch {} }
+    sweeping ??= (async () => {
+      const old = now() - FILES_DAYS * 86_400_000;
+      const ls = (d: string) => readdir(d).catch(() => [] as string[]);
+      for (const dir of [join(workDir, "check-kept"), ...(await ls(join(workDir, "check-inputs"))).map((m) => join(workDir, "check-inputs", m))])
+        // The age check and the unlink in one synchronous step, so an upload replacing the file in between is never removed.
+        for (const f of await ls(dir)) { await new Promise((ok) => setImmediate(ok)); try { if (statSync(join(dir, f)).mtimeMs < old) rmSync(join(dir, f), { force: true }); } catch {} }
+    })().finally(() => { sweeping = undefined; });
   };
+  /** An attempt's folder (or a part of one) out of the way now, removed off the event loop. */
+  const trash = (path: string) => trashAway(path, join(workDir, "checks", ".trash"), log);
   /** The run's kept file (a keep recipe's /aidenhq-out/keep: a regular file of at most INPUT_MAX, never through a link), copied
    * from the descriptor it was checked on into a file of the kernel's own before the attempt's folder goes; anything else is none. */
   const keepOut = (id: string, dir: string) => {
@@ -452,7 +461,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
   /** A run launched in a fresh box (its handle). `trees`: commit trees by spec field, moved into the out folder (the recipe's
    * history); `spec`: written to the out folder's spec.json. */
   async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, trees: Record<string, string> = {}, spec?: Record<string, string>, mint?: () => string, inputs: Record<string, string> = {}) {
-    rmSync(out, { recursive: true, force: true });
+    trash(out);
     mkdirSync(join(out, "home"), { recursive: true });
     for (const [name, text] of Object.entries(r.files)) (mkdirSync(join(out, "recipe", dirname(name)), { recursive: true }), writeFileSync(join(out, "recipe", name), text));
     for (const [field, tree] of Object.entries(trees)) renameSync(tree, join(out, field));
@@ -552,10 +561,10 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       mkdirSync(join(tree, f, ".."), { recursive: true });
       writeFileSync(join(tree, f), text);
     }
-    rmSync(judge, { recursive: true, force: true });
-    rmSync(from, { recursive: true, force: true });
+    trash(judge);
+    trash(from);
     noLinks(tree, cases);
-    rmSync(join(tree, cases), { recursive: true, force: true });
+    trash(join(tree, cases));
     mkdirSync(join(tree, cases), { recursive: true });
     for (const [n, text] of judged) writeFileSync(join(tree, cases, n), text);
     return judgedRun(id, r, head, dir, { n: 1, names: [...judged.keys()], added }, launched, caps);
@@ -596,7 +605,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       // The one partial re-run: only the failed cases (the box had the tree read-only, so what stays is as laid); each must pass now.
       const cases = `${J.cwd}/${J.cases}`, keep = new Set(res.failed.map((f) => f.file));
       noLinks(join(dir, "tree"), cases);
-      for (const n of readdirSync(join(dir, "tree", cases))) if (!keep.has(n)) rmSync(join(dir, "tree", cases, n), { recursive: true, force: true });
+      for (const n of readdirSync(join(dir, "tree", cases))) if (!keep.has(n)) trash(join(dir, "tree", cases, n));
       return judgedRun(id, r, head, dir, { n: 2, names: [...keep], added: step.added, first }, launched, caps);
     }
     const rerun = `, and ${res.passed}/${res.total} of the failed cases on their one re-run`;
@@ -661,7 +670,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
         const o = await follow(adopted.box);
         v = "n" in adopted.step ? await judgedRun(attempt, recipe, r.head, dir, adopted.step, launched, caps, o) : codeEnded(recipe, dir, o, r.run_key ?? undefined, adopted.step);
       } else {
-        rmSync(dir, { recursive: true, force: true });
+        trash(dir);
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         const snap = snapshot(r.module);
         v = recipe.judged ? await evaluate(attempt, snap, recipe, r.head, spec, dir, launched, caps) : await code(attempt, r.module, snap, recipe, r.run, r.repo, r.head, spec, dir, Number(r.cost_usd ?? 0), (key) => db.prepare("UPDATE checks SET run_key = ? WHERE id = ? AND at = ?").run(key, id, r.at), launched);
@@ -688,7 +697,7 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (await ended("error", { error: why, ...(cap ? { cap } : {}), ...(cost !== undefined ? { cost } : {}) })) log(cap ? `WARNING: check ended at the ${cap} spend cap, no receipt` : "WARNING: check couldn't run", { ...ids, err: msg.slice(0, TAIL + 600) });
     } finally {
       mine.delete(id);
-      if (!kept) rmSync(dir, { recursive: true, force: true });
+      if (!kept) { try { trash(dir); } catch (e) { log("WARNING: a check's folder couldn't be removed", { ...ids, err: (e as Error).message }); } }
       bump(id);
     }
   }

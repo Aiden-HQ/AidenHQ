@@ -61,7 +61,7 @@ async function host(t) {
       mkdirSync(outDir);
       writeFileSync(envFile, `AIDENHQ_RUN_TOKEN=${body.token}\n`);
       writeFileSync(join(cfg.boxDir, `${container}.box.json`), JSON.stringify({ workspace: body.workspace, outDir, engineDir: join(dir, "engines") }));
-      res.writeHead(200).end(JSON.stringify({ container, envFile, outDir }));
+      res.writeHead(200).end(JSON.stringify({ container, envFile, outDir, gen: 1 }));
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -145,7 +145,8 @@ test("admit → box → run: the kernel's key, the job token as the box's creden
   // The end: the box is released, and the token buys nothing any more.
   h.release();
   await until("both boxes released", () => h.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE released > 0").get().n === 2);
-  assert.equal(h.calls.filter((c) => c.route === "/job/release").length, 2);
+  // Each release names the lease it ends (the box's generation), and parks the box for the task's next job (no destroy).
+  assert.deepEqual(h.calls.filter((c) => c.route === "/job/release").map((c) => [c.body.gen, c.body.destroy]), [[1, false], [1, false]]);
   await assert.rejects(h.whoami(acquire.body.token), /ended/);
   assert.ok(other.id);
 });
