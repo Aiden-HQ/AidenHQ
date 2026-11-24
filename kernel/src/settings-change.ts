@@ -187,14 +187,12 @@ export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }
       agentsOwn();
       only(c, ["kind", "name", "text"]);
       if (!NAME.test(String(c.name))) refuse(`${c.name} isn't a skill name (a-z, 0-9 and -)`);
-      // This writes the library's skills only. A name another module ships would be a second, unused skill: the agent's
-      // /codex-home/skills/<name>/ is copied from each skill's own module folder (sandbox.ts copySkills), so the library
-      // write never reaches it. The compiled catalog covers enabled modules, the tree a disabled one.
+      // This writes the library's skills only (modules/library/skills/<name>/SKILL.md). A name a module other than library
+      // ships would be a second, unused skill: an agent's /codex-home/skills/<name>/ is copied from each skill's own module
+      // folder (sandbox.ts copySkills), so the library write never reaches it. The compiled catalog covers the enabled modules
+      // of any marketplace; skillModule reads the product's and the instance's module trees, so a disabled module refuses too.
       const name = String(c.name);
-      const owners = Object.keys(compiled?.skills ?? {}).flatMap((id) => {
-        const [m, n] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
-        return n === name && m !== "library" ? [m] : [];
-      });
+      const owners = Object.keys(compiled?.skills ?? {}).map((id) => id.split(".")).filter(([m, n]) => m !== "library" && n === name).map(([m]) => m!);
       const module = owners.sort()[0] ?? skillModule?.(name);
       if (module) refuse(`skill ${name} is module ${module}'s: modules/${module}/skills/${name}/SKILL.md is a module skill, and module skills change through an Engineer PR on the product repo (a self_change writes library skills only)`);
       text(c.text, RULES_MAX);
@@ -571,8 +569,7 @@ export function createSettingsChanges(d: SettingsDeps) {
     try {
       await d.tree(base, dir);
       const compiled = (() => { try { return compileTree(d.product, dir); } catch (e) { return refuse(`the instance doesn't compile at ${base.slice(0, 12)}: ${(e as Error).message}`); } })();
-      const modulesRoot = join(dir, "modules");
-      const skillModule = (name: string) => (existsSync(modulesRoot) ? readdirSync(modulesRoot, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== "library" && existsSync(join(modulesRoot, e.name, "skills", name, "SKILL.md"))).map((e) => e.name).sort()[0] : undefined);
+      const skillModule = moduleSkillOwner([join(d.product, "modules"), join(dir, "modules")]);
       const src: Sources = { compiled: compiled.paperclip, catalog: compiled.catalog, self: { key, roles: requester.roles }, skillModule };
       for (const ch of changes) checkTyped(ch, src);
       const typed = (changes as Change[]).map((ch) => (ch.kind === "routine_def" ? { ...ch, agent: key } : ch));
@@ -622,6 +619,11 @@ export function createSettingsChanges(d: SettingsDeps) {
     return { record: r.id, tier: r.tier, state: r.state, sha };
   }
   return Object.assign(apply, { asAgent, ownerTask });
+}
+
+/** The module other than library whose tree ships `name` as a skill (`modules/<module>/skills/<name>/SKILL.md`), if any. */
+function moduleSkillOwner(roots: string[]): (name: string) => string | undefined {
+  return (name) => roots.flatMap((root) => (existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== "library" && existsSync(join(root, e.name, "skills", name, "SKILL.md"))).map((e) => e.name) : [])).sort()[0];
 }
 
 /**
