@@ -8,18 +8,31 @@ const job = (state: string, min: number, error?: string): Job => ({ agent: "A", 
 const api = async (p: string): Promise<any> => (p.startsWith("/api/agents/") ? { name: "Fleet Engineer" } : { identifier: "WOR-9" });
 
 describe("watch", () => {
-  it("repeated failed jobs alert once an hour; a successful job after it says recovered once", async () => {
+  it("repeated failures and a later recovery send the owner nothing", async () => {
     const store = openStore(":memory:");
     const notify = vi.fn(async (_text: string, _kind: "alert" | "done") => true);
     let recent = [job("failed", -2), job("timeout", -3), job("lost", -4), job("cancelled", -5)];
     const work = async () => ({ recent });
     await tick({ work, api, notify, store, now: NOW });
     await tick({ work, api, notify, store, now: NOW + 5 * 60_000 });
-    expect(notify.mock.calls).toEqual([["⚠️ Agents are failing: 3 failed jobs in 15 minutes, e.g. Fleet Engineer/WOR-9", "alert"]]);
     recent = [job("done", 10), ...recent];
     await tick({ work, api, notify, store, now: NOW + 20 * 60_000 });
     await tick({ work, api, notify, store, now: NOW + 22 * 60_000 });
-    expect(notify.mock.calls.map((c) => c[0]).slice(1)).toEqual(["✅ Agents recovered"]);
+    expect(notify.mock.calls).toEqual([]);
   });
 
+  it("a 402 failure alerts once an hour", async () => {
+    const store = openStore(":memory:");
+    const notify = vi.fn(async (_text: string, _kind: "alert" | "done") => true);
+    let recent = [job("failed", -1, "402 Payment Required: insufficient credits")];
+    const work = async () => ({ recent });
+    await tick({ work, api, notify, store, now: NOW });
+    await tick({ work, api, notify, store, now: NOW + 5 * 60_000 });
+    expect(notify.mock.calls).toEqual([
+      ["⚠️ Agents are failing: out of OpenRouter credits (402) (1 failed jobs, e.g. Fleet Engineer/WOR-9)", "alert"],
+    ]);
+    recent = [job("failed", 60, "402 Payment Required: insufficient credits")];
+    await tick({ work, api, notify, store, now: NOW + 61 * 60_000 });
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
 });

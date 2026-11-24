@@ -680,7 +680,12 @@ export function App() {
   }, [needsSignIn]);
   // Every hook runs before the early returns below (React needs the same hooks on every render).
   const appsQ = useQuery(QUERIES.apps, signInNeeded);
-  const pages = useQuery(QUERIES.pages, signInNeeded).data?.pages ?? [];
+  const pagesQ = useQuery(QUERIES.pages, signInNeeded);
+  const pages = pagesQ.data?.pages ?? [];
+  // An apply can add or remove a module's page while the board is open: Fleet reads them again each time it is opened.
+  const inFleet = ["agents", "apps", "modules", "reviews", "fleet"].includes(view);
+  const reloadPages = pagesQ.reload;
+  useEffect(() => void (inFleet && reloadPages()), [inFleet, reloadPages]);
   // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
   if (session && !session.account) return <SignInScreen />;
 

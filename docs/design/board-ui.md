@@ -123,7 +123,7 @@ contributes:
 - **The board** lists the pages after Fleet's own (sidebar, phone More, ⌘K) and shows one at `#/fleet/<id>`
   (`ModuleView.tsx`). The view runs in an iframe served from `/api/pages/<id>/frame` with a sandbox CSP (`allow-scripts
   allow-forms` only): an opaque origin with no network, no cookies, no navigation and nothing loaded from outside. Inline
-  script and style only; `_meta.ui.csp` domains aren't honoured.
+  script and style only; `_meta.ui.csp` domains aren't honoured. The board's own CSP (`frame-src 'self'`) keeps the frame from navigating anywhere outside the board, and the bridge serves only the first document a frame loads; a view that navigates itself, or doesn't send `ui/initialize` within 8 seconds (its module down), is replaced by a Try again.
 - **The bridge** is MCP Apps over postMessage, from that frame only: `ui/initialize` (the host context carries `theme` and
   `styles.variables`: `--color-background-primary|secondary`, `--color-text-primary|secondary|danger|inverse`,
   `--color-border-primary`, `--color-ring-primary`, `--font-sans`, `--border-radius-md`, as the board's tokens write them, so

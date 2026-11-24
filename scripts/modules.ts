@@ -660,8 +660,7 @@ export function organisations(list: unknown, allDefs: Obj, enabledDefs: Obj) {
  * board.pages (modules/board/schemas/pages.json): each page's view and tools sit on one of its own module's connections, as
  * read or write tools (never destructive, never one a write kind routes). Each tool is named <module>_… (the owner MCP serves every page's tools side by side,
  * under their own names). What each view may reach goes onto its connection in the kernel's table (`views`: view -> tools),
- * where the kernel's view route enforces it (kernel/src/views.ts). `settings` lists keys the page may propose beyond its own
- * module's: each declared by that module or one it requires (the board's save accepts exactly those).
+ * where the kernel's view route enforces it (kernel/src/views.ts).
  */
 export function modulePages(pages: Obj[], connections: Obj, kinds: Obj = {}, declares: (module: string, key: string) => boolean = () => true) {
   // One page per view, and one page per MCP name (the owner MCP serves each page's tools and its `<id>_page` opener side by side).
