@@ -188,7 +188,7 @@ export function selected(setting: string[]): string[] {
  * with the cursor left where the pass began. The same holds for an id page (by its own total) and a resumed pass (whose first
  * time query has its own total).
  */
-async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string> }, deadline: number): AsyncGenerator<CrmRecord> {
+async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: string; afterId?: string }, state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowDropped?: number }, deadline: number): AsyncGenerator<CrmRecord> {
   let since = Date.parse(from.sinceIso);
   let afterId = from.afterId;
   // A page shorter than the limit while its own query's total says more matched is a page HubSpot has not published whole (its
@@ -202,7 +202,8 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
   };
   // The pass's `total` is its first search's (the records modified since the cursor), across its retries; a later window's
   // smaller total describes only that window and must not replace it.
-  let firstWindow = from.afterId === undefined;
+  const resumed = from.afterId !== undefined; // this pass began inside a bulk-edit time, not at its own start
+  let firstWindow = !resumed;
   for (;;) {
     if (afterId === undefined) {
       const droppedBefore = state.dropped;
@@ -231,7 +232,11 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         ({ records: page, total, returned } = answer);
         // The total comes from the answer the first page is accepted with: a retried page's earlier total may count a record
         // HubSpot has since archived, and would report the pass as short forever.
+        // Only a pass that began at the search's start has a whole-search total to compare (a resumed one counts from the
+        // middle, per the ingest-run contract). A resumed pass's newer time range is compared on its own: the first newer
+        // window's total covers the range, and `state.windowRead` collects the ids every newer window read.
         if (firstWindow) state.total = total;
+        else if (state.windowRead && state.windowTotal === undefined && total !== null) state.windowTotal = total;
         state.dropped = droppedBefore + (returned - page.length);
         if (total !== null) gapTotal = total;
         // A retry that omits its total can't disprove the gap the page before it showed: the last total it gave is used.
@@ -239,8 +244,11 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         // Recorded before the retry, so a retry that throws or runs out of budget still leaves the gap (and the cursor) as it
         // was; a replacement page that resolves it clears it again.
         state.shortfall = gap || shortBefore;
+        // Counted from the page in hand (its rows are written right after), not from `state.seen`, which is a snapshot before them.
         if (gap && gapTotal !== null)
-          state.partial = firstWindow ? { total: gapTotal, fetched: state.seen.size } : { total: gapTotal, fetched: new Set(page.map((r) => r.id)).size };
+          state.partial = firstWindow
+            ? { total: gapTotal, fetched: new Set([...state.seen, ...page.map((r) => r.id)]).size }
+            : { total: gapTotal, fetched: new Set(page.map((r) => r.id)).size };
         if (!gap) break;
         if (attempt + 1 >= SHORT_PAGE_ATTEMPTS) break;
         if (!(await wait()) || Date.now() >= deadline) {
@@ -252,7 +260,9 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       // Past the budget no new write is started: the page is re-read next pass from the held cursor instead of a long batch of
       // upserts running past the pass's share.
       if (spent) return void (state.ended = false);
+      if (state.windowRead) state.windowDropped = (state.windowDropped ?? 0) + (returned - page.length); // unusable, but returned
       for (const r of page) {
+        state.windowRead?.add(r.id);
         state.seen.add(r.id);
         yield r;
         const t = Date.parse(isoOf(r.properties[def.modified]) ?? "");
@@ -340,6 +350,8 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         id = r.id;
         state.tieId = id;
         tieRead.add(r.id);
+        // A newer time window is read by time and then by id: both halves count toward the same range.
+        state.windowRead?.add(r.id);
         state.seen.add(r.id);
         yield r;
       }
@@ -363,6 +375,9 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
     }
     state.tieId = undefined;
     state.doneMs = since;
+    // The resumed tie is read whole: the newer time window after it is a fresh search whose own total is comparable, against
+    // the rows that window reads. `state.windowRead` holds them, so the resumed tie's rows don't inflate its count.
+    if (resumed) state.windowRead ??= new Set<string>();
     since += 1;
     afterId = undefined;
   }
@@ -384,7 +399,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   let newest = cursorTime || new Date((o.now ?? Date.now()) - o.days * DAY).toISOString();
   const from = newest;
   let tieId = cursorId || undefined;
-  const state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string> } = { ended: false, shortfall: false, dropped: 0, seen: new Set() };
+  const state: { ended: boolean; shortfall: boolean; partial?: { total: number; fetched: number }; partialOnly?: boolean; dropped: number; tieId?: string; doneMs?: number; total?: number | null; seen: Set<string>; windowRead?: Set<string>; windowTotal?: number; windowDropped?: number } = { ended: false, shortfall: false, dropped: 0, seen: new Set() };
   try {
     for await (const r of records(call, def, { sinceIso: newest, afterId: tieId }, state, o.deadline)) {
       let row: Row;
@@ -414,7 +429,16 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
     // pass's start so the next pass reads the same window again, rather than at/after `newest` and past what was not yet
     // indexed. That holds when the retries ran out, when the budget left no time for one, and when a later, narrower window
     // reported its own smaller total. A result listed without an id was never writable, so it doesn't make the window short.
-    const read = state.seen.size + (state.dropped ?? 0);
+    const read = (state.windowRead?.size ?? state.seen.size) + state.dropped;
+    // A pass resumed inside a bulk-edit time compares the newer time range it read against that range's own first total: a full
+    // page that omitted an older record still leaves fewer distinct ids than the range held, even when each later, narrower
+    // page matches its own total.
+    const windowFetched = (state.windowRead?.size ?? 0) + (state.windowDropped ?? 0);
+    if (!state.shortfall && state.ended && state.windowTotal !== undefined && windowFetched < state.windowTotal) {
+      state.shortfall = true;
+      state.partial = { total: state.windowTotal, fetched: windowFetched };
+      state.partialOnly = true;
+    }
     // No second, narrower search is asked here to explain the total away: a lower count alone doesn't prove the missing rows were
     // read, and an extra request in `finally` could throw before `saveScope` runs. The cursor is held and the alert keeps
     // tripping until a pass reads the window whole (the owner's call: a quiet alarm over a real shortfall is the worse failure).
@@ -430,7 +454,7 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   // whole-pass comparison alone would look complete, so the alert doesn't go quiet. A pass that stopped early without measuring
   // a gap reports nothing, as before.
   // A result listed without an id was returned, not missed: count it the same way the cursor decision does.
-  const whole = typeof state.total === "number" ? { total: state.total, fetched: state.seen.size + state.dropped } : undefined;
+  const whole = typeof state.total === "number" ? { total: state.total, fetched: (state.windowRead?.size ?? state.seen.size) + state.dropped } : undefined;
   const wholeShort = whole !== undefined && whole.fetched < whole.total;
   if (o.pass) {
     if (state.shortfall) {

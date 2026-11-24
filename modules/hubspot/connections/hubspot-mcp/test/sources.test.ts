@@ -221,6 +221,25 @@ it("a search that ran from its start to its end reports HubSpot's total against 
   expect(resumed.pass.complete).toBeUndefined();
 });
 
+it("a resumed bulk-edit read whose newer time range ends short keeps the cursor", async () => {
+  const TIE = "2026-09-01T04:00:00.000Z";
+  const NEW = new Date(NOW - 60_000).toISOString();
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const { store, scopes } = fakeStore();
+  scopes.set("contacts", { baselined: true, cursor: `${TIE}#1` });
+  const call = async (_: string, args: Record<string, any>) => {
+    const [mod] = args.filterGroups[0].filters;
+    if (mod.operator === "EQ") return answer([contact(2, TIE)], 1, 1); // the resumed tie finishes whole
+    // The newer range reports five but serves four distinct ids, every page matching its own total.
+    const sinceMs = Number(mod.value);
+    const rest = [contact(10, NEW), contact(11, NEW), contact(12, NEW), contact(13, NEW)];
+    return answer(sinceMs <= Date.parse(NEW) ? rest : [], rest.length, sinceMs <= Date.parse(NEW) ? 5 : rest.length);
+  };
+  await syncObject(store, call, "contacts", opts());
+  // Held at the exact checkpoint it began at (tie id included), not past the gap.
+  expect(scopes.get("contacts")).toEqual({ baselined: true, cursor: `${TIE}#1` });
+});
+
 // These two drive real retries (which sleep between attempts), so the clock and timers are faked around them.
 const withRetries = async (run: () => Promise<unknown>) => {
   vi.useFakeTimers({ now: NOW });
