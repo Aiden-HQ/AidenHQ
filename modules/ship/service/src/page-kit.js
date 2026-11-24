@@ -44,15 +44,19 @@ const openHelp = (btn, c) => {
 addEventListener("keydown", (e) => { if (e.key === "Escape") closeHelp(); });
 addEventListener("pointerdown", (e) => { if (tipFor && e.target !== tipFor.btn) closeHelp(); });
 addEventListener("resize", closeHelp);
+let helpN = 0;
 const help = (label, text, more = {}) => {
   const c = { text, ...more }, btn = h("button", { type: "button", className: "q", textContent: "?", ariaLabel: `About ${label}` });
-  btn.setAttribute("aria-describedby", "tip"); btn.setAttribute("aria-expanded", "false");
+  // The button's own description (hidden text, read by a screen reader); the shared tooltip is its sighted twin.
+  const did = `hd${++helpN}`, desc = [text, ...Object.entries(more.options ?? {}).map(([v, m]) => `${v}: ${m}`), more.note].filter(Boolean).join(" ");
+  const dsc = h("span", { id: did, hidden: true, textContent: desc });
+  btn.setAttribute("aria-describedby", did); btn.setAttribute("aria-expanded", "false");
   btn.addEventListener("mouseenter", () => openHelp(btn, c));
   btn.addEventListener("mouseleave", () => { if (!tipPinned) closeHelp(); });
   btn.addEventListener("focus", () => openHelp(btn, c));
   btn.addEventListener("blur", closeHelp);
   btn.addEventListener("click", () => { if (tipFor?.btn === btn && tipPinned) closeHelp(); else { openHelp(btn, c); tipPinned = true; } });
-  return more.bare ? btn : h("span", { className: "hd" }, label, btn);
+  return h("span", { className: "hd" }, more.bare ? null : label, btn, dsc);
 };
 // "3 hours ago" for an ISO time, or "" when there is none.
 const ago = (iso) => { const s = (Date.now() - Date.parse(iso)) / 1000; if (!(s >= 0)) return ""; const [n, u] = s < 90 ? [0, ""] : s < 5400 ? [Math.round(s / 60), "minute"] : s < 172800 ? [Math.round(s / 3600), "hour"] : [Math.round(s / 86400), "day"]; return u ? `${n} ${u}${n === 1 ? "" : "s"} ago` : "just now"; };

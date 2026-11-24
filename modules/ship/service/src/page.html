@@ -27,7 +27,7 @@
 <div class="card">
   <div class="head"><div><b>Repos</b> <small id="count"></small></div><div class="pause" id="pausebox"><span id="pausetxt">Running</span><button class="sw" id="pause" role="switch" aria-checked="true" aria-label="Ship is running"></button><span id="pausehelp"></span></div></div>
   <div id="rows"></div>
-  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><span id="addhelp"></span><button type="button" id="refresh" title="Reload the saved settings. To drop proposed edits, use Discard in the bar above.">Refresh</button></form>
+  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><span id="addhelp"></span><button type="button" id="refresh" title="Reload the saved settings. Your proposed edits stay until you Save or Discard in the bar above.">Refresh</button></form>
   <div class="note" id="note" role="status"></div>
 </div>
 <div class="card">
@@ -106,7 +106,7 @@
     } catch (e) { say(e.message, true); }
   }
   $("pause").addEventListener("click", () => propose({ paused: !(pending.paused ?? status.paused) }));
-  $("refresh").addEventListener("click", () => { pending = { repos: {}, paused: undefined }; say(""); load(); });
+  $("refresh").addEventListener("click", () => { say(""); load(); });
   $("add").addEventListener("submit", async (e) => {
     e.preventDefault();
     const repo = $("newrepo").value.trim();
