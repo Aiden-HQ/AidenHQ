@@ -175,6 +175,17 @@ deepsec 254.
   of all, files confirmed read over every area's (a failed area's count too), failed or partial areas named, and cost summed
   over every area and retry, with the area plan's own. A skill that reports no reads shows as unverified coverage. There is
   one Primer report, with the existing dedupe.
+- **Incremental by default (owner, 2026-11-24).** A rerun of an option reviews only the areas with a changed file since that
+  option's last review of them; the board's "Full review" switch and `code_review_run`'s `full: true` review every area. Areas
+  change between plans, so the memory is per file: the service's own table `area_seen` holds, per repo and option, each file's git
+  blob sha (the plan check lists them, `blobs` in its kept file) at the last finished area run that read it, with that run and
+  commit. Only the files a run reports reading (`coverage.reviewed`) count, or the whole area for a skill that reads its own way
+  and says so. When the plan lands, an area whose every file is seen at its current blob sha is filed as a skipped run, "unchanged
+  since <commit> (<date>)", carrying the findings the earlier runs gave for its files; any new or changed file, a failed area
+  (nothing recorded), or a first review makes it due, and a due area is reviewed whole. A `scope: map` option or a one-area repo
+  is the same over every file. The report says per option how many areas were reviewed and how many are unchanged, and the carried
+  findings stay in it (and in the verdict), marked as carried over and counted apart from new ones; the board's area list marks
+  the skipped ones. deepsec is whole-repo and keeps its own records (above), so it is always run.
 - **Room.** Check jobs have their own computers (`check_computers_max`, default 32), apart from agent jobs. At most 32 tree
   runs run at once (`TREE_RUNNING`), since each fetches its snapshot before it waits for a computer.
 - **deepsec stays whole-repo.** It gets the check's whole time (180 minutes less a 10-minute reserve) and carries its records

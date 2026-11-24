@@ -159,3 +159,50 @@ test("a failed plan fails every option that waited for it; the whole-repo ones k
   assert.match(md, /sec\.deepsec: ran/);
   assert.match(md, /cor\.review: \*\*failed\*\*: the area plan failed: the review's result isn't a plan: an area isn't in the plan's shape/);
 });
+
+test("a rerun reviews only the areas with a changed file and shows the rest as unchanged with their findings; a full review reviews them all", async () => {
+  const started = [], results = new Map(), kept = new Map();
+  let t = Date.parse("2026-11-24T10:00:00Z"), head = sha("1"), blob = { "svc/a.ts": sha("a"), "svc/b.ts": sha("b"), "web/c.tsx": sha("c") };
+  const engine = createEngine({
+    db: new DatabaseSync(":memory:"), config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t, source: { open: async () => [] }, poster: {}, catalog: () => CATALOG,
+    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" }, input: async () => "", kept: async (c) => kept.get(c) },
+    codehost: { tree: async () => ({ sha: head, paths: Object.keys(blob) }) },
+    publisher: { file: async () => ({ state: "refused", write: "p", why: "off" }), outcome: async () => ({ state: "refused" }) }, deepsec: { read: () => undefined, write: () => {} },
+  });
+  const finding = (path) => ({ id: `f-${path}`, severity: "important", path, line: 1, title: `bug in ${path}`, why: "w", evidence: "e", fix_brief: "f" });
+  // One review of cor.review to its end: the plan (with the files' blobs), then each area's run reading every file of it.
+  const review = async (full) => {
+    const first = started.length;
+    const b = await engine.repoReview({ target: { repo: REPO }, options: ["cor.review"], ...(full ? { full: true } : {}) });
+    await engine.tick({ github: false });
+    const plan = { version: 1, repo: REPO, head, blobs: blob, eligible: 3, lines: 40, planned_by: "model", note: null };
+    kept.set(`c-${first + 1}`, Buffer.from(JSON.stringify({ ...plan, areas: AREAS })));
+    results.set(`c-${first + 1}`, { state: "done", billed_usd: 0.02, review: { ...plan, blobs: undefined, areas: 2 } });
+    await engine.tick({ github: false });
+    for (const s of started.slice(first + 1)) {
+      const files = Object.entries(s.area.files).flatMap(([d, ns]) => ns.map((n) => `${d}/${n}`));
+      results.set(`c-${started.indexOf(s) + 1}`, { state: "done", billed_usd: 1, review: { version: 1, repo: REPO, pr: 0, base: head, head, coverage: { reviewed: files, excluded: [], incomplete: null, counts: { eligible: files.length, reviewed: files.length } }, findings: [finding(files[0])], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [] } });
+    }
+    await engine.tick({ github: false });
+    return { b, ran: started.slice(first + 1).map((s) => s.area.id) };
+  };
+  assert.deepEqual((await review(false)).ran, ["a01", "a02"], "the first review reads everything");
+  // Only web/c.tsx changes: service is unchanged.
+  t += 86_400_000; head = sha("2"); blob = { ...blob, "web/c.tsx": sha("d") };
+  const again = await review(false);
+  assert.deepEqual(again.ran, ["a02"], "only the changed area is reviewed again");
+  const md = engine.report(again.b.batch);
+  assert.match(md, /cor\.review: ran \(1 of 1 areas reviewed, 1 unchanged since 1111111 \(2026-11-24\)\)/);
+  assert.match(md, /bug in svc\/a\.ts/, "the unchanged area's open finding stays");
+  assert.match(md, /carried over from the review of 1111111/);
+  assert.match(md, /1 carried over from earlier reviews/);
+  assert.doesNotMatch(md, /partial|failed/);
+  const [batch] = engine.batches({});
+  assert.deepEqual(batch.runs.filter((r) => r.option === "cor.review").map((r) => [r.area, r.status, r.unchanged]), [["service", "skipped", "unchanged since 1111111 (2026-11-24)"], ["web", "done", undefined]]);
+  // Nothing changed at all: every area is unchanged; a full review reads them all anyway.
+  t += 86_400_000; head = sha("3");
+  assert.deepEqual((await review(false)).ran, []);
+  t += 1000;
+  assert.deepEqual((await review(true)).ran, ["a01", "a02"]);
+  assert.equal(engine.batches({})[0].full, true);
+});

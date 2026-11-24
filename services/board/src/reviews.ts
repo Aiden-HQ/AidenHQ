@@ -164,9 +164,11 @@ export interface TreeBatch {
   option_names?: string[];
   /** Each option's run, whose page lists its findings (the report may leave some out to fit Primer); a per-area option has one
    * per area of the batch's plan (`area`: its name), and the plan's own run is named "Area plan". */
-  runs?: { id: string; option: string; names?: string[]; status: RunStatus; important: number; nit: number; pre_existing: number; area?: string; cost_usd?: number }[];
+  runs?: { id: string; option: string; names?: string[]; status: RunStatus; important: number; nit: number; pre_existing: number; area?: string; cost_usd?: number; /** Skipped as unchanged since the option's last review of it: "unchanged since <commit> (<date>)" */ unchanged?: string }[];
   /** How many areas its plan split the repo into (absent: no plan). */
   areas?: number;
+  /** A Full review: every area reviewed, whatever changed. */
+  full?: boolean;
 }
 export const TreeRequestSchema = z
   .object({
@@ -174,6 +176,8 @@ export const TreeRequestSchema = z
     options: z.array(z.string().regex(/^[\w.-]{1,64}$/)).min(1, "tick at least one option").max(60),
     /** Absent: each option runs its own default model and effort. */
     combo: z.object({ model: z.string().regex(/^~?[\w.-]+\/[\w.:~-]+$/, "a model is an OpenRouter id"), effort: z.string().regex(/^[a-z]{3,8}$/) }).strict().optional(),
+    /** Every area is reviewed. Absent: only the areas with a changed file since each option's last review of them. */
+    full: z.boolean().optional(),
   })
   .strict();
 export type TreeRequest = z.infer<typeof TreeRequestSchema>;

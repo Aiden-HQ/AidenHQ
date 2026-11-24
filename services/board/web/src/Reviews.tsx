@@ -460,7 +460,7 @@ function BatchPage({ id, batch, onSignIn, reload }: { id: string; batch: TreeBat
         <Card className="rv-report">
           <h3>Findings by option</h3>
           <p className="muted">The report above keeps within Primer's size; each option's page lists all of its findings.</p>
-          {batch.areas && batch.areas > 1 ? <p className="muted">The repo was split into {batch.areas} areas; a per-area option ran once per area.</p> : null}
+          {batch.areas && batch.areas > 1 ? <p className="muted">The repo was split into {batch.areas} areas; a per-area option ran once per area{batch.full ? " (a full review)" : ", skipping the areas unchanged since its last review"}.</p> : null}
           <ul>{byOption(batch.runs).map((g) => <OptionRuns key={g.option} runs={g.runs} />)}</ul>
         </Card>
       ) : null}
@@ -479,13 +479,14 @@ const counts = (rs: BatchRun[]) => `${rs.reduce((n, r) => n + r.important, 0)} i
 /** One option's line: its run, or its areas rolled up (done of all, failed ones named) with each area's run linked. */
 function OptionRuns({ runs }: { runs: BatchRun[] }) {
   const first = runs[0]!, name = (first.names ?? [first.option]).join(", "), link = (r: BatchRun) => `#/reviews/r/${encodeURIComponent(r.id)}`;
-  if (runs.length === 1 && !first.area) return <li><a href={link(first)}>{name}</a>: {first.status}{first.status === "done" ? `, ${counts(runs)}` : ""}</li>;
-  const done = runs.filter((r) => r.status === "done"), failed = runs.filter((r) => r.status === "failed" || r.status === "skipped");
+  if (runs.length === 1 && !first.area) return <li><a href={link(first)}>{name}</a>: {first.unchanged ?? first.status}{first.status === "done" ? `, ${counts(runs)}` : ""}</li>;
+  const same = runs.filter((r) => r.unchanged), fresh = runs.filter((r) => !r.unchanged);
+  const done = fresh.filter((r) => r.status === "done"), failed = fresh.filter((r) => r.status === "failed" || r.status === "skipped");
   const cost = runs.reduce((n, r) => n + (r.cost_usd ?? 0), 0);
   return (
     <li>
-      {name}: {done.length} of {runs.length} areas done{failed.length ? `, ${failed.length} didn't finish` : ""}, {counts(done)}, ${cost.toFixed(2)}
-      <ul>{runs.map((r) => <li key={r.id}><a href={link(r)}>{r.area ?? "whole repo"}</a>: {r.status}{r.status === "done" ? `, ${r.important} important` : ""}</li>)}</ul>
+      {name}: {done.length} of {fresh.length} areas reviewed{same.length ? `, ${same.length} unchanged` : ""}{failed.length ? `, ${failed.length} didn't finish` : ""}, {counts(done)}, ${cost.toFixed(2)}
+      <ul>{runs.map((r) => <li key={r.id}><a href={link(r)}>{r.area ?? "whole repo"}</a>: {r.unchanged ?? r.status}{r.status === "done" ? `, ${r.important} important` : ""}</li>)}</ul>
     </li>
   );
 }
@@ -871,6 +872,8 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // Off: only the areas with a changed file since each check's last review of them are reviewed (the first review reads everything).
+  const [full, setFull] = useState(false);
   const [models, refreshModels] = useModelCatalog();
   const commitOk = !commit.trim() || SHA.test(commit.trim());
   const edited = useRef(false);
@@ -932,7 +935,7 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
     setBusy(true);
     setErr("");
     try {
-      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen.map((o) => o.id), ...(override ? { combo: { model: c.model, effort: efforts.includes(c.effort) ? c.effort : "medium" } } : {}) });
+      const r = await api.reviewTreeRun({ target: { tree: true, repo, commit: sha }, options: chosen.map((o) => o.id), ...(full ? { full } : {}), ...(override ? { combo: { model: c.model, effort: efforts.includes(c.effort) ? c.effort : "medium" } } : {}) });
       location.hash = `#/reviews/b/${encodeURIComponent(r.batch)}`;
     } catch (x) {
       setErr((x as Error).message);
@@ -1013,6 +1016,9 @@ function RepoReviewPage({ config, engines }: { config: CodeReview | null; engine
         )}
 
         <div className="rv-model">
+          <Field label="Full review" help={full ? "Every area is reviewed again." : "Only areas with a changed file since each check's last review of them are reviewed; the rest are shown as unchanged, with their open findings. The first review of a repo reads everything."}>
+            {() => <span className="rv-switch"><Switch on={full} label="Full review" onChange={setFull} />{full ? "On" : "Off"}</span>}
+          </Field>
           <div className="ui-field">
             <span className="ui-field-label">Model for the checks that call one</span>
             {c && e && (
