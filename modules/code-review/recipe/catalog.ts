@@ -21,13 +21,16 @@ export type Mode = (typeof MODES)[number];
  * contract is what a whole-repo review, the one_off mode, runs instead: other arguments, or false to leave a change-only skill out) and the extra Claude Code `tools` they need (e.g. Skill), or an engine's id. `runs_code`:
  * the tool can run the repo's code (a JS config it imports): only a tool, never on a fork's PR, after the others (tools.ts). `severity: "nit"` caps a tool whose
  * output marks everything an error (ruff); an option with `unavailable` (the reason) is never run. `name`, `description` and `needs` are the board's words for it (the service's catalog.ts reads them). `source.version` is the pin: a release tag,
- * package version or commit.
+ * package version or commit. A model option's repo review runs once per area of the repo's plan (plan.ts) unless `scope` says
+ * otherwise (`repo`: once over the whole repo, at once; `map`: once over the whole repo, given the plan's areas); `stack`: it runs
+ * only on the areas tagged with that stack.
  */
 export interface Option {
   id: string; lens: Lens; modes: Mode[]; recommended: Mode[]; kind: (typeof KINDS)[number];
   source: { repo: string; version: string; licence: string };
   run: { cmd?: string; exits?: number[]; harness?: string; skills?: SkillRef[]; tools?: string[]; engine?: string; max_cost_usd?: number };
   when: string[]; output: (typeof OUTPUTS)[number]; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; severity?: "nit"; name?: string; description?: string; needs?: string;
+  stack?: string; scope?: "repo" | "map";
 }
 
 const bad = (id: unknown, why: string): never => { throw new Error(`catalog entry ${String(id)}: ${why}`); };
@@ -60,6 +63,8 @@ export function loadCatalog(source: string): Option[] {
     if (o.runs_code === true && o.kind !== "tool") bad(id, "only a tool option runs repo code (runs_code)");
     if (typeof o.runs_code !== "boolean" || !["free", "low", "high"].includes(o.cost)) bad(id, "runs_code is a boolean and cost is free, low or high");
     if (o.severity !== undefined && o.severity !== "nit") bad(id, "severity is nit or absent");
+    if (o.stack !== undefined && (o.kind === "tool" || typeof o.stack !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(o.stack) || !o.when.length)) bad(id, "stack is a model option's stack tag, with the globs (when) that find it");
+    if (o.scope !== undefined && (o.kind === "tool" || !["repo", "map"].includes(o.scope) || o.stack !== undefined)) bad(id, "scope is a model option's repo or map, never with a stack");
   }
   return list;
 }

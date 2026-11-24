@@ -16,6 +16,9 @@ export type Option = {
   source: { repo: string; version: string; licence: string };
   run: { cmd?: string; harness?: string; skills?: SkillRef[]; tools?: string[]; engine?: string; /** exit codes a tool may end with and still have run (default [0]) */ exits?: number[]; /** an engine's own spend cap (deepsec) */ max_cost_usd?: number };
   when: string[]; output: "sarif" | "vulture" | "scc" | "gcc" | "findings"; runs_code: boolean; cost: "free" | "low" | "high"; unavailable?: string; needs?: string; severity?: "nit";
+  /** A repo review: a model option runs once per area of the plan, unless `scope` is `repo` (once, over the whole repo, at once) or
+   * `map` (once, over the whole repo, given the plan's areas); one with a `stack` only on the areas tagged with it. */
+  stack?: string; scope?: "repo" | "map";
 };
 
 const LENSES = ["correctness", "security", "maintainability", "performance"];
@@ -39,6 +42,8 @@ export function loadCatalog(text: string): Option[] {
     if (!Array.isArray(o.when)) bad("when is a list of globs");
     if (typeof o.name !== "string" || !o.name.trim() || typeof o.description !== "string" || !o.description.trim()) bad("name and description are the words the board shows");
     if (o.when.length && (typeof o.needs !== "string" || !o.needs.trim())) bad("an option with `when` says what it needs");
+    if (o.stack !== undefined && (o.kind === "tool" || typeof o.stack !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(o.stack) || !o.when.length)) bad("stack is a model option's stack tag, with the globs (when) that find it");
+    if (o.scope !== undefined && (o.kind === "tool" || !["repo", "map"].includes(o.scope) || o.stack !== undefined)) bad("scope is a model option's repo or map, never with a stack");
   }
   return list;
 }

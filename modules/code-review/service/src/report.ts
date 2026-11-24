@@ -1,6 +1,8 @@
 // A repo review's report: the verdict and the markdown document (Primer's, and the board's GET /reviews/:batch/report), made by
 // code from the batch's stored reviews, never by a model. Findings stay stored per option observation; display() groups the same
-// lens, file and overlapping lines for the reader only. Repo-derived text (titles, evidence, fix briefs: a model's or a tool's
+// lens, file and overlapping lines for the reader only. A per-area option's runs (one per area of the batch's plan) are rolled up as
+// one option: its areas done, the files it confirmed reading over every area's (a failed area's count too), its failed or partial
+// areas and its cost summed; a skill that reports no reads is said as unverified coverage. Repo-derived text (titles, evidence, fix briefs: a model's or a tool's
 // words about the repo's code) is flattened to plain lines, and evidence and the fix prompt go in fences it can't close.
 import type { Finding, Review } from "./seams.ts";
 
@@ -8,10 +10,15 @@ import type { Finding, Review } from "./seams.ts";
 export const REPORT_MAX = 78_000;
 export type Verdict = "blocked" | "concerns" | "incomplete" | "clean";
 export type Shown = Finding & { option: string; lens: string };
-export type Coverage = { ran: string[]; failed: { id: string; why: string }[]; skipped: { id: string; why: string }[]; partial: { id: string; why: string }[] };
-/** One run of a repo review as the report reads it: its option (the tools run: `tools`, with its tool options), its lens, its end and its review. */
-export type ReportRun = { option: string; options?: string[]; lens: string | null; status: string; why: string | null; cost_usd: number; review: Review | null };
-export type ReportBatch = { repo: string; sha: string; created: string; runs: ReportRun[]; lensOf: (option: string) => string };
+/** `areas`: a per-area option's areas done of its areas; `none`: an option with nothing to review (a stack no area has), no gap. */
+export type Coverage = { ran: string[]; failed: { id: string; why: string }[]; skipped: { id: string; why: string }[]; partial: { id: string; why: string }[]; none: { id: string; why: string }[]; areas: Record<string, { done: number; total: number }> };
+/** One run of a repo review as the report reads it: its option (the tools run: `tools`, with its tool options), its lens, its end
+ * and its review; `area`, a per-area run's (its name and file count); `plan`, the batch's area plan run (its cost only); `none`, a
+ * skip with nothing to review. */
+export type ReportRun = { option: string; options?: string[]; lens: string | null; status: string; why: string | null; cost_usd: number; review: (Review & { coverage_note?: string }) | null; area?: { name: string; files: number } | null; plan?: true; none?: true };
+/** The batch's area plan as the report shows it. */
+export type ReportPlan = { planned_by: string; note: string | null; eligible: number; lines: number; areas: { name: string; count: number; lines: number; tags: string[] }[] };
+export type ReportBatch = { repo: string; sha: string; created: string; runs: ReportRun[]; lensOf: (option: string) => string; plan?: ReportPlan | null };
 
 const RANK: Record<string, number> = { important: 0, nit: 1, pre_existing: 2 };
 
@@ -24,25 +31,49 @@ export function verdict({ findings, coverage }: { findings: Pick<Shown, "severit
   return "clean";
 }
 
-/** Every option's end: ran, failed (a tool the tools run reports failed too), skipped, or ran with partial coverage. */
+/** Every option's end: ran, failed (a tool the tools run reports failed too), skipped, or ran with partial coverage. A per-area
+ * option is one entry: ran when any area did, its failed areas partial, its files confirmed read summed over every area. */
 export function coverageOf(runs: ReportRun[]): Coverage {
-  const c: Coverage = { ran: [], failed: [], skipped: [], partial: [] };
-  for (const r of runs) {
-    const ids = r.options ?? [r.option];
-    if (r.status === "skipped") { for (const id of ids) c.skipped.push({ id, why: r.why ?? "skipped" }); continue; }
-    if (r.status !== "done" || !r.review) { for (const id of ids) c.failed.push({ id, why: r.why ?? r.status }); continue; }
-    const failed = new Map((r.review.coverage?.failed ?? []).map((f) => [f.id, f.why]));
-    // A tools run lists the tools that ran (coverage.options): one it doesn't list never ran, so the verdict can't be clean.
-    const ran = r.options ? new Set(r.review.coverage?.options ?? []) : undefined;
-    for (const id of ids) failed.has(id) ? c.failed.push({ id, why: failed.get(id)! }) : ran && !ran.has(id) ? c.failed.push({ id, why: "the tools run didn't report it ran" }) : c.ran.push(id);
-    if (r.review.coverage?.incomplete) c.partial.push({ id: r.option, why: r.review.coverage.incomplete });
-    // A model run over a tree that can't say it read every eligible file (an engine that reports no reads shows none) is partial, never "ran in full".
-    const k = r.review.coverage?.counts;
-    if (k && k.reviewed < k.eligible) c.partial.push({ id: r.option, why: `${k.reviewed} of ${k.eligible} eligible files confirmed read` });
+  const c: Coverage = { ran: [], failed: [], skipped: [], partial: [], none: [], areas: {} };
+  const groups = new Map<string, ReportRun[]>();
+  for (const r of runs) if (!r.plan) groups.set(r.option, [...(groups.get(r.option) ?? []), r]);
+  const confirmed = (id: string, rs: ReportRun[], areas: string) => {
+    const done = rs.filter((r) => r.status === "done" && r.review);
+    const eligible = rs.reduce((n, r) => n + (r.review?.coverage?.counts?.eligible ?? r.area?.files ?? 0), 0);
+    const read = done.reduce((n, r) => n + (r.review!.coverage?.counts?.reviewed ?? 0), 0);
+    if (!done.some((r) => r.review!.coverage?.counts)) return;
+    // A skill reads the code its own way and reports no reads: its coverage is unverified, never shown as none read.
+    if (!read && done.some((r) => r.review!.coverage_note)) c.partial.push({ id, why: `coverage unverified: it reports no reads (${eligible} eligible files${areas})` });
+    else if (read < eligible) c.partial.push({ id, why: `${read} of ${eligible} eligible files confirmed read${areas}` });
+  };
+  for (const [id, rs] of groups) {
+    if (rs.length === 1 && !rs[0]!.area) {
+      const r = rs[0]!;
+      const ids = r.options ?? [r.option];
+      if (r.none) { c.none.push({ id, why: r.why ?? "nothing to review" }); continue; }
+      if (r.status === "skipped") { for (const x of ids) c.skipped.push({ id: x, why: r.why ?? "skipped" }); continue; }
+      if (r.status !== "done" || !r.review) { for (const x of ids) c.failed.push({ id: x, why: r.why ?? r.status }); continue; }
+      const failed = new Map((r.review.coverage?.failed ?? []).map((f) => [f.id, f.why]));
+      // A tools run lists the tools that ran (coverage.options): one it doesn't list never ran, so the verdict can't be clean.
+      const ran = r.options ? new Set(r.review.coverage?.options ?? []) : undefined;
+      for (const x of ids) failed.has(x) ? c.failed.push({ id: x, why: failed.get(x)! }) : ran && !ran.has(x) ? c.failed.push({ id: x, why: "the tools run didn't report it ran" }) : c.ran.push(x);
+      if (r.review.coverage?.incomplete) c.partial.push({ id, why: r.review.coverage.incomplete });
+      // A model run over a tree that can't say it read every eligible file is partial, never "ran in full".
+      confirmed(id, rs, "");
+    } else {
+      const done = rs.filter((r) => r.status === "done" && r.review);
+      c.areas[id] = { done: done.length, total: rs.length };
+      if (!done.length) { c.failed.push({ id, why: `no area finished (${rs[0]!.why ?? rs[0]!.status})` }); continue; }
+      c.ran.push(id);
+      const bad = rs.filter((r) => !(r.status === "done" && r.review));
+      if (bad.length) c.partial.push({ id, why: `${bad.length} of ${rs.length} areas didn't finish (${bad.slice(0, 3).map((r) => `${r.area?.name ?? "an area"}: ${r.why ?? r.status}`).join("; ")}${bad.length > 3 ? "; …" : ""})` });
+      const gaps = done.filter((r) => r.review!.coverage?.incomplete);
+      if (gaps.length) c.partial.push({ id, why: `${gaps.length} area${gaps.length > 1 ? "s" : ""} reported gaps (${gaps.slice(0, 2).map((r) => `${r.area?.name ?? "an area"}: ${r.review!.coverage.incomplete}`).join("; ")}${gaps.length > 2 ? "; …" : ""})` });
+      confirmed(id, rs, ` across ${rs.length} areas`);
+    }
     // Findings a run left out (a tool's output capped, nits past the cap) are coverage the report doesn't show whole.
-    const w = r.review.withheld ?? { important: 0, nit: 0, pre_existing: 0 };
-    const left = (w.important ?? 0) + (w.nit ?? 0) + (w.pre_existing ?? 0);
-    if (left > 0) c.partial.push({ id: r.option, why: `${left} finding${left === 1 ? "" : "s"} left out by its cap` });
+    const left = rs.reduce((n, r) => { const w = r.review?.withheld ?? { important: 0, nit: 0, pre_existing: 0 }; return n + (w.important ?? 0) + (w.nit ?? 0) + (w.pre_existing ?? 0); }, 0);
+    if (left > 0) c.partial.push({ id, why: `${left} finding${left === 1 ? "" : "s"} left out by its cap` });
   }
   return c;
 }
@@ -122,12 +153,22 @@ export function render(b: ReportBatch): { markdown: string; verdict: Verdict; co
     const left = Object.entries(dropped).filter(([, n]) => n).map(([s, n]) => `${n} ${s === "nit" ? "nits" : s === "pre_existing" ? "pre-existing findings" : "important findings"}`);
     if (left.length) out.push(`_Not shown, to keep the report within Primer's size: ${left.join(", ")}. Every finding is on this review's page on the board, under each option._`, "");
     out.push("## Coverage", "");
-    for (const id of coverage.ran) out.push(`- ${flat(id, 80)}: ran`);
+    for (const id of coverage.ran) out.push(`- ${flat(id, 80)}: ran${coverage.areas[id] ? ` (${coverage.areas[id]!.done} of ${coverage.areas[id]!.total} areas)` : ""}`);
     for (const f of coverage.failed) out.push(`- ${flat(f.id, 80)}: **failed**: ${flat(f.why, 400)}`);
     for (const f of coverage.skipped) out.push(`- ${flat(f.id, 80)}: skipped: ${flat(f.why, 300)}`);
     for (const f of coverage.partial) out.push(`- ${flat(f.id, 80)}: partial: ${flat(f.why, 300)}`);
+    for (const f of coverage.none) out.push(`- ${flat(f.id, 80)}: ${flat(f.why, 300)}`);
+    if (b.plan) {
+      const p = b.plan;
+      out.push("", "## Areas", "", p.areas.length === 1 ? `Reviewed as one area: ${p.eligible} eligible files, ${p.lines} lines.` : `${p.eligible} eligible files (${p.lines} lines) in ${p.areas.length} areas, ${p.planned_by === "model" ? "planned by a model and checked in code" : "split by folder"}${p.note ? ` (${flat(p.note, 300)})` : ""}:`, "");
+      if (p.areas.length > 1) for (const a of p.areas.slice(0, 200)) out.push(`- ${flat(a.name, 100)}: ${a.count} file${a.count === 1 ? "" : "s"}, ${a.lines} lines${a.tags.length ? ` (${a.tags.map((t) => flat(t, 30)).join(", ")})` : ""}`);
+      if (p.areas.length > 200) out.push(`- and ${p.areas.length - 200} more`);
+    }
     out.push("", "## Cost", "");
-    for (const r of b.runs) out.push(`- ${flat(r.option, 80)}: ${usd(r.cost_usd)}`);
+    // Each option's runs summed (every area, every retry), the area plan's own.
+    const costs = new Map<string, { usd: number; n: number }>();
+    for (const r of b.runs) { const k = r.plan ? "area plan" : r.option, x = costs.get(k) ?? { usd: 0, n: 0 }; costs.set(k, { usd: x.usd + r.cost_usd, n: x.n + (r.area ? 1 : 0) }); }
+    for (const [k, x] of costs) out.push(`- ${flat(k, 80)}: ${usd(x.usd)}${x.n > 1 ? ` (${x.n} areas)` : ""}`);
     out.push(`- Total: ${usd(cost)}`, "");
     const fix = fixLines.filter((l, i) => l && shown[i]);
     out.push("## Fix prompt", "", "Paste into Claude Code or Codex, in a checkout of this commit:", "",

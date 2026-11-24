@@ -146,6 +146,43 @@ model, makes an important finding without one a nit, and one in a file the PR do
 to fix or answer on); the scenario leads the finding's why on GitHub. Nits never gate. The box runs without repo hooks, plugins, shell or network beyond the
 model gateway. The service accepts what the recipe runs: each engine's own efforts.
 
+## Repo reviews: areas (owner, 2026-11-24)
+
+A repo review (one commit, the options picked from `service/src/catalog.json`) is split into areas so a big repo is read whole.
+Measured on AidenHQ (2,104 eligible files) before the split, one check per option covered a sliver: Codex 167 files, Claude 23,
+deepsec 254.
+
+- **The plan.** The batch's first check is `code-review-plan` (`recipe/plan.ts`, 20 minutes). It lists the eligible files with
+  their line counts, using `scope.ts`'s rules over the review's own history. A repo within one area's budget (150 files, 40,000
+  lines and 14 KB of path list, what a check's spec field holds) is one area and asks no model: its review runs as a whole-repo
+  review always did. A larger repo goes to a cheap model (Haiku 5.5), which sees only the fenced paths and counts. It answers
+  areas as path prefixes, with stack tags from the catalog's `stack` values. Code checks the answer: every file in exactly one
+  area, known tags only. An area over budget is split by folder, then by sorted file, and a file over budget is its own area.
+  An answer that fails the check, or no answer, becomes that folder split of the whole repo, tagged by the stacks' `when` globs,
+  and the report says so. The plan is stored on the batch and shown in the report.
+- **Per area.** In one transaction after the plan, each model option is filed once per area (one area: once, with no area, as
+  before). The catalog's `scope: repo` options (deepsec) start at once with the tools and need no plan. A `scope: map` option
+  (improve-architecture) runs once over the whole repo with the areas as data (`area_map`). A `stack` option (React, Postgres,
+  Solidity, Django, .NET, React Native) runs only on the areas tagged with it. With none, its run is skipped as "no <stack>
+  code", which is no gap in the verdict. A failed plan fails the options that waited for it.
+- **An area check sees only its area.** The spec's `area` is the area's file list, and `review.ts` makes the head commit hold
+  only those files. `git ls-files` and the diff from the empty tree are the area's, for every engine and skill (a skill's own
+  checkout is a clone of that commit, so it holds the area's files only); `git status` shows no untracked files. The rest of the checkout stays on disk to follow calls. Coverage counts against
+  the area's files, a finding outside them is dropped, and paths and lines stay the repo's. The brief and the skills' `tree`
+  contracts say "the assigned area".
+- **Roll-up.** There is one run row per option and area: the same poller, and a failed area retries alone with the same spec
+  (rebuilt from the stored plan). The report, `batchEnded` and the board's Reviews page roll an option's areas up: areas done
+  of all, files confirmed read over every area's (a failed area's count too), failed or partial areas named, and cost summed
+  over every area and retry, with the area plan's own. A skill that reports no reads shows as unverified coverage. There is
+  one Primer report, with the existing dedupe.
+- **Room.** Check jobs have their own computers (`check_computers_max`, default 32), apart from agent jobs. At most 32 tree
+  runs run at once (`TREE_RUNNING`), since each fetches its snapshot before it waits for a computer.
+- **deepsec stays whole-repo.** It gets the check's whole time (180 minutes less a 10-minute reserve) and carries its records
+  between checks. The service keeps each repo's records on its `/data`, never the repo. They go in as an uploaded check input
+  and come back as the run's kept file (`POST /v1/checks/inputs`, `GET /v1/checks/:check/kept`), laid over the held records.
+  Before the scan, a carried record whose file's content hash changed is set pending, because deepsec's own scan keeps an
+  analysed file analysed.
+
 ## Posting
 
 The service files a `post` write (Tier 0: no AI reviewer reads it; the `instance-details` write.filed check refuses a host, home path or address in a post's or reply's comment text; the service removes them first) or
