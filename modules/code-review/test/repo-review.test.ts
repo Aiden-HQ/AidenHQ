@@ -57,19 +57,17 @@ test("a finished default-branch read is never reused for a new ask of the head; 
   assert.equal((await w.engine.catalogFor({ repo: REPO, commit: sha("2") })).sha, sha("2"));
 });
 
-test("the commit is resolved once at start: the default branch moving mid-run changes nothing; tools then each model option run in sequence", async () => {
+test("the commit is resolved once at start: the default branch moving mid-run changes nothing; the tools check and each model option all start at once", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["maint.lint", "sec.gitleaks", "sec.cloudflare"] });
   assert.equal(b.sha, sha("1"));
   await w.tick();
-  assert.equal(w.started.length, 1); // the tools run alone first
+  assert.equal(w.started.length, 2); // every check starts together, each in its own box
   assert.deepEqual([w.started[0].profile, Object.keys(w.started[0].tools), w.started[0].target, w.started[0].head], ["code-review-tools", ["maint.lint", "sec.gitleaks"], "tree", sha("1")]);
   w.heads.HEAD = sha("2");
-  w.finish(0, { findings: [w.finding("k1", { option: "maint.lint", severity: "nit" })] });
-  await w.tick();
-  assert.equal(w.started.length, 2);
   assert.deepEqual([w.started[1].profile, w.started[1].combo.engine, w.started[1].combo.harness, w.started[1].combo.skills, w.started[1].option, w.started[1].lens, w.started[1].head],
     ["code-review", "skill:sec.cloudflare", "claude-code", [{ skill: "cloudflare/security-audit-skill:security-audit", args: "{base}..HEAD" }], "sec.cloudflare", "security", sha("1")]);
+  w.finish(0, { findings: [w.finding("k1", { option: "maint.lint", severity: "nit" })] });
   w.finish(1, {}, 1.5);
   await w.tick();
   const [batch] = w.engine.batches({});
@@ -181,14 +179,18 @@ test("deepsec's set-up files are asked for once as a setup PR through the code h
   assert.equal(w.started[0].setup_files, undefined);
   assert.equal(w.started[0].combo.max_cost_usd, 150, "the catalog's cap rides in the combo to the box");
   assert.deepEqual(w.setups.map((s) => [s.repo, Object.keys(s.files)]), [[REPO, [".deepsec/data/app/INFO.md", ".deepsec/deepsec.config.ts"]]]);
-  await review(); // asked for, not on the code host yet: not asked again within the day
-  assert.equal(w.setups.length, 1);
   w.branch.setup = { tip: sha("9"), files: { ".deepsec/data/app/INFO.md": "# app", ".deepsec/package-lock.json": "{}" } };
+  await review(); // the branch has its open PR: scanned with, never asked again
+  assert.equal(w.setups.length, 1);
   w.later(2 * 24 * 3600_000);
-  await review(); // the branch exists (its PR pending or open): scanned with, never asked again
+  await review();
   assert.equal(w.setups.length, 1);
   assert.ok(w.branch.asked.length && w.branch.asked.every((b) => b === "aidenhq/setup-abcdef123456"), "reads the branch its PR is open on");
   assert.deepEqual(w.started[2].setup_files, { ".deepsec/data/app/INFO.md": "# app" });
+  assert.deepEqual(w.started[1].setup_files, { ".deepsec/data/app/INFO.md": "# app" });
+  w.branch.setup = undefined; // its PR was closed unmerged (the code host reports no open PR on the branch): a fresh one is asked for at once
+  await review();
+  assert.equal(w.setups.length, 2);
 });
 
 test("a data version 1 database keeps its PR runs, reviews and findings readable", () => {
@@ -275,11 +277,11 @@ test("an option gone from the catalog while queued fails that run, and the repor
   const w = world();
   const [a, b] = await Promise.all([w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] }), w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] })]);
   assert.equal(a.batch, b.batch);
-  await w.tick();
   const i = CATALOG.findIndex((o) => o.id === "sec.cloudflare"), gone = CATALOG.splice(i, 1);
   try {
+    await w.tick();
     w.finish(0);
-    await w.tick(); await w.tick();
+    await w.tick();
   } finally { CATALOG.splice(i, 0, ...gone); }
   assert.match(w.db.prepare("SELECT why FROM runs WHERE option = 'sec.cloudflare'").get().why, /isn't in the option catalog/);
   assert.equal(w.engine.batches({})[0].status, "done");

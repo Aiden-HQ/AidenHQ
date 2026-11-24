@@ -26,7 +26,7 @@ export const STATUS_KIND = "code-review.status";
 export const REPLY_KIND = "code-review.reply";
 /** The only files a deepsec setup PR may hold: what deepsec means to be committed (recipe/deepsec.ts setupPath; module.yaml
  * codehost.setup lists the same paths). */
-export const SETUP_PATH = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
+export const SETUP_PATH = /^\.deepsec\/(\.gitignore|deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** The role whose agent (the Reviewer Manager) holds each PR's task, where its posts' approvals land. */
 export const ROLE = "reviewer-manager";
 /** A dedupe key as a wake's `id`: the kernel takes `[\w.-]{1,80}` and keys the row by it, so a resend is the same wake. */
@@ -300,7 +300,7 @@ const SETUP_BODY = "deepsec's own set-up files (`.deepsec/`), written by `deepse
 /**
  * The code host through the kernel (POST /v1/codehost/:op, this module's `codehost:` grant). A snapshot's tarball is read as it
  * streams (never held whole): `tree` lists its paths, `setupBranch` takes only deepsec's allowlisted files from the setup branch
- * (absent: no such branch). `setup` asks for the deepsec setup PR; github files its own Tier 1 write for it.
+ * (absent: no such branch, or none with an open PR). `setup` asks for the deepsec setup PR; github files its own Tier 1 write for it.
  */
 export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: KernelClient, fetcher: typeof fetch = fetch): CodeHost {
   const op = (name: string, body: unknown) => fetcher(`${kernelUrl.replace(/\/+$/, "")}/v1/codehost/${name}`, { method: "POST", headers: { authorization: `Bearer ${token()}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10 * 60_000) });
@@ -343,6 +343,10 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
       return { sha: s.sha, paths: s.value };
     },
     async setupBranch(repo, branch) {
+      // The branch counts only while a PR is open on it: one closed unmerged leaves its branch behind, and is asked for again.
+      const prs = await op("read", { repo, kind: "prs" });
+      if (!prs.ok) throw new Error(`the open PRs of ${repo}: ${prs.status} ${(await prs.text().catch(() => "")).slice(0, 200)}`);
+      if (!((await prs.json()) as { head_ref?: string | null; head_repo?: string | null }[]).some((p) => p.head_ref === branch && p.head_repo?.toLowerCase() === repo.toLowerCase())) return undefined;
       // A first pass lists the branch; only its regular, allowlisted files are then unpacked, by exact name, from the commit the
       // listing named. A link member is never unpacked, so nothing a link points at can be written through.
       const listed = await snapshot(repo, branch, ["-tvzf", "-"], (out) => out.split("\n").flatMap((l) => {
@@ -367,7 +371,7 @@ export function kernelCodeHost(kernelUrl: string, token: () => string, kernel: K
       // The code host waits five minutes for the approval, then answers 202 { pending }: asking again finds the same open record.
       let r: Response, j: Record<string, unknown>;
       for (let i = 0; ; i++) {
-        r = await op("setup", { ...b, title: "Set up deepsec", body: SETUP_BODY, task: String(t.id) });
+        r = await op("setup", { ...b, title: "chore: set up deepsec", body: SETUP_BODY, task: String(t.id) });
         j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
         if (r.status !== 202 || j.pending !== true) break;
         if (i >= 5) throw new Error(`the deepsec setup PR is still waiting for its approval (write ${String(j.write)})`);

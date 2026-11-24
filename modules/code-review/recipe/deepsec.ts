@@ -48,9 +48,9 @@ export interface DeepsecOutput {
   setup?: Record<string, string>;
 }
 
-/** The files deepsec means to be committed: its config, matchers, package and lockfile, and the repo summary. Nothing else (a
+/** The files deepsec means to be committed: its .gitignore (keeps .env.local and scan output out), config, matchers, package and lockfile, and the repo summary. Nothing else (a
  * setup carries all but the lockfile). */
-const SETUP = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\/INFO\.md)$/;
+const SETUP = /^\.deepsec\/(\.gitignore|deepsec\.config\.ts|generated-matchers\.ts|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|data\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\/INFO\.md)$/;
 export const setupPath = (p: string) => SETUP.test(p);
 const ID = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
 /** A regular file's text (at most 64 KB) at commit `rev` of the box's history, else undefined. */
@@ -179,7 +179,7 @@ export async function deepsec({ root, target, base, trusted = base, model, effor
     // init ran only because nothing of deepsec's was committed, so every file here is new: none overwrites a committed one. Its
     // lockfile stays out (about 150 KB, too large for the result next to a tree's findings; our scans never install from it).
     setup = {};
-    for (const f of ["deepsec.config.ts", "generated-matchers.ts", "package.json"]) {
+    for (const f of [".gitignore", "deepsec.config.ts", "generated-matchers.ts", "package.json"]) {
       const text = plain(root, `.deepsec/${f}`) ? readSmall(join(ws, f), 4 << 20) : undefined;
       if (text !== undefined) setup[`.deepsec/${f}`] = text;
     }

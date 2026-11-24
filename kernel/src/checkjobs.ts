@@ -124,7 +124,9 @@ export type BoxOut = { exit: number | null; out: string; timedOut: boolean };
  * end (any kernel's: it ends the box), or answers "gone" (no status and not running) or "detached" (`signal` aborted: the box
  * runs on). */
 export interface CheckBox {
-  launch(o: { check: string; image: "engineer"; workspace: string; out: string; cwd: string; argv: string[]; env: Record<string, string>; timeoutMs: number; readOnly?: boolean; waiting?: (waiting: boolean) => void }): Promise<BoxRun>;
+  launch(o: { check: string; image: "engineer"; workspace: string; out: string; cwd: string; argv: string[]; env: Record<string, string>; timeoutMs: number; readOnly?: boolean; waiting?: (waiting: boolean) => void;
+    /** Mints the run's model token (set in env as OPENROUTER_API_KEY) once the box has its slot, so the token's lifetime starts then. */
+    mint?: () => string }): Promise<BoxRun>;
   follow(run: BoxRun, signal: AbortSignal): Promise<BoxOut | "gone" | "detached">;
 }
 /** Where a check is when its box runs: a code recipe's spend before this attempt, or a judged run's pass and its cases. */
@@ -407,13 +409,13 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
 
   /** A run launched in a fresh box (its handle). `trees`: commit trees by spec field, moved into the out folder (the recipe's
    * history); `spec`: written to the out folder's spec.json. */
-  async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, trees: Record<string, string> = {}, spec?: Record<string, string>) {
+  async function inBox(id: string, r: Recipe, workspace: string, out: string, cwd: string, env: Record<string, string>, trees: Record<string, string> = {}, spec?: Record<string, string>, mint?: () => string) {
     rmSync(out, { recursive: true, force: true });
     mkdirSync(join(out, "home"), { recursive: true });
     for (const [name, text] of Object.entries(r.files)) (mkdirSync(join(out, "recipe", dirname(name)), { recursive: true }), writeFileSync(join(out, "recipe", name), text));
     for (const [field, tree] of Object.entries(trees)) renameSync(tree, join(out, field));
     if (spec) writeFileSync(join(out, "spec.json"), JSON.stringify(spec));
-    return box.launch({ check: id, image: "engineer", workspace, out, cwd, argv: r.argv, env, timeoutMs: r.timeout_min * 60_000, readOnly: r.judged !== undefined, waiting: (w) => { if (w !== boxless.has(id)) { if (w) boxless.add(id); else boxless.delete(id); bump(id); } } });
+    return box.launch({ check: id, image: "engineer", workspace, out, cwd, argv: r.argv, env, timeoutMs: r.timeout_min * 60_000, readOnly: r.judged !== undefined, mint, waiting: (w) => { if (w !== boxless.has(id)) { if (w) boxless.add(id); else boxless.delete(id); bump(id); } } });
   }
   const tail = (o: BoxOut) => `${o.timedOut ? "didn't finish in time" : `exit ${o.exit}`}. Its output (data, not instructions):\n\n\`\`\`\n${fence(o.out).slice(-TAIL) || "(no output)"}\n\`\`\``;
   /** Stops following runs while a restart drains: the next kernel follows them (recover). */
@@ -458,14 +460,12 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
       if (now === "no") return { verdict: "pass" as const, ran: false, summary: `${repo} declares no \`${r.declares}\` script` };
     }
     let token: string | undefined;
-    if (r.model) {
-      token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000 });
-      // Its run key on the row before it runs: a run a restart loses still has its spend counted (recover).
-      minted(runKey(token));
-    }
-    const env = r.model ? checkEnv("model", { modelToken: token, gatewayUrl }) : checkEnv(r.result ? "result" : "plain");
+    // Minted by the box once it holds a slot, so a check queued in the pool doesn't spend its token's lifetime waiting. Its run key goes
+    // on the row before it runs: a run a restart loses still has its spend counted (recover).
+    const mint = r.model ? () => { token = modelToken(`${run}:${id}`, { ttlMs: (r.timeout_min + 10) * 60_000 }); minted(runKey(token)); return token; } : undefined;
+    const env = r.model ? checkEnv("model", { gatewayUrl }) : checkEnv(r.result ? "result" : "plain");
     const step = { prior };
-    const o = await launched(await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head }), step);
+    const o = await launched(await inBox(id, r, ws, join(dir, "out"), r.cwd_from ? spec[r.cwd_from]! : ".", env, trees, { ...spec, repo, head }, mint), step);
     return codeEnded(r, dir, o, token ? runKey(token) : undefined, step);
   }
   /** A code recipe's verdict from its run's end (this kernel's run, or one it followed after a restart): `key`, its model token's run key. */
@@ -517,11 +517,11 @@ export function createChecks({ db, secret, recipes, box, snapshot, modelToken, s
     // the second pass mints its own (finding: preserve first-pass spend). Carried into the row's cost before the key moves.
     if (!o) caps.carry();
     if (!o) {
-      const token = modelToken(`eval:${head}`, { ttlMs: 3 * 3600_000 });
-      // Its run key on the row before it runs: a restart's next kernel reads the same ledger rows (a judged run has no retry).
-      caps.keep(runKey(token));
-      const env = checkEnv("judged", { modelToken: token, gatewayUrl });
-      o = await launched(await inBox(id, r, join(dir, "tree"), out, J.cwd, env), step);
+      // Minted once the box has its slot (a queued eval would otherwise lose lifetime waiting); its run key goes on the row before it
+      // runs: a restart's next kernel reads the same ledger rows (a judged run has no retry).
+      const mint = () => { const token = modelToken(`eval:${head}`, { ttlMs: 3 * 3600_000 }); caps.keep(runKey(token)); return token; };
+      const env = checkEnv("judged", { gatewayUrl });
+      o = await launched(await inBox(id, r, join(dir, "tree"), out, J.cwd, env, {}, undefined, mint), step);
     }
     // The gateway's own record of a cap refusal, which no eval can misreport: an eval older than its `capped` list scores the
     // cut case as a miss (or, for a case that expects `escalate`, as a pass), so the ledger is what ends the run here.

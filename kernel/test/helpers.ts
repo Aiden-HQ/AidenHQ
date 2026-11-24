@@ -55,6 +55,7 @@ export function fakeBox(run) {
   let n = 0;
   return {
     async launch(o) {
+      if (o.mint) o = { ...o, env: { ...o.env, OPENROUTER_API_KEY: o.mint() } };
       const container = `fake-${++n}`;
       const p = Promise.resolve().then(() => run(o));
       p.catch(() => {});

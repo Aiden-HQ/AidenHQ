@@ -18,8 +18,8 @@
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason, never silent.
 //
 // A repo review (a batch whose target is a tree: a whole repo at one commit, resolved once when it is asked for) runs on the same
-// lifecycle: its catalog options as runs of one batch, in sequence: the tools check (the selected tool options together,
-// token-free) first, then each model option as its own check. Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
+// lifecycle: its catalog options as runs of one batch, all started at once: the tools check (the selected tool options together,
+// token-free) and each model option, each its own check in its own box. Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
 // Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
@@ -907,7 +907,7 @@ export function createEngine(d: EngineDeps) {
   /**
    * deepsec set the repo up in a run: its set-up files (deepsec's allowlisted `.deepsec/` files only) are asked for as one setup PR
    * through the code host (github files and reviews its own write, on a new branch off the default branch's head; an earlier setup
-   * PR is closed). Never while the branch its last answer named exists (its PR is pending or open: runs scan with its files), and
+   * PR is closed). Never while the branch its last answer named has an open PR (runs scan with its files), and
    * once a day at most while it doesn't yet.
    */
   /** The branch the repo's last setup answer named (its PR is open on it), if any. */
@@ -917,11 +917,14 @@ export function createEngine(d: EngineDeps) {
   async function fileSetup(r: RunRow, raw: Record<string, string>) {
     const files = Object.fromEntries(Object.entries(raw ?? {}).filter(([p, c]) => SETUP_PATH.test(p) && typeof c === "string"));
     if (!Object.keys(files).length || batchRow(r.batch)?.setup_tip) return;
-    // The branch the last answer named still exists (its PR is pending or open; one that can't be read counts as there): no second request, which would close it.
+    // The branch the last answer named still has an open PR (one that can't be read counts as open): no second request, which would close it.
+    // A PR closed unmerged is asked for again at once; a request that was refused or is still with the reviewer waits out SETUP_RETRY.
     const named = setupBranchOf(r.repo);
     if (named && await d.codehost.setupBranch(r.repo, named).then((x) => x !== undefined, () => true)) return;
+    // A concurrent batch claimed the request while the lookup ran: its row is the one to follow.
+    if (setupBranchOf(r.repo) !== named) return;
     const asked = one<{ asked: number }>("SELECT asked FROM setups WHERE repo = ?", r.repo)?.asked;
-    if (asked !== undefined && now() - asked < SETUP_RETRY) return;
+    if (!named && asked !== undefined && now() - asked < SETUP_RETRY) return;
     // The slot is taken in the same step as the look above (a request takes minutes), so a concurrent batch asks for no second PR.
     run("INSERT INTO setups (repo, asked, answer) VALUES (?, ?, 'asking') ON CONFLICT (repo) DO UPDATE SET asked = excluded.asked, answer = excluded.answer", r.repo, now());
     let answer: string;
@@ -1537,8 +1540,7 @@ export function createEngine(d: EngineDeps) {
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
-      // A repo review's options run one at a time, in order: each is its own check (metered by the gateway like any run).
-      if (r.target === "tree" && one("SELECT 1 FROM runs WHERE batch = ? AND id != ? AND (status = 'running' OR (status = 'queued' AND rowid < (SELECT rowid FROM runs WHERE id = ?)))", r.batch, r.id, r.id)) continue;
+      // A repo review's options start together: each is its own check in its own box (metered by the gateway like any run).
       const started = admit(r);
       if (started) await startRun(started);
       else if (r.target === "tree") await batchEnded(r.batch);
