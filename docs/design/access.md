@@ -289,6 +289,20 @@ and the gate's real notify handler — without a person at a sign-in screen. Thi
    for the named app's host: not at the front door, not at the app's public URL (a different host), not for another app
    (403/404). An expired or revoked session is a 401.
 
+**On an existing host, once.** `ops/vm/setup.sh` installs the canary network's unit
+(`ops/units/aidenhq-canary-net.service`) and script on a new host, but an apply does not re-run it. Before the setting
+is added, an upgraded host installs them once (sudo, as the CI runner's own network is installed on an upgrade):
+
+```sh
+sudo install -m0755 ops/vm/canary-net.sh /usr/local/sbin/aidenhq-canary-net
+sudo install -m0644 ops/units/aidenhq-canary-net.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now aidenhq-canary-net
+```
+
+Without it there is no `aidenhq-canary` bridge, the gate cannot bind `10.231.6.1`, and `app_page_canary` cannot start a
+browser: the canary stays unavailable (nothing opens or serves) rather than running on an unguarded network. The
+setting's own apply card says so.
+
 Negative checks are part of the acceptance, not polish: no setting means the mint refuses and the listener serves no
 page; an unauthenticated browser gets 401; another app's host gets 403/404; an expired or revoked session gets 401; the
 public app URL refuses the test cookie; a test account is not an admin and has no board access.
