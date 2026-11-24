@@ -362,9 +362,11 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       }
       attempt = 0; // a complete page: the next gets its own retries
       idTotal = null; // the next page is a new boundary, with its own total
-      // A result listed without an id can't be written on an id page either; it is returned, not missing.
+      // A result listed without an id can't be written on an id page either; it is returned, not missing. It counts toward the
+      // resumed pass's newer-window coverage too, or one such row would look like a gap forever.
       state.dropped += returned - page.length;
       tieDropped += returned - page.length;
+      if (state.windowRead) state.windowDropped = (state.windowDropped ?? 0) + (returned - page.length);
       if (returned < SEARCH_LIMIT) break; // the tie time is read whole
       if (Date.now() >= deadline) return void (state.ended = false);
     }
