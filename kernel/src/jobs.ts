@@ -182,8 +182,14 @@ const quoted = (text: string, from: number, to: number, lineStart: number, lineE
   const prefix = text.slice(lineStart, from);
   if (!/^[ \t>]*$/.test(prefix) || !(prefix.includes(">") || /^(?:\t| {4})/.test(prefix))) return false;
   const end = Math.min(lineEnd, limit);
+  // What follows the marker on its line must be a leak or nothing: a marker beside reply text is a leak of its own.
   let i = to;
-  while (i < end && PAD.test(text[i]!)) i++;
+  for (;;) {
+    while (i < end && PAD.test(text[i]!)) i++;
+    const leak = SENTINELS.find((s) => i + s.length <= end && text.startsWith(s, i));
+    if (!leak) break;
+    i += leak.length;
+  }
   // A quote line shows something else too: a marker that is the whole reply is a leak, whatever its indentation.
   return i === end && hasOther;
 };
@@ -214,6 +220,27 @@ const trailingRunStart = (text: string) => {
     at = end - hit.length;
   }
 };
+/**
+ * `text` without a sentinel that follows a marker the reply shows on a quoted line, or `text` itself when there is none.
+ * A marker beside reply text is still a leak and is left to the main scan; only a marker the quote check keeps is spliced.
+ */
+const stripAfterQuote = (text: string) => {
+  const starts = lineStarts(text);
+  const outerFrom = leadingRunEnd(text), outerTo = trailingRunStart(text);
+  const hasOther = skipStart(text, outerFrom, outerTo) < skipEnd(text, outerFrom, outerTo);
+  let line = 0;
+  const at = skipStart(text, 0, text.length);
+  while (line + 1 < starts.length && starts[line + 1]! <= at) line++;
+  const lineStart = starts[line]!, lineEnd = line + 1 < starts.length ? starts[line + 1]! - 1 : text.length;
+  const after = afterHeader(text, at, text.length);
+  const hit = after !== undefined ? undefined : SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
+  const reach = after ?? hit?.length;
+  if (reach === undefined || !quoted(text, at, at + reach, lineStart, lineEnd, hasOther)) return text;
+  let i = at + reach;
+  while (i < lineEnd && PAD.test(text[i]!)) i++;
+  const leak = SENTINELS.find((s) => text.startsWith(s, i));
+  return leak ? text.slice(0, i) + text.slice(i + leak.length) : text;
+};
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
   const starts = [0];
@@ -228,6 +255,13 @@ const lineStarts = (text: string) => {
  * costs its own length rather than its square.
  */
 export function stripSentinels(text: string): string {
+  // A leak can sit right after a marker the reply shows ("    <|im_end|><|endoftext|>"): the example stays, the leak goes.
+  // Each splice shortens the text, and only a quoted line can trigger one, so a handful of passes settles any reply.
+  for (let pass = 0; pass < 8; pass++) {
+    const spliced = stripAfterQuote(text);
+    if (spliced === text) break;
+    text = spliced;
+  }
   let from = 0, to = text.length;
   const starts = lineStarts(text);
   const outerFrom = leadingRunEnd(text), outerTo = trailingRunStart(text);
