@@ -1887,7 +1887,8 @@ test("ship's evidence: a covered head is completed; past the push cap the verdic
   assert.equal(w.started.length, 1, "no push review past the cap");
   assert.equal(w.engine.verdict(REPO, 2, sha("3")).verdict, "pass");
   assert.deepEqual(w.engine.evidence(REPO, 2, sha("3")), { reviewed: sha("2"), kind: "exhausted" });
-  await w.engine.fresh({ pr_url: `https://github.com/${REPO}/pull/2` }); await w.tick();
+  await assert.rejects(w.engine.fresh({ pr_url: `https://github.com/${REPO}/pull/2`, head: sha("2") }), /not 222/, "only at the head ship judged");
+  await w.engine.fresh({ pr_url: `https://github.com/${REPO}/pull/2`, head: sha("3") }); await w.tick();
   assert.deepEqual([w.started[1].head, w.started[1].mandatory], [sha("3"), true]);
   assert.deepEqual(codes(w.engine.verdict(REPO, 2, sha("3"))), ["running"]);
   w.finish(1); await w.tick(); // an important finding

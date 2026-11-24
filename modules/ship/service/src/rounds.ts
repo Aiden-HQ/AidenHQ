@@ -37,7 +37,7 @@ export interface RoundDeps {
   /** The kernel, as ship: wakes, write records (github.merge), their state, and closing a hand-off's task. */
   kernel: { call(method: string, path: string, body?: unknown): Promise<any> };
   /** Code review's gating review of the PR's head (effects.ts askFresh): a model fix its last review doesn't carry to. */
-  askFresh(url: string): Promise<void>;
+  askFresh(url: string, head: string): Promise<void>;
   /** GitHub's update-branch bound to the head (expected_head_sha): a clean merge of the base, no conflict. */
   updateBranch(repo: string, number: number, head: string): Promise<void>;
   assign(repo: string, number: number, logins: string[]): Promise<void>;
@@ -117,7 +117,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A model fix the last review doesn't carry to: code review is asked once for a review of this head (never under observe).
   if (j?.ask && (s.approve === "safe" || s.approve === "all") && a.asked !== pr.head) {
     try {
-      await d.askFresh(pr.url);
+      await d.askFresh(pr.url, pr.head);
       a = { ...a, asked: pr.head, did: [...(a.did ?? []), `asked code review for a review of \`${pr.head.slice(0, 12)}\``] };
       d.state.put(a);
     } catch (e) {
@@ -129,7 +129,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front) return "nothing";
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
-  const key = `${pr.head}:${v.do}`;
+  // A wait is said again when its approval line changes (observe: code review passed meanwhile); every other action once per head.
+  const key = v.do === "wait" && facts.approval ? `${pr.head}:wait:${facts.approval}` : `${pr.head}:${v.do}`;
   const followed = v.do === "merge" || v.do === "approve" || (v.do === "repair" && f.dirty === true);
   if (!followed && c.lastRound === key) return "nothing";
   // Each new action spends a round; past `rounds` the PR holds.

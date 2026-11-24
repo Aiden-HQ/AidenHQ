@@ -2117,9 +2117,10 @@ export function createEngine(d: EngineDeps) {
       return queue(p, list, "oneoff", { full: b.full !== false, focus: (b.focus as string) || null, ...(who ? { asker: who } : {}) });
     },
     /** Ship's ask for a fresh review of an adopted PR's head (a model fix past the push review cap): the repo's opening reviewers,
-     * queued as a writer's `aiden review` is, so the run gates the merge and covers the head. */
-    async fresh(b: { pr_url?: unknown }) {
+     * queued as a writer's `aiden review` is, so the run gates the merge and covers the head. Only at the head ship judged. */
+    async fresh(b: { pr_url?: unknown; head?: unknown }) {
       const p = await readPr(b.pr_url);
+      if (p.head !== b.head) throw new RequestError(`the pull request is at ${p.head.slice(0, 12)}, not ${String(b.head).slice(0, 12)}`);
       const cfg = repoCfg(p.repo);
       if (!cfg || !gated(cfg)) throw new RequestError(`${p.repo} has no mandatory code review in its code_review setting`);
       return queue(p, cfg.on_open, "command", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open" });

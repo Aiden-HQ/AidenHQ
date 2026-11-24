@@ -21,18 +21,20 @@ test("the safe class counts substantive lines only, denies config, and never tak
   assert.equal(safeClass([file("src/a.ts", 1300)], { ...s, max_lines: null }, []).safe, true);
   assert.match(safeClass([file("gen/api.pb.go"), file("go.sum")], s, ["gen/**"]).why, /generated files .* without the source/);
   assert.equal(safeClass([file("proto/api.proto"), file("gen/api.pb.go")], s, ["gen/**"]).safe, true);
+  assert.match(safeClass([file("src/a.ts"), file("web/yarn.lock")], { ...s, deny: [] }, []).why, /yarn\.lock.*without the source/, "a lockfile's source is its manifest");
   assert.match(safeClass([file("src/a.ts"), file("infra/main.tf")], s, []).why, /infra\/main\.tf.*safe\.deny/);
 });
 
 test("a verdict carries after a base merge or a regeneration, and a model fix needs a fresh review", () => {
   const reviewed = [file("src/a.ts", 3, "@@ -10,2 +10,3 @@\n+fix"), file("package-lock.json", 1, "@@ -1 +1 @@\n-a\n+b")];
-  // A base merge moved the PR's hunk and regenerated the lockfile: its own change is the same.
-  assert.equal(carries(reviewed, [file("src/a.ts", 3, "@@ -40,2 +40,3 @@\n+fix"), file("package-lock.json", 1, "@@ -1 +1 @@\n-a\n+c")], []), true);
+  // A base merge regenerated the lockfile: its own change is the same. The same edit at another place is another change.
+  assert.equal(carries(reviewed, [file("src/a.ts", 3, "@@ -10,2 +10,3 @@\n+fix"), file("package-lock.json", 1, "@@ -1 +1 @@\n-a\n+c")], []), true);
+  assert.equal(carries(reviewed, [file("src/a.ts", 3, "@@ -40,2 +40,3 @@\n+fix")], []), false);
   assert.equal(carries(reviewed, [file("src/a.ts", 4, "@@ -10,2 +10,4 @@\n+fix\n+more")], []), false);
   assert.equal(carries(reviewed, [{ ...file("src/a.ts"), patch: undefined }], []), false, "an unreadable patch is a change");
   const s = effective({ repos: { "a/b": { approve: "safe" } } }, "a/b", { fleet: [], listed: ["a/b"] })!;
   const exhausted: Verdict = { ...PASS, kind: "exhausted", reviewed: H1 };
-  assert.equal(judge(s, { files: [file("src/a.ts", 3, "@@ -40,2 +40,3 @@\n+fix")], generated: [], verdict: exhausted, reviewedFiles: reviewed }).ok, true);
+  assert.equal(judge(s, { files: [file("src/a.ts", 3, "@@ -10,2 +10,3 @@\n+fix")], generated: [], verdict: exhausted, reviewedFiles: reviewed }).ok, true);
   assert.deepEqual([judge(s, { files: [file("src/a.ts", 9)], generated: [], verdict: exhausted, reviewedFiles: reviewed })].map((j) => [j.ok, j.ask]), [[false, true]]);
   assert.equal(judge(s, { files: [file("src/a.ts")], generated: [], verdict: { ...PASS, kind: "skipped" } }).ok, false, "a skipped review never approves");
   assert.equal(judge(s, { files: [file("src/a.ts")], generated: [], verdict: { verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open" }] } }).ok, false);
@@ -57,7 +59,7 @@ function world(approve: string) {
   const deps = {
     state, kernel, settings, log: () => {}, paused: () => false,
     permission: async () => "admin", askReview: async () => {}, unassign: async () => {}, assign: async () => {}, updateBranch: async () => {},
-    askFresh: async (url: string) => void calls.push({ what: "fresh", body: url }),
+    askFresh: async (url: string, head: string) => void calls.push({ what: "fresh", body: `${url}@${head.slice(0, 1)}` }),
     comment: async (_: string, __: number, body: string) => (reports.push(body), 501),
   };
   const pr = (o: Partial<PrView> = {}): PrView => ({
@@ -98,7 +100,7 @@ test("a model fix past the review cap asks code review once and isn't approved; 
   const fix = { files: [file("src/a.ts", 12, "@@ -1,2 +1,12 @@\n+x\n+fix")], generated: [], verdict: { ...PASS, kind: "exhausted" as const }, reviewedFiles: [file("src/a.ts")] };
   await w.pass(w.pr({ head: H2 }), fix);
   await w.pass(w.pr({ head: H2 }), fix);
-  assert.deepEqual(w.calls.filter((c) => c.what === "fresh").map((c) => c.body), ["https://github.com/a/b/pull/7"]);
+  assert.deepEqual(w.calls.filter((c) => c.what === "fresh").map((c) => c.body), ["https://github.com/a/b/pull/7@2"]);
   assert.equal(w.approvals().length, 0);
   // Reviewed afresh: approved; GitHub's App can't (it opened the PR): said once, nothing filed again.
   await w.pass(w.pr({ head: H2 }), { ...fix, verdict: { ...PASS, reviewed: H2 } });

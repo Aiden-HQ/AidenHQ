@@ -18,7 +18,7 @@
 //   GET  /engines                        → { engines }  each engine's efforts, offered models and default run cap
 //   GET  /github/repos?q=                → { repos }   repos the GitHub identity can read (the board's picker)
 //   POST /findings/dismiss { repo, number, id, reason, by? } → { dismissed }   the owner dismisses an open finding (the board)
-//   POST /reviews { pr_url, fresh: true } with the ship module's own token → { runs }   a gating review of the head (a writer's
+//   POST /reviews { pr_url, fresh: true, head } with the ship module's own token → { runs }   a gating review of the head (a writer's
 //                                        `aiden review`): ship's ask when a model fix has no review of its own
 //   GET  /v1/verdict?repo=&pr=&head=     → { verdict: pass|wait, reasons: [{ code, text, unblock? }], reviewed, kind }   the github
 //                                        module's merge queue and ship's approval, with that module's own token (the kernel says
@@ -75,7 +75,7 @@ export function handler(engine: Engine, token: () => string, isModule: (authoriz
     if (route === "POST /reviews" && !authorized(req) && (await isModule(String(req.headers.authorization ?? ""), "ship"))) {
       try {
         const b = await body(req);
-        if (b.fresh === true) return send(res, 200, { runs: await engine.fresh({ pr_url: b.pr_url }) });
+        if (b.fresh === true) return send(res, 200, { runs: await engine.fresh({ pr_url: b.pr_url, head: b.head }) });
         const task = typeof b.task === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(b.task) ? b.task : undefined;
         return send(res, 200, { runs: await engine.oneoff({ pr_url: b.pr_url }, { requester: "Ship", ...(task ? { task } : {}) }) });
       } catch (e) {

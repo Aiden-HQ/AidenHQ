@@ -19,8 +19,8 @@ export function shipEffects(kernel: Pick<KernelClient, "call">, o: { codeReview:
       return r.json() as Promise<Verdict>;
     },
     /** A gating review of the PR's head (a writer's `aiden review`): a model fix the last review doesn't carry to. */
-    async askFresh(url: string): Promise<void> {
-      const r = await fetchFn(`${o.codeReview.replace(/\/+$/, "")}/reviews`, { method: "POST", headers: { authorization: `Bearer ${o.key()}`, "content-type": "application/json" }, body: JSON.stringify({ pr_url: url, fresh: true }), signal: AbortSignal.timeout(30_000) });
+    async askFresh(url: string, head: string): Promise<void> {
+      const r = await fetchFn(`${o.codeReview.replace(/\/+$/, "")}/reviews`, { method: "POST", headers: { authorization: `Bearer ${o.key()}`, "content-type": "application/json" }, body: JSON.stringify({ pr_url: url, fresh: true, head }), signal: AbortSignal.timeout(30_000) });
       if (!r.ok) throw new Error(`code review answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
     },
     async askReview(url: string, task: string): Promise<void> {

@@ -18,6 +18,7 @@ export type Judged = { ok: boolean; why: string; ask?: boolean; safe: SafeClass 
 const COMPARE_CAP = 300;
 const TESTS = ["**/test/**", "**/tests/**", "**/__tests__/**", "**/testdata/**", "**/fixtures/**", "**/*.test.*", "**/*.spec.*", "**/*_test.go", "**/test_*.py"];
 const DOCS = ["**/*.md", "**/*.mdx", "**/*.rst", "**/docs/**", "**/LICENSE*", "**/CHANGELOG*"];
+const MANIFESTS = ["package.json", "go.mod", "Cargo.toml", "pyproject.toml"];
 const hit = (path: string, globs: string[]) => globs.some((g) => posix.matchesGlob(path, g));
 const isGenerated = (f: ChangedFile, generated: string[]) => LOCKFILES.includes(posix.basename(f.filename)) || hit(f.filename, generated);
 const names = (fs: ChangedFile[]) => `${fs.slice(0, 3).map((f) => `\`${f.filename}\``).join(", ")}${fs.length > 3 ? ` and ${fs.length - 3} more` : ""}`;
@@ -34,19 +35,23 @@ export function safeClass(files: ChangedFile[], s: ShipSettings["safe"], generat
   if (files.length >= COMPARE_CAP) return out(`${files.length}+ changed files: GitHub doesn't list them all`);
   const denied = files.filter((f) => hit(f.filename, s.deny) || (f.previous_filename !== undefined && hit(f.previous_filename, s.deny)));
   if (denied.length) return out(`touches ${names(denied)} (safe.deny)`);
-  if (gen.length && !counted.length) return out(`changes generated files (${names(gen)}) without the source they come from`);
+  // A lockfile's source is its manifest beside it; any other generated file's is some substantive change (its generator's input).
+  const manifest = (f: ChangedFile) => files.some((m) => posix.dirname(m.filename) === posix.dirname(f.filename) && MANIFESTS.includes(posix.basename(m.filename)));
+  const orphan = gen.filter((f) => (LOCKFILES.includes(posix.basename(f.filename)) ? !manifest(f) : !counted.length));
+  if (orphan.length) return out(`changes generated files (${names(orphan)}) without the source they come from`);
   if (s.max_lines !== null && lines > s.max_lines) return out(`${lines} lines > ${s.max_lines}`);
   if (s.max_files !== null && counted.length > s.max_files) return out(`${counted.length} files > ${s.max_files}`);
   return { safe: true, why: `${lines} lines in ${counted.length} files`, lines, files: counted.length };
 }
 
-/** The PR's own change without its generated paths: each file's status, names and patch, hunk positions dropped (git patch-id's
- * rule), so a base merge that only moves lines carries. null when a file has no patch (binary, too large) or the list is cut. */
+/** The PR's own change without its generated paths: each file's status, names and patch, hunk positions included (code review's
+ * patch-id rule: the same edit at another place is another change). null when a file has no patch (binary, too large) or the
+ * list is cut. */
 function fingerprint(files: ChangedFile[], generated: string[]): string | null {
   if (files.length >= COMPARE_CAP) return null;
   const own = files.filter((f) => !isGenerated(f, generated));
   if (own.some((f) => typeof f.patch !== "string")) return null;
-  return own.map((f) => `${f.status}\0${f.previous_filename ?? ""}\0${f.filename}\0${f.patch!.replace(/^@@ [^@]* @@/gm, "@@")}`).sort().join("\0\0");
+  return own.map((f) => `${f.status}\0${f.previous_filename ?? ""}\0${f.filename}\0${f.patch}`).sort().join("\0\0");
 }
 
 /** Whether code review's pass on an earlier head carries to this one: the PR's own change is the same at both (a base merge, or
