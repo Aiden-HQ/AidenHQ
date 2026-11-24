@@ -43,6 +43,16 @@ export function viewOf(repo: string, defaultBranch: string, pr: Json): PrView {
 }
 
 export function adoptedPass(o: AdoptedOptions) {
+  /**
+   * Whether the PR is first in the repo's merge order (item 19): the earliest hand-off among the repo's open adoptions that ship
+   * still works (not the fleet's, not held). Under `rebase: conflict` only that one is brought up to date; the rest wait their turn.
+   */
+  const front = (repo: string, number: number, open: Set<number>) => {
+    const order = (o.state.all() as Kept[])
+      .filter((a) => a.repo.toLowerCase() === repo.toLowerCase() && open.has(a.number) && a.trigger.kind !== "fleet" && !a.hold)
+      .sort((x, y) => String(x.trigger.at ?? "").localeCompare(String(y.trigger.at ?? "")) || x.number - y.number);
+    return order[0]?.number === number;
+  };
   const must = async (method: string, path: string, body?: unknown) => {
     const r = await o.gh(method, path, body);
     if (r.status >= 300) throw new Error(`GitHub ${method} ${path}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}`);
@@ -70,7 +80,7 @@ export function adoptedPass(o: AdoptedOptions) {
     /** A new pass: roles are read again. */
     begin() { roles.clear(); },
     /** One open PR that isn't the fleet's own: intake, then a round once adopted (and handed back when its task was cancelled). */
-    async open(repo: string, main: { name: string; rollup: Json }, pr: Json) {
+    async open(repo: string, main: { name: string; rollup: Json }, pr: Json, open: Set<number> = new Set([pr.number])) {
       const view = viewOf(repo, main.name, pr);
       let a = await intake(handoff, view) as Kept | undefined;
       if (!a || a.trigger.kind === "fleet") return;
@@ -84,7 +94,7 @@ export function adoptedPass(o: AdoptedOptions) {
       const v = await o.decision(repo, pr.number, view.head);
       // Red on the base too: the same required check names red on the default branch's head.
       const onBase = new Set(namedChecks(main.rollup).filter((c) => !c.ok && !c.pending).map((c) => c.name));
-      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, failing: v.failing ?? [], onBase: (v.failing ?? []).filter((n) => onBase.has(n)) });
+      await round(rounds, view, { do: v.do, ...(v.why ? { why: v.why } : {}) }, { dirty: !!v.dirty, front: front(repo, pr.number, open), failing: v.failing ?? [], onBase: (v.failing ?? []).filter((n) => onBase.has(n)) });
     },
     /** The adoptions of `repo` (not the fleet's) whose PR left the open list: a merged one closes its hand-off's task once. */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {

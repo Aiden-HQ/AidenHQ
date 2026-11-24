@@ -42,3 +42,24 @@ test("a writer's ship label adopts a PR and its round files the adoption's merge
   await pass.open("acme/app", main, pr([label("e1", "mallory"), label("e2", "maria")]));
   assert.equal(state.get("acme/app", 4).hold?.kind, "handed_back");
 });
+
+test("under rebase: conflict, only the earliest hand-off among the repo's open adoptions is brought up to date", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  const kept = (number, at) => ({ repo: "acme/app", number, generation: 1, trigger: { kind: "label", event: `e${number}`, actor: "maria", at, head: "a".repeat(40) }, task: `T${number}`, hold: null });
+  state.put(kept(5, "2026-11-24T09:00:00Z"));
+  state.put(kept(6, "2026-11-24T10:00:00Z"));
+  const updated = [];
+  const pass = adoptedPass({
+    gh: async (method, path) => (method === "PUT" && updated.push(path), { status: 200, body: {} }), state,
+    kernel: { call: async (m, path) => (path.startsWith("/v1/work") ? { status: "in_progress", records: [] } : {}) },
+    settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "repair", why: "behind", failing: [], dirty: false }),
+    effects: { comment: async () => 1, askReview: async () => {} },
+  });
+  const pr = (number) => ({ number, url: `https://github.com/acme/app/pull/${number}`, headRefOid: "a".repeat(40), baseRefName: "main", author: { __typename: "User", login: "dev" }, isCrossRepository: false, isDraft: false, labels: { nodes: [] }, assignees: { nodes: [] }, timelineItems: { nodes: [] } });
+  const main = { name: "main", rollup: { contexts: { nodes: [] } } };
+  const open = new Set([5, 6]);
+  await pass.open("acme/app", main, pr(6), open);
+  await pass.open("acme/app", main, pr(5), open);
+  assert.deepEqual(updated, ["/repos/acme/app/pulls/5/update-branch"]);
+});
