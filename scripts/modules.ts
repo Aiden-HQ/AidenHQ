@@ -794,7 +794,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (!(Number.isInteger(settings.computers_max) && settings.computers_max >= 1 && settings.computers_max <= 64)) fail("settings.computers_max: a whole number, 1 to 64");
   settings.exposure ??= "tailscale";
   // instance_name: a DNS label (agents commit as <key>@<instance_name>.aidenhq.ai).
-  if (settings.instance_name && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(settings.instance_name))) fail("settings.instance_name: lowercase letters, digits and - (a DNS label)");
+  if (settings.instance_name != null && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(settings.instance_name))) fail("settings.instance_name: lowercase letters, digits and - (a DNS label)");
 
 
   // The fleet org: the owner's `github_fleet_org`, where bare create_repo names and `@agents` grants land. Unset, the fleet's

@@ -28,10 +28,23 @@ export function slugOf(name: string | undefined): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/** Whether the app already has a bot user: its @handle is fixed from the first install, so its name is never set again. */
+export function hasBotUser(manifest: unknown): boolean {
+  return isMap(manifest) && isMap(manifest.features) && isMap(manifest.features.bot_user);
+}
+
+/** Our manifest without the bot's display name, for an app that has a bot already: its label (like its name) stays the owner's. */
+function withoutBotName(manifest: unknown): unknown {
+  if (!isMap(manifest) || !isMap(manifest.features) || !isMap(manifest.features.bot_user)) return manifest;
+  const { display_name: _kept, ...botUser } = manifest.features.bot_user;
+  return { ...manifest, features: { ...manifest.features, bot_user: botUser } };
+}
+
 /**
- * The manifest for a new app: ours with the instance's own names, so several AidenHQ bots in one workspace don't all want
- * `@AidenHQ` (Slack fixes the @handle at the first install; renaming later changes only the label). The update path keeps the
- * app's own display_information (onto) and Slack won't change a handle after install, so the name is set only here.
+ * The manifest for an app's first bot install: ours with the instance's own names, so several AidenHQ bots in one workspace
+ * don't all want `@AidenHQ` (Slack fixes the @handle at that first install; renaming later changes only the label). The update
+ * path keeps the app's own display_information and an existing bot, and Slack won't change a handle after install, so a name is
+ * set only here.
  */
 export function named(manifest: unknown, slug: string): unknown {
   if (!isMap(manifest)) return manifest;
@@ -120,7 +133,12 @@ export function apps(store: Store, fetchImpl: typeof fetch = fetch) {
       if (id) {
         // The app's own settings stay (scopes the owner added, other redirect URLs, its name): ours are added on top.
         const current = (await call("apps.manifest.export", input.token, { app_id: id })).manifest;
-        await call("apps.manifest.update", input.token, { app_id: id, manifest: JSON.stringify(onto(current, manifest)) });
+        // Adding the bot to an app that has none is its first install, and Slack fixes the @handle then: name it per instance
+        // like a new app. An app that already has a bot keeps both its handle and its label (Slack won't change a handle after
+        // install, and the owner may have renamed it): only the rest of our bot settings are added.
+        const hasBot = hasBotUser(current);
+        const overlay = input.part === "advanced" && !hasBot ? named(manifest, slugOf(process.env.INSTANCE_NAME || process.env.OWNER_NAME)) : hasBot ? withoutBotName(manifest) : manifest;
+        await call("apps.manifest.update", input.token, { app_id: id, manifest: JSON.stringify(onto(current, overlay)) });
       }
       else {
         // A new app is named after this instance: Slack fixes its @handle at this first install, so it must be distinct now.

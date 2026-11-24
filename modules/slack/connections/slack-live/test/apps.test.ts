@@ -9,7 +9,7 @@ const TOKEN = ["xoxe", `xoxp-test-${"a".repeat(24)}`].join(".");
 
 it("makes the app from a pasted config token, named after the instance, then updates it to the bot manifest; the token is never kept", async () => {
   vi.stubEnv("INSTANCE_NAME", "");
-  vi.stubEnv("OWNER_NAME", "Mudit");
+  vi.stubEnv("OWNER_NAME", "Sam");
   const calls: { method: string; auth: string; body: Record<string, string> }[] = [];
   const slack = (async (url: string, init: RequestInit) => {
     const method = url.split("/api/")[1]!;
@@ -27,11 +27,12 @@ it("makes the app from a pasted config token, named after the instance, then upd
   // A new app takes the instance's name (INSTANCE_NAME unset here, so the owner's): the @handle Slack fixes at first install
   // is per instance, and the app name says which one it is.
   const created = JSON.parse(calls[0]!.body.manifest!);
-  expect(created.display_information.name).toBe("AidenHQ (mudit)");
+  expect(created.display_information.name).toBe("AidenHQ (sam)");
   expect(MANIFESTS.basic).toMatchObject({ display_information: { name: "AidenHQ" } });
   expect(JSON.stringify(MANIFESTS.basic)).not.toBe(calls[0]!.body.manifest);
 
-  // Adding the bot later: the same app, updated to the advanced manifest.
+  // Adding the bot later: the same app, updated to the advanced manifest. The app has no bot yet, so this is the bot's first
+  // install and it takes the instance's name too (Slack fixes the @handle then, not at the sign-in app's create).
   const updated = await a.apply({ token: TOKEN, part: "advanced", app_id: "A0123ABCD" });
   expect(updated).toEqual({ app_id: "A0123ABCD", part: "advanced", current: true, url: "https://api.slack.com/apps/A0123ABCD" });
   expect(calls[1]).toMatchObject({ method: "apps.manifest.export", body: { app_id: "A0123ABCD" } });
@@ -42,8 +43,8 @@ it("makes the app from a pasted config token, named after the instance, then upd
   expect(sent.oauth_config.redirect_urls).toEqual(["https://example.com/cb", "http://localhost:3121/slack/callback"]);
   expect(sent.oauth_config.scopes.user).toContain("chat:write");
   expect(sent.settings.socket_mode_enabled).toBe(true);
-  // The update keeps the app's own display_information and our manifest's fixed bot name: Slack won't change a handle after install.
-  expect(sent.features.bot_user.display_name).toBe("AidenHQ (AI)");
+  // The update keeps the app's own display_information, and the bot it just gained is named after the instance.
+  expect(sent.features.bot_user.display_name).toBe("aidenhq-sam");
   expect(JSON.stringify(store.listKv(""))).not.toMatch(/xoxe|shh/);
 
   // Slack's refusal comes back in words; a wrong-looking token never reaches Slack.
@@ -94,13 +95,15 @@ it("cuts the bot name to Slack's 21 characters and the app name to 35, keeping b
   expect(trimmed.features.bot_user.display_name).not.toMatch(/[-_.]$/);
 });
 
-it("still sends a create only the create path: an update never renames the app", async () => {
+it("names the bot when an app first gains one, and never renames a bot the app already has", async () => {
   vi.stubEnv("INSTANCE_NAME", "acme");
+  // The app as Slack has it after its bot's first install: its own name, and a bot user (its @handle is already fixed).
+  const installed = { ...OWNERS, features: { bot_user: { display_name: "aidenhq-other", always_online: false } } };
   const calls: { method: string; body: Record<string, string> }[] = [];
   const slack = (async (url: string, init: RequestInit) => {
     const method = url.split("/api/")[1]!;
     calls.push({ method, body: JSON.parse(String(init.body)) });
-    if (method === "apps.manifest.export") return new Response(JSON.stringify({ ok: true, manifest: OWNERS }));
+    if (method === "apps.manifest.export") return new Response(JSON.stringify({ ok: true, manifest: installed }));
     return new Response(JSON.stringify(method === "apps.manifest.create" ? { ok: true, app_id: "A0123ABCD", credentials: { client_id: "111.222" } } : { ok: true }));
   }) as typeof fetch;
   const a = apps(openStore(":memory:"), slack);
@@ -108,7 +111,9 @@ it("still sends a create only the create path: an update never renames the app",
   expect(JSON.parse(calls[0]!.body.manifest!).display_information.name).toBe("AidenHQ (acme)");
   expect(JSON.parse(calls[0]!.body.manifest!).features.bot_user.display_name).toBe("aidenhq-acme");
   await a.apply({ token: TOKEN, part: "advanced", app_id: "A0123ABCD" });
+  // Their display_information stays, and so does their bot (only its always_online and the rest of ours are added): a handle
+  // Slack already fixed is left alone.
   const sent = JSON.parse(calls[2]!.body.manifest!);
   expect(sent.display_information.name).toBe("My Slack helper");
-  expect(sent.features.bot_user.display_name).toBe("AidenHQ (AI)");
+  expect(sent.features.bot_user).toEqual({ display_name: "aidenhq-other", always_online: true });
 });
