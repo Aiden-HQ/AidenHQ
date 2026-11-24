@@ -171,19 +171,45 @@ const beforeHeader = (text: string, from: number, to: number) => {
   return undefined;
 };
 /**
- * True when the sentinel from `from` to `to` is the whole of a Markdown blockquote line ("> <|im_end|>"): the reply shows the
- * marker on purpose, so it stays. A marker anywhere else is a leak, however it is indented.
+ * True when the sentinel from `from` to `to` is the whole of a line the reply shows on purpose: a Markdown blockquote
+ * ("> <|im_end|>", with an optional list marker in front) or an indented code block ("    <|im_end|>"). Such a line needs the
+ * reply's own text beside it, so a reply that is nothing but a marker is still a run with no reply.
  */
 const QUOTE_PREFIX = 64;
-const quoted = (text: string, from: number, to: number, lineStart: number, limit: number) => {
-  // A blockquote's own marks are a handful of characters: a longer prefix is reply text, and is not walked at all.
+const quoted = (text: string, from: number, to: number, lineStart: number, limit: number, hasOther: boolean) => {
+  // A quote's own marks are a handful of characters: a longer prefix is reply text, and is not walked at all.
   if (from - lineStart > QUOTE_PREFIX) return false;
-  // A blockquote's own marks, with an optional list marker in front of them ("- > <|im_end|>"): a handful of characters.
   const prefix = text.slice(lineStart, from);
-  if (!/^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*$/.test(prefix)) return false;
+  const blockquote = /^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*$/.test(prefix);
+  const code = /^(?:\t| {4})[ \t]*$/.test(prefix);
+  if (!blockquote && !code) return false;
   let i = to;
   while (i < limit && PAD.test(text[i]!)) i++;
-  return i === limit;
+  return i === limit && (blockquote || hasOther);
+};
+/** Where the run of sentinels and padding at each edge ends: what is left between them is the reply's own text. */
+const leadingRunEnd = (text: string) => {
+  let at = 0;
+  for (;;) {
+    at = skipStart(text, at, text.length);
+    const header = afterHeader(text, at, text.length);
+    if (header !== undefined) { at += header; continue; }
+    const hit = SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
+    if (!hit) return at;
+    at += hit.length;
+  }
+};
+const trailingRunStart = (text: string) => {
+  let at = text.length;
+  for (;;) {
+    const header = beforeHeader(text, 0, at);
+    if (header !== undefined) { at = header; continue; }
+    const end = skipEnd(text, 0, at);
+    const hit = SENTINELS.find((s) => end - s.length >= 0 && text.startsWith(s, end - s.length)
+      && text[end - s.length - 1] !== "\\");
+    if (!hit) return end;
+    at = end - hit.length;
+  }
 };
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
@@ -201,6 +227,8 @@ const lineStarts = (text: string) => {
 export function stripSentinels(text: string): string {
   let from = 0, to = text.length;
   const starts = lineStarts(text);
+  // The reply's own text, past the sentinels and padding at both ends: what a quoted example has to sit beside.
+  const hasOther = skipStart(text, leadingRunEnd(text), trailingRunStart(text)) < skipEnd(text, leadingRunEnd(text), trailingRunStart(text));
   let line = 0;
   const leadLine = (at: number) => { while (line + 1 < starts.length && starts[line + 1]! <= at) line++; return starts[line]!; };
   let back = starts.length - 1;
@@ -212,7 +240,7 @@ export function stripSentinels(text: string): string {
     const hit = after !== undefined ? undefined : SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
     const reach = after ?? hit?.length;
     // Only what the reply still has before the marker counts as its line's prefix: a sentinel just removed is not there.
-    if (reach === undefined || quoted(text, at, at + reach, Math.max(leadLine(at), from), to)) break;
+    if (reach === undefined || quoted(text, at, at + reach, Math.max(leadLine(at), from), to, hasOther)) break;
     from = at + reach;
   }
   // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
@@ -220,12 +248,12 @@ export function stripSentinels(text: string): string {
     const end = skipEnd(text, from, to);
     const head = beforeHeader(text, from, end);
     if (head !== undefined) {
-      if (quoted(text, head, end, Math.max(tailLine(head), from), to)) break;
+      if (quoted(text, head, end, Math.max(tailLine(head), from), to, hasOther)) break;
       to = head;
       continue;
     }
     const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length) && text[end - s.length - 1] !== "\\");
-    if (!hit || quoted(text, end - hit.length, end, Math.max(tailLine(end - hit.length), from), to)) break;
+    if (!hit || quoted(text, end - hit.length, end, Math.max(tailLine(end - hit.length), from), to, hasOther)) break;
     to = end - hit.length;
   }
   return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
