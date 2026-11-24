@@ -20,7 +20,7 @@ roles:
   # kernel.settings: the config tool's settings changes (writers below). kernel.tasks and kernel.wake: a hand-off's one Engineer
   # task (module-task source ship:<repo>/<n>:<generation>) and its wakes (handoff.ts, rounds.ts); the watch loop's Dependabot
   # tasks, the Maintainer's contributor-PR tasks and the wakes of a fleet PR's task (loop.ts). kernel.work-read: a fleet PR's
-  # task's status and records (a cancelled task's PR is closed; a merge already open isn't filed twice).
+  # task's status and records (a cancelled task's PR is left open for a successor; a merge already open isn't filed twice).
   requests: [ kernel.settings, kernel.tasks, kernel.wake, kernel.work-read ]
   declares:
     - { id: ship-admin, description: "Reads ship's settings and changes one repo's entry (ship_config, ship_configure) when the owner asks in words; a change that loosens anything is the owner's." }

@@ -8,6 +8,9 @@
 //   suggest:   the repo's own regenerate command or workflow, as an `actions` step for the report to propose (never enabled here)
 export const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
+// The `github.repair` request's limits (modules/github/schemas/repair.json, plan).
+const MAX_GLOBS = 200, MAX_GLOB_LEN = 300, MAX_COMMANDS = 20, MAX_DIR_LEN = 300, MAX_CMD_LEN = 500;
+
 export type Suggestion = { stage: "conflict" | "behind"; step: { comment: string } | { workflow: string }; from: string };
 export type Discovered = { globs: string[]; commands: { dir: string; cmd: string }[]; ambiguous: string[]; suggest: Suggestion[] };
 
@@ -21,7 +24,8 @@ const GEN_RUN = /\b(make\s+(generate|gen|codegen)\b|(npm|pnpm|yarn)\s+(run\s+)?(
 
 /** `files`: path → text, from the target branch (`.gitattributes`, `.github/workflows/*`, Makefiles, package.json, go files, …). */
 export function discover(files: Record<string, string>): Discovered {
-  const globs = new Set<string>();
+  // The lockfiles first: they stay when the list is capped below.
+  const globs = new Set<string>(LOCKFILES.map((l) => `**/${l}`));
   const ambiguous: string[] = [];
   for (const [path, text] of Object.entries(files)) {
     if (base(path) === ".gitattributes") {
@@ -35,10 +39,12 @@ export function discover(files: Record<string, string>): Discovered {
       }
     }
   }
-  for (const l of LOCKFILES) globs.add(`**/${l}`);
 
   const byDir = new Map<string, string>();
-  const put = (dir: string, cmd: string) => { if (!byDir.has(dir)) byDir.set(dir, cmd); };
+  const put = (dir: string, cmd: string) => {
+    if (dir.length > MAX_DIR_LEN || cmd.length > MAX_CMD_LEN) { ambiguous.push(`${dir}: \`${cmd.slice(0, 60)}…\` is too long for the repair request`); return; }
+    if (!byDir.has(dir)) byDir.set(dir, cmd);
+  };
   // 1. CI: the run lines of a job that checks generated code (the repo's own word for how to regenerate).
   for (const [path, text] of Object.entries(files)) {
     if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) continue;
@@ -72,7 +78,14 @@ export function discover(files: Record<string, string>): Discovered {
     while (dir !== "." && !(`${dir}/go.mod` in files)) dir = dirOf(dir);
     put(dir, "go generate ./...");
   }
-  return { globs: [...globs], commands: [...byDir].map(([dir, cmd]) => ({ dir, cmd })), ambiguous, suggest: suggestions(files) };
+  // The repair request takes at most MAX_GLOBS paths of MAX_GLOB_LEN characters and MAX_COMMANDS commands: past that the rest is
+  // left out and said, loudly (the owner or the Engineer sets `generated` with wider globs), never a request that fails every pass.
+  const fit = [...globs].filter((g) => g.length <= MAX_GLOB_LEN);
+  const kept = fit.slice(0, MAX_GLOBS);
+  if (kept.length < globs.size) ambiguous.push(`${globs.size - kept.length} generated path(s) are left out of the repair (its request holds ${MAX_GLOBS} paths of up to ${MAX_GLOB_LEN} characters): set \`generated.globs\` with wider globs`);
+  const commands = [...byDir].map(([dir, cmd]) => ({ dir, cmd }));
+  if (commands.length > MAX_COMMANDS) ambiguous.push(`${commands.length - MAX_COMMANDS} generate command(s) are left out of the repair (its request holds ${MAX_COMMANDS}): set \`generated.command\``);
+  return { globs: kept, commands: commands.slice(0, MAX_COMMANDS), ambiguous, suggest: suggestions(files) };
 }
 
 // A comment workflow's command: `startsWith(github.event.comment.body, '/rebase')`, `contains(…, '/rebase')` or `== '/rebase'`.

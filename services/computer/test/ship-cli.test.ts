@@ -64,6 +64,14 @@ test("ship checkout fetches the PR's head by its sha; ship push files the fix on
   const next = git(origin, "commit-tree", git(origin, "rev-parse", `${head}^{tree}`), "-p", head, "-m", "the App's commit");
   assert.match((await aidenhq("ship", "checkout", link, next)).stdout, /ship-pr-7 is checked out/);
   assert.equal(git(app, "rev-parse", "HEAD"), next);
+  // A second fix round: fixed on the App's commit, pushed, and the next checkout moves on from that one too.
+  writeFileSync(join(app, "b.txt"), "b fixed again\n");
+  git(app, "commit", "-qam", "fix: b again");
+  assert.match((await aidenhq("ship", "push", link, next, "3")).stdout, /k-1: done/);
+  const next2 = git(origin, "commit-tree", git(origin, "rev-parse", `${next}^{tree}`), "-p", next, "-m", "the App's second commit");
+  assert.match((await aidenhq("ship", "checkout", link, next2)).stdout, /ship-pr-7 is checked out/);
+  assert.equal(git(app, "rev-parse", "HEAD"), next2);
+  writes.pop();
   // Nothing on top of the head: nothing filed.
   git(app, "checkout", "-q", "-B", "ship-pr-7", head);
   await assert.rejects(aidenhq("ship", "push", link, head, "3"), (e: { code?: number }) => e.code === 2);

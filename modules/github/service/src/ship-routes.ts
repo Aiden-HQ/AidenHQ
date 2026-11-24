@@ -10,6 +10,7 @@
 //   POST /internal/ship/decide   {data, head} -> the merge gate's rule on the loop's view of a PR (merge-gate.ts decide)
 //   GET  /internal/ship/openers  -> pr-tasks.json: which task opened each PR
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { withBranch } from "./branch-lock.ts";
 import { decide } from "./merge-gate.ts";
 import { readPrTasks } from "./pr-tasks.ts";
 import type { ReviewGate } from "./review-gate.ts";
@@ -25,11 +26,19 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
   ["POST", new RegExp(`^/repos/${REPO}/actions/runs/\\d+/rerun-failed-jobs$`)],
   ["GET", new RegExp(`^/repos/${REPO}/actions/runs/\\d+/jobs$`)],
   ["GET", new RegExp(`^/repos/${REPO}/pulls/\\d+$`)],
-  ["PATCH", new RegExp(`^/repos/${REPO}/pulls/\\d+$`), (b) => JSON.stringify(b) === JSON.stringify({ state: "closed" })],
+  // A close carries the task it was decided for (expectTask): the route re-reads ownership under the branch lock and skips a PR a
+  // successor took over while the cleanup waited (a delete carries it too).
+  ["PATCH", new RegExp(`^/repos/${REPO}/pulls/\\d+$`), (b) => b?.state === "closed" && Object.keys(b).every((k) => k === "state" || k === "expectTask") && (b.expectTask === undefined || typeof b.expectTask === "string")],
   ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/comments$`), (b) => typeof b?.body === "string" && Object.keys(b).length === 1],
   ["DELETE", new RegExp(`^/repos/${REPO}/git/refs/heads/[\\w./-]+$`)],
   ["PUT", new RegExp(`^/repos/${REPO}/pulls/\\d+/update-branch$`)],
   ["GET", new RegExp(`^/repos/${REPO}/compare/[0-9a-f]{4,40}\\.\\.\\.[0-9a-f]{4,40}$`)],
+  // The cleanups' own reads before a branch delete: the ref's current tip, and every open PR on the branch (a moved tip or any
+  // open PR keeps it; a failed read keeps it too).
+  ["GET", new RegExp(`^/repos/${REPO}/git/ref/heads/[\\w./-]+$`)],
+  ["GET", new RegExp(`^/repos/${REPO}/pulls\\?state=open&head=[\\w%:./-]+$`)],
+  // A PR off the default branch (a release, a former default): its own base's head, for the rebase wake.
+  ["GET", new RegExp(`^/repos/${REPO}/branches/[\\w./-]+$`)],
   ["GET", new RegExp(`^/repos/${REPO}/check-runs/\\d+$`)],
   // Hand-offs (handoff.ts, rounds.ts): a trigger's author's role, and the assignees ship adds on a hold and removes on a resume.
   ["GET", new RegExp(`^/repos/${REPO}/collaborators/[\\w-]+/permission$`)],
@@ -72,6 +81,12 @@ export function shipRoutes(o: {
     return ok;
   };
   const send = (res: ServerResponse, status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body ?? null));
+  /** The head branch of a PR on a repo the fleet works (a close's lock is keyed by it), or undefined when it can't be read: the call
+   *  then runs unlocked, exactly as it did before there was a lock (a failed read must not hold a cleanup that closes nothing). */
+  const prBranch = async (repo: string, number: number) => {
+    const r = await o.gh("GET", `/repos/${repo}/pulls/${number}`, undefined, { background: true }).catch(() => undefined);
+    return r && r.status < 300 ? String(r.body?.head?.ref ?? "") || undefined : undefined;
+  };
   /** Serves a /internal/ship/ request; false for any other path. */
   return async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
     const op = new URL(req.url ?? "/", "http://x").pathname.match(/^\/internal\/ship\/(\w+)$/)?.[1];
@@ -100,8 +115,35 @@ export function shipRoutes(o: {
           const def = branch ? (await o.gh("GET", `/repos/${repo}`, undefined, { background: true })).body?.default_branch : undefined;
           if (!branch || !def || def === branch) return send(res, 403, { error: `ship may delete only an opener's PR branch, never the default branch` }), true;
         }
-        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body;
-        try { return send(res, 200, await o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) })), true; }
+        // `expectTask` is the route's own re-check of ownership, never GitHub's: it is stripped before the call goes out.
+        const { expectTask, ...sent } = read ? {} : (b.body ?? {});
+        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : sent;
+        // A close or a branch delete runs under this service's per-branch lock (branch-lock.ts), the one the publish holds around its
+        // push and its ownership write. A cleanup in the gap between them would otherwise close or delete what a successor just pushed.
+        const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);
+        const run = () => o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) });
+        if (branch && (method === "DELETE" || (method === "PATCH" && b.body?.state === "closed"))) {
+          /** Ownership as pr-tasks.json has it once the lock is ours: a successor that published and was recorded while this cleanup
+           *  waited is the PR's task now, and its PR is not the earlier task's to close (the head is unchanged, so no tip read can say so). */
+          const moved = (expect: unknown) => {
+            if (typeof expect !== "string") return false;
+            const rows = Object.entries(readPrTasks(o.cacheDir)).filter(([u, t]) => (method === "DELETE"
+              ? u.startsWith(`https://github.com/${repo.toLowerCase()}/pull/`) && t.branch === decodeURIComponent(branch)
+              : u === `https://github.com/${repo.toLowerCase()}/pull/${String(path).split("/").at(-1)}`));
+            return rows.some(([, t]) => t.task !== expect);
+          };
+          try {
+            return send(res, 200, await withBranch(repo, decodeURIComponent(branch), async () => {
+              if (moved(expectTask)) return { status: 409, body: { skipped: "ownership moved: a successor owns this PR now" } };
+              return run();
+            })), true;
+          }
+          catch (e) {
+            const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: unknown }).cause;
+            return send(res, 200, { thrown: { message: String((e as Error).message ?? e).slice(0, 500), ...(typeof cause === "string" ? { cause } : {}) } }), true;
+          }
+        }
+        try { return send(res, 200, await run()), true; }
         catch (e) {
           const cause = (e as { need?: { cause?: string } }).need?.cause ?? (e as { cause?: unknown }).cause;
           return send(res, 200, { thrown: { message: String((e as Error).message ?? e).slice(0, 500), ...(typeof cause === "string" ? { cause } : {}) } }), true;
