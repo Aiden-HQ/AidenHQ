@@ -81,8 +81,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   a = { ...a, counters: c };
   const caps = s.caps;
   const over = (n: number, cap: number | null) => cap !== null && n >= cap;
-  // A conflict's repair needs the generated paths: the repo's setting, else discovery on the target branch (actions.ts).
-  if (v.do === "repair" && f.dirty && !s.generated && !f.discovered && d.gh) {
+  // A conflict's repair needs the generated paths: the repo's setting, else discovery on the target branch (actions.ts). Discovery
+  // also proposes the repo's own regenerate command for the report.
+  if (v.do === "repair" && f.dirty && !f.discovered && d.gh) {
     try { f = { ...f, discovered: await discovered(d.gh, pr.repo, pr.base) }; } catch (e) { d.log("discovery failed", { repo: pr.repo, err: String((e as Error).message).slice(0, 200) }); }
   }
   const suggest = suggestLines(f.discovered, s.actions);

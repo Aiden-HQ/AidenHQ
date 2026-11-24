@@ -28,10 +28,14 @@ const LOCK_CMD: Record<string, string> = {
 };
 const LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
-/** The tool a command's output says is missing: `sh: 1: webrpc-gen: not found`, `make: oapi-codegen: No such file or directory`,
- * `bash: buf: command not found`, or Go's `exec: "protoc": executable file not found in $PATH`. */
+/** The tool a command's output says is missing, from the shell's or a launcher's own words only: `sh: 1: webrpc-gen: not found`,
+ * `bash: buf: command not found`, `make: oapi-codegen: No such file or directory`, `env: 'x': No such file or directory`, or
+ * Go's `exec: "protoc": executable file not found in $PATH`. */
 export function missingTool(out: string): string | undefined {
-  const m = /exec: "([\w.+-]{1,60})": executable file not found/.exec(out) ?? /(?:^|\s)([\w.+-]{1,60}): (?:command )?not found\b/m.exec(out) ?? /(?:^|\s)make(?:\[\d+\])?: ([\w.+-]{1,60}): No such file or directory/m.exec(out);
+  const m = /exec: "([\w.+-]{1,60})": executable file not found/.exec(out)
+    ?? /^(?:\/bin\/)?(?:sh|bash|dash|zsh)(?:: line \d+:|: \d+:|:) ([\w.+-]{1,60}): (?:command )?not found$/m.exec(out)
+    ?? /^make(?:\[\d+\])?: ([\w.+-]{1,60}): No such file or directory$/m.exec(out)
+    ?? /^env: '?([\w.+-]{1,60})'?: No such file or directory$/m.exec(out);
   return m?.[1];
 }
 

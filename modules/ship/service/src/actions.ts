@@ -13,7 +13,7 @@ import type { ActionStep, STAGES } from "./settings.ts";
 export type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 export type Stage = (typeof STAGES)[number];
 /** The stage's run on the adoption: which step, at which head, since when, and how it ended. */
-export interface ActionRun { stage: Stage; head: string; step: number; at: string; outcome?: "ok" | "failed"; why?: string; made?: string }
+export interface ActionRun { stage: Stage; head: string; step: number; at: string; outcome?: "ok" | "failed"; why?: string; made?: string; steps?: string }
 
 /** As long as ship's own repair job may run (module.yaml `ship-repair` timeout_min). */
 export const STEP_WAIT_MS = 30 * 60_000;
@@ -31,10 +31,13 @@ const label = (x: ActionStep) => ("comment" in x ? `posted \`${x.comment}\`` : `
  *   follows; for before_merge a failure holds); skip: nothing to run here (this head is a step's own); capped: the round cap.
  */
 export async function advance(gh: Gh, pr: PrView, stage: Stage, steps: ActionStep[], rec: ActionRun | undefined, start: () => boolean, now = Date.now()): Promise<{ go: "started" | "waiting" | "ok" | "failed" | "skip" | "capped"; rec?: ActionRun; did?: string }> {
-  const mine = rec?.stage === stage ? rec : undefined;
+  // A run of the same steps (a changed setting starts over).
+  const sig = JSON.stringify(steps);
+  const mine = rec?.stage === stage && rec.steps === sig ? rec : undefined;
   if (mine?.made === pr.head) return { go: "skip", rec };
-  // The head moved while a step was in flight: the repo's bot pushed it. That head is the step's: ship's own step follows there.
-  if (mine && mine.head !== pr.head && !mine.outcome) return { go: "skip", rec: { ...mine, made: pr.head } };
+  // The head moved while a conflict or behind step was in flight: the repo's bot pushed it, and ship's own step follows there (it
+  // is ship's anyway, so a push by someone else loses nothing). Before a merge a new head proves nothing: the stage runs again.
+  if (mine && mine.head !== pr.head && !mine.outcome && stage !== "before_merge") return { go: "skip", rec: { ...mine, made: pr.head } };
   if (mine && mine.head === pr.head) {
     if (mine.outcome) return { go: mine.outcome, rec };
     const s = steps[mine.step];
@@ -60,12 +63,12 @@ async function next(gh: Gh, pr: PrView, stage: Stage, steps: ActionStep[], from:
         const ref = String((await must(gh, "GET", `/repos/${pr.repo}/pulls/${pr.number}`)).head?.ref ?? "");
         await must(gh, "POST", `/repos/${pr.repo}/actions/workflows/${s.workflow}/dispatches`, { ref, ...(s.inputs ? { inputs: s.inputs } : {}) });
       }
-      return { go: "started", rec: { stage, head: pr.head, step: i, at }, did: `${label(s)} (${stage.replace("_", " ")}) at \`${pr.head.slice(0, 12)}\`` };
+      return { go: "started", rec: { stage, head: pr.head, step: i, at, steps: JSON.stringify(steps) }, did: `${label(s)} (${stage.replace("_", " ")}) at \`${pr.head.slice(0, 12)}\`` };
     } catch (e) {
       why = `${label(s)} failed: ${String((e as Error).message).slice(0, 200)}`;
     }
   }
-  return { go: "failed", rec: { stage, head: pr.head, step: steps.length, at: new Date(now).toISOString(), outcome: "failed", ...(why ? { why } : {}) }, ...(why ? { did: `the repo's ${stage.replace("_", " ")} steps didn't settle it (${why})` } : {}) };
+  return { go: "failed", rec: { stage, head: pr.head, step: steps.length, at: new Date(now).toISOString(), steps: JSON.stringify(steps), outcome: "failed", ...(why ? { why } : {}) }, ...(why ? { did: `the repo's ${stage.replace("_", " ")} steps didn't settle it (${why})` } : {}) };
 }
 
 async function must(gh: Gh, method: string, path: string, body?: unknown) {
@@ -74,11 +77,11 @@ async function must(gh: Gh, method: string, path: string, body?: unknown) {
   return r.body;
 }
 
-/** The workflow's dispatched run on the PR's head since the step started (GitHub gives no run id on dispatch). */
+/** The workflow's dispatched run on the PR's head: the first one since the step started (GitHub gives no run id on dispatch). */
 async function runOf(gh: Gh, pr: PrView, workflow: string, since: string) {
   const r = await gh("GET", `/repos/${pr.repo}/actions/workflows/${workflow}/runs?event=workflow_dispatch&created=%3E%3D${encodeURIComponent(since.slice(0, 19))}Z&per_page=20`);
   const runs = (r.status < 300 ? r.body?.workflow_runs ?? [] : []) as { status: string; conclusion: string | null; head_sha: string; created_at: string }[];
-  return runs.filter((x) => x.head_sha === pr.head && x.created_at >= since.slice(0, 19)).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  return runs.filter((x) => x.head_sha === pr.head && x.created_at >= since.slice(0, 19)).sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
 }
 
 // ---- Discovery ----

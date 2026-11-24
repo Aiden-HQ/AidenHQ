@@ -15,6 +15,8 @@ const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) :
 const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 // A CI job that checks generated code (its id or name): "generated code up to date", "check-generated", "codegen", …
 const GEN_JOB = /generat|codegen/i;
+// A whole snippet that is a generate command and nothing else (AGENTS.md's examples).
+const WHOLE = /^(make (generate|gen|codegen)|(npm|pnpm|yarn) (run )?(generate|gen|codegen)|go generate( \.\/\.\.\.)?|buf generate)$/;
 const GEN_RUN = /\b(make\s+(generate|gen|codegen)\b|(npm|pnpm|yarn)\s+(run\s+)?(generate|gen|codegen)\b|go\s+generate\b|buf\s+generate\b)/;
 
 /** `files`: path → text, from the target branch (`.gitattributes`, `.github/workflows/*`, Makefiles, package.json, go files, …). */
@@ -55,7 +57,7 @@ export function discover(files: Record<string, string>): Discovered {
   for (const [path, text] of Object.entries(files)) {
     if (base(path) !== "AGENTS.md") continue;
     const m = /`([^`\n]*)`/g;
-    for (let x = m.exec(text); x; x = m.exec(text)) if (GEN_RUN.test(x[1]!) && !/["'$\\;&|]/.test(x[1]!)) { put(dirOf(path), x[1]!.trim()); break; }
+    for (let x = m.exec(text); x; x = m.exec(text)) if (WHOLE.test(x[1]!.trim())) { put(dirOf(path), x[1]!.trim()); break; }
   }
   // 3. Build files, per package dir.
   for (const [path, text] of Object.entries(files)) {
