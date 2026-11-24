@@ -1,12 +1,14 @@
 name: board
-description: "The owner's board (still the root compose's board service): the points other modules extend it through. board.signins: a vendor sign-in the board shows as a banner and connects at its https address (or on loopback). board.setup_flows: a module's guided setup."
+description: "The owner's board (still the root compose's board service): the points other modules extend it through. board.signins: a vendor sign-in the board shows as a banner and connects at its https address (or on loopback). board.setup_flows: a module's guided setup. board.pages: a module's Fleet page."
 # A sign-in through a module's MCP proxy (OAuth): the board asks <status_url> and starts and finishes the sign-in beside it
 # (…/auth/start, …/auth/finish) with the module's `<id>_auth_token`, mounted on the board.
 # A guided setup the board renders at #/setup/<module> (modules/board/schemas/setup_flows.json): the secrets to paste, a
 # sign-in to connect and a pairing code from the module's own service.
+# A module's Fleet page: docs/design/board-ui.md "Modules".
 points:
   signins: { schema: schemas/signins.json }
   setup_flows: { schema: schemas/setup_flows.json }
+  pages: { schema: schemas/pages.json }
 # The board's buckets and markers.
 labels:
   - { name: needs-review, color: "#d97706" }

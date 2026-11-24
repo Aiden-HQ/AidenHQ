@@ -1,0 +1,86 @@
+<!doctype html>
+<!-- An example module view (MCP Apps, text/html;profile=mcp-app), the shape a module's Fleet page takes: one self-contained file,
+     inline script and style only (the frame loads and sends nothing), themed by the host's style variables, calling only its
+     page's tools through the host. The mock API serves it as the "Notes" page (web/dev/mock-api.ts); a module serves its own
+     from its MCP connection as ui://<module>/<path>. docs/design/board-ui.md "Modules". -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; font-family: var(--font-sans, system-ui, sans-serif); font-size: 14px; color: var(--color-text-primary, CanvasText); background: transparent; }
+  body { margin: 0; padding: 0; display: grid; gap: 20px; }
+  h2 { margin: 0 0 8px; font-size: 15px; }
+  p { margin: 0; color: var(--color-text-secondary, GrayText); }
+  section { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--color-border-primary, GrayText); border-radius: var(--border-radius-md, 8px); background: var(--color-background-secondary, Canvas); }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: var(--border-radius-md, 8px); background: var(--color-background-primary, Canvas); border: 1px solid var(--color-border-primary, GrayText); }
+  li span { color: var(--color-text-secondary, GrayText); white-space: nowrap; }
+  form { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+  label { display: grid; gap: 4px; color: var(--color-text-secondary, GrayText); }
+  input { font: inherit; padding: 6px 10px; width: 8em; border-radius: var(--border-radius-md, 8px); border: 1px solid var(--color-border-primary, GrayText); background: var(--color-background-primary, Canvas); color: inherit; }
+  button { font: inherit; padding: 6px 14px; border-radius: var(--border-radius-md, 8px); border: 0; background: var(--color-ring-primary, Highlight); color: var(--color-text-inverse, HighlightText); cursor: pointer; }
+  .error { color: var(--color-text-danger, red); }
+</style>
+</head>
+<body>
+<section>
+  <h2>Recent notes</h2>
+  <p id="state">Loading…</p>
+  <ul id="notes"></ul>
+</section>
+<section>
+  <h2>Settings</h2>
+  <form id="configure">
+    <label>Notes to keep <input id="limit" type="number" min="1" max="100" value="20" required></label>
+    <button type="submit">Propose</button>
+  </form>
+  <p id="said"></p>
+</section>
+<script>
+  // The view's half of the MCP Apps bridge: JSON-RPC 2.0 over postMessage to the host (window.parent).
+  let next = 1;
+  const waiting = new Map();
+  const send = (method, params) => new Promise((ok, ko) => { const id = next++; waiting.set(id, { ok, ko }); parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*"); });
+  const notify = (method, params) => parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  const theme = (ctx) => { for (const [k, v] of Object.entries(ctx?.styles?.variables ?? {})) if (v) document.documentElement.style.setProperty(k, v); if (ctx?.theme) document.documentElement.style.colorScheme = ctx.theme; };
+  addEventListener("message", (e) => {
+    if (e.source !== parent) return;
+    const m = e.data;
+    const w = waiting.get(m?.id);
+    if (!w) return;
+    waiting.delete(m.id);
+    m.error ? w.ko(new Error(m.error.message)) : w.ok(m.result);
+  });
+  const tool = async (name, args) => { const r = await send("tools/call", { name, arguments: args }); if (r?.isError) throw new Error(r.content?.[0]?.text ?? "failed"); return r; };
+  const size = () => { const r = document.body.getBoundingClientRect(); notify("ui/notifications/size-changed", { width: Math.ceil(r.width), height: Math.ceil(r.height) }); };
+  new ResizeObserver(size).observe(document.body);
+
+  async function load() {
+    const state = document.getElementById("state"), list = document.getElementById("notes");
+    try {
+      const r = await tool("example_notes", {});
+      const notes = r.structuredContent?.notes ?? [];
+      state.textContent = notes.length ? "" : "No notes yet.";
+      list.replaceChildren(...notes.map((n) => { const li = document.createElement("li"); li.append(n.text); const s = document.createElement("span"); s.textContent = n.at; li.append(s); return li; }));
+    } catch (e) { state.textContent = e.message; state.className = "error"; }
+  }
+  document.getElementById("configure").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const said = document.getElementById("said");
+    try {
+      const r = await tool("example_configure", { limit: Number(document.getElementById("limit").value) });
+      said.textContent = r.content?.[0]?.text ?? "Proposed.";
+      said.className = "";
+    } catch (err) { said.textContent = err.message; said.className = "error"; }
+  });
+
+  (async () => {
+    const init = await send("ui/initialize", { appInfo: { name: "example", version: "1" }, appCapabilities: {}, protocolVersion: "2026-01-26" });
+    theme(init.hostContext);
+    notify("ui/notifications/initialized", {});
+    await load();
+  })();
+</script>
+</body>
+</html>

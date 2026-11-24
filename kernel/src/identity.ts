@@ -12,7 +12,9 @@ export type Connection = { url: string; auth_secret: string; module: string; ret
   /** The module may make model calls billed to the caller of a tool call in flight (its manifest says so; off by default). */
   model_as_caller?: boolean;
   /** The module's health probes (module.yaml `health_probes`): name -> one read tool with fixed arguments (health.ts). */
-  health_probes?: Record<string, { tool: string; args?: Record<string, unknown> }> };
+  health_probes?: Record<string, { tool: string; args?: Record<string, unknown> }>;
+  /** Its module's Fleet page views (module.yaml board.pages): view -> the tools it may call, as the owner (views.ts). */
+  views?: Record<string, string[]> };
 /** A read a job may hold on a connection (config/jobcaps.json): its tools. */
 export type Jobcap = { connection: string; tools: string[] };
 export type Identity = {
