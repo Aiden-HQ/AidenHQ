@@ -22,9 +22,8 @@ if (!(RUN_DAYS > 0) || !(ACTIVITY_DAYS > 0)) throw new Error("RUN_DAYS and ACTIV
 const OWNED = new Map([["heartbeat_run_events", ""], ["environment_leases", "AND lease_policy = 'ephemeral'"], ["workspace_operations", ""]]);
 const DATA = join(process.env.PAPERCLIP_HOME || "/paperclip", "instances/default/data");
 const LOGS = join(DATA, "run-logs"), OP_LOGS = join(DATA, "workspace-operation-logs");
-// The kernel's drain touches this file (retention.ts): the pass stops at its next check.
-const STOP = "/tmp/aidenhq-prune.stop";
-rmSync(STOP, { force: true });
+// The kernel's drain touches this pass's own file (retention.ts names it per pass): the pass stops at its next check.
+const STOP = process.env.STOP_FILE || "";
 const pgDir = process.env.PG_MODULE_DIR || "/app/node_modules/.pnpm/" + readdirSync("/app/node_modules/.pnpm").find((d) => d.startsWith("pg@")) + "/node_modules/pg";
 // import.meta.url of a module read from stdin is not a file URL: resolve `pg` from its own directory instead.
 const { Client } = createRequire(join(pgDir, "x.js"))(pgDir);
@@ -51,7 +50,7 @@ async function referrers(parent) {
 }
 
 const stats = { runs: 0, owned: {}, nulled: {}, workspaces: 0, activity: 0, logs: 0, stopped: null };
-const out = () => (stats.stopped = stats.stopped ?? (existsSync(STOP) ? "drain" : Date.now() > deadline ? "deadline" : null));
+const out = () => (stats.stopped = stats.stopped ?? (STOP && existsSync(STOP) ? "drain" : Date.now() > deadline ? "deadline" : null));
 
 // 1. Runs.
 const runRefs = await referrers("heartbeat_runs");
@@ -139,4 +138,5 @@ while (!out()) {
   await sleep(200);
 }
 await c.end();
+if (STOP) rmSync(STOP, { force: true });
 console.log(JSON.stringify(stats));

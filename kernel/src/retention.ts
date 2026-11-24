@@ -10,7 +10,8 @@
 //   checks   finished (not running), by ended: spec -> '{}' (a re-ask writes it again: checkjobs.ts start), result -> the
 //            expired marker (a re-ask of a result recipe runs it again). The receipt, verdict, hash and cost stay.
 // `expired` (ms) marks a cleared row and leaves a partial index, so each day's scan reads only what is newly due.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { inTx } from "./factlog.ts";
@@ -111,17 +112,21 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
 export function pruneIn(container: string, { stopping = (): boolean => false, run = spawn }: { stopping?: () => boolean; run?: typeof spawn } = {}): Promise<string> {
   const script = readFileSync(new URL("./paperclip-prune.mjs", import.meta.url));
   return new Promise((ok, no) => {
-    const child = run("docker", ["exec", "-i", "-e", `RUN_DAYS=${PAPERCLIP_RUN_DAYS}`, "-e", `ACTIVITY_DAYS=${PAPERCLIP_ACTIVITY_DAYS}`, "-e", "DEADLINE_MIN=45", container, "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
+    const stop = `/tmp/aidenhq-prune-${randomBytes(6).toString("hex")}.stop`;
+    const child = run("docker", ["exec", "-i", "-e", `STOP_FILE=${stop}`, "-e", `RUN_DAYS=${PAPERCLIP_RUN_DAYS}`, "-e", `ACTIVITY_DAYS=${PAPERCLIP_ACTIVITY_DAYS}`, "-e", "DEADLINE_MIN=45", container, "node", "--input-type=module", "-"], { stdio: ["pipe", "pipe", "pipe"] });
     let out = "", err = "";
     // The worker bounds itself (DEADLINE_MIN) and holds an advisory lock against a second pass; this only ends a hung docker client.
     const t = setTimeout(() => child.kill("SIGTERM"), 70 * 60_000);
-    // A drain: the worker's own stop file ends its pass at the next batch (killing the docker client would not).
-    const drain = setInterval(() => { if (stopping()) { clearInterval(drain); run("docker", ["exec", container, "touch", "/tmp/aidenhq-prune.stop"], { stdio: "ignore" }).on("error", () => {}); } }, 5_000).unref();
+    // A drain: this pass's own stop file ends its worker at the next batch (killing the docker client would not). Polled twice a
+    // second, and touched on exit too, since a drained kernel can exit before a poll.
+    const touch = () => spawnSync("docker", ["exec", container, "touch", stop], { stdio: "ignore", timeout: 10_000 });
+    const drain = setInterval(() => { if (stopping()) (clearInterval(drain), touch()); }, 500).unref();
+    process.once("exit", touch);
     child.stdin!.on("error", () => {}); // the docker client exited before reading the script: its exit code says so
     child.stdout!.on("data", (d) => (out += d));
     child.stderr!.on("data", (d) => (err += d));
-    child.on("error", (e) => (clearTimeout(t), clearInterval(drain), no(e)));
-    child.on("close", (code) => (clearTimeout(t), clearInterval(drain), code === 0 ? ok(out.trim().split("\n").pop() ?? "") : no(new Error(`exit ${code}: ${(err || out).trim().slice(0, 500)}`))));
+    child.on("error", (e) => (clearTimeout(t), clearInterval(drain), process.off("exit", touch), no(e)));
+    child.on("close", (code) => (clearTimeout(t), clearInterval(drain), process.off("exit", touch), code === 0 ? ok(out.trim().split("\n").pop() ?? "") : no(new Error(`exit ${code}: ${(err || out).trim().slice(0, 500)}`))));
     child.stdin!.end(script);
   });
 }
