@@ -17,7 +17,7 @@ export type Judged = { ok: boolean; why: string; ask?: boolean; safe: SafeClass 
 /** GitHub's compare lists at most 300 files: past that the change can't be read whole. */
 const COMPARE_CAP = 300;
 const TESTS = ["**/test/**", "**/tests/**", "**/__tests__/**", "**/testdata/**", "**/fixtures/**", "**/*.test.*", "**/*.spec.*", "**/*_test.go", "**/test_*.py"];
-const DOCS = ["**/*.md", "**/*.mdx", "**/*.rst", "**/docs/**", "**/LICENSE*", "**/CHANGELOG*"];
+const DOCS = ["**/*.md", "**/*.mdx", "**/*.rst", "**/LICENSE*", "**/CHANGELOG*"];
 const MANIFESTS = ["package.json", "go.mod", "Cargo.toml", "pyproject.toml"];
 const hit = (path: string, globs: string[]) => globs.some((g) => posix.matchesGlob(path, g));
 const isGenerated = (f: ChangedFile, generated: string[]) => LOCKFILES.includes(posix.basename(f.filename)) || hit(f.filename, generated);

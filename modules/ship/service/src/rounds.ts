@@ -148,8 +148,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     if (qn.act === "fix_ci") { v = { do: "fix_ci", why: "a required check failed on its merge queue run" }; f = { ...f, failing: qn.failing }; facts.failing = qn.failing; facts.onBase = f.onBase ?? []; viaQueue = true; qn = undefined; }
   }
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
-  // A wait is said again when its approval line changes (observe: code review passed meanwhile); every other action once per head.
-  const key = v.do === "wait" && facts.approval ? `${pr.head}:wait:${facts.approval}` : `${pr.head}:${v.do}`;
+  // A wait is said again when what it waits on, or its approval line, changes; every other action once per head.
+  const key = v.do === "wait" ? `${pr.head}:wait:${v.why ?? ""}:${facts.approval ?? ""}` : `${pr.head}:${v.do}`;
   const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true);
   // A fix already asked for at this head is not asked again after a `wait` in between (a CI re-run with no push).
   const fix = ["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty);
@@ -165,12 +165,13 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     switch (v.do) {
       case "repair": {
         if (!s.fix.includes("conflicts")) return hold("it needs a repair, and this repo's `fix` setting excludes conflicts");
+        // A fork's branch takes ship's writes (update-branch too) only where its author allows maintainer edits.
+        if (pr.fork && !pr.canModify) return hold(noEdits);
         if (!f.dirty) {
           await d.updateBranch(pr.repo, pr.number, pr.head);
           a = { ...a!, did: [...(a!.did ?? []), `updated the branch with \`${pr.defaultBranch}\``] };
           return "acted";
         }
-        if (pr.fork && !pr.canModify) return hold(noEdits);
         // A conflict: ship's repair check job (no model) first, as github's `repair` effect; the Engineer gets only what it leaves.
         if (a!.repair?.head === pr.head) {
           const r = await d.kernel.call("GET", `/v1/writes/${a!.repair.record}`);
@@ -289,7 +290,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         const attempt = a!.approve?.head === pr.head ? a!.approve.attempt + 1 : 1;
         let r: any;
         try {
-          r = await d.kernel.call("POST", "/v1/writes", { kind: "github.approve", ...(a!.task ? { task: a!.task } : {}), args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base } });
+          // A reviewed approval needs a task: the Engineer's, or the adoption's quiet records task.
+          const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
+          if (holder) a = { ...a!, holder };
+          r = await d.kernel.call("POST", "/v1/writes", { kind: "github.approve", task: a!.task ?? a!.holder, args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base } });
         } catch (e) {
           const text = String((e as Error).message);
           if (NO_APP.test(text)) return person(text);
