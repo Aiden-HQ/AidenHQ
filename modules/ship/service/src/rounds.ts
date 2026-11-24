@@ -4,7 +4,7 @@
 // the repo's settings exclude, the PR goes on hold with the reason, its author assigned once, and the report says so.
 // The loop (loop.ts) calls round() after intake() for each adopted PR it read, with decide's answer and this pass's facts.
 import type { Discovered } from "./discover.ts";
-import { fileTask, type Kept, type PrView } from "./handoff.ts";
+import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { renderReport, type Facts } from "./report.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
@@ -59,8 +59,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   if (pr.state === "merged" && v.do === "done") {
     if (a.counters?.lastRound !== `${pr.head}:done`) {
       // Closed before it is recorded: a close that failed is tried again next pass (an already-closed task answers ok).
-      if (a.task && a.trigger.kind !== "fleet") {
-        try { await d.kernel.call("POST", `/v1/tasks/${a.task}/close`, { status: "done", body: `${pr.url} is merged.` }); } catch (e) {
+      for (const t of tasksOf(a)) {
+        try { await d.kernel.call("POST", `/v1/tasks/${t}/close`, { status: "done", body: `${pr.url} is merged.` }); } catch (e) {
           d.log("task close failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
           return "nothing";
         }
@@ -156,7 +156,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         const retry = a!.repair?.head === pr.head;
         const held = spend();
         if (held) return held;
-        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.repair", ...(a!.task ? { task: a!.task } : {}), args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, plan: repairPlan(s, f.discovered), ...(retry ? { attempt: 2 } : {}) } });
+        const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
+        if (holder) a = { ...a!, holder };
+        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.repair", task: a!.task ?? a!.holder, args: { repo: pr.repo, number: pr.number, head: pr.head, generation: a!.generation, base: pr.base, plan: repairPlan(s, f.discovered), ...(retry ? { attempt: 2 } : {}) } });
         a = { ...a!, repair: { head: pr.head, record: String(r.id), ...(retry ? { retried: true } : {}) }, did: [...(a!.did ?? []), `ran the repair (merge \`${pr.defaultBranch}\`, regenerate) at \`${pr.head.slice(0, 12)}\``] };
         return "acted";
       }
@@ -199,7 +201,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           c.rounds++;
         }
         const attempt = a!.merge?.head === pr.head ? a!.merge.attempt + 1 : 1;
-        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.merge", ...(a!.task ? { task: a!.task } : {}), args: { prs: [{ repo: pr.repo, number: pr.number, head: pr.head, base: pr.base }], generation: a!.generation, attempt } });
+        // A reviewed merge needs a task: the Engineer's, or the adoption's quiet records task.
+        const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);
+        if (holder) a = { ...a!, holder };
+        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.merge", task: a!.task ?? a!.holder, args: { prs: [{ repo: pr.repo, number: pr.number, head: pr.head, base: pr.base }], generation: a!.generation, attempt } });
         a = { ...a!, merge: { head: pr.head, attempt, record: String(r.id) }, did: [...(a!.did ?? []), `asked to merge at \`${pr.head.slice(0, 12)}\` (attempt ${attempt})`] };
         return "acted";
       }

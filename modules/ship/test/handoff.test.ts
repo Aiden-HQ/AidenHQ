@@ -47,7 +47,7 @@ function world(raw: Record<string, unknown> = { repos: { "a/b": "cautious" } }) 
   const ev = (id: string, kind: "labeled" | "unlabeled" | "comment", actor: string, at: string, o: Record<string, unknown> = {}) => ({ id, kind, actor, bot: actor.endsWith("[bot]"), at, ...(kind !== "comment" ? { label: "ship" } : {}), ...o });
   const of = (what: string) => calls.filter((c) => c.what === what);
   // The jobs the Engineer got: the first files the adoption's task, the rest wake it.
-  const jobs = () => calls.filter((c) => c.what === "POST /v1/tasks" || c.what === "POST /v1/wakes").map((c) => String((c.body as any).description ?? (c.body as any).text));
+  const jobs = () => calls.filter((c) => (c.what === "POST /v1/tasks" && !String((c.body as any).source).endsWith(":records")) || c.what === "POST /v1/wakes").map((c) => String((c.body as any).description ?? (c.body as any).text));
   return { state, calls, records, deps, pr, ev, of, jobs };
 }
 
@@ -76,8 +76,8 @@ test("a fork waits for a member: then it is adopted and code review is asked onc
   const p = w.pr({ ...fork, events: [w.ev("c1", "comment", "outsider", "2026-11-24T01:00:00Z", { body: "/ship" }), w.ev("c2", "comment", "writer", "2026-11-24T01:01:00Z", { body: "/ship" })] });
   assert.equal((await intake(w.deps, p))?.trigger.actor, "writer");
   await intake(w.deps, p);
-  assert.deepEqual(w.of("ask").map((c) => [c.url, c.task]), [["https://github.com/a/b/pull/7", "task-ship:a/b/7:1"]]);
-  assert.deepEqual(w.of("POST /v1/tasks").map((c) => [(c.body as any).source, (c.body as any).role, (c.body as any).quiet]), [["ship:a/b/7:1", "platform-engineer", true]]);
+  assert.deepEqual(w.of("ask").map((c) => [c.url, c.task]), [["https://github.com/a/b/pull/7", "task-ship:a/b/7:1:records"]]);
+  assert.deepEqual(w.of("POST /v1/tasks").map((c) => [(c.body as any).source, (c.body as any).role, (c.body as any).quiet]), [["ship:a/b/7:1:records", "platform-engineer", true]]);
 });
 
 test("a hand-back is sticky with the label still on; re-adding it starts generation 2", async () => {
@@ -128,7 +128,7 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   const dirty = { dirty: true, discovered: { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }], ambiguous: [] } };
   await round(w.deps, w.pr(), { do: "repair", why: "it conflicts with `main`" }, dirty);
   await round(w.deps, w.pr(), { do: "repair", why: "it conflicts with `main`" }, dirty);
-  assert.deepEqual(w.of("POST /v1/writes").map((c) => c.body), [{ kind: "github.repair", args: { repo: "a/b", number: 7, head: H1, generation: 1, base: "main", plan: { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }] } } }]);
+  assert.deepEqual(w.of("POST /v1/writes").map((c) => c.body), [{ kind: "github.repair", task: "task-ship:a/b/7:1:records", args: { repo: "a/b", number: 7, head: H1, generation: 1, base: "main", plan: { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }] } } }]);
   assert.equal(w.jobs().length, 0, "the repair runs before any Engineer");
   // It left real conflicts: the Engineer is woken once, with no path from the PR in the text.
   w.records["rec-1"] = { state: "failed", outcome: { text: "ship-leftovers: merging `main` into … leaves conflicts no generator rewrites:\nleftover: src/a.ts" } };
@@ -179,5 +179,18 @@ test("a conflict runs ship's repair job first and wakes the Engineer only for wh
   await round(g.deps, g.pr({ fork: true }), { do: "repair" }, { dirty: true });
   assert.match(String((g.state.get("a/b", 7) as any).hold.reason), /maintainer edits/);
   assert.equal(g.of("POST /v1/writes").length, 0);
-  assert.equal(g.jobs().length, 1, "only the fork's adoption task: its review summary lands there");
+  assert.equal(g.jobs().length, 0, "no Engineer: the fork's review summary lands on its quiet records task");
+});
+
+test("a clean, green hand-off with no Engineer task merges directly, its record on a quiet records task", async () => {
+  const w = world();
+  await intake(w.deps, w.pr({ events: [w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z")] }));
+  await round(w.deps, w.pr(), { do: "merge", why: "ready" });
+  assert.equal(w.jobs().length, 0, "no Engineer");
+  assert.deepEqual(w.of("POST /v1/tasks").map((c) => [(c.body as any).source, (c.body as any).quiet]), [["ship:a/b/7:1:records", true]]);
+  assert.deepEqual(w.of("POST /v1/writes").map((c) => c.body), [{ kind: "github.merge", task: "task-ship:a/b/7:1:records", args: { prs: [{ repo: "a/b", number: 7, head: H1, base: "main" }], generation: 1, attempt: 1 } }]);
+  // github's check before the write names that same task.
+  assert.equal(generationOf(w.state, false, "a/b", 7).task, "task-ship:a/b/7:1:records");
+  await round(w.deps, w.pr({ state: "merged" }), { do: "done", why: "already merged" });
+  assert.equal(w.of("POST /v1/tasks/task-ship:a/b/7:1:records/close").length, 1);
 });
