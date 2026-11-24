@@ -110,22 +110,23 @@ export function areaOf(text: string | undefined) {
   return { name: String(j.name ?? j.id ?? "an area").slice(0, 80), paths };
 }
 
-/** What a rerun's area check reads first: the area's files changed since they were last reviewed, then those never reviewed (spec.unseen, ordered). The rest of the area stays in the checkout as context. */
-export function unseenFocus(raw: string | undefined) {
+/** What a rerun's area check reads first (spec.unseen, ordered): the area's files changed since they were last reviewed, then those never reviewed. The rest of the area stays in the checkout as context. */
+export function readFirst(raw: string | undefined): { files: string[]; changed: number; more: number } | undefined {
   let u: { files?: unknown; changed?: unknown; more?: unknown };
-  try { u = JSON.parse(raw || "{}"); } catch { return ""; }
+  try { u = JSON.parse(raw || "{}"); } catch { return undefined; }
   const files = Array.isArray(u.files) ? u.files.filter((f): f is string => typeof f === "string") : [];
-  if (!files.length) return "";
-  const changed = Number.isInteger(u.changed) ? Math.min(Number(u.changed), files.length) : 0, more = Number.isInteger(u.more) ? Number(u.more) : 0;
-  return `Read these files of this area first, each one in full, in this order (${changed} changed since they were last reviewed, then ${files.length - changed} never reviewed). ${more ? `${more} more such files are left off this list and still need review after them; every other file was covered by earlier reviews and is context.` : "Every other file of the area was covered by earlier reviews and is context."}\n${files.join("\n")}`;
+  if (!files.length) return undefined;
+  return { files, changed: Number.isInteger(u.changed) ? Math.min(Number(u.changed), files.length) : 0, more: Number.isInteger(u.more) ? Number(u.more) : 0 };
 }
 
 /** The files with a rerun's unseen ones first (the engines that submit files in turn under one deadline reach them before the rest). */
 export function priority(files: string[], raw: string | undefined) {
   let u: { files?: unknown } = {};
   try { u = JSON.parse(raw || "{}"); } catch { /* none */ }
-  const first = new Set(Array.isArray(u.files) ? u.files : []);
-  return first.size ? [...files.filter((p) => first.has(p)), ...files.filter((p) => !first.has(p))] : files;
+  // In the order given (changed first, then never reviewed), not the file list's.
+  const have = new Set(files), first = [...new Set(Array.isArray(u.files) ? u.files.filter((p): p is string => typeof p === "string" && have.has(p)) : [])];
+  const head = new Set(first);
+  return first.length ? [...first, ...files.filter((p) => !head.has(p))] : files;
 }
 
 /** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. `paths`: the only
@@ -371,7 +372,7 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     return !!p && p.path === f.path && RANK[p.severity] <= RANK[f.severity] && (f.severity !== "important" || !combo.mandatory || p.gating);
   };
 
-  const instructions = brief({ root: ws, guides, checks, focus: [cap(spec.focus, 2000), tree ? unseenFocus(spec.unseen) : ""].filter(Boolean).join("\n\n"), intent: tree ? "" : cap(spec.intent, 2000), excluded, incremental: !full, addressed, reported: previous,
+  const instructions = brief({ root: ws, guides, checks, focus: cap(spec.focus, 2000), readFirst: tree ? readFirst(spec.unseen) : undefined, intent: tree ? "" : cap(spec.intent, 2000), excluded, incremental: !full, addressed, reported: previous,
     ...(area ? { area: { name: area.name, files: reviewed.length } } : {}), ...(tree && spec.area_map && spec.area_map !== "{}" ? { areaMap: spec.area_map } : {}) });
   const scratch = mkdtempSync(join(out, "home", "review-"));
   const minutes = Number(process.env.REVIEW_MINUTES || 20);

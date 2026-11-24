@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { decode, plan, FILES_MAX } from "../recipe/plan.ts";
-import { unseenFocus } from "../recipe/review.ts";
+import { readFirst, priority } from "../recipe/review.ts";
+import { brief } from "../recipe/brief.ts";
 import { review } from "../recipe/review.ts";
 import { readConfig } from "../service/src/config.ts";
 import { createEngine } from "../service/src/engine.ts";
@@ -194,7 +195,13 @@ test("a rerun reviews only the areas with a changed file and shows the rest as u
   assert.deepEqual(again.ran, ["a02"], "only the changed area is reviewed again");
   assert.equal(started[2].unseen, undefined, "a first review has nothing to focus on");
   assert.deepEqual(started.at(-1).unseen, { files: ["web/c.tsx"], changed: 1, more: 0 }, "the rerun's focus is the files changed since they were last read, then the never-read ones");
-  assert.match(unseenFocus(JSON.stringify(started.at(-1).unseen)), /\(1 changed since .*then 0 never reviewed\).*context\.\nweb\/c\.tsx$/);
+  const first = readFirst(JSON.stringify(started.at(-1).unseen));
+  assert.deepEqual(first, { files: ["web/c.tsx"], changed: 1, more: 0 });
+  const text = brief({ guides: [], checks: "", focus: "", excluded: [], incremental: false, addressed: false, readFirst: first }, "M");
+  assert.match(text, /Read the files listed below first, each one in full, in the\norder given \(1 changed since they were last reviewed, then 0 never reviewed\)/);
+  assert.match(text, /M\nweb\/c\.tsx\nM/);
+  // The engine queue keeps the given order (changed first), not the file list's.
+  assert.deepEqual(priority(["a.ts", "z.ts", "m.ts"], JSON.stringify({ files: ["z.ts", "a.ts"] })), ["z.ts", "a.ts", "m.ts"]);
   const md = engine.report(again.b.batch);
   assert.match(md, /cor\.review: ran \(1 of 1 areas reviewed, 1 unchanged since 1111111 \(2026-11-24\)\)/);
   assert.match(md, /bug in svc\/a\.ts/, "the unchanged area's open finding stays");
