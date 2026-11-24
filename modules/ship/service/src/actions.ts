@@ -20,7 +20,7 @@ export const STEP_WAIT_MS = 30 * 60_000;
 
 /** The stage a round's decision needs, if any. */
 export function stageOf(v: string, dirty?: boolean): Stage | undefined {
-  return v === "repair" ? (dirty ? "conflict" : "behind") : v === "merge" ? "before_merge" : undefined;
+  return v === "repair" ? (dirty ? "conflict" : "behind") : v === "merge" || v === "enqueue" ? "before_merge" : undefined;
 }
 
 const label = (x: ActionStep) => ("comment" in x ? `posted \`${x.comment}\`` : `ran the \`${x.workflow}\` workflow`);

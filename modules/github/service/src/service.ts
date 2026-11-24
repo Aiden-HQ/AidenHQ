@@ -39,7 +39,7 @@ import { fileContext, numstat } from "./review-files.ts";
 type Changed = { path: string; add?: number; del?: number };
 import { SOURCE_EXCEPTIONS_FILE, readCardSourceExceptions } from "./sources.ts";
 import { candidatesOf, readSiblings } from "./siblings.ts";
-import { notePrTask } from "./pr-watch.ts";
+import { notePrTask } from "./pr-tasks.ts";
 
 import { createDesignReviews, startDesignReviewSweep } from "./design-review.ts";
 import { packBundle, type OpsContext } from "./ops.ts";
@@ -312,7 +312,21 @@ export function createService(o: Options) {
   const pushedHeads = (): string[] => (existsSync(pushed) ? JSON.parse(readFileSync(pushed, "utf8")) : []);
   const pushedKey = (repo: string, sha: string) => `${repo.toLowerCase()} ${sha}`;
   const notePushed = (repo: string, sha: string) => writeFileSync(pushed, JSON.stringify([...pushedHeads().slice(-4999), pushedKey(repo, sha)]));
-  // Which task opened each PR this code host opened (pr-watch.ts notePrTask): the task's sibling PRs for the reviewer.
+  // Which task opened each PR this code host opened (pr-tasks.ts notePrTask): the task's sibling PRs for the reviewer.
+  // The merges ship filed itself (a fleet PR's plain merge), noted at plan time: the kernel's execute call carries no requester, and
+  // the merge queue stops these when ship is paused, its repo is off or the task is cancelled (merges.ts). Keyed repo#n@head.
+  const shipMergesFile = join(o.cacheDir, "ship-merges.json");
+  const shipMerges = (): Record<string, string> => { try { return JSON.parse(readFileSync(shipMergesFile, "utf8")); } catch { return {}; } };
+  const noteShipMerge = (key: string) => {
+    const keep = Object.fromEntries(Object.entries(shipMerges()).filter(([, at]) => Date.now() - Date.parse(at) < 7 * 86_400_000));
+    writeFileSync(`${shipMergesFile}.tmp`, JSON.stringify({ ...keep, [key]: new Date().toISOString() }));
+    renameSync(`${shipMergesFile}.tmp`, shipMergesFile);
+  };
+  const mergeKey = (repo: string, n: number, head: string) => `${repo.toLowerCase()}#${n}@${head}`;
+  const filedByShip = (rec: { args?: unknown }) => {
+    const p = (rec.args as { prs?: { repo?: string; number?: number; head?: string }[]; generation?: unknown } | undefined);
+    return p?.generation === undefined && (p?.prs ?? []).some((x) => Boolean(shipMerges()[mergeKey(String(x.repo), Number(x.number), String(x.head))]));
+  };
   const prTasks = (): Record<string, { task?: string; branch?: string }> => { try { return JSON.parse(readFileSync(join(o.cacheDir, "pr-tasks.json"), "utf8")); } catch { return {}; } };
   const isPlatform = (requester?: { roles?: string[] }) => (requester?.roles ?? []).includes("platform-engineer");
 
@@ -350,7 +364,7 @@ export function createService(o: Options) {
     }
     // A write for an adopted PR (ship): the PR as GitHub has it now and ship's adoption, never the args.
     const filedOn = [String(task ?? ""), String(a.workspace ?? "")].filter(Boolean);
-    const byShip = requester?.kind === "module" ? requester.module === SHIP : (requester as { filed_by?: string } | undefined)?.filed_by === SHIP;
+    const byShip = requester?.kind === "module" && requester.module === SHIP;
     const adoption = async (repo: string, number: number, generation: unknown, expected: unknown, pr: any, bound?: unknown): Promise<Ship> => {
       if (!Number.isInteger(generation) || typeof expected !== "string") throw fail(400, "a write for an adopted PR names its generation and the head it expects");
       const at = o.ship ? await o.ship.generation(repo, number) : undefined;
@@ -422,6 +436,7 @@ export function createService(o: Options) {
           bases.push({ repo: s.slug, base: String(pr.base?.ref ?? ""), read: (path) => git(into.dir, ["show", `${into.sha}:${path}`]), dir: into.dir, tip: into.sha });
         }
         own.add(`${s.slug.toLowerCase()}#${Number(p.number)}`);
+        if (merge && byShip && a.generation === undefined && typeof p.head === "string") noteShipMerge(mergeKey(s.slug, Number(p.number), p.head));
         prs.push({
           repo: s.slug, number: Number(p.number), head: pr.head?.sha, base: pr.base?.sha, headMatches: !p.head || p.head === pr.head?.sha,
           files, checks: await checksAt(s, pr.head?.sha),
@@ -472,7 +487,8 @@ export function createService(o: Options) {
       bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
       // The commits go onto the PR's own head branch (GitHub's name for it, a fork's too); the box's branch only carries them.
       const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: String(onto.pr?.head?.ref ?? "") } : undefined;
-      branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
+      // An adopted PR's push is planned against where it lands (the PR's head branch), never the box's local branch name.
+      branches.push({ repo: s.slug, branch: ship ? ship.branch : b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
     return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, changed, bases, own, task: String(a.workspace ?? "") };
@@ -505,7 +521,7 @@ export function createService(o: Options) {
     },
     async execute(rec) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
-      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier);
+      if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier, filedByShip(rec));
       // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
       if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
       // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
@@ -560,7 +576,7 @@ export function createService(o: Options) {
               : await api("POST", `/repos/${s.slug}/pulls`, { ...opened, head: b.branch, base: def });
             done.push(pr.html_url ?? `${s.slug}#${pr.number}`);
             if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
-            if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // the PR watch wakes the task that opened it
+            if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch }); // ship wakes the task that opened it
             if (pr.number) {
               // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
               const n = Number(pr.number);
@@ -580,7 +596,7 @@ export function createService(o: Options) {
         return { ok: true, text: `${action === "pr" ? "PRs" : "Pushed"}: ${done.join(", ")}`, objects };
       }
       // An approved merge is a queue (merges.ts): its outcome comes when every PR merged at its bound head, or the queue stopped.
-      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier, rec.tier);
+      if (action === "merge") return merges.enqueue(rec.id, a, rec.task, rec.identifier, rec.tier, filedByShip(rec));
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
@@ -716,8 +732,9 @@ export function createService(o: Options) {
       // git's own merge: its tree, and the paths it couldn't merge (exit 1 is "conflicts", still a tree).
       const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", a.head, baseSha], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
       const [merged, ...conflicted] = out.split("\0").filter(Boolean);
-      // A generated path (the plan's globs), or a lockfile git couldn't merge (its package manager rewrote it).
-      const allowed = (p: string) => globs.some((re: RegExp) => re.test(p)) || (REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) && conflicted.includes(p));
+      // A generated path (the plan's globs), or a lockfile only where git couldn't merge it (its package manager rewrote it), even
+      // when a glob names lockfiles.
+      const allowed = (p: string) => (REPAIR_LOCKS.includes(p.slice(p.lastIndexOf("/") + 1)) ? conflicted.includes(p) : globs.some((re: RegExp) => re.test(p)));
       const refuse = (why: string) => ({ ok: false, text: `ship-refused: the repair of ${url} ${why}: nothing was changed.` });
       const taken = new Set<string>();
       await g(["read-tree", merged!]);
@@ -1019,12 +1036,14 @@ export function createService(o: Options) {
    */
   async function stillApproved(r: Held): Promise<boolean> {
     if (!r.asker) return false;
-    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
-      .then(({ state, facts }) => planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }>)
+    const planned = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
+      .then(({ state, facts }) => ({ branches: (state as { branches?: { branch: string }[] }).branches ?? [], targets: planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }> }))
       .catch((e) => { if (disconnected(e)) throw e; return undefined; });
-    if (!targets) return false;
+    if (!planned) return false;
+    const { targets, branches } = planned;
     const want = [
-      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b) => [`${slugOf(b.repo).slug} ${b.branch}`, b.sha] as const),
+      // Keyed as the plan keys its targets: the planned branch (an adopted PR's push lands on its head ref, not the box's branch).
+      ...((r.args?.only ?? []) as { repo: string; branch: string; sha: string }[]).map((b, i) => [`${slugOf(b.repo).slug} ${branches[i]?.branch ?? b.branch}`, b.sha] as const),
       ...((r.args?.prs ?? []) as { repo: string; number: number; head?: string }[]).filter((p) => p.head).map((p) => [`${slugOf(p.repo).slug}#${Number(p.number)}`, p.head!] as const),
     ];
     return want.every(([k, sha]) => targets[k]?.commit === sha);
@@ -1082,6 +1101,7 @@ export function createService(o: Options) {
   const merges = createMerges({
     ship: o.ship,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
+    taskStatus: async (task) => String(((await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`)) as { status?: unknown })?.status ?? "") || null,
     // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
     identifierOf: async (record) => {
       // A record that is gone (404) has no identifier to find; any other failure is transient (the kernel restarting), and the
@@ -1487,5 +1507,7 @@ export function createService(o: Options) {
     flow,
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
+    /** Ship's round decision for an adopted PR (merges.ts decision), for /internal/ship/decision. */
+    shipDecision: (repo: string, number: number, head: string) => merges.decision(repo, number, head),
   });
 }

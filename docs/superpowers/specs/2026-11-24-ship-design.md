@@ -100,7 +100,7 @@ outside them is adopted only once it has an explicit `ship` entry, so quiet star
 | `generated` | discovered | discovered | `{ globs, commands }` overrides; see §3 |
 | `fix` | `[conflicts, ci, review]` | same | What the Engineer may work on |
 | `protected` | lockfiles, `.github/**`, test and lint config, CODEOWNERS | `[]` | A model fix touching these goes on `hold`. Deterministic repair may still regenerate lockfiles |
-| `caps` | `{ wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, review_rounds: 3, rounds: 30, usd: 5, requeue_on_timeout: 1 }` | all `null` | Per PR; `null` means unlimited. Past a cap the PR goes on `hold` |
+| `caps` | `{ wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 30, usd: 5, requeue_on_timeout: 1 }` | all `null` | Per PR; `null` means unlimited. Past a cap the PR goes on `hold` |
 | `approve` | `safe` | `all` | `off`; `observe` (the report says what it would do); `safe`; `all` |
 | `safe` | `{ max_lines: 1200, max_files: 50, deny: [<protected>, migrations, auth, config, infra globs] }` | n/a | The safe class (§5) |
 | `merge` | `ready` | `ready` | `off`: stop at ready. `ready`: merge when every gate passes |
@@ -236,6 +236,8 @@ one PR.
    - A real finding is fixed, with a test where it fits.
    - Anything else is declined with evidence through `code_review_resolve`.
    - The fix's independent review is code review's next run on the new head: no second reviewer loop.
+   - How many review and fix cycles a PR gets is code review's `push_rounds` (owner): ship has no review cap of its own and
+     fixes the findings of each review that runs.
 6. **The Engineer's rules** (the `ship` skill):
    - Never weaken a check to get green.
    - One commit per round.

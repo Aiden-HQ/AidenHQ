@@ -44,11 +44,11 @@ export function discover(files: Record<string, string>): Discovered {
     if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) continue;
     for (const job of jobsOf(text)) {
       if (!GEN_JOB.test(job.id) && !GEN_JOB.test(job.name)) continue;
-      const runs = job.runs.filter((r) => GEN_RUN.test(r));
-      // The command with its own arguments, up to the next shell operator (`go generate ./...`, not `go generate`). Quoting or
-      // expansion in it is beyond this reading: the Engineer proposes the command instead.
-      const cmd = runs.length === 1 ? /[^;&|]*/.exec(runs[0]!.slice(runs[0]!.search(GEN_RUN)))![0].trim() : "";
-      if (cmd && !/["'`$\\]/.test(cmd)) put(job.dir, cmd);
+      const runs = job.runs.filter((r) => GEN_RUN.test(r.cmd));
+      // The command with its own arguments, up to the next shell operator (`go generate ./...`, not `go generate`), in its own
+      // step's folder. Quoting or expansion in it is beyond this reading: the Engineer proposes the command instead.
+      const cmd = runs.length === 1 ? /[^;&|]*/.exec(runs[0]!.cmd.slice(runs[0]!.cmd.search(GEN_RUN)))![0].trim() : "";
+      if (cmd && !/["'`$\\]/.test(cmd)) put(runs[0]!.dir, cmd);
       else if (runs.length) ambiguous.push(`${path}: job ${job.id} ${runs.length > 1 ? `runs ${runs.length} generate commands` : "runs a generate command this can't read plainly"}`);
       else if (runs.length > 1) ambiguous.push(`${path}: job ${job.id} runs ${runs.length} generate commands`);
     }
@@ -94,16 +94,20 @@ function suggestions(files: Record<string, string>): Suggestion[] {
   return out;
 }
 
-/** A workflow's jobs, read just enough: each job's id, name, working directory and `run:` lines (one-line and block scalars). */
+/**
+ * A workflow's jobs, read just enough: each job's id, name and `run:` lines (one-line and block scalars), each with its own
+ * working directory (the step's `working-directory`, else the job's `defaults.run.working-directory`, else the root).
+ */
 function jobsOf(yaml: string) {
-  const jobs: { id: string; name: string; dir: string; runs: string[] }[] = [];
-  const lines = yaml.split("\n");
-  let inJobs = false, jobIndent = -1, cur: (typeof jobs)[number] | undefined, block: { indent: number } | undefined;
-  for (const raw of lines) {
+  type Step = { dir?: string; runs: string[] };
+  const jobs: { id: string; name: string; dir: string; steps: Step[]; runs: { cmd: string; dir: string }[] }[] = [];
+  let inJobs = false, jobIndent = -1, cur: (typeof jobs)[number] | undefined, step: Step | undefined, stepIndent = -1, inSteps = false, block: { indent: number } | undefined;
+  const clean = (d: string) => d.replace(/^\.\//, "").replace(/\/$/, "") || ".";
+  for (const raw of yaml.split("\n")) {
     const indent = raw.length - raw.trimStart().length;
     const line = raw.trim();
     if (block) {
-      if (line && indent > block.indent) { cur?.runs.push(line); continue; }
+      if (line && indent > block.indent) { step?.runs.push(line); continue; }
       if (!line) continue;
       block = undefined;
     }
@@ -112,19 +116,23 @@ function jobsOf(yaml: string) {
     if (indent === 0) { inJobs = false; continue; }
     if (jobIndent < 0 || indent === jobIndent) {
       const m = /^([\w-]+):\s*$/.exec(line);
-      if (m) { jobIndent = indent; cur = { id: m[1]!, name: "", dir: ".", runs: [] }; jobs.push(cur); continue; }
+      if (m) { jobIndent = indent; cur = { id: m[1]!, name: "", dir: ".", steps: [], runs: [] }; jobs.push(cur); step = undefined; stepIndent = -1; inSteps = false; continue; }
     }
     if (!cur) continue;
+    // The job's own keys: `steps:` opens its steps; any other key at that indent (needs, defaults, …) closes them.
+    if (indent === jobIndent + 2 && !line.startsWith("- ")) { inSteps = /^steps:\s*$/.test(line); step = undefined; stepIndent = -1; }
+    // A new step: a list item at the steps' indent, inside `steps:`.
+    if (inSteps && line.startsWith("- ") && (stepIndent < 0 || indent <= stepIndent) && indent > jobIndent + 2) { stepIndent = indent; step = { runs: [] }; cur.steps.push(step); }
     const name = /^name:\s*["']?(.+?)["']?\s*$/.exec(line);
     if (name && !cur.name && indent === jobIndent + 2) cur.name = name[1]!;
-    const wd = /^working-directory:\s*["']?(.+?)["']?\s*$/.exec(line);
-    if (wd) cur.dir = wd[1]!.replace(/^\.\//, "").replace(/\/$/, "") || ".";
+    const wd = /^(?:-\s+)?working-directory:\s*["']?(.+?)["']?\s*$/.exec(line);
+    if (wd) { if (step && indent >= stepIndent) step.dir = clean(wd[1]!); else cur.dir = clean(wd[1]!); }
     const run = /^(?:-\s+)?run:\s*(.*)$/.exec(line);
-    if (run) {
+    if (run && step) {
       if (/^[|>][-+]?$/.test(run[1]!.trim())) block = { indent };
-      else cur.runs.push(run[1]!.trim().replace(/^(["'])(.*)\1$/, "$2"));
+      else step.runs.push(run[1]!.trim().replace(/^(["'])(.*)\1$/, "$2"));
     }
   }
+  for (const j of jobs) j.runs = j.steps.flatMap((st) => st.runs.map((cmd) => ({ cmd, dir: st.dir ?? j.dir })));
   return jobs;
 }
-

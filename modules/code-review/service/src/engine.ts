@@ -1994,6 +1994,19 @@ export function createEngine(d: EngineDeps) {
     return reasons.length ? wait(...reasons) : { verdict: "pass", reasons: [] };
   }
 
+  /**
+   * What a verdict at `head` stands on (ship's approval evidence): `completed` when the head itself is covered (reviewed whole, or a
+   * bare rebase's review carried to it); `skipped` when a mandatory reviewer skipped it; else `exhausted`: the verdict stands on an
+   * earlier head's review (push rounds used up, no mandatory on_push, or a run failed past its retries). `reviewed` is the newest
+   * covered head, which ship compares the PR's own change against (a later head with the same change carries its review).
+   */
+  function evidence(repo: string, n: number, head: string): { reviewed: string | null; kind: "completed" | "exhausted" | "skipped" } {
+    const reviewed = one<{ head: string }>("SELECT head FROM covered WHERE repo = ? AND number = ? ORDER BY at DESC LIMIT 1", repo, n)?.head ?? null;
+    if (isCovered(repo, n, head)) return { reviewed: head, kind: "completed" };
+    const cfg = repoCfg(repo);
+    return { reviewed, kind: cfg && gateRuns(cfg, repo, n, head).some((r) => r.status === "skipped") ? "skipped" : "exhausted" };
+  }
+
   /** The owner's dismissal of an open finding (the board, in the owner's signed-in session). */
   function dismiss(b: { repo?: unknown; number?: unknown; id?: unknown; reason?: unknown; by?: unknown }) {
     const repo = String(b.repo ?? "").toLowerCase(), n = Number(b.number), id = String(b.id ?? "");
@@ -2073,6 +2086,7 @@ export function createEngine(d: EngineDeps) {
   return {
     tick,
     verdict,
+    evidence,
     dismiss,
     resolve,
     /** The PR's open important findings with their ids (what a merge wait's cut text may leave out). */
@@ -2101,6 +2115,15 @@ export function createEngine(d: EngineDeps) {
       const task = asker?.task && /^[A-Za-z0-9_-]{1,100}$/.test(asker.task) ? asker.task : undefined;
       const who: Asker | undefined = asker ? { requester: name || "an agent", ...(task ? { task } : {}) } : undefined;
       return queue(p, list, "oneoff", { full: b.full !== false, focus: (b.focus as string) || null, ...(who ? { asker: who } : {}) });
+    },
+    /** Ship's ask for a fresh review of an adopted PR's head (a model fix past the push review cap): the repo's opening reviewers,
+     * queued as a writer's `aiden review` is, so the run gates the merge and covers the head. Only at the head ship judged. */
+    async fresh(b: { pr_url?: unknown; head?: unknown }) {
+      const p = await readPr(b.pr_url);
+      if (p.head !== b.head) throw new RequestError(`the pull request is at ${p.head.slice(0, 12)}, not ${String(b.head).slice(0, 12)}`);
+      const cfg = repoCfg(p.repo);
+      if (!cfg || !gated(cfg)) throw new RequestError(`${p.repo} has no mandatory code review in its code_review setting`);
+      return queue(p, cfg.on_open, "command", { focus: prRow(p.repo, p.number)?.focus ?? null, moment: "open" });
     },
     runs(q: { repo?: string; status?: string; target?: string; limit?: number }) {
       const where: string[] = [], args: unknown[] = [];

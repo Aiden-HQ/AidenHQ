@@ -13,6 +13,9 @@ export interface Facts {
   waits?: string;
   /** Substantive changed lines and files (generated, lock, test and docs files not counted), and the areas' code owners. */
   lines?: number; files?: number; owners?: string[];
+  /** The safe-class verdict and why (safe.ts), and the App's approval line under the repo's `approve`. */
+  safe?: { safe: boolean; why: string };
+  approval?: string;
   /** Protected or denied paths the PR touches. */
   protectedHit?: string[];
   /** Code review's verdict on the head, and its open important findings. */
@@ -32,12 +35,16 @@ export function renderReport(a: Kept, pr: PrView, f: Facts): string {
   const held = a.hold && f.state !== "merged";
   lines.push(`**State:** ${held ? `on hold (${a.hold!.kind}): ${a.hold!.reason}` : f.state}`);
   if (f.waits && !a.hold) lines.push(`**Waiting on:** ${f.waits}`);
+  // Code owners stay human: the App's approval never stands for theirs, so the report is what they approve from.
+  if (f.waits && !a.hold && /code owner/.test(f.waits)) lines.push("A code owner approves it on GitHub: the risk facts below are written by code from the PR's change, and code review's verdict is on its head.");
+  if (f.approval) lines.push(`**Approval:** ${f.approval}`);
   const handed = a.trigger.kind === "fleet" ? "opened by the fleet" : a.trigger.kind === "all" ? `adopted (handoff: all, author @${a.trigger.actor})` : `handed over by @${a.trigger.actor} (${a.trigger.kind === "comment" ? "/ship" : "ship label"})`;
   lines.push(`**Hand-off:** ${handed}${pr.fork ? `; a fork${pr.canModify ? " that allows maintainer edits" : " without maintainer edits (ship can't push to it)"}` : ""}`);
   if (a.did?.length) lines.push("", "**What ship did**", ...a.did.slice(-10).map((d) => `- ${d}`));
   const risk: string[] = [];
   if (f.lines !== undefined || f.files !== undefined) risk.push(`- ${f.lines ?? "?"} substantive lines in ${f.files ?? "?"} files (generated, lock, test and docs files not counted)`);
   if (f.owners?.length) risk.push(`- Areas touched (code owners): ${f.owners.map((o) => `@${o.replace(/^@/, "")}`).join(", ")}`);
+  if (f.safe) risk.push(`- Safe class: ${f.safe.safe ? "inside" : "outside"} (${f.safe.why})`);
   if (f.protectedHit?.length) risk.push(`- Protected or denied paths: ${list(f.protectedHit)}`);
   if (f.review) risk.push(`- Code review: ${f.review.verdict}${f.review.open ? `, ${f.review.open} open important finding(s)` : ", no open important findings"}`);
   if (f.failing?.length) risk.push(`- Failing required checks: ${list(f.failing)}${f.onBase?.length ? `; also failing on \`${pr.defaultBranch}\`: ${list(f.onBase)}` : ""}`);

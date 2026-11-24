@@ -60,6 +60,10 @@ test("ship checkout fetches the PR's head by its sha; ship push files the fix on
   const fix = git(app, "rev-parse", "HEAD");
   assert.match((await aidenhq("ship", "push", link, head, "3")).stdout, /k-1: done/);
   assert.deepEqual(writes, [{ kind: "codehost.push", args: { only: [{ repo: "acme/app", branch: "ship-pr-7", sha: fix }], pr: { repo: "acme/app", number: 7 }, expected: head, generation: 3 } }]);
+  // The pushed fix lands as the App's commit (another sha): the next checkout moves on from it, as it isn't unpublished work.
+  const next = git(origin, "commit-tree", git(origin, "rev-parse", `${head}^{tree}`), "-p", head, "-m", "the App's commit");
+  assert.match((await aidenhq("ship", "checkout", link, next)).stdout, /ship-pr-7 is checked out/);
+  assert.equal(git(app, "rev-parse", "HEAD"), next);
   // Nothing on top of the head: nothing filed.
   git(app, "checkout", "-q", "-B", "ship-pr-7", head);
   await assert.rejects(aidenhq("ship", "push", link, head, "3"), (e: { code?: number }) => e.code === 2);

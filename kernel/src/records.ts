@@ -18,8 +18,7 @@ import type { ReviewContext } from "../sdk/src/executor.ts";
 
 export type State = "review" | "owner" | "approved" | "claimed" | "done" | "failed" | "rejected" | "stale" | "cancelled" | "unknown";
 /** `model`: a kernel job's model (its frozen authority), so the AI reviewer is never of the requester's family. */
-/** `filed_by`: the module that asked the kernel to file this agent's write for it (writes.fileOwnMerge): no caller waits inline, so its outcome goes to the task at any tier. */
-export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string; model?: string; filed_by?: string };
+export type Requester = { agent: string; key: string; name: string; roles: string[]; kind: string; task?: string; run?: string; module?: string; model?: string };
 /** The release updater's requester (writes.fileKernel): kind `kernel`, which no token yields (identity.ts: run, job, module). */
 export const UPDATER: Requester = { agent: "", key: "", name: "the release updater", roles: [], kind: "kernel" };
 /** The owner's typed settings change from the board (settings-change.ts), filed by the kernel: saved in his signed-in board session it is decided as his account at filing (computeTier `ownerSave`); otherwise no exemption in any rule (the caps hold). */
