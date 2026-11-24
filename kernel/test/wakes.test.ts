@@ -1249,3 +1249,17 @@ test("an older read never takes the mirror or the facts back past a newer one", 
   assert.equal(w.wakes.mirror("t1").status, "done");
   assert.equal(w.facts.forTask("t1").filter((f) => f.type === "task.status_changed").at(-1).data.to, "done");
 });
+
+test("a bulk update that gives more than a page of tasks one instant is read through by id", async () => {
+  const w = world();
+  w.issue("seed", { status: "todo" });
+  await w.wakes.poll();
+  w.tick(60_000);
+  const at = iso(Date.now() > 0 ? Date.parse(w.issues.seed.updatedAt) + 60_000 : 0);
+  for (let i = 0; i < 505; i++) w.issue(`chat-${String(i).padStart(3, "0")}`, { status: "done", labels: [{ name: "chat" }], updatedAt: at, completedAt: iso(Date.parse(at) - 1000) });
+  w.comments["chat-503"] = [{ id: "c1", body: "one more thing", authorUserId: "u1", authorAgentId: null, createdAt: iso(Date.parse(at) - 500) }];
+  w.tick(5000);
+  await w.wakes.poll();
+  assert.equal(w.issues["chat-503"].status, "todo", "the reply past the first page reopened its chat");
+  assert.ok(w.lists.some((q) => q.includes("sortField=id") && q.includes("updatedSince")), "the instant was read by id");
+});

@@ -819,9 +819,11 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
    *  the pass runs moves to the end of the order, where a later page or the next pass reads it, so none is skipped. */
   async function changes(company: string, joined: Map<string, number>, signal?: AbortSignal) {
     const cur = cursorOf(company), started = now();
-    let since = cur.since, offset = 0, complete = false, last: string | undefined, failedAt: number | undefined;
+    // `afterId`: a whole page inside one instant (a bulk update) can't be passed by time, so the rest of the pass reads every row
+    // changed since then by id instead (stable: a row updated meanwhile keeps its place, and a deleted one shifts nothing).
+    let since = cur.since, afterId: string | undefined, complete = false, last: string | undefined, failedAt: number | undefined;
     for (let page = 0; page < PAGES && !signal?.aborted; page++) {
-      const query = new URLSearchParams({ updatedSince: since, sortField: "updated", sortDir: "asc", limit: String(PAGE), ...(offset ? { offset: String(offset) } : {}) });
+      const query = new URLSearchParams({ updatedSince: since, limit: String(PAGE), ...(afterId === undefined ? { sortField: "updated", sortDir: "asc" } : { sortField: "id", sortDir: "asc", ...(afterId ? { afterId } : {}) }) });
       const l = await owner("GET", `/api/companies/${encodeURIComponent(company)}/issues?${query}`);
       if (l.status !== 200 || !Array.isArray(l.json)) { log("wake changes failed", { company, status: l.status }); break; }
       const rows = l.json as Issue[];
@@ -829,14 +831,15 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       for (const row of rows) {
         if (signal?.aborted) { cut = true; break; }
         if (!(await changed(row, joined, cur.floor)) && failedAt === undefined) failedAt = ms(row.updatedAt);
-        last = row.updatedAt;
+        // By id, rows come in no time order: a pass cut short resumes from where the id pass began.
+        if (afterId === undefined) last = row.updatedAt;
       }
       if (cut) break;
       if (rows.length < PAGE) { complete = true; break; }
+      if (afterId !== undefined) { afterId = rows.at(-1)!.id; continue; }
       const next = iso(ms(rows.at(-1)!.updatedAt) - 1);
-      // A whole page inside one instant (a bulk update): the same `since` is paged on by offset until the instant is passed.
-      if (ms(next) <= ms(since)) offset += PAGE;
-      else { since = next; offset = 0; }
+      if (ms(next) <= ms(since)) afterId = "";
+      else since = next;
     }
     // The cursor moves only past what was processed: to the pass's start on a complete pass, else to the last row it reached,
     // and never past a row whose record failed. Always with the overlap, never backwards.

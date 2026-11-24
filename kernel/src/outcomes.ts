@@ -12,6 +12,7 @@ import type { Finish } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { createOnce } from "./once.ts";
+import { wrote } from "./cplimit.ts";
 import { signature } from "../../services/paperclip-events/sign.js";
 import { heldRoles } from "./identity.ts";
 
@@ -70,7 +71,9 @@ export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30
       const signKey = postKey();
       if (!signKey) throw new OutcomeError(503, "no-post-key", "the kernel has no paperclip_post_key (setup generates it)");
       const p = { ...params, ts: Date.now() };
-      const r = await call(keyOf(agent), "POST", `/api/plugins/${PLUGIN}/actions/post`, { companyId, params: { ...p, sig: signature(signKey, companyId, agent, p) } });
+      // A write outside the shared readers (cplimit.ts): reads after it never share an answer begun before it.
+      wrote();
+      const r = await call(keyOf(agent), "POST", `/api/plugins/${PLUGIN}/actions/post`, { companyId, params: { ...p, sig: signature(signKey, companyId, agent, p) } }).finally(wrote);
       return { status: r.status, data: r.json?.data };
     },
   };

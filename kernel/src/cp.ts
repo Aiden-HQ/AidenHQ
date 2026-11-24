@@ -30,7 +30,7 @@ import type { Asserter } from "./assert.ts";
 import type { Checks } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
-import { MAX_ANSWER, readCapped, shareReads, TooLarge, TYPED, wrote } from "./cplimit.ts";
+import { MAX_ANSWER, readCapped, shareReads, TooLarge, TYPED } from "./cplimit.ts";
 import type { Connection, Grant, Whoami } from "./identity.ts";
 import type { Once } from "./once.ts";
 import { delegateIds, OutcomeError, type PluginPost } from "./outcomes.ts";
@@ -199,8 +199,7 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
       type Data = { comment: string | null; child: string | null; found: boolean; status: string | null };
       const refused = { r: undefined as { refused: string; details?: unknown } | undefined };
       const d = await viaPlugin(async () => ((r) => ({ ...r.value, found: r.value.found || r.again }))(await once(`cp:${op}`, async (retry): Promise<Data> => {
-        wrote();
-        const r = await plugin.post(agent, { ...params, ...(retry ? { again: true } : {}) }).finally(wrote);
+        const r = await plugin.post(agent, { ...params, ...(retry ? { again: true } : {}) });
         if (r.status >= 500 || !r.data) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}; retry the same write`);
         if (r.status >= 300) throw new OutcomeError(502, "bad_upstream", `the post action answered ${r.status}`);
         if (r.data.refused) { refused.r = r.data; throw new OutcomeError(409, "refused", r.data.refused); }
