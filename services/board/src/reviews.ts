@@ -162,8 +162,11 @@ export interface TreeBatch {
   published?: boolean;
   /** The options it ran with, by name. */
   option_names?: string[];
-  /** Each option's run, whose page lists its findings (the report may leave some out to fit Primer). */
-  runs?: { id: string; option: string; names?: string[]; status: RunStatus; important: number; nit: number; pre_existing: number }[];
+  /** Each option's run, whose page lists its findings (the report may leave some out to fit Primer); a per-area option has one
+   * per area of the batch's plan (`area`: its name), and the plan's own run is named "Area plan". */
+  runs?: { id: string; option: string; names?: string[]; status: RunStatus; important: number; nit: number; pre_existing: number; area?: string; cost_usd?: number }[];
+  /** How many areas its plan split the repo into (absent: no plan). */
+  areas?: number;
 }
 export const TreeRequestSchema = z
   .object({

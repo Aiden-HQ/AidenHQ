@@ -84,15 +84,19 @@ function shards(findings: unknown[]): Record<string, string> {
  * A tree review has no merge base: base and incremental_from are its head (the recipe diffs against the empty tree), and pr is
  * empty. option and lens are the catalog option's (empty for a combo); setup_files a pending deepsec setup branch's files.
  * `code-review-tools` (the selected tool options, token-free): the base (a tree's: the commit itself) and the options (toolSpec).
+ * `code-review-plan` (a repo review's area plan): the commit, the planner's model and the catalog's stack tags with their globs.
+ * A repo review's area run carries its area ({ id, name, files }) and a map option the plan's areas; both {} otherwise.
  */
 export function checkSpec(s: ReviewSpec): Record<string, string> {
   const tree = s.target === "tree";
   const base = tree ? s.head : s.merge_base;
   // `run` keeps two reviews of one commit with one spec apart (the kernel reuses a check for an identical spec): empty for a PR run.
   if (s.profile === "code-review-tools") return { base, options: JSON.stringify(s.tools ?? {}), run: s.run ?? "" };
+  if (s.profile === "code-review-plan") return { base, run: s.run ?? "", model: s.combo.model, stacks: JSON.stringify(s.stacks ?? {}) };
   return {
     base, run: s.run ?? "", incremental_from: tree ? base : s.incremental_from ?? base, pr: tree ? "" : String(s.number), target: tree ? "tree" : "pr",
     option: s.option ?? "", lens: s.lens ?? "", setup_files: JSON.stringify(s.setup_files ?? {}), deepsec_data: s.deepsec_data ?? "",
+    area: JSON.stringify(s.area ?? {}), area_map: JSON.stringify(s.area_map ?? {}),
     combo: JSON.stringify({ ...s.combo, ignore: s.ignore, max_nits: s.max_nits, mandatory: s.mandatory }), focus: s.focus ?? "",
     // The kernel's text kind: no control characters but newline and tab, at most 2000 (a PR body is often CRLF).
     intent: s.intent.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").slice(0, 2000),

@@ -460,10 +460,33 @@ function BatchPage({ id, batch, onSignIn, reload }: { id: string; batch: TreeBat
         <Card className="rv-report">
           <h3>Findings by option</h3>
           <p className="muted">The report above keeps within Primer's size; each option's page lists all of its findings.</p>
-          <ul>{batch.runs.map((r) => <li key={r.id}><a href={`#/reviews/r/${encodeURIComponent(r.id)}`}>{(r.names ?? [r.option]).join(", ")}</a>: {r.status}{r.status === "done" ? `, ${r.important} important, ${r.nit} nits, ${r.pre_existing} pre-existing` : ""}</li>)}</ul>
+          {batch.areas && batch.areas > 1 ? <p className="muted">The repo was split into {batch.areas} areas; a per-area option ran once per area.</p> : null}
+          <ul>{byOption(batch.runs).map((g) => <OptionRuns key={g.option} runs={g.runs} />)}</ul>
         </Card>
       ) : null}
     </Page>
+  );
+}
+
+type BatchRun = NonNullable<TreeBatch["runs"]>[number];
+/** A batch's runs by option, in the order they came: a per-area option's areas together. */
+function byOption(runs: BatchRun[]) {
+  const groups = new Map<string, BatchRun[]>();
+  for (const r of runs) groups.set(r.option, [...(groups.get(r.option) ?? []), r]);
+  return [...groups].map(([option, rs]) => ({ option, runs: rs }));
+}
+const counts = (rs: BatchRun[]) => `${rs.reduce((n, r) => n + r.important, 0)} important, ${rs.reduce((n, r) => n + r.nit, 0)} nits, ${rs.reduce((n, r) => n + r.pre_existing, 0)} pre-existing`;
+/** One option's line: its run, or its areas rolled up (done of all, failed ones named) with each area's run linked. */
+function OptionRuns({ runs }: { runs: BatchRun[] }) {
+  const first = runs[0]!, name = (first.names ?? [first.option]).join(", "), link = (r: BatchRun) => `#/reviews/r/${encodeURIComponent(r.id)}`;
+  if (runs.length === 1 && !first.area) return <li><a href={link(first)}>{name}</a>: {first.status}{first.status === "done" ? `, ${counts(runs)}` : ""}</li>;
+  const done = runs.filter((r) => r.status === "done"), failed = runs.filter((r) => r.status === "failed" || r.status === "skipped");
+  const cost = runs.reduce((n, r) => n + (r.cost_usd ?? 0), 0);
+  return (
+    <li>
+      {name}: {done.length} of {runs.length} areas done{failed.length ? `, ${failed.length} didn't finish` : ""}, {counts(done)}, ${cost.toFixed(2)}
+      <ul>{runs.map((r) => <li key={r.id}><a href={link(r)}>{r.area ?? "whole repo"}</a>: {r.status}{r.status === "done" ? `, ${r.important} important` : ""}</li>)}</ul>
+    </li>
   );
 }
 

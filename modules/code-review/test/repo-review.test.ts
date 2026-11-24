@@ -15,20 +15,25 @@ const CATALOG = [
   { id: "maint.lint", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "acme/lint", version: "5.0.0", licence: "ISC" }, run: { cmd: "lint" }, when: ["package.json"], output: "sarif", runs_code: false, cost: "free" },
   { id: "sec.gitleaks", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "gitleaks/gitleaks", version: "8.0.0", licence: "MIT" }, run: { cmd: "gitleaks" }, when: [], output: "sarif", runs_code: false, cost: "free" },
   { id: "sec.cloudflare", model: "openai/gpt-6.2-sol", effort: "medium", lens: "security", modes: ["one_off"], recommended: ["one_off"], kind: "skill", source: { repo: "cloudflare/security-audit-skill", version: "1.0.0", licence: "MIT" }, run: { harness: "claude-code", skills: [{ skill: "cloudflare/security-audit-skill:security-audit", args: "{base}..HEAD" }] }, when: [], output: "findings", runs_code: false, cost: "low" },
-  { id: "sec.deepsec", model: "anthropic/claude-haiku-5.5", effort: "medium", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec", max_cost_usd: 150 }, when: [], output: "findings", runs_code: true, cost: "high" },
+  { id: "sec.deepsec", model: "anthropic/claude-haiku-5.5", effort: "medium", lens: "security", modes: ["one_off"], recommended: [], kind: "engine", source: { repo: "vercel-labs/deepsec", version: "1.0.0", licence: "Apache-2.0" }, run: { engine: "deepsec", max_cost_usd: 150 }, when: [], output: "findings", runs_code: true, cost: "high", scope: "repo" },
   { id: "maint.vulture", lens: "maintainability", modes: ["one_off"], recommended: ["one_off"], kind: "tool", source: { repo: "jendrikseipp/vulture", version: "2.0", licence: "MIT" }, run: {}, when: ["**/*.py"], output: "vulture", runs_code: false, cost: "free" },
 ];
 
 /** The engine over fakes, for repo reviews: a code host whose default branch can move, a runner finished by hand, a Primer that records. */
-function world({ db = new DatabaseSync(":memory:"), primer = true } = {}) {
+/** A plan run's result: one area by default (the repo within budget), or `areas` ([{ id, name, tags, files }]). */
+const planResult = (s, areas) => ({ state: "done", billed_usd: areas ? 0.01 : 0, review: { version: 1, repo: s.repo, head: s.head, eligible: 2, lines: 10, planned_by: areas ? "model" : "one", note: null,
+  areas: (areas ?? [{ id: "a01", name: "the whole repository", tags: [], files: {} }]).map((a) => ({ count: Object.values(a.files).flat().length || 2, lines: 5, ...a })) } });
+
+/** `areas`: the plan every plan run answers (default one area); a plan run is answered by the next tick, which `tick` runs too. */
+function world({ db = new DatabaseSync(":memory:"), primer = true, areas = undefined } = {}) {
   let t = Date.parse("2026-11-22T10:00:00Z");
   const heads = { HEAD: sha("1") };
   const started = [], results = new Map(), published = [], setups = [], branch = { setup: undefined, asked: [] };
-  const held = new Map(), inputs = [], kept = new Map();
+  const held = new Map(), inputs = [], kept = new Map(), plans = [];
   const engine = createEngine({
     db, config: () => readConfig(JSON.stringify({ repos: [] })), now: () => t,
     source: { open: async () => [], repos: async () => [] },
-    runner: { start: async (s) => (started.push(s), { check: `c-${started.length}` }), result: async (c) => results.get(c) ?? { state: "running" },
+    runner: { start: async (s) => (s.profile === "code-review-plan" ? (plans.push(s), results.set(`p-${plans.length}`, planResult(s, areas)), { check: `p-${plans.length}` }) : (started.push(s), { check: `c-${started.length}` })), result: async (c) => results.get(c) ?? { state: "running" },
       input: async (data) => (inputs.push(data), `${inputs.length}`.padStart(64, "0")), kept: async (c) => kept.get(c) },
     deepsec: { read: (repo) => held.get(repo), write: (repo, data) => held.set(repo, data) },
     poster: {},
@@ -41,7 +46,9 @@ function world({ db = new DatabaseSync(":memory:"), primer = true } = {}) {
   const finding = (id, o = {}) => ({ id, severity: "important", path: "src/a.ts", line: 3, title: `t ${id}`, why: "w", evidence: "e", fix_brief: "b", ...o });
   const finish = (i, o = {}, billed = 0) => results.set(`c-${i + 1}`, { state: "done", billed_usd: billed,
     review: { version: 1, repo: REPO, pr: 0, base: started[i].head, head: started[i].head, coverage: { reviewed: [], excluded: [], incomplete: null, ...(started[i].tools ? { options: Object.keys(started[i].tools) } : { counts: { eligible: 0, reviewed: 0 } }) }, findings: [], withheld: { important: 0, nit: 0, pre_existing: 0 }, cost_usd: 0, stale_guidance: [], ...o } });
-  return { db, engine, heads, started, results, published, setups, branch, finish, finding, held, inputs, kept, tick: () => engine.tick({ github: false }), later: (ms) => (t += ms) };
+  // A tick that started a plan run also takes its answer and starts the runs it files (the plan is never what a test waits on).
+  const tick = async () => { const n = plans.length; await engine.tick({ github: false }); if (plans.length > n) await engine.tick({ github: false }); };
+  return { db, engine, heads, started, results, published, setups, branch, finish, finding, held, inputs, kept, plans, tick, later: (ms) => (t += ms) };
 }
 
 test("options must fit the tree", async () => {
@@ -230,7 +237,7 @@ test("a tree result with a finding out of shape fails that option with the reaso
   assert.deepEqual(w.started.map((s) => s.combo.engine), ["tools", "skill:sec.cloudflare"]);
   assert.equal(w.db.prepare("SELECT COUNT(*) n FROM findings").get().n, 0);
   w.finish(1); await w.tick();
-  assert.deepEqual(w.engine.runs({ repo: REPO }).map((r) => r.status).sort(), ["done", "failed"]);
+  assert.deepEqual(w.engine.runs({ repo: REPO }).filter((r) => r.option !== "plan").map((r) => r.status).sort(), ["done", "failed"]);
   assert.equal(w.engine.batches({})[0].verdict, "incomplete");
   assert.match(w.engine.report(b.batch), /sec\.gitleaks: \*\*failed\*\*: the review's result isn't for this run: a finding isn't in the shared shape/);
 });
@@ -316,11 +323,14 @@ test("a report trimmed to fit still has the verdict of every finding", () => {
 
 test("each model option runs its own catalog default model and effort; a combo in the request overrides every option", async () => {
   const w = world();
-  const models = (b) => Object.fromEntries(b.runs.filter((r) => r.option !== "sec.gitleaks").map((r) => [r.option, `${r.model} ${r.effort}`]));
+  // Each option's run once the plan filed it (deepsec, whole-repo, at once).
+  const models = (batch) => Object.fromEntries(w.engine.runs({ repo: REPO }).filter((r) => r.batch === batch && r.option !== "plan").map((r) => [r.option, `${r.model} ${r.effort}`]));
   const a = await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.cloudflare", "sec.deepsec"] });
-  assert.deepEqual(models(a), { "sec.cloudflare": "openai/gpt-6.2-sol medium", "sec.deepsec": "anthropic/claude-haiku-5.5 medium" });
+  await w.tick();
+  assert.deepEqual(models(a.batch), { "sec.cloudflare": "openai/gpt-6.2-sol medium", "sec.deepsec": "anthropic/claude-haiku-5.5 medium" });
   const b = await w.engine.repoReview({ target: { repo: REPO, commit: sha("2") }, options: ["sec.cloudflare", "sec.deepsec"], combo: { model: "~a/b", effort: "low" } });
-  assert.deepEqual(models(b), { "sec.cloudflare": "~a/b low", "sec.deepsec": "~a/b low" });
+  await w.tick();
+  assert.deepEqual(models(b.batch), { "sec.cloudflare": "~a/b low", "sec.deepsec": "~a/b low" });
 });
 
 test("deepsec is handed the repo's records earlier runs left, and what a run changed is laid over them", async () => {

@@ -18,8 +18,14 @@
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason, never silent.
 //
 // A repo review (a batch whose target is a tree: a whole repo at one commit, resolved once when it is asked for) runs on the same
-// lifecycle: its catalog options as runs of one batch, all started at once: the tools check (the selected tool options together,
-// token-free) and each model option, each its own check in its own box. Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
+// lifecycle: its catalog options as runs of one batch: the tools check (the selected tool options together, token-free) and each
+// whole-repo model option (catalog `scope: repo`, deepsec) start at once, each its own check in its own box. Every other model
+// option waits for the batch's area plan (the `code-review-plan` check, recipe/plan.ts: the repo split into areas a check reads
+// whole, by a cheap model checked in code; a repo within one area's budget is one area), stored on the batch; then, in one
+// transaction, each per-area option is filed once per area (one area: once, as a whole-repo review always was), a stack option
+// (`stack`) once per area tagged with its stack (none: a skipped run saying there is no such code), and a `scope: map` option once
+// over the whole repo with the areas as data. A failed plan fails the options that waited for it. At most TREE_RUNNING tree runs
+// run at once (each fetches its snapshot before it waits for a check computer). Its runs never post, gate or ack; once the last ends, report.ts renders the report, which goes to
 // Primer (a new private document per review) and is served to the board. deepsec's set-up files from a run are asked
 // for once as a setup PR (the code host's `setup` op: github files its own reviewed write), and later runs scan with the files on
 // that PR's branch until it merges. Spend is the gateway's (each check metered, the install's limits): a repo review has no budget of
@@ -97,6 +103,8 @@ export type RunRow = {
   /** What it reviews: a PR (`pr`) or a repo review's tree (`tree`: number 0, head the commit); for a tree, the catalog option it
    * runs (the tools run: its tool options, comma-separated) and its check job (`code-review` or `code-review-tools`). */
   target: "pr" | "tree"; option: string | null; profile: string | null;
+  /** A repo review run's area of its batch's plan (null: the whole repo). */
+  area: string | null;
   /** A refused post's typed need (needs_owner, JSON): restricted, expired, sso or scope, with what fixes it. */
   need: string | null;
   /** A refused post's notice on the pull request: `pending` until the kernel took its notice write, then `sent`. A delivery that
@@ -116,7 +124,18 @@ export type BatchRow = {
   setup_tip: string | null; setup_files: string | null;
   /** The report's primer.publish write record, while its outcome is pending. */
   report_write: string | null;
+  /** Its area plan (recipe/plan.ts), once its plan run is done: JSON. */
+  plan: string | null;
 };
+/** A batch's area plan, as recipe/plan.ts gives it. */
+export type Plan = { eligible: number; lines: number; planned_by: "one" | "model" | "folders"; note: string | null; areas: { id: string; name: string; tags: string[]; files: Record<string, string[]>; count: number; lines: number }[] };
+/** The area planner's model (cheap: it reads only paths and line counts) and its check job. */
+const PLAN_MODEL = "anthropic/claude-haiku-5.5", PLAN = "code-review-plan";
+/** Tree runs running at once: each fetches its snapshot before it waits for one of the kernel's check computers (its default
+ * check_computers_max), so more would only hold snapshots to wait. */
+const TREE_RUNNING = 32;
+/** A stack option's skip when no area has its stack (a run with nothing to review: never a gap in the verdict). */
+export const NO_CODE = "skipped: no ";
 /** The deepsec set-up files a run's box gets from a pending setup branch: its summary, config and matchers (the spec's json cap). */
 const BOX_SETUP = /^\.deepsec\/(deepsec\.config\.ts|generated-matchers\.ts|data\/[A-Za-z0-9_.-]+\/INFO\.md)$/;
 /** A deepsec setup PR asked for and not on the code host yet (refused, or still with the AI reviewer) is asked for again after this. */
@@ -209,7 +228,7 @@ export function createEngine(d: EngineDeps) {
   db.exec(DDL);
   // Columns added after data_version 1, kept on the data there is.
   for (const [table, col, type] of [["runs", "box_at", "TEXT"], ["prs", "close_due", "INTEGER NOT NULL DEFAULT 0"], ["runs", "mandatory", "INTEGER NOT NULL DEFAULT 0"], ["runs", "complete", "INTEGER"], ["findings", "why", "TEXT"], ["findings", "evidence", "TEXT"], ["runs", "post_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "post_due", "INTEGER"], ["runs", "notice", "TEXT"], ["runs", "notice_tries", "INTEGER NOT NULL DEFAULT 0"], ["runs", "notice_write", "TEXT"], ["runs", "notice_due", "INTEGER"], ["prs", "merged", "INTEGER NOT NULL DEFAULT 0"], ["prs", "status_key", "TEXT"], ["prs", "ack", "INTEGER"], ["runs", "moment", "TEXT"], ["runs", "policy", "TEXT"], ["covered", "policy", "TEXT"], ["findings", "claim", "TEXT"], ["runs", "bills", "TEXT"], ["runs", "need", "TEXT"], ["askers", "runs", "TEXT NOT NULL DEFAULT ''"], ["askers", "text", "TEXT"], ["askers", "pending", "TEXT"], ["askers", "sent", "TEXT"], ["askers", "claim", "TEXT"],
-    ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"]] as const)
+    ["runs", "target", "TEXT NOT NULL DEFAULT 'pr'"], ["runs", "option", "TEXT"], ["runs", "profile", "TEXT"], ["runs", "area", "TEXT"], ["batches", "plan", "TEXT"]] as const)
     if (!(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   // 1 → 2: a finding is stored per option observation (one tools run reports for several options), so its key gains the option.
   if (version === 1) {
@@ -583,7 +602,15 @@ export function createEngine(d: EngineDeps) {
     const b = batchRow(r.batch)!;
     const tools = r.profile === "code-review-tools";
     try {
+      if (r.profile === PLAN) {
+        const { check } = await d.runner.start({ repo: r.repo, number: 0, base: r.head, head: r.head, merge_base: r.head, target: "tree", run: r.id, profile: PLAN, combo: comboOf(r), stacks: stacksOf(catalog()),
+          focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 0 });
+        return void run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
+      }
       const opts = new Map(catalog().map((o) => [o.id, o]));
+      const plan = b.plan ? (JSON.parse(b.plan) as Plan) : undefined;
+      const area = r.area ? plan?.areas.find((a) => a.id === r.area) : undefined;
+      if (r.area && !area) throw new RequestError(`area ${r.area} isn't in the batch's plan`);
       const o = tools ? undefined : opts.get(r.option!);
       const picked = tools ? r.option!.split(",").map((id) => opts.get(id)) : [];
       if (tools ? picked.some((x) => !x) : !o) throw new RequestError(`${tools ? picked.some((x) => !x) && r.option : r.option} isn't in the option catalog`);
@@ -596,6 +623,7 @@ export function createEngine(d: EngineDeps) {
         combo: { ...comboOf(r), ...(o?.kind === "skill" ? { harness: o.run.harness, skills: o.run.skills, tools: o.run.tools } : {}), ...(o?.run.max_cost_usd ? { max_cost_usd: o.run.max_cost_usd } : {}) },
         ...(tools ? { tools: toolSpec(picked as Option[]) } : { option: r.option!, lens: o!.lens }),
         ...(fits && Object.keys(boxed).length ? { setup_files: boxed } : {}), ...await deepsecData(r),
+        ...(area ? { area: { id: area.id, name: area.name, files: area.files } } : {}), ...(o?.scope === "map" && plan ? { area_map: areaMap(plan) } : {}),
         focus: null, intent: "", incremental_from: null, full: true, previous: [], mandatory: false, ignore: [], max_nits: 200 });
       run("UPDATE runs SET check_job = ? WHERE id = ?", check, r.id);
     } catch (e) {
@@ -669,6 +697,11 @@ export function createEngine(d: EngineDeps) {
     live.delete(r.id);
     mirrorDue = true;
     // A result is bound to its run: one for another repo, PR, head or base (what a box could claim) is refused, never posted.
+    if (res.state === "done" && r.profile === PLAN) {
+      const plan = planOf(r, res.review as unknown as Record<string, unknown>);
+      if (typeof plan !== "string") { filePlan(r, plan, charge(r, res.billed_usd)); return batchEnded(r.batch); }
+      res = { state: "failed", why: `the review's result isn't a plan: ${plan}`, billed_usd: res.billed_usd };
+    }
     if (res.state === "done") {
       const v = res.review as Partial<Review>;
       const bound = String(v.repo ?? "").toLowerCase() === r.repo && v.head === r.head && Array.isArray(v.findings) && (r.target === "tree" || (v.pr === r.number && v.base === r.merge_base));
@@ -698,6 +731,7 @@ export function createEngine(d: EngineDeps) {
       }
       run("UPDATE runs SET status = 'failed', why = ?, cost_usd = ?, ended = ? WHERE id = ?", res.why.slice(0, 500), charge(r, res.billed_usd), iso(), r.id);
       end(runRow(r.id)!);
+      if (r.profile === PLAN) failPlan(r, res.why);
       if (r.target === "tree") return batchEnded(r.batch);
       if (r.kind !== "auto") void ack({ repo: r.repo, number: r.number, head: r.head, state: "failed", run: r.id, combo: comboOf(r), why: res.why.slice(0, 300) });
       return;
@@ -876,6 +910,66 @@ export function createEngine(d: EngineDeps) {
   // ---- repo reviews: the batch, its report, deepsec's setup PR ----------------------------------------------------------------
 
   const batchRow = (id: string) => one<BatchRow>("SELECT * FROM batches WHERE id = ?", id);
+  /** The catalog's stack tags and the globs that find each (the planner tags a folder-split area by them). */
+  const stacksOf = (opts: Option[]) => { const out: Record<string, string[]> = {}; for (const o of opts) if (o.stack) out[o.stack] = [...new Set([...(out[o.stack] ?? []), ...o.when])]; return out; };
+  /** A plan's areas as a whole-repo option is given them: names, their top folders and tags, within a spec field. */
+  const areaMap = (plan: Plan) => {
+    const tops = (a: Plan["areas"][number], n: number) => [...new Set(Object.keys(a.files).map((d) => d.split("/").slice(0, 3).join("/") || "(root)"))].slice(0, n);
+    for (const n of [8, 3, 1]) {
+      const map = { areas: plan.areas.map((a) => ({ name: a.name, files: a.count, folders: tops(a, n), tags: a.tags })) };
+      if (JSON.stringify(map).length <= 15_000) return map;
+    }
+    return { areas: plan.areas.slice(0, 100).map((a) => ({ name: a.name, files: a.count })) };
+  };
+  /** The model options of a batch that wait for its plan (every one but `scope: repo`), in the catalog's order; an option the
+   * catalog no longer has is an id alone (its run fails saying so). */
+  const deferredOf = (b: BatchRow) => {
+    const ids = Object.keys(JSON.parse(b.combo) as Record<string, unknown>), cat = catalog();
+    return [...cat.filter((o) => ids.includes(o.id) && o.scope !== "repo"), ...ids.filter((id) => !cat.some((o) => o.id === id)).map((id) => ({ id, gone: true as const }))];
+  };
+  const engineOf = (o: Option) => (o.kind === "engine" ? String(o.run.engine ?? o.id) : `skill:${o.id}`);
+  /** The plan's runs, filed in one step with the plan itself: each waiting option per area (one area: once, whole), a stack
+   * option on its stack's areas (none: a skipped run), a map option once with the areas. */
+  function filePlan(r: RunRow, plan: Plan, cost: number) {
+    const b = batchRow(r.batch)!;
+    const combos = JSON.parse(b.combo) as Record<string, { model: string; effort: string }>;
+    const one = plan.areas.length === 1;
+    tx(() => {
+      run("UPDATE runs SET status = 'done', why = NULL, cost_usd = ?, ended = ?, complete = 1, duration_ms = ? WHERE id = ?", cost, iso(), r.started ? now() - Date.parse(r.started) : null, r.id);
+      run("UPDATE batches SET plan = ? WHERE id = ?", JSON.stringify(plan), b.id);
+      for (const o of deferredOf(b)) {
+        if ("gone" in o) { addTree(b, "gone", combos[o.id]!.model, combos[o.id]!.effort, o.id, "code-review", null, { status: "failed", why: `couldn't start: ${o.id} isn't in the option catalog` }); continue; }
+        const c = combos[o.id] ?? optionCombo(o), engine = engineOf(o);
+        const areas = o.scope === "map" || one ? [null] : plan.areas.filter((a) => !o.stack || a.tags.includes(o.stack)).map((a) => a.id);
+        if (!areas.length) addTree(b, engine, c.model, c.effort, o.id, "code-review", null, { status: "skipped", why: `${NO_CODE}${o.stack} code in any of the ${plan.areas.length} areas` });
+        for (const a of areas) addTree(b, engine, c.model, c.effort, o.id, "code-review", a);
+      }
+    });
+  }
+  /** One run of a repo review: queued, or ended at once (`end`: skipped or failed, with why). */
+  const addTree = (b: BatchRow, engine: string, model: string, effort: string, option: string, profile: string, area: string | null, end?: { status: "skipped" | "failed"; why: string }) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, why, ended, full, due, created, author, batch, target, option, profile, area)
+    VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'oneoff', ?, ?, ?, 1, ?, ?, ?, ?, 'tree', ?, ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, b.repo, b.sha, b.sha, engine, model, effort, end?.status ?? "queued", end?.why.slice(0, 500) ?? null, end ? iso() : null, now(), now(), b.author, b.id, option, profile, area);
+  /** The plan failed for good: each option that waited for it fails with its reason. */
+  function failPlan(r: RunRow, why: string) {
+    const b = batchRow(r.batch)!;
+    const combos = JSON.parse(b.combo) as Record<string, { model: string; effort: string }>;
+    tx(() => { for (const o of deferredOf(b)) { const c = combos[o.id]!; addTree(b, "gone" in o ? "gone" : engineOf(o), c.model, c.effort, o.id, "code-review", null, { status: "failed", why: `the area plan failed: ${why}` }); } });
+  }
+  /** A plan run's result, checked: every area named, its tags the catalog's, its file list within a check's spec field. */
+  function planOf(r: RunRow, v: Record<string, unknown>): Plan | string {
+    if (String(v.repo ?? "").toLowerCase() !== r.repo || v.head !== r.head) return "the plan isn't for this run's repo and commit";
+    const tags = new Set(Object.keys(stacksOf(catalog())));
+    const areas = v.areas as Plan["areas"];
+    if (!Array.isArray(areas) || !areas.length || areas.length > 2000) return "the plan has no list of areas";
+    const ids = new Set<string>();
+    for (const a of areas) {
+      if (!a || typeof a.id !== "string" || !/^a\d{2,4}$/.test(a.id) || ids.has(a.id) || typeof a.name !== "string" || !a.name || a.name.length > 120 || !Array.isArray(a.tags) || a.tags.some((t) => !tags.has(t))
+        || !a.files || typeof a.files !== "object" || Object.values(a.files).some((n) => !Array.isArray(n) || n.some((x) => typeof x !== "string")) || !Number.isInteger(a.count) || !Number.isInteger(a.lines)) return "an area isn't in the plan's shape";
+      if (areas.length > 1 && JSON.stringify({ id: a.id, name: a.name, files: a.files }).length > 16_000) return `area ${a.id} is more than a check's spec field holds`;
+      ids.add(a.id);
+    }
+    return { eligible: Number(v.eligible) || 0, lines: Number(v.lines) || 0, planned_by: v.planned_by === "model" || v.planned_by === "folders" ? v.planned_by : "one", note: typeof v.note === "string" ? v.note.slice(0, 500) : null, areas };
+  }
   /** The option catalog: the one way it is read, a bad one a request error (a run that needs it fails, or waits, loudly). */
   const catalog = () => { try { return d.catalog(); } catch (e) { throw new RequestError(`the option catalog can't be read: ${String((e as Error).message).slice(0, 200)}`); } };
 
@@ -886,12 +980,16 @@ export function createEngine(d: EngineDeps) {
     let out: ReturnType<typeof render>;
     try {
       const lens = new Map(catalog().map((o) => [o.id, o.lens]));
+      const plan = b.plan ? (JSON.parse(b.plan) as Plan) : null;
+      const areas = new Map((plan?.areas ?? []).map((a) => [a.id, a]));
       const runs = all<RunRow>("SELECT * FROM runs WHERE batch = ? ORDER BY rowid", id).map((r) => {
         const v = one<{ json: string }>("SELECT json FROM reviews WHERE run = ?", r.id);
-        const tools = r.profile === "code-review-tools";
-        return { option: tools ? "tools" : r.option!, ...(tools ? { options: r.option!.split(",") } : {}), lens: tools ? null : lens.get(r.option!) ?? null, status: r.status, why: r.why, cost_usd: r.cost_usd, review: v ? (JSON.parse(v.json) as Review) : null };
+        const tools = r.profile === "code-review-tools", a = r.area ? areas.get(r.area) : undefined;
+        return { option: tools ? "tools" : r.option!, ...(tools ? { options: r.option!.split(",") } : {}), lens: tools ? null : lens.get(r.option!) ?? null, status: r.status, why: r.why, cost_usd: r.cost_usd, review: v ? (JSON.parse(v.json) as Review) : null,
+          ...(a ? { area: { name: a.name, files: a.count } } : {}), ...(r.profile === PLAN ? { plan: true as const } : {}), ...(r.status === "skipped" && r.why?.startsWith(NO_CODE) ? { none: true as const } : {}) };
       });
-      out = render({ repo: b.repo, sha: b.sha, created: new Date(b.created).toISOString(), runs, lensOf: (o) => lens.get(o) ?? "correctness" });
+      out = render({ repo: b.repo, sha: b.sha, created: new Date(b.created).toISOString(), runs, lensOf: (o) => lens.get(o) ?? "correctness",
+        plan: plan && { planned_by: plan.planned_by, note: plan.note, eligible: plan.eligible, lines: plan.lines, areas: plan.areas.map((x) => ({ name: x.name, count: x.count, lines: x.lines, tags: x.tags })) } });
     } catch (e) {
       // Never a stuck tick: the batch stays running and the sweep tries again (loudly) each tick.
       return void log("repo review report not rendered", { batch: id, err: String((e as Error).message).slice(0, 200) });
@@ -1566,7 +1664,9 @@ export function createEngine(d: EngineDeps) {
     // A repo review whose last run ended before a restart (or whose report didn't render) gets its report now.
     for (const b of all<{ id: string }>("SELECT id FROM batches WHERE status = 'running'")) await batchEnded(b.id);
     for (const r of all<RunRow>("SELECT * FROM runs WHERE status = 'queued' AND due <= ? ORDER BY created, rowid", now())) {
-      // A repo review's options start together: each is its own check in its own box (metered by the gateway like any run).
+      // A repo review's runs start together, each its own check in its own box (metered by the gateway like any run), up to
+      // TREE_RUNNING at once.
+      if (r.target === "tree" && one<{ n: number }>("SELECT COUNT(*) n FROM runs WHERE target = 'tree' AND status = 'running'")!.n >= TREE_RUNNING) continue;
       const started = admit(r);
       if (started) await startRun(started);
       else if (r.target === "tree") await batchEnded(r.batch);
@@ -1961,7 +2061,8 @@ export function createEngine(d: EngineDeps) {
       const { available, recommended } = detect(tree.paths, catalog(), "one_off");
       // What past repo reviews cost, per option, model and effort (finished runs of one option; the board's cost hint reads it).
       const past = new Map<string, { model: string; effort: string; n: number; usd: number }[]>();
-      for (const r of all<{ option: string; model: string; effort: string; n: number; usd: number }>("SELECT option, model, effort, COUNT(*) n, AVG(cost_usd) usd FROM runs WHERE target = 'tree' AND status = 'done' AND cost_usd > 0 GROUP BY option, model, effort")) {
+      // An option's cost in one review: all its runs there (one per area).
+      for (const r of all<{ option: string; model: string; effort: string; n: number; usd: number }>("SELECT option, model, effort, COUNT(*) n, AVG(usd) usd FROM (SELECT batch, option, model, effort, SUM(cost_usd) usd FROM runs WHERE target = 'tree' AND status = 'done' AND cost_usd > 0 GROUP BY batch, option, model, effort) GROUP BY option, model, effort")) {
         past.set(r.option, [...(past.get(r.option) ?? []), { model: r.model, effort: r.effort, n: r.n, usd: r.usd }]);
       }
       // Every option, the ones that can't run here with why (the board lists them last, greyed).
@@ -2008,12 +2109,12 @@ export function createEngine(d: EngineDeps) {
         const same = one<{ id: string }>("SELECT id FROM batches WHERE repo = ? AND sha = ? AND options = ? AND combo = ? AND status = 'running'", repo, tree.sha, JSON.stringify(ids), JSON.stringify(resolved));
         if (same) return same.id;
         run("INSERT INTO batches (id, repo, sha, options, combo, status, created, author, deepsec, setup_tip, setup_files) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)", id, repo, tree.sha, JSON.stringify(ids), JSON.stringify(resolved), now(), author, deepsec, pending?.tip ?? null, pending ? JSON.stringify(pending.files) : null);
-        const add = (engine: string, model: string, effort: string, option: string, profile: string) => run(`INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, full, due, created, author, batch, target, option, profile)
-          VALUES (?, ?, 0, ?, ?, ?, ?, ?, 'oneoff', 'queued', 1, ?, ?, ?, ?, 'tree', ?, ?)`, `cr-${randomBytes(6).toString("hex")}`, repo, tree.sha, tree.sha, engine, model, effort, now(), now(), author, id, option, profile);
-        // The tools first (free), then each model option in the catalog's order.
+        const b = batchRow(id)!;
+        // The tools first (free), then each whole-repo model option in the catalog's order, and the area plan the others wait for.
         const tools = picked.filter((o) => o.kind === "tool").map((o) => o.id);
-        if (tools.length) add("tools", "", "", tools.join(","), "code-review-tools");
-        for (const o of picked.filter((o) => o.kind !== "tool")) { const c = comboFor(o); add(o.kind === "engine" ? String(o.run.engine ?? o.id) : `skill:${o.id}`, c.model as string, c.effort as string, o.id, "code-review"); };
+        if (tools.length) addTree(b, "tools", "", "", tools.join(","), "code-review-tools", null);
+        for (const o of picked.filter((o) => o.kind !== "tool" && o.scope === "repo")) { const c = comboFor(o); addTree(b, engineOf(o), c.model as string, c.effort as string, o.id, "code-review", null); }
+        if (picked.some((o) => o.kind !== "tool" && o.scope !== "repo")) addTree(b, "plan", PLAN_MODEL, "low", "plan", PLAN, null);
         return id;
       });
       return asBatch(made);
@@ -2030,7 +2131,10 @@ export function createEngine(d: EngineDeps) {
           started: new Date(b.created).toISOString(), ended: b.ended, options: JSON.parse(b.options) as string[], option_names: named((JSON.parse(b.options) as string[]).join(",")), combo: JSON.parse(b.combo),
           // `published`: the report's Primer outcome is in (a link or a refusal); the board follows the batch until then.
           published: b.report_url !== null || b.report_why !== null,
-          runs: all<{ id: string; option: string; status: string; important: number; nit: number; pre_existing: number }>("SELECT id, option, status, important, nit, pre_existing FROM runs WHERE batch = ? ORDER BY rowid", b.id).map((r) => ({ ...r, names: named(r.option) })),
+          // Each run, a per-area one with its area's name (the board rolls an option's areas up); the plan run is the area plan.
+          runs: ((areas) => all<{ id: string; option: string; status: string; important: number; nit: number; pre_existing: number; area: string | null; cost_usd: number; profile: string | null }>("SELECT id, option, status, important, nit, pre_existing, area, cost_usd, profile FROM runs WHERE batch = ? ORDER BY rowid", b.id)
+            .map(({ profile, area, ...r }) => ({ ...r, cost_usd: round(r.cost_usd), names: profile === PLAN ? ["Area plan"] : named(r.option), ...(area ? { area: areas.get(area) ?? area } : {}) })))(new Map(b.plan ? (JSON.parse(b.plan) as Plan).areas.map((a) => [a.id, a.name]) : [])),
+          ...(b.plan ? { areas: (JSON.parse(b.plan) as Plan).areas.length } : {}),
           ...(b.status === "done" ? { report_url: `/reviews/${b.id}/report` } : {}), ...(b.report_url ? { primer_url: b.report_url } : {}) }));
     },
     /** A finished repo review's report (markdown), as Primer has it. */
@@ -2049,7 +2153,7 @@ function view(r: RunRow & { title?: string | null }, waiting = false) {
   return { id: r.id, repo: r.repo, number: r.number, head: r.head, engine: r.engine, model: r.model, effort: r.effort, kind: r.kind, status: waiting ? "waiting" : r.status, why: r.why, cost_usd: round(r.cost_usd),
     tokens_in: r.tokens_in, tokens_cached: r.tokens_cached, tokens_out: r.tokens_out, duration_ms: r.duration_ms,
     important: r.important, nit: r.nit, pre_existing: r.pre_existing, started: r.started, ended: r.ended, box_at: r.box_at, check_job: r.check_job,
-    full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, target: r.target, batch: r.batch, ...(r.option ? { option: r.option } : {}),
+    full: !!r.full, incremental_from: r.incremental_from, posted: r.posted, target: r.target, batch: r.batch, ...(r.option ? { option: r.option } : {}), ...(r.area ? { area: r.area } : {}),
     url: r.target === "tree" ? `https://github.com/${r.repo}/tree/${r.head}` : `https://github.com/${r.repo}/pull/${r.number}`,
     ...(r.title ? { title: r.title } : {}), ...(r.review_url ? { review_url: r.review_url } : {}), ...(r.resolved != null ? { resolved: r.resolved } : {}) };
 }

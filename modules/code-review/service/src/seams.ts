@@ -77,8 +77,9 @@ export type ReviewSpec = {
   repo: string; number: number; base: string; head: string; combo: ComboRef;
   /** What it reviews: a PR's change, or a whole tree at `head` (number 0, no merge base). */
   target: "pr" | "tree";
-  /** The check job: `code-review` (one model option or combo, metered) or `code-review-tools` (the selected tool options, token-free). */
-  profile: "code-review" | "code-review-tools";
+  /** The check job: `code-review` (one model option or combo, metered), `code-review-tools` (the selected tool options,
+   * token-free) or `code-review-plan` (a repo review's area plan, metered: combo.model is the planner's). */
+  profile: "code-review" | "code-review-tools" | "code-review-plan";
   /** A repo review run's id: part of its check's spec, so two reviews of one commit are two checks. */
   run?: string;
   /** The tools run's selected tool options, as the recipe runs them (catalog.ts toolSpec). */
@@ -89,6 +90,9 @@ export type ReviewSpec = {
   setup_files?: Record<string, string>;
   /** deepsec's records of the repo from earlier runs: their uploaded input's sha256 (ReviewRunner.input). */
   deepsec_data?: string;
+  /** A repo review run's area of the plan (it sees only those files), the plan's areas a whole-repo option is given, and (the
+   * plan run) the catalog's stack tags with their globs. */
+  area?: { id: string; name: string; files: Record<string, string[]> }; area_map?: unknown; stacks?: Record<string, string[]>;
   /** The merge base of the PR's base and head: what a full review diffs against. */
   merge_base: string;
   focus: string | null; incremental_from: string | null; full: boolean;
