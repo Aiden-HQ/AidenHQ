@@ -28,7 +28,7 @@ import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
 import type { AuthorKind, Flow } from "./flow.js";
-import { gradeShown, milestonesOf } from "./task-truth.js";
+import { gradeShown, milestonesOf, runLineOf } from "./task-truth.js";
 import { searchView, type TaskSearch } from "./search.js";
 import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
@@ -804,7 +804,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
    */
   async function chatView(ref: string, peek = false) {
     const { ctx, issue } = await editableIssue(ref, "this chat isn't yours");
-    const [comments, files, busy, live, kids, parent, names, cards, runs] = await Promise.all([
+    const [comments, files, busy, live, kids, parent, names, cards, runs, facts] = await Promise.all([
       pc.comments(issue.id),
       pc.attachments(issue.id).catch(() => []),
       working(ctx),
@@ -814,6 +814,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       bylines(),
       cardsOf("recent", { limit: 50 }),
       runLinks(issue.id, ctx.agents),
+      opts.flow?.task(issue.id).catch(() => null) ?? null,
     ]);
     const [said, states, jobs] = await Promise.all([chatMessages(issue, ctx, comments), stateRows([issue.id, ...kids.map((k) => k.id)]), work.task(issue.id).catch(() => [])]);
     // A reply's `answers`: the newest owner message its run had read. The reply's own kernel tag names the run (a model can't write
@@ -836,7 +837,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       }
       return last;
     };
-    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? "") } : m));
+    const messages = said.map((m) => (m.kind === "reply" ? { ...m, answers: answersOf(bodies.get(m.id) ?? ""), run: runLineOf(bodies.get(m.id) ?? "", jobs, facts, ctx.agents) } : m));
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const ids = new Set([issue.id, ...kids.map((k) => k.id)]);
     const agent = agentOf(chatAgent(issue));

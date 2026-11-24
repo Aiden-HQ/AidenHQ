@@ -636,7 +636,7 @@ export interface LaneMessage {
 
 export type ChatMessage =
   | { kind: "owner"; id: string; text: string; at: string; via?: string; correction?: boolean; by?: string }
-  | { kind: "reply"; id: string; agent: string; text: string; at: string; actions?: string[]; questions?: Question[] }
+  | { kind: "reply"; id: string; agent: string; text: string; at: string; actions?: string[]; questions?: Question[]; /** The run behind this reply: how long it ran, what woke it. */ run?: { id: string; seconds: number; trigger?: string } }
   | { kind: "notes"; id: string; agent: string; at: string; notes: { by: string; text: string; at: string }[] }
   | { kind: "notice"; id: string; text: string; at: string };
 

@@ -103,3 +103,38 @@ describe("task truth", () => {
     expect(m.find((x: { kind: string }) => x.kind === "deployed").href).toContain("/pull/12");
   });
 });
+
+describe("chat run line", () => {
+  const chat: Issue = { ...issue(9), assigneeAgentId: "cos", labels: [{ id: "L", name: "chat", color: "#000" }], description: "hi\n\n<!-- aidenhq-chat-agent:cos -->" };
+  const tag = (j: string) => `Done.\n\n<!-- aidenhq:job=${j} kind=reply -->`;
+  const comments: Comment[] = [
+    { id: "c1", body: tag("j-2222222222222222"), authorType: "agent", authorAgentId: "cos", createdAt: "2026-11-10T10:10:00.000Z" },
+    { id: "c2", body: "Typed by hand.\n\n<!-- aidenhq-reply -->", authorType: "agent", authorAgentId: "cos", createdAt: "2026-11-10T10:20:00.000Z" },
+  ];
+  const chatPc = { ...pc, labelled: async () => [chat], openIssues: async () => [chat], issue: async () => chat, issueSummary: async () => chat, comments: async () => comments, labels: async () => chat.labels, agents: async () => [{ id: "cos", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff" } }] } as unknown as Paperclip;
+  const chatFlow = { task: async () => ({ task: chat.id, root: chat.id, stages: [], idle: [], facts: [fact("wake.opened", "wake:w1", "2026-11-10T10:00:00.000Z", { cause: "routine:daily-brief", author: "kernel" }), fact("wake.bound", "wake:w1", "2026-11-10T10:00:05.000Z", { job: "j-2222222222222222" })] }) } as unknown as Flow;
+  const work = { job: async () => null, task: async () => [{ id: "j-2222222222222222", started_at: "2026-11-10T10:00:00.000Z", ended_at: "2026-11-10T10:06:12.000Z" }], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
+  const app = createApp({ taskStates: fakeStates([]), paperclip: chatPc, store: new Store(":memory:"), records: fakeRecords([]), grading, flow: chatFlow, work: work as never, log: pino({ level: "silent" }), allowedHosts: ["localhost:3120"], staticDir: "/nonexistent", timezone: "UTC", session: () => ({ accountId: "owner", role: "admin" as const }) });
+  let port = 0;
+  beforeAll(async () => {
+    await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
+    port = (app.address() as AddressInfo).port;
+  });
+  afterAll(() => app.close());
+
+  it("a reply carrying a job tag gets its run (seconds, what woke it); one without gets none", async () => {
+    const r = await new Promise<any>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, method: "GET", path: `/api/chats/${chat.identifier}`, headers: { host: "localhost:3120" } }, (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c));
+        res.on("end", () => (res.statusCode === 200 ? resolve(JSON.parse(text)) : reject(new Error(`${res.statusCode} ${text}`))));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    const replies = r.messages.filter((m: { kind: string }) => m.kind === "reply");
+    expect(replies[0].run).toMatchObject({ id: "j-2222222222222222", seconds: 372 });
+    expect(replies[0].run.trigger).toContain("Schedule");
+    expect(replies[1].run).toBeUndefined();
+  });
+});

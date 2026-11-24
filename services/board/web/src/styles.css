@@ -713,6 +713,8 @@ kbd {
 .msg-name { font-weight: 650; }
 .msg-time, .msg-meta { font-variant-numeric: tabular-nums; }
 .msg-time { font-size: var(--text-xs); color: var(--faint); }
+.run-line { display: block; margin-top: 4px; text-decoration: none; font-variant-numeric: tabular-nums; }
+.run-line:hover { color: var(--accent); text-decoration: underline; }
 .msg-actions, .msg.agent > .link-btn { padding-left: var(--indent); justify-self: start; }
 .msg-actions { opacity: 0; transition: opacity var(--fast) var(--ease); }
 .msg.agent:hover .msg-actions, .msg.agent:focus-within .msg-actions, .app.mobile .msg-actions { opacity: 1; }

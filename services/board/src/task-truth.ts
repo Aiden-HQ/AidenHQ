@@ -2,6 +2,7 @@
 // for this one task (flow.ts task()). Agent text in either is untrusted: shown as plain text.
 import type { Deliverable, GradeState, GradesView, Verdict } from "./grading.js";
 import type { Waterfall } from "./flow.js";
+import { triggerWords } from "./timeline.js";
 
 export interface GradeShown {
   /** none: no grade row (nothing is shown); unavailable: the module can't be read; ungraded_close: closed with no verdict. */
@@ -72,4 +73,25 @@ export function milestonesOf(w: Waterfall | null): Milestone[] {
     }
   }
   return out.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+export interface RunLine {
+  id: string;
+  seconds: number;
+  /** What woke the run, in Agent Activity's words; absent when the kernel has no wake for it. */
+  trigger?: string;
+}
+
+/** The run behind an agent's final reply (its job tag, which only the kernel writes): how long it ran and what woke it. */
+export function runLineOf(body: string, jobs: { id: string; started_at: string | null; ended_at: string | null }[], w: Waterfall | null, agents: Parameters<typeof triggerWords>[2]): RunLine | undefined {
+  const id = /<!-- aidenhq:job=(j-[0-9a-f]{16}) kind=reply -->\s*$/.exec(body)?.[1];
+  const job = jobs.find((j) => j.id === id);
+  if (!id || !job?.started_at || !job.ended_at) return undefined;
+  const wake = w?.facts.find((f) => f.type === "wake.bound" && f.data?.job === id)?.subject;
+  const opened = wake ? w!.facts.findLast((f) => f.type === "wake.opened" && f.subject === wake) : undefined;
+  return {
+    id,
+    seconds: Math.max(0, Math.round((Date.parse(job.ended_at) - Date.parse(job.started_at)) / 1000)),
+    ...(opened ? { trigger: triggerWords(String(opened.data?.cause ?? ""), String(opened.data?.author ?? ""), agents) } : {}),
+  };
 }

@@ -884,6 +884,12 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
           ))}
         </div>
       )}
+      {m.run && (
+        <a className="run-line muted small" href={`#/r/${m.run.id}`} title="Open this run's steps">
+          Ran for {m.run.seconds >= 60 ? `${Math.floor(m.run.seconds / 60)}m ${m.run.seconds % 60}s` : `${m.run.seconds}s`}
+          {m.run.trigger ? ` · ${m.run.trigger}` : ""} ›
+        </a>
+      )}
       {asking && open && m.questions && <AnswerForm questions={m.questions} onAnswer={answerAsk} />}
       <div className="msg-actions">
         <button className="link-btn small" onClick={() => setFixing(!fixing)} title="Tell the agent this reply was wrong (recorded as a correction)">
