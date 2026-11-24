@@ -1,5 +1,5 @@
 {
-  "title": "github.merge: squash-merge these PRs, each only at this head and once its checks are green.",
+  "title": "github.merge: squash-merge these PRs, each only at this head and once its checks are green. With `generation`, one adopted PR, filed by ship for that adoption; `attempt` tells a new try at the same head from a repeat.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -31,9 +31,23 @@
           "head": {
             "type": "string",
             "pattern": "^[0-9a-f]{40}$"
+          },
+          "base": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[\\w./-]+$"
           }
         }
       }
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
     }
   }
 }

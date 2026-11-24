@@ -33,7 +33,7 @@ import { MIGRATION_WAIT, createMerges } from "./merges.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
-import { LOCAL_ORG, plan as planRules } from "./plan.ts";
+import { LOCAL_ORG, plan as planRules, type Ship } from "./plan.ts";
 import { fileContext, numstat } from "./review-files.ts";
 /** One changed file as git counts it (review-files.ts numstat; a binary file has no line counts). */
 type Changed = { path: string; add?: number; del?: number };
@@ -86,7 +86,50 @@ export type Options = {
   churnExclude?: string[];
   /** Code review's verdict on a head before the merge queue merges it (review-gate.ts). */
   reviewGate: ReviewGate;
+  /**
+   * The ship module's adoptions (its GET /v1/generation): a PR's current generation (null: not adopted) and the adoption's
+   * task. Unset when ship isn't installed (compiled config): every write that names a generation is then refused. A ship that
+   * doesn't answer throws, and the write is refused until it does.
+   */
+  ship?: ShipAdoptions;
+  /**
+   * The reviewer App's REST on a repo where it is installed (github_reviewer_app, github-mcp's github-app.ts over its own vault
+   * dir), and its bot login; undefined where it isn't (approvals then go as the owner, never on a PR the owner opened).
+   */
+  reviewer?: (repo: string) => Promise<{ login: string; rest: Gh } | undefined>;
 };
+/**
+ * The reviewer App (github-mcp's gitHubApp over its own vault dir, `<state>/github-reviewer-app/`) as `Options.reviewer`: its
+ * REST with an installation token on a repo it is installed on, and its bot login; undefined where it isn't (or isn't set up).
+ */
+export function reviewerOf(app: { installation(repo: string): Promise<number | null>; token(installation: number, fresh?: boolean): Promise<string>; slug(): string | undefined }, fetchFn: typeof fetch = fetch): (repo: string) => Promise<{ login: string; rest: Gh } | undefined> {
+  return async (repo) => {
+    const installation = await app.installation(repo);
+    const slug = app.slug();
+    if (installation === null || !slug) return undefined;
+    const rest: Gh = async (method, path, body) => {
+      const r = await fetchFn(`https://api.github.com${path}`, { method, headers: { authorization: `Bearer ${await app.token(installation)}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
+      return { status: r.status, body: await r.json().catch(() => ({})), headers: r.headers };
+    };
+    return { login: `${slug}[bot]`, rest };
+  };
+}
+/** Ship's answer for one PR (its GET /v1/generation?repo&pr): `generation` null when it isn't adopted now. */
+export type ShipAdoptions = { generation(repo: string, number: number): Promise<{ generation: number | null; task?: string }> };
+/** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
+export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typeof fetch }): ShipAdoptions {
+  const fetchFn = o.fetchFn ?? fetch;
+  return {
+    async generation(repo, number) {
+      const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number) });
+      const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
+      if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
+      const j = (await r.json()) as { generation?: unknown; task?: unknown };
+      const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
+      return { generation, ...(typeof j.task === "string" && j.task ? { task: j.task } : {}) };
+    },
+  };
+}
 
 /** A base a change targets: a file read there (source exceptions), and its cache clone at `tip` (siblings). */
 type Base = { repo: string; base: string; read: (path: string) => Promise<string>; dir?: string; tip?: string };
@@ -95,6 +138,8 @@ const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 const SLUG = /^([\w.-]+)\/([\w.-]+)$/;
 const BRANCH = /^(?!-)(?!.*\.\.)[\w./-]{1,200}$/;
 const same = (a?: string, b?: string) => Boolean(a && b) && a!.toLowerCase() === b!.toLowerCase();
+/** The module that adopts PRs and files their writes (approve, enqueue, an adoption's merge): its name as the kernel reports it. */
+const SHIP = "ship";
 const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
 /**
  * GitHub refuses any push that creates or updates a workflow file when the sign-in's OAuth grant lacks `workflow` ("refusing to
@@ -118,6 +163,12 @@ const slugOf = (repo: unknown) => {
   if (!m || m[2]!.endsWith(".git") || m.slice(1).some((p) => /^\.+$/.test(p))) throw fail(400, `${String(repo)} is not owner/name`);
   return { slug: `${m[1]}/${m[2]}`, org: m[1]!, name: m[2]! };
 };
+
+/** A PR's merge-queue state, for an enqueue and its reconcile. */
+const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName isInMergeQueue mergeQueueEntry { headCommit { oid } } } } }`;
+
+/** GitHub's enqueue, bound to the head: it refuses when the PR's head isn't `head`. */
+const ENQUEUE = `mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { state } } }`;
 
 export function createService(o: Options) {
   const log = o.log ?? (() => {});
@@ -261,7 +312,7 @@ export function createService(o: Options) {
    * The verified state plan.ts tiers a request on (its `s`) and the card's facts (target, sentence, the diff the reviewer
    * reads): read from the workspace, the cache and GitHub, never the args.
    */
-  async function stateFor(kind: string, a: any, requester?: { roles?: string[] }) {
+  async function stateFor(kind: string, a: any, requester?: PlanRequest["requester"], task?: string) {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the
     // args); it may push to any branch, others to their own task's (plan.ts branch-namespace).
     const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, workspace: String(a.workspace ?? ""), also: [] as string[] };
@@ -285,6 +336,39 @@ export function createService(o: Options) {
       if (!access.connected()) throw fail(503, "GitHub isn't connected");
       return { state: { ...base, repo }, facts: { target: repo, sentence: `Create the repository ${repo} on GitHub${inOrg(o.fleetOrg, repo) ? ", with the app starter on main" : ""}.`, diff: "" } };
     }
+    // A write for an adopted PR (ship): the PR as GitHub has it now and ship's adoption, never the args.
+    const filedOn = [String(task ?? ""), String(a.workspace ?? "")].filter(Boolean);
+    const byShip = requester?.kind === "module" ? requester.module === SHIP : (requester as { filed_by?: string } | undefined)?.filed_by === SHIP;
+    const adoption = async (repo: string, number: number, generation: unknown, expected: unknown, pr: any, bound?: unknown): Promise<Ship> => {
+      if (!Number.isInteger(generation) || typeof expected !== "string") throw fail(400, "a write for an adopted PR names its generation and the head it expects");
+      const at = o.ship ? await o.ship.generation(repo, number) : undefined;
+      return {
+        number, generation: generation as number, expected, head: pr?.head?.sha, headRepo: pr?.head?.repo ? String(pr.head.repo.full_name) : null, headRef: pr?.head?.ref, canModify: pr?.maintainer_can_modify === true,
+        ...(typeof bound === "string" ? { bound, baseRef: String(pr?.base?.ref ?? "") } : {}),
+        current: at ? at.generation : undefined, ...(at?.task ? { task: at.task } : {}), filedOn, byShip,
+      };
+    };
+    if (kind.endsWith(".approve") || kind.endsWith(".enqueue")) {
+      const s = slugOf(a.repo);
+      const n = Number(a.number);
+      const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+      const ship = await adoption(s.slug, n, a.generation, a.head, pr, a.base);
+      // An enqueue is a merge by the queue: the reviewer reads the PR's diff at its head when the head isn't the runner's own.
+      let diff = "", files: string[] | undefined;
+      if (kind.endsWith(".enqueue") && pr.head?.sha === a.head) {
+        const head = await fetchRemote(s, String(pr.head.sha));
+        const into = await fetchRemote(s, String(pr.base?.sha));
+        const mb = await git(head.dir, ["merge-base", into.sha, head.sha]).catch(() => "");
+        diff = await diffOf(head.dir, mb || EMPTY_TREE, head.sha);
+        files = (await git(head.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, head.sha])).split("\0").filter(Boolean);
+      }
+      // GitHub refuses an approval from the PR's own author: the code host's account where no reviewer App is installed.
+      if (kind.endsWith(".approve")) ship.selfApproval = !(await o.reviewer?.(s.slug)) && same(String(pr.user?.login ?? ""), await ownerLogin());
+      const url = `https://github.com/${s.slug}/pull/${n}`;
+      const at = `at \`${String(a.head).slice(0, 12)}\``;
+      const what = kind.endsWith(".approve") ? `Approve ${url} ${at}, as the reviewer App` : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : "";
+      return { state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: [], ship, ...(files ? { files } : {}), ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))) }] }, facts: { target: url, sentence: `${what} (generation ${a.generation}).`, diff } };
+    }
     // What the reviewer reads beside the diff (review): each changed file at the reviewed head, and the PR's Evidence section.
     const reads: { name: string; read: () => Promise<string> }[] = [];
     // The bases the change targets, each with a way to read a file there (the owner's source exceptions: never the change's own).
@@ -295,6 +379,8 @@ export function createService(o: Options) {
     const own = new Set<string>();
     if (kind.endsWith(".merge") || kind.endsWith(".close")) {
       const merge = kind.endsWith(".merge");
+      // An adopted PR's merge names one PR and its adoption (ship files it on the PR's task with a fresh attempt each time).
+      if (merge && (a.generation !== undefined || a.attempt !== undefined) && (!Number.isInteger(a.generation) || !Number.isInteger(a.attempt) || (a.prs ?? []).length !== 1)) throw fail(400, "a merge for an adopted PR names one PR, its generation and its attempt");
       const prs = [];
       const changed: Changed[] = [];
       let diff = "";
@@ -323,6 +409,7 @@ export function createService(o: Options) {
           // Code review's verdict for this head on the product repo: with ci-required green, a real pass skips the AI reviewer.
           ...(merge && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, Number(p.number), String(pr.head?.sha)) } : {}),
           ownHead: pushedHeads().includes(pushedKey(s.slug, String(pr.head?.sha))), dependabot: pr.user?.login === "dependabot[bot]",
+          ...(merge && a.generation !== undefined ? { ship: await adoption(s.slug, Number(p.number), a.generation, p.head, pr, p.base) } : {}),
         });
       }
       const urls = prs.map((p) => `https://github.com/${p.repo}/pull/${p.number}`).join(", ");
@@ -333,6 +420,13 @@ export function createService(o: Options) {
     const branches = [];
     const changed: Changed[] = [];
     let diff = "";
+    // A push onto an adopted PR's branch: exactly one branch, of that PR's repository, filed as a push (never a PR).
+    let onto: { pr: any; s: ReturnType<typeof slugOf> } | undefined;
+    if (a.pr !== undefined || a.expected !== undefined || a.generation !== undefined) {
+      if (!kind.endsWith(".push") || !a.pr || (a.only ?? []).length !== 1 || !same(slugOf(a.only[0].repo).slug, slugOf(a.pr.repo).slug)) throw fail(400, "a push onto an adopted PR names that PR, its generation and the head it expects, and one branch of its repository");
+      const s = slugOf(a.pr.repo);
+      onto = { s, pr: await api("GET", `/repos/${s.slug}/pulls/${Number(a.pr.number)}`) };
+    }
     for (const b of a.only ?? []) {
       const { s, dir } = await fromWorkspace(a.workspace, b);
       const def = await defaultBranch(s.slug);
@@ -355,7 +449,8 @@ export function createService(o: Options) {
       for (const f of files) reads.push({ name: `${s.slug} ${f}`, read: () => git(dir, ["show", `${b.sha}:${f}`]) });
       // A branch's PR targets the default branch (execute opens it there); a repo with none yet has no base to read.
       bases.push({ repo: s.slug, base: empty ? "" : def, read: (path) => git(dir, ["show", `refs/remote/${def}:${path}`]), dir, tip });
-      branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty });
+      const ship = onto ? { ...(await adoption(onto.s.slug, Number(a.pr.number), a.generation, a.expected, onto.pr)), branch: b.branch } : undefined;
+      branches.push({ repo: s.slug, branch: b.branch, sha: b.sha, base: mb || undefined, files, defaultBranch: def, empty, ...(ship ? { ship } : {}) });
     }
     const names = branches.map((b) => `${b.repo} \`${b.branch}\``).join(", ");
     return { state: { ...base, branches }, facts: { target: names, sentence: `${kind.endsWith(".pr") ? "Push and open a PR for" : "Push"} ${names}.`, diff: diff.trim() }, reads, changed, bases, own, task: String(a.workspace ?? "") };
@@ -374,7 +469,7 @@ export function createService(o: Options) {
   const executor: Executor = {
     async plan(req: PlanRequest) {
       if (req.kind.endsWith(".setup")) return setupWrite.plan(api, req.args, (text) => (ownRepo(String(req.args?.repo), o.fleetOrg, o.productRepo) ? undefined : leakIn(text)));
-      const { state, facts, reads, changed, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; own?: Set<string>; task?: string };
+      const { state, facts, reads, changed, bases, own, task } = (await stateFor(req.kind, req.args ?? {}, req.requester, req.task)) as Awaited<ReturnType<typeof stateFor>> & { reads?: { name: string; read: () => Promise<string> }[]; changed?: Changed[]; bases?: Base[]; own?: Set<string>; task?: string };
       const planned = planRules({ kind: req.kind, args: req.args }, state, facts);
       // Who asked, by the request's exact kind and args (the revalidating plan carries the record's own args, as execute
       // does): a write held while GitHub is disconnected is re-checked as them, and its PR is signed with their name.
@@ -393,6 +488,8 @@ export function createService(o: Options) {
       if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
       // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
       if (rec.kind.endsWith(".publish_module")) return access.connected() ? publishModule(rec.args) : { ok: false, text: "GitHub isn't connected: preview again once it is." };
+      // An approval or an enqueue is never held: its adoption and head are read again by the next round, which files a new one.
+      if (/\.(approve|enqueue)$/.test(rec.kind) && !access.connected()) return { ok: false, text: "GitHub isn't connected: the next round asks again once it is." };
       // GitHub signed out, or signed out mid-write: the approved record waits (held.json) and runs once by id after the reconnect.
       if (!access.connected()) return hold(rec);
       try {
@@ -411,6 +508,9 @@ export function createService(o: Options) {
       const ref = (slug: string) => `github:${slug.toLowerCase()}`;
       const action = rec.kind.replace(/^github\./, "");
       const done: string[] = [];
+      if (action === "approve") return approve(a);
+      if (action === "enqueue") return enqueue(a);
+      if (action === "push" && a.pr) return pushOnto(a);
       if (action === "push" || action === "pr") {
         for (const b of a.only) {
           const { s, dir } = await fromWorkspace(a.workspace, b);
@@ -481,6 +581,94 @@ export function createService(o: Options) {
       return { ok: false, text: `no such kind ${rec.kind}` };
     }
   }
+  /**
+   * A push onto an adopted PR's branch (ship): the PR is read again here (a Tier 0 push runs right after its plan, with no
+   * revalidation), and the push carries a lease on the head the write expects, so a contributor's push in between wins and
+   * this one is refused (ship-head-moved), never forced over it. The commit is not noted as the runner's own head: the branch
+   * holds the contributor's commits, so its merge stays the AI reviewer's (foreign-head tiering, plan.ts).
+   */
+  async function pushOnto(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+    const b = a.only[0];
+    const { s, dir } = await fromWorkspace(a.workspace, b);
+    const pr = await api("GET", `/repos/${s.slug}/pulls/${Number(a.pr.number)}`);
+    const url = `https://github.com/${s.slug}/pull/${Number(a.pr.number)}`;
+    // The branch lives where the PR's head does: the base repo, or a fork whose author lets maintainers push to it.
+    const fork = pr.head?.repo && !same(String(pr.head.repo.full_name), s.slug);
+    if (!pr.head?.repo || (fork && pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainers to push: nothing was pushed.` };
+    const into = slugOf(pr.head.repo.full_name).slug;
+    if (pr.head.ref !== b.branch) return { ok: false, text: `ship-scope: \`${b.branch}\` isn't ${url}'s head branch: nothing was pushed.` };
+    if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
+    try {
+      await push(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${a.expected}`, remote(into), `${b.sha}:refs/heads/${b.branch}`]);
+    } catch (e) {
+      // The lease: someone pushed after the read above. Git's own words ("stale info", "rejected") are the refusal.
+      if (/stale info|\[rejected\]|failed to push/i.test(String((e as Error).message ?? e))) return { ok: false, text: `ship-head-moved: ${url} moved while pushing (the lease on \`${String(a.expected).slice(0, 12)}\` refused it): nothing was pushed; read it again.` };
+      throw e;
+    }
+    flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
+    flow.checksStarted(s.slug, Number(a.pr.number), b.sha, undefined, a.workspace);
+    return { ok: true, text: `Pushed ${url} \`${b.branch}\` from \`${String(a.expected).slice(0, 12)}\` to \`${b.sha.slice(0, 12)}\`.`, objects: [`github:${s.slug.toLowerCase()}@${b.sha}`] };
+  }
+
+  /**
+   * The reviewer's approval of an adopted PR at exactly its head (`commit_id`), as the reviewer App where it is installed, else
+   * as the owner. Its approvals of earlier heads are dismissed, so only the current head carries one. GitHub has no
+   * compare-and-swap for a review: the head is read before and after, and an approval that raced a push is dismissed again.
+   */
+  async function approve(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const moved = (sha: unknown) => ({ ok: false, text: `ship-head-moved: ${url} is at \`${String(sha ?? "").slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not approved.` });
+    const before = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    if (before.head?.sha !== a.head) return moved(before.head?.sha);
+    const app = await o.reviewer?.(s.slug);
+    const as = app ?? { login: String((await ownerLogin()) ?? ""), rest: gh };
+    const dismiss = (id: unknown) => as.rest("PUT", `/repos/${s.slug}/pulls/${n}/reviews/${id}/dismissals`, { message: "Superseded: the PR has a new head.", event: "DISMISS" })
+      .then((r) => { if (r.status >= 300) log("ship approval not dismissed", { pr: url, review: id, status: r.status }); }, (e: Error) => log("ship approval not dismissed", { pr: url, review: id, err: String(e.message).slice(0, 200) }));
+    const r = await as.rest("POST", `/repos/${s.slug}/pulls/${n}/reviews`, { event: "APPROVE", commit_id: a.head });
+    if (r.status >= 300) return { ok: false, text: `GitHub refused the approval of ${url}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    const after = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    if (after.head?.sha !== a.head) { await dismiss(r.body?.id); return moved(after.head?.sha); }
+    const reviews = await api("GET", `/repos/${s.slug}/pulls/${n}/reviews?per_page=100`).catch(() => []);
+    for (const x of Array.isArray(reviews) ? reviews : []) if (same(String(x.user?.login ?? ""), as.login) && x.state === "APPROVED" && x.commit_id !== a.head) await dismiss(x.id);
+    return { ok: true, text: `Approved ${url} at \`${String(a.head).slice(0, 12)}\`${app ? ` as ${app.login}` : ""}.`, objects: [`github:${s.slug.toLowerCase()}#${n}`] };
+  }
+
+  /**
+   * An adopted PR into its branch's merge queue, bound by GitHub to the head (`expectedHeadOid`). An answer that never came
+   * (a timeout, a 5xx) is reconciled by reading the PR's queue entry, never by asking again: queued at this head (or merged at
+   * it) is done; anything else fails and the next round files a new attempt after reading the PR itself.
+   */
+  async function enqueue(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+    const s = slugOf(a.repo);
+    const n = Number(a.number);
+    const url = `https://github.com/${s.slug}/pull/${n}`;
+    const read = async () => {
+      const r = await gh("POST", "/graphql", { query: QUEUE_READ, variables: { owner: s.org, repo: s.name, number: n } });
+      const pr = r.body?.data?.repository?.pullRequest;
+      if (r.status >= 300 || r.body?.errors?.length || !pr) throw fail(502, `GitHub couldn't read ${url}'s queue entry: ${r.body?.errors?.[0]?.message ?? r.status}`);
+      return pr;
+    };
+    const settled = (pr: any) => {
+      if (pr.state === "MERGED" && pr.headRefOid === a.head) return { ok: true, text: `${url} is merged at \`${String(a.head).slice(0, 12)}\`.` };
+      if (pr.isInMergeQueue && pr.mergeQueueEntry?.headCommit?.oid === a.head) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
+      return undefined;
+    };
+    const pr = await read();
+    const now = settled(pr);
+    if (now) return now;
+    if (pr.state !== "OPEN") return { ok: false, text: `${url} is ${String(pr.state).toLowerCase()}: not queued.` };
+    if (pr.headRefOid !== a.head || pr.isInMergeQueue) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
+    let r: { status: number; body: any } | undefined;
+    try { r = await gh("POST", "/graphql", { query: ENQUEUE, variables: { id: pr.id, head: a.head } }); } catch (e) { log("enqueue unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
+    if (r && r.status < 300 && !r.body?.errors?.length) return { ok: true, text: `${url} is in the merge queue at \`${String(a.head).slice(0, 12)}\`.` };
+    // GitHub's own refusal (a GraphQL error, a 4xx): the PR wasn't queued.
+    if (r && r.status < 500) return { ok: false, text: `GitHub refused to queue ${url}: ${String(r.body?.errors?.[0]?.message ?? r.body?.message ?? r.status).slice(0, 300)}` };
+    const again = await read().catch(() => undefined);
+    return (again && settled(again)) ?? { ok: false, text: `${url}: GitHub didn't answer the enqueue and the PR doesn't read as queued at \`${String(a.head).slice(0, 12)}\`: the next round reads it and asks again.` };
+  }
+
   /**
    * Create org/name, private, with a README: only for an approved create_repo (the one caller). Naming, adding or detecting a
    * repo never creates one. "exists" when GitHub says the name is taken.
@@ -556,7 +744,7 @@ export function createService(o: Options) {
    */
   async function stillApproved(r: Held): Promise<boolean> {
     if (!r.asker) return false;
-    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester)
+    const targets = await stateFor(r.kind, r.args ?? {}, r.asker.requester, r.asker.task)
       .then(({ state, facts }) => planRules({ kind: r.kind, args: r.args }, state, facts).targets as Record<string, { commit?: string | null }>)
       .catch((e) => { if (disconnected(e)) throw e; return undefined; });
     if (!targets) return false;

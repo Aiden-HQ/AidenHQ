@@ -12,8 +12,31 @@ import { productMergeEligible, type Verdict } from "./merge-gate.ts";
 
 interface Part { tier: 0 | 1 | 2; rule: string; reason: string; reject?: boolean }
 interface Check { name?: string; ok?: boolean; pending?: boolean; skipped?: boolean }
-interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string }
-interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string; /** Code review's verdict for the head (product merges). */ verdict?: Verdict }
+interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string; /** A push onto an adopted PR's branch (ship). */ ship?: Ship }
+interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string; /** Code review's verdict for the head (product merges). */ verdict?: Verdict; /** A merge the ship module filed for an adoption. */ ship?: Ship }
+/**
+ * A write for one adopted PR (the ship module's), as the code host read it now: what the record names (`generation`,
+ * `expected` head) beside GitHub's PR and ship's adoption. Every such write is refused on any mismatch (ship-scope,
+ * ship-head-moved, ship-generation, ship-fork), so a contributor's push or a newer hand-off always wins over an older write.
+ */
+export interface Ship {
+  number: number; generation: number; expected: string;
+  /** The PR's head now: its commit, the repository it lives in (null: a deleted fork), its branch, and whether its author lets
+   * maintainers push to a fork's branch (`maintainer_can_modify`). */
+  head?: string; headRepo?: string | null; headRef?: string; canModify?: boolean;
+  /** A push's branch (args.only): it must be the PR's own head branch. */
+  branch?: string;
+  /** The base branch the write is bound to (args `base`) and the PR's base now: a retarget refuses it (ship-target). */
+  bound?: string; baseRef?: string;
+  /** Ship's adoption: its current generation (null: not adopted, undefined: ship isn't installed) and the adoption's task. */
+  current?: number | null; task?: string;
+  /** The record's task, its id and identifier: an adoption's write is filed on that adoption's task. */
+  filedOn?: string[];
+  /** Filed by the ship module (itself, or for a task through `filed_by`). */
+  byShip?: boolean;
+  /** An approval GitHub would refuse: no reviewer App, and the PR is the owner's own (the code host opened it). */
+  selfApproval?: boolean;
+}
 interface State {
   agentsOrgs?: string | string[];
   agentsOrg?: string;
@@ -61,7 +84,50 @@ export function planParts(action: string, s: State) {
   if (action === "close") return (s.prs ?? []).map((p) => [closePart(p, s)]);
   if (action === "create_repo") return [[createRepoPart(s)]];
   if (action === "publish_module") return [[publishModulePart(s)]];
+  if (action === "approve" || action === "enqueue") return (s.prs ?? []).map((p) => shipEffectParts(action, p, s));
   return [];
+}
+
+/**
+ * Why a write for an adopted PR is refused, or undefined: ship isn't installed or the adoption is gone or newer
+ * (ship-generation), the write isn't for that PR's own branch or task (ship-scope), the PR's head lives in a fork (ship-fork),
+ * or its head moved off the one the write names (ship-head-moved). Refusals, never waits: the next round reads the PR again.
+ */
+export function shipRefusal(x: Ship, ref: string): Part | undefined {
+  if (x.current === undefined) return REJECT("ship-generation", `${ref}: the ship module isn't installed, so no adoption can be checked`);
+  if (x.current === null) return REJECT("ship-generation", `${ref} isn't adopted by ship (handed back, stopped or never handed over)`);
+  if (x.current !== x.generation) return REJECT("ship-generation", `${ref}: generation ${x.generation} is stale, the adoption is at ${x.current}`);
+  if (x.task && !(x.filedOn ?? []).includes(x.task)) return REJECT("ship-scope", `${ref}: the write isn't on the adoption's task`);
+  // A push onto a fork's branch only where its author allows maintainers to modify it; a merge or an approval is the base repo's.
+  if (x.branch !== undefined && (x.headRepo === null || (x.headRepo !== undefined && !same(x.headRepo, ref.split("#")[0]) && !x.canModify))) return REJECT("ship-fork", `${ref}: its head is in a fork whose author doesn't allow maintainers to push: hold it with a note`);
+  if (x.bound !== undefined && x.bound !== x.baseRef) return REJECT("ship-target", `${ref} now targets \`${String(x.baseRef ?? "")}\`, not \`${x.bound}\`: read it again`);
+  if (x.branch !== undefined && x.branch !== x.headRef) return REJECT("ship-scope", `${ref}: \`${x.branch}\` isn't the PR's head branch`);
+  if (!x.head || x.head !== x.expected) return REJECT("ship-head-moved", `${ref} moved to \`${String(x.head ?? "").slice(0, 12)}\` since \`${x.expected.slice(0, 12)}\`: read it again`);
+  return undefined;
+}
+
+/**
+ * approve and enqueue: Tier 0 when the adoption, its generation, the target and the head all match, else refused.
+ * Only the ship module files them (its `approve` setting is what lets a PR be approved: an agent's job can't go around it),
+ * only where the fleet may merge, and never an approval GitHub would refuse as the PR author's own. An enqueue is a merge by
+ * GitHub's queue, so a head the runner didn't push goes to the AI reviewer first, as a direct merge's does.
+ */
+function shipEffectParts(action: "approve" | "enqueue", p: Pr, s: State): Part[] {
+  const part = shipEffectPart(action, p, s);
+  if (part.reject || action !== "enqueue" || p.ownHead) return [part];
+  const listed = inMaintained(p.repo, s);
+  return [T(1, listed ? "maintained-merge-foreign-head" : same(p.repo, s.productRepo) ? "product-merge-foreign-head" : "agents-org-merge-foreign-head", `${p.repo}#${p.number}: its head isn't a commit the runner pushed (the reviewer reads that exact head before the queue merges it)`), part];
+}
+function shipEffectPart(action: "approve" | "enqueue", p: Pr, s: State): Part {
+  const ref = `${p.repo}#${p.number ?? "?"}`;
+  if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
+  if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inMaintained(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and maintainer_repos`);
+  if (!p.ship) return REJECT("ship-generation", `${ref}: a ${action} names an adoption`);
+  if (!p.ship.byShip) return REJECT("ship-only", `${ref}: only the ship module files a ${action}`);
+  const refused = shipRefusal(p.ship, ref);
+  if (refused) return refused;
+  if (action === "approve" && p.ship.selfApproval) return REJECT("ship-self-approval", `${ref} was opened by the code host's account, which GitHub won't let approve it: set up the reviewer App`);
+  return T(0, `ship-${action}`, `${ref}: adopted at generation ${p.ship.generation}, at its head \`${p.ship.expected.slice(0, 12)}\``);
 }
 
 function publishParts(action: string, b: Branch, s: State): Part[] {
@@ -70,7 +136,12 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
   if (!Array.isArray(b.files)) return [REJECT("unknown-files", `couldn't tell which files ${b.repo} \`${b.branch}\` changes; try again`)];
   // A job without the platform role pushes only its own task's branches (agent/<task>/…): never a branch another
   // requester's PR stands on, a protected or deploy branch, or the default branch.
-  const foreign = !s.requester?.platform && !b.branch.startsWith(`agent/${s.workspace}/`);
+  // A push onto an adopted PR's branch is checked against the adoption first: when it holds, that one ref is the task's.
+  if (b.ship) {
+    const refused = shipRefusal(b.ship, `${b.repo}#${b.ship.number}`);
+    if (refused) return [refused];
+  }
+  const foreign = !b.ship && !s.requester?.platform && !b.branch.startsWith(`agent/${s.workspace}/`);
   const namespace = () => REJECT("branch-namespace", `\`${b.branch}\` isn't this task's branch: name it \`agent/${s.workspace}/<topic>\` and publish again`);
   if (same(b.repo, s.productRepo)) {
     if (b.empty || b.branch === b.defaultBranch) return [REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`)];
@@ -176,6 +247,8 @@ function checkCounts(checks: Check[]) {
 
 function mergeParts(p: Pr, s: State): Part[] {
   const ref = `${p.repo}#${p.number ?? "?"}`;
+  const refused = p.ship && shipRefusal(p.ship, ref);
+  if (refused) return [refused];
   // The instance repo is refused before anything reads its files: it changes only through apply, whatever it touches.
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
   if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);
@@ -245,14 +318,14 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
   const refused = parts.find((p) => p.reject);
   if (refused) throw Object.assign(new Error(refused.reason), { rule: refused.rule });
   const top = parts.reduce((a, b) => (b.tier > a.tier ? b : a));
-  const targets = action === "merge" || action === "close"
+  const targets = action === "merge" || action === "close" || action === "approve" || action === "enqueue"
     ? Object.fromEntries((state.prs ?? []).map((p) => [`${p.repo}#${p.number}`, { repo: p.repo, ref: isLocal(p.repo) ? `change/${p.number}` : `pull/${p.number}`, commit: p.head ?? null, base_sha: p.base ?? null }]))
     : action === "create_repo" ? { [String(state.repo)]: { repo: state.repo } }
     : action === "publish_module" ? { [`${state.repo} ${state.ref}`]: { repo: state.repo, ref: state.ref, commit: state.base } }
     // `base_branch` is the destination the plan read: a publish's open-PR lookup and its new PR's base both use it, so a
     // default-branch switch after approval makes the record stale rather than editing the PR into the new base.
     : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null, base_branch: b.defaultBranch ?? null }]));
-  const items = action === "push" || action === "pr" ? state.branches : action === "merge" ? state.prs : undefined;
+  const items = action === "push" || action === "pr" ? state.branches : action === "merge" || action === "enqueue" ? state.prs : undefined;
   const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));
   return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier as 1 | 2, reason: top.reason, rule: top.rule } } : {}) };
 }
