@@ -3,7 +3,7 @@
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
 import { findPrs, staleHead } from "./text.ts";
-import { GATE_CHECK, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
 import { closedBy } from "../aidenhq-sdk/closed-event.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
@@ -652,6 +652,16 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // The base commit (baseCommitOf): the base ref's commit recorded on the PR, never the base branch's moving tip or the git
     // merge base. "not established" is missing evidence rather than a guess.
     facts.push(`${p.url}: ${pr.state.toLowerCase()}${merged ? ` into ${pr.baseRefName}` : ` (base ${pr.baseRefName})`}${base ? `, base commit ${base} (the recorded base ref commit)` : ", base commit not established"}, head ${pr.headRefOid}${merged && pr.mergeCommit?.oid ? `, merge commit ${pr.mergeCommit.oid}` : ""}; checks: ${checks.length ? checks.map((c: any) => `${c.name} ${checkState(pr, c, gate)}`).join(", ") : "none"}${byRecord ? "; named by the runner's own record for this task, which is how its number was told from another change" : ""}${byName ? "; named by the deliverable's own ref" : ""}`);
+    // Code review's status is advisory in the named checks (the merge gate asks its verdict itself), so it is left out of that
+    // list and stated as one fact of its own when the head carries it: a rubric that names `aidenhq/review` has something to
+    // read. It is read only from a commit status: code review publishes the status, and a check run wearing the same name is
+    // not its verdict. An absent status is no fact at all, and it never holds the grade (`checks` and `gateOn` decide that).
+    const review = (pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).find((n: any) => n.__typename === "StatusContext" && n.context === CODE_REVIEW_STATUS);
+    if (review) {
+      const status = contextStatus(review);
+      const state = ["PENDING", "EXPECTED", "QUEUED", null, undefined].includes(status) ? "still running" : status === "SUCCESS" ? "green" : status === "NEUTRAL" ? "not green (neutral)" : "not green (failed)";
+      facts.push(`${p.url}: code review's ${CODE_REVIEW_STATUS} status on head ${pr.headRefOid}: ${state}`);
+    }
     // The command facts this change adds: one line per green suite job on this head (see `commandFacts`).
     facts.push(...(await commandFacts(pr, p.repo, deps)));
     // The author's own words: code labels them and says whether they were cut; the text itself goes fenced, as data.
