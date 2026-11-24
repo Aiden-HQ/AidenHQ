@@ -110,14 +110,18 @@ const SENTINELS = [
   // DeepSeek's turn markers, which stand alone at an edge and name the role in the marker itself.
   "<\uff5cUser\uff5c>", "<\uff5cAssistant\uff5c>", "<\uff5cSystem\uff5c>",
 ];
+/**
+ * A chat template's message header and the roles its own template gives a turn: `model` is Gemma's role, not ChatML's, so a
+ * reply that opens with `<|im_start|>model` is a heading, and its text stays.
+ */
+const HEADERS: { text: string; roles: string[] }[] = [
+  { text: "<|im_start|>", roles: ["system", "user", "assistant", "tool", "ipython"] },
+  { text: "<\uff5cim_start\uff5c>", roles: ["system", "user", "assistant", "tool", "ipython"] },
+  { text: "<|start_header_id|>", roles: ["system", "user", "assistant", "ipython", "tool"] },
+  { text: "<start_of_turn>", roles: ["user", "model", "system"] },
+];
 /** The padding beside a sentinel: whitespace and the invisible characters a tokenizer leaves around one. */
 const PAD = /[\s\u200b\ufeff\u2060]/;
-/** A chat template's message header, which carries the role of the turn that follows it. */
-const START = /^(?:<\|im_start\|>|<\uff5cim_start\uff5c>|<\|start_header_id\|>|<start_of_turn>)$/;
-/** A turn's role, and the same at the end of a reply: what a template leaves when its turn held no reply body. */
-const ROLE_START = /^(?:system|user|assistant|model|tool|ipython)(?=[\s\u200b\ufeff\u2060]*(?:$|\r?\n|<[|\uff5c]|<end_of_turn>))/;
-/** A turn's role as it ends a reply: checked as a suffix, so a long reply is not rescanned for a role it never had. */
-const ROLES = ["system", "user", "assistant", "model", "tool", "ipython"];
 /** The same as `skipEnd` for the padding inside a line: spaces and invisible characters, never a newline. */
 const skipSpace = (text: string, from: number, to: number) => {
   let i = to;
@@ -135,28 +139,35 @@ const skipEnd = (text: string, from: number, to: number) => {
   while (i > from && PAD.test(text[i - 1]!)) i--;
   return i;
 };
-/** How much of the text after a header a role may occupy, so a long reply is not matched against in full. */
-const ROLE_SLICE = 64;
+/** How long a role at `at` is, when one of `roles` starts there and the reply has a role's delimiter after it, else 0. */
+const roleAt = (text: string, at: number, to: number, roles: string[]) => {
+  const role = roles.find((r) => text.startsWith(r, at));
+  if (!role) return 0;
+  let i = at + role.length;
+  while (i < to && /[ \t\u200b\ufeff\u2060]/.test(text[i]!)) i++;
+  return i >= to || text[i] === "\n" || text[i] === "\r" || text[i] === "<" ? role.length : 0;
+};
 /** How far a leading header and its role reach past `from`, or undefined when the text there opens with neither. */
 const afterHeader = (text: string, from: number, to: number) => {
-  const header = SENTINELS.find((s) => START.test(s) && text.startsWith(s, from) && text[from - 1] !== "\\");
+  const header = HEADERS.find((h) => text.startsWith(h.text, from) && text[from - 1] !== "\\");
   if (!header) return undefined;
   // Only padding, never a newline, may sit between a header and its role: a role on the next line is the reply's own word.
-  let at = from + header.length;
+  let at = from + header.text.length;
   while (at < to && /[ \t\u200b\ufeff\u2060]/.test(text[at]!)) at++;
-  const role = text.slice(at, Math.min(to, at + ROLE_SLICE)).match(ROLE_START)?.[0].length ?? 0;
-  return at - from + role;
+  return at - from + roleAt(text, at, to, header.roles);
 };
 /** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
 const beforeHeader = (text: string, from: number, to: number) => {
   const end = skipEnd(text, from, to);
-  const role = ROLES.find((r) => end - r.length >= from && text.startsWith(r, end - r.length));
-  if (!role) return undefined;
-  // As at the opening edge, a role on the next line is the reply's own word, never a template's role line.
-  const head = skipSpace(text, from, end - role.length);
-  const header = SENTINELS.find((s) => START.test(s) && head - s.length >= from
-    && text.startsWith(s, head - s.length) && text[head - s.length - 1] !== "\\");
-  return header ? head - header.length : undefined;
+  for (const header of HEADERS) {
+    const role = header.roles.find((r) => end - r.length >= from && text.startsWith(r, end - r.length));
+    if (!role) continue;
+    // As at the opening edge, a role on the next line is the reply's own word, never a template's role line.
+    const head = skipSpace(text, from, end - role.length);
+    if (head - header.text.length >= from && text.startsWith(header.text, head - header.text.length)
+      && text[head - header.text.length - 1] !== "\\") return head - header.text.length;
+  }
+  return undefined;
 };
 /**
  * True when the marker from `from` to `to` stands alone on a quoted line ("> <|im_end|>", or an indented code block): text the
