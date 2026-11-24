@@ -62,7 +62,7 @@ const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.Des
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string; /** One approval card (#/approvals/<id>). */ card?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean } | { kind: "page"; id: string };
+type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string; /** One approval card (#/approvals/<id>). */ card?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean } | { kind: "page"; id: string; sub?: string };
 
 /** My day's Done column: cards shown before "Show more". */
 const DONE_PAGE = 10;
@@ -148,7 +148,8 @@ function parseRoute(): Route {
   // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
   if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
   // #/reviews[/…]: the Reviews page is code review's module page now (links from before it moved).
-  if (/^reviews(\/[\w/-]*)?$/.test(h)) return { kind: "page", id: "code-review" };
+  const rv = /^reviews(?:\/([\w/-]{1,100}))?$/.exec(h);
+  if (rv) return { kind: "page", id: "code-review", ...(rv[1] ? { sub: rv[1] } : {}) };
   // #/flow/<tab> opens a Flow tab (Flow.tsx reads the tab itself).
   if (/^flow\/[a-z]+(\?.*)?$/.test(h)) return { kind: "view", view: "flow" };
   const setup = /^setup\/([a-z0-9-]{1,63})(\?change=1)?$/.exec(h);
@@ -157,8 +158,8 @@ function parseRoute(): Route {
   if (h === "help") return { kind: "help" };
   if (h === "design") return { kind: "design" };
   // #/fleet/<id> opens a module's page (board.pages, ModuleView.tsx).
-  const page = /^fleet\/([a-z][a-z0-9-]{0,30})$/.exec(h);
-  if (page) return { kind: "page", id: page[1]! };
+  const page = /^fleet\/([a-z][a-z0-9-]{0,30})(?:\/([\w/-]{1,100}))?$/.exec(h);
+  if (page) return { kind: "page", id: page[1]!, ...(page[2] ? { sub: page[2] } : {}) };
   // #/apps/<name> opens an app's page.
   const app = /^apps\/([a-z0-9-]+)$/.exec(h);
   if (app) return { kind: "app", name: app[1]! };
@@ -857,7 +858,7 @@ export function App() {
       {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
       {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
-      {view === "fleet" && route.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={route.id} page={pages.find((p) => p.id === route.id)} onSignIn={signInNeeded} /></Suspense>}
+      {view === "fleet" && route.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={route.id} sub={route.sub} page={pages.find((p) => p.id === route.id)} onSignIn={signInNeeded} /></Suspense>}
       {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}

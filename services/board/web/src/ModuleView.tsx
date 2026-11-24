@@ -33,7 +33,7 @@ function hostContext() {
   return { theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light", styles: { variables }, displayMode: "inline", platform: matchMedia("(max-width: 720px)").matches ? "mobile" : "web", locale: navigator.language, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
 }
 
-export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSignIn: () => void }) {
+export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined; /** The part of the address after the page's own (#/fleet/<id>/<sub>): handed to the view in its host context. */ sub?: string; onSignIn: () => void }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(480);
   const [proposal, setProposal] = useState<Proposal | null>(null);
@@ -65,8 +65,15 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
       if (!frame.current || e.source !== frame.current.contentWindow || loads.current > 1) return;
       const m = e.data as Msg;
       if (m?.jsonrpc !== "2.0") return;
-      if (m.method === "ui/initialize") return (started.current = true), answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: hostContext() } });
+      if (m.method === "ui/initialize") return (started.current = true), answer(m, { result: { protocolVersion: PROTOCOL, hostInfo: { name: "AidenHQ board", version: "1" }, hostCapabilities: { serverTools: {} }, hostContext: { ...hostContext(), route: sub ?? "" } } });
       if (m.method === "ui/notifications/size-changed" && typeof m.params?.height === "number") return setHeight(Math.min(4000, Math.max(160, Math.ceil(m.params.height))));
+      // A link the view asks to open: http(s) only, in a new tab the page can't reach back from.
+      if (m.method === "ui/open-link") {
+        const url = typeof m.params?.url === "string" && URL.canParse(m.params.url) ? new URL(m.params.url) : null;
+        if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) return answer(m, { error: { code: -32602, message: "only http and https links open" } });
+        window.open(url.href, "_blank", "noopener,noreferrer");
+        return answer(m, { result: {} });
+      }
       if (m.method !== "tools/call") return; // ui/notifications/initialized needs nothing; anything else isn't offered
       const r: { result?: unknown; error?: { code?: number; message?: string } } = await api.viewCall(id!, String(m.params?.name ?? ""), m.params?.arguments).catch((err: Error) => {
         if (err instanceof SignInRequired) onSignIn();
@@ -79,7 +86,7 @@ export function ModuleView({ page, onSignIn }: { page: PageRow | undefined; onSi
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [id, onSignIn]);
+  }, [id, sub, onSignIn]);
 
   if (!page)
     return (

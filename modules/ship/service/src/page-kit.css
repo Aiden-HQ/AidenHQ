@@ -29,5 +29,9 @@ button:disabled { opacity: .5; cursor: default; }
 .note { padding: 8px 14px; border-top: 1px solid var(--line); color: var(--soft); }
 .note:empty { display: none; }
 .note.err { color: var(--color-text-danger, red); }
+.lnk { color: var(--accent); cursor: pointer; text-decoration: underline; overflow-wrap: anywhere; }
+.md p, .md ul, .md ol { margin: 0 0 8px; } .md ul, .md ol { padding-left: 20px; } .md h3, .md h4, .md h5, .md h6 { margin: 10px 0 4px; font-size: 13.5px; font-weight: 600; }
+.md pre { margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; white-space: pre; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.md code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 4px; border-radius: 4px; background: color-mix(in srgb, var(--line) 22%, transparent); }
 .lab { display: none; color: var(--soft); font-size: 12px; }
 @media (max-width: 860px) { .row.cols { display: none; } .lab { display: block; margin-bottom: 2px; } }

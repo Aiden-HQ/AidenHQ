@@ -3,7 +3,7 @@
      Its own parts only: the shared kit (services/shared/page-kit.css and .js: the bridge, helpers and common styles) is inlined where the
      markers sit (mcp.ts pageHtml). Calls only the code_review_* tools declared on the page (module.yaml board.pages) through the host; as the
      owner, code_review_configure only proposes: the board shows the change and files it on his Save. PR titles, findings and reports are
-     strangers' or a model's words: set as text only, and shown as text (the frame has no navigation, so a URL is not a link).
+     strangers' or a model's words: set as text only, and links open through the host (kit link()), reports and findings through the kit's safe markdown.
      docs/design/board-ui.md "Modules". -->
 <html lang="en">
 <head>
@@ -44,7 +44,8 @@
   .finding:first-of-type { border-top: 0; }
   .finding.important { box-shadow: inset 2px 0 0 var(--bad); } .finding.nit { box-shadow: inset 2px 0 0 var(--warn); }
   .finding h4 { margin: 0; font-size: 13.5px; font-weight: 600; }
-  .finding p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .finding p { overflow-wrap: anywhere; }
+  .finding textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; resize: vertical; }
   .finding pre, .report { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
   .finding summary { color: var(--soft); cursor: pointer; }
   .facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
@@ -107,6 +108,7 @@
   const LENSES = { correctness: "Correctness", security: "Security", maintainability: "Maintainability", performance: "Performance" };
   const live = (r) => r.status === "queued" || r.status === "waiting" || r.status === "running";
   const skipWords = (why) => { if (!why) return "Skipped"; const k = why.split(":")[0].trim().toLowerCase(); return SKIPS[k] ?? why.replace(/^./, (c) => c.toUpperCase()); };
+  const costText = (u) => (u < 0.005 ? "<$0.01" : u < 10 ? `$${u.toFixed(2)}` : `$${Math.round(u)}`);
   const usd = (n) => (n == null ? "—" : `$${Number(n).toFixed(2)}`);
   const short = (s) => String(s ?? "").slice(0, 7);
   const when = (r) => r.started ?? r.ended ?? new Date().toISOString();
@@ -116,6 +118,7 @@
   const engineLabel = (k) => ov?.engines?.[k]?.label ?? k;
   const comboLabel = (c) => `${engineLabel(c.engine)} · ${String(c.model).replace(/^~/, "").split("/").pop()} · ${c.effort}`;
   const fail = (e) => say(e.message, true);
+  const gh = (url, text) => (/^https:\/\/github\.com\//.test(String(url ?? "")) ? link(url, text) : h("span", { textContent: text ?? "" }));
 
   const t = (tag, cls, text, props) => h(tag, { className: cls ?? "", ...(text !== undefined ? { textContent: text } : {}), ...(props ?? {}) });
   const btn = (text, fn, cls, props) => { const b = h("button", { type: "button", textContent: text, className: cls ?? "", ...(props ?? {}) }); b.addEventListener("click", fn); return b; };
@@ -131,11 +134,16 @@
   const back = () => h("div", { className: "bar" }, btn("← Reviews", () => go({ page: "list" })));
 
   /* -------------------------------------------------------------------------------- reads */
-  async function loadOverview() {
+  async function loadOverview(ctx) {
     try {
       ov = await tool("code_review_overview", {});
       $("lists").replaceChildren(...Object.entries(ov.engines).map(([k, e]) => h("datalist", { id: `models-${k}` }, ...e.models.map((m) => h("option", { value: m })))));
       render();
+      // Opened at an address (#/reviews/r/<run>, #/reviews/b/<batch>, #/reviews/<tab>): the host says which, once.
+      const at = String(ctx?.route ?? "").split("/");
+      if (at[0] === "r" && /^cr-[0-9a-f]{12}$/.test(at[1] ?? "")) go({ page: "run", id: at[1] });
+      else if (at[0] === "b" && /^b-[0-9a-f]{12}$/.test(at[1] ?? "")) go({ page: "batch", id: at[1] });
+      else if (["reviews", "repos", "insights"].includes(at[0])) (tab = at[0], render());
     } catch (e) { fail(e); }
   }
   async function loadDetail() { const id = route.id; try { const d = await tool("code_review_run_detail", { id }); if (route.id === id) { detail = d; render(); } } catch (e) { fail(e); } }
@@ -226,7 +234,7 @@
         h("span", { style: "flex:1" }),
         run.target === "tree" ? (run.batch ? btn("Repo review", () => go({ page: "batch", id: run.batch })) : h("span")) : btn("Review again", () => { form = { url: `https://github.com/${run.repo}/pull/${run.number}`, combos: [], focus: "", full: false }; go({ page: "pr" }); })),
       run.title ? t("div", "soft", run.title) : null,
-      t("div", "soft mono", run.review_url ?? run.url ?? ""))));
+      h("div", { className: "bar" }, gh(run.review_url ?? run.url, run.review_url ? "Open the review on GitHub" : run.target === "tree" ? "Open the commit" : "Open the PR")))));
     if (run.status === "skipped") out.push(t("div", "banner warn", `Skipped: ${skipWords(run.why)}.${run.target === "tree" && run.why?.startsWith("unchanged") ? (findings.length ? " Its open findings from that review are listed here." : " Nothing was open in it.") : ""}`));
     if (run.status === "failed") out.push(t("div", "banner bad", `The review didn't finish${run.why ? `: ${run.why}` : ""}. Nothing was posted. Ask again with “Review again”, or comment “aiden review” on the PR.`));
     if (review?.coverage?.incomplete) out.push(t("div", "banner warn", `Partial review: ${review.coverage.incomplete}. Files outside the reviewed set weren't checked, so fewer findings here doesn't mean clean.`));
@@ -236,14 +244,14 @@
       if (!review.findings.length) main.push(t("div", "empty", `No issues found in ${review.coverage.reviewed.length} file${review.coverage.reviewed.length === 1 ? "" : "s"}.`));
       for (const [sev, name] of SEV) {
         const list = review.findings.filter((f) => f.severity === sev);
-        if (list.length) main.push(card(name, h("small", { textContent: String(list.length) }), ...list.map((f) => finding(f, outcomes.get(f.id)))));
+        if (list.length) main.push(card(name, h("small", { textContent: String(list.length) }), ...list.map((f) => finding(f, outcomes.get(f.id), review))));
       }
     } else if (findings.length) main.push(card("Findings", h("small", { textContent: String(findings.length) }), ...findings.map((f) => h("div", { className: `finding ${f.severity}` }, h("h4", { textContent: f.title }), h("div", { className: "mono soft", textContent: `${f.path}:${f.line}${f.outcome ? ` · ${OUTCOMES[f.outcome]}` : ""}` })))));
     else if (run.status === "done") main.push(t("div", "empty", "The findings of this run are no longer kept."));
     const side = [];
     if (gate) side.push(gateCard(run, gate));
     side.push(card("Details", null, h("div", { className: "pad" }, facts([
-      ["Reviewed by", comboLabel(run)], ["Asked by", run.kind === "auto" ? "Repo trigger" : run.kind === "command" ? "aiden review on GitHub" : "One-off"], ["Head", short(run.head)],
+      ["Reviewed by", comboLabel(run)], ["Asked by", run.kind === "auto" ? "Repo trigger" : run.kind === "command" ? "aiden review on GitHub" : "One-off"], ["Head", gh(`https://github.com/${run.repo}/commit/${run.head}`, short(run.head))],
       review ? ["Scope", review.full || !review.incremental_from ? "Whole PR" : `Changes since ${short(review.incremental_from)}`] : null,
       review ? ["Files", `${review.coverage.reviewed.length} reviewed${review.coverage.excluded.length ? `, ${review.coverage.excluded.length} excluded` : ""}`] : null,
       ["Cost", usd(run.cost_usd)], run.tokens_in || run.tokens_out ? ["Tokens", `${tokens(run.tokens_in)} in, ${tokens(run.tokens_out)} out`] : null,
@@ -254,13 +262,18 @@
     out.push(h("div", { className: "split" }, h("div", { className: "stack" }, ...main), h("div", { className: "stack" }, ...side)));
     return out;
   }
-  const facts = (items) => h("dl", { className: "facts" }, ...items.filter(Boolean).flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", { textContent: v })]));
-  function finding(f, outcome) {
+  const facts = (items) => h("dl", { className: "facts" }, ...items.filter(Boolean).flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", typeof v === "string" ? { textContent: v } : {}, ...(typeof v === "string" ? [] : [v]))]));
+  function finding(f, outcome, review) {
     const where = `${f.path}:${f.line}${f.end_line && f.end_line !== f.line ? `-${f.end_line}` : ""}`;
+    const blob = review ? `https://github.com/${review.repo}/blob/${review.head}/${f.path.split("/").map(encodeURIComponent).join("/")}#L${f.line}${f.end_line ? `-L${f.end_line}` : ""}` : "";
+    // The brief for the author's coding agent: shown to select and copy (the frame has no clipboard).
+    const brief = review ? [`Fix in ${review.repo} (PR #${review.pr}, ${short(review.head)}): ${f.title}`, `Where: ${where}`, `Why: ${f.why}`, `Evidence: ${f.evidence}`, `Wanted: ${f.fix_brief}`].join("\n") : "";
+    const area = h("textarea", { readOnly: true, value: brief, ariaLabel: "Fix brief", rows: 6, spellcheck: false });
     return h("div", { className: `finding ${f.severity}` },
       h("div", { className: "bar" }, h("h4", { textContent: f.title }), outcome ? t("span", "tag", OUTCOMES[outcome]) : null),
-      t("div", "mono soft", where), t("p", "", f.why),
-      h("details", {}, h("summary", { textContent: "Why flagged" }), h("pre", { textContent: f.evidence }), h("p", {}, h("b", { textContent: "Wanted: " }), f.fix_brief)));
+      h("div", { className: "mono soft" }, blob ? gh(blob, where) : where, ...(f.url ? [" · ", gh(f.url, "View the comment")] : [])), md(f.why),
+      h("details", {}, h("summary", { textContent: "Why flagged" }), h("pre", { textContent: f.evidence }), h("div", {}, h("b", { textContent: "Wanted: " }), ...mdInline(f.fix_brief))),
+      brief ? h("details", {}, h("summary", { textContent: "Fix brief" }), area, h("div", { className: "actions" }, btn("Select all", () => { area.focus(); area.select(); }), t("small", "soft", "Then copy it, to paste to a coding agent."))) : null);
   }
   /** A gated repo's merge verdict for the PR's current head: why it waits, and a Dismiss (with a reason) for each open important finding. */
   function gateCard(run, gate) {
@@ -287,10 +300,10 @@
     const out = [back()];
     if (!b) return [...out, t("div", "empty", "This repo review isn't listed any more.")];
     out.push(card(null, null, h("div", { className: "pad" }, h("div", { className: "bar" }, h("b", { textContent: `${b.repo} ${b.sha7}` }), status(b.status === "done" ? "done" : b.status), b.verdict ? t("span", "tag", VERDICTS[b.verdict]) : h("span"), t("span", "soft", usd(b.cost_usd))),
-      b.primer_url ? t("div", "soft mono", b.primer_url) : null)));
+      b.primer_url ? h("div", {}, link(b.primer_url, "Open in Primer")) : null)));
     if ((b.status === "failed" || b.status === "skipped") && b.why) out.push(t("div", "banner bad", b.why));
     if (b.status === "done" && b.why) out.push(t("div", "banner warn", `${b.why}. The report is below.`));
-    if (b.status === "done") out.push(card("Report", null, h("div", { className: "pad" }, report === null ? t("span", "soft", "Loading…") : h("pre", { className: "report", textContent: report }))));
+    if (b.status === "done") out.push(card("Report", null, h("div", { className: "pad" }, report === null ? t("span", "soft", "Loading…") : md(report))));
     if (b.runs?.length) {
       const groups = new Map();
       for (const r of b.runs) groups.set(r.option, [...(groups.get(r.option) ?? []), r]);
@@ -350,6 +363,7 @@
       h("div", { className: "bar" }, h("div", { className: "field", style: "flex:1 1 220px" }, h("span", { textContent: "Repository" }), repo), h("div", { className: "field", style: "flex:1 1 220px" }, h("span", { textContent: "Commit" }), commit), find)))];
     if (catalog) {
       const eng = ov.engines.codex, over = form.model !== "";
+      const picked = catalog.options.filter((o) => form.ticked.has(o.id)), paid = picked.filter((o) => o.cost !== "free"), known = paid.filter((o) => estimate(o) != null), total = known.reduce((a, o) => a + estimate(o), 0);
       const list = h("div", { className: "card" }, h("div", { className: "head" }, h("b", { textContent: `Checks for ${form.repo.trim()} at ${short(catalog.sha)}` }), t("small", "", `${form.ticked.size} selected`)));
       for (const lens of Object.keys(LENSES)) {
         const opts = catalog.options.filter((o) => o.lens === lens && !o.unavailable);
@@ -367,15 +381,23 @@
         } catch (e) { run.disabled = false; fail(e); }
       }, "primary runbtn"); run.disabled = !form.ticked.size;
       out.push(list, card("Options", null, h("div", { className: "pad" },
-        h("div", { className: "grid2" }, field("Model for the checks that call one", model), field("Effort", select(eng.efforts.map((x) => [x, x]), form.effort, (v) => (form.effort = v), "Effort"))),
+        h("div", { className: "grid2" }, field("Model for the checks that call one", model), field("Effort", select(eng.efforts.map((x) => [x, x]), form.effort, (v) => { form.effort = v; render(); }, "Effort"))),
         h("label", { className: "actions" }, check(form.full, "Full review", (on) => (form.full = on)), "Full review: every area, not only those changed since each check's last review"),
+        t("span", "soft", picked.length ? `${picked.length} check${picked.length === 1 ? "" : "s"}${paid.length ? `, ${paid.length} on a model: ${known.length ? `about ${costText(total)} from past runs${known.length < paid.length ? ` plus ${paid.length - known.length} without history` : ""}` : "no cost history yet"}` : ", all free"}` : "No checks selected"),
         h("div", { className: "actions" }, run, btn("Cancel", () => { form = null; catalog = null; go({ page: "list" }); })))));
     } else out.push(h("div", { className: "actions" }, btn("Cancel", () => { form = null; go({ page: "list" }); })));
     return out;
+    function estimate(o) {
+      if (o.cost === "free") return 0;
+      const over = form.model !== "", model = over ? form.model : o.model, effort = over ? (ov.engines.codex.efforts.includes(form.effort) ? form.effort : "medium") : o.effort;
+      const past = (o.past ?? []).filter((x) => x.model === model), same = past.filter((x) => x.effort === effort), use = same.length ? same : past;
+      const n = use.reduce((a, x) => a + x.n, 0);
+      return n ? use.reduce((a, x) => a + x.usd * x.n, 0) / n : null;
+    }
     function opt(o) {
       const cb = check(form.ticked.has(o.id), o.name, (on) => { on ? form.ticked.add(o.id) : form.ticked.delete(o.id); render(); });
       cb.disabled = !!o.unavailable;
-      return h("label", { className: `opt${o.unavailable ? " off" : ""}` }, cb, h("span", {}, h("b", { textContent: o.name }), h("small", { textContent: o.unavailable ?? o.description })), t("span", "tag", o.cost));
+      return h("label", { className: `opt${o.unavailable ? " off" : ""}` }, cb, h("span", {}, h("b", { textContent: o.name }), h("small", { textContent: o.unavailable ?? o.description })), t("span", "tag", o.unavailable ? o.cost : o.cost === "free" ? "free" : estimate(o) != null ? `~${costText(estimate(o))}` : "no history", o.unavailable || o.cost === "free" ? {} : { title: "From what past repo reviews of this check cost on this model" }));
     }
   }
 
@@ -459,7 +481,7 @@
     app.replaceChildren(...(route.page === "list" ? [t("div", "card intro", "Code review reads each pull request on the repos you watch. When a PR opens, and again when it is pushed to, each reviewer you chose (an AI engine with a model) looks at the changes and posts its findings on the PR: important ones that should be fixed, and smaller nits. Watch a repo under Repos, or review any PR or whole repository by hand with the buttons here. Nothing runs until you do.")] : []), ...parts);
     if (!$("lists").querySelector("#repos")) $("lists").append(h("datalist", { id: "repos" }));
   }
-  start("code-review", loadOverview);
+  start("code-review", (ctx) => loadOverview(ctx));
 </script>
 </body>
 </html>
