@@ -583,14 +583,18 @@ and trades it at the gateway's `POST /ci/token` for an opaque CI token that live
 (`kernel/src/gateway/ci.ts`) checks GitHub's signature and that the job is a `pull_request` run of the repo's own
 `.github/workflows/ci.yml` for that PR, on a self-hosted runner in the fleet org; each run attempt trades its token
 once. The repo and PR come from that signed token, and the answer names the review model and effort
-(`settings.ci_review_model`). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
+(`settings.ci_review_model`) and the repo's risk tier rules (its `code_review` entry's `rules` and `repo_class`, or none: the template's
+default rules) with the instance App's bot login, so the job classifies the PR as code review does (below). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
 for repos on the older template) with `settings.ci_review_model` or `settings.ci_review_models`, no fallbacks, plugins,
 server tools or stored responses, zero data retention forced, under the install's spend limit (a refusal fails the review, no retry). Each call goes out while the limit is not used up
 and settles at what was billed (a Responses stream at its `response.completed`); a cut stream keeps its input estimate.
 Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job sent (advisory):
 the Costs tab's "App CI code review" line. Revoke: removing the `ci` module refuses every CI token at once.
-The reviewer is codex with codex review's guidelines (`.github/code-review.ts`, pinned `@openai/codex`), at the model's effort (critical paths
-too), one higher (xhigh) only with the `deep-review` label or text addressed to a reviewer. codex runs with its shell off: the
+The reviewer is codex with codex review's guidelines (`.github/code-review.ts`, pinned `@openai/codex`), at the effort the PR's risk tier
+chooses: the job classifies the whole PR first (`.github/tiers.ts`, `.github/codegenie-tier.ts`: the same classifier and rules as code
+review, no labels), `skip` and `trivial` PRs are not reviewed (a delta still runs), `standard` at the model's effort, `sensitive` one higher
+(xhigh at high); text addressed to a reviewer also runs one higher. A green review carries to a later head (reuse or delta) only at the same tier
+and model and an effort at least as high; its commit status records them. codex runs with its shell off: the
 runner container can't give it its sandbox (bubblewrap needs user namespaces, which Docker and the host's AppArmor refuse
 there), so its only tools are `.github/review-tools.ts`, a stdio MCP server that reads the PR's tree and git history
 (diff, log, show, blame, read a file, list files, search; for TypeScript and JavaScript definition, references and
@@ -598,16 +602,16 @@ diagnostics from a pinned typescript-language-server, with no dependencies insta
 nothing else: nothing of the PR runs, writes or connects, and its
 environment holds only the CI token (never the job's GitHub tokens). It runs from an empty directory with a config the
 job writes (hooks, plugins and apps off), so nothing in the PR is loaded as codex config or instructions; a PR that adds
-`.codex/`, `codex.toml` or `AGENTS.override.md` fails the check, and AGENTS.md is a critical path. Its answer must match
+`.codex/`, `codex.toml` or `AGENTS.override.md` fails the check (before any tier shortcut), and AGENTS.md is a sensitive path. Its answer must match
 an output schema: anything else is no verdict, which passes the check with a comment saying so ("Code review: no verdict on
 `abc1234` (not blocking)"; the system fails open rather than stalls, owner ruling 2026-11-21, replacing the fail-closed ruling of
 2026-11-17). A run without a verdict (a provider error, a timeout, an answer that isn't a review) gets one
 retry when time is left (an incomplete review is not retried); a gateway refusal (bad token, our spend cap) isn't retried. The review target of 2,000 counted lines is
 advisory: past it, a run without a verdict says the change is large and suggests stacked PRs. Findings that did come out still
 decide (high or critical block). A run without a verdict records no baseline for the next push's delta review, so the next
-push reviews the whole PR. A package-lock.json change that adds a package, changes a version or source, or adds an install script is a
-critical path, and the reviewer gets a summary of it. Its scripts and the house rules (`.github/code-review-rules.md`) come
-from the base commit. Its brief: the house rules, the app's critical paths and its AGENTS.md (base commit), and the PR's
+push reviews the whole PR. Any lockfile change is a sensitive path (a bot's manifest-and-lockfile-only PR is standard), and the reviewer gets a summary of a
+package-lock.json change. Its scripts and the house rules (the repo's `REVIEW.md`) come
+from the base commit. Its brief: the house rules, the PR's tier and its AGENTS.md (base commit), and the PR's
 title and description fenced as data, so it judges scope. P0 and P1 findings block (critical, high); P2 and P3 are listed.
 A same-repo PR can edit the workflow and spend up to the install's spend limit on the allowed models: the limit and scope are the
 boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_URL`) use the repo secret

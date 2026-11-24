@@ -43,9 +43,13 @@ export function tierOf(files: FileChange[], o: { author: string; association?: s
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  const e = process.env;
-  const raw = execFileSync("git", ["diff", "--numstat", "-z", "-M", `${e.BASE_SHA}...${e.HEAD_SHA}`], { encoding: "utf8", maxBuffer: 1 << 28 });
-  const files = changes(raw);
-  if (process.argv[2] === "refuse") console.log(codexConfig(files) ?? "");
-  else console.log(JSON.stringify(tierOf(files, { author: e.PR_AUTHOR ?? "", association: e.PR_ASSOCIATION, base: e.BASE_REF ?? "", effort: e.EFFORT || "high", tiers: e.TIERS ? JSON.parse(readFileSync(e.TIERS, "utf8")) : undefined })));
+  try {
+    const e = process.env;
+    const files = changes(execFileSync("git", ["diff", "--numstat", "-z", "-M", `${e.BASE_SHA}...${e.HEAD_SHA}`], { encoding: "utf8", maxBuffer: 1 << 28 }));
+    if (process.argv[2] === "refuse") console.log(codexConfig(files) ?? "");
+    else console.log(JSON.stringify(tierOf(files, { author: e.PR_AUTHOR ?? "", association: e.PR_ASSOCIATION, base: e.BASE_REF ?? "", effort: e.EFFORT || "high", tiers: e.TIERS ? JSON.parse(readFileSync(e.TIERS, "utf8")) : undefined })));
+  } catch (err) {
+    console.error((err as Error).message.split("\n")[0]);
+    process.exit(1);
+  }
 }
