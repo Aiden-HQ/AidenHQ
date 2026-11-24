@@ -838,6 +838,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const instanceApps = instanceAppDefs.map((a: Obj) => a.name);
   const compose: Obj = { services: {}, secrets: {}, volumes: {}, networks: {} };
   // The root compose (the product's own services, networks and secrets): what modules may reach only through LEGACY_*.
+  // instance_name is optional (a DNS label, never required) and modules pass it on as text: unset, it is the empty string, so
+  // Slack's setup still renders (its app then names itself after the owner). After the board's settings snapshot above, which
+  // shows only the values the instance has.
+  settings.instance_name ??= "";
   const base = existsSync(join(productDir, "compose.yaml")) ? readYaml(join(productDir, "compose.yaml")) : {};
   const serviceModule: Obj = {};
   const secretOwner: Obj = {};

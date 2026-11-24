@@ -127,6 +127,12 @@ test("connections go through the kernel: no compiled service mounts grants; the 
   assert.equal(r.compose.services.paperclip, undefined, "no connection token reaches paperclip");
   assert.deepEqual(r.connections.aconn, { url: "http://a-mcp:1/mcp", auth_secret: "a_service_key", module: "a", returns: "untrusted", tools: { read: ["a_get"], write: ["a_set"], destructive: [] } });
 });
+test("slack-live gets the instance's own name and the owner's, so a new Slack app is named per instance", () => {
+  const env = (settings: any) => compile(product, pinst([], { ...owner, ...settings })).compose.services["slack-live"].environment;
+  assert.deepEqual([env({ instance_name: "acme" }).INSTANCE_NAME, env({ instance_name: "acme" }).OWNER_NAME], ["acme", "Sam"]);
+  // instance_name is optional: unset, it is the empty string and the service falls back to the owner's name.
+  assert.deepEqual([env({}).INSTANCE_NAME, env({}).OWNER_NAME], ["", "Sam"]);
+});
 test("overrides apply to allowed fields only", () => {
   assert.equal(compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "m2" } } } })).paperclip.agents.x.model, "m2");
   assert.equal(compile(mods, finst(["a"], base, { overrides: { agents: { x: { max_parallel: 4 } } } })).paperclip.agents.x.max_parallel, 4);
