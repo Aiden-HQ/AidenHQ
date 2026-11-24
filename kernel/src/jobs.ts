@@ -144,8 +144,11 @@ const afterHeader = (text: string) => {
   while (at < rest.length && /[ \t\u200b\ufeff\u2060]/.test(rest[at]!)) at++;
   return header.length + at + (rest.slice(at).match(ROLE_START)?.[0].length ?? 0);
 };
-/** True when the sentinel at `at` stands alone on a Markdown blockquote line ("> <|im_end|>"): quoted text, not a leak. */
-const blockquoted = (text: string, at: number, lineStart: number) => /^[\s>]*>$/.test(text.slice(lineStart, at).trimEnd());
+/** True when the sentinel at `at` stands alone on a quoted line ("> <|im_end|>", or an indented code block): text, not a leak. */
+const quoted = (text: string, at: number, lineStart: number) => {
+  const prefix = text.slice(lineStart, at);
+  return /^[\s>]*>$/.test(prefix.trimEnd()) || /^(?:\t| {4})/.test(prefix);
+};
 /** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
 const beforeHeader = (text: string) => {
   const end = trimEnd(text).length;
@@ -186,13 +189,13 @@ export function stripSentinels(text: string): string {
   };
   for (;;) {
     const head = beforeHeader(text.slice(from, to));
-    // A header and role a blockquote quotes ("> <|im_start|>assistant") are the reply's example, not a leak.
-    const before = head !== undefined && !blockquoted(text, from + head, lineStartAt(from + head)) ? from + head : undefined;
+    // A header and role a quoted line shows ("> <|im_start|>assistant") are the reply's example, not a leak.
+    const before = head !== undefined && !quoted(text, from + head, lineStartAt(from + head)) ? from + head : undefined;
     if (before !== undefined) to = before;
     else {
       const tail = trimEnd(text.slice(from, to));
       const hit = SENTINELS.find((s) => tail.endsWith(s) && tail[tail.length - s.length - 1] !== "\\"
-        && !blockquoted(tail, tail.length - s.length, lineStartAt(from + tail.length - s.length) - from));
+        && !quoted(tail, tail.length - s.length, lineStartAt(from + tail.length - s.length) - from));
       if (!hit) break;
       to = from + tail.length - hit.length;
     }
