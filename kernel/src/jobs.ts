@@ -129,6 +129,8 @@ const skipEnd = (text: string, from: number, to: number) => {
   while (i > from && PAD.test(text[i - 1]!)) i--;
   return i;
 };
+/** How much of the text after a header a role may occupy, so a long reply is not matched against in full. */
+const ROLE_SLICE = 64;
 /** How far a leading header and its role reach past `from`, or undefined when the text there opens with neither. */
 const afterHeader = (text: string, from: number, to: number) => {
   const header = SENTINELS.find((s) => START.test(s) && text.startsWith(s, from) && text[from - 1] !== "\\");
@@ -139,8 +141,6 @@ const afterHeader = (text: string, from: number, to: number) => {
   const role = text.slice(at, Math.min(to, at + ROLE_SLICE)).match(ROLE_START)?.[0].length ?? 0;
   return at - from + role;
 };
-/** How much of the text after a header a role may occupy, so a long reply is not matched against in full. */
-const ROLE_SLICE = 64;
 /** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
 const beforeHeader = (text: string, from: number, to: number) => {
   const end = skipEnd(text, from, to);
