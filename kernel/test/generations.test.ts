@@ -13,7 +13,7 @@ import { CODEHOST } from "../src/codehost.ts";
 
 test("a merged PR is deployed at the first good generation containing it, once", async () => {
   const dir = mkdtempSync(join(tmpdir(), "gen-"));
-  const git = (...a: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" }).trim();
+  const git = (...a: string[]) => execFileSync("git", ["-C", dir, "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" }).trim();
   git("init", "-q");
   git("remote", "add", "origin", "https://github.com/o/r.git");
   git("commit", "-q", "--allow-empty", "-m", "a");
