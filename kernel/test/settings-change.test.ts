@@ -121,15 +121,15 @@ test("an agent writes a structured setting its module names its role a writer of
   const manager = { agent: "a1", key: "reviewer-manager", name: "Reviewer Manager", roles: ["reviewer-manager"], kind: "run", task: OTHER };
   const value = { repos: [{ repo: "acme/payments", on_open: "deep" }], day_usd: 100 };
   // Only the module's own agents, and only the module's own settings (a writers list elsewhere doesn't open it to this module).
-  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value }], "engineering"), /only for its own agents/);
-  await assert.rejects(apply.asAgent({ ...manager, key: "lead", roles: [] }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review"), /only for its own agents/);
+  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value }], "engineering"), /only for agents holding a role/);
+  await assert.rejects(apply.asAgent({ ...manager, key: "lead", roles: [] }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review"), /only for agents holding a role/);
   // An agent of another module holding a role the setting names a writer may file it (the Maintainer changing ship's settings).
   await apply.asAgent({ ...manager, key: "lead" }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review");
-  await assert.rejects(apply.asAgent({ ...manager, key: "lead" }, OTHER, [{ kind: "module", name: "slack", on: false }], "code-review"), /only for its own agents/);
-  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "github_fleet_org", value: "acme" }], "code-review"), /may not change github_fleet_org/);
-  await assert.rejects(apply.asAgent({ ...manager, roles: [] }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review"), /may not change code_review/);
-  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "timezone", value: "UTC" }], "code-review"), /may not change timezone/);
-  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "module", name: "slack", on: false }], "code-review"), /settings only/);
+  await assert.rejects(apply.asAgent({ ...manager, key: "lead" }, OTHER, [{ kind: "module", name: "slack", on: false }], "code-review"), /only for agents holding a role/);
+  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "github_fleet_org", value: "acme" }], "code-review"), /only for agents holding a role/);
+  await assert.rejects(apply.asAgent({ ...manager, roles: [] }, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review"), /only for agents holding a role/);
+  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "timezone", value: "UTC" }], "code-review"), /only for agents holding a role/);
+  await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "module", name: "slack", on: false }], "code-review"), /only for agents holding a role/);
   await assert.rejects(apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value: { repos: [{ repo: "${SECRET}" }] } }], "code-review"), /no control characters or \$/);
   const r = await apply.asAgent(manager, OTHER, [{ kind: "setting", key: "code_review", value }], "code-review");
   assert.deepEqual(at(r.sha).settings.code_review, value);

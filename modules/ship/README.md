@@ -6,7 +6,7 @@ Owns the lifecycle of every pull request on the repos it covers: the fleet's own
 repo) and every repo in `maintainer_repos`. This release holds the foundation: one `ship` setting with per-repo entries and
 two presets (`cautious`, the default, and `full`), every knob a per-repo setting with no floor in code (`null` caps are
 unlimited), and the adoption store. A fork's PR is ignored until a member hands it off (a member's label or `/ship` comment adopts it and starts its review through code review's existing ask). Rounds, repair, App approval and the merge arrive in later releases. The Fleet page
-(Fleet sidebar) edits the settings and shows status and metrics.
+(Fleet sidebar) edits the settings and shows status.
 
 ## Connect
 
@@ -21,5 +21,4 @@ Fleet page.
 
 ## New installs
 
-In the default bundle, quiet: a repo is worked only when it is enabled (`enabled`, on by default for the fleet's own repos; enabling a listed repo applies `cautious`). The Fleet page's controls are Enabled, Preset, Which PRs to adopt (`handoff`), Approval policy (`approve`) and Auto-merge (`merge`); discovered checks, the generator and blockers are read-only facts in `ship_status`. With `defaults: cautious` it covers only the fleet's own repos, and nothing is adopted until a later
-release switches the loop on. No other repo is touched until you list it.
+In the default bundle, quiet: a repo is worked only when it is enabled (`enabled`, on by default for the fleet's own repos; enabling a listed repo applies `cautious`). The Fleet page's controls are Enabled, Preset, Which PRs to adopt (`handoff`), Approval policy (`approve`) and Auto-merge (`merge`). With `defaults: cautious` it works only the fleet's own repos, and nothing is adopted until a later release switches the loop on. A `maintainer_repos` repo is not touched until it has an entry.

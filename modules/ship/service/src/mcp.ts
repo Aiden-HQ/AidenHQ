@@ -1,4 +1,4 @@
-// The module's MCP connection `code_review` (a stateless JSON-RPC subset: initialize, tools/list, tools/call) for the kernel's
+// The module's MCP connection `ship` (a stateless JSON-RPC subset: initialize, tools/list, tools/call) for the kernel's
 // proxy: ship's config tools (config-tool.ts). Every call carries the kernel's caller assertion, whose signed roles gate
 // each tool; the connection returns untrusted (a PR's title is a stranger's text).
 import type { IncomingMessage, ServerResponse } from "node:http";

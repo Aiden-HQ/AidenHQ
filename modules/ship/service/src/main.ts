@@ -3,11 +3,9 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
-import { handler } from "./api.ts";
 import { configTools } from "./config-tool.ts";
 import { createMcp, serveMcp } from "./mcp.ts";
-import { isModule } from "./module-caller.ts";
-import { coveredRepos } from "./settings.ts";
+import { scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
 
 const env = process.env;
@@ -18,14 +16,12 @@ const kernel = new Proxy({} as ReturnType<typeof kernelClient>, { get: (_, k) =>
 
 const json = (v: string | undefined) => { try { return JSON.parse(v || "null"); } catch { return null; } };
 const raw = () => { const v = json(env.SHIP_SETTINGS); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
-const covered = () => coveredRepos(env);
-const gated = () => (env.SHIP_GATED === undefined ? undefined : env.SHIP_GATED.split(",").map((s) => s.trim()).filter(Boolean));
+const scope = () => scopeFrom(env);
 
 const state = openState(env.SHIP_STATE_FILE ?? "/data/state.json");
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
-const api = handler({ state, isModule: (a, m) => isModule(kernelUrl, a, m) });
 const mcp = serveMcp(createMcp(configTools({
-  raw, covered, gated, state,
+  raw, scope, state,
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
@@ -33,5 +29,7 @@ const mcp = serveMcp(createMcp(configTools({
   },
 })), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
 
-createServer(async (req, res) => { if (await mcp(req, res)) return; await api(req, res); })
-    .listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101, covered: covered().length }));
+createServer(async (req, res) => {
+  if (await mcp(req, res)) return;
+  res.writeHead(req.url === "/healthz" ? 200 : 404).end();
+}).listen(8101, "0.0.0.0", () => log("ship listening", { port: 8101 }));

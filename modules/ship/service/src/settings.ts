@@ -5,7 +5,6 @@ type Dict = Record<string, unknown>;
 export const CAP_KEYS = ["wakes_per_head", "ci_rounds", "same_check_heads", "review_rounds", "rounds", "usd", "requeue_on_timeout"] as const;
 export type Caps = Record<(typeof CAP_KEYS)[number], number | null>;
 export const HANDOFF = ["none", "label", "all"] as const;
-export const EXTERNAL = ["member", "any"] as const;
 export const REBASE = ["conflict", "behind"] as const;
 export const APPROVE = ["off", "observe", "safe", "all"] as const;
 export const MERGE = ["off", "ready"] as const;
@@ -15,7 +14,6 @@ export interface ShipSettings {
   /** Whether ship adopts and works this repo's PRs (the Fleet page's Enabled switch). */
   enabled: boolean;
   handoff: (typeof HANDOFF)[number];
-  external: (typeof EXTERNAL)[number];
   rebase: (typeof REBASE)[number];
   generated: { globs: string[]; command: string } | null;
   fix: (typeof FIX)[number][];
@@ -31,13 +29,13 @@ export interface ShipSettings {
 const PROTECTED = ["**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", ".github/**", "**/.eslintrc*", "**/eslint.config.*", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS"];
 
 const CAUTIOUS: ShipSettings = {
-  enabled: true, handoff: "label", external: "member", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
+  enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
   caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, review_rounds: 3, rounds: 30, usd: 5, requeue_on_timeout: 1 },
   approve: "observe", safe: { max_lines: 1200, max_files: 50, deny: [...PROTECTED, "**/migrations/**", "**/auth/**", "**/Dockerfile*", "**/docker-compose*", "**/*.tf", "infra/**", "**/.env*", "**/config/**"] }, merge: "ready", stop_label: "ship:stop",
 };
 const FULL: ShipSettings = {
-  // Unguarded at ship's own policy layer: outside PRs admitted too. Host rules, human code-owner reviews and kernel authority still apply.
-  ...CAUTIOUS, handoff: "all", external: "any", rebase: "behind", protected: [], approve: "all",
+  // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
+  ...CAUTIOUS, handoff: "all", rebase: "behind", protected: [], approve: "all",
   caps: Object.fromEntries(CAP_KEYS.map((k) => [k, null])) as Caps,
   safe: { max_lines: null, max_files: null, deny: [] },
 };
@@ -54,11 +52,14 @@ export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CA
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-const FIELDS = ["preset", "enabled", "handoff", "external", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
+const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
-/** A repo ship covers: the agents org (`org/*`), the product repo and every maintainer_repos entry. a wildcard owner and name covers all. */
-export const isCovered = (repo: string, covered: string[]) => covered.some((c) => { const [a, b] = c.toLowerCase().split("/"); const [r, n] = repo.toLowerCase().split("/"); return (a === "*" || a === r) && (b === "*" || b === n); });
+/** Where ship works: the fleet's own repos (the agents org as `org/*`, the product repo), always; a `maintainer_repos` repo only
+ * once it has a ship entry (quiet until enabled). A wildcard owner and name matches all. */
+export interface Scope { fleet: string[]; listed: string[] }
+const match = (repo: string, list: string[]) => list.some((c) => { const [a, b] = c.toLowerCase().split("/"); const [r, n] = repo.toLowerCase().split("/"); return (a === "*" || a === r) && (b === "*" || b === n); });
+const ALL: Scope = { fleet: ["*/*"], listed: [] };
 
 /** The entry as a preset name plus overrides: `"full"`, `{ preset, ...fields }` or `{ ...fields }` over `base`. */
 function entryOf(e: unknown, base: "cautious" | "full"): { preset: "cautious" | "full"; over: Dict } {
@@ -78,16 +79,17 @@ function resolve(preset: "cautious" | "full", over: Dict): ShipSettings {
 }
 const defaultsOf = (raw: Dict) => entryOf(raw.defaults, "cautious");
 
-/** The settings a repo runs under, or null where ship doesn't cover the repo. A repo with no entry takes `defaults`. */
-export function effective(raw: unknown, repo: string, covered: string[]): ShipSettings | null {
-  if (!isCovered(repo, covered)) return null;
+/** The settings a repo runs under, or null where ship doesn't work it: not a fleet repo and no entry of its own. */
+export function effective(raw: unknown, repo: string, scope: Scope): ShipSettings | null {
   const r = isMap(raw) ? raw : {};
   const key = Object.keys(isMap(r.repos) ? r.repos : {}).find((k) => k.toLowerCase() === repo.toLowerCase());
+  if (!match(repo, scope.fleet) && !(key && match(repo, scope.listed))) return null;
   const d = defaultsOf(r);
   if (!key) return resolve(d.preset, d.over);
-  const e = entryOf((r.repos as Dict)[key], d.preset);
+  const entry = (r.repos as Dict)[key];
+  const e = entryOf(entry, d.preset);
   // An entry spelled with only fields sits over the defaults' preset and overrides.
-  const inherits = isMap((r.repos as Dict)[key]) && !("preset" in ((r.repos as Dict)[key] as Dict));
+  const inherits = isMap(entry) && !("preset" in entry);
   return resolve(e.preset, inherits ? { ...d.over, ...e.over, caps: { ...(d.over.caps as Dict), ...(e.over.caps as Dict) }, safe: { ...(d.over.safe as Dict), ...(e.over.safe as Dict) } } : e.over);
 }
 
@@ -102,7 +104,6 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   if ("preset" in e) oneOf(errors, `${at}.preset`, e.preset, ["cautious", "full"]);
   if ("enabled" in e && typeof e.enabled !== "boolean") errors.push(`${at}.enabled: true or false`);
   if ("handoff" in e) oneOf(errors, `${at}.handoff`, e.handoff, HANDOFF);
-  if ("external" in e) oneOf(errors, `${at}.external`, e.external, EXTERNAL);
   if ("rebase" in e) oneOf(errors, `${at}.rebase`, e.rebase, REBASE);
   if ("approve" in e) oneOf(errors, `${at}.approve`, e.approve, APPROVE);
   if ("merge" in e) oneOf(errors, `${at}.merge`, e.merge, MERGE);
@@ -124,8 +125,8 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   }
 }
 
-/** The errors in a raw `ship` value (none: valid). `gated`, when given, lists the repos code review gates: approve above off needs one. */
-export function validate(raw: unknown, covered: string[], gated?: string[]): string[] {
+/** The errors in a raw `ship` value (none: valid). */
+export function validate(raw: unknown, scope: Scope): string[] {
   const errors: string[] = [];
   if (!isMap(raw)) return ["ship: a map { defaults, repos, paused }"];
   for (const k of Object.keys(raw)) if (!["defaults", "repos", "paused"].includes(k)) errors.push(`ship.${k}: unknown (defaults, repos, paused)`);
@@ -135,9 +136,8 @@ export function validate(raw: unknown, covered: string[], gated?: string[]): str
   if (!isMap(repos)) return [...errors, "ship.repos: a map of owner/name to a preset or fields"];
   for (const [repo, e] of Object.entries(repos)) {
     if (!REPO.test(repo)) { errors.push(`${repo.slice(0, 100)} isn't owner/name`); continue; }
-    if (!isCovered(repo, covered)) { errors.push(`${repo} isn't a repo ship covers (agents org, product repo or maintainer_repos)`); continue; }
+    if (!match(repo, scope.fleet) && !match(repo, scope.listed)) { errors.push(`${repo} isn't a repo ship covers (agents org, product repo or maintainer_repos)`); continue; }
     checkEntry(errors, repo, e);
-    if (!errors.length && gated && effective(raw, repo, covered)!.approve !== "off" && !gated.map((g) => g.toLowerCase()).includes(repo.toLowerCase())) errors.push(`${repo}: approve above off needs code review gating the repo (a mandatory combo)`);
   }
   return errors;
 }
@@ -146,7 +146,6 @@ const rank = (list: readonly string[], v: string) => list.indexOf(v);
 const raised = (a: number | null, b: number | null) => (b === null ? a !== null : a !== null && b > a);
 /** Every field a change loosens, by repo (`owner/name.field`, or `defaults.field`): the owner's to approve. */
 export function loosens(before: unknown, after: unknown): string[] {
-  const all = ["*/*"];
   const b = isMap(before) ? before : {}, a = isMap(after) ? after : {};
   const repos = new Set([...Object.keys(isMap(b.repos) ? b.repos : {}), ...Object.keys(isMap(a.repos) ? a.repos : {})].map((r) => r.toLowerCase()));
   const out: string[] = [];
@@ -154,7 +153,6 @@ export function loosens(before: unknown, after: unknown): string[] {
     const add = (f: string) => out.push(`${name}.${f}`);
     if (y.enabled && !x.enabled) add("enabled");
     if (rank(HANDOFF, y.handoff) > rank(HANDOFF, x.handoff)) add("handoff");
-    if (y.external === "any" && x.external !== "any") add("external");
     if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
     if (y.approve !== x.approve && rank(APPROVE, y.approve) > rank(APPROVE, x.approve)) add("approve");
     if (y.merge === "ready" && x.merge !== "ready") add("merge");
@@ -167,14 +165,15 @@ export function loosens(before: unknown, after: unknown): string[] {
   };
   const dx = resolve(defaultsOf(b).preset, defaultsOf(b).over), dy = resolve(defaultsOf(a).preset, defaultsOf(a).over);
   diff("defaults", dx, dy);
-  for (const r of [...repos].sort()) diff(r, effective(b, r, all)!, effective(a, r, all)!);
+  for (const r of [...repos].sort()) diff(r, effective(b, r, ALL)!, effective(a, r, ALL)!);
   if (b.paused === true && a.paused !== true) out.push("paused");
   return out;
 }
 
-/** The repos ship covers: the fleet org (every repo of it), the product repo and maintainer_repos (JSON entries, or a comma list). */
-export function coveredRepos(e: Record<string, string | undefined>): string[] {
+/** The scope from the environment: the fleet org and the product repo, and maintainer_repos (JSON entries, or a comma list). */
+export function scopeFrom(e: Record<string, string | undefined>): Scope {
   const m = (() => { try { return JSON.parse(e.SHIP_MAINTAINER_REPOS || "null"); } catch { return null; } })();
-  const maintained = Array.isArray(m) ? m.map((x) => (typeof x === "string" ? x : x?.repo)) : String(e.SHIP_MAINTAINER_REPOS ?? "").split(",");
-  return [e.SHIP_FLEET_ORG ? `${e.SHIP_FLEET_ORG}/*` : "", e.SHIP_PRODUCT_REPO ?? "", ...maintained].map((s) => String(s ?? "").trim()).filter((s) => /^[\w.-]+\/[\w.*-]+$/.test(s));
+  const listed = Array.isArray(m) ? m.map((x) => (typeof x === "string" ? x : x?.repo)) : String(e.SHIP_MAINTAINER_REPOS ?? "").split(",");
+  const ok = (l: unknown[]) => l.map((x) => String(x ?? "").trim()).filter((x) => /^[\w.-]+\/[\w.*-]+$/.test(x));
+  return { fleet: ok([e.SHIP_FLEET_ORG ? `${e.SHIP_FLEET_ORG}/*` : "", e.SHIP_PRODUCT_REPO]), listed: ok(listed) };
 }
