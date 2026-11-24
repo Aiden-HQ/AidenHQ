@@ -117,7 +117,7 @@ export function shipRoutes(o: {
         }
         // `expectTask` is the route's own re-check of ownership, never GitHub's: it is stripped before the call goes out.
         const { expectTask, ...sent } = read ? {} : (b.body ?? {});
-        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : sent;
+        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body === undefined ? undefined : sent;
         // A close or a branch delete runs under this service's per-branch lock (branch-lock.ts), the one the publish holds around its
         // push and its ownership write. A cleanup in the gap between them would otherwise close or delete what a successor just pushed.
         const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);
