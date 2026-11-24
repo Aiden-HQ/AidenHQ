@@ -16,6 +16,7 @@
 //   app access). The kernel is the only process that opens the accounts file (lean 3g).
 import { execFile } from "node:child_process";
 import http from "node:http";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -113,7 +114,7 @@ const connections = watched(path.join(configDir, "kernel", "connections.json"), 
 // One owner-key caller to the control plane, kept under its issue-list cap (cplimit.ts).
 // Every comment it writes is marked as code's unless it carries the owner's typed words (cplimit.ts markCode).
 const ownerFetch = markCode(limitIssueLists(fetch));
-const cpApi = (p: string, init: RequestInit = {}, typed = false) => ownerFetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json", ...(typed ? { [TYPED]: "owner" } : {}) }, signal: AbortSignal.timeout(15_000) });
+const cpApi = (p: string, init: RequestInit = {}, typed = false) => ownerFetch(new URL(p, controlUrl), { ...init, headers: { authorization: `Bearer ${secret("paperclip_board_key")}`, "content-type": "application/json", ...(typed ? { [TYPED]: "owner" } : {}) }, signal: init.signal ?? AbortSignal.timeout(15_000) });
 // Modules with kernel roles, a privileged entry, a token of their own or a channel (compile).
 const modulesFile = watched(path.join(configDir, "kernel", "modules.json"), (j) => j as ModulesFile & { snapshot?: string; reviewer?: ReviewerSlot; setup?: SetupField[]; services?: Record<string, string[]>; mounts?: Record<string, string[]>; check_jobs?: Recipes }, {});
 const whoami = createIdentity({
@@ -144,8 +145,6 @@ const events = createEvents({
 });
 // Flow's fact log (facts.ts) on the same file, so a kernel change and its fact commit together.
 const facts = openFacts(records.db);
-// Facts are kept 400 days (docs/design/flow.md §8).
-setInterval(() => { try { facts.prune(); } catch (e) { log("facts prune failed", { error: String((e as Error).message) }); } }, 864e5).unref();
 // Flow's stages: the kernel's plus every module's declared ones (module.yaml `stages:`), read from the watched modules file.
 const stages = (): Stage[] => [...KERNEL_STAGES, ...Object.entries(modulesFile().modules ?? {}).flatMap(([module, m]) => (m.stages ?? []).map((s) => ({ ...s, module })))];
 const journeys = () => journeysOf(modulesFile().modules ?? {});
@@ -307,6 +306,11 @@ const timers: NodeJS.Timeout[] = [];
 const every = (fn: () => void, ms: number) => timers.push(setInterval(fn, ms).unref());
 const once = (fn: () => void, ms: number) => timers.push(setTimeout(fn, ms).unref());
 every(sendNotices, 5_000);
+// Facts are kept 400 days (docs/design/flow.md §8).
+every(() => { try { facts.prune(); } catch (e) { log("facts prune failed", { error: String((e as Error).message) }); } }, 864e5);
+// A drain ends the wake inbox's control-plane reads at once (the poll in flight stops at its next read; the next kernel polls).
+const drainSignal = new AbortController();
+const wakeOwner = asApi((p, init) => cpApi(p, { ...init, signal: AbortSignal.any([AbortSignal.timeout(15_000), drainSignal.signal]) }));
 // Who owns a row across a restart. A restart drains the old kernel beside this one for at most DRAIN_MS (below): the old one
 // starts no job and no write after its drain begins, but finishes the launches and executions it had in flight. So a row this
 // process didn't make (a job still `admitted`, a write still `claimed`) is the previous kernel's until that process has exited
@@ -475,7 +479,7 @@ const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, log, 
 const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@maintained"];
 const localRepoExists = (repo: string) => { try { return existsSync(path.join(localCode.bare(repo), "HEAD")); } catch { return false; } };
 const wakes = createWakes({
-  db: records.db, facts, owner: ownerApi, post: outcomes.post, log,
+  db: records.db, facts, owner: wakeOwner, post: outcomes.post, log,
   // Setup's log tasks (review logs, chat tasks, Fleet issues): held by an agent, they wake nobody.
   containers: () => logTasks(grantsTable() as never),
   routineKey: (id) => (grantsTable().routine_keys as Record<string, string> | undefined)?.[id],
@@ -568,8 +572,15 @@ const fleetOps = createFleetOps({
   recreate: (services) => composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") })(services),
 });
 const work = createWork({ db: records.db, records, pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
-// Flow: what the kernel kept before the fact log, once (idempotent), and the host's deploys as they settle (generations.ts).
-try { log("flow backfill", { recorded: backfillLocal(records.db, facts, { agentKey: (id) => grantsTable().agents?.[id]?.key }) }); } catch (e) { log("WARNING: flow backfill failed", { err: String((e as Error).message) }); }
+// Flow: what the kernel kept before the fact log, once per install (kernel_once marks it done; every record and job since
+// writes its own facts), and the host's deploys as they settle (generations.ts).
+records.db.exec("CREATE TABLE IF NOT EXISTS kernel_once (name TEXT PRIMARY KEY, at TEXT NOT NULL)");
+if (!records.db.prepare("SELECT 1 FROM kernel_once WHERE name = 'flow-backfill'").get()) {
+  try {
+    log("flow backfill", { recorded: backfillLocal(records.db, facts, { agentKey: (id) => grantsTable().agents?.[id]?.key }) });
+    records.db.prepare("INSERT OR IGNORE INTO kernel_once (name, at) VALUES ('flow-backfill', ?)").run(new Date().toISOString());
+  } catch (e) { log("WARNING: flow backfill failed", { err: String((e as Error).message) }); }
+}
 const deploys = createDeploys({ db: records.db, file: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), repo });
 const syncDeploys = () => { try { deploys(); } catch (e) { log("WARNING: deploy facts failed", { err: String((e as Error).message) }); } };
 syncDeploys();
@@ -860,15 +871,36 @@ const ciCheck = () => { if (!ciBound && ciAddr && gw.ciEnabled()) { ciBound = tr
 ciCheck();
 every(ciCheck, 60_000);
 
-// The monitoring module's metrics (lib.ts metricsText): a node-exporter textfile every 30 seconds, written only while the
-// module's directory exists. A file, not a route: nothing new listens, and a stale file shows the gateway is down.
+// The monitoring module's metrics (lib.ts metricsText, and the event loop's health below): node-exporter textfiles every 30
+// seconds, written only while the module's directory exists. Files, not a route: nothing new listens, and a stale file shows
+// the kernel is down.
 const textfile = path.join(dataDir, "modules", "monitoring", "textfile");
+// The event loop's delay (p99 and max) and utilization over each 30-second window: the histogram starts over at each write.
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
+let loopUse = performance.eventLoopUtilization();
+const loopText = () => {
+  const use = performance.eventLoopUtilization();
+  const busy = performance.eventLoopUtilization(use, loopUse).utilization;
+  loopUse = use;
+  const p99 = loopDelay.percentile(99) / 1e9, max = loopDelay.max / 1e9;
+  loopDelay.reset();
+  const gauge = (name: string, help: string, v: number) => `# HELP ${name} ${help}\n# TYPE ${name} gauge\n${name} ${Math.round(v * 1e4) / 1e4}\n`;
+  return gauge("aidenhq_kernel_event_loop_delay_p99_seconds", "The kernel's event loop delay, 99th percentile over the last 30 seconds.", p99)
+    + gauge("aidenhq_kernel_event_loop_delay_max_seconds", "The kernel's longest event loop delay over the last 30 seconds.", max)
+    + gauge("aidenhq_kernel_event_loop_utilization", "The share of the last 30 seconds the kernel's event loop was busy.", busy);
+};
+const writeProm = (name: string, text: string) => {
+  const tmp = path.join(textfile, `.${name}.tmp`);
+  writeFileSync(tmp, text);
+  renameSync(tmp, path.join(textfile, name));
+};
 every(() => {
+  const loop = loopText();
   if (!existsSync(textfile)) return;
   try {
-    const tmp = path.join(textfile, ".gateway.prom.tmp");
-    writeFileSync(tmp, gw.metricsText());
-    renameSync(tmp, path.join(textfile, "gateway.prom"));
+    writeProm("gateway.prom", gw.metricsText());
+    writeProm("kernel.prom", loop);
   } catch (e) {
     log("metrics write failed", { err: String((e as Error).message).slice(0, 200) });
   }
@@ -889,12 +921,17 @@ drain = () => {
   checkJobs.detach();
   stopTending();
   for (const t of timers) clearTimeout(t);
+  drainSignal.abort();
+  // The ledger's own timers stop now; it closes once the calls it holds and the true-up in flight have settled.
+  let truedUp = false;
+  void gw.stop().finally(() => { truedUp = true; });
   for (const s of servers) if (s.listening) s.close();
   const done = () => {
     for (const s of servers) s.closeIdleConnections();
     const t = Date.now() - t0;
-    if ((gw.inflight() > 0 || admission.inflight() > 0 || writes.inflight() > 0 || checkJobs.inflight() > 0 || notices.inflight()) && t < DRAIN_MS) return;
+    if ((gw.inflight() > 0 || !truedUp || admission.inflight() > 0 || writes.inflight() > 0 || checkJobs.inflight() > 0 || notices.inflight()) && t < DRAIN_MS) return;
     log("drained: exiting", { inflight: gw.inflight(), launches: admission.inflight(), writes: writes.inflight(), checks: checkJobs.inflight(), notices: notices.inflight(), ms: t });
+    if (gw.inflight() === 0 && truedUp) gw.close();
     process.exit(0);
   };
   done();

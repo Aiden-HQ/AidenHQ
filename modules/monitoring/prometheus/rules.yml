@@ -160,6 +160,14 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "the install has spent over 80% of its {{ $labels.period }} spend limit ({{ $value | humanizePercentage }})"
+      # The kernel's one event loop serves every model call, tool call and board read: a loop held up for half a second at p99,
+      # or busy over 80% of the time, slows all of them (kernel.prom, written every 30 s by kernel/src/main.ts).
+      - alert: KernelEventLoopSaturated
+        expr: aidenhq_kernel_event_loop_delay_p99_seconds > 0.5 or aidenhq_kernel_event_loop_utilization > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "the kernel's event loop is saturated ({{ $value | humanize }}): p99 delay over 0.5 s or utilization over 80% for 5 minutes"
       # Deployed apps (the app-* compose projects) are starved of CPU: an app container's own cgroup waits over 20% while the
       # host waits over 15% (an app at its own CPU limit alone does not fire). Host CPU pressure alone is not an app alert, and
       # this rule never matches the host series: its summary names the project, which only the app clause carries.

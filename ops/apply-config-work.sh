@@ -936,6 +936,8 @@ switchOver() {
   [ -e "$AIDENHQ_GENERATIONS_MIRROR" ] || : > "$AIDENHQ_GENERATIONS_MIRROR"
   # validate built the images; a switch nothing validated (--generation, a product from before staging) builds them here.
   if [ "$staged" = 0 ]; then build_files="$(composeFiles)"; stepRun images imageInputs env COMPOSE_FILE="$build_files" docker compose build; fi
+  # Paperclip's Postgres tuning (postgresql.auto.conf, idempotent), in place before compose recreates it.
+  if [ -f ops/paperclip-pg-tune.sh ]; then bash ops/paperclip-pg-tune.sh; fi
   ops/compose-recreate.sh # recreate only the services that moved, and stop and remove what this config dropped
   # The host's own tailnet name keeps Paperclip and the board only; apps are on their own node (compose.yaml apps-edge).
   node scripts/host-serve.ts prune
