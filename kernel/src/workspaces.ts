@@ -8,8 +8,8 @@
 //                                        removed, only these per-task homes, which the next job's engineState makes again;
 //   <workDir>/checks/<attempt>           a check attempt's folder (checkjobs.ts), left by a kernel that died mid-check;
 //   <workDir>/.cache/npm                 every job box's shared npm cache (services/computer/lib.ts npmCacheDir): started
-//                                        afresh once it is CACHE_DAYS old, or under pressure, while no job is live (a parked
-//                                        box still mounting the old one never fits a job again: its folder is gone).
+//                                        afresh once it is CACHE_DAYS old while no job is live, or under pressure once it is
+//                                        an hour old (a parked box still mounting the old one never fits a job again).
 // A folder goes when nothing live uses it (no admitted or running job, no box released less than a day ago; no running check
 // of that attempt) and either its task has been done or cancelled for CLOSED_DAYS with no job started since (and the control plane confirms it), or it has been
 // idle (its last job's end, or the folder's mtime when no job names it) for IDLE_DAYS whatever the task's state: an idle task
@@ -29,7 +29,7 @@ import { emptyTrash, removeTree, trashAway } from "./trash.ts";
 export const IDLE_DAYS = 3, CLOSED_DAYS = 1, PRESSURE = 0.8, CACHE_DAYS = 7;
 /** How long the closed rule waits on the control plane's answer before it counts as none. */
 export const LOOKUP_MS = 10_000;
-const DAY = 86_400_000;
+const DAY = 86_400_000, HOUR = 3_600_000;
 const CLOSED = new Set(["done", "cancelled"]);
 /** engineState's folder name for an agent's task (sandbox.ts; the launcher checks the same). */
 const homeName = (agent: string, task: string) => `${agent}/${task}`.replace(/[^\w.-]/g, "_").replace(/^\.*$/, "_");
@@ -148,7 +148,10 @@ export function createDiskSweep({ db, workDir, stateDir, engines, stillClosed, l
     // The shared npm cache, started afresh (the next job's box makes it again); an earlier one a restart left half removed goes.
     emptyTrash(join(workDir, ".cache", ".trash"), log);
     const cache = npmCacheDir(workDir), born = (() => { try { return statSync(cache).birthtimeMs; } catch { return undefined; } })();
-    if (born !== undefined && (pressure || now() - born > CACHE_DAYS * DAY) && !stopping() && !db.prepare("SELECT 1 FROM jobs WHERE state IN ('admitted', 'running') LIMIT 1").get()) {
+    // Its age: weekly while no job runs. Under pressure it goes even beside running jobs (an install mid-way may fail; a full disk
+    // fails everything), once it is an hour old so a sustained pressure doesn't empty it every pass.
+    const age = born === undefined ? 0 : now() - born;
+    if (born !== undefined && !stopping() && (pressure ? age > HOUR : age > CACHE_DAYS * DAY && !db.prepare("SELECT 1 FROM jobs WHERE state IN ('admitted', 'running') LIMIT 1").get())) {
       try { trashAway(cache, join(workDir, ".cache", ".trash"), log); log("shared npm cache started afresh", { cache, ...(pressure ? { pressure: true } : {}) }); } catch (e) { log("shared npm cache not removed", { cache, err: (e as Error).message }); }
     }
     return { removed, pressure };

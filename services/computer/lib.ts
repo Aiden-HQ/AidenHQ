@@ -76,11 +76,14 @@ export const CODEX_CONFIG_SCRUB = [
 export const BOX_EXEC_WRAP = CODEX_CONFIG_SCRUB;
 
 /**
- * compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next). Until it
- * exists the launch is refused with a 503: the kernel retries it (an agent job on its next tick, a check every 30s up to its busy wait).
+ * The image a tag names now, by its ID: a box runs that exact image, so a tag rebuilt later is a different image (warm boxes
+ * key on it). compile publishes a new image tag before ops/computer-images.sh has built it (the same apply builds it next).
+ * Until it exists the launch is refused with a 503: the kernel retries it (an agent job on its next tick, a check every 30s up
+ * to its busy wait).
  */
 export async function builtImage(tag: string, docker: (args: string[]) => Promise<{ exitCode?: number | null; stdout: string }>, log: (...a: unknown[]) => void = () => {}) {
-  if ((await docker(["image", "inspect", tag])).exitCode === 0) return tag;
+  const r = await docker(["image", "inspect", "-f", "{{.Id}}", tag]);
+  if (r.exitCode === 0 && /^sha256:[0-9a-f]{64}$/.test(r.stdout.trim())) return r.stdout.trim();
   log("image", tag, "not built yet; launch deferred");
   throw Object.assign(new Error(`image ${tag} is not built yet (ops/computer-images.sh)`), { status: 503 });
 }
@@ -134,14 +137,16 @@ export const LEASE_MS = 15 * 60_000;
 export const WARM_MS = 30 * 60_000;
 
 /**
- * What makes a box fit a job: its whole `docker run` line (image, user, limits, network, labels, every mount: workspace, Codex
- * home, engine, hooks, roles) with the name and out folder held constant, and the identity (device, inode, birth) of each folder
- * it binds by path. A folder removed or replaced since the box started (the disk sweep, `aidenhq cleanup`, a rotated cache)
- * is a new inode, so the box, whose mount still holds the old one, no longer fits.
+ * What makes a box fit a job: its exact `docker run` line (the image by ID, user, limits, network, labels, every mount) and
+ * the identity (device, inode, birth) of every mount's source. Anything replaced since the box started (an image rebuilt
+ * under its tag, the engine module or repo-checkout updated by an apply, a folder the disk sweep, `aidenhq cleanup` or a cache
+ * reset made again) is a different key, so the box, which still holds the old one, no longer fits. A source that can't be
+ * read throws: no fit.
  */
-export function compatKey(runArgs: string[], boundDirs: string[]) {
-  // The birth time too: ext4 hands a freed inode number straight to the next folder made.
-  const ids = boundDirs.map((d) => { const st = statSync(d); return `${st.dev}:${st.ino}:${st.birthtimeMs}`; });
+export function compatKey(runArgs: string[]) {
+  const sources = runArgs.flatMap((a, i) => (runArgs[i - 1] === "-v" ? [a.slice(0, a.indexOf(":"))] : []));
+  // The birth time too: ext4 hands a freed inode number straight to the next file made.
+  const ids = sources.map((d) => { const st = statSync(d); return `${st.dev}:${st.ino}:${st.birthtimeMs}`; });
   return createHash("sha256").update(JSON.stringify([runArgs, ids])).digest("hex");
 }
 

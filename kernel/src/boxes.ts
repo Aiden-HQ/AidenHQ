@@ -123,7 +123,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
     const mcp = mcpBlock(tools, conns, cfg.boxGatewayUrl);
     // The task's last job lets its box go first (the launcher keeps one per task and parks it between jobs); while it is still
     // leased, the job waits a tick.
-    for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND released IS NULL AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await release(r.id).catch(unavailable);
+    // A release already in flight (the last job's end) is waited for too, so its cleanup runs before this job touches the workspace.
+    for (const r of db.prepare("SELECT id FROM jobs WHERE task = ? AND authority IS NOT NULL AND box IS NOT NULL AND (released IS NULL OR released = -1) AND state NOT IN ('admitted', 'running')").all(job.task) as { id: string }[]) await (releasing.get(r.id) ?? release(r.id)).catch(unavailable);
     // After that release: a cleanup it does removes the last job's workspace, never this one's.
     mkdirSync(workspace, { recursive: true });
     insideNoLinks(join(cfg.workDir, "tasks"), workspace, "workspace");
@@ -216,7 +217,14 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
    * one that asked for its workspace to go (`aidenhq cleanup`), whose workspace then goes too, unless a later job on the task
    * is already admitted or running in it.
    */
-  async function release(id: string) {
+  /** Releases in flight in this process: a launch waits for its task's (a restart resets the claims a dead kernel left, start()). */
+  const releasing = new Map<string, Promise<void>>();
+  function release(id: string): Promise<void> {
+    let p = releasing.get(id);
+    if (!p) { p = releaseOnce(id).finally(() => releasing.delete(id)); releasing.set(id, p); }
+    return p;
+  }
+  async function releaseOnce(id: string) {
     const r = db.prepare("SELECT task, box, state FROM jobs WHERE id = ? AND authority IS NOT NULL AND released IS NULL").get(id) as { task: string; box: string | null; state: string } | undefined;
     if (!r?.box || db.prepare("UPDATE jobs SET released = -1 WHERE id = ? AND released IS NULL").run(id).changes !== 1) return;
     const { container, workspace, gen } = JSON.parse(r.box) as Box & { workspace?: string; gen?: number };
@@ -231,7 +239,8 @@ export function createBoxes({ db, cfg, jobs, call, secret, whoami, connections, 
       db.prepare("UPDATE jobs SET released = NULL WHERE id = ? AND released = -1").run(id);
       throw e;
     }
-    if (wipe && existsSync(workspace!) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND id != ? AND state IN ('admitted', 'running')").get(r.task, id)) {
+    // A job admitted next waits for this release before it uses the workspace (launch, above); only a running one is in it.
+    if (wipe && existsSync(workspace!) && !db.prepare("SELECT 1 FROM jobs WHERE task = ? AND id != ? AND state = 'running'").get(r.task, id)) {
       insideNoLinks(join(cfg.workDir, "tasks"), workspace!, "workspace");
       trashAway(workspace!, join(cfg.workDir, "tasks", ".trash"), log);
       log("job's workspace removed (aidenhq cleanup)", { job: id, workspace });

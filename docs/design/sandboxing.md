@@ -49,8 +49,9 @@ host: a repo's checks are check jobs.
   id and a generation, kept in the launcher's `jobs.json` and the job row, so a late renew or release of an earlier job
   never touches the next one's). A released box is parked for the task's next job: its token is revoked, it is restarted
   (nothing the job started runs on; files and mounts stay) and its env file and out folder are cleared. The task's next job
-  leases it when its `docker run` line and mounted folders are the same (`compatKey`: image, engine, roles, the very
-  workspace and Codex home folders), else it goes and a new box starts. A job that never ran, or asked for its workspace to
+  leases it only when its exact `docker run` line (the image by ID) and every mount's source (device, inode, birth) are the
+  same (`compatKey`), else it goes and a new box starts. Parking also clears what the job's user left in `/tmp` and
+  `/var/tmp`. A job that never ran, or asked for its workspace to
   go (`aidenhq cleanup`), destroys its box. A parked box goes after 30 minutes idle (`WARM_MS`). Check jobs use
   `POST /check`, one box per run, always destroyed.
 - **Pool.** `settings.computers_max` (1 to 64; unset, the host's RAM in GB divided by 1.5, 4 to 64, worked out at compile

@@ -94,16 +94,18 @@ test("a task's box is leased to one job at a time: a late renew or release of an
   assert.deepEqual(stale(boxes, WARM_MS, WARM_MS + 1, (n) => jobs.leased(n, WARM_MS + 1)), ["box"]);
 });
 
-test("a parked box fits the next job only with the same run line and the very folders it mounted", () => {
+test("a parked box fits the next job only with the same run line and the very sources it mounted", () => {
   const dir = mkdtempSync(join(tmpdir(), "compat-"));
-  const ws = join(dir, "PEN-1"), home = join(dir, "home");
-  mkdirSync(ws); mkdirSync(home);
-  const args = ["run", "-v", `${ws}:/workspace`, "img:1"];
-  const k = compatKey(args, [ws, home]);
-  assert.equal(compatKey([...args], [ws, home]), k);
-  assert.notEqual(compatKey(["run", "-v", `${ws}:/workspace`, "img:2"], [ws, home]), k, "a new image is a new box");
-  // The workspace removed and made again (aidenhq cleanup, the disk sweep): the parked box's mount holds the old folder.
-  rmSync(ws, { recursive: true }); mkdirSync(ws);
-  assert.notEqual(compatKey(args, [ws, home]), k);
+  const ws = join(dir, "PEN-1"), engine = join(dir, "engine");
+  mkdirSync(ws); mkdirSync(engine);
+  const args = (img: string) => ["run", "-v", `${ws}:/workspace`, "-v", `${engine}:/opt/aidenhq/engine:ro`, img, "sleep", "infinity"];
+  const k = compatKey(args("sha256:1"));
+  assert.equal(compatKey(args("sha256:1")), k);
+  assert.notEqual(compatKey(args("sha256:2")), k, "an image rebuilt under its tag is a new box");
+  // A mount's source removed and made again (aidenhq cleanup, the disk sweep, an apply replacing the engine module).
+  rmSync(engine, { recursive: true }); mkdirSync(engine);
+  assert.notEqual(compatKey(args("sha256:1")), k);
+  rmSync(engine, { recursive: true });
+  assert.throws(() => compatKey(args("sha256:1")), "a source that is gone is no fit");
   rmSync(dir, { recursive: true, force: true });
 });

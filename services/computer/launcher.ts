@@ -38,7 +38,7 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_CHECK_MIN, WARM_MS, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, npmCacheDir, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
+import { MAX_CHECK_MIN, WARM_MS, forwardModel, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 
 type Failure = Error & { status?: number };
@@ -195,6 +195,8 @@ function emptyOut(outDir: string) {
  * folder's contents go. Any step failing destroys the box instead. While it parks it is busy, and a lease waits for it.
  */
 const parking = new Map<string, Promise<boolean>>();
+/** Clears what the box's user left in /tmp and /var/tmp, then prints whatever of it is still there (nothing, or the park fails). */
+const PARK_TMP = 'u=$(id -u); find /tmp /var/tmp -mindepth 1 -user "$u" -delete 2>/dev/null; find /tmp /var/tmp -mindepth 1 -user "$u" 2>/dev/null | head -1';
 function park(name: string) {
   let p = parking.get(name);
   if (!p) {
@@ -207,6 +209,9 @@ function park(name: string) {
         // The restart first, so nothing of the job still writes while its out folder is cleared.
         const r = await docker(["restart", "-t", "0", name], { timeoutMs: 60_000 });
         if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `docker restart ${r.exitCode ?? r.signal}`);
+        // A restart keeps the box's own disk: what the job left in its temp folders (per-job tallies, scratch) goes too.
+        const t = await docker(["exec", name, "sh", "-c", PARK_TMP], { timeoutMs: 60_000 });
+        if (t.exitCode !== 0 || t.stdout.trim()) throw new Error(`its temp folders weren't cleared ${t.stderr.trim()}`);
         emptyOut(path.join(jobEnvDir, name));
         if (draining || !jobs.park(name)) throw new Error(draining ? "the launcher is restarting" : "its record went");
         saveJobs();
@@ -279,8 +284,9 @@ const jobControl = {
     jobFolder(workspace, path.join(CFG.runnerWork, "tasks"), identifier);
     jobFolder(state, path.join(CFG.runnerState, engine), `${agentId}/${issueId}`.replace(/[^\w.-]/g, "_"));
     const codexHome = state;
-    const runArgs = (name: string, outDir: string) => dockerRunArgs({ name, image: tag, agentId, network: CFG.network, limits: CFG.limits, mounts: jobMounts({ resolvConf, workspace, outDir, codexHome, runnerWork: CFG.runnerWork, repo, engineDir: entry.dir, roles }), user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME });
-    const compat = compatKey(runArgs("", "/aidenhq-out"), [workspace, codexHome, npmCacheDir(CFG.runnerWork)]);
+    const runArgs = (name: string, image: string) => dockerRunArgs({ name, image, agentId, network: CFG.network, limits: CFG.limits, mounts: jobMounts({ resolvConf, workspace, outDir: path.join(jobEnvDir, name), codexHome, runnerWork: CFG.runnerWork, repo, engineDir: entry.dir, roles }), user: JOB_USER, labels: [`aidenhq.job=${issueId}`], home: JOB_HOME });
+    // The image by ID: a tag rebuilt since a box started is another image (and a tag not built yet is a 503).
+    const image = await builtImage(tag, docker, log);
     const envText = jobEnvFile({ token, mcp, gatewayUrl: GATEWAY_URL, identity });
     // One box per task, leased to one job at a time. A box still parking is waited for; a box leased to a job is never shared.
     let before = jobs.byIssue(issueId);
@@ -292,10 +298,13 @@ const jobControl = {
     if (before && !before.parked && (await jobState(before.container)) === "missing") { await destroy(before.container, "gone before the task's next box"); before = undefined; }
     else if (before && !before.parked) throw fail(409, `the task's last box ${before.container} is still up: release it first`);
     if (before) {
-      // The task's parked box, warm: the next job leases it when it fits (same image, mounts and folders) and is still running.
+      // The task's parked box, warm: the next job leases it only when its exact run line and every mount's source are the same
+      // (compatKey), and it is still running. Any doubt: a new box.
       const name = before.container;
-      const fits = before.compat === compat && !removing.has(name) && !draining && (await jobState(name)) === "running";
-      if (fits && jobs.get(name) === before && before.parked) {
+      const key = (() => { try { return compatKey(runArgs(name, image)); } catch { return undefined; } })();
+      const fits = key !== undefined && before.compat === key && !removing.has(name) && !draining && (await jobState(name)) === "running";
+      // Checked again after the inspect: a launcher that began draining meanwhile saves nothing, so it leases nothing.
+      if (fits && !draining && jobs.get(name) === before && before.parked) {
         // The env file first: a lease is only ever committed with a box the kernel can run in.
         const envFile = path.join(jobEnvDir, `${name}.env`);
         writeFileSync(`${envFile}.tmp`, envText, { mode: 0o600 }); renameSync(`${envFile}.tmp`, envFile);
@@ -306,19 +315,19 @@ const jobControl = {
       }
       if (!(await retire(name, "doesn't fit the task's next job"))) throw fail(409, `the task's last box ${name} is still being removed`);
     }
-    await builtImage(tag, docker, log);
     await makeRoom();
     const name = newName();
     boxes.set(name, { agentId, lastUsed: Date.now(), busy: 1 }); // reserve the slot while starting
     // The job's only credential is the kernel's job token: the launcher keeps only its hash.
-    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, kernel: true, tokenHash: tokenHash(token), roles, ...(job ? { job } : {}), gen: 1, compat }); saveJobs();
+    jobs.add({ container: name, agentId, issueId, identifier, workspace, codexHome, kernel: true, tokenHash: tokenHash(token), roles, ...(job ? { job } : {}), gen: 1 }); saveJobs();
     const envFile = path.join(jobEnvDir, `${name}.env`);
     // The job's last message lands here, outside the workspace: a folder of the launcher's, mounted at /aidenhq-out.
     const outDir = path.join(jobEnvDir, name);
     try {
       mkdirSync(outDir, { mode: 0o700 });
+      jobs.get(name)!.compat = compatKey(runArgs(name, image)); saveJobs();
       // aidenhq-browse uses the image's own agent-browser and Chrome (the browser image every computer builds on).
-      const r = await docker(runArgs(name, outDir));
+      const r = await docker(runArgs(name, image));
       if (r.exitCode !== 0) throw fail(500, `docker run failed: ${r.stderr.trim()}`);
       writeFileSync(envFile, envText, { mode: 0o600 });
       // A launcher draining for its successor hands out no box the successor may not know: it goes back, and the kernel asks again.
