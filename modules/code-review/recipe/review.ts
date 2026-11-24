@@ -26,7 +26,10 @@
 // (coverage.reviewed: the files it reports it analysed, else the eligible ones whose diff some finder read); a run that stopped
 // short, an unreadable file or a truncated list is `coverage.incomplete`, never a clean pass. Engines with their own scope
 // (deepsec: setup files and scan, spec.setup_files) return `setup`, the files to commit. Every finding carries the spec's option
-// and lens. deepsec gets the check's whole time (less RESERVE_MINUTES to read its records and write the result) where the other
+// and lens. A repo review's area check (spec.area: one area of the plan.ts plan, its files by folder) sees only that area: the
+// head commit holds only its files, so `git ls-files` and the diff from the empty tree are the area's for every engine and skill
+// (the rest of the checkout stays on disk to follow calls), coverage counts against its files and a finding outside them is
+// dropped. A whole-repo option may be given the plan's areas as data (spec.area_map). deepsec gets the check's whole time (less RESERVE_MINUTES to read its records and write the result) where the other
 // engines get REVIEW_MINUTES, and its records from earlier runs (spec.deepsec_data, laid at /aidenhq-out/deepsec_data); it leaves
 // the ones it changed at /aidenhq-out/keep for the service.
 // Exit 0 with a result; 1 with none (no finder finished: the run failed).
@@ -61,6 +64,8 @@ export interface Spec {
   setup_files?: string;
   /** deepsec's records from earlier runs: the input's sha256 (its file is /aidenhq-out/deepsec_data), empty for none. */
   deepsec_data?: string;
+  /** A repo review's area ({ id, name, files: { folder: [names] } }) and the plan's areas as data ({ areas }): JSON text, {} for none. */
+  area?: string; area_map?: string;
 }
 interface Result {
   addressed: boolean; version: number; repo?: string; pr: number; base: string; head: string; engine: string; model: string; effort: string;
@@ -94,8 +99,20 @@ const LENSES = [
 ];
 
 
-/** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. */
-export function history(ws: string, out: string, spec: Spec) {
+/** A repo review's area from the spec: its name and its files (paths in the repo), or undefined for none. */
+export function areaOf(text: string | undefined) {
+  let j: { id?: unknown; name?: unknown; files?: unknown };
+  try { j = JSON.parse(text || "{}"); } catch { throw new Error("the area isn't JSON"); }
+  if (j.files === undefined) return undefined;
+  const files = j.files && typeof j.files === "object" && !Array.isArray(j.files) ? Object.entries(j.files as Record<string, unknown>) : [];
+  const paths = files.flatMap(([d, names]) => (Array.isArray(names) ? names.map((n) => (d ? `${d}/${String(n)}` : String(n))) : []));
+  if (!paths.length || paths.some((p) => p.startsWith("/") || p.split("/").some((x) => !x || x === "." || x === ".." || x === ".git"))) throw new Error("the area's files aren't paths in the repo");
+  return { name: String(j.name ?? j.id ?? "an area").slice(0, 80), paths };
+}
+
+/** The box's history: base, then (incremental) the last reviewed head, then the head; the commits by name. `paths`: the only
+ * files the head commit holds (a repo review's area), else every file of the checkout. */
+export function history(ws: string, out: string, spec: Spec, paths?: string[]) {
   const env = { PATH: process.env.PATH, HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
   const flags = ["-c", "user.name=aidenhq-review", "-c", "user.email=review@aidenhq.invalid", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"];
   const g = (args: string[], extra: Record<string, string> = {}) => execFileSync("git", [...flags, ...args], { cwd: ws, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 1 << 30 }).trim();
@@ -126,7 +143,12 @@ export function history(ws: string, out: string, spec: Spec) {
   };
   const commit = (tree: string | undefined, msg: string) => {
     if (tree) g(["add", "-A", "-f"], { GIT_WORK_TREE: tree });
-    else g(["add", "-A", "-f"]);
+    else if (paths) {
+      // Literal pathspecs from a file: names are data, never globs or options; one missing at the commit fails the review.
+      const list = join(out, `paths-${randomBytes(6).toString("hex")}`);
+      writeFileSync(list, paths.join("\0"));
+      try { g(["--literal-pathspecs", "add", "-f", `--pathspec-from-file=${list}`, "--pathspec-file-nul"]); } finally { rmSync(list, { force: true }); }
+    } else g(["add", "-A", "-f"]);
     g(["commit", "-q", "--allow-empty", "--no-verify", "-m", msg]);
     return g(["rev-parse", "HEAD"]);
   };
@@ -289,8 +311,9 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
   const problem = comboProblem(combo);
   if (problem) throw new Error(`combo: ${problem}`);
   const how = plan(combo);
-  const h = history(ws, out, spec);
   const tree = spec.target === "tree";
+  const area = tree ? areaOf(spec.area) : undefined;
+  const h = history(ws, out, spec, area?.paths);
   const full = tree || spec.incremental_from === spec.base;
   // What the PR changes against its merge base (not just since the last reviewed head): generated paths it touches are gaps.
   const prChanged = new Set(h.git(["-c", "core.quotePath=false", "diff", "--no-renames", "--name-only", "-z", h.base, "HEAD"]).split("\0").filter(Boolean));
@@ -328,7 +351,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
     return !!p && p.path === f.path && RANK[p.severity] <= RANK[f.severity] && (f.severity !== "important" || !combo.mandatory || p.gating);
   };
 
-  const instructions = brief({ root: ws, guides, checks, focus: cap(spec.focus, 2000), intent: tree ? "" : cap(spec.intent, 2000), excluded, incremental: !full, addressed, reported: previous });
+  const instructions = brief({ root: ws, guides, checks, focus: cap(spec.focus, 2000), intent: tree ? "" : cap(spec.intent, 2000), excluded, incremental: !full, addressed, reported: previous,
+    ...(area ? { area: { name: area.name, files: reviewed.length } } : {}), ...(tree && spec.area_map && spec.area_map !== "{}" ? { areaMap: spec.area_map } : {}) });
   const scratch = mkdtempSync(join(out, "home", "review-"));
   const minutes = Number(process.env.REVIEW_MINUTES || 20);
   const result: Result = {
@@ -500,6 +524,8 @@ export async function review({ spec, ws, out, run: engine = runEngine }: { spec:
       candidates = dedupe(place(confirmed.map(({ id, ...f }) => f), ws, reviewedSet, own, out_));
     }
   }
+  // A tree review reports only on its own files (an area's: the rest of the checkout is there to follow calls).
+  if (tree) candidates = candidates.filter((f) => reviewedSet.has(f.path));
   const { kept, withheld } = withhold(candidates, Number.isInteger(combo.max_nits) ? combo.max_nits! : 5);
   // An important finding is never withheld (it gates once stored): the cap of 100 drops the others.
   const imp = kept.filter((f) => f.severity === "important"), rest = kept.filter((f) => f.severity !== "important");
