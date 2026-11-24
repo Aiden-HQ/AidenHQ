@@ -21,6 +21,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The kinds a dispatcher posts (POST /v1/jobs/:job/post); the kernel's own (`coalesced` and `stale` routine runs, wakes.ts; `lane`, lane.ts) go through `post` too. */
 export const JOB_KINDS = ["reply", "status", "notice"];
 export const tag = (job: string, kind: string) => `<!-- aidenhq:job=${job} kind=${kind} -->`;
+const CLOSED = new Set(["done", "cancelled"]);
 
 export class OutcomeError extends Error {
   name = "OutcomeError";
@@ -80,8 +81,10 @@ export function createPluginPost({ controlUrl, agentKey, postKey, timeoutMs = 30
 }
 export type PluginPost = ReturnType<typeof createPluginPost>;
 
-export function createOutcomes({ db, plugin, delegates, finish, relay, facts, agentKey = (id) => id, chatTask, log = () => {} }: {
+export function createOutcomes({ db, plugin, delegates, finish, relay, facts, agentKey = (id) => id, chatTask, task, log = () => {} }: {
   db: DatabaseSync; plugin: PluginPost;
+  /** A task as the control plane has it now (undefined when gone): a reply is not posted or relayed on a closed one. */
+  task?: (id: string) => Promise<{ status?: string } | undefined>;
   /** Flow's fact log (facts.ts): task.commented for each comment an agent's outcome posts, and an agent's key for its actor. */
   facts?: Facts; agentKey?: (agent: string) => string;
   /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
@@ -103,6 +106,19 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
     if (typeof req.body !== "string" || !req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
     // `listed` is the kernel's word: the grants table naming this task for the agent (its chat task), never the caller's.
     if (req.scope === "listed" && chatTask?.(job.agent) !== job.task) throw new OutcomeError(403, "not-listed", `a listed post is only for a task the grants table names for agent ${job.agent}`);
+    // A closed task takes no reply, and none is relayed: not a new comment on it, and not the channel copy of one posted
+    // before it closed. The decision is made here, before the write, because the plugin has no conditional write and no way
+    // to delete a comment (`post.js` reads, then writes: a window, not a guard). A close landing inside that window is refused
+    // by Paperclip at the write itself, and dispatch acknowledges that refusal without paging the owner (#1676). A read that
+    // fails is a 502, so the dispatcher's retry decides later; a reply on an open task is never dropped because a read was short.
+    if (req.kind === "reply" && task) {
+      let now: { status?: string } | undefined;
+      try { now = await task(job.task); } catch (e) { throw new OutcomeError(502, "unknown", `reading task ${job.task} before its reply failed (${(e as Error).message.slice(0, 200)}): try again`); }
+      if (!now || CLOSED.has(String(now.status))) {
+        log("reply not posted: its task is closed", { job: job.id, task: job.task, status: now?.status ?? "gone" });
+        return { comment: null, status: now?.status ?? null };
+      }
+    }
     await plugin.company(job.agent);
     const { value, again } = await once(tag(job.id, req.kind), async (retry): Promise<Outcome> => {
       let status = req.status;
@@ -135,7 +151,10 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
         } catch (e) {
           const status = (e as { status?: number }).status ?? 502;
           if (status >= 400 && status < 500 && status !== 429) return void log("reply relay given up", { job: job.id, task: job.task, err: (e as Error).message });
-          throw new OutcomeError(502, "relay-pending", `the reply is posted; relaying it to the owner's channel failed (${(e as Error).message.slice(0, 200)}): try again`);
+          // The comment is written; only the relay is short. `unknown` keeps the write's record, so the retry comes back as `again`
+          // and finds the comment it already posted (never a second one) and relays it then, while a reply on an open task is
+          // still worth delivering.
+          throw new OutcomeError(502, "unknown", `the reply is posted; relaying it to the owner's channel failed (${(e as Error).message.slice(0, 200)}): try again`);
         }
         return true;
       });
