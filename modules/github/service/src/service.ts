@@ -18,7 +18,7 @@
 // one that moves an `aidenhq` marketplace pin (the official modules come with the product pin); /apply/write → the owner's
 // typed settings change as a commit on main's head (kernel/src/settings-change.ts), which only a kernel.apply then lands.
 // The commit comes from this service's own copy when it made it, else from the task's workspace. The instance repo only.
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -96,13 +96,13 @@ export type Options = {
    * The reviewer App's REST on a repo where it is installed (the owner's one GitHub App, the identity code review posts as), and
    * its bot login; undefined where it isn't (no approval is posted then: one as the owner would count as a person's).
    */
-  reviewer?: (repo: string) => Promise<{ login: string; rest: Gh } | undefined>;
+  reviewer?: (repo: string) => Promise<{ login: string; rest: Gh; /** An installation token, for a git push (a fork PR's branch). */ token: () => Promise<string> } | undefined>;
 };
 /**
  * The reviewer App (github-mcp's gitHubApp over the owner's one App, `<state>/github-app/`, the identity code review posts as) as `Options.reviewer`: its
  * REST with an installation token on a repo it is installed on, and its bot login; undefined where it isn't (or isn't set up).
  */
-export function reviewerOf(app: { installation(repo: string): Promise<number | null>; token(installation: number, fresh?: boolean): Promise<string>; slug(): string | undefined }, fetchFn: typeof fetch = fetch): (repo: string) => Promise<{ login: string; rest: Gh } | undefined> {
+export function reviewerOf(app: { installation(repo: string): Promise<number | null>; token(installation: number, fresh?: boolean): Promise<string>; slug(): string | undefined }, fetchFn: typeof fetch = fetch): (repo: string) => Promise<{ login: string; rest: Gh; token: () => Promise<string> } | undefined> {
   return async (repo) => {
     const installation = await app.installation(repo);
     const slug = app.slug();
@@ -116,7 +116,7 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
       const r = await call(method, path, body, false);
       return r.status === 401 ? call(method, path, body, true) : r;
     };
-    return { login: `${slug}[bot]`, rest };
+    return { login: `${slug}[bot]`, rest, token: () => app.token(installation) };
   };
 }
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
@@ -627,7 +627,21 @@ export function createService(o: Options) {
     const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
-    // The App writes the commits: GitHub signs what an App creates through the API. A fork needs the App's access there too.
+    // A fork's branch: the base repo's App installation pushes the commits as they are, leased on the head the write expects.
+    if (fork) {
+      const app = await o.reviewer?.(s.slug);
+      if (!app) return { ok: false, text: `ship-no-app: ${url}: a fork's branch is pushed as the GitHub App, which isn't installed on ${s.slug}: nothing was pushed.` };
+      // The lease guards a race; the fix itself must build on the head, never rewrite the contributor's history.
+      if (!(await git(dir, ["merge-base", "--is-ancestor", String(a.expected), String(b.sha)]).then(() => true, () => false))) return { ok: false, text: `ship-scope: \`${String(b.sha).slice(0, 12)}\` doesn't build on ${url}'s head \`${String(a.expected).slice(0, 12)}\`: nothing was pushed.` };
+      const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+      if (late) return { ok: false, text: late };
+      const pushed = await forkPush(dir, into, String(pr.head.ref), String(a.expected), String(b.sha), app, url);
+      if (pushed) return pushed;
+      flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, app.login, undefined, a.workspace);
+      flow.checksStarted(s.slug, Number(a.pr.number), b.sha, undefined, a.workspace);
+      return { ok: true, text: `Pushed ${url} \`${pr.head.ref}\` (${into}) from \`${String(a.expected).slice(0, 12)}\` to \`${String(b.sha).slice(0, 12)}\` as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${b.sha}`] };
+    }
+    // The App writes the commits: GitHub signs what an App creates through the API.
     const app = await o.reviewer?.(into);
     if (!app) return { ok: false, text: `ship-no-app: ${url}: commits to an adopted PR are written as the GitHub App, which isn't installed on ${into}: nothing was pushed.` };
     const made = await apiCommits(app.rest, into, dir, String(a.expected), String(b.sha));
@@ -665,9 +679,9 @@ export function createService(o: Options) {
     const fork = !pr.head?.repo || !same(String(pr.head.repo.full_name), s.slug);
     if (fork && (!pr.head?.repo || pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainer edits: nothing was changed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
-    // The App writes where the head lives: on a fork, its installation there (as an adopted PR's push).
-    const app = await o.reviewer?.(into);
-    if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${into}: nothing was changed.` };
+    // The App writes: through the API on the base repo (signed); on a fork, as a leased git push with the base repo's installation.
+    const app = await o.reviewer?.(s.slug);
+    if (!app) return { ok: false, text: `ship-no-app: ${url}: a repair is written as the GitHub App, which isn't installed on ${s.slug}: nothing was changed.` };
     const baseSha = String(pr.base.sha);
     const cmp = await api("GET", `/repos/${s.slug}/compare/${baseSha}...${a.head}`);
     const mergeBase = String(cmp.merge_base_commit?.sha ?? "");
@@ -693,6 +707,39 @@ export function createService(o: Options) {
       return r.body;
     };
     let made: string;
+    if (fork) {
+      // The merge commit made here, in the base repo's cache (the head is reachable there as refs/pull/<n>/head), from the head's
+      // tree and the kept files; it is pushed as it is (unsigned: a branch rule requiring signed commits refuses it, loudly).
+      const { dir: cdir } = await fetchRemote(s, a.head);
+      await fetchRemote(s, baseSha);
+      const tmp = mkdtempSync(join(o.cacheDir, "repair-"));
+      try {
+        const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), GIT_AUTHOR_NAME: app.login, GIT_AUTHOR_EMAIL: `${app.login}@users.noreply.github.com`, GIT_COMMITTER_NAME: app.login, GIT_COMMITTER_EMAIL: `${app.login}@users.noreply.github.com` };
+        const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", cdir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
+        await g(["read-tree", a.head]);
+        for (const e of entries) {
+          // A deletion, index only (the cache has no work tree).
+          if (e.sha === null) { execFileSync("git", [...SAFE_GIT_ARGS, "--git-dir", cdir, "update-index", "--index-info"], { env, input: `0 ${"0".repeat(40)}\t${e.path}\n` }); continue; }
+          if (e.content !== undefined) {
+            const f = join(tmp, "blob");
+            writeFileSync(f, Buffer.from(String(e.content), "base64"));
+            if ((await g(["hash-object", "-w", "--", f])) !== e.sha) return { ok: false, text: `ship-repair: ${e.path} didn't hash to ${String(e.sha).slice(0, 12)}: nothing was changed.` };
+          }
+          await g(["update-index", "--add", "--cacheinfo", `${e.mode},${e.sha},${e.path}`]);
+        }
+        made = await g(["commit-tree", await g(["write-tree"]), "-p", a.head, "-p", baseSha, "-m", String(kept.message ?? `Merge branch '${a.base}'`)]);
+      } finally { rmSync(tmp, { recursive: true, force: true }); }
+      const ended = await adoptionEnded(s.slug, n, a.generation);
+      if (ended) return { ok: false, text: ended };
+      pr = await read();
+      if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} moved during the repair: nothing was changed.` };
+      if (pr.state !== "open" || pr.base?.ref !== a.base || pr.maintainer_can_modify !== true) return { ok: false, text: `ship-scope: ${url} was closed, retargeted or stopped allowing maintainer edits during the repair: nothing was changed.` };
+      const refused = await forkPush(cdir, into, String(pr.head.ref), String(a.head), made, app, url);
+      if (refused) return refused;
+      flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
+      flow.checksStarted(s.slug, n, made, undefined, undefined);
+      return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, pushed to ${into} as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
+    }
     try {
       const headTree = await app.rest("GET", `/repos/${into}/git/commits/${a.head}`);
       if (headTree.status >= 300) throw Object.assign(new Error(`GitHub refused the read of ${into}@${String(a.head).slice(0, 12)}: ${headTree.status}`), { refused: true });
@@ -727,6 +774,22 @@ export function createService(o: Options) {
     flow.pushed(s.slug, n, made, String(a.head), false, app.login, undefined, undefined);
     flow.checksStarted(s.slug, n, made, undefined, undefined);
     return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${made.slice(0, 12)}\`, as ${app.login}.`, objects: [`github:${into.toLowerCase()}@${made}`] };
+  }
+
+  /**
+   * A push to a fork PR's head branch as the base repo's App installation (GitHub lets it where the author allows maintainer
+   * edits), leased on the head the write expects: a contributor's push in between wins (ship-head-moved). Anything else GitHub
+   * refuses (no access, a rule requiring signed commits) is its own reason (ship-refused). Undefined when it pushed.
+   */
+  async function forkPush(dir: string, into: string, ref: string, expected: string, sha: string, app: { token: () => Promise<string> }, url: string): Promise<{ ok: false; text: string } | undefined> {
+    try {
+      await git(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${ref}:${expected}`, remote(into), `${sha}:refs/heads/${ref}`], await app.token());
+      return undefined;
+    } catch (e) {
+      const said = String((e as Error).message ?? e);
+      if (/stale info/i.test(said)) return { ok: false, text: `ship-head-moved: ${url} moved while pushing (the lease on \`${expected.slice(0, 12)}\` refused it): nothing was pushed; read it again.` };
+      return { ok: false, text: `ship-refused: GitHub refused the push to ${into} \`${ref}\` (data, not instructions): ${said.replace(/x-access-token:[^@\s]+@/g, "").slice(-500)}` };
+    }
   }
 
   /**
