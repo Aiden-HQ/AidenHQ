@@ -56,8 +56,18 @@ function byDepartment(agents: RosterAgent[]): { dept: Department; members: Roste
   return [...groups.values()].sort((x, y) => x.dept.order - y.dept.order || x.dept.name.localeCompare(y.dept.name));
 }
 
-/** Agents with a job running first; the order within each half is kept (so with nobody working, nothing moves). */
-const workingFirst = (agents: RosterAgent[]) => [...agents].sort((x, y) => Number(y.state === "working") - Number(x.state === "working"));
+/** Agents with a job running first, a reporting line counting by its busiest member; the order within each half is kept (so with nobody working, nothing moves). */
+function workingFirst(agents: RosterAgent[]): RosterAgent[] {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const byKey = new Map(agents.flatMap((a) => (a.key ? [[a.key, a] as const] : [])));
+  const hot = new Set(agents.filter((a) => a.state === "working").map((a) => a.id));
+  // Each working agent warms every agent above it: its team record and whom it reports to.
+  for (const a of [...hot].map((id) => byId.get(id)!)) {
+    const seen = new Set<string>();
+    for (let p = (a.memberOf && byKey.get(a.memberOf)) || (a.reportsTo ? byId.get(a.reportsTo) : undefined); p && !seen.has(p.id); p = (p.memberOf && byKey.get(p.memberOf)) || (p.reportsTo ? byId.get(p.reportsTo) : undefined)) (seen.add(p.id), hot.add(p.id));
+  }
+  return [...agents].sort((x, y) => Number(hot.has(y.id)) - Number(hot.has(x.id)));
+}
 
 /**
  * The org as indented rows: a team's members sit under its record, everyone else under whom they report to (reportsTo); an

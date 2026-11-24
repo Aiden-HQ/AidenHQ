@@ -157,12 +157,13 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
   const [sched, setSched] = useState(r.schedules.map((s) => ({ ...s })));
   const [model, setModel] = useState(r.model ?? "");
   const [paused, setPaused] = useState(Boolean(r.paused));
-  useEffect(() => setPaused(Boolean(r.paused)), [r.paused]); // a refreshed status is the truth
+  const [next, setNext] = useState(r.next);
+  useEffect(() => (setPaused(Boolean(r.paused)), setNext(r.next)), [r.paused, r.next]); // a refreshed status is the truth
   const [pausing, setPausing] = useState(false);
   const [pauseError, setPauseError] = useState("");
   const togglePause = () => {
     setPausing(true);
-    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setPauseError("")), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
+    api.pauseRoutine(r.id!, !paused).then((x) => (setPaused((r.paused = x.status === "paused")), setNext(x.next), setPauseError("")), (e) => setPauseError((e as Error).message)).finally(() => setPausing(false));
   };
   const [review, setReview] = useState(false);
   const own = r.defaults ?? {};
@@ -188,10 +189,10 @@ function RoutineField({ r, models, agentModel }: { r: Routine; models: string[];
           <span>
             {when}
             {r.model && ` on ${modelShort(r.model)}`}
-            {!paused && r.next && ` · next ${at(r.next)}`}
+            {!paused && next && ` · next ${at(next)}`}
           </span>
           {paused && <StatusDot tone="idle">Paused</StatusDot>}
-          {(!r.id || r.wakes === "not_applied") && <StatusDot tone="idle">Not set up yet</StatusDot>}
+          {r.wakes === "not_applied" && <StatusDot tone="idle">Not set up yet</StatusDot>}
           {r.id && <button className="btn" type="button" disabled={pausing} onClick={togglePause}>{paused ? "Resume" : "Pause"}</button>}
           {pauseError && <span className="st-error" role="alert">{pauseError}</span>}
           {diff.length > 0 && <span className="muted"> · module default differs for {diff.join(", ")}</span>}

@@ -1339,17 +1339,20 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const routineKeys = () => grantsTable().routine_keys ?? {};
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
+  /** An active routine's next scheduled run: the soonest of its enabled triggers (a paused one has none). */
+  const nextRunOf = (r: { status: string; triggers?: { enabled?: boolean; nextRunAt?: string | null }[] }) => (r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? undefined : undefined);
+
   async function settingsData() {
     const [pending, live] = await Promise.all([records.list("owner"), Promise.resolve().then(() => pc.routines()).catch(() => [])]);
     // Each routine's live row (setup's id for its key): its pause and resume are Paperclip's, shown and changed live.
     const rows = new Map(live.filter((x) => x.status !== "archived").map((x) => [x.id, x]));
     const { routine_keys = {}, routine_events = {} } = grantsTable();
+    // A routine's wake source comes from the applied subscriptions, so it shows even while Paperclip can't be asked.
     const byKey = Object.fromEntries(Object.entries(routine_keys).flatMap(([id, k]) => {
       const r = rows.get(id);
-      if (!r) return [];
-      const next = r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled).map((t) => t.nextRunAt).filter(Boolean).sort()[0] : undefined;
       const ev = routine_events[id];
-      return [[k, { id, paused: r.status === "paused", ...(next ? { next } : {}), ...(ev ? { wakes: { connection: ev.connection, resource: ev.resource, filter: ev.filter } } : {}) }]];
+      const next = r && nextRunOf(r);
+      return r || ev ? [[k, { ...(r ? { id, paused: r.status === "paused" } : {}), ...(next ? { next } : {}), ...(ev ? { wakes: { connection: ev.connection, resource: ev.resource, filter: ev.filter } } : {}) }]] : [];
     }));
     return settingsView({
       ...readSources(settingsFiles()),
@@ -1649,7 +1652,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         await setRoutinePaused(pc, t, ask.paused);
         log.info({ routine: t.title, paused: ask.paused }, ask.paused ? "routine paused" : "routine resumed");
         store.events.emit("fleet");
-        return { status: ask.paused ? "paused" : "active" };
+        const next = nextRunOf(await pc.routine(t.id).catch(() => t));
+        return { status: ask.paused ? "paused" : "active", ...(next ? { next } : {}) };
       },
     },
     {

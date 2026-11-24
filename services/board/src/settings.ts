@@ -98,7 +98,7 @@ export interface Grants {
 
 export interface Sources {
   /** Each routine's live Paperclip row by its compiled key (setup's ids): pause and resume are Paperclip's, shown as they are; `next` is an active schedule's next run, `wakes` an event routine's applied subscription. */
-  live?: Record<string, { id: string; paused: boolean; next?: string; wakes?: Wakes }>;
+  live?: Record<string, { id?: string; paused?: boolean; next?: string; wakes?: Wakes }>;
   /** config/paperclip.yaml, parsed; null when the board can't read it (not mounted yet). */
   compiled: Compiled | null;
   catalog: CatalogEntry[];
