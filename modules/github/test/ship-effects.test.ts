@@ -182,6 +182,12 @@ test("a push onto an adopted PR's branch is written through the API as the code 
   assert.match(closedLate.text, /^ship-scope: .* is closed/, closedLate.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "a PR closed during the upload never gets its branch moved");
   pr.state = "open";
+  // Retargeted during the upload: the commit was built against the base the plan read, so the branch stays put too.
+  duringPush(() => { pr.base = "release"; });
+  const retargeted = await run("k-00000000000000b7", "github.push", args);
+  assert.match(retargeted.text, /^ship-scope: .*retargeted during the push/, retargeted.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "a PR retargeted during the upload never gets its branch moved");
+  pr.base = "main";
   const ok = await run("k-00000000000000b2", "github.push", args);
   assert.equal(ok.ok, true, ok.text);
   // The code host's commit: the repair's tree on top of c1, written as the owner's sign-in (never the reviewer App), not the box's commit.

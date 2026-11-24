@@ -834,6 +834,7 @@ export function createService(o: Options) {
     // The PR once more, as the repair reads it: a close or a retarget during the upload refuses it rather than move its branch.
     const again = await api("GET", `/repos/${s.slug}/pulls/${Number(a.pr.number)}`);
     if (again.state !== "open") return { ok: false, text: `ship-scope: ${url} is ${again.state}: nothing was pushed.` };
+    if (again.base?.ref !== pr.base?.ref) return { ok: false, text: `ship-scope: ${url} was retargeted during the push (it now targets \`${String(again.base?.ref)}\`, not \`${String(pr.base?.ref)}\`): nothing was pushed.` };
     if (again.head?.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} moved while writing: nothing was pushed; read it again.` };
     // The PR's own head branch, as GitHub names it: the box's branch is only where the commits came from.
     const r = await who.rest("PATCH", `/repos/${into}/git/refs/heads/${String(pr.head.ref).split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
