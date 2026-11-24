@@ -67,7 +67,7 @@ const roster = [
   { id: "a4", key: "platform-engineer", name: "Platform Engineer", title: "Keeps the fleet healthy", system: false, department: ENG, avatar: "platform-engineer", model: "deepseek-flash", reportsTo: "a1", state: "failing", stateNote: "Last 2 runs failed", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Health check", paused: false, nextRunAt: ahead(48) }], lastRunAt: ago(50), lastRunStatus: "failed" },
   { id: "a5", key: "ui-designer", name: "UI Designer", title: "Designs app screens", system: false, department: ENG, avatar: "ui-designer", model: "deepseek-flash", reportsTo: "a3", state: "queued", running: 0, queued: 2, workingSince: null, schedules: [], lastRunAt: ago(240), lastRunStatus: "succeeded" },
   { id: "a6", key: "email-triage", name: "Email Triage", title: "Sorts the inbox", system: false, department: DESK, avatar: "email-triage", model: "deepseek-flash", reportsTo: "a1", state: "paused", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Inbox pass", paused: true, nextRunAt: null }], lastRunAt: ago(1440), lastRunStatus: "succeeded" },
-  { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
+  { id: "a7", key: "meeting-librarian", name: "Meeting Librarian", title: "Notes from every meeting", system: false, department: DESK, avatar: "meeting-librarian", model: "deepseek-flash", reportsTo: "a1", state: "working", running: 1, queued: 0, workingSince: null, schedules: [{ title: "After meetings", paused: false, nextRunAt: ahead(95) }], lastRunAt: ago(130), lastRunStatus: "succeeded" },
   { id: "a8", key: "researcher", name: "Researcher", title: "Research and drafts", system: true, department: OPS, avatar: "aiden", model: "deepseek-flash", reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, schedules: [{ title: "Process task replies", paused: true, nextRunAt: null }], lastRunAt: ago(60), lastRunStatus: "succeeded" },
 ];
 
@@ -170,6 +170,7 @@ const chatRows = () => mock.empty ? [] : [
   { identifier: "WOR-820", title: "Can you find a time with Sam next week?", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-820", STATES.running), updatedAt: ago(1), preview: { text: "Looking at both calendars now.", at: ago(1), from: "agent" }, unread: true },
   { identifier: "WOR-818", title: "Build a small app that tracks invoices", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-818", CARD), updatedAt: ago(9), preview: { text: "The app is ready; the deploy waits on your approval.", at: ago(9), from: "agent" }, unread: true },
   { identifier: "WOR-815", title: "Weekly metrics digest looks off", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-815", ASK), updatedAt: ago(40), preview: { text: "Which week should I compare against?", at: ago(40), from: "agent" }, unread: false },
+  { identifier: "WOR-803", title: "Ship the invoices app's export", open: true, agent: { key: "engineer", name: "Engineer" }, state: named("WOR-803", STATES.running), updatedAt: ago(5), preview: { text: "Running the export tests.", at: ago(5), from: "agent" }, unread: false },
   { identifier: "WOR-811", title: "Summarise yesterday's leadership sync", open: true, agent: { key: "meeting-librarian", name: "Meeting Librarian" }, state: named("WOR-811", STATES.done), updatedAt: ago(180), preview: { text: "Summary posted with 4 action items.", at: ago(180), from: "agent" }, unread: false },
   { identifier: "WOR-806", title: "Why did the health check fail?", open: true, agent: { key: "platform-engineer", name: "Platform Engineer" }, state: named("WOR-806", FAILED), updatedAt: ago(52), preview: { text: "Timed out after 30 minutes.", at: ago(52), from: "agent" }, unread: false },
   { identifier: "WOR-799", title: "Draft a reply to the hiring agency", open: true, agent: { key: "aiden", name: "Aiden" }, state: named("WOR-799", STATES.chatTurn), updatedAt: ago(1500), preview: { text: "Sent.", at: ago(1500), from: "you" }, unread: false },
@@ -252,7 +253,24 @@ const settingsData = () => ({
     { key: "spend_month_usd", module: "core", value: 1000, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a UTC calendar month." },
     { key: "quiet_start", module: "core", value: false, set: true, known: true, switch: true, doc: "Nothing runs on a schedule until you turn it on." },
   ],
-  agents: [], choices: { heartbeatHours: [1, 4, 24], models: ["deepseek-flash", "gpt-luna"] }, approvals: { pending: 2 },
+  agents: [{
+    recurring: [],
+    key: "aiden", name: "Aiden", module: "core", model: "deepseek-flash", models: [], effort: "high", heartbeatHours: 4, canHeartbeat: true, efforts: ["low", "medium", "high"], department: OPS, graded: false, roles: [], connections: [], defaults: {},
+    // A schedule with its next run, a paused one, an event routine and one setup hasn't applied yet.
+    routines: [
+      { key: "morning-brief", title: "Morning brief", schedules: [{ cron: "0 9 * * 1-5", timezone: "Asia/Dubai", label: "" }], id: "r1", paused: false, next: ahead(600), defaults: {} },
+      { key: "weekly-digest", title: "Weekly digest", schedules: [{ cron: "0 17 * * 5", timezone: "Asia/Dubai", label: "" }], id: "r2", paused: true, defaults: {} },
+      { key: "linear-issues", title: "Triage new Linear issues", schedules: [], id: "r3", paused: false, wakes: { connection: "linear", resource: "ENG", filter: { kind: ["issue"], contains: ["urgent", "outage"] } }, defaults: {} },
+      { key: "slack-mentions", title: "Answer Slack mentions", schedules: [], wakes: "not_applied", defaults: {} },
+    ],
+  }, {
+    key: "researcher", name: "Researcher", module: "core", model: "deepseek-flash", models: [], effort: "high", heartbeatHours: null, canHeartbeat: false, efforts: ["low", "medium", "high"], department: OPS, graded: false, roles: [], connections: [], defaults: {}, routines: [],
+    // Recurring tasks the Researcher runs: one active with its next run, one paused.
+    recurring: [
+      { title: "Repeats: WOR-812", task: "WOR-812", summary: "Every Monday 09:00", paused: false, next: ahead(2000) },
+      { title: "Repeats: WOR-790", task: "WOR-790", summary: "Every 2 weeks on Friday 17:00", paused: true },
+    ],
+  }], choices: { heartbeatHours: [1, 4, 24], models: ["deepseek-flash", "gpt-luna"] }, approvals: { pending: 2 },
   updates: { current: { name: "2026.11.19", product: "9c1496b" }, auto: true, timezone: "Asia/Dubai", checkedAt: ago(60), available: null, error: null, last: { release: "2026.11.19", outcome: "installed", at: ago(1300), by: "auto" } },
 });
 
@@ -437,7 +455,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/approvals": return [200, { approvals: approvals() }];
 
     case "/api/agents/roster": return [200, { roster: mock.empty ? roster.slice(0, 1) : roster }];
-    case "/api/agents": return [200, { sessions: [{ id: "s1", agent: "Engineer", agentId: "a3", state: "working", startedAt: ago(12), said: "Running the export tests", run: { identifier: "WOR-790", title: "Ship the invoices app's export" }, tasks: [] }], finished: [], roster }];
+    case "/api/agents": return [200, { sessions: [{ id: "s1", agent: "Engineer", agentId: "a3", state: "working", startedAt: ago(12), said: "Running the export tests", run: { identifier: "WOR-790", title: "Ship the invoices app's export" }, tasks: [] }, { id: "s2", agent: "Meeting Librarian", agentId: "a7", state: "working", startedAt: ago(3), said: "Summarising the leadership sync", run: { identifier: "WOR-840", title: "Summarise yesterday's leadership sync and file the four action items with their owners" }, tasks: [] }], finished: [], roster }];
     case "/api/apps": return [200, { apps: apps() }];
     case "/api/app-admins": return [200, { apps: [] }];
     case "/api/modules": return [200, { modules: modules(), advisories: [] }];

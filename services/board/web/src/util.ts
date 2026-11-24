@@ -143,3 +143,22 @@ export function keepsSecureCookies(): boolean {
   document.cookie = `${probe}=; Path=/; Secure; SameSite=Strict; Max-Age=0`;
   return secureOnHttp;
 }
+
+/** Whether the browser knows this IANA zone (a typo in a schedule's zone must not break the page that shows it). */
+export const validZone = (zone: string) => {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** A run time: the clock time, with the weekday when it isn't today; in `zone` when given and valid, else the browser's. */
+export const runAt = (iso: string, zone?: string) => {
+  const d = new Date(iso);
+  const timeZone = zone && validZone(zone) ? zone : undefined;
+  const dayOf = (x: Date) => x.toLocaleDateString("en-CA", { timeZone });
+  const day = dayOf(d) === dayOf(new Date()) ? "" : `${d.toLocaleDateString(undefined, { weekday: "short", timeZone })} `;
+  return `${day}${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone })}`;
+};

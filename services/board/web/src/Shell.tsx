@@ -83,9 +83,9 @@ export function TopNav({ view, approvals, agentsActive, onNav, spend, settingsAl
               {sec.name}
               {first === "approvals" && approvals > 0 && <span className="tn-badge" key={approvals}>{approvals}</span>}
               {sec.name === FLEET && agentsActive > 0 && (
-                <span className="tn-live" title={`${agentsActive} working now`}>
+                <span className="tn-live" title={`${agentsActive} agent job${agentsActive === 1 ? "" : "s"} running now`}>
                   <i />
-                  {agentsActive}
+                  {agentsActive} active run{agentsActive === 1 ? "" : "s"}
                 </span>
               )}
             </a>
