@@ -163,6 +163,12 @@ const quoted = (text: string, at: number, lineStart: number) => {
   const prefix = text.slice(lineStart, at);
   return prefix.includes(">") || /^(?:\t| {4})/.test(prefix);
 };
+/** Where the reply's own text starts: past the padding a removed sentinel left, but not past a line's indentation. */
+const bodyStart = (text: string, from: number, to: number) => {
+  const at = skipStart(text, from, to);
+  const nl = text.lastIndexOf("\n", at - 1);
+  return nl >= from ? nl + 1 : at;
+};
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
   const starts = [0];
@@ -186,12 +192,13 @@ export function stripSentinels(text: string): string {
   const tailLine = (at: number) => { while (back > 0 && starts[back]! > at) back--; return starts[back]!; };
   for (;;) {
     const at = skipStart(text, from, to);
+    // A reply that opens by showing a marker or header on a quoted line ("    <|im_end|>") is text, not a leak.
+    if (quoted(text, at, leadLine(at))) break;
     const after = afterHeader(text, at, to);
     if (after !== undefined) from = at + after;
     else {
       const hit = SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
-      // A reply that opens by showing a marker on a quoted line ("    <|im_end|>") is text, not a leak.
-      if (!hit || quoted(text, at, leadLine(at))) break;
+      if (!hit) break;
       from = at + hit.length;
     }
   }
@@ -210,7 +217,7 @@ export function stripSentinels(text: string): string {
   }
   // A reply of nothing but padding is no reply; anything else keeps its own text as the model wrote it.
   if (from === 0 && to === text.length) return skipStart(text, 0, to) === to ? "" : text;
-  return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
+  return text.slice(bodyStart(text, from, to), skipEnd(text, from, to));
 }
 export function firstError(logPath: string): string {
   let head = "";
