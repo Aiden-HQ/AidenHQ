@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { discover } from "../service/src/discover.ts";
 
-test("discover: generated paths from .gitattributes, lockfiles and headers; the generator from a CI job, else the build files", () => {
+test("discover: generated paths from .gitattributes and lockfiles only; the generator from a CI job, else the build files", () => {
   const d = discover({
     ".gitattributes": "# generated\ngen/** linguist-generated\ndocs/** linguist-documentation\n",
     ".github/workflows/ci.yml": [
@@ -29,7 +29,7 @@ test("discover: generated paths from .gitattributes, lockfiles and headers; the 
   assert.ok(d.globs.includes("gen/**"));
   assert.ok(!d.globs.some((g) => g.startsWith("docs")));
   assert.ok(d.globs.includes("**/package-lock.json"));
-  assert.ok(d.globs.includes("api/types.pb.go"));
+  assert.ok(!d.globs.includes("api/types.pb.go"), "a header the repo didn't declare in .gitattributes widens nothing");
   assert.deepEqual(d.commands, [{ dir: ".", cmd: "make generate" }, { dir: "web", cmd: "npm run generate" }]);
   assert.deepEqual(d.ambiguous, []);
 });

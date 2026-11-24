@@ -14,6 +14,8 @@
   .pause.on { color: var(--color-text-danger, red); }
   .hold { display: grid; grid-template-columns: minmax(150px, 1fr) 110px 2fr; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line); }
   .hold:first-of-type { border-top: 0; }
+  .adv { padding: 0 14px 8px; } .adv summary { cursor: pointer; font-size: 12px; } .adv textarea { width: 100%; min-height: 64px; font: 12px ui-monospace, monospace; box-sizing: border-box; }
+  .q { display: inline-block; width: 15px; height: 15px; line-height: 15px; text-align: center; border: 1px solid var(--line); border-radius: 50%; font-size: 10px; cursor: help; margin-left: 6px; }
   @media (max-width: 860px) {
     .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
     .row .repo { grid-column: 1; } .row .onoff { grid-column: 2; justify-self: end; }
@@ -58,6 +60,16 @@
     return h("div", {}, h("span", { className: "lab", textContent: c.label }), sel);
   }
 
+  // Advanced, per repo: the repo's own commands and workflows ship runs before its own step (the `actions` setting).
+  const ACTIONS_HELP = "Your repo's own tools, run before ship's: per stage (conflict, behind, before_merge) a list of steps, each { \"comment\": \"/rebase\" } (ship posts your slash command) or { \"workflow\": \"pr-rebase.yml\", \"inputs\": {} } (ship dispatches it on the PR's branch). Ship waits for the new head or the run, and falls back to its own repair if a step fails. Runs only on adopted PRs, only for the stage needed.";
+  function advanced(r) {
+    const area = h("textarea", { ariaLabel: `Actions for ${r.repo}`, spellcheck: false, value: JSON.stringify(shown(r).actions ?? {}, null, 1) });
+    const set = h("button", { type: "button", textContent: "Propose" });
+    set.addEventListener("click", () => { let v; try { v = JSON.parse(area.value || "{}"); } catch { return say("Actions: that isn't JSON.", true); } propose({ actions: v }, r.repo); });
+    return h("details", { className: "adv" }, h("summary", { textContent: `Advanced: repo actions for ${r.repo}` }, h("span", { className: "q", title: ACTIONS_HELP, textContent: "?" })),
+      h("div", { className: "soft", textContent: ACTIONS_HELP }), area, set);
+  }
+
   function render() {
     $("count").textContent = status.repos.length ? `${status.repos.length}` : "";
     const paused = pending.paused ?? status.paused;
@@ -75,7 +87,7 @@
       return h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
         h("div", { className: "repo", textContent: r.repo }), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: controls.enabled.label }), sw),
         choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"), rm);
-    });
+    }).flatMap((row, i) => [row, advanced(status.repos[i])]);
     const cols = h("div", { className: "row cols" }, ...["Repo", "On", "Preset", "Adopt PRs", "Approve", "Merge", ""].map((t) => h("span", { textContent: t })));
     $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty", textContent: "No repo is on yet. Ship stays quiet until you add one: it adopts the PRs you hand it and works them to a merge." })]));
     $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", textContent: String(x.hold?.kind ?? "").replace("_", " ") }), h("span", { className: "soft", textContent: x.hold?.reason ?? "" }))) : [h("div", { className: "empty", textContent: "Nothing is held." })]));

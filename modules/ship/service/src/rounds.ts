@@ -3,6 +3,7 @@
 // Engineer task (the same task across rounds) is woken only for what the repair leaves, a red required check or review findings. Past a cap, or on a step
 // the repo's settings exclude, the PR goes on hold with the reason, its author assigned once, and the report says so.
 // The loop (loop.ts) calls round() after intake() for each adopted PR it read, with decide's answer and this pass's facts.
+import { advance, discovered, stageOf, suggestLines, type Gh } from "./actions.ts";
 import type { Discovered } from "./discover.ts";
 import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { renderReport, type Facts } from "./report.ts";
@@ -39,6 +40,8 @@ export interface RoundDeps {
   /** The code host's comment op (POST /v1/codehost/comment): posts, or edits comment `id`; answers the comment's id. */
   comment(repo: string, number: number, body: string, id?: number): Promise<number>;
   log(msg: string, f?: Record<string, unknown>): void;
+  /** GitHub as the owner (github's /internal/ship/gh): the repo's own actions and discovery (actions.ts). Without it, neither runs. */
+  gh?: Gh;
 }
 
 const OPEN = ["review", "owner", "approved", "claimed", "done"];
@@ -78,7 +81,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   a = { ...a, counters: c };
   const caps = s.caps;
   const over = (n: number, cap: number | null) => cap !== null && n >= cap;
-  const facts: Facts = { state: "working", stopLabel: s.stop_label, ...(f.report ?? {}), ...(f.failing?.length ? { failing: f.failing, onBase: f.onBase ?? [] } : {}) };
+  // A conflict's repair needs the generated paths: the repo's setting, else discovery on the target branch (actions.ts).
+  if (v.do === "repair" && f.dirty && !s.generated && !f.discovered && d.gh) {
+    try { f = { ...f, discovered: await discovered(d.gh, pr.repo, pr.base) }; } catch (e) { d.log("discovery failed", { repo: pr.repo, err: String((e as Error).message).slice(0, 200) }); }
+  }
+  const suggest = suggestLines(f.discovered, s.actions);
+  const facts: Facts = { ...(suggest.length ? { suggest } : {}), state: "working", stopLabel: s.stop_label, ...(f.report ?? {}), ...(f.failing?.length ? { failing: f.failing, onBase: f.onBase ?? [] } : {}) };
   const save = async (state: string, waits?: string) => { d.state.put(a!); await report(d, a!, pr, { ...facts, state, ...(waits ? { waits } : {}) }); };
   const hold = async (reason: string) => {
     const assign = pr.authorBot || !pr.author ? [] : [pr.author];
@@ -110,6 +118,20 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
   // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front) return "nothing";
+  // The repo's own commands and workflows for the stage this round needs (actions.ts), before ship's own step for it.
+  const stage = stageOf(v.do, f.dirty);
+  const steps = stage && d.gh && (stage === "before_merge" ? s.merge !== "off" : s.fix.includes("conflicts")) ? s.actions[stage] ?? [] : [];
+  if (stage && steps.length) {
+    // Each step started spends a round.
+    const r = await advance(d.gh!, pr, stage, steps, a!.action, () => (over(c.rounds, caps.rounds) ? false : (c.rounds++, true)));
+    if (r.go === "capped") return hold(`${c.rounds} rounds (rounds)`);
+    const changed = r.rec !== a!.action;
+    a = { ...a!, ...(r.rec ? { action: r.rec } : {}), ...(r.did ? { did: [...(a!.did ?? []), r.did] } : {}) };
+    if (r.go === "waiting") return "nothing";
+    if (r.go === "started") { await save("working", `the repo's own ${stage.replace("_", " ")} step`); return "acted"; }
+    if (r.go === "failed" && stage === "before_merge") return hold(`the repo's before_merge steps didn't pass (${a.action?.why ?? "failed"})`);
+    if (changed) d.state.put(a);
+  }
   // A round is a settled head: each (head, action) is taken once; a merge or a conflict's repair is followed by its record instead.
   const key = `${pr.head}:${v.do}`;
   const followed = v.do === "merge" || (v.do === "repair" && f.dirty === true);
@@ -139,6 +161,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           if (r.state === "done" || /^ship-head-moved/.test(text)) return "nothing";
           if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`);
           const left = text.split("\n").filter((l) => l.startsWith("leftover: ")).length;
+          // The box lacks the generator's tool: the Engineer's computer is the same image, so the PR holds, and the report suggests
+          // the repo's own command or workflow as an `actions` step.
+          const missing = /^ship-generator/.test(text) && /^toolchain missing: ([\w.+-]{1,60})/m.exec(text)?.[1];
+          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure an \`actions\` step for conflicts, such as the repo's own regenerate command or workflow${suggest.length ? `: ${suggest[0]}` : ""}`);
           if (/^ship-leftovers/.test(text) || /^ship-generator/.test(text)) {
             if (a!.repair.woke) return "nothing";
             a = { ...a!, repair: { ...a!.repair, woke: true } };

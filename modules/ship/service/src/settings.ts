@@ -9,6 +9,11 @@ export const REBASE = ["conflict", "behind"] as const;
 export const APPROVE = ["off", "observe", "safe", "all"] as const;
 export const MERGE = ["off", "ready"] as const;
 export const FIX = ["conflicts", "ci", "review"] as const;
+/** The stages a repo's own commands and workflows run at (actions.ts): before ship's repair of a conflict, before it brings a
+ * branch up to date, and before it merges. */
+export const STAGES = ["conflict", "behind", "before_merge"] as const;
+/** One step of a stage: the repo's own slash command, posted as a comment, or one of its workflows, dispatched on the PR's head. */
+export type ActionStep = { comment: string } | { workflow: string; inputs?: Record<string, string> };
 
 export interface ShipSettings {
   /** Whether ship adopts and works this repo's PRs (the Fleet page's Enabled switch). */
@@ -23,6 +28,8 @@ export interface ShipSettings {
   safe: { max_lines: number | null; max_files: number | null; deny: string[] };
   merge: (typeof MERGE)[number];
   stop_label: string;
+  /** The repo's own commands and workflows per stage (actions.ts). An ordinary setting: they are the repo's own CI. */
+  actions: Partial<Record<(typeof STAGES)[number], ActionStep[]>>;
 }
 
 // Protected paths bind the model's fixes only: the deterministic repair may regenerate lockfiles.
@@ -31,7 +38,7 @@ const PROTECTED = ["**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", 
 const CAUTIOUS: ShipSettings = {
   enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
   caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, review_rounds: 3, rounds: 30, usd: 5, requeue_on_timeout: 1 },
-  approve: "observe", safe: { max_lines: 1200, max_files: 50, deny: [...PROTECTED, "**/migrations/**", "**/auth/**", "**/Dockerfile*", "**/docker-compose*", "**/*.tf", "infra/**", "**/.env*", "**/config/**"] }, merge: "ready", stop_label: "ship:stop",
+  approve: "observe", safe: { max_lines: 1200, max_files: 50, deny: [...PROTECTED, "**/migrations/**", "**/auth/**", "**/Dockerfile*", "**/docker-compose*", "**/*.tf", "infra/**", "**/.env*", "**/config/**"] }, merge: "ready", stop_label: "ship:stop", actions: {},
 };
 const FULL: ShipSettings = {
   // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
@@ -52,7 +59,7 @@ export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CA
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label"];
+const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "approve", "safe", "merge", "stop_label", "actions"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 /** Where ship works: the fleet's own repos (the agents org as `org/*`, the product repo), always; a `maintainer_repos` repo only
@@ -105,6 +112,19 @@ const oneOf = (errors: string[], at: string, v: unknown, list: readonly string[]
 const strings = (errors: string[], at: string, v: unknown) => { if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !x || x.length > 300)) errors.push(`${at}: a list of strings`); };
 const count = (errors: string[], at: string, v: unknown) => { if (v !== null && !(Number.isInteger(v) && (v as number) >= 0)) errors.push(`${at}: a whole number, or null for unlimited`); };
 
+// A step is the repo's own command, never free text: one slash command line (posted as is), or a workflow file name in
+// .github/workflows (it goes into an API path) with string inputs.
+const COMMAND = /^\/[\w-]{1,40}( [\w.:/=-]{1,60})?$/;
+const WORKFLOW = /^[\w.-]{1,100}\.ya?ml$/;
+function stepError(x: unknown): string | undefined {
+  if (!isMap(x)) return "{ comment } or { workflow, inputs? }";
+  if ("comment" in x) return Object.keys(x).length === 1 && typeof x.comment === "string" && COMMAND.test(x.comment) ? undefined : "comment: one slash command, e.g. /rebase";
+  if (!("workflow" in x) || Object.keys(x).some((k) => !["workflow", "inputs"].includes(k))) return "{ comment } or { workflow, inputs? }";
+  if (typeof x.workflow !== "string" || !WORKFLOW.test(x.workflow)) return "workflow: a file name in .github/workflows, e.g. pr-rebase.yml";
+  if ("inputs" in x && (!isMap(x.inputs) || Object.keys(x.inputs).length > 10 || Object.entries(x.inputs).some(([k, v]) => !/^[\w-]{1,50}$/.test(k) || typeof v !== "string" || v.length > 200))) return "inputs: up to 10 names with text values";
+  return undefined;
+}
+
 function checkEntry(errors: string[], at: string, e: unknown) {
   if (typeof e === "string") return void (Object.hasOwn(PRESETS, e) || errors.push(`${at}: preset ${e} (cautious or full)`));
   if (!isMap(e)) return void errors.push(`${at}: a preset name or a map of fields`);
@@ -122,6 +142,14 @@ function checkEntry(errors: string[], at: string, e: unknown) {
     const g = e.generated;
     if (!isMap(g) || Object.keys(g).some((k) => !["globs", "command"].includes(k))) errors.push(`${at}.generated: { globs, command }`);
     else { strings(errors, `${at}.generated.globs`, g.globs ?? []); if (g.command !== undefined && (typeof g.command !== "string" || g.command.length > 500)) errors.push(`${at}.generated.command: text`); }
+  }
+  if ("actions" in e) {
+    if (!isMap(e.actions)) errors.push(`${at}.actions: a map of stage to steps`);
+    else for (const [stage, steps] of Object.entries(e.actions)) {
+      if (!STAGES.includes(stage as never)) { errors.push(`${at}.actions.${stage.slice(0, 40)}: unknown stage (known: ${STAGES.join(", ")})`); continue; }
+      if (!Array.isArray(steps) || steps.length > 5) { errors.push(`${at}.actions.${stage}: a list of up to 5 steps`); continue; }
+      steps.forEach((x, i) => { const m = stepError(x); if (m) errors.push(`${at}.actions.${stage}[${i}]: ${m}`); });
+    }
   }
   if ("caps" in e) {
     if (!isMap(e.caps)) errors.push(`${at}.caps: a map`);

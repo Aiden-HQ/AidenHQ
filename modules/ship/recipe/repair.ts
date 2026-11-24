@@ -28,6 +28,13 @@ const LOCK_CMD: Record<string, string> = {
 };
 const LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
+/** The tool a command's output says is missing: `sh: 1: webrpc-gen: not found`, `make: oapi-codegen: No such file or directory`,
+ * `bash: buf: command not found`, or Go's `exec: "protoc": executable file not found in $PATH`. */
+export function missingTool(out: string): string | undefined {
+  const m = /exec: "([\w.+-]{1,60})": executable file not found/.exec(out) ?? /(?:^|\s)([\w.+-]{1,60}): (?:command )?not found\b/m.exec(out) ?? /(?:^|\s)make(?:\[\d+\])?: ([\w.+-]{1,60}): No such file or directory/m.exec(out);
+  return m?.[1];
+}
+
 export function repair(ws: string, out: string, spec: Record<string, string>) {
   const plan = JSON.parse(spec.plan || "{}") as { globs?: string[]; commands?: { dir: string; cmd: string }[] };
   const globs = (plan.globs ?? []).filter((x) => typeof x === "string" && x);
@@ -78,7 +85,11 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   for (const c of [...relock, ...commands]) {
     try { execFileSync("sh", ["-c", c.cmd], { cwd: join(repo, c.dir), env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 << 20 }); } catch (e) {
       const x = e as { status?: number; stderr?: Buffer; stdout?: Buffer; message: string };
-      return { result: { failed: `\`${c.cmd}\` in ${c.dir} exited ${x.status ?? "?"}: ${String(x.stderr || x.stdout || x.message).slice(-2000)}` } };
+      const said = String(x.stderr || x.stdout || x.message);
+      // A tool this box doesn't have (the shell's "not found", Go's exec error, or exit 127): said first, plainly, so ship can
+      // suggest the repo's own workflow instead.
+      const tool = missingTool(said) ?? (x.status === 127 ? c.cmd.trim().split(/\s+/)[0] : undefined);
+      return { result: { failed: `${tool ? `toolchain missing: ${tool}\n` : ""}\`${c.cmd}\` in ${c.dir} exited ${x.status ?? "?"}: ${said.slice(-2000)}` } };
     }
   }
   g(["add", "-A"]);

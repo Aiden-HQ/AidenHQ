@@ -1,16 +1,18 @@
 // Zero-config discovery for the deterministic repair (spec §3 "Generated files"): which paths are generated and which command
 // regenerates them, read from the target branch's own files (never the PR's). Pure: the caller hands it the files it read.
-//   globs:     `.gitattributes` `linguist-generated`, the known lockfiles, and files whose header says "Code generated … DO NOT EDIT"
-//   commands:  per package dir, the first of: a CI job that checks generated code is up to date, a Makefile `generate` target,
-//              a package.json `generate` script, `go:generate` directives (go generate ./...)
+//   globs:     `.gitattributes` `linguist-generated` and the known lockfiles only: the repo declared those, so the repair may write
+//              them. Anything wider is a loosening, the owner's `generated` setting.
+//   commands:  per package dir, the first of: a CI job that checks generated code is up to date, a command AGENTS.md names, a
+//              Makefile `generate` target, a package.json `generate` script, `go:generate` directives (go generate ./...)
 //   ambiguous: what discovery couldn't settle (the Engineer proposes the command with ship_configure; the setting wins from then on)
+//   suggest:   the repo's own regenerate command or workflow, as an `actions` step for the report to propose (never enabled here)
 export const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
-export type Discovered = { globs: string[]; commands: { dir: string; cmd: string }[]; ambiguous: string[] };
+export type Suggestion = { stage: "conflict" | "behind"; step: { comment: string } | { workflow: string }; from: string };
+export type Discovered = { globs: string[]; commands: { dir: string; cmd: string }[]; ambiguous: string[]; suggest: Suggestion[] };
 
 const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
 const base = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const HEADER = /Code generated .* DO NOT EDIT/;
 // A CI job that checks generated code (its id or name): "generated code up to date", "check-generated", "codegen", …
 const GEN_JOB = /generat|codegen/i;
 const GEN_RUN = /\b(make\s+(generate|gen|codegen)\b|(npm|pnpm|yarn)\s+(run\s+)?(generate|gen|codegen)\b|go\s+generate\b|buf\s+generate\b)/;
@@ -30,7 +32,6 @@ export function discover(files: Record<string, string>): Discovered {
         globs.add(at === "." ? (pattern.startsWith("/") || p.includes("/") ? p : `**/${p}`) : `${at}/${p}`);
       }
     }
-    if (HEADER.test(text.split("\n", 5).join("\n"))) globs.add(path);
   }
   for (const l of LOCKFILES) globs.add(`**/${l}`);
 
@@ -50,7 +51,13 @@ export function discover(files: Record<string, string>): Discovered {
       else if (runs.length > 1) ambiguous.push(`${path}: job ${job.id} runs ${runs.length} generate commands`);
     }
   }
-  // 2. Build files, per package dir.
+  // 2. AGENTS.md: a plain generate command it names (in code), for its own dir.
+  for (const [path, text] of Object.entries(files)) {
+    if (base(path) !== "AGENTS.md") continue;
+    const m = /`([^`\n]*)`/g;
+    for (let x = m.exec(text); x; x = m.exec(text)) if (GEN_RUN.test(x[1]!) && !/["'$\\;&|]/.test(x[1]!)) { put(dirOf(path), x[1]!.trim()); break; }
+  }
+  // 3. Build files, per package dir.
   for (const [path, text] of Object.entries(files)) {
     const dir = dirOf(path);
     if (/^(GNU)?[Mm]akefile$/.test(base(path)) && /^generate\s*:/m.test(text)) put(dir, "make generate");
@@ -63,7 +70,26 @@ export function discover(files: Record<string, string>): Discovered {
     while (dir !== "." && !(`${dir}/go.mod` in files)) dir = dirOf(dir);
     put(dir, "go generate ./...");
   }
-  return { globs: [...globs], commands: [...byDir].map(([dir, cmd]) => ({ dir, cmd })), ambiguous };
+  return { globs: [...globs], commands: [...byDir].map(([dir, cmd]) => ({ dir, cmd })), ambiguous, suggest: suggestions(files) };
+}
+
+// A comment workflow's command: `startsWith(github.event.comment.body, '/rebase')`, `contains(…, '/rebase')` or `== '/rebase'`.
+const SLASH = /comment\.body\s*(?:,\s*|==\s*)['"](\/[\w-]{1,40})['"]/;
+const REGEN = /\b(rebase|regenerat|generat|codegen)/i;
+/** The repo's own regenerate paths, from its workflows: a slash command that rebases or regenerates (issue_comment), and a
+ * workflow_dispatch workflow that does. Proposed in the report as `actions` steps; enabling one is the owner's or an agent's
+ * ship_configure. */
+function suggestions(files: Record<string, string>): Suggestion[] {
+  const out: Suggestion[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) continue;
+    const name = base(path);
+    const regen = REGEN.test(name) || jobsOf(text).some((j) => j.runs.some((r) => GEN_RUN.test(r) || /\bgit\s+rebase\b/.test(r)));
+    const slash = SLASH.exec(text)?.[1];
+    if (/\bissue_comment\b/.test(text) && slash && (regen || REGEN.test(slash))) out.push({ stage: "conflict", step: { comment: slash }, from: path });
+    else if (/\bworkflow_dispatch\b/.test(text) && regen) out.push({ stage: "conflict", step: { workflow: name }, from: path });
+  }
+  return out;
 }
 
 /** A workflow's jobs, read just enough: each job's id, name, working directory and `run:` lines (one-line and block scalars). */
