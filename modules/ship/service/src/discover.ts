@@ -42,8 +42,11 @@ export function discover(files: Record<string, string>): Discovered {
     for (const job of jobsOf(text)) {
       if (!GEN_JOB.test(job.id) && !GEN_JOB.test(job.name)) continue;
       const runs = job.runs.filter((r) => GEN_RUN.test(r));
-      // The command with its own arguments, up to the next shell operator (`go generate ./...`, not `go generate`).
-      if (runs.length === 1) put(job.dir, /[^;&|]*/.exec(runs[0]!.slice(runs[0]!.search(GEN_RUN)))![0].trim());
+      // The command with its own arguments, up to the next shell operator (`go generate ./...`, not `go generate`). Quoting or
+      // expansion in it is beyond this reading: the Engineer proposes the command instead.
+      const cmd = runs.length === 1 ? /[^;&|]*/.exec(runs[0]!.slice(runs[0]!.search(GEN_RUN)))![0].trim() : "";
+      if (cmd && !/["'`$\\]/.test(cmd)) put(job.dir, cmd);
+      else if (runs.length) ambiguous.push(`${path}: job ${job.id} ${runs.length > 1 ? `runs ${runs.length} generate commands` : "runs a generate command this can't read plainly"}`);
       else if (runs.length > 1) ambiguous.push(`${path}: job ${job.id} runs ${runs.length} generate commands`);
     }
   }
@@ -91,7 +94,7 @@ function jobsOf(yaml: string) {
     const run = /^(?:-\s+)?run:\s*(.*)$/.exec(line);
     if (run) {
       if (/^[|>][-+]?$/.test(run[1]!.trim())) block = { indent };
-      else cur.runs.push(run[1]!.trim());
+      else cur.runs.push(run[1]!.trim().replace(/^(["'])(.*)\1$/, "$2"));
     }
   }
   return jobs;

@@ -27,7 +27,8 @@ const list = (xs: string[]) => xs.map((x) => `\`${x.replace(/`/g, "")}\``).join(
 
 export function renderReport(a: Kept, pr: PrView, f: Facts): string {
   const lines = [MARKER, `**Ship** · generation ${a.generation} · head \`${pr.head.slice(0, 12)}\``, ""];
-  lines.push(`**State:** ${a.hold ? `on hold (${a.hold.kind}): ${a.hold.reason}` : f.state}`);
+  const held = a.hold && f.state !== "merged";
+  lines.push(`**State:** ${held ? `on hold (${a.hold!.kind}): ${a.hold!.reason}` : f.state}`);
   if (f.waits && !a.hold) lines.push(`**Waiting on:** ${f.waits}`);
   const handed = a.trigger.kind === "fleet" ? "opened by the fleet" : a.trigger.kind === "all" ? `adopted (handoff: all, author @${a.trigger.actor})` : `handed over by @${a.trigger.actor} (${a.trigger.kind === "comment" ? "/ship" : "ship label"})`;
   lines.push(`**Hand-off:** ${handed}${pr.fork ? `; a fork${pr.canModify ? " that allows maintainer edits" : " without maintainer edits (ship can't push to it)"}` : ""}`);

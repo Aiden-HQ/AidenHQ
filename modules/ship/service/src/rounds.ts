@@ -4,7 +4,7 @@
 // the repo's settings exclude, the PR goes on hold with the reason, its author assigned once, and the report says so.
 // The loop (loop.ts) calls round() after intake() for each adopted PR it read, with decide's answer and this pass's facts.
 import type { Discovered } from "./discover.ts";
-import type { Kept, PrView } from "./handoff.ts";
+import { fileTask, type Kept, type PrView } from "./handoff.ts";
 import { renderReport, type Facts } from "./report.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
@@ -55,8 +55,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
   // Landed: a hand-off's task ends with it (a fleet PR's task is its opener's), whatever else holds the PR.
   if (pr.state === "merged" && v.do === "done") {
-    if (a.trigger.kind !== "fleet" && a.counters?.lastRound !== `${pr.head}:done`) {
-      await d.kernel.call("POST", `/v1/tasks/${a.task}/close`, { status: "done", body: `${pr.url} is merged.` }).catch((e) => d.log("task close failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
+    if (a.counters?.lastRound !== `${pr.head}:done`) {
+      // Closed before it is recorded: a close that failed is tried again next pass (an already-closed task answers ok).
+      if (a.task && a.trigger.kind !== "fleet") {
+        try { await d.kernel.call("POST", `/v1/tasks/${a.task}/close`, { status: "done", body: `${pr.url} is merged.` }); } catch (e) {
+          d.log("task close failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
+          return "nothing";
+        }
+      }
       a = { ...a, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
       d.state.put(a);
       await report(d, a, pr, { state: "merged", stopLabel: s.stop_label });
@@ -88,13 +94,20 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`);
     // The kernel keeps 2,000 characters of a wake: a longer one (a very long repair plan) would reach the task cut.
     if (text.length > 2000) return hold(`the ${kind} wake is ${text.length} characters (over 2,000): narrow the repo's \`generated\` setting`);
-    await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text });
+    // The first job files the adoption's task (which starts the Engineer on it); later ones wake that same task.
+    if (!a!.task) a = { ...a!, task: await fileTask(d.kernel, pr, a!.generation, text) };
+    else if ((await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text }))?.closed) {
+      // Someone closed or cancelled the task: that ends the adoption until a fresh hand-off.
+      a = { ...a!, hold: { kind: "handed_back", reason: "its task was closed", at: new Date().toISOString() } };
+      await save("on hold");
+      return "acted" as const;
+    }
     c.wakes++;
     a = { ...a!, did: [...(a!.did ?? []), `${kind} at \`${pr.head.slice(0, 12)}\``] };
     return "acted" as const;
   };
 
-  const push = () => `Push it onto the PR's branch with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
+  const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
   // A round is a settled head: each (head, action) is taken once; a merge is followed by its record instead.
   const key = `${pr.head}:${v.do}`;
   if (v.do !== "merge" && c.lastRound === key) return "nothing";
@@ -160,7 +173,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           c.rounds++;
         }
         const attempt = a!.merge?.head === pr.head ? a!.merge.attempt + 1 : 1;
-        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.merge", task: a!.task, args: { prs: [{ repo: pr.repo, number: pr.number, head: pr.head, base: pr.base }], generation: a!.generation, attempt } });
+        const r = await d.kernel.call("POST", "/v1/writes", { kind: "github.merge", ...(a!.task ? { task: a!.task } : {}), args: { prs: [{ repo: pr.repo, number: pr.number, head: pr.head, base: pr.base }], generation: a!.generation, attempt } });
         a = { ...a!, merge: { head: pr.head, attempt, record: String(r.id) }, did: [...(a!.did ?? []), `asked to merge at \`${pr.head.slice(0, 12)}\` (attempt ${attempt})`] };
         return "acted";
       }
@@ -176,7 +189,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A merge already asked for at this head: nothing new to say until its record ends.
   if (did === "nothing" && c.lastRound === key) return did;
   c.lastRound = key;
-  const state = v.do === "done" ? "merged" : v.do === "merge" ? "merging" : ["approve", "enqueue"].includes(v.do) ? "ready" : v.do === "wait" ? "waiting" : "working";
+  const state = v.do === "done" ? "merged" : v.do === "merge" ? (s.merge === "off" ? "ready (its `merge` setting is off: a person merges it)" : "merging") : ["approve", "enqueue"].includes(v.do) ? "ready" : v.do === "wait" ? "waiting" : "working";
   await save(state, ["wait", "approve", "enqueue"].includes(v.do) ? v.why : undefined);
   return did;
 }

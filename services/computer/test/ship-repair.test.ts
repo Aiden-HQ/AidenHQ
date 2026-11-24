@@ -75,6 +75,13 @@ test("ship repair: generated conflicts are regenerated into one pushed commit; a
   assert.equal(at("show", `${sha}:gen/out.txt`), "a2\nb");
   assert.equal(at("show", `${sha}:package-lock.json`), '{\n  "lockfileVersion": 3\n}');
 
+  // With no generator to rewrite them, generated conflicts are the Engineer's too.
+  const none = Buffer.from(JSON.stringify({ globs: ["gen/**"], commands: [] })).toString("base64url");
+  const fresh = join(root, "ws2");
+  mkdirSync(fresh);
+  await assert.rejects(run(process.execPath, [CLI, "ship", "repair", "https://github.com/acme/app/pull/7", head, "2", "main", none], { env: { ...env, AIDENHQ_TASK_WORKTREE: fresh }, cwd: fresh }), (e) => e.code === 3 && /^leftover: gen\/out\.txt$/m.test(e.stdout));
+  assert.equal(writes.length, 1);
+
   // A conflict outside the generated paths is the Engineer's: listed, nothing pushed.
   await assert.rejects(repair(clash), (e) => e.code === 3 && /^leftover: src\/a\.txt$/m.test(e.stdout) && !/gen\/out\.txt/.test(e.stdout));
   assert.equal(writes.length, 1);

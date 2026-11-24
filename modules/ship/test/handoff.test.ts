@@ -46,24 +46,25 @@ function world(raw: Record<string, unknown> = { repos: { "a/b": "cautious" } }) 
   });
   const ev = (id: string, kind: "labeled" | "unlabeled" | "comment", actor: string, at: string, o: Record<string, unknown> = {}) => ({ id, kind, actor, bot: actor.endsWith("[bot]"), at, ...(kind !== "comment" ? { label: "ship" } : {}), ...o });
   const of = (what: string) => calls.filter((c) => c.what === what);
-  return { state, calls, records, deps, pr, ev, of };
+  // The jobs the Engineer got: the first files the adoption's task, the rest wake it.
+  const jobs = () => calls.filter((c) => c.what === "POST /v1/tasks" || c.what === "POST /v1/wakes").map((c) => String((c.body as any).description ?? (c.body as any).text));
+  return { state, calls, records, deps, pr, ev, of, jobs };
 }
 
-test("a member's ship label adopts once (one task, one report); the App's never; a reader's never", async () => {
+test("a member's ship label adopts once (one report; no task until a round needs one); the App's never; a reader's never", async () => {
   const w = world();
   assert.equal(await intake(w.deps, w.pr({ events: [w.ev("e0", "labeled", "acme-app[bot]", "2026-11-24T01:00:00Z"), w.ev("e1", "labeled", "reader", "2026-11-24T01:01:00Z")] })), undefined);
   const p = w.pr({ labels: ["ship"], events: [w.ev("e2", "labeled", "admin1", "2026-11-24T01:02:00Z")] });
   const a = await intake(w.deps, p);
   assert.equal(a?.generation, 1);
   await intake(w.deps, p);
-  assert.deepEqual(w.of("POST /v1/tasks").map((c) => (c.body as any).source), ["ship:a/b/7:1"]);
-  assert.equal((w.of("POST /v1/tasks")[0]!.body as any).role, "platform-engineer");
+  assert.equal(w.of("POST /v1/tasks").length, 0, "a PR that needs no work starts no Engineer");
   assert.equal(w.of("ask").length, 0, "not a fork: no review ask");
   await round(w.deps, p, { do: "wait", why: "1 required check(s) still running on its head" });
   await round(w.deps, p, { do: "wait", why: "1 required check(s) still running on its head" });
   assert.equal(w.of("comment").length, 1);
   assert.ok(String(w.of("comment")[0]!.body).startsWith(MARKER));
-  assert.deepEqual(generationOf(w.state, false, "a/b", 7), { generation: 1, hold: null, task: "task-ship:a/b/7:1" });
+  assert.deepEqual(generationOf(w.state, false, "a/b", 7), { generation: 1, hold: null });
   assert.equal(generationOf(w.state, true, "a/b", 7).hold?.kind, "stopped", "a pause reads as a hold");
 });
 
@@ -75,7 +76,8 @@ test("a fork waits for a member: then it is adopted and code review is asked onc
   const p = w.pr({ ...fork, events: [w.ev("c1", "comment", "outsider", "2026-11-24T01:00:00Z", { body: "/ship" }), w.ev("c2", "comment", "writer", "2026-11-24T01:01:00Z", { body: "/ship" })] });
   assert.equal((await intake(w.deps, p))?.trigger.actor, "writer");
   await intake(w.deps, p);
-  assert.deepEqual(w.of("ask").map((c) => c.url), ["https://github.com/a/b/pull/7"]);
+  assert.deepEqual(w.of("ask").map((c) => [c.url, c.task]), [["https://github.com/a/b/pull/7", "task-ship:a/b/7:1"]]);
+  assert.deepEqual(w.of("POST /v1/tasks").map((c) => [(c.body as any).source, (c.body as any).role]), [["ship:a/b/7:1", "platform-engineer"]]);
 });
 
 test("a hand-back is sticky with the label still on; re-adding it starts generation 2", async () => {
@@ -88,7 +90,6 @@ test("a hand-back is sticky with the label still on; re-adding it starts generat
   assert.equal((await intake(w.deps, w.pr({ labels: ["ship"], events: [on, back, w.ev("e3", "labeled", "acme-app[bot]", "2026-11-24T03:00:00Z")] })))?.hold?.kind, "handed_back");
   const again = await intake(w.deps, w.pr({ labels: ["ship"], events: [on, back, w.ev("e4", "labeled", "writer", "2026-11-24T04:00:00Z")] }));
   assert.deepEqual([again?.generation, again?.hold], [2, null]);
-  assert.deepEqual(w.of("POST /v1/tasks").map((c) => (c.body as any).source), ["ship:a/b/7:1", "ship:a/b/7:2"]);
 });
 
 test("a person assigned pauses the loop; past ci_rounds the PR holds with its author assigned once, and a fresh trigger clears it", async () => {
@@ -97,10 +98,11 @@ test("a person assigned pauses the loop; past ci_rounds the PR holds with its au
   await intake(w.deps, w.pr({ events: [on] }));
   assert.equal(await round(w.deps, w.pr({ assignees: ["reviewer1"] }), { do: "fix_ci" }, { failing: ["test"] }), "stopped");
   assert.equal(await round(w.deps, w.pr({ head: H1 }), { do: "fix_ci" }, { failing: ["test"] }), "acted");
-  assert.equal(w.of("POST /v1/wakes").length, 1);
+  assert.equal(w.jobs().length, 1);
   // Red on main too: pre-existing, so it spends no CI round (the Engineer judges it with evidence).
   await round(w.deps, w.pr({ head: H2 }), { do: "fix_ci" }, { failing: ["lint"], onBase: ["lint"] });
-  assert.equal(w.of("POST /v1/wakes").length, 2);
+  assert.equal(w.jobs().length, 2);
+  assert.match(w.jobs()[1]!, /aidenhq ship checkout .*aidenhq ship push https:\/\/github.com\/a\/b\/pull\/7 2{40} 1/s);
   assert.equal(w.state.get("a/b", 7)?.hold, null);
   await round(w.deps, w.pr({ head: H3 }), { do: "fix_ci" }, { failing: ["e2e"] });
   const held = w.state.get("a/b", 7) as any;
@@ -124,14 +126,14 @@ test("a conflict wakes the task with the repair command; a fork without maintain
   await intake(w.deps, w.pr({ events: [on] }));
   // GitHub ran no checks on the conflicting head: decide says repair at once.
   await round(w.deps, w.pr(), { do: "repair", why: "it conflicts with `main`" }, { dirty: true, discovered: { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }], ambiguous: [] } });
-  const text = String((w.of("POST /v1/wakes")[0]!.body as any).text);
+  const text = w.jobs()[0]!;
   const line = /aidenhq ship repair (\S+) (\S+) (\d+) (\S+) (\S+)/.exec(text)!;
   assert.deepEqual(line.slice(1, 5), ["https://github.com/a/b/pull/7", H1, "1", "main"]);
   assert.deepEqual(JSON.parse(Buffer.from(line[5]!, "base64url").toString()), { globs: ["gen/**"], commands: [{ dir: ".", cmd: "make generate" }] });
   // Behind only: GitHub's update-branch, no wake.
   await round(w.deps, w.pr({ head: H2 }), { do: "repair", why: "it is behind `main`" }, { dirty: false });
   assert.deepEqual(w.of("update").map((c) => c.head), [H2]);
-  assert.equal(w.of("POST /v1/wakes").length, 1);
+  assert.equal(w.jobs().length, 1);
 
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
@@ -152,4 +154,5 @@ test("a conflict wakes the task with the repair command; a fork without maintain
   await round(f.deps, f.pr({ fork: true }), { do: "repair" }, { dirty: true });
   assert.match(String((f.state.get("a/b", 7) as any).hold.reason), /maintainer edits/);
   assert.equal(f.of("POST /v1/wakes").length, 0);
+  assert.equal(f.jobs().length, 1, "only the fork's adoption task: its review summary lands there");
 });
