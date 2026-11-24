@@ -162,7 +162,8 @@ test("a module-filed write on a task records that task's identifier, and GET /v1
 });
 
 test("a module-filed write on a task the control plane can't resolve leaves its identifier unset", async (t) => {
-  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE, "TASK-11": { id: "TASK-11", identifier: "", status: "open" } } });
+  const { k } = await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE, "TASK-11": { id: "TASK-11", identifier: "", status: "open" } },
+    onControl: (req) => (/^\/api\/issues\/TASK-404$/.test(req.url ?? "") ? { status: 404, body: { error: "not_found" } } : undefined) });
   // An empty identifier, and a task the control plane has no row for (404): both leave it unset, so the guard fails closed.
   const empty = await k.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "a" }, task: "TASK-11" }, "other-key");
   assert.equal(empty.status, 200, JSON.stringify(empty.json));
@@ -179,6 +180,10 @@ test("a module-filed write whose task the control plane can't read now is refuse
   assert.equal(r.status, 503, JSON.stringify(r.json));
   assert.equal(r.json.error.type, "check_failed");
   assert.equal(k.records.list(["review", "owner", "claimed", "done"]).length, 0);
+  // A control plane that drops the read (no answer at all) is the same retryable refusal, never an identifier-less record.
+  const dropped = await (await twin(t, { issues: { ...HEARTBEAT, ...TRIAGE }, onControl: (req) => { if (/^\/api\/issues\/TASK-9$/.test(req.url ?? "") && String(req.headers["x-dropped"] ?? "") !== "once") req.socket.destroy(); return undefined; } })).k;
+  assert.equal((await dropped.v1("POST", "/v1/writes", { kind: "twin.shared", args: { note: "r" }, task: "TASK-9" }, "other-key")).status, 503);
+  assert.equal(dropped.records.list(["review", "owner", "claimed", "done"]).length, 0);
 });
 
 test("a job's plan-time refusal keeps its rule's stable code beside its words, and a write that goes through clears both", async (t) => {

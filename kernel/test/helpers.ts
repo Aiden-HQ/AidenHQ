@@ -126,8 +126,21 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
     checks: typeof checkTable === "function" ? checkTable : () => checkTable ?? {}, filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck },
     autonomy: () => grantsTable().autonomy ?? "full", onTask: { open: async (task) => !closed.includes(task), notify: async (task, text, o) => { const to = o?.parent ? parents[task] : task; if (to && !closed.includes(to)) notices.push({ task: to, text }); },
       scope: async (task, agent) => { const i = issues[task]; if (!i) return undefined; const read = async (ref) => issues[ref]; return { id: i.id ?? task, identifier: i.identifier, scope: await scopeOf(i, agent, read) }; } },
-    // A named task's identifier, read as main.ts reads it: none when the task answers without one; a failed read refuses.
-    taskIdentifier: async (task) => { const r = await fetch(new URL(`/api/issues/${encodeURIComponent(task)}`, cpServer.url), { headers: { authorization: "Bearer board-key" } }); if (r.status === 404) return undefined; if (!r.ok) throw Object.assign(new Error(`control plane GET task ${task} → ${r.status}`), { status: 503, type: "check_failed" }); const i = (await r.json()) as { identifier?: unknown }; return typeof i.identifier === "string" && i.identifier ? i.identifier : undefined; } });
+    // A named task's identifier, read as main.ts reads it: none when the task answers without one (404, empty); a failed read
+    // (a 5xx, a dropped connection, a body that isn't JSON) refuses the filing with a retryable 503 check_failed.
+    taskIdentifier: async (task) => {
+      const unavailable = (why: string) => Object.assign(new Error(`control plane GET task ${task} failed (${why}): nothing was filed; try again`), { status: 503, type: "check_failed" });
+      try {
+        const r = await fetch(new URL(`/api/issues/${encodeURIComponent(task)}`, cpServer.url), { headers: { authorization: "Bearer board-key" } });
+        if (r.status === 404) return undefined;
+        if (!r.ok) throw unavailable(`it answered ${r.status}`);
+        const i = (await r.json()) as { identifier?: unknown };
+        return typeof i.identifier === "string" && i.identifier ? i.identifier : undefined;
+      } catch (e) {
+        if ((e as { type?: string })?.type === "check_failed") throw e;
+        throw unavailable(String((e as Error)?.message ?? e).slice(0, 200));
+      }
+    } });
   // `connect`: connect on first use wired as main.ts wires it (facts, the wake inbox, waits, the connection state).
   let connectionState;
   const proxy = createProxy({ whoami, grants: () => grantsTable().agents ?? {}, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, needs: () => connectionState, log: logf });

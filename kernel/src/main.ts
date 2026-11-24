@@ -238,10 +238,17 @@ const writes = createWrites({
   // the same control-plane read onTask.scope uses. None when the task answers without one; a failed read refuses the filing
   // (503, retryable) rather than store an identifier-less record the merge queue could never land.
   taskIdentifier: async (task: string) => {
-    const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`);
-    if (r.status === 404) return undefined;
-    if (!r.ok) throw Object.assign(new Error(`control plane GET task ${task} → ${r.status}`), { status: 503, type: "check_failed" });
-    const identifier = (await r.json()) as { identifier?: unknown };
+    // A timeout, a dropped connection or a body that isn't JSON is no answer yet either: the same retryable refusal as a 5xx.
+    const unavailable = (why: string) => Object.assign(new Error(`control plane GET task ${task} failed (${why}): nothing was filed; try again`), { status: 503, type: "check_failed" });
+    let identifier: { identifier?: unknown };
+    try {
+      const r = await cpApi(`/api/issues/${encodeURIComponent(task)}`);
+      if (r.status === 404) return undefined;
+      if (!r.ok) throw unavailable(`it answered ${r.status}`);
+      identifier = (await r.json()) as { identifier?: unknown };
+    } catch (e) {
+      throw (e as { type?: string })?.type === "check_failed" ? e : unavailable(String((e as Error)?.message ?? e).slice(0, 200));
+    }
     return typeof identifier.identifier === "string" && identifier.identifier ? identifier.identifier : undefined;
   },
   // ai_review_code (the ai-reviewer module's setting) and the mandatory code-review repos, compiled into the modules file.
