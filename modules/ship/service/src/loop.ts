@@ -31,9 +31,10 @@ export type Main = { name: string; oid?: string; rollup: Json };
 export type LoopOptions = {
   /**
    * The repos to watch, owner/name: `all` for the ones ship works, `dependabot` for a maintained repo elsewhere, where only the
-   * Dependabot duty runs (no rounds, no recoveries, no flow facts).
+   * Dependabot duty runs (no rounds, no recoveries, no flow facts). `dependabot`: which bumps get an Engineer task: `all` once their
+   * checks finish (the default), none (`off`), or only `failing` ones, those with a check that finished red (the repo's maintainer_repos entry).
    */
-  repos: { repo: string; duties: "all" | "dependabot" }[]; kernelUrl: string; /** Ship's own token (kernel.tasks). */ key: string; cacheDir: string;
+  repos: { repo: string; duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }[]; kernelUrl: string; /** Ship's own token (kernel.tasks). */ key: string; cacheDir: string;
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
   /** Which task opened each PR (github's pr-tasks.json): PR url (lower case) -> { task, branch }. */
   openers: () => Promise<Record<string, { task: string; branch: string }>>;
@@ -53,9 +54,11 @@ export type LoopOptions = {
 const EVERY_MS = 60_000, IDLE_MAX_MS = 30 * 60_000;
 const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
-function dependabotDue(pr: Json) {
-  if (!isDependabot(pr)) return false;
-  return !namedChecks(rollupOf(pr)).some((c) => c.pending); // a PR with no named checks has none to wait for
+function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
+  if (which === "off" || !isDependabot(pr)) return false;
+  const checks = namedChecks(rollupOf(pr));
+  if (checks.some((c) => c.pending)) return false; // a PR with no named checks has none to wait for
+  return which === "all" || checks.some((c) => !c.ok);
 }
 
 // The watcher's own table in ship's data dir (loop.json; the adoption records are state.ts's).
@@ -75,7 +78,7 @@ export function startLoop(o: LoopOptions) {
   }
 
   /** One repo's pass; `all` is the state file's content, keyed by lowercased repo, and `save` writes it whole. */
-  async function scan(repo: string, duties: "all" | "dependabot", all: Json): Promise<number> {
+  async function scan(repo: string, duties: "all" | "dependabot", which: "off" | "failing" | "all", all: Json): Promise<number> {
     const [owner, name] = repo.split("/");
     let r: Json;
     const open: Json[] = [];
@@ -93,7 +96,7 @@ export function startLoop(o: LoopOptions) {
     state.dependabot ??= {}; // PR url -> its task's id
     const save = () => writeJson(stateFile, all);
 
-    for (const pr of open.filter(dependabotDue)) {
+    for (const pr of open.filter((p) => dependabotDue(p, which))) {
       const url = pr.url.toLowerCase();
       if (state.dependabot[url]) continue;
       const title = `Dependabot PR ${repo}#${pr.number}`;
@@ -187,8 +190,8 @@ export function startLoop(o: LoopOptions) {
     let open = 0;
     o.adopted.begin();
     if ((o.connected && !o.connected()) || o.paused?.()) return open;
-    for (const { repo, duties } of o.repos) {
-      try { open += await scan(repo, duties, all); }
+    for (const { repo, duties, dependabot } of o.repos) {
+      try { open += await scan(repo, duties, dependabot ?? "all", all); }
       catch (e) { open++; log("PR check failed", { repo, err: String((e as Error).message).slice(0, 300) }); }
     }
     return open;

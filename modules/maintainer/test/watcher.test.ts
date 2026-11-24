@@ -213,14 +213,14 @@ test("one repo's incomplete bootstrap files what it read and is read again, and 
 });
 
 test("new-issue triage follows the repo's triage setting alone, and with `new` a held issue waits for a slot instead of expiring", async () => {
-  const w = world({ repos: [repo({ issues: false, triage: "new", triage_cap_per_author_day: 1 })] });
+  const w = world({ repos: [repo({ fixes: false, triage: "new", triage_cap_per_author_day: 1 })] });
   await w.look();
   const old = new Date(Date.now() - 2 * 86_400_000).toISOString();
   w.log.push(ev(1, "issues.opened", { number: 1, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] }), ev(2, "issues.opened", { number: 2, author_kind: "outside", created_at: old }, { author: "ada", labels: [] }));
   await w.look();
   assert.deepEqual(w.triaged, [1]);
   assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [2], "held past a day, since `new` has no daily pass to take it");
-  w.repos = [repo({ issues: false, triage: "new+backlog", triage_cap_per_author_day: 1 })];
+  w.repos = [repo({ fixes: false, triage: "new+backlog", triage_cap_per_author_day: 1 })];
   await w.look();
   assert.deepEqual(w.state().repos[R.toLowerCase()].held, [], "with the backlog on, the daily run has an issue held over a day");
 });

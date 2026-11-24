@@ -1036,21 +1036,23 @@ const OTHER = "acme/widgets";
 
 it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain or write refuses the list", () => {
   expect(parseRepos("")).toEqual([]);
-  expect(parseRepos(`${PRODUCT},${OTHER}`).map((r) => [r.repo, r.label, r.trusted])).toEqual([
+  expect(parseRepos(`${PRODUCT},${OTHER}`).map((r) => [r.repo, r.fix_label, r.trusted])).toEqual([
     [PRODUCT, "agent-fix", ["admin", "maintain"]],
     [OTHER, "agent-fix", ["admin", "maintain"]],
   ]);
-  expect(parseRepos(JSON.stringify([{ repo: PRODUCT }, { repo: OTHER, label: "fix-me", trusted: ["write"] }])).map((r) => [r.repo, r.label, r.trusted])).toEqual([
+  expect(parseRepos(JSON.stringify([{ repo: PRODUCT }, { repo: OTHER, fix_label: "fix-me", trusted: ["write"] }])).map((r) => [r.repo, r.fix_label, r.trusted])).toEqual([
     [PRODUCT, "agent-fix", ["admin", "maintain"]],
     [OTHER, "fix-me", ["write"]],
   ]);
   // Duties are opt-in (issues aside), and a quiet PR waits a week.
-  expect(parseRepos(PRODUCT)[0]).toMatchObject({ issues: true, features: false, dependabot: false, contributor_prs: false, stale_days: 7, preset: "quiet", triage: "off", triage_cap_per_author_day: 5, triage_labels: true, close: ["duplicate"], needs_info_close_days: null, stale_issues: null, resolved_check: { max_closes: 10, exempt_labels: ["roadmap", "wip", "blocked"] } });
-  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, issues: false, stale_days: 14 }]))[0]).toMatchObject({ issues: false, features: true, stale_days: 14 });
+  expect(parseRepos(PRODUCT)[0]).toMatchObject({ fixes: true, features: false, dependabot: "failing", contributor_prs: false, stale_days: 7, preset: "quiet", triage: "off", triage_cap_per_author_day: 5, triage_labels: true, close: ["duplicate"], needs_info_close_days: null, stale_issues: null, resolved_check: { max_closes: 10, exempt_labels: ["roadmap", "wip", "blocked"] } });
+  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, fixes: false, stale_days: 14 }]))[0]).toMatchObject({ fixes: false, features: true, stale_days: 14 });
   expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, contributor_pr: true }]))).toThrow("maintainer_repos[0]: unknown key contributor_pr");
   for (const bad of [
     [{ repo: PRODUCT, stale_days: 0 }],
-    [{ repo: PRODUCT, dependabot: "all" }],
+    [{ repo: PRODUCT, dependabot: true }],
+    [{ repo: PRODUCT, issues: true }],
+    [{ repo: PRODUCT, label: "x" }],
     [{ repo: PRODUCT, preset: "loud" }],
     [{ repo: PRODUCT, close: ["spam"] }],
     [{ repo: PRODUCT, needs_info_close_days: 0 }],
@@ -1070,6 +1072,8 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
 
 it("a preset sets features and triage unless the entry says; settings have no upper limit; stale_issues fills its own defaults", () => {
   const at = (e: object) => parseRepos(JSON.stringify([{ repo: PRODUCT, ...e }]))[0]!;
+  expect(at({ dependabot: "all" }).dependabot).toBe("all");
+  expect(at({ dependabot: "off" }).dependabot).toBe("off");
   expect(at({ preset: "triage" })).toMatchObject({ features: false, triage: "new" });
   expect(at({ preset: "full" })).toMatchObject({ features: true, triage: "new+backlog" });
   expect(at({ preset: "full", features: false, triage: "off" })).toMatchObject({ features: false, triage: "off" });
@@ -1106,7 +1110,7 @@ it("trust is per repo: a write collaborator vouches only where the repo trusts w
 it("a repo's own label is the one listed, trusted and the only one changed", async () => {
   const fixMe = (login: string, at: string, app?: { id: number; slug: string }) => ({ ...labeled(login, at, app), label: { name: "fix-me" } });
   const f = fake({ issues: [{ number: 3, updated_at: "2026-01-01T00:00:00Z", labels: ["fix-me"] }], timelines: { 3: [fixMe("owner1", "2026-01-01T00:00:00Z")] } });
-  const m = maintainer(f, [], [{ repo: OTHER, label: "fix-me" }]);
+  const m = maintainer(f, [], [{ repo: OTHER, fix_label: "fix-me" }]);
   expect((await m.repoSince(OTHER)).issues.map((i) => i.number)).toEqual([3]);
   expect(f.calls.some((c) => c.url.includes(`/repos/${OTHER}/issues?state=open&labels=fix-me`))).toBe(true);
   await expect(m.label(OTHER, 3, "add", "agent-fix")).rejects.toThrow(/only the fix-me and feature-request labels/);
@@ -1122,7 +1126,7 @@ it("the bootstrap covers every listed repo, and one repo's failure holds up no o
     ],
     timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")], 2: [labeled("owner1", "2026-01-02T00:00:00Z")] },
   });
-  const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER, issues: false }]);
+  const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER, fixes: false }]);
   expect((await m.bootstrap()).repos).toEqual([{ repo: PRODUCT, issues: [expect.objectContaining({ number: 1 }), expect.objectContaining({ number: 2 })] }, { repo: OTHER }]);
   f.opts.failList = [PRODUCT];
   expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, incomplete: expect.stringMatching(/couldn't list acme\/product's issues/) });
@@ -1189,7 +1193,7 @@ it("a features repo's bootstrap reads its trusted agent-build issues and its tru
     timelines: { 1: [labeledAs("feature-request", "owner1", "2026-02-01T00:00:01Z")], 2: [labeledAs(BUILD, "admin-user", "2026-02-01T00:00:03Z")], 4: [labeledAs("feature-request", "stranger", "2026-02-01T00:00:04Z")] },
     permissions: { "admin-user": "admin" },
   });
-  const row = (await maintainer(f, [], [{ repo: PRODUCT, features: true, issues: false }]).bootstrap()).repos[0]! as any;
+  const row = (await maintainer(f, [], [{ repo: PRODUCT, features: true, fixes: false }]).bootstrap()).repos[0]! as any;
   expect(row.builds.map((i: any) => [i.number, i.trusted])).toEqual([[2, true]]);
   expect(row.featured).toEqual([1]);
   expect(row.issues).toBeUndefined();

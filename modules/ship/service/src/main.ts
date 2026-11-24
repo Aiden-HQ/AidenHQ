@@ -70,16 +70,18 @@ const flow: Flow = {
 // The repos the loop watches: the product repo and every maintained repo ship works (all duties), and the other maintained repos
 // with Dependabot on (that duty only).
 const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { log("maintainer_repos unreadable: only the product repo is watched", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
-const repos = new Map<string, "all" | "dependabot">();
-if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) repos.set(env.SHIP_PRODUCT_REPO, "all");
+const repos = new Map<string, { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }>();
+// Which Dependabot bumps get a task comes from the repo's maintainer_repos entry (the product repo, unlisted, takes every one).
+const bumps = (repo: string) => maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot;
+if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) repos.set(env.SHIP_PRODUCT_REPO, { duties: "all", dependabot: bumps(env.SHIP_PRODUCT_REPO) });
 for (const m of maintained) {
   if (repos.has(m.repo)) continue;
-  if (settingsOf(m.repo)) repos.set(m.repo, "all");
-  else if (m.dependabot) repos.set(m.repo, "dependabot");
+  if (settingsOf(m.repo)) repos.set(m.repo, { duties: "all", dependabot: bumps(m.repo) });
+  else if (m.dependabot !== "off") repos.set(m.repo, { duties: "dependabot", dependabot: m.dependabot });
 }
 const dataDir = dirname(stateFile);
 startLoop({
-  repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, paused,
+  repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, paused,
   openers: () => github("GET", "openers"),
   recover: ciRecover({ gh, log }),
   // Every PR but Dependabot's: the hand-off (or a task's own PR) and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
@@ -90,7 +92,7 @@ startLoop({
     effects: shipEffects(kernel, { codeReview: "http://code-review:8098", key: token }),
   }),
 });
-log("ship watch loop", { repos: [...repos].map(([r, d]) => `${r}:${d}`) });
+log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot ?? "all"}`) });
 
 // The contributor_prs pass (contributor.ts): its one state value in data/contributor-prs.json, checked every five minutes (at most
 // hourly reads).

@@ -260,13 +260,13 @@ export class Maintainer {
   }
 
   /** The latest event of `label` (the repo's by default), when it is a `labeled` one: the label is currently on the issue. */
-  private latestLabel(r: MaintainedRepo, events: LabelEvent[], label = r.label): LabelEvent | undefined {
+  private latestLabel(r: MaintainedRepo, events: LabelEvent[], label = r.fix_label): LabelEvent | undefined {
     const e = events.filter((x) => named(x.label, label)).at(-1);
     return e?.action === "labeled" ? e : undefined;
   }
 
   /** The latest label event, or why it couldn't be read: an unreadable timeline is untrusted, never assumed. */
-  private async latestOrError(r: MaintainedRepo, number: number, label = r.label): Promise<{ latest?: LabelEvent; error?: string }> {
+  private async latestOrError(r: MaintainedRepo, number: number, label = r.fix_label): Promise<{ latest?: LabelEvent; error?: string }> {
     try {
       return { latest: this.latestLabel(r, (await this.labelEvents(r.repo, number, label)).events, label) };
     } catch (err) {
@@ -278,7 +278,7 @@ export class Maintainer {
   async issueList(repo: string | undefined, label?: string) {
     const r = this.target(repo);
     const { owner, name } = r;
-    const asked = label ?? r.label;
+    const asked = label ?? r.fix_label;
     const issues: Record<string, unknown>[] = [];
     for (let page = 1; page <= PAGE_CAP; page++) {
       const res = await this.gh.rest("GET", `/repos/${owner}/${name}/issues?state=open&labels=${encodeURIComponent(asked)}&per_page=100&page=${page}`);
@@ -437,9 +437,9 @@ export class Maintainer {
     const issue = res.body as GhIssue;
     const labels = labelNames(issue);
     const pull_request = Boolean(issue.pull_request);
-    const present = labels.some((l) => same(l, r.label));
+    const present = labels.some((l) => same(l, r.fix_label));
     if (!present) return { present: false, trusted: true, event: undefined as LabelEvent | undefined, labels, pull_request };
-    const { events } = await this.labelEvents(r.repo, number, r.label);
+    const { events } = await this.labelEvents(r.repo, number, r.fix_label);
     const latest = this.latestLabel(r, events);
     return { present: true, trusted: Boolean(latest?.trusted), event: latest, labels, pull_request };
   }
@@ -449,7 +449,7 @@ export class Maintainer {
     const cur = await this.currentLabel(r, number);
     if (cur.present && !cur.trusted) {
       const who = cur.event?.actor ?? cur.event?.app_slug ?? "an unknown actor";
-      throw new GitHubRefused(`#${number}'s ${r.label} label is untrusted (added by ${who}); refusing to act on it`);
+      throw new GitHubRefused(`#${number}'s ${r.fix_label} label is untrusted (added by ${who}); refusing to act on it`);
     }
     return cur;
   }
@@ -500,8 +500,8 @@ export class Maintainer {
   async label(repo: string | undefined, number: number, action: "add" | "remove", label?: string) {
     const r = this.target(repo);
     if (label !== undefined && same(label, BUILD_LABEL)) throw new GitHubRefused(`${BUILD_LABEL} is the owner's label`);
-    const which = label === undefined || same(label, r.label) ? r.label : same(label, FEATURE_LABEL) ? FEATURE_LABEL : undefined;
-    if (!which) throw new GitHubRefused(`only the ${r.label} and ${FEATURE_LABEL} labels may be changed on ${r.repo}`);
+    const which = label === undefined || same(label, r.fix_label) ? r.fix_label : same(label, FEATURE_LABEL) ? FEATURE_LABEL : undefined;
+    if (!which) throw new GitHubRefused(`only the ${r.fix_label} and ${FEATURE_LABEL} labels may be changed on ${r.repo}`);
     const cur = await this.assertTrusted(r, number);
     const present = cur.labels.some((l) => named(l, which));
     const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed,  });
@@ -858,14 +858,14 @@ export class Maintainer {
       const part = async (label: string | undefined) => {
         const read = await this.repoSince(r.repo, label);
         const unread = read.skipped.filter((s) => s.unread);
-        if (unread.length) row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${label ?? r.label}: ${unread.length} issue(s) whose label events couldn't be read (${unread[0]!.reason})`.slice(0, 300);
+        if (unread.length) row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${label ?? r.fix_label}: ${unread.length} issue(s) whose label events couldn't be read (${unread[0]!.reason})`.slice(0, 300);
         return read.issues;
       };
       // Each list is its own read: one that fails marks the repo `incomplete` and hands over the others.
       const tolerate = async (fn: () => Promise<void>) => {
         try { await fn(); } catch (err) { row.incomplete = `${row.incomplete ? `${row.incomplete}; ` : ""}${(err as Error).message}`.slice(0, 300); }
       };
-      if (r.issues) await tolerate(async () => { row.issues = await part(undefined); });
+      if (r.fixes) await tolerate(async () => { row.issues = await part(undefined); });
       if (r.features) {
         await tolerate(async () => { row.builds = await part(BUILD_LABEL); });
         await tolerate(async () => { row.featured = (await part(FEATURE_LABEL)).map((i) => i.number); });
@@ -882,7 +882,7 @@ export class Maintainer {
    */
   async oneIssue(repo: string | undefined, number: number, label?: string) {
     const r = this.target(repo);
-    const asked = label ?? r.label;
+    const asked = label ?? r.fix_label;
     const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
     // A deleted issue is a definite no, never a retry that would stall the watcher's feed.
     if (res.status === 404) return { repo: r.repo, number, issue: null };
@@ -908,7 +908,7 @@ export class Maintainer {
    */
   async repoSince(repo: string, label?: string) {
     const r = this.target(repo);
-    const asked = label ?? r.label;
+    const asked = label ?? r.fix_label;
     const { owner, name } = r;
     const listed: GhIssue[] = [];
     let page = 1;

@@ -48,7 +48,7 @@ test("ship_configure for the owner returns the settings change and files nothing
   assert.deepEqual(loosened._aidenhq.settings_change.map((c: any) => [c.key, c.value.repos["a/b"].approve]), [["ship", "all"]]);
   const added = (await tool.run({ repo: "x/y", add: true }, owner)) as any;
   assert.deepEqual(added._aidenhq.settings_change.map((c: any) => c.key), ["maintainer_repos", "code_review", "ship"]);
-  assert.deepEqual(added._aidenhq.settings_change[0].value, ["a/b", { repo: "x/y", issues: false }]);
+  assert.deepEqual(added._aidenhq.settings_change[0].value, ["a/b", { repo: "x/y", fixes: false }]);
   assert.deepEqual(filed, []);
   await assert.rejects(tool.run({ repo: "x/y", add: true }, { agent: "x", roles: ["ship-admin"], assertion: "jwt" }), /owner's/);
   await assert.rejects(tool.run({ repo: "x/y", change: "cautious" }, owner), /isn't covered yet/);

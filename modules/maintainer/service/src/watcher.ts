@@ -5,7 +5,7 @@
  * Maintainer once per issue. No GitHub timer runs here.
  *
  * What an event does, only for a duty that repo has on:
- * - `issues.labeled` with the repo's fix label (duty `issues`), or `agent-build` (duty `features`): one trust read of that issue through
+ * - `issues.labeled` with the repo's fix label (duty `fixes`), or `agent-build` (duty `features`): one trust read of that issue through
  *   github-mcp (a label counts only from a collaborator with one of the repo's trusted roles; the owner's login is an admin; the event's
  *   own actor never decides), then one task keyed by its source `maintainer-issue:<repo>#<n>`. An untrusted one is logged once and costs
  *   no run. A read that fails throws, so the batch is redelivered.
@@ -55,7 +55,7 @@ export interface MaintainerIssue {
 export interface BootstrapRow {
   repo: string;
   error?: string;
-  /** The fix label's issues (duty `issues`). */
+  /** The fix label's issues (duty `fixes`). */
   issues?: MaintainerIssue[];
   /** The agent-build issues and the trusted feature-request numbers (duty `features`). */
   builds?: MaintainerIssue[];
@@ -221,7 +221,7 @@ async function handle(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
       return 0;
     case "issues.reopened": {
       let count = 0;
-      for (const [on, label, kind] of [[r.issues, r.label, "fix"], [r.features, BUILD_LABEL, "build"]] as const) {
+      for (const [on, label, kind] of [[r.fixes, r.fix_label, "fix"], [r.features, BUILD_LABEL, "build"]] as const) {
         if (!on) continue;
         const issue = await d.one(r.repo, number, label);
         if (issue) count += await file(d, r, issue, kind, st);
@@ -234,7 +234,7 @@ async function handle(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
       return 0;
     case "issues.labeled": {
       const label = String(ev.data?.label ?? "");
-      const kind = r.issues && same(label, r.label) ? "fix" : r.features && label === BUILD_LABEL ? "build" : undefined;
+      const kind = r.fixes && same(label, r.fix_label) ? "fix" : r.features && label === BUILD_LABEL ? "build" : undefined;
       if (kind) {
         const issue = await d.one(r.repo, number, label);
         return issue ? file(d, r, issue, kind, st) : 0;
@@ -255,7 +255,7 @@ async function opened(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
   const number = Number(ev.data?.number);
   const labels = ev.labels ?? [];
   if (r.triage === "off" || ev.data?.author_kind === "agent") return 0;
-  if (labels.some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL)) return 0;
+  if (labels.some((l) => same(l, r.fix_label) || l === FEATURE_LABEL || l === BUILD_LABEL)) return 0;
   if ((st.triaged ?? []).includes(number) || (st.held ?? []).some((h) => h.number === number)) return 0;
   const author = String(ev.author ?? "").toLowerCase();
   const recent = (st.recent = (st.recent ?? []).filter((x) => Date.now() - x.at < DAY));

@@ -7,20 +7,20 @@ const tools = (repos: string, ship = false) => Object.fromEntries(configTools({ 
 
 test("maintainer_configure for the owner proposes merged field edits, refuses an agent, an unlisted repo and a bad value", async () => {
   const t = tools('["a/b",{"repo":"c/d","features":true}]').maintainer_configure!;
-  const r = (await t.run({ edits: { repos: { "a/b": { dependabot: true, issues: false, preset: "triage", close: ["duplicate", "invalid"] } } } }, owner)) as any;
+  const r = (await t.run({ edits: { repos: { "a/b": { dependabot: "all", fixes: false, preset: "triage", close: ["duplicate", "invalid"] } } } }, owner)) as any;
   assert.deepEqual(r._aidenhq.settings_change, [
-    { kind: "setting", key: "maintainer_repos", value: [{ repo: "a/b", dependabot: true, issues: false, preset: "triage", close: ["duplicate", "invalid"] }, { repo: "c/d", features: true }] },
+    { kind: "setting", key: "maintainer_repos", value: [{ repo: "a/b", dependabot: "all", fixes: false, preset: "triage", close: ["duplicate", "invalid"] }, { repo: "c/d", features: true }] },
   ]);
   await assert.rejects(t.run({ edits: { repos: { "a/b": { dependabot: true } } } }, { agent: "x", roles: ["maintainer"] }), /owner's/);
-  assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "x/y": { issues: true } } }), /add it from the Ship page/);
+  assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "x/y": { fixes: true } } }), /add it from the Ship page/);
   assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "a/b": { nope: true } } }), /fields/);
   assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "a/b": { triage: "sometimes" } } }), /triage must be one of/);
   assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "a/b": { stale_issues: { days: 0 } } } }), /stale_issues/);
 });
 
 test("null puts a field back to its default, and a stale_issues object is a whole value", async () => {
-  const t = tools('[{"repo":"a/b","label":"fix-me","stale_days":3,"triage":"new"}]').maintainer_configure!;
-  const r = (await t.run({ edits: { repos: { "a/b": { label: null, triage: null, trusted: ["admin", "write"], stale_days: 900, stale_issues: { days: 30, grace_days: 7, exempt_labels: ["pinned"] } } } } }, owner)) as any;
+  const t = tools('[{"repo":"a/b","fix_label":"fix-me","stale_days":3,"triage":"new"}]').maintainer_configure!;
+  const r = (await t.run({ edits: { repos: { "a/b": { fix_label: null, triage: null, trusted: ["admin", "write"], stale_days: 900, stale_issues: { days: 30, grace_days: 7, exempt_labels: ["pinned"] } } } } }, owner)) as any;
   assert.deepEqual(r._aidenhq.settings_change[0].value, [{ repo: "a/b", stale_days: 900, trusted: ["admin", "write"], stale_issues: { days: 30, grace_days: 7, exempt_labels: ["pinned"] } }]);
 });
 
