@@ -10,7 +10,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createJobs, writeLastMessage } from "../src/jobs.ts";
+import { createJobs, stripSentinels, writeLastMessage } from "../src/jobs.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
 import { quietRun } from "../src/quiet.ts";
@@ -44,6 +44,10 @@ function sandbox() {
   const envdump = engine("env.mjs", `emit({ t: "final", text: JSON.stringify(process.env) });`);
   // An engine whose program isn't installed: it exits 127, as a shell does for a command it can't find.
   const missing = engine("missing.mjs", `import { spawnSync } from "node:child_process";\nconst r = spawnSync("aidenhq-no-such-program", [], { stdio: "inherit" });\nprocess.exit(r.error?.code === "ENOENT" ? 127 : 1);`);
+  // Engines whose reply carries model-format sentinels as literal text, as a tokenizer or chat template can leak them.
+  const sentinel = engine("sentinel.mjs", `emit({ t: "final", text: "<begin\u2581of\u2581sentence>Attention: x<|im_end|>" });`);
+  const sentinelsOnly = engine("sentinels-only.mjs", `emit({ t: "final", text: "<\uff5cbegin\u2581of\u2581sentence\uff5c>\u200b<|endoftext|>" });`);
+  const quoted = engine("quoted.mjs", `emit({ t: "final", text: "The marker is " + String.fromCharCode(96) + "<|im_end|>" + String.fromCharCode(96) + "." });`);
   // An engine that dies at start on stderr, as Codex does resuming a session its home doesn't have.
   const dies = engine("dies.mjs", `console.log(JSON.stringify({ type: "noise" }));\nconsole.error("Error: thread/resume failed: no rollout found for thread id s-gone; OPENROUTER_API_KEY=sk-or-v1-abc123 Bearer sk-or-v1-def456 run ahqj_body.sig");\nprocess.exit(1);`);
   const engines = {
@@ -51,6 +55,9 @@ function sandbox() {
     echo: { module: "engine-echo", dir: "fixtures/engine-echo", bin: "fixtures/engine-echo/bin/engine", kind: "echo", live_input: true, box: true },
     slow: { module: "test", dir: join(dir, "engines"), bin: slow, kind: "slow", box: true },
     env: { module: "test", dir: join(dir, "engines"), bin: envdump, kind: "env", box: true },
+    sentinel: { module: "test", dir: join(dir, "engines"), bin: sentinel, kind: "sentinel", box: true },
+    sentinelsOnly: { module: "test", dir: join(dir, "engines"), bin: sentinelsOnly, kind: "sentinelsOnly", box: true },
+    quoted: { module: "test", dir: join(dir, "engines"), bin: quoted, kind: "quoted", box: true },
     missing: { module: "test", dir: join(dir, "engines"), bin: missing, kind: "missing", box: true },
   };
   writeFileSync(join(dir, "engines.json"), JSON.stringify(engines));
@@ -104,6 +111,78 @@ test("a job runs for its task, in its workspace, and reports its end: final word
   assert.equal(j.dir, join(cfg.boxDir, j.dir.split("/").at(-2), "job"), "its job dir is in the box's out folder");
   assert.ok(readFileSync(j.log, "utf8").includes(join(cfg.workDir, "tasks/PEN-1")));
   assert.equal((await jobs.get("other-module", j.id).catch((e) => e)).status, 404, "another module never sees it");
+});
+
+// A model can return a tokenizer's control tokens as literal text: they are stripped from the recorded final message, and a final
+// that was nothing but sentinels leaves no message, so its dispatcher sees a run that ended without a reply.
+test("a job's final has model-format sentinels stripped, and a final of only sentinels records no reply", async () => {
+  const sb = sandbox();
+  const jobs = inProcess(sb.cfg);
+  const said = await finished(jobs, jobs.run(sb, "sentinel").id);
+  assert.equal(said.state, "done");
+  assert.equal(said.exit, 0);
+  assert.equal(said.final, "Attention: x");
+  assert.equal(readFileSync(`${said.log}.last.md`, "utf8"), "Attention: x");
+  const silent = await finished(jobs, jobs.run(sb, "sentinelsOnly").id);
+  assert.equal(silent.final, "", "no sentinel survives, and no reply is recorded");
+  assert.equal(silent.state, "done");
+  assert.equal(silent.exit, 0);
+  const keeps = await finished(jobs, jobs.run(sb, "quoted").id);
+  assert.equal(keeps.final, "The marker is `<|im_end|>`.", "a sentinel the reply quotes on purpose stays");
+});
+
+// A sentinel stands at a final's edges, with the padding a tokenizer leaves beside it; a marker a reply shows on purpose (in a
+// blockquote, or inside its text) stays, and a long reply or run of sentinels is not a place for a quadratic scan.
+test("a final's sentinels are stripped from its edges only, in time linear in its length", () => {
+  assert.equal(stripSentinels("Attention: x<|im_end|>\n"), "Attention: x", "a newline after the sentinel goes with it");
+  assert.equal(stripSentinels("<\uff5cbegin_of_sentence\uff5c>hello"), "hello", "the full-width underscore spelling");
+  assert.equal(stripSentinels("\u200b"), "", "a final of only invisible padding is no reply");
+  assert.equal(stripSentinels("<|im_start|>assistant\n<|im_end|>"), "", "a leaked template's header and role are not a reply");
+  assert.equal(stripSentinels("<|im_start|>assistant<|im_end|>"), "", "a role before a closing sentinel is not a reply");
+  assert.equal(stripSentinels("<|im_start|>assistant<|im_end|>\nNO_REPLY"), "NO_REPLY", "an empty turn before the reply goes");
+  assert.equal(stripSentinels("The ChatML header is \\<|im_start|>assistant"), "The ChatML header is \\<|im_start|>assistant", "an escaped header is literal text");
+  assert.equal(stripSentinels("<|im_start|>assistant\u200b\nNO_REPLY"), "NO_REPLY", "padding before a role's delimiter still finds it");
+  assert.equal(stripSentinels("The raw token is \\<|im_end|>"), "The raw token is \\<|im_end|>", "an escaped marker is literal text");
+  assert.equal(stripSentinels("Done.<|im_end|><|im_start|>user"), "Done.", "a trailing header and its role go too");
+  assert.equal(stripSentinels("<|im_start|>User-facing changes are ready."), "User-facing changes are ready.", "a word is not a role");
+  assert.equal(stripSentinels("<|im_start|>model\n---\nUse gpt-4.1."), "model\n---\nUse gpt-4.1.", "Gemma's role is not a ChatML role");
+  assert.equal(stripSentinels("<|im_start|>user<sub>1</sub> was updated"), "user<sub>1</sub> was updated", "a tag is not a template delimiter");
+  assert.equal(stripSentinels("<|im_start|>user@example.com"), "user@example.com", "an address is not a role");
+  assert.equal(stripSentinels("NO_REPLY<|im_end|><|im_start|>\u200buser"), "NO_REPLY", "invisible padding at a header's role");
+  assert.equal(stripSentinels("<|im_start|>user settings were saved."), "user settings were saved.", "a reply starting with a word is not a role");
+
+  assert.equal(stripSentinels("Done.<|eot_id|><|start_header_id|>ipython<|end_header_id|>"), "Done.", "a Llama tool-result header goes too");
+  assert.equal(stripSentinels("<start_of_turn>model\nNO_REPLY<end_of_turn>"), "NO_REPLY", "Gemma's opening turn header goes too");
+  assert.equal(stripSentinels("<|im_start|>assistant<|im_start|>assistant\nDone."), "Done.", "a repeated opening header goes too");
+  assert.equal(stripSentinels("<|im_start|>\nmodel\ngpt-4.1"), "model\ngpt-4.1", "a bare header is a leak; the next line is the reply");
+  assert.equal(stripSentinels("<|im_end|>\n    "), "", "trailing whitespace does not hide a sentinel");
+  assert.equal(stripSentinels("<\uff5cUser\uff5c>"), "", "DeepSeek's own turn marker is a sentinel");
+  assert.equal(stripSentinels("<|im_start|>\u200bassistant\nDone."), "Done.", "padding before a role still finds it");
+  assert.equal(stripSentinels("<|im_start|>\nmodel<|im_end|>"), "model", "the trailing scan stays inside what the leading one left");
+  assert.equal(stripSentinels("Done.<|im_start|>\nmodel"), "Done.<|im_start|>\nmodel", "a role on the next line is the reply's own word");
+
+  // A marker the reply shows on purpose stays: inside its text, in a fenced block, and on a blockquote line.
+  assert.equal(stripSentinels("The marker is `<|im_end|>`."), "The marker is `<|im_end|>`.", "a marker inside the reply's own text stays");
+  assert.equal(stripSentinels("The token is:\n```\n<|im_end|>\n```"), "The token is:\n```\n<|im_end|>\n```", "a marker in a fenced block stays");
+  assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker on a blockquote line stays");
+  assert.equal(stripSentinels("See the header:\n> <|im_start|>assistant"), "See the header:\n> <|im_start|>assistant", "a quoted header and its role stay");
+  assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|>", "a leak after a quoted marker goes, the quote stays");
+  assert.equal(stripSentinels("<|begin_of_text|>> <|im_end|>"), "> <|im_end|>", "a removed sentinel is not part of the line's prefix");
+  assert.equal(stripSentinels("The stop tokens:\n- > <|im_end|>"), "The stop tokens:\n- > <|im_end|>", "a blockquote in a list item stays");
+  assert.equal(stripSentinels("The stop token is:\r\n> <|im_end|>\r\n"), "The stop token is:\r\n> <|im_end|>", "a CRLF reply's blockquote stays");
+
+  // Only a blockquote is a quote: a marker beside reply text is a leak, however it is indented.
+  assert.equal(stripSentinels("    <|im_end|>Attention: x"), "Attention: x", "an indented marker beside reply text is a leak");
+  assert.equal(stripSentinels("    <|im_end|>"), "", "an indented marker that is the whole reply is no reply");
+  assert.equal(stripSentinels("Example:\n\n    echo hello<|im_end|>"), "Example:\n\n    echo hello", "a marker after reply text goes");
+  assert.equal(stripSentinels("<|im_end|>\n    echo hi"), "echo hi", "the padding a stripped sentinel left goes too");
+
+  for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,
+    `<|im_end|>${"<|im_end|>".repeat(20_000)}`, `${"a".repeat(100_000)}<|im_end|>${"<|im_end|>".repeat(20_000)}`]) {
+    const t0 = Date.now();
+    stripSentinels(long);
+    assert.ok(Date.now() - t0 < 2_000, "a long reply or a run of sentinels is walked once");
+  }
 });
 
 test("a job's env in its box: the launcher's env file, nothing of the kernel's own", async () => {
