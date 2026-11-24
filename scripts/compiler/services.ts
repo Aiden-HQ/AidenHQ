@@ -175,7 +175,8 @@ export function generateCompose(name: string, def: Dict, ctx: { root: string; lo
     if (s.read_only != null && typeof s.read_only !== "boolean") fail(`${at("read_only")} is true or false`);
     if (s.read_only !== false) o.read_only = true;
     if (s.tmp != null) o.tmpfs = [`/tmp:size=${typeof s.tmp === "string" && SIZE.test(s.tmp) ? s.tmp : fail(`${at("tmp")} is a size (16m)`)}`];
-    Object.assign(o, { security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: s.on_demand === true ? "no" : "unless-stopped" });
+    // init: a node PID 1 never reaps its exited children (git zombies); logging: json-file has no rotation by default.
+    Object.assign(o, { init: true, logging: { driver: "json-file", options: { "max-size": "20m", "max-file": "3" } }, security_opt: ["no-new-privileges:true"], cap_drop: ["ALL"], restart: s.on_demand === true ? "no" : "unless-stopped" });
     if (s.on_demand != null && typeof s.on_demand !== "boolean") fail(`${at("on_demand")} is true or false`);
     if (s.on_demand === true) o.profiles = [name];
     for (const f of ["entrypoint", "command"]) if (s[f] != null) o[f] = strings(s[f], at(f)).map((v) => interpolation(v, at(f)));
