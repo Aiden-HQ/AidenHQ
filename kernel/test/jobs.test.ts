@@ -171,6 +171,7 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("    echo hello<|im_end|>"), "    echo hello", "a trailing sentinel keeps the code block it ended");
   assert.equal(stripSentinels("    <|im_end|>"), "", "an indented marker that is the whole reply is no reply");
   assert.equal(stripSentinels("    <|im_end|>\n<|endoftext|>"), "", "a stripped sentinel is not content that makes a marker quoted");
+  assert.equal(stripSentinels("    <|im_end|>\n<|im_start|>user"), "", "a trailing template role is not content either");
   assert.equal(stripSentinels("    <|im_start|>assistant\n\nThat is the header."), "    <|im_start|>assistant\n\nThat is the header.", "a reply that opens with a quoted header keeps it");
   assert.equal(stripSentinels("  keep my padding  "), "  keep my padding  ", "a reply without a sentinel is left as it is");
   for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,
