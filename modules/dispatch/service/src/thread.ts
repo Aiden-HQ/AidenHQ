@@ -9,6 +9,13 @@ import { forOthers } from "./aidenhq-sdk/for-others.ts";
 export const SELF_TAG = /<!-- aidenhq:job=/;
 /** A module's wake notice, posted by the kernel with the owner's client: a module's words, never the owner's. */
 const WAKE_NOTICE = "<!-- aidenhq-wake -->";
+/**
+ * A system note on the task (the board's, or the kernel's on its behalf: `<!-- aidenhq-notice -->`). It is shown in the
+ * conversation as a notice, but it is nobody's words: it never starts a run, and it is not the boundary a run reads the
+ * conversation from (a grading note is not the assignee's last word).
+ */
+const SYSTEM_NOTE = /<!-- aidenhq-notice -->/;
+export const systemNote = (body: unknown) => SYSTEM_NOTE.test(String(body ?? ""));
 
 export interface Issue {
   id: string; identifier?: string; title?: string; description?: string | null; status?: string; parentId?: string | null;
@@ -43,8 +50,8 @@ export function ownRequest(t: Issue) {
   return stripHidden(text).trim();
 }
 
-/** Ours: the job's own posts and the assignee's own comments. */
-export const ours = (c: Comment, t: Issue) => SELF_TAG.test(c.body ?? "") || (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId);
+/** Ours: the job's own posts and the assignee's own comments, never a system note (which is no one's word). */
+export const ours = (c: Comment, t: Issue) => !systemNote(c.body) && (SELF_TAG.test(c.body ?? "") || (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId));
 /** The assignee has spoken on the task: not its first job here. */
 export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId));
 
@@ -55,6 +62,7 @@ export const spoke = (comments: Comment[], t: Issue) => comments.some((c) => (c.
  * starts nothing).
  */
 export function speaker(c: Comment, t: Issue, dir: Directory): "owner" | "agent" | "notice" | "ours" | "other" {
+  if (systemNote(c.body)) return "ours";
   if (ours(c, t)) return "ours";
   if (c.authorType !== "agent") return String(c.body ?? "").includes(WAKE_NOTICE) || forOthers(c.body) ? "notice" : "owner";
   return isOverseer(dir, c.authorAgentId) || (agentMade(t) && c.authorAgentId === t.createdByAgentId) ? "agent" : "other";
@@ -93,7 +101,8 @@ export function threadEntries(comments: Comment[], t: Issue, { owner, agents, sk
     const body = stripHidden(raw).trim();
     if (!body || c.deletedAt || skip.has(c.id)) continue;
     const mine = SELF_TAG.test(raw) || (c.authorType === "agent" && c.authorAgentId === t.assigneeAgentId);
-    if (mine) out.push({ kind: "you", who: "You", at: c.createdAt, body });
+    if (systemNote(raw)) out.push({ kind: "notice", who: "Notice", at: c.createdAt, body });
+    else if (mine) out.push({ kind: "you", who: "You", at: c.createdAt, body });
     else if (c.authorType === "agent") {
       const a = agents.get(c.authorAgentId ?? "");
       out.push({ kind: "agent", who: a?.metadata?.persona?.name || a?.name || "Another agent", at: c.createdAt, body });
