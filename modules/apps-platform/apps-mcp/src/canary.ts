@@ -118,10 +118,13 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     await new Promise((ok) => setTimeout(ok, 1200)); // the notify's own answer, and the page's "thanks" render
     const finalUrl = (await within(ab("get", "url"), 3000, {})).url || landed;
     const pageTitle = (await within(ab("get", "title"), 3000, {})).title || title;
-    // The reference: the app's own intake response body (a same-origin POST other than notify, from this submission), else
-    // the text the page shows.
+    // The app's own intake answer(s): a same-origin POST other than notify, from this submission. A failed intake is not a
+    // successful submission even when the page still fires its notify, so its status is reported apart from notify's.
+    const intake = NET.filter((x) => x.at >= submittedAt && x.method === "POST" && new URL(x.url).origin === listener && new URL(x.url).pathname !== "/.aidenhq/notify");
+    const intakeStatus = intake.length ? (intake.at(-1).status ?? null) : null;
+    // The reference: the app's own intake response body, else the text the page shows.
     let reference = null;
-    for (const n of NET.filter((x) => x.at >= submittedAt && x.method === "POST" && new URL(x.url).origin === listener && new URL(x.url).pathname !== "/.aidenhq/notify" && x.id).slice(-4)) {
+    for (const n of intake.filter((x) => x.id).slice(-4)) {
       try {
         const b = await dt.send("Network.getResponseBody", { requestId: n.id }, sessionId);
         const body = String(b.body || "");
@@ -135,7 +138,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     let png;
     if (await within(ab("screenshot", "/tmp/canary.png"), 8000, null)) png = readFileSync("/tmp/canary.png").toString("base64");
     out({
-      status: 200, finalUrl, pageTitle, notify: notify ? (notify.status === 204 ? "fired" : notify.status ? "not-fired" : "unknown") : "not-fired",
+      status: intakeStatus ?? 200, finalUrl, pageTitle, notify: notify ? (notify.status === 204 ? "fired" : notify.status ? "not-fired" : "unknown") : "not-fired",
       notifyStatus: notify ? notify.status : null, reference, submittedAt: new Date(submittedAt).toISOString(), png,
     });
   } catch (e) {
@@ -169,9 +172,12 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
       // A failed run still carries whatever the browser proved before it stopped (never the code or the cookie).
       return { ...base, ...(r.finalUrl ? { finalUrl: r.finalUrl } : {}), ...(r.pageTitle ? { pageTitle: r.pageTitle } : {}), session: session ?? base.session, error: r.error };
     }
+    // `ok` is a submission the app took: the page fired its notify (the gate's 204) and, when the page also called the app's own
+    // intake, that answer wasn't a refusal. A page that saved nothing is still legible from `status` and `notify`.
+    const accepted = (r.status ?? 200) < 400;
     return {
       ...base,
-      ok: r.notify === "fired",
+      ok: r.notify === "fired" && accepted,
       status: r.status ?? 200,
       finalUrl: r.finalUrl ?? "",
       pageTitle: r.pageTitle ?? "",
