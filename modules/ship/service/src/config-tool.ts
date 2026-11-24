@@ -2,15 +2,12 @@
 // repo, `ship_configure` changes one repo's entry. Built like code-review's: the change is applied to the raw value, the whole
 // result validated, and one typed settings change filed as the calling job (POST /v1/settings/agent).
 // A change that loosens anything (loosens()) is the owner's: the tool refuses it and the owner makes it from the board.
-import { CONTROLS, effective, loosens, PRESETS, validate, type Scope } from "./settings.ts";
+import { CONTROLS, covers, effective, loosens, PRESETS, validate, type Scope } from "./settings.ts";
 import { status } from "./status.ts";
 import type { State } from "./state.ts";
+import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
-export interface Tool {
-  name: string; description: string; inputSchema: object; roles?: string[];
-  run: (args: Dict, caller: { agent: string; roles: string[]; assertion?: string; task?: string }) => Promise<unknown>;
-}
 export interface Change {
   /** `owner/name`, or `defaults` for the entry every uncovered-by-entry repo takes. */
   repo: string;
@@ -45,8 +42,29 @@ export function applyShipChange(raw: Dict, c: Change): { value: Dict; summary: s
   return { value, summary: [summary], loosens: loosens(raw, value, c.scope) };
 }
 
+const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
+const same = (a: unknown, b: string) => String(typeof a === "string" ? a : (a as Dict)?.repo).toLowerCase() === b.toLowerCase();
+
+/**
+ * A repo ship doesn't cover yet: one settings change that lists it for the Maintainer (maintainer_repos, no duty on) and code review
+ * (code_review, its defaults) and gives it its ship entry, so the three land or none does. It is always the owner's.
+ */
+export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string, change: unknown) {
+  if (!REPO.test(repo)) throw new Error(`${repo.slice(0, 100)} isn't owner/name`);
+  const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? "cautious", scope: { ...d.scope, listed: [...d.scope.listed, repo] } });
+  const watched = ((d.codeReview.repos as unknown[]) ?? []);
+  const changes: Dict[] = [
+    { kind: "setting", key: "maintainer_repos", value: [...d.maintainerRepos, { repo, issues: false }] },
+    ...(watched.some((x) => same(x, repo)) ? [] : [{ kind: "setting", key: "code_review", value: { ...d.codeReview, repos: [...watched, { repo }] } }]),
+    { kind: "setting", key: "ship", value },
+  ];
+  return { changes, summary: [`${repo}: listed for the Maintainer and code review, then ${summary[0]!.slice(repo.length + 2)}`] };
+}
+
 export function configTools(d: {
   raw: () => Dict; scope: () => Scope; state: State;
+  /** maintainer_repos and settings.code_review as compiled (a new repo is added to both). */
+  maintainerRepos: () => unknown[]; codeReview: () => Dict;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
 }): Tool[] {
@@ -69,12 +87,26 @@ export function configTools(d: {
     },
     {
       name: "ship_configure", roles: ["ship-admin"],
-      description: "Change one repo's ship settings in one reviewed settings change on your task: { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
-      inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {} }, required: ["repo", "change"], additionalProperties: false },
+      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label) or null to drop the entry }, or { paused: true | false } for the kill switch. A repo ship doesn't cover yet is listed for the Maintainer and code review in the same change, and the owner decides it. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a wider approve or fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
+      inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {}, paused: { type: "boolean" } }, additionalProperties: false },
       run: async (a, caller) => {
-        const { value, summary, loosens: l } = applyShipChange(d.raw(), { repo: String(a.repo), change: a.change, scope: d.scope() });
+        const raw = d.raw(), scope = d.scope();
+        let changes: Dict[], summary: string[], l: string[], fresh = false;
+        if (typeof a.paused === "boolean") {
+          const value = { ...raw, paused: a.paused };
+          const errors = validate(value, scope);
+          if (errors.length) throw new Error(`that setting wouldn't work: ${errors.join("; ")}`);
+          changes = [{ kind: "setting", key: "ship", value }]; summary = [a.paused ? "ship paused" : "ship resumed"]; l = loosens(raw, value, scope);
+        } else if (typeof a.repo === "string" && a.repo !== "defaults" && !covers(a.repo, scope)) {
+          ({ changes, summary } = addRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, a.repo, a.change)); l = []; fresh = true;
+        } else {
+          const r = applyShipChange(raw, { repo: String(a.repo), change: a.change, scope });
+          changes = [{ kind: "setting", key: "ship", value: r.value }]; summary = r.summary; l = r.loosens;
+        }
+        // The owner's own call (the Fleet page) only proposes: the board shows it and files it on his Save.
+        if (caller.kind === "owner") return { changes: summary, _aidenhq: { settings_change: changes } };
         if (l.length) throw new Error(`that change loosens ${l.join(", ")}: the owner's to approve; ask them to make it from the Fleet page`);
-        return { filed: await d.file([{ kind: "setting", key: "ship", value }], caller.assertion ?? ""), changes: summary };
+        return { filed: await d.file(changes, caller.assertion ?? ""), changes: summary, ...(fresh ? { owner: "a new repo is the owner's to approve" } : {}) };
       },
     },
   ];

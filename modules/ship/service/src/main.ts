@@ -17,17 +17,19 @@ const kernel = new Proxy({} as ReturnType<typeof kernelClient>, { get: (_, k) =>
 const json = (v: string | undefined) => { try { return JSON.parse(v || "null"); } catch { return null; } };
 const raw = () => { const v = json(env.SHIP_SETTINGS); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
 const scope = () => scopeFrom(env);
+const maintainerRepos = (): unknown[] => { const t = String(env.SHIP_MAINTAINER_REPOS ?? "").trim(); const v = t.startsWith("[") ? json(t) : t.split(",").map((x) => x.trim()).filter(Boolean); return Array.isArray(v) ? v : []; };
+const codeReview = () => { const v = json(env.SHIP_CODE_REVIEW); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
 
 const state = openState(env.SHIP_STATE_FILE ?? "/data/state.json");
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
-const mcp = serveMcp(createMcp(configTools({
-  raw, scope, state,
+const mcp = serveMcp(createMcp("ship", configTools({
+  raw, scope, state, maintainerRepos, codeReview,
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
     return r.json;
   },
-})), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
+}), [{ uri: "ui://ship/page", html: readFileSync(new URL("./page.html", import.meta.url), "utf8") }]), () => file(env.SHIP_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "ship")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;

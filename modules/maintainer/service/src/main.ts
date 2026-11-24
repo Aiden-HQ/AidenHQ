@@ -2,7 +2,11 @@
 // issue read with the token it shares with this service, and the routines' signed webhooks on the compose network.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { createServer } from "node:http";
+import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { configTools } from "./config-tool.ts";
+import { createMcp, serveMcp } from "./mcp.ts";
 import { maintainerIssues, maintainerPrs, maintainerPrWake, maintainerTriageWake, maintainerWake, startMaintainer, triageLimits } from "./watcher.ts";
 
 const stateFile = process.env.MAINTAINER_STATE_FILE ?? "/data/state.json";
@@ -34,4 +38,15 @@ startMaintainer({
   wiring: () => { const [fire, issues, triage] = [maintainerWake(), maintainerIssues(), maintainerTriageWake()]; return fire && issues ? { fire, issues, triage, limits: triageLimits(), emit: (f) => emitter()?.emit(f), prs: maintainerPrs(), firePr: maintainerPrWake() } : undefined; },
   store, log,
 });
-setInterval(() => {}, 2 ** 30); // the watcher's own timers don't hold the process open
+
+// The Fleet page's connection `maintainer` (config-tool.ts): the owner's own calls from the board, on the service key.
+const readKey = () => { try { return readFileSync(process.env.MAINTAINER_SERVICE_KEY_FILE ?? "", "utf8").trim(); } catch { return ""; } };
+const jwks = kernelJwks(`${process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130"}/v1/jwks`);
+const mcp = serveMcp(
+  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", externalTriage: () => process.env.MAINTAINER_EXTERNAL_TRIAGE === "true" }), [{ uri: "ui://maintainer/page", html: readFileSync(new URL("./page.html", import.meta.url), "utf8") }]),
+  readKey, (req) => verifyCaller(req, jwks, "maintainer"),
+);
+createServer(async (req, res) => {
+  if (await mcp(req, res)) return;
+  res.writeHead(req.url === "/healthz" ? 200 : 404).end();
+}).listen(8102, "0.0.0.0");

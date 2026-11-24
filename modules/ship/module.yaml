@@ -8,6 +8,12 @@ license: MIT
 # (the Fleet page).
 requires:
   - github # the covered repos' reads and the effects ship files (later releases)
+  - code-review # a new repo is added to settings.code_review with the others (the Fleet page's Add repo)
+  - board # contributes.board.pages
+contributes:
+  # The Fleet page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").
+  board.pages:
+    - { id: ship, title: Ship, icon: rocket, order: 10, connection: ship, view: "ui://ship/page", tools: [ ship_config, ship_configure, ship_status ] }
 roles:
   # kernel.settings: the config tool's settings changes (writers below).
   requests: [ kernel.settings ]
@@ -27,7 +33,7 @@ settings:
     default:
       defaults: cautious
       repos: {}
-# The Fleet page (a module view, declared here by a later lane) calls only this module's own tools: ship_config and ship_configure
+# The Fleet page (contributes.board.pages above) calls only this module's own tools: ship_config and ship_configure
 # for settings and presets, ship_status for status.
 connections:
   ship:
@@ -55,6 +61,7 @@ services:
         SHIP_FLEET_ORG: "${settings.github_fleet_org}"
         SHIP_PRODUCT_REPO: "${settings.product_repo}"
         SHIP_MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        SHIP_CODE_REVIEW: "${settings.code_review}"
         SHIP_TOKEN_FILE: ${secrets.ship_token}
         SHIP_SERVICE_KEY_FILE: ${secrets.ship_service_key}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130

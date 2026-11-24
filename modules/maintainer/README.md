@@ -8,7 +8,7 @@ contributor PRs.
 
 ## Connect
 
-Needs the `github` module with the owner signed in to GitHub, and the owner's account able to reach each listed repo. Add repos in the `maintainer_repos` setting.
+Needs the `github` module with the owner signed in to GitHub, and the owner's account able to reach each listed repo. The Fleet page (Maintainer) lists the repos with their duties (issues, features, dependabot, contributor PRs) and the `external_triage` switch; it is a module view the `maintainer` connection serves (`maintainer_config`, `maintainer_configure`, the owner's own calls, never an agent's).
 
 ## What agents get
 
