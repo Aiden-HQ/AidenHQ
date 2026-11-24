@@ -21,7 +21,7 @@ import { checklistText, matchChecklist } from "./review-checklist.ts";
 import { gitListed, gitSafe, runEngine } from "./engines.ts";
 import { changed, guidePaths, place, scope } from "./scope.ts";
 
-const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20;
+const MODEL = "openai/gpt-6.2-sol", FIRST = "medium", AGAIN = "low", MINUTES = 20, REVIEWS = 2;
 
 const raw = (...a: string[]) => gitListed(process.cwd(), a); // untrimmed (a NUL-separated path list may start with a space) and strictly UTF-8
 const ln = (...a: string[]) => raw(...a).replace(/\n$/, ""); // a ref, a sha or a path: git's one final newline off, nothing else (a name may end in a space)
@@ -51,11 +51,14 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const branch = asked, memo = join(ln("rev-parse", "--path-format=absolute", "--git-common-dir"), `self-review-${createHash("sha256").update(asked).digest("hex")}.json`); // shared by linked worktrees; aidenhq publish reads the same file
   // One file per branch (a branch is checked out in one worktree at a time, so no two runs write one file), so reviewing another branch in
   // the same clone doesn't reset this one's incremental review.
-  const last: { base?: string; head?: string; open?: number } = (() => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } })();
+  const last: { base?: string; head?: string; open?: number; runs?: number } = (() => { try { return JSON.parse(readFileSync(memo, "utf8")); } catch { return {}; } })();
   // open: the important findings left, or INCOMPLETE. A record for the head is what `aidenhq publish` asks for, whatever the outcome; only a
   // finished clean review lets the next run be incremental.
   const INCOMPLETE = -1;
-  const remember = (open: number) => writeFileSync(memo, JSON.stringify({ base, head, open }));
+  // runs: finished model reviews of this branch at this merge base (a rebase starts over). Each review turns up new findings, so a
+  // branch gets REVIEWS of them; after that a run records the head without a model and the PR's own review takes over.
+  const runs = last.base === base ? last.runs ?? 0 : 0;
+  const remember = (open: number, n = runs) => writeFileSync(memo, JSON.stringify({ base, head, open, runs: n }));
   // The checkout as captured: the same branch at the same commit. Anything else and nothing is recorded for what was reviewed.
   const moved = () => { let r = ""; try { r = ln("symbolic-ref", "-q", "HEAD"); } catch {} return r !== ref || ln("rev-parse", "HEAD") !== head; };
   onError = () => { if (!moved()) remember(INCOMPLETE); }; // any failure from here on is an incomplete review of this head
@@ -65,6 +68,10 @@ async function main(): Promise<{ out: string[]; code: number }> {
   const at = `branch ${branch} base ${from.slice(0, 12)} (${incremental ? "since the last review" : "merge base"}) head ${head.slice(0, 12)}`;
   if (git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")) return { out: [`self-review: ${at}: incomplete: uncommitted changes (commit them first; the review reads the committed head)`], code: 2 };
   if (from === head) { remember(INCOMPLETE); return { out: [`self-review: ${at}: incomplete: nothing to review`], code: 2 }; }
+  if (runs >= REVIEWS) {
+    remember(INCOMPLETE); // a record of this head for aidenhq publish, not a review
+    return { out: [`self-review: ${at}: not reviewed: this branch had its ${REVIEWS} reviews; publish this head and list in the PR body any finding still open`], code: 0 };
+  }
 
   // The files the PR check would review (its scope), and the generated ones the change adds, which it counts as a gap.
   const prChanged = new Set(raw("diff", "--no-renames", "--ignore-submodules=none", "--name-only", "-z", base, head).split("\0").filter(Boolean));
@@ -112,8 +119,9 @@ async function main(): Promise<{ out: string[]; code: number }> {
     // Some of the patch was not reviewed (a part that failed, a hunk too big to send): nothing counts as clean.
     if (r.incomplete || gapNote) return unfinished([`self-review: ${at}: incomplete`, detail([r.incomplete, gapNote].filter(Boolean).join("; ")), ...lines]);
     if (moved()) return unfinished([]);
-    remember(important.length); // a finished review
-    return { out: [`self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})`, ...lines], code: important.length ? 1 : 0 };
+    remember(important.length, runs + 1); // a finished review
+    const final = important.length && runs + 1 >= REVIEWS ? "; the branch's last review: fix the real ones, then run once more to record the head and publish" : "";
+    return { out: [`self-review: ${at}: ${important.length ? `${important.length} important finding${important.length === 1 ? "" : "s"}` : "clean"} (${MODEL}, ${effort})${final}`, ...lines], code: important.length ? 1 : 0 };
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
 
