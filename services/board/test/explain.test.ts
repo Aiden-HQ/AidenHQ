@@ -23,11 +23,19 @@ describe("explain's tier history", () => {
   });
   it("keeps the filing tier when the reviewer escalated it to the owner", () => {
     // records.review() sets tier 2 with no cap on an escalate: the record filed at its merits.
-    for (const [merit, tier] of [[1, 2], [2, 2]] as const) {
-      const e = explain(record({ tier, merit, state: "owner", review: "send it to the owner" }), null);
-      expect(e.path[0]).toBe(`Filed by Engineer at Tier ${merit}, then the AI reviewer sent it to you.`);
+    for (const [merit, maybe] of [[1, ""], [2, " (Tier 2 on its merits)"]] as const) {
+      const e = explain(record({ tier: 2, merit, state: "owner", review: "send it to the owner" }), null);
+      expect(e.path[0]).toBe(`Filed by Engineer at Tier 1${maybe}, then the AI reviewer sent it to you.`);
       expect(e.decider.kind).toBe("pending-owner");
     }
+    // Once the owner decides it, the state leaves `owner` and the review is still the escalation's evidence.
+    for (const [state, by, verdictWord] of [["approved", "account:me-1", "You approved it."], ["rejected", "account:me-1", "You rejected it."]] as const) {
+      const e = explain(record({ tier: 2, merit: 1, state, review: "send it to the owner", decided_by: by }), null);
+      expect(e.path[0]).toBe("Filed by Engineer at Tier 1, then the AI reviewer sent it to you.");
+      expect(e.path).toContain(verdictWord);
+    }
+    expect(explain(record({ tier: 2, merit: 2, state: "approved", review: "send it to the owner", decided_by: "account:me-1" }), null).path[0])
+      .toBe("Filed by Engineer at Tier 1 (Tier 2 on its merits), then the AI reviewer sent it to you.");
     // The owner's own veto needs no review: the record is Tier 2 from the start.
     expect(explain(record({ tier: 2, merit: 1, state: "owner", review: null }), null).path[0]).toBe("Filed by Engineer at Tier 1, then yours to decide.");
   });

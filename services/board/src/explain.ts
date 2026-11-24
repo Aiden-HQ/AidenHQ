@@ -66,11 +66,12 @@ const models = (by: string) => (by.startsWith("reviewer:") && by !== "reviewer:k
  * escalation sets the record's tier to 2 without a cap, so a record without one reads its merits, never "at Tier 2" for
  * what the reviewer sent to the owner.
  */
-const tierWords = (r: { tier: number; merit?: number | null; cap?: { by: "autonomy"; value: string } | null; state: string; review?: string | null }) => {
+const tierWords = (r: { tier: number; merit?: number | null; cap?: { by: "autonomy"; value: string } | null; review?: string | null; decided_by: string | null }) => {
   const merit = r.merit ?? r.tier;
-  // A record in the owner's hands with no cap got there by the reviewer's escalation (records.review sets tier 2): it filed
-  // at its merits, whatever that tier was, so the history shows the reviewer's step rather than calling it filed at Tier 2.
-  if (r.state === "owner" && !r.cap && r.review) return `at Tier ${merit}, then the AI reviewer sent it to you`;
+  // A record the AI reviewer read filed at Tier 1; if it is Tier 2 without a cap, the reviewer's escalation put it there
+  // (records.review sets tier 2), so the history says Tier 1 whether it waits on the owner or the owner has decided.
+  if (r.tier === 2 && !r.cap && (r.review != null || (r.decided_by ?? "").startsWith("reviewer:")))
+    return `at Tier 1${merit !== 1 ? ` (Tier ${merit} on its merits)` : ""}, then the AI reviewer sent it to you`;
   if (merit === r.tier) return `at Tier ${r.tier}`;
   if (merit < r.tier) return r.cap
     ? `at Tier ${merit}, raised to Tier ${r.tier} (${capWords(r.cap).replace(/\.$/, "").toLowerCase()})`
