@@ -4,7 +4,7 @@
 // the PR waits only on an approval, it reads the PR's own change and code review's verdict and judges the App's approval (safe.ts).
 import { namedChecks } from "./aidenhq-sdk/checks.ts";
 import { handBack, intake, type HandoffDeps, type Kept, type PrView, type TriggerEvent } from "./handoff.ts";
-import { round, type Decision, type RoundDeps } from "./rounds.ts";
+import { retryReport, round, type Decision, type RoundDeps } from "./rounds.ts";
 import { canApprove, judge, type ChangedFile, type Judged, type Verdict } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
@@ -105,7 +105,7 @@ export function adoptedPass(o: AdoptedOptions) {
         if (w?.status === "cancelled") { handBack(o.state, repo, pr.number, "its task was cancelled"); return; }
       }
       a = o.state.get(repo, pr.number) as Kept;
-      if (a.hold || o.paused()) return;
+      if (a.hold || o.paused()) { await retryReport(rounds, a, view); return; }
       const v = await o.decision(repo, pr.number, view.head);
       // Waiting only on an approval: the evidence is judged, and decide's `approve` is taken where the repo's `approve` allows it.
       const s = o.settings(repo);
@@ -119,7 +119,7 @@ export function adoptedPass(o: AdoptedOptions) {
     /** The adoptions of `repo` (not the fleet's) whose PR left the open list: a merged one closes its hand-off's task once. */
     async gone(repo: string, defaultBranch: string, open: Set<number>) {
       for (const a of o.state.all() as Kept[]) {
-        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || a.trigger.kind === "fleet" || a.counters?.lastRound === "closed" || a.counters?.lastRound?.endsWith(":done")) continue;
+        if (a.repo.toLowerCase() !== repo.toLowerCase() || open.has(a.number) || a.trigger.kind === "fleet" || a.counters?.lastRound === "closed" || (a.counters?.lastRound?.endsWith(":done") && !a.reportStale)) continue;
         const r = await o.gh("GET", `/repos/${repo}/pulls/${a.number}`);
         if (r.status >= 300) continue;
         // A held adoption is still finished when someone merges its PR (round closes the hand-off's task). A closed one is handed

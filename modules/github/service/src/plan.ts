@@ -12,7 +12,7 @@ import { productMergeEligible, type Verdict } from "./merge-gate.ts";
 
 interface Part { tier: 0 | 1 | 2; rule: string; reason: string; reject?: boolean }
 interface Check { name?: string; ok?: boolean; pending?: boolean; skipped?: boolean }
-interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string; /** A push onto an adopted PR's branch (ship). */ ship?: Ship }
+interface Branch { repo: string; branch: string; files?: string[]; empty?: boolean; defaultBranch?: string; deployBranch?: string; ciTemplate?: boolean; sha?: string; base?: string; /** A push onto an adopted PR's branch (ship). */ ship?: Ship; /** An explicit handoff: an open PR on this branch whose recorded owner task is no longer open (service.ts reads both facts). */ handoff?: boolean; /** A PR on this branch already recorded to this task (a successor republishing what it adopted): the branch name is the old task's. */ adopted?: boolean; /** The base the change is reviewed against (the PR's own base); `defaultBranch` stays the repo's, so the default-branch guard still holds. */ destination?: string }
 interface Pr { repo: string; number?: number; files?: string[]; headMatches?: boolean; checks: Check[]; ciTemplate?: boolean; sensitive?: boolean; ownHead?: boolean; dependabot?: boolean; head?: string; base?: string; /** Code review's verdict for the head (product merges). */ verdict?: Verdict; /** A merge the ship module filed for an adoption. */ ship?: Ship }
 /**
  * A write for one adopted PR (the ship module's), as the code host read it now: what the record names (`generation`,
@@ -136,6 +136,14 @@ function shipEffectPart(action: "approve" | "enqueue" | "repair", p: Pr, s: Stat
   return T(0, `ship-${action}`, `${ref}: adopted at generation ${p.ship.generation}, at its head \`${p.ship.expected.slice(0, 12)}\``);
 }
 
+/**
+ * Where a non-platform task's branch is confined to its own namespace (agent/<task>/…): the product repo and any repo outside the
+ * agents org. The publish executor re-asks it to decide whether a push needs the handoff grant, so the two can never disagree.
+ */
+export function namespaced(repo: string, s: State): boolean {
+  return same(repo, s.productRepo) || !inAgentsOrg(repo, s);
+}
+
 function publishParts(action: string, b: Branch, s: State): Part[] {
   const inAgents = inAgentsOrg(b.repo, s);
   if (same(b.repo, s.instanceRepo)) return [REJECT("instance-repo", "the instance repo changes only through apply")];
@@ -149,14 +157,28 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
     // A contributor's fork receives the commits: an outside push, whatever its base repo is.
     if (b.ship.headRepo && !same(b.ship.headRepo, b.repo)) return [T(1, "outside-push", `a push to ${b.ship.headRepo}, a contributor's fork of ${b.repo} (outside the agents org)`)];
   }
-  const foreign = !b.ship && !s.requester?.platform && !b.branch.startsWith(`agent/${s.workspace}/`);
+  const foreign = !b.ship && !b.adopted && !s.requester?.platform && !b.branch.startsWith(`agent/${s.workspace}/`);
   const namespace = () => REJECT("branch-namespace", `\`${b.branch}\` isn't this task's branch: name it \`agent/${s.workspace}/<topic>\` and publish again`);
+  // A branch whose recorded owner is a task no longer open (cancelled, done) is an explicit handoff: a successor finishes that PR
+  // by publishing to the head branch it already has, the only way to take a PR over (notePrTask then records it as the successor's).
+  // It relaxes the namespace refusal only, never a default-branch refusal, and stays the reviewer's.
+  const handoff = () => [T(1, action === "pr" ? "handoff-pr" : "handoff-push", `${action === "pr" ? "a PR on" : "a push to"} ${b.repo} \`${b.branch}\`: the branch of an open PR whose task is no longer open, which its successor finishes`)];
+  const adopted = () => [T(1, action === "pr" ? "adopted-pr" : "adopted-push", `${action === "pr" ? "a PR on" : "a push to"} ${b.repo} \`${b.branch}\`: the branch of the open PR this task already took over`)];
+  const grant = () => (b.handoff ? handoff() : b.adopted ? adopted() : undefined);
   if (same(b.repo, s.productRepo)) {
     if (b.empty || b.branch === b.defaultBranch) return [REJECT("product-default-branch", `\`${b.branch}\` is the product repo's default branch: publish a branch and open a PR`)];
     // A PR or a branch is a proposal: any job that may file one opens it, on any task, and may ask to merge it
     // (productMergePart). The merge waits for ci-required and the mandatory code review on GitHub.
-    if (foreign) return [namespace()];
-    return [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo`)];
+    if (foreign) return grant() ?? [namespace()];
+    // Its own branch of the product repo: an adopted PR on another base stays that PR's (the reviewer reads it), any other is the
+    // ordinary product publish.
+    return grant() ?? [T(1, action === "pr" ? "product-pr" : "product-push-branch", `${action === "pr" ? "a PR" : "a branch push"} to the product repo`)];
+  }
+  // Outside the agents org: its default branch and, for a non-platform task, another task's branch are refused (a handoff relaxes
+  // the second only). An agents-org repo has neither rule: any branch there is an ordinary one (its `inAgents` parts below).
+  if (!inAgents) {
+    if (b.empty || b.branch === b.defaultBranch) return [REJECT("outside-default-branch", `\`${b.branch}\` is ${b.repo}'s default branch, outside the agents org: publish a branch and open a PR`)];
+    if (foreign) return grant() ?? [namespace()];
   }
   const workflow = b.files.find((f) => GITHUB.test(f));
   const parts: Part[] = [];
@@ -171,8 +193,6 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
     else parts.push(T(0, workflow ? "ci-template-copy" : "agents-org-branch", workflow ? `${b.repo}'s \`.github/\` is exactly the product's CI template` : `an ordinary branch of ${b.repo} in the agents org`));
     return parts;
   }
-  if (b.empty || b.branch === b.defaultBranch) return [REJECT("outside-default-branch", `\`${b.branch}\` is ${b.repo}'s default branch, outside the agents org: publish a branch and open a PR`)];
-  if (foreign) return [namespace()];
   parts.push(action === "pr" ? T(1, "outside-pr", `a draft PR to ${b.repo}, outside the agents org`) : T(1, "outside-push", `a branch push to ${b.repo}, outside the agents org`));
   return parts;
 }
@@ -334,7 +354,7 @@ export function plan({ kind, args }: { kind: unknown; args?: unknown }, state: S
     : action === "publish_module" ? { [`${state.repo} ${state.ref}`]: { repo: state.repo, ref: state.ref, commit: state.base } }
     // `base_branch` is the destination the plan read: a publish's open-PR lookup and its new PR's base both use it, so a
     // default-branch switch after approval makes the record stale rather than editing the PR into the new base.
-    : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null, base_branch: b.defaultBranch ?? null }]));
+    : Object.fromEntries((state.branches ?? []).map((b) => [`${b.repo} ${b.branch}`, { repo: b.repo, ref: b.branch, commit: b.sha ?? null, base_sha: b.base ?? null, base_branch: b.destination ?? b.defaultBranch ?? null }]));
   const items = action === "push" || action === "pr" ? state.branches : action === "merge" || action === "enqueue" ? state.prs : undefined;
   const paths = items?.map((x) => ({ repo: x.repo, ...(Array.isArray(x.files) ? { files: x.files.map((path) => ({ path })) } : {}) }));
   return { args, targets, facts, ...(paths ? { paths } : {}), ...(top.tier > 0 ? { raise: { tier: top.tier as 1 | 2, reason: top.reason, rule: top.rule } } : {}) };
