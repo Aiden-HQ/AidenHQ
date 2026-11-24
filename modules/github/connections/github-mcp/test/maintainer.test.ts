@@ -315,7 +315,7 @@ it("a timeline longer than the page cap is refused, never read as if its tail we
   // The watcher skips it rather than trusting the older event it could read.
   const out = await m.repoSince(PRODUCT);
   expect(out.issues.map((i) => i.number)).toEqual([1]);
-  expect(out.skipped).toEqual([{ number: 2, reason: expect.stringMatching(/longer than/) }]);
+  expect(out.skipped).toEqual([{ number: 2, reason: expect.stringMatching(/longer than/), unread: true }]);
 });
 
 it("a comment has the owner's host and email removed before it is sent", async () => {
@@ -964,31 +964,7 @@ it("a reopen carrying a note is refused, since a note is posted only when closin
   expect(f.posted).toHaveLength(0);
 });
 
-it("since paging returns the same cursor twice without duplicating an issue", async () => {
-  const f = fake({
-    issues: [
-      { number: 1, updated_at: "2026-01-01T00:00:00Z" },
-      { number: 2, updated_at: "2026-01-02T00:00:00Z" },
-    ],
-    timelines: {
-      1: [labeled("owner1", "2026-01-01T00:00:00Z")],
-      2: [labeled("owner1", "2026-01-02T00:00:00Z")],
-    },
-  });
-  const m = maintainer(f);
-  // The board's first poll sends an empty since: from the start.
-  expect((await m.repoSince(PRODUCT, "")).issues.map((i) => i.number)).toEqual([1, 2]);
-  const first = await m.repoSince(PRODUCT, "2025-12-31T00:00:00Z");
-  expect(first.issues.map((i) => i.number)).toEqual([1, 2]);
-  expect(first.cursor).toBe("2026-01-02T00:00:00Z");
-  const again = await m.repoSince(PRODUCT, first.cursor!);
-  expect(again.issues).toEqual([]);
-  expect(again.cursor).toBe(first.cursor);
-  const later = await m.repoSince(PRODUCT, "2026-01-01T12:00:00Z");
-  expect(later.issues.map((i) => i.number)).toEqual([2]);
-});
-
-it("a failed label-event read does not advance the cursor, so the next poll retries it", async () => {
+it("the bootstrap read lists each labelled issue once, and a failed label-event read is flagged unread, never read as done", async () => {
   const f = fake({
     issues: [
       { number: 1, updated_at: "2026-01-01T00:00:00Z" },
@@ -1001,18 +977,14 @@ it("a failed label-event read does not advance the cursor, so the next poll retr
     failTimeline: [2],
   });
   const m = maintainer(f);
-  const first = await m.repoSince(PRODUCT, "2025-12-31T00:00:00Z");
+  const first = await m.repoSince(PRODUCT);
   expect(first.issues.map((i) => i.number)).toEqual([1]);
-  expect(first.skipped.map((s) => s.number)).toEqual([2]);
-  // The failure is not recorded as done: the cursor stops before it, so the next poll sees issue 2 again.
-  expect(first.cursor).toBe("2026-01-01T00:00:00Z");
+  expect(first.skipped).toEqual([{ number: 2, reason: expect.stringMatching(/could not read its label events/), unread: true }]);
   f.opts.failTimeline = undefined;
-  const retry = await m.repoSince(PRODUCT, first.cursor!);
-  expect(retry.issues.map((i) => i.number)).toEqual([2]);
-  expect(retry.cursor).toBe("2026-01-02T00:00:00Z");
+  expect((await m.repoSince(PRODUCT)).issues.map((i) => i.number)).toEqual([1, 2]);
 });
 
-it("an issue past the first page is read and never skipped by the cursor", async () => {
+it("an issue past the first page is read", async () => {
   const issues = Array.from({ length: 101 }, (_, k) => ({ number: k + 1, updated_at: `2026-01-01T00:00:00.${String(k).padStart(3, "0")}Z` }));
   issues[100]!.updated_at = "2026-02-01T00:00:00Z";
   const timelines = Object.fromEntries(issues.map((i) => [i.number, [labeled("owner1", i.updated_at)]]));
@@ -1020,7 +992,6 @@ it("an issue past the first page is read and never skipped by the cursor", async
   const out = await maintainer(f).repoSince(PRODUCT);
   expect(out.issues).toHaveLength(101);
   expect(out.issues.at(-1)!.number).toBe(101);
-  expect(out.cursor).toBe("2026-02-01T00:00:00Z");
   expect(f.calls.filter((c) => c.url.includes("/issues?state=open"))).toHaveLength(2);
 });
 
@@ -1101,7 +1072,7 @@ it("a list that doesn't parse refuses every tool and the watcher's read, naming 
   const f = fake({});
   const m = new Maintainer(accessFor(f.fetchFn), new Error("maintainer_repos[0]: trusted must be one or more of admin, maintain, write"));
   await expect(m.issueList(PRODUCT)).rejects.toThrow(/maintainer_repos is invalid: .*trusted/);
-  await expect(m.issuesSince({})).rejects.toThrow(/maintainer_repos is invalid/);
+  await expect(m.bootstrap()).rejects.toThrow(/maintainer_repos is invalid/);
   expect(f.calls).toHaveLength(0);
 });
 
@@ -1125,7 +1096,7 @@ it("a repo's own label is the one listed, trusted and the only one changed", asy
   expect(f.posted[0]!.path).toBe(`/repos/${OTHER}/issues/3/labels/fix-me`);
 });
 
-it("the watcher's read covers every listed repo from its own cursor, and one repo's failure holds up no other", async () => {
+it("the bootstrap covers every listed repo, and one repo's failure holds up no other or its own unread issues", async () => {
   const f = fake({
     issues: [
       { number: 1, updated_at: "2026-01-01T00:00:00Z" },
@@ -1133,46 +1104,18 @@ it("the watcher's read covers every listed repo from its own cursor, and one rep
     ],
     timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")], 2: [labeled("owner1", "2026-01-02T00:00:00Z")] },
   });
-  const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER }]);
-  const out = await m.issuesSince({ [PRODUCT]: "2026-01-01T12:00:00Z" });
-  expect(out.repos.map((r) => [r.repo, "issues" in r ? r.issues.map((i) => i.number) : r.error])).toEqual([
-    [PRODUCT, [2]],
-    [OTHER, [1, 2]],
-  ]);
-  f.opts.failList = [OTHER];
-  const failed = await m.issuesSince({});
-  expect(failed.repos[0]).toMatchObject({ repo: PRODUCT, cursor: "2026-01-02T00:00:00Z" });
-  expect(failed.repos[1]).toEqual({ repo: OTHER, error: expect.stringMatching(/couldn't list acme\/widgets's issues/) });
+  const m = maintainer(f, [], [{ repo: PRODUCT }, { repo: OTHER, issues: false }]);
+  expect((await m.bootstrap()).repos).toEqual([{ repo: PRODUCT, issues: [expect.objectContaining({ number: 1 }), expect.objectContaining({ number: 2 })] }, { repo: OTHER }]);
+  f.opts.failList = [PRODUCT];
+  expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, error: expect.stringMatching(/couldn't list acme\/product's issues/) });
+  f.opts.failList = undefined;
+  f.opts.failTimeline = [2];
+  expect((await m.bootstrap()).repos[0]).toEqual({ repo: PRODUCT, error: expect.stringMatching(/1 issue\(s\) whose label events couldn't be read/) });
 });
-
 it("a comment on a maintained repo keeps that repo's own org, while other owner terms are still redacted", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f, ["acme", "internal.example-host"], [{ repo: OTHER }]);
   expect(await m.commentBody(OTHER, 1, "fixed by https://github.com/acme/widgets/pull/7 on internal.example-host")).toBe("fixed by https://github.com/acme/widgets/pull/7 on [redacted]");
-});
-
-it("the triage read hands over new unlabelled reports once, the fleet's own included filings, PRs or labelled ones, nor the backlog", async () => {
-  const at = (h: number) => `2026-01-01T${String(h).padStart(2, "0")}:00:00Z`;
-  const f = fake({
-    issues: [
-      { number: 1, updated_at: at(1), created_at: at(1), labels: [] }, // before the cursor: the daily triage's
-      { number: 2, updated_at: at(3), created_at: at(3), labels: ["bug"] },
-      { number: 3, updated_at: at(4), created_at: at(4), labels: [], user: "owner1" },
-      { number: 4, updated_at: at(5), created_at: at(5) }, // labelled: the labelled-issue path's
-      { number: 5, updated_at: at(6), created_at: at(6), labels: [], pr: true },
-      { number: 6, updated_at: at(7), created_at: at(7), labels: [] },
-    ],
-  });
-  const m = maintainer(f, [], [{ repo: PRODUCT }], [3]); // #3 is the fleet's own filing (a product bug): triaged like any
-  const first = await m.untriaged(PRODUCT);
-  expect(first.untriaged).toEqual([]);
-  expect(Date.parse(first.triage_cursor)).toBeGreaterThan(Date.now() - 60_000);
-  const out = await m.untriaged(PRODUCT, at(2));
-  expect(out).toEqual({ untriaged: [{ number: 2, created_at: at(3), author: "someone" }, { number: 3, created_at: at(4), author: "owner1" }, { number: 6, created_at: at(7), author: "someone" }], triage_cursor: at(7) });
-  expect((await m.untriaged(PRODUCT, at(7))).untriaged).toEqual([]);
-  const both = await m.issuesSince({}, { [PRODUCT]: at(2) });
-  expect(both.repos[0]).toMatchObject({ repo: PRODUCT, untriaged: [{ number: 2 }, { number: 3 }, { number: 6 }] });
-  expect((await m.issuesSince({})).repos[0]).not.toHaveProperty("untriaged");
 });
 
 const labeledAs = (label: string, login: string, at: string, app?: { id: number; slug: string }) => ({ ...labeled(login, at, app), label: { name: label } });
@@ -1189,7 +1132,7 @@ it("agent-build is trusted from an admin (the owner's login included) and a main
     },
     permissions: { "writer-user": "write", "admin-user": "admin" },
   });
-  const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, undefined, BUILD);
+  const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, BUILD);
   expect(out.issues.map((i) => i.number)).toEqual([1, 3]);
   expect(out.skipped.map((s) => s.number)).toEqual([2]);
   // A repo trusting write lets a write collaborator vouch for it.
@@ -1218,24 +1161,36 @@ it("the label tool adds and removes feature-request, and refuses agent-build", a
   expect(f.posted[0]).toMatchObject({ body: { labels: ["feature-request"] } });
 });
 
-it("triage skips issues already labelled feature-request or agent-build, and a features repo reads its builds", async () => {
+it("a features repo's bootstrap reads its trusted agent-build issues and its trusted feature requests, a repo without features neither", async () => {
   const f = fake({
     issues: [
       { number: 1, updated_at: "2026-02-01T00:00:00Z", created_at: "2026-02-01T00:00:00Z", labels: ["feature-request"] },
       { number: 2, updated_at: "2026-02-01T00:00:01Z", created_at: "2026-02-01T00:00:01Z", labels: [BUILD] },
-      { number: 3, updated_at: "2026-02-01T00:00:02Z", created_at: "2026-02-01T00:00:02Z", labels: ["bug"] },
       { number: 4, updated_at: "2026-02-01T00:00:03Z", created_at: "2026-02-01T00:00:03Z", labels: ["feature-request"] },
     ],
     timelines: { 1: [labeledAs("feature-request", "owner1", "2026-02-01T00:00:01Z")], 2: [labeledAs(BUILD, "admin-user", "2026-02-01T00:00:03Z")], 4: [labeledAs("feature-request", "stranger", "2026-02-01T00:00:04Z")] },
     permissions: { "admin-user": "admin" },
   });
-  const out = await maintainer(f, [], FEATURES).issuesSince({}, { [PRODUCT]: "2026-01-01T00:00:00Z" });
-  const row = out.repos[0]! as any;
-  expect(row.untriaged.map((i: any) => i.number)).toEqual([3]);
+  const row = (await maintainer(f, [], [{ repo: PRODUCT, features: true, issues: false }]).bootstrap()).repos[0]! as any;
   expect(row.builds.map((i: any) => [i.number, i.trusted])).toEqual([[2, true]]);
   expect(row.featured).toEqual([1]);
-  // A repo without `features` reads no builds.
-  expect(((await maintainer(f).issuesSince({})).repos[0]! as any).builds).toBeUndefined();
+  expect(row.issues).toBeUndefined();
+  const plain = (await maintainer(f).bootstrap()).repos[0]! as any;
+  expect([plain.builds, plain.featured]).toEqual([undefined, undefined]);
+});
+
+it("oneIssue reads the issue as it stands with its label's trust verdict, and null when it is closed, a PR or no longer labelled", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }, { number: 2, updated_at: "2026-01-01T00:00:00Z" }, { number: 3, updated_at: "2026-01-01T00:00:00Z", pr: true }, { number: 4, updated_at: "2026-01-01T00:00:00Z", labels: ["bug"] }],
+    timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")], 2: [labeled("random-user", "2026-01-01T00:00:00Z")] },
+    states: { 5: "closed" },
+  });
+  const m = maintainer(f);
+  expect((await m.oneIssue(PRODUCT, 1)).issue).toMatchObject({ number: 1, trusted: true, labeled_at: "2026-01-01T00:00:00Z", labels: ["agent-fix"] });
+  expect((await m.oneIssue(PRODUCT, 2)).issue).toMatchObject({ number: 2, trusted: false, actor: "random-user" });
+  for (const n of [3, 4]) expect((await m.oneIssue(PRODUCT, n)).issue).toBeNull();
+  f.opts.failTimeline = [1];
+  await expect(m.oneIssue(PRODUCT, 1)).rejects.toThrow(/timeline/);
 });
 
 it("pr_list tells bot, fleet and human PRs apart, and reads a human author's latest activity and what waits on them", async () => {
@@ -1276,7 +1231,7 @@ it("an issue edited after its trusted agent-build label is untrusted until the o
     permissions: { "admin-user": "admin" },
     edited: { 1: "2026-01-01T00:00:05Z", 2: "2025-12-31T00:00:00Z" },
   });
-  const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, undefined, BUILD);
+  const out = await maintainer(f, [], FEATURES).repoSince(PRODUCT, BUILD);
   expect(out.issues.map((i) => i.number)).toEqual([2]);
   expect(out.skipped).toEqual([{ number: 1, reason: expect.stringMatching(/edited after agent-build was added/) }]);
   expect((await maintainer(f, [], FEATURES).labelEvents(PRODUCT, 1, BUILD)).events[0]).toMatchObject({ trusted: false, stale: true });

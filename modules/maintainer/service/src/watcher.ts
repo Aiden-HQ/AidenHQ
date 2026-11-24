@@ -1,98 +1,88 @@
 /**
- * The Maintainer's issue wake-up. An instance has no public ingress GitHub can reach, so a webhook cannot
- * arrive: on a timer this service asks github-mcp for the issues labelled since its last look on every maintained repo (the
- * github module's setting maintainer_repos, which github-mcp holds) and files a task for the Maintainer once per
- * trusted issue. github-mcp decides `trusted` (a label counts only from a collaborator with one of the repo's
- * trusted roles; the owner's login is an admin); an untrusted one is logged once and costs no model call and no run.
+ * The Maintainer's issue wake-up, driven by the github module's change feed (docs/superpowers/specs/2026-11-24-github-change-feed-design.md,
+ * lane 2). The feed reader posts each issue event to the kernel, and this service reads the kernel's log of the `issues.*` events on
+ * the maintained repos (module.yaml `subscribes:`) every few seconds, with its own committed cursor, and files a task for the
+ * Maintainer once per issue. No GitHub timer runs here.
  *
- * Each repo's cursor, the issues already fired and the ones already noted as untrusted live in this service's data file
- * (state.json, per repo), so a restart with the stored cursors neither repeats a delivery nor skips a new issue. A
- * failed read leaves that repo's cursor where it was and files nothing there; the next tick asks again.
+ * What an event does, only for a duty that repo has on:
+ * - `issues.labeled` with the repo's fix label (duty `issues`), or `agent-build` (duty `features`): one trust read of that issue through
+ *   github-mcp (a label counts only from a collaborator with one of the repo's trusted roles; the owner's login is an admin; the event's
+ *   own actor never decides), then one task keyed by its source `maintainer-issue:<repo>#<n>`. An untrusted one is logged once and costs
+ *   no run. A read that fails throws, so the batch is redelivered.
+ * - `issues.labeled` with `feature-request` (duty `features`): the same trust read, and a trusted one joins the repo's `featured` set,
+ *   the valid reports the per-author triage cap leaves uncounted.
+ * - `issues.opened` with none of the three labels, by someone other than the fleet, with external triage on: one triage task (its repo and
+ *   number only: the title is a stranger's text), through the per-author cap on invalid issues a day. Past it the issue is `held` and
+ *   filed once a slot frees (oldest first); a day on, the daily run has it. An issue is valid once it carries the fix label (trusted,
+ *   in `fired`) or feature-request (`featured`), labels only a trusted collaborator adds.
+ * - `issues.closed`: a held issue is let go.
+ * - `github.resync` (the feed read a repo afresh): that repo is bootstrapped.
  *
- * With external triage on (the maintainer module's external_triage), the same read also brings each repo's issues
- * opened since its triage cursor with no fix label that AidenHQ didn't file, and each files a triage task once, with
- * its repo and number only (the title is a stranger's text). Labelling stays the Maintainer's judgment in that run; its
- * label then comes back through the trusted path above. The first look only sets the cursor: the issues already open are
- * the daily triage's. A stranger's issue starts a model run that reads untrusted text before a trusted label, so
- * the runs are capped a day per issue author on the invalid ones (`limits`, the maintainer module's
- * settings): past it, the issue is held in the repo's state and re-checked every tick, filing its triage the moment a slot frees
- * (oldest first); a day on, the daily run has it. An issue is valid once it carries the repo's fix label
- * (a trusted one, in `fired`) or feature-request (`featured`): labels only a trusted collaborator adds.
- * A valid issue doesn't count against its author, so a tester's burst of real reports is all triaged; one whose triage has
- * no verdict yet counts, so a stranger's flood is bounded at the limit in flight.
+ * The bootstrap is github-mcp's read of every open labelled issue of the repo (its trust verdicts included): at the first start, after a
+ * feed gap (the kernel's log is kept three days), after a resync and for a repo whose settings changed since the last start. It files
+ * what has no task yet (the kernel keeps one task per source) and rebuilds `featured`. Unlabelled issues already open are the daily
+ * triage's, never a burst of runs.
  *
- * On a repo with `features` on, the same read also brings the issues labelled agent-build (the owner's word that a feature
- * request may be built; github-mcp trusts a collaborator with a trusted role, the owner's login included), each filing one build task. An issue carrying both labels
- * is one task: the fired set is shared, and the task's source is the issue's.
- *
- * The `contributor_prs` nudge and close tasks are the ship module's to file (modules/ship/service/src/contributor.ts).
+ * The cursor (the last log seq committed) moves only after a batch's effects are written to this service's state file (state.json), so a
+ * crash or a refused filing redelivers it; every handler is idempotent (the fired, noted and triaged sets, and the task sources).
+ * `contributor_prs` nudges are the ship module's (modules/ship/service/src/contributor.ts).
  */
 import { readFileSync } from "node:fs";
-import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
+import { kernelClient, type FactIn } from "./aidenhq-sdk/kernel-client.ts";
+import { BUILD_LABEL, FEATURE_LABEL, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.ts";
 
 const MIN = 60_000;
 const STATE_KEY = "maintainer_issues";
-/** How many issue numbers each repo's state keeps: github-mcp resends nothing the cursor has moved past. */
+/** How many issue numbers each repo's state keeps. */
 const KEEP = 500;
+const DAY = 24 * 60 * MIN;
+const POLL_MS = 5_000;
 
 export interface MaintainerIssue {
   number: number;
-  title?: string;
   trusted: boolean;
   labeled_at?: string;
-  actor?: string;
-  /** The issue's own creation time and label names, for Flow's triage fact (absent from an older github-mcp). */
+  actor?: string | null;
+  /** The issue's own creation time and label names, for Flow's triage fact. */
   created_at?: string;
   labels?: string[];
 }
-/** One repo's answer: its issues since its cursor and the new cursor, or why it couldn't be read; and, when asked, its new
- * unlabelled issues (oldest first) and their cursor, or why those couldn't be read. */
-export interface MaintainerRepoBatch {
+/** github-mcp's bootstrap answer for one repo: its open labelled issues, or why they couldn't be read. */
+export interface BootstrapRow {
   repo: string;
-  issues?: MaintainerIssue[];
-  skipped?: { number: number; reason: string }[];
-  cursor?: string | null;
   error?: string;
-  untriaged?: { number: number; created_at: string; author?: string }[];
-  triage_cursor?: string;
-  triage_error?: string;
-  /** Issues labelled agent-build (a repo with `features` on), their cursor, or why they couldn't be read. */
+  /** The fix label's issues (duty `issues`). */
+  issues?: MaintainerIssue[];
+  /** The agent-build issues and the trusted feature-request numbers (duty `features`). */
   builds?: MaintainerIssue[];
-  build_cursor?: string | null;
-  build_error?: string;
-  /** The issues labelled feature-request in the last day (a repo with `features` on): valid reports, so uncounted by the author cap. */
   featured?: number[];
 }
-export interface MaintainerBatch {
-  repos: MaintainerRepoBatch[];
-}
-/** The watcher's one state value (main.ts keeps it in a file). */
+/** One event of the kernel's log (kernel/src/events.ts LoggedEvent): what this service reads of it. */
+export interface FeedEvent { seq: number; resource: string; id: string; kind: string; author?: string; labels?: string[]; data?: Record<string, unknown> }
+export interface FeedPage { events: FeedEvent[]; next: number; gap: boolean }
+/** The state value this service keeps (main.ts keeps it in a file). */
 type Kv = { meta(key: string): string | undefined; setMeta(key: string, value: string): void };
-type Issues = (cursors: Record<string, string>, triage?: Record<string, string>, builds?: Record<string, string>) => Promise<MaintainerBatch>;
 /** True or the filed task ({ id }) when the task is filed (or already was); false when refused. `kind`: a fix (the repo's label) or a build (agent-build). */
 type Fire = (repo: string, issue: MaintainerIssue, kind?: "fix" | "build") => Promise<boolean | { id: string }>;
 type Triage = (repo: string, number: number) => Promise<boolean>;
 type Log = { info(o: object, m: string): void; warn(o: object, m: string): void };
 
 interface RepoState {
-  cursor?: string;
   fired?: number[];
   noted?: number[];
-  /** The last error logged for this repo, so a run of the same one is said once. */
-  error?: string;
-  triage_cursor?: string;
+  /** The valid reports (trusted feature-request issues): uncounted by the per-author triage cap. */
+  featured?: number[];
   triaged?: number[];
   /** The triage runs fired in the last day, with their issue and its author: what the daily limits count (an issue that proves valid stops counting for its author). */
   recent?: { at: number; author: string; issue?: number }[];
-  triage_error?: string;
-  /** Issues over their author's cap, kept until a slot frees (oldest first): re-checked every tick, dropped once labelled valid or a day old (the daily run has them). */
+  /** Issues over their author's cap, kept until a slot frees (oldest first), dropped once labelled valid, closed or a day old (the daily run has them). */
   held?: { number: number; author: string; created_at: string }[];
-  build_cursor?: string;
-  build_error?: string;
 }
 interface State {
   repos?: Record<string, RepoState>;
-  /** The last whole-read error logged. */
+  /** The last log seq committed, and each repo's settings as of the last bootstrap. */
+  feed?: { after: number; digest: Record<string, string> };
+  /** The last error logged: a run of the same one is said once. */
   error?: string;
 }
 
@@ -105,176 +95,204 @@ function readState(store: Kv): State {
 }
 
 const keep = (xs: Iterable<number>) => [...new Set(xs)].slice(-KEEP);
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-/**
- * One look over every maintained repo: fire each new trusted issue once, name each new untrusted one once, and move a
- * repo's cursor only when its whole batch was delivered. Returns how many tasks were filed.
- */
 export interface TriageLimits {
   /** The most invalid (not yet valid) issues a day one author may have triaged. */
   perAuthor: number;
 }
-const DAY = 24 * 60 * MIN;
 
-export async function maintainerTick(d: { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits; store: Kv; log: Log; /** Flow facts (FactEmitter.emit). */ emit?: (f: FactIn) => void }): Promise<number> {
+export interface PumpDeps {
+  /** The kernel's log of the feed events this module subscribes to, after a seq (no seq: the watermark). */
+  feed: (after?: number) => Promise<FeedPage>;
+  bootstrap: () => Promise<{ repos: BootstrapRow[] }>;
+  /** One issue's trust read for a label (github-mcp), null when it is closed or no longer carries it. */
+  one: (repo: string, number: number, label: string) => Promise<MaintainerIssue | null>;
+  fire: Fire;
+  /** Undefined with external triage off. */
+  triage?: Triage;
+  limits?: TriageLimits;
+  repos: () => MaintainedRepo[];
+  store: Kv;
+  log: Log;
+  /** Flow facts (FactEmitter.emit). */
+  emit?: (f: FactIn) => void;
+}
+
+/**
+ * One look at the feed: bootstrap what needs it, handle each new event, then let go of held issues whose slot freed. Returns how many
+ * tasks were filed. The cursor moves only when everything succeeded; a failure is said once and the next look redelivers.
+ */
+export async function maintainerPump(d: PumpDeps): Promise<number> {
   const state = readState(d.store);
   const repos: Record<string, RepoState> = { ...(state.repos ?? {}) };
-  const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(error ? { error } : {}) }));
-  const cursors = Object.fromEntries(Object.entries(repos).flatMap(([r, s]) => (s.cursor ? [[r, s.cursor]] : [])));
-  const triageCursors = Object.fromEntries(Object.entries(repos).flatMap(([r, s]) => (s.triage_cursor ? [[r, s.triage_cursor]] : [])));
-  const buildCursors = Object.fromEntries(Object.entries(repos).flatMap(([r, s]) => (s.build_cursor ? [[r, s.build_cursor]] : [])));
-  let batch: MaintainerBatch;
+  let cfg = new Map<string, MaintainedRepo>();
+  let digest: Record<string, string> = {};
+  let after = state.feed?.after;
+  let committed = state.feed?.digest ?? {};
+  let count = 0;
+  const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(after === undefined ? {} : { feed: { after, digest: committed } }), ...(error ? { error } : {}) }));
+  const of = (repo: string): RepoState => (repos[repo.toLowerCase()] ??= {});
+  const prune = () => { for (const k of Object.keys(repos)) if (!cfg.has(k)) delete repos[k]; };
   try {
-    batch = d.triage ? await d.issues(cursors, triageCursors, buildCursors) : await d.issues(cursors, undefined, buildCursors);
+    cfg = new Map(d.repos().map((r) => [r.repo.toLowerCase(), r]));
+    digest = Object.fromEntries([...cfg].map(([k, r]) => [k, JSON.stringify([r, !!d.triage])]));
+    const first = after === undefined;
+    const page = await d.feed(after);
+    const stale = first || page.gap ? [...cfg.keys()] : [...cfg.keys()].filter((k) => committed[k] !== digest[k]);
+    if (stale.length) {
+      const read = await d.bootstrap();
+      for (const row of read.repos) {
+        const k = row.repo.toLowerCase();
+        if (!stale.includes(k)) continue;
+        count += await bootRepo(d, cfg.get(k)!, row, of(k));
+        committed = { ...committed, [k]: digest[k]! };
+      }
+      for (const k of Object.keys(committed)) if (!cfg.has(k)) delete committed[k];
+    }
+    for (const ev of page.events) {
+      const r = cfg.get(ev.resource.toLowerCase());
+      if (r) count += await handle(d, r, ev, of(r.repo), async () => { const row = (await d.bootstrap()).repos.find((x) => same(x.repo, r.repo)); if (!row) throw new Error(`${r.repo} is not in the bootstrap read`); return bootRepo(d, r, row, of(r.repo)); });
+    }
+    for (const r of cfg.values()) count += await releaseHeld(d, r, of(r.repo));
+    prune();
+    after = page.next;
+    save();
   } catch (err) {
     const message = String(err instanceof Error ? err.message : err).slice(0, 300);
-    if (message !== state.error) d.log.warn({ err: message }, "maintainer issues not read; the next tick asks again");
-    // Every cursor stays where it was: nothing was delivered, so nothing was seen.
+    if (message !== state.error) d.log.warn({ err: message }, "maintainer feed not handled; the next look redelivers it");
+    after = state.feed?.after;
     save(message);
+  }
+  return count;
+}
+
+/** Files what a repo's bootstrap read found, and rebuilds its featured set. A repo that couldn't be read throws, so it is read again. */
+async function bootRepo(d: PumpDeps, r: MaintainedRepo, row: BootstrapRow, st: RepoState): Promise<number> {
+  if (row.error) throw new Error(`${r.repo}: ${row.error}`);
+  let count = 0;
+  for (const i of row.issues ?? []) count += await file(d, r, i, "fix", st);
+  for (const i of row.builds ?? []) count += await file(d, r, i, "build", st);
+  if (r.features && row.featured) st.featured = keep(row.featured);
+  return count;
+}
+
+/** One issue whose fix or build label is read: an untrusted one is named once, a trusted one files its task once. A refusal throws. */
+async function file(d: PumpDeps, r: MaintainedRepo, issue: MaintainerIssue, kind: "fix" | "build", st: RepoState): Promise<number> {
+  const fired = new Set(st.fired ?? []);
+  const noted = new Set(st.noted ?? []);
+  if (!issue.trusted) {
+    if (!noted.has(issue.number)) {
+      d.log.info({ repo: r.repo, issue: issue.number, actor: issue.actor ?? "" }, kind === "build" ? "untrusted agent-build label: no run" : "untrusted maintainer label: no run");
+      st.noted = keep(noted.add(issue.number));
+    }
     return 0;
   }
-  let count = 0;
-  for (const b of batch.repos ?? []) {
-    const before = repos[b.repo] ?? {};
-    const { count: triaged = 0, ...triage } = d.triage ? await triageRepo(b, before, d.triage, d.limits ?? triageLimits({}), d.log) : {};
-    count += triaged;
-    if (b.error) {
-      if (b.error !== before.error) d.log.warn({ repo: b.repo, err: b.error }, "maintainer issues not read for this repo; the next tick asks again");
-      repos[b.repo] = { ...before, ...triage, error: b.error };
-      continue;
+  if (fired.has(issue.number)) return 0;
+  const ok = await d.fire(r.repo, issue, kind).catch(() => false);
+  if (!ok) throw new Error(`the ${kind} task for ${r.repo}#${issue.number} was not filed`);
+  // Flow: the issue is triaged when its fix label lands (the time github-mcp read from its label events); the filed task is its item's root.
+  if (kind === "fix") d.emit?.({ type: "issue.triaged", subject: `issue:${r.repo}#${issue.number}`, version: "1", at: issue.labeled_at ?? new Date().toISOString(), task: typeof ok === "object" ? ok.id : undefined,
+    data: { issue_url: `https://github.com/${r.repo}/issues/${issue.number}`, issue_created_at: issue.created_at, labels: issue.labels ?? [], trusted: issue.trusted } });
+  st.fired = keep(fired.add(issue.number));
+  return 1;
+}
+
+async function handle(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoState, boot: () => Promise<number>): Promise<number> {
+  const number = Number(ev.data?.number);
+  switch (ev.kind) {
+    case "github.resync": return boot();
+    case "issues.closed":
+      if (st.held) st.held = st.held.filter((h) => h.number !== number);
+      return 0;
+    case "issues.labeled": {
+      const label = String(ev.data?.label ?? "");
+      const kind = r.issues && same(label, r.label) ? "fix" : r.features && label === BUILD_LABEL ? "build" : undefined;
+      if (kind) {
+        const issue = await d.one(r.repo, number, label);
+        return issue ? file(d, r, issue, kind, st) : 0;
+      }
+      if (r.features && label === FEATURE_LABEL) {
+        const issue = await d.one(r.repo, number, FEATURE_LABEL);
+        if (issue?.trusted) st.featured = keep([...(st.featured ?? []), number]);
+      }
+      return 0;
     }
-    const fired = new Set(before.fired ?? []);
-    const noted = new Set(before.noted ?? []);
-    let delivered = true;
-    for (const issue of b.issues ?? []) {
-      if (!issue.trusted) {
-        if (!noted.has(issue.number)) {
-          d.log.info({ repo: b.repo, issue: issue.number, actor: issue.actor ?? "" }, "untrusted maintainer label: no run");
-          noted.add(issue.number);
-        }
-        continue;
-      }
-      if (fired.has(issue.number)) continue;
-      const ok = await d.fire(b.repo, issue).catch(() => false);
-      if (ok) {
-        // Flow: the issue is triaged when its fix label lands (the time github-mcp read from its label events); the filed task is its item's root.
-        d.emit?.({ type: "issue.triaged", subject: `issue:${b.repo}#${issue.number}`, version: "1", at: issue.labeled_at ?? new Date().toISOString(), task: typeof ok === "object" ? ok.id : undefined,
-          data: { issue_url: `https://github.com/${b.repo}/issues/${issue.number}`, issue_created_at: issue.created_at, labels: issue.labels ?? [], trusted: issue.trusted } });
-      }
-      if (!ok) {
-        d.log.warn({ repo: b.repo, issue: issue.number }, "maintainer task not filed; the next tick retries it");
-        // No cursor move: the next tick asks for the same window and retries only what was not delivered.
-        delivered = false;
-        break;
-      }
-      fired.add(issue.number);
-      count++;
-    }
-    // The agent-build issues: one task each (an issue already fired as a fix is that task), and the build cursor moves only
-    // when the whole batch was delivered, like the fix cursor.
-    let buildDelivered = delivered && !b.build_error;
-    if (b.build_error && b.build_error !== before.build_error) d.log.warn({ repo: b.repo, err: b.build_error }, "agent-build issues not read for this repo; the next tick asks again");
-    for (const issue of delivered ? b.builds ?? [] : []) {
-      if (!issue.trusted) {
-        if (!noted.has(issue.number)) {
-          d.log.info({ repo: b.repo, issue: issue.number, actor: issue.actor ?? "" }, "untrusted agent-build label: no run");
-          noted.add(issue.number);
-        }
-        continue;
-      }
-      if (fired.has(issue.number)) continue;
-      if (!(await d.fire(b.repo, issue, "build").catch(() => false))) {
-        d.log.warn({ repo: b.repo, issue: issue.number }, "maintainer build task not filed; the next tick retries it");
-        buildDelivered = false;
-        break;
-      }
-      fired.add(issue.number);
-      count++;
-    }
-    repos[b.repo] = {
-      cursor: (delivered ? b.cursor : undefined) ?? before.cursor, fired: keep(fired), noted: keep(noted), ...triage,
-      build_cursor: (buildDelivered ? b.build_cursor : undefined) ?? before.build_cursor, ...(b.build_error ? { build_error: b.build_error } : {}),
-    };
+    case "issues.opened": return opened(d, r, ev, st);
+    default: return 0;
   }
-  save();
+}
+
+/** A new issue: one triage task unless it is labelled, the fleet's own, or its author is over the cap (then it is held). */
+async function opened(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoState): Promise<number> {
+  const number = Number(ev.data?.number);
+  const labels = ev.labels ?? [];
+  if (!d.triage || !(r.issues || r.features) || ev.data?.author_kind === "agent") return 0;
+  if (labels.some((l) => same(l, r.label) || l === FEATURE_LABEL || l === BUILD_LABEL)) return 0;
+  if ((st.triaged ?? []).includes(number) || (st.held ?? []).some((h) => h.number === number)) return 0;
+  const author = String(ev.author ?? "").toLowerCase();
+  const limits = d.limits ?? triageLimits({});
+  const recent = (st.recent = (st.recent ?? []).filter((x) => Date.now() - x.at < DAY));
+  const valid = new Set([...(st.fired ?? []), ...(st.featured ?? [])]);
+  const byAuthor = recent.filter((x) => x.author === author && !valid.has(x.issue!)).length;
+  if (byAuthor >= limits.perAuthor) {
+    d.log.info({ repo: r.repo, issue: number, author, invalid_today: byAuthor }, "triage limit reached (invalid issues per author): held until a slot frees");
+    st.held = [...(st.held ?? []), { number, author, created_at: String(ev.data?.created_at ?? new Date().toISOString()) }].slice(-KEEP);
+    return 0;
+  }
+  if (!(await d.triage(r.repo, number).catch(() => false))) throw new Error(`the triage task for ${r.repo}#${number} was not filed`);
+  recent.push({ at: Date.now(), author, issue: number });
+  st.triaged = keep([...(st.triaged ?? []), number]);
+  return 1;
+}
+
+/** Held issues, oldest first: one files as soon as its author is under the cap; one labelled valid or a day old is let go (the daily run has it). A local deadline, never a GitHub read. */
+async function releaseHeld(d: PumpDeps, r: MaintainedRepo, st: RepoState): Promise<number> {
+  if (!st.held?.length || !d.triage) return 0;
+  const limits = d.limits ?? triageLimits({});
+  const recent = (st.recent = (st.recent ?? []).filter((x) => Date.now() - x.at < DAY));
+  const valid = new Set([...(st.fired ?? []), ...(st.featured ?? [])]);
+  const held: NonNullable<RepoState["held"]> = [];
+  let count = 0;
+  for (const h of st.held.filter((x) => !valid.has(x.number) && Date.now() - Date.parse(x.created_at) < DAY)) {
+    if (recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= limits.perAuthor) held.push(h);
+    else if (!(await d.triage(r.repo, h.number).catch(() => false))) {
+      d.log.warn({ repo: r.repo, issue: h.number }, "maintainer triage task not filed; the next look retries it");
+      held.push(h);
+    } else {
+      recent.push({ at: Date.now(), author: h.author, issue: h.number });
+      st.triaged = keep([...(st.triaged ?? []), h.number]);
+      count++;
+    }
+  }
+  st.held = held;
   return count;
 }
 
 /**
- * One repo's new unlabelled issues: each fires the triage routine once. The triage cursor moves past what was delivered:
- * a refused filing stops there, and the next tick reads it again (the triaged set keeps a repeat out). An issue over its author's cap is `held`, not triaged. A github-mcp that
- * sends no `untriaged` (older than this service) leaves the state as it was.
+ * github-mcp's internal reads on the compose network, as this module (its own token, which github-mcp checks with the kernel): the
+ * bootstrap of every open labelled issue, and one issue's trust read. Undefined until the token file has its content: the watcher is
+ * off, rather than failing every look.
  */
-async function triageRepo(b: MaintainerRepoBatch, before: RepoState, fire: Triage, limits: TriageLimits, log: Log): Promise<Partial<RepoState> & { count?: number }> {
-  const recent = (before.recent ?? []).filter((r) => Date.now() - r.at < DAY);
-  const kept = { triage_cursor: before.triage_cursor, triaged: before.triaged, recent, held: before.held };
-  if (b.triage_error) {
-    if (b.triage_error !== before.triage_error) log.warn({ repo: b.repo, err: b.triage_error }, "new issues not read for triage on this repo; the next tick asks again");
-    return { ...kept, triage_error: b.triage_error };
-  }
-  if (!b.untriaged || !b.triage_cursor) return kept;
-  const triaged = new Set(before.triaged ?? []);
-  const valid = new Set([...(before.fired ?? []), ...(b.issues ?? []).filter((i) => i.trusted).map((i) => i.number), ...(b.featured ?? [])]);
-  const invalid = (author: string) => recent.filter((r) => r.author === author && !valid.has(r.issue!)).length;
-  let count = 0;
-  // The held issues first, oldest first: one fires as soon as its author is under the cap. One already labelled valid, or a day old, is let go.
-  const held: NonNullable<RepoState["held"]> = [];
-  for (const h of (before.held ?? []).filter((h) => !valid.has(h.number) && Date.now() - Date.parse(h.created_at) < DAY)) {
-    if (invalid(h.author) >= limits.perAuthor) held.push(h);
-    else if (!(await fire(b.repo, h.number).catch(() => false))) {
-      log.warn({ repo: b.repo, issue: h.number }, "maintainer triage task not filed; the next tick retries it");
-      held.push(h);
-    } else {
-      recent.push({ at: Date.now(), author: h.author, issue: h.number });
-      count++;
-    }
-  }
-  const heldNow = new Set(held.map((h) => h.number));
-  // At most KEEP held, the oldest dropped to the daily triage run (it sweeps every open unlabelled issue).
-  const bounded = () => {
-    if (held.length > KEEP) {
-      log.warn({ repo: b.repo, dropped: held.length - KEEP }, "held triage issues over the limit: the oldest are left to the daily triage run");
-      held.splice(0, held.length - KEEP);
-    }
-    return held;
-  };
-  // The issues come oldest first: the cursor follows the last one delivered, and reaches the read's own once all are.
-  let cursor = before.triage_cursor;
-  for (const i of b.untriaged) {
-    const author = String(i.author ?? "").toLowerCase();
-    if (!triaged.has(i.number) && !heldNow.has(i.number)) {
-      const byAuthor = invalid(author);
-      if (byAuthor >= limits.perAuthor) {
-        log.info({ repo: b.repo, issue: i.number, author, invalid_today: byAuthor }, "triage limit reached (invalid issues per author): held until a slot frees");
-        held.push({ number: i.number, author, created_at: i.created_at });
-        heldNow.add(i.number);
-      } else if (!(await fire(b.repo, i.number).catch(() => false))) {
-        log.warn({ repo: b.repo, issue: i.number }, "maintainer triage task not filed; the next tick retries it");
-        return { triage_cursor: cursor, triaged: keep(triaged), recent, held: bounded(), count };
-      } else {
-        recent.push({ at: Date.now(), author, issue: i.number });
-        triaged.add(i.number);
-        count++;
-      }
-    }
-    cursor = i.created_at;
-  }
-  return { triage_cursor: b.triage_cursor, triaged: keep(triaged), recent, held: bounded(), count };
-}
-
-/**
- * github-mcp's internal read on the compose network, as this module (its own token, which github-mcp checks with the
- * kernel). Undefined until the token file has its content: the watcher is off, rather than failing every tick.
- */
-export function maintainerIssues(env: NodeJS.ProcessEnv = process.env): Issues | undefined {
+export function maintainerReads(env: NodeJS.ProcessEnv = process.env): Pick<PumpDeps, "bootstrap" | "one"> | undefined {
   const url = (env.MAINTAINER_ISSUES_URL ?? "http://github:8086/internal/maintainer/issues").replace(/\/+$/, "");
   if (!token(env)) return undefined;
-  return async (cursors, triage, builds) => {
-    const query = `cursors=${encodeURIComponent(JSON.stringify(cursors))}${triage ? `&triage_cursors=${encodeURIComponent(JSON.stringify(triage))}` : ""}${builds ? `&build_cursors=${encodeURIComponent(JSON.stringify(builds))}` : ""}`;
-    const res = await fetch(`${url}?${query}`, { headers: { authorization: `Bearer ${token(env)}` }, signal: AbortSignal.timeout(20_000) });
+  const get = async (u: string) => {
+    const res = await fetch(u, { headers: { authorization: `Bearer ${token(env)}` }, signal: AbortSignal.timeout(60_000) });
     if (!res.ok) throw new Error(`github-mcp: ${res.status} ${(await res.text()).slice(0, 200)}`);
-    return (await res.json()) as MaintainerBatch;
+    return (await res.json()) as any;
   };
+  return {
+    bootstrap: () => get(url),
+    one: async (repo, number, label) => (await get(`${url.replace(/\/issues$/, "/issue")}?repo=${encodeURIComponent(repo)}&number=${number}&label=${encodeURIComponent(label)}`)).issue ?? null,
+  };
+}
+
+/** The kernel's log of the feed events this module subscribes to (GET /v1/events/log, this module's own token). */
+export function maintainerFeed(env: NodeJS.ProcessEnv = process.env): PumpDeps["feed"] | undefined {
+  if (!token(env)) return undefined;
+  const client = kernelClient(env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", token(env));
+  return (after) => client.call("GET", `/v1/events/log?connection=github&limit=200${after === undefined ? "" : `&after=${after}`}`);
 }
 
 /**
@@ -329,24 +347,20 @@ export function triageLimits(env: NodeJS.ProcessEnv = process.env): TriageLimits
   return { perAuthor: n(env.MAINTAINER_TRIAGE_INVALID_PER_AUTHOR_DAY, 5) };
 }
 
-type Wiring = { issues: Issues; fire: Fire; triage?: Triage; limits?: TriageLimits; emit?: (f: FactIn) => void };
+type Wiring = Omit<PumpDeps, "store" | "log">;
 
 /**
- * Starts the watcher (main.ts). `wiring` is asked on every tick, so a token the kernel writes after this service started is
- * picked up without a restart; until it answers, the tick does nothing. A tick that finds the previous one still in flight
- * is skipped.
+ * Starts the watcher (main.ts). `wiring` is asked on every look, so a token the kernel writes after this service started is picked up
+ * without a restart; until it answers, a look does nothing. A look that finds the previous one still in flight is skipped.
  */
-export function startMaintainer(d: { wiring: () => Wiring | undefined; store: Kv; log: Log; minutes?: number }): void {
-  const minutes = Number(d.minutes ?? process.env.MAINTAINER_POLL_MINUTES ?? 5);
-  if (!(minutes > 0)) return;
+export function startMaintainer(d: { wiring: () => Wiring | undefined; store: Kv; log: Log }): void {
   let busy = false;
   let on: boolean | undefined;
   const wired = () => {
     const w = d.wiring();
     if (!!w !== on) {
       on = !!w;
-      if (on) d.log.info({ minutes }, "maintainer issue watcher on");
-      else d.log.info({}, "maintainer issue watcher waiting: the module's token file is still empty");
+      d.log.info({}, on ? "maintainer issue watcher on" : "maintainer issue watcher waiting: the module's token file is still empty");
     }
     return w;
   };
@@ -356,14 +370,13 @@ export function startMaintainer(d: { wiring: () => Wiring | undefined; store: Kv
     if (!w) return;
     busy = true;
     try {
-      await maintainerTick({ ...w, store: d.store, log: d.log });
+      await maintainerPump({ ...w, store: d.store, log: d.log });
     } catch (err) {
-      d.log.warn({ err: String(err) }, "maintainer tick failed");
+      d.log.warn({ err: String(err) }, "maintainer look failed");
     } finally {
       busy = false;
     }
   };
-  setInterval(run, Math.max(1, minutes) * MIN).unref();
-  setTimeout(run, MIN).unref();
+  setInterval(run, POLL_MS).unref();
   wired();
 }

@@ -13,8 +13,8 @@ Needs the `github` module with the owner signed in to GitHub, and the owner's ac
 ## What agents get
 
 The `maintainer` agent holds the roles `maintainer` and `product-issues` and uses `github` tools to read, label, comment
-and set state on issues, list PRs and read repo files. A watcher service looks for newly labelled issues every
-`maintainer_poll_minutes` (default 5).
+and set state on issues, list PRs and read repo files. A watcher service reads the github change feed's issue events from the kernel's log and files a task for each newly
+labelled issue within about a minute of its label.
 
 Settings: `external_triage`, `triage_invalid_per_author_day` (5, invalid issues only: a fix-labelled or feature-request issue doesn't count) bounds new-issue triage runs a day (per repo they are unlimited).
 
