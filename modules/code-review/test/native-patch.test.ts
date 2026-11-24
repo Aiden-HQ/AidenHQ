@@ -414,6 +414,24 @@ test("self-review takes the exact remote-tracking ref as the base, whatever a ta
   assert.ok(out.includes(`base ${base.slice(0, 12)} (merge base)`), out);
 });
 
+test("a branch gets two self-reviews: after them a run records the head without a model, as not reviewed", async () => {
+  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
+  sh(repo, "update-ref", "refs/remotes/origin/main", base);
+  const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD"), head = sh(repo, "rev-parse", "HEAD");
+  const memo = join(repo, ".git", `self-review-${createHash("sha256").update(branch).digest("hex")}.json`);
+  const run = () => new Promise<{ status: number | null; out: string }>((ok) => {
+    const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env: { ...process.env, AIDENHQ_GATEWAY_URL: "http://127.0.0.1:9", AIDENHQ_RUN_TOKEN: "t" }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = ""; c.stdout.on("data", (d) => (out += d)); c.stderr.on("data", (d) => (out += d)); c.on("close", (status) => ok({ status, out }));
+  });
+  writeFileSync(memo, JSON.stringify({ base, head: base, open: 3, runs: 2 })); // two reviews done, then a fix commit (this head)
+  for (let i = 0; i < 2; i++) { // the same answer on a repeat at this head
+    const r = await run();
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /not reviewed: this branch had its 2 reviews/);
+    assert.deepEqual(JSON.parse(readFileSync(memo, "utf8")), { base, head, open: -1, runs: 2 }, "the head is recorded for aidenhq publish, as not reviewed");
+  }
+});
+
 test("a file name that starts with a byte order mark keeps it in the change list", () => {
   const { repo, base } = repoWith({ "\ufeffbom.txt": (v) => `v${v}\n` });
   assert.equal(gitListed(repo, ["diff", "--no-renames", "--name-only", "-z", base, "HEAD"]), "\ufeffbom.txt\0");
