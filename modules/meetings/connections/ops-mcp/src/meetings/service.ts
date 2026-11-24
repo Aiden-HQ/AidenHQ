@@ -752,16 +752,22 @@ export class MeetingService {
     if (!meeting) throw new UserFacingError(`No published meeting for calendar event ${input.calendar_event_id}`, "not_found");
     const marker = meetingMarker(meeting.calendar_event_id);
     const changed: { path: string; replacements: number }[] = [];
-    const count = (hay: string) => hay.split(find).length - 1;
+    // Wiki links keep their destination (the file is not renamed); the text around them and a link's `|alias` are corrected.
+    const walk = (hay: string, on: (t: string) => string): string =>
+      hay.split(/(\[\[[^\]|]*)((?:\|[^\]]*)?\]\])/).map((p, k) => (k % 3 === 0 ? on(p) : k % 3 === 2 ? on(p.slice(0, -2)) + "]]" : p)).join("");
+    const count = (hay: string) => { let c = 0; walk(hay, (t) => { c += t.split(find).length - 1; return t; }); return c; };
+    const swap = (t: string) => t.split(find).join(replace);
+    const fix = (hay: string) => walk(hay, swap);
 
     if (meeting.canonical_note_path && this.vault.exists(meeting.canonical_note_path)) {
       let n = 0;
-      // The stored hash marks the generated version: advance it only if the owner had not edited the note, so their
-      // edits are still seen (kept_user_edits) by the next transcript revision.
-      const ours = this.vault.read(meeting.canonical_note_path).version === meeting.canonical_note_hash;
+      // The stored hash marks the generated version: advance it only if the content actually edited (the committing
+      // attempt's) was ours, so owner edits are still seen (kept_user_edits) by the next transcript revision.
+      let ours = false;
       const snap = this.vault.editNote(meeting.canonical_note_path, (content) => {
+        ours = sha256(content) === meeting.canonical_note_hash;
         n = count(content);
-        return content.split(find).join(replace);
+        return fix(content);
       });
       if (snap) {
         if (ours) this.setCanonical(meeting.id, snap.path, snap.version);
@@ -784,13 +790,14 @@ export class MeetingService {
         const end = m ? m.index + 1 : content.length;
         const region = content.slice(start, end);
         n = count(region);
-        return content.slice(0, start) + region.split(find).join(replace) + content.slice(end);
+        return content.slice(0, start) + fix(region) + content.slice(end);
       });
       if (snap) changed.push({ path: snap.path, replacements: n });
     }
     // Keep the stored extraction consistent so a later re-publish keeps the correction.
     if (meeting.extraction_json?.includes(find)) {
-      this.db.prepare("UPDATE meetings SET extraction_json = ?, updated_at = ? WHERE id = ?").run(meeting.extraction_json.split(find).join(replace), nowIso(), meeting.id);
+      const deep = (v: unknown): unknown => (typeof v === "string" ? fix(v) : Array.isArray(v) ? v.map(deep) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x)])) : v);
+      this.db.prepare("UPDATE meetings SET extraction_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(deep(JSON.parse(meeting.extraction_json))), nowIso(), meeting.id);
     }
     if (!changed.length) throw new UserFacingError(`"${find}" was not found in the notes AidenHQ wrote for this meeting`, "not_found");
     this.log.info({ tool: "meeting_note_correct", event_id: meeting.calendar_event_id, notes: changed.map((c) => c.path) }, "meeting notes corrected");
