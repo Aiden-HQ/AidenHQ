@@ -1,5 +1,6 @@
 // The tool proxy end to end: a fake control plane, a grants table and module servers that check their service key.
 import { test } from "node:test";
+import http from "node:http";
 import assert from "node:assert/strict";
 import { verifyCaller } from "../sdk/src/caller.ts";
 import { kernel, moduleServer } from "./helpers.ts";
@@ -154,4 +155,68 @@ test("untrusted answers: errors, resources, SSE events and failures all reach th
   const f = JSON.parse(await call());
   assert.match(f.error.message, /^UNTRUSTED CONTENT from docs\.doc_read/);
   assert.match(f.error.message, /answered 500/);
+});
+
+test("session setup is answered by the kernel from the module's own answers; a session-bound module passes through", async (t) => {
+  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read", "doc_write"] });
+  const k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"], write: ["doc_write"] }) } });
+  const forwarded = () => docs.seen.length;
+  for (const id of [7, 8]) {
+    let r = await k.call("docs", "run-jwt-ada", { id, method: "initialize", params: { protocolVersion: "2025-03-26" } });
+    assert.deepEqual(await r.json(), { jsonrpc: "2.0", id, result: {} });
+    r = await k.call("docs", "run-jwt-ada", { method: "notifications/initialized" }, {});
+    assert.ok(r.status < 300);
+  }
+  assert.equal(forwarded(), 2); // one initialize and one initialized reached the module; the repeats were the kernel's
+  // tools/list is kept per deployment, but each caller's own grant filters it and the id is its own.
+  let r = await k.call("docs", "run-jwt-ada", { id: 41, method: "tools/list" });
+  assert.deepEqual(await r.json(), { jsonrpc: "2.0", id: 41, result: { tools: [{ name: "doc_read", inputSchema: { type: "object" } }, { name: "doc_write", inputSchema: { type: "object" } }] } });
+  r = await k.call("docs", "agent-key-bo", { id: 42, method: "tools/list" });
+  const bo = await r.json();
+  assert.equal(bo.id, 42);
+  assert.deepEqual(bo.result.tools.map((x) => x.name), ["doc_read"]);
+  assert.equal(docs.seen.filter((s) => s.method === "tools/list").length, 1);
+  assert.ok(k.log.some((l) => l.msg === "proxy" && l.outcome === "ok-cached" && typeof l.bytes === "number"));
+
+  // A module that hands out an mcp-session-id keeps every setup message pass-through.
+  const calls = [];
+  const sess = http.createServer(async (req, res) => {
+    let raw = ""; for await (const c of req) raw += c;
+    const msg = JSON.parse(raw); calls.push(msg.method);
+    const h = { "content-type": "application/json", ...(msg.method === "initialize" ? { "mcp-session-id": "s1" } : {}) };
+    if (!("id" in msg)) return res.writeHead(202, h).end();
+    res.writeHead(200, h).end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: msg.method === "tools/list" ? { tools: [] } : {} }));
+  });
+  await new Promise((ok) => sess.listen(0, "127.0.0.1", ok));
+  t.after(() => { sess.closeAllConnections(); sess.close(); });
+  const k2 = await kernel(t, { agents, grants, secrets, connections: { docs: conn(`http://127.0.0.1:${sess.address().port}`, "docs", { read: ["doc_read"] }) } });
+  for (let i = 0; i < 2; i++) {
+    await k2.call("docs", "run-jwt-ada", { method: "initialize", params: {} });
+    await k2.call("docs", "run-jwt-ada", { method: "notifications/initialized" });
+    await k2.call("docs", "run-jwt-ada", { method: "tools/list" });
+  }
+  assert.deepEqual(calls, ["initialize", "notifications/initialized", "tools/list", "initialize", "notifications/initialized", "tools/list"]);
+});
+
+test("a result over 1 MB reaches the agent as an explicit oversized-result error", async (t) => {
+  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"], answer: () => ({ content: [{ type: "text", text: "x".repeat(1_100_000) }] }) });
+  const k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }) } });
+  const r = await (await k.call("docs", "run-jwt-ada", { method: "tools/call", params: { name: "doc_read", arguments: {} } })).json();
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /^oversized-result: docs\.doc_read/);
+});
+
+test("setup is the module's own for a caller that doesn't accept JSON, and an oversized trusted failure is capped", async (t) => {
+  const docs = await moduleServer(t, { key: "docs-key", tools: ["doc_read"] });
+  const k = await kernel(t, { agents, grants, secrets, connections: { docs: conn(docs.url, "docs", { read: ["doc_read"] }) } });
+  await k.call("docs", "run-jwt-ada", { method: "tools/list" });
+  await k.call("docs", "run-jwt-ada", { method: "tools/list" }, { accept: "text/event-stream" });
+  assert.equal(docs.seen.filter((s) => s.method === "tools/list").length, 2);
+  const big = http.createServer(async (req, res) => { for await (const _ of req); res.writeHead(500).end("x".repeat(1_200_000)); });
+  await new Promise((ok) => big.listen(0, "127.0.0.1", ok));
+  t.after(() => { big.closeAllConnections(); big.close(); });
+  const k2 = await kernel(t, { agents, grants, secrets, connections: { docs: conn(`http://127.0.0.1:${big.address().port}`, "docs", { read: ["doc_read"] }, { returns: "trusted" }) } });
+  const r = await k2.call("docs", "run-jwt-ada", { method: "tools/call", params: { name: "doc_read", arguments: {} } });
+  const text = await r.text();
+  assert.match(text, /oversized-result: docs\.doc_read/);
 });

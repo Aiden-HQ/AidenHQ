@@ -1,25 +1,34 @@
 // Where a module's service is: its compose container's address (the kernel runs on the host, where compose service names
 // don't resolve). The name a URL uses is the service's compose name (`<project>-<name>-1`) or, for a module's generated
 // service, the name it declared (its `aidenhq.service` label; the compose key is `<module>-<name>`). Any of its networks'
-// addresses works from the host; its module's own network is preferred. Cached a minute; forget() after a failed connect.
+// addresses works from the host; its module's own network is preferred. Cached ten minutes, one lookup at a time per host; forget() after a failed connect.
 // An IP or localhost URL is used as it is (tests).
 import { execFile } from "node:child_process";
 
 export type Target = { host: string; port: number; path: string };
+const TTL_MS = 10 * 60_000;
 type Inspect = (name: string) => Promise<string>;
 
 export function createResolver({ project = "aidenhq", inspect = dockerAddress(project) }: { project?: string; inspect?: Inspect } = {}) {
   const ips = new Map<string, { ip: string; at: number }>();
+  const pending = new Map<string, Promise<string>>();
   async function resolve(urlStr: string): Promise<Target> {
     const u = new URL(urlStr);
     const port = Number(u.port || 80), path = `${u.pathname}${u.search}`;
     if (/^[\d.]+$/.test(u.hostname) || u.hostname === "localhost") return { host: u.hostname, port, path };
     const hit = ips.get(u.hostname);
-    if (hit && Date.now() - hit.at < 60_000) return { host: hit.ip, port, path };
-    const ip = (await inspect(u.hostname)).trim();
-    if (!/^[\d.]+$/.test(ip)) throw new Error(`the service ${u.hostname} isn't running`);
-    ips.set(u.hostname, { ip, at: Date.now() });
-    return { host: ip, port, path };
+    if (hit && Date.now() - hit.at < TTL_MS) return { host: hit.ip, port, path };
+    let lookup = pending.get(u.hostname);
+    if (!lookup) {
+      lookup = (async () => {
+        const ip = (await inspect(u.hostname)).trim();
+        if (!/^[\d.]+$/.test(ip)) throw new Error(`the service ${u.hostname} isn't running`);
+        ips.set(u.hostname, { ip, at: Date.now() });
+        return ip;
+      })().finally(() => pending.delete(u.hostname));
+      pending.set(u.hostname, lookup);
+    }
+    return { host: await lookup, port, path };
   }
   return { resolve, forget: (urlStr: string) => void ips.delete(new URL(urlStr).hostname) };
 }
