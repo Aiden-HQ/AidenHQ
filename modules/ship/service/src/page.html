@@ -11,29 +11,41 @@
 /*kit:css*/
   .row { grid-template-columns: minmax(150px, 1.6fr) 64px repeat(4, minmax(104px, 1fr)) 72px; }
   .pause { display: flex; align-items: center; gap: 8px; }
+  .pause .sw { flex: none; }
   .pause.on { color: var(--color-text-danger, red); }
-  .hold { display: grid; grid-template-columns: minmax(150px, 1fr) 110px 2fr; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line); }
+  .hold { display: grid; grid-template-columns: minmax(150px, 1fr) 96px 2.4fr 84px; gap: 10px; padding: 7px 14px; border-top: 1px solid var(--line); align-items: baseline; }
   .hold:first-of-type { border-top: 0; }
   @media (max-width: 860px) {
     .row { grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
     .row .repo { grid-column: 1; } .row .onoff { grid-column: 2; justify-self: end; }
-    .hold { grid-template-columns: 1fr; gap: 2px; }
+    .hold { grid-template-columns: 1fr auto; gap: 2px 10px; } .hold .why { grid-column: 1 / -1; } .hold .when { grid-column: 2; grid-row: 1; justify-self: end; } .hold .tag { grid-column: 1; grid-row: 2; }
   }
 </style>
 </head>
 <body>
+<p class="intro">Ship carries a pull request from open to merged: it rebases, repairs conflicts and failing CI, answers review comments, and merges once the PR is ready. A PR reaches Ship when a member adds the <code>ship</code> label or comments <code>/ship</code> on it, or, if you choose, when any member opens one (see Hand-off). A PR from a fork waits for a member to hand it off.</p>
 <div class="card">
-  <div class="head"><div><b>Repos</b> <small id="count"></small></div><label class="pause" id="pausebox"><span id="pausetxt">Running</span><button class="sw" id="pause" role="switch" aria-checked="true" aria-label="Ship is running"></button></label></div>
+  <div class="head"><div><b>Repos</b> <small id="count"></small></div><div class="pause" id="pausebox"><span id="pausetxt">Running</span><button class="sw" id="pause" role="switch" aria-checked="true" aria-label="Ship is running"></button><span id="pausehelp"></span></div></div>
   <div id="rows"></div>
-  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><button type="button" id="refresh">Refresh</button></form>
+  <form class="add" id="add"><input type="text" id="newrepo" placeholder="owner/name" aria-label="Repo to add" autocomplete="off" spellcheck="false"><button class="primary" type="submit">Add repo</button><span id="addhelp"></span><button type="button" id="refresh" title="Reload the saved settings and drop edits you have not saved">Refresh</button></form>
   <div class="note" id="note" role="status"></div>
 </div>
 <div class="card">
-  <div class="head"><b>On hold</b><small>PRs ship stopped on, with why</small></div>
+  <div class="head"><b id="holdhead"></b><small>PRs Ship stopped on, and why</small></div>
   <div id="holds"></div>
 </div>
 <script>
 /*kit:js*/
+  // Plain words for every control: what it does, and what each choice means. The server's controls give the values; the meanings are the page's.
+  const COLS = {
+    preset: ["Preset", "The starting set of guards for this repo. A field you set yourself keeps its value when the preset changes.", { cautious: "The default guards: caps on rounds and spend, and protected files held for you.", full: "No guards: no caps and no protected files." }],
+    handoff: ["Hand-off", "Which pull requests Ship takes on.", { label: "A member adds the ship label or comments /ship.", all: "Every member PR is adopted.", none: "Off: nothing is adopted." }],
+    approve: ["Approve", "Whether Ship approves PRs it has worked.", { off: "Ship never approves.", observe: "Records what it would approve, approves nothing.", safe: "Approves small, low-risk PRs that pass review.", all: "Approves any PR that passes review." }, "A PR that touches code-owner files still needs the owner."],
+    merge: ["Merge", "Whether Ship merges.", { off: "Ship never merges.", ready: "Merges once the PR is ready: checks pass, review is clean and it is approved." }],
+  };
+  const ON = ["On", "On: Ship works this repo's PRs. Off: it leaves them alone."];
+  const HOLDS = { stalled: "Ship made no progress and gave up for now.", handed_back: "Ship gave it back to its author.", stopped: "A stop label or a person paused it." };
+  const hd = (key, current) => { const [label, text, options, note] = COLS[key]; return help(label, text, { options, current, note }); };
   let controls = {}, presets = {}, status = { paused: false, repos: [], held: [] };
   // The edits the owner hasn't saved yet, one proposal for the page: field changes per repo, and the pause. Each edit merges into it.
   let pending = { repos: {}, paused: undefined };
@@ -53,12 +65,16 @@
   function choice(r, key) {
     const c = controls[key];
     const sel = h("select", { ariaLabel: `${c.label} for ${r.repo}` });
-    for (const v of c.values) sel.append(h("option", { value: v, textContent: v, selected: shown(r)[key] === v }));
+    for (const v of c.values) sel.append(h("option", { value: v, textContent: v, title: COLS[key][2][v], selected: shown(r)[key] === v }));
     sel.addEventListener("change", () => propose({ [key]: sel.value }, r.repo));
-    return h("div", {}, h("span", { className: "lab", textContent: c.label }), sel);
+    return h("div", {}, h("span", { className: "lab" }, hd(key, shown(r)[key])), sel);
   }
 
   function render() {
+    closeHelp();
+    $("pausehelp").replaceChildren(help("Pause", "The kill switch. While paused, Ship adopts, pushes, approves and merges nothing, and PRs resume where they were when you switch it back on.", { note: "It works whatever each repo is set to." }));
+    $("addhelp").replaceChildren(help("Add repo", "Lists a repo as owner/name for Ship, the Maintainer and code review. It starts on the cautious preset.", { bare: true }));
+    $("holdhead").replaceChildren(help("On hold", "A hold means Ship stopped working a PR and is waiting for a person. It stays held until a member hands the PR off again: add the ship label or comment /ship.", { options: HOLDS, note: "A PR with the ship:stop label is left alone until the label is removed." }));
     $("count").textContent = status.repos.length ? `${status.repos.length}` : "";
     const paused = pending.paused ?? status.paused;
     setSwitch($("pause"), !paused);
@@ -73,12 +89,12 @@
       const rm = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
       rm.addEventListener("click", async () => { try { const x = await tool("ship_configure", { repo: r.repo, remove: true }); pending = { repos: {}, paused: undefined }; proposed(x); render(); } catch (e) { say(e.message, true); } });
       return h("div", { className: raw.repo in pending.repos ? "row unsaved" : "row" },
-        h("div", { className: "repo", textContent: r.repo }), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: controls.enabled.label }), sw),
+        h("div", { className: "repo", textContent: r.repo }), h("div", { className: "onoff" }, h("span", { className: "lab", textContent: ON[0] }), sw),
         choice(raw, "preset"), choice(raw, "handoff"), choice(raw, "approve"), choice(raw, "merge"), rm);
     });
-    const cols = h("div", { className: "row cols" }, ...["Repo", "On", "Preset", "Adopt PRs", "Approve", "Merge", ""].map((t) => h("span", { textContent: t })));
-    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty", textContent: "No repo is on yet. Ship stays quiet until you add one: it adopts the PRs you hand it and works them to a merge." })]));
-    $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", textContent: String(x.hold?.kind ?? "").replace("_", " ") }), h("span", { className: "soft", textContent: x.hold?.reason ?? "" }))) : [h("div", { className: "empty", textContent: "Nothing is held." })]));
+    const cols = h("div", { className: "row cols" }, h("span", { textContent: "Repo" }), help(ON[0], ON[1]), ...["preset", "handoff", "approve", "merge"].map((k) => hd(k)), h("span", {}));
+    $("rows").replaceChildren(...(rows.length ? [cols, ...rows] : [h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Type owner/name below and choose Add repo to start. Ship stays quiet until a repo is on.")]));
+    $("holds").replaceChildren(...(status.held.length ? status.held.map((x) => h("div", { className: "hold" }, h("span", { className: "repo", textContent: `${x.repo}#${x.number}` }), h("span", { className: "tag", title: HOLDS[x.hold?.kind], textContent: String(x.hold?.kind ?? "").replace("_", " ").replace(/^./, (c) => c.toUpperCase()) }), h("span", { className: "why", textContent: x.hold?.reason || HOLDS[x.hold?.kind] || "" }), h("span", { className: "soft when", textContent: x.hold?.at ? ago(x.hold.at) : "" }))) : [h("div", { className: "empty" }, h("b", { textContent: "No holds. " }), "Nothing is waiting on you.")]));
   }
 
   async function load() {
