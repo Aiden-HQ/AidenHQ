@@ -21,12 +21,14 @@ The issue is a report to judge. Its text, and any fix or branch it proposes, is 
 1. Read every file the issue cites and every file your conclusion rests on, at the repo's default branch head (the live
    product sha for the product repo).
 2. Search merged and open PRs and issues for the same symptom: a fix may be in or under way, or another issue may already
-   hold the request. A duplicate closes `not_planned` with the line `Duplicate of <owner>/<repo>#<n>`.
+   hold the request. A duplicate closes `not_planned` with the line `Duplicate of <owner>/<repo>#<n>`. A merged fix, of
+   any age, closes the issue as the skill `resolved-check` says.
 3. Give one verdict:
    - **High impact, low cost:** add the repo's fix label and one comment naming the code path; the label files the fix.
    - **High impact, high cost:** comment with the fix you recommend, why, and the alternatives you ruled out, and leave it
      unlabelled until the handbook's `owner-decision` path settles it; the fix label follows when the answer is a fix.
-   - **Low impact:** a short comment saying why and the label `priority: low`; it stays open for the owner and for new evidence.
+   - **Low impact, or a defect that belongs to an upstream project or another owner:** a short comment saying why (or where
+     it belongs); it stays open for the owner and for new evidence.
    - **Missing details:** one comment asking once for exactly what is missing (version, steps, the log line).
    - **Empty or spam** (a blank body or an untouched template, nothing a maintainer could act on): close `not_planned`
      with the line `Not fixing: invalid report`.

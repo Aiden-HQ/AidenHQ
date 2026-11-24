@@ -21,6 +21,8 @@ was asked). Maintainers saying it is intended or kept open for tracking, and any
 
 ## Close
 
+The same close serves an issue triage finds fixed by an older merged PR.
+
 Close at most 10 per run, strongest evidence first, with one `github_issue_state` call (`completed`) whose `note` is:
 one sentence naming the fixing PR as `owner/name#number` and `path:line` at the head; one or two sentences from the code on
 why this resolves it; "If it still happens, comment with a version and a reproduction and a maintainer will reopen it."; and
