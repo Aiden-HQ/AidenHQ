@@ -167,6 +167,7 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("The stop token is:\n> <|im_end|>"), "The stop token is:\n> <|im_end|>", "a marker on a blockquote line stays");
   assert.equal(stripSentinels("See the header:\n> <|im_start|>assistant"), "See the header:\n> <|im_start|>assistant", "a quoted header and its role stay");
   assert.equal(stripSentinels("> <|im_end|><|endoftext|>"), "> <|im_end|>", "a leak after a quoted marker goes, the quote stays");
+  assert.equal(stripSentinels("<|begin_of_text|>> <|im_end|>"), "> <|im_end|>", "a removed sentinel is not part of the line's prefix");
 
   // Only a blockquote is a quote: a marker beside reply text is a leak, however it is indented.
   assert.equal(stripSentinels("    <|im_end|>Attention: x"), "Attention: x", "an indented marker beside reply text is a leak");

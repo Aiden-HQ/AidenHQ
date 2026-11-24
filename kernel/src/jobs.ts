@@ -210,7 +210,8 @@ export function stripSentinels(text: string): string {
     const after = afterHeader(text, at, to);
     const hit = after !== undefined ? undefined : SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
     const reach = after ?? hit?.length;
-    if (reach === undefined || quoted(text, at, at + reach, leadLine(at), to)) break;
+    // Only what the reply still has before the marker counts as its line's prefix: a sentinel just removed is not there.
+    if (reach === undefined || quoted(text, at, at + reach, Math.max(leadLine(at), from), to)) break;
     from = at + reach;
   }
   // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
@@ -218,12 +219,12 @@ export function stripSentinels(text: string): string {
     const end = skipEnd(text, from, to);
     const head = beforeHeader(text, from, end);
     if (head !== undefined) {
-      if (quoted(text, head, end, tailLine(head), to)) break;
+      if (quoted(text, head, end, Math.max(tailLine(head), from), to)) break;
       to = head;
       continue;
     }
     const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length) && text[end - s.length - 1] !== "\\");
-    if (!hit || quoted(text, end - hit.length, end, tailLine(end - hit.length), to)) break;
+    if (!hit || quoted(text, end - hit.length, end, Math.max(tailLine(end - hit.length), from), to)) break;
     to = end - hit.length;
   }
   return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
