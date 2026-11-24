@@ -2,7 +2,7 @@
 // nothing can be admitted into it), then removed asynchronously. A trash folder sits beside what it takes, on the same
 // filesystem; one a crash left behind is emptied by the disk sweep (workspaces.ts), which removes every root's .trash.
 import { execFile } from "node:child_process";
-import { mkdirSync, readdirSync, renameSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -28,12 +28,18 @@ export function emptyTrash(trash: string, log: (msg: string, f?: Record<string, 
  */
 export function trashAway(path: string, trash: string, log: (msg: string, f?: Record<string, unknown>) => void = () => {}) {
   const to = join(trash, `${basename(path)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  try {
-    mkdirSync(trash, { recursive: true });
-    renameSync(path, to);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw e;
+  // ENOENT is "nothing to move" only when the path itself is gone: the trash folder can vanish under a sweep emptying it, so
+  // the move is tried again, and a path that still can't be moved throws.
+  for (let n = 0; ; n++) {
+    try {
+      mkdirSync(trash, { recursive: true });
+      renameSync(path, to);
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      if (!lstatSync(path, { throwIfNoEntry: false })) return;
+      if (n >= 2) throw e;
+    }
   }
   void removeTree(to).catch((e: Error) => log("trash not removed", { trash: to, err: e.message }));
 }

@@ -313,6 +313,8 @@ const jobControl = {
         if (b) b.lastUsed = Date.now();
         return { container: name, envFile, outDir: path.join(jobEnvDir, name), gen: before.gen, warm: true };
       }
+      // A competing launch for the task changed it during the inspect (leased, retired, gone): refused, never retired here.
+      if (jobs.get(name) !== before || !before.parked || before.retired) throw fail(409, `the task's box ${name} changed while this launch checked it; ask again`);
       if (!(await retire(name, "doesn't fit the task's next job"))) throw fail(409, `the task's last box ${name} is still being removed`);
     }
     await makeRoom();
