@@ -70,27 +70,27 @@ export function diffPath(l: string): string | undefined {
   return (/^diff --git a\/(.+) b\/\1$/.exec(l) ?? /^diff --git a\/\S+ b\/(\S+)/.exec(l))?.[1];
 }
 
-/** The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. */
+/**
+ * The files a diff changes, each with the lines it adds and removes, read from its own `diff --git` headers and hunks. `retype`:
+ * the record adds a file whose path the record before it deleted (git's two records for a file-type change, symlink to file).
+ */
 export function diffFiles(diff: string | null | undefined) {
-  const out: { path: string; add: number; del: number; deleted?: boolean }[] = [];
+  const out: { path: string; add: number; del: number; removed: boolean; retype: boolean }[] = [];
   let hunk = false;
-  let deleted = false;
   for (const l of String(diff ?? "").split("\n")) {
     const path = diffPath(l);
+    const cur = out.at(-1);
     if (path !== undefined) {
-      out.push({ path, add: 0, del: 0 });
+      out.push({ path, add: 0, del: 0, removed: false, retype: false });
       hunk = false;
-      deleted = false;
-    } else if (l.startsWith("deleted file mode") && !hunk) deleted = true;
-    else if (l.startsWith("new file mode") && !hunk && out.length > 1 && out.at(-2)!.path === out.at(-1)!.path && out.at(-2)!.deleted) {
-      // A file-type change (symlink to file) is a delete record then an add record of one path; numstat counts the path once.
-      out.pop();
-    } else if (l.startsWith("@@")) hunk = true;
-    else if (hunk && out.length && l.startsWith("+")) out.at(-1)!.add++;
-    else if (hunk && out.length && l.startsWith("-")) out.at(-1)!.del++;
-    if (deleted && !hunk && out.length) out.at(-1)!.deleted = true;
+    } else if (!cur) continue;
+    else if (l.startsWith("@@")) hunk = true;
+    else if (hunk && l.startsWith("+")) cur.add++;
+    else if (hunk && l.startsWith("-")) cur.del++;
+    else if (!hunk && l.startsWith("deleted file mode")) cur.removed = true;
+    else if (!hunk && l.startsWith("new file mode")) { const prev = out.at(-2); cur.retype = Boolean(prev?.removed && prev.path === cur.path); }
   }
-  return out.map(({ path, add, del }) => ({ path, add, del }));
+  return out.map(({ path, add, del, retype }) => ({ path, add, del, retype }));
 }
 
 /**
@@ -100,7 +100,17 @@ export function diffFiles(diff: string | null | undefined) {
 export function sameChanges(changed: { path: string; add?: number; del?: number }[], diff: string) {
   const key = (f: { path: string; add?: number; del?: number }) => (f.add === undefined ? f.path : `${f.path} (+${f.add} -${f.del})`);
   const binary = new Set(changed.filter((f) => f.add === undefined).map((f) => f.path));
-  const want = changed.map(key).sort(), got = diffFiles(diff).map((f) => (binary.has(f.path) ? f.path : key(f))).sort();
+  const want = changed.map(key).sort();
+  // A file-type change is two records in the diff and one numstat line, whose counts are the content's difference (not the sum
+  // of the records'): when numstat has the path once, the pair is that line. Records of one path from separate diffs have two lines.
+  const once = (p: string) => changed.filter((f) => f.path === p).length === 1;
+  const records = diffFiles(diff);
+  const got = records.flatMap((f, i) => {
+    const pairStart = records[i + 1]?.retype && once(f.path);
+    if (f.retype && once(f.path)) return [];
+    if (pairStart) return [key(changed.find((c) => c.path === f.path)!)];
+    return [binary.has(f.path) ? f.path : key(f)];
+  }).sort();
   const left = [...got];
   const missing = want.filter((k: string) => { const i = left.indexOf(k); return i < 0 || (left.splice(i, 1), false); });
   return [...missing.map((k: string) => `in the change, not the diff: ${k}`), ...left.map((k: string) => `in the diff, not the change: ${k}`)];

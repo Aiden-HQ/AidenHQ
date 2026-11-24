@@ -437,8 +437,13 @@ export function pingPong(jobs: JobRow[], t: number): { task: string; agents: str
   const out: { task: string; agents: string[]; n: number }[] = [];
   for (const [task, list] of by) {
     const runs = list.sort((a, b) => a.started_at!.localeCompare(b.started_at!));
-    const agents = [...new Set(runs.map((j) => j.agent))];
-    if (agents.length === 2 && runs.length >= PING_PONG.n && runs.every((j, i) => i === 0 || j.agent !== runs[i - 1]!.agent)) out.push({ task, agents, n: runs.length });
+    // The latest alternating stretch (an earlier retry on one agent doesn't hide it).
+    let from = runs.length - 1;
+    if (from > 0 && runs[from - 1]!.agent !== runs[from]!.agent) from--;
+    while (from > 0 && runs[from - 1]!.agent !== runs[from]!.agent && runs[from - 1]!.agent === runs[from + 1]!.agent) from--;
+    const latest = runs.slice(from);
+    const agents = [...new Set(latest.map((j) => j.agent))];
+    if (agents.length === 2 && latest.length >= PING_PONG.n) out.push({ task, agents, n: latest.length });
   }
   return out;
 }

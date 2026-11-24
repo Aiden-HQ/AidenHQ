@@ -448,3 +448,11 @@ test("a git-quoted path is the same file in the count and the diff", async () =>
   assert.equal(diffPath(header), "café.txt");
   assert.deepEqual(sameChanges(numstat('1\t0\t"caf\\303\\251.txt"\n'), `${header}\n@@ -0,0 +1 @@\n+x`), []);
 });
+
+test("a file-type change is one numstat line; records of one path from separate diffs stay two", async () => {
+  const { sameChanges } = await import("../service/src/review-files.ts");
+  const gone = "diff --git a/b.md b/b.md\ndeleted file mode 120000\n--- a/b.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-a.md";
+  const made = "diff --git a/b.md b/b.md\nnew file mode 100644\n--- /dev/null\n+++ b/b.md\n@@ -0,0 +1 @@\n+a.md";
+  assert.deepEqual(sameChanges([{ path: "b.md", add: 0, del: 0 }], `${gone}\n${made}`), []);
+  assert.deepEqual(sameChanges([{ path: "b.md", add: 0, del: 1 }, { path: "b.md", add: 1, del: 0 }], `${gone}\n${made}`), []);
+});

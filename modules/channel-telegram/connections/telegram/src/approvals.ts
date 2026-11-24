@@ -58,6 +58,19 @@ function button(store: Kv, text: string, ids: string[], decision: "approve" | "r
 }
 export const cardButtons = (store: Kv, id: string) => ({ inline_keyboard: [[button(store, "Approve", [id], "approve"), button(store, "Reject", [id], "reject")]] });
 
+/**
+ * /waiting's Apply buttons: one per task whose single pending card was sent here and is decidable here, bound to that card's id
+ * (a press decides that card with its own token, and is refused once it is no longer pending). A task with no such card gets none.
+ */
+export async function applyButtons(kernel: Pick<Kernel, "cards">, store: Kv, tasks: string[], setting: DecideSetting): Promise<{ inline_keyboard: { text: string; callback_data: string }[][] } | undefined> {
+  const { cards } = await syncCards(kernel, store, async () => false, setting);
+  const rows = tasks.flatMap((task) => {
+    const open = cards.filter((c) => c.identifier === task && held(store, c.id)?.decidable);
+    return open.length === 1 && store.getKv(`card:${open[0]!.id}`) ? [[button(store, `Apply ${task}`, [open[0]!.id], "approve")]] : [];
+  });
+  return rows.length ? { inline_keyboard: rows } : undefined;
+}
+
 /** A press of a card or list button in the owner chat → the card ids and the decision, used up. null for anything else. */
 export function approvalPress(update: unknown, ownerChatId: string, store: Kv): { ids: string[]; decision: "approve" | "reject"; chatId: string; messageId: number; cb: string } | null {
   const cb = (update as any)?.callback_query;

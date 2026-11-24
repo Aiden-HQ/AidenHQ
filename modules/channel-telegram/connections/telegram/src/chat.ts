@@ -241,18 +241,9 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
         const press = card ? null : fromTelegramCallback(u, cfg.telegramChatId, store);
         if (press) {
           // Used up only once delivered: on failure the button comes back and the update is retried.
-          // A label that reads "apply WOR-n" decides that card the way the typed words do (token-bound), never as chat text.
-          const pressed = extras?.approvals ? parseReply(press.label) : undefined;
-          let kept = false;
-          if (pressed) {
-            const r = await decideByReply(extras!.approvals!.kernel, store, pressed.task, pressed.decision, "owner", extras!.approvals!.setting).catch(unreachable);
-            await extras!.reply({ text: decidedText(r, pressed.decision) });
-            // Undecided: the button stays as it was (usable again), and the reply above says why.
-            if (!r.ok) store.setKv(`btn:${(u as any).callback_query.data}`, press.label);
-            kept = !r.ok;
-          } else await deliver(press.message).catch((err) => { store.setKv(`btn:${(u as any).callback_query.data}`, press.label); throw err; });
+          await deliver(press.message).catch((err) => { store.setKv(`btn:${(u as any).callback_query.data}`, press.label); throw err; });
           // Confirm, and swap the buttons for the choice, so it can't be pressed twice.
-          if (!kept) await tg("editMessageReplyMarkup", { chat_id: press.chatId, message_id: press.messageId, reply_markup: { inline_keyboard: [[{ text: `✓ ${press.label}`, callback_data: "done" }]] } });
+          await tg("editMessageReplyMarkup", { chat_id: press.chatId, message_id: press.messageId, reply_markup: { inline_keyboard: [[{ text: `✓ ${press.label}`, callback_data: "done" }]] } });
         }
         const cbId = (u as { callback_query?: { id?: string } }).callback_query?.id;
         if (cbId) await tg("answerCallbackQuery", { callback_query_id: cbId, ...(press ? { text: `Sent: ${press.label}` } : {}) });

@@ -314,6 +314,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const cardsOf = async (state: Parameters<Records["list"]>[0], opt?: Parameters<Records["list"]>[1]) => Promise.all((await records.list(state, opt)).map(named));
   /** The last complete live read: a failed page falls back to it, never to a short list that would drop a blocked card. */
   let liveCache: Approval[] | undefined;
+  let pendingCache: Approval[] | undefined;
 
   const sessionOf = liveActivity(opts.sessions);
   const work = opts.work ?? { job: async () => null, task: async () => [], agent: async () => [], activity: async () => ({ running: [], recent: [], queued: [], parked: [], failing: [] }), stop: async () => [] };
@@ -1768,7 +1769,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           cardsOf("recent", { limit: 100 }),
           cardsOf("recent", { limit: 100, tier0: true }),
           records.live().then((rows) => Promise.all(rows.map(named))).then((rows) => ((liveCache = rows), rows), () => liveCache ?? []),
-          records.allOf("pending").then((rows) => Promise.all(rows.map(named))),
+          records.allOf("pending").then((rows) => Promise.all(rows.map(named))).then((rows) => ((pendingCache = rows), rows), () => pendingCache ?? []),
         ]);
         const held = [...undecided, ...live.filter((a) => isLive(a.state)), ...all.filter((a) => a.state === "auto" || isLive(a.state))];
         const seen = new Set(cards.map((c) => c.id));

@@ -111,7 +111,7 @@ export function replyQuestions(body: string): Question[] | undefined {
 type ChatComment = Pick<Comment, "id" | "body" | "authorType" | "authorAgentId" | "authorUserId" | "createdAt">;
 
 /**
- * The multiple-choice questions on a task's agent's newest reply that offered some (the kernel says whether they still wait on the
+ * The multiple-choice questions on a task's agent's newest reply that offered some, unless the owner has commented since (the kernel says whether they still wait on the
  * owner: this only finds their options). Only the task's own agent's reply counts: another agent commenting on the task can't put
  * a question in front of the owner as if it were this one's. Comments oldest first.
  */
@@ -119,10 +119,11 @@ export function askedQuestions(comments: ChatComment[], agentId: string | null |
   if (!agentId) return undefined;
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
+    // A form the owner has since commented after was answered: it is not the current question.
+    if (c.authorType === "user") return undefined;
     if (c.authorType !== "agent" || c.authorAgentId !== agentId || !isReply(c.body)) continue;
-    // The newest reply decides: a later reply with no choices means the older form is no longer the question.
     const questions = replyQuestions(c.body);
-    return questions ? { id: c.id, at: c.createdAt, text: strip(c.body), questions } : undefined;
+    if (questions) return { id: c.id, at: c.createdAt, text: strip(c.body), questions };
   }
   return undefined;
 }
