@@ -443,14 +443,23 @@ export function createAccess(o: {
     let stray = false;
     if (!as && res.status === 401) {
       // Another call (or a reconnect) replaced the token this one was sent with: its 401 is the old token's, so send again with the new one.
+      // Kept apart from the retry budget: a replaced token says nothing about the token saved now, so it never marks that one expired.
       const replaced = async () => {
         const now = String((await o.auth.headers().catch(() => ({}) as Record<string, string>)).authorization ?? "").replace(/^Bearer\s+/i, "");
-        return !retried && now !== "" && now !== t;
+        return now !== "" && now !== t;
       };
       const again = () => attempt(p, method, path, body, resource, background, accept, deadline, as, true, etag, caller);
-      if (await replaced()) return again();
+      // Replaced while the probe was out: its verdict is on the old token, so the saved one is left alone.
+      const replacedNow = async () => {
+        if (!(await replaced())) return false;
+        if (!retried) return true;
+        stray = true;
+        o.log?.("github 401 on a token another call replaced; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });
+        return false;
+      };
+      if (await replacedNow()) return again();
       const refusedNow = o.auth.refused ? await o.auth.refused() : true;
-      if (await replaced()) return again(); // replaced while the probe was out: its verdict is on the old token
+      if (await replacedNow()) return again();
       if (!refusedNow) {
         stray = true;
         o.log?.("github 401 on a token GitHub still accepts; sign-in kept", { method, path: path.replace(/\/[0-9]+/g, "/:n").split("?")[0] });

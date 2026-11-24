@@ -96,6 +96,36 @@ it("a 401 for a token another call already replaced is sent again with the new o
   expect(a.status().state).toBe("ok");
 });
 
+it("a retried 401 whose token another call replaced never marks the saved sign-in expired", async () => {
+  // The first attempt's token is refused, so the client refreshes and retries once. While the retry's refusal probe is out, the
+  // owner's sign-in is replaced again: the probe's verdict is on the token that was just replaced, not the saved one.
+  let saved = "gho_old";
+  let probes = 0;
+  const a = {
+    ...auth(),
+    headers: async () => ({ authorization: `Bearer ${saved}` }),
+    refresh: async () => void (saved = "gho_mid"),
+    refused: async () => {
+      probes += 1;
+      if (probes === 2) saved = "gho_new"; // replaced while the retry's probe was out
+      return true;
+    },
+  };
+  let sent = 0;
+  const access = createAccess({
+    auth: a,
+    fetchImpl: async () => {
+      sent += 1;
+      return answer(401, { message: "Bad credentials" });
+    },
+  });
+  const r = await access.rest("GET", "/repos/acme/api").catch((e) => e);
+  expect(r).not.toBeInstanceOf(GitHubNeed);
+  expect(a.status().state).toBe("ok");
+  expect(access.connected()).toBe(true);
+  expect(sent).toBe(2); // the original attempt and its one retry
+});
+
 it("rate_limited and write_busy stay plain errors with their codes", () => {
   const busy = needResult(new GitHubNeed({ cause: "write_busy" }));
   expect(busy.isError).toBe(true);

@@ -103,6 +103,711 @@ describe("vendor pass-through", () => {
   });
 });
 
+describe("a replaced session is not closed under other calls", () => {
+  // One shared session serves every call. A call that hits an endpoint-specific 401 replaces it; a call already running on it
+  // must still answer instead of failing with the session closed.
+  let release: () => void = () => {};
+  let slowStarted: () => void = () => {};
+  const started = new Promise<void>((r) => { slowStarted = r; });
+  const slow = new Promise<void>((r) => { release = r; });
+  let refused401 = false;
+  const flaky = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string; params?: { name?: string } };
+    if (body.method === "tools/call" && body.params?.name === "unauthorized" && !refused401) {
+      refused401 = true;
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "endpoint refused" }));
+    }
+    if (body.method === "tools/call" && body.params?.name === "slow") {
+      slowStarted();
+      await slow;
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "slow", inputSchema: { type: "object" as const } }, { name: "unauthorized", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async (r) => ({ content: [{ type: "text", text: `ran ${r.params.name}` }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("an in-flight call answers on the session it started on, and the replacement answers the retry", async () => {
+    const up = await listen(flaky);
+    const p = createVendorProxy({
+      name: "Vendor",
+      upstream: new URL(`${up}/mcp`),
+      // The vendor's REST side still answers the token: the MCP 401 is endpoint-specific, so the session is replaced without a refresh.
+      auth: { ...staticAuth(), refused: async () => false },
+      log,
+      serviceKey: "svc",
+      caller: async () => {},
+      instructions: "",
+      stateDir: tmp(),
+    });
+    const url = await listen(p);
+    const callTool = (name: string) => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>);
+    try {
+      const inFlight = callTool("slow");
+      await started;
+      // The 401 retries on a fresh session; the call still running on the old one is not cut off by closing it.
+      expect((await callTool("unauthorized")).result.content[0].text).toBe("ran unauthorized");
+      release();
+      expect((await inFlight).result.content[0].text).toBe("ran slow");
+    } finally {
+      // A failed assertion must not leave the blocked request or the servers running.
+      release();
+      p.close();
+      flaky.close();
+    }
+  });
+});
+
+describe("a late 401 from a retired session decides nothing", () => {
+  // A call runs on the session; the owner signs in again and the new session is live; then the old call's 401 comes back. That 401
+  // belongs to the session (and token) it was opened with, so it must not mark the freshly saved sign-in expired.
+  let release: () => void = () => {};
+  let slowStarted: () => void = () => {};
+  let signedIn = false;
+  const started = new Promise<void>((r) => { slowStarted = r; });
+  const gate = new Promise<void>((r) => { release = r; });
+  const late = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string; params?: { name?: string } };
+    if (body.method === "tools/call" && body.params?.name === "late" && !signedIn) {
+      // The session the owner has since replaced: its call answers 401 only after the new sign-in is live.
+      slowStarted();
+      await gate;
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "this session's token was revoked" }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "late", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async (r) => ({ content: [{ type: "text", text: `ran ${r.params.name}` }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("a working sign-in is not marked expired by the session it replaced", async () => {
+    const up = await listen(late);
+    let state: "ok" | "expired" = "ok";
+    let refreshed = 0;
+    // A device sign-in whose start signs in at once: POST /auth/device drives the proxy's own sign-in reset.
+    const auth = {
+      ...staticAuth(),
+      refresh: async () => void (refreshed += 1),
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+      signIn: {}, // the route needs one to exist; the device flow below is what signs in
+      device: { start: async (onSignedIn?: () => void) => (onSignedIn?.(), { user_code: "ABCD-1234", verification_uri: "https://auth.example.com/device", expires_in: 900, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+      // No `refused` probe (Jira): the old rule marks expired on the second 401.
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "late", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>);
+    try {
+      const inFlight = callTool();
+      await started;
+      // The owner signs in again: a new session is live before the old call answers.
+      signedIn = true;
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      release();
+      // The old call is not replayed on the account the owner just signed in with: it fails, and the saved sign-in stays ok with
+      // its refresh grant unspent.
+      const r = await inFlight;
+      expect(r.result.content[0].text).toMatch(/error/i);
+      expect(state).toBe("ok");
+      expect(refreshed).toBe(0);
+    } finally {
+      release();
+      p.close();
+      late.close();
+    }
+  });
+});
+
+describe("a late 401 from a retry's retired session decides nothing", () => {
+  // A call refreshes, retries on the fresh session, and that retry is still running when the owner signs in again. Its late 401
+  // belongs to the session the sign-in replaced, so it must not mark the freshly saved sign-in expired (no `refused` probe here).
+  let release: () => void = () => {};
+  let retryStarted: () => void = () => {};
+  const retryIn = new Promise<void>((r) => { retryStarted = r; });
+  const retryGate = new Promise<void>((r) => { release = r; });
+  let token = "old";
+  let calls = 0;
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/call") {
+      calls += 1;
+      if (calls === 1) return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+      if (token === "refreshed") { retryStarted(); await retryGate; } // the retry on the refreshed session, held
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "boom", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the saved sign-in stays ok after the retry's session was replaced", async () => {
+    const up = await listen(vendor);
+    let state: "ok" | "expired" = "ok";
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${token}` }),
+      refresh: async () => void (token = "refreshed"),
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (token = "signed-in"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "boom", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>).catch(() => undefined);
+    try {
+      const call = callTool();
+      await retryIn; // the retry on the refreshed session is now held
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      release(); // the retry's 401 lands after the sign-in
+      await call;
+      expect(state).toBe("ok");
+    } finally {
+      release();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a sign-in does not queue behind a stalled connect", () => {
+  // A connect is stuck listing tools on the old account when the owner signs in again. The board gives /auth/finish 20 seconds, so
+  // the sign-in's own connect must not wait for that stalled one; it opens at once and becomes the session.
+  let stall: () => void = () => {};
+  let stalled: () => void = () => {};
+  const stallIn = new Promise<void>((r) => { stalled = r; });
+  const stallGate = new Promise<void>((r) => { stall = r; });
+  let account = "old";
+  const tokens: string[] = [];
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") {
+      tokens.push(String(req.headers.authorization ?? ""));
+      if (String(req.headers.authorization ?? "").endsWith("old")) { stalled(); await stallGate; }
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "ping", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the sign-in's connect opens while the old one is still stalled", async () => {
+    const up = await listen(vendor);
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      // /auth/finish awaits the connect (the board's 20s budget): that is the path that must not queue behind the stalled one.
+      signIn: { start: async () => ({ url: "https://auth.example.com/authorize" }), finish: async () => void (account = "new"), scopes: async () => ({ supported: [], recommended: [] }) },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth: auth as never, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const list = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }).then((r) => r.json() as Promise<any>).catch(() => undefined);
+    try {
+      const stuck = list(); // the old account's connect, stalled in tools/list
+      await stallIn;
+      // The sign-in's finish returns without waiting for it: the old connect is never released here.
+      const signed = await Promise.race([
+        fetch(`${url}/auth/finish`, { method: "POST", headers: { authorization: "Bearer board", "content-type": "application/json" }, body: JSON.stringify({ state: "s", code: "c" }) }).then((r) => r.status),
+        new Promise<string>((r) => setTimeout(() => r("timed out"), 3000)),
+      ]);
+      expect(signed).toBe(200);
+      expect(tokens).toContain("Bearer new"); // the sign-in's connect went out with the new account
+      stall();
+      await stuck;
+    } finally {
+      stall();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a call is never replayed under a different sign-in", () => {
+  // A private read is in flight when the owner connects a different account, and the original call's 401 comes back after. Replaying
+  // it would return the new account's private results to the caller who asked under the old one, so the call must fail instead.
+  let release: () => void = () => {};
+  let started: () => void = () => {};
+  const inFlight = new Promise<void>((r) => { started = r; });
+  const gate = new Promise<void>((r) => { release = r; });
+  let account = "owner-a";
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string; params?: { name?: string } };
+    if (body.method === "tools/call" && body.params?.name === "private") {
+      if (String(req.headers.authorization ?? "").endsWith("owner-a")) {
+        started();
+        await gate;
+        return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+      }
+      // Under the new account it would happily answer — which is exactly what must not reach the old caller.
+      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "owner-b private" }] } }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "private", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async (r) => ({ content: [{ type: "text", text: `ran ${r.params.name}` }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the in-flight call fails rather than returning the new account's answer", async () => {
+    const up = await listen(vendor);
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (account = "owner-b"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "private", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>);
+    try {
+      const call = callTool();
+      await inFlight;
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      release();
+      const r = await call;
+      expect(JSON.stringify(r)).not.toContain("owner-b private");
+    } finally {
+      release();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a post-refresh handshake the vendor refuses marks the sign-in expired", () => {
+  // The token endpoint issues a fresh token, but the MCP endpoint still 401s while connecting with it. That is a refused sign-in, so
+  // the call must end as needs_owner rather than a generic error, or the board keeps showing the old healthy state.
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    // Every connect is refused once the refresh has happened; the initial one works so a session is cached.
+    if (body.method === "tools/list" && refreshed) {
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+    }
+    if (body.method === "tools/call") {
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "boom", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+  let refreshed = false;
+
+  it("the call ends as an expired need, not a plain error", async () => {
+    const up = await listen(vendor);
+    let state: "ok" | "expired" = "ok";
+    const auth = {
+      ...staticAuth(),
+      refresh: async () => void (refreshed = true),
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+      // No `refused` probe: the fallback treats a 401 as a refusal.
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    try {
+      const res = await fetch(`${url}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "boom", arguments: {} } }),
+      });
+      const result = ((await res.json()) as any).result;
+      expect(readNeed(result)?.cause).toBe("expired");
+      expect(state).toBe("expired");
+    } finally {
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a failed connect superseded by a sign-in is stale, not an auth failure", () => {
+  // A connect is listing tools with the old account's token when the owner signs in again; the old handshake then fails with a 401.
+  // That failure belongs to the account just replaced: the waiting call must take the sign-in's session, not refresh against the
+  // new grant (which would spend it, and could mark a working sign-in expired).
+  let listRelease: () => void = () => {};
+  let listStarted: () => void = () => {};
+  const listIn = new Promise<void>((r) => { listStarted = r; });
+  const listGate = new Promise<void>((r) => { listRelease = r; });
+  let account = "old";
+  let lists = 0;
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") {
+      lists += 1;
+      if (lists === 1) {
+        // The old account's connect: held until the sign-in is in, then refused.
+        listStarted();
+        await listGate;
+        if (String(req.headers.authorization ?? "").endsWith("old")) {
+          return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+        }
+      }
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "ping", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the waiting call uses the sign-in's session and never refreshes the grant it replaced", async () => {
+    const up = await listen(vendor);
+    let refreshed = 0;
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      refresh: async () => void (refreshed += 1),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (account = "new"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const list = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }).then((r) => r.json() as Promise<any>).catch(() => undefined);
+    try {
+      const stale = list(); // the old account's connect, held
+      await listIn;
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      listRelease(); // the old handshake now 401s
+      await stale;
+      // The waiting call answered on the sign-in's session, and the new grant was never spent on the old account's failure.
+      expect(refreshed).toBe(0);
+    } finally {
+      listRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a retry never reconnects with a token a refresh is replacing", () => {
+  // Two calls are in flight on one session and both come back 401. The first starts the refresh (slow). The second's 401 arrives
+  // while that refresh is still running, so its session is retired: its retry must wait for the refresh rather than open a handshake
+  // with the token being replaced, which would 401 and leave the retry joining that dead handshake.
+  let releaseA: () => void = () => {};
+  let releaseB: () => void = () => {};
+  let aStarted: () => void = () => {};
+  let bStarted: () => void = () => {};
+  const aIn = new Promise<void>((r) => { aStarted = r; });
+  const bIn = new Promise<void>((r) => { bStarted = r; });
+  const aGate = new Promise<void>((r) => { releaseA = r; });
+  const bGate = new Promise<void>((r) => { releaseB = r; });
+  let refreshRelease: () => void = () => {};
+  let refreshStarted: () => void = () => {};
+  const refreshIn = new Promise<void>((r) => { refreshStarted = r; });
+  const refreshGate = new Promise<void>((r) => { refreshRelease = r; });
+  let token = "old";
+  const handshakes: string[] = [];
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string; params?: { name?: string } };
+    if (body.method === "tools/list") {
+      handshakes.push(token);
+      // The MCP endpoint answers only the refreshed token; any later handshake with the old one is a 401.
+      if (token === "old" && handshakes.length > 1) {
+        return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+      }
+    }
+    if (body.method === "tools/call" && token === "old") {
+      if (body.params?.name === "a") { aStarted(); await aGate; }
+      if (body.params?.name === "b") { bStarted(); await bGate; }
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "expired" }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "a", inputSchema: { type: "object" as const } }, { name: "b", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async (r) => ({ content: [{ type: "text", text: `ran ${r.params.name}` }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the second call's retry waits for the refresh instead of handshaking with the old token", async () => {
+    const up = await listen(vendor);
+    let state: "ok" | "expired" = "ok";
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${token}` }),
+      refresh: async () => { refreshStarted(); await refreshGate; token = "new"; },
+      status: () => ({ state, since: "" }),
+      mark: (s: "ok" | "expired") => void (state = s),
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = (name: string) => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>).catch(() => undefined);
+    try {
+      const a = callTool("a");
+      const b = callTool("b");
+      await Promise.all([aIn, bIn]);
+      releaseA(); // A's 401 starts the refresh
+      await refreshIn;
+      releaseB(); // B's 401 lands while the refresh is still running
+      await new Promise((r) => setTimeout(r, 100));
+      refreshRelease();
+      await Promise.allSettled([a, b]);
+      // Only the initial connect handshook with the old token: B's retry waited for the refresh instead of opening its own.
+      expect(handshakes.filter((t) => t === "old")).toHaveLength(1);
+      expect(state).toBe("ok");
+    } finally {
+      releaseA(); releaseB(); refreshRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a sign-in during a reconnect is not lost", () => {
+  // A connect is listing tools with the old account's token when the owner signs in again. That connect must not become the saved
+  // session, or calls would run under the account the owner just replaced until the next reconnect.
+  let listRelease: () => void = () => {};
+  let listStarted: () => void = () => {};
+  const listIn = new Promise<void>((r) => { listStarted = r; });
+  const listGate = new Promise<void>((r) => { listRelease = r; });
+  const tokens: string[] = [];
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") {
+      tokens.push(String(req.headers.authorization ?? ""));
+      if (tokens.length === 1) { listStarted(); await listGate; } // the first connect (old account) is slow
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "ping", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("the saved session is the one the sign-in opened, not the connect that was in flight", async () => {
+    const up = await listen(vendor);
+    let account = "old";
+    const auth = {
+      ...staticAuth(),
+      headers: async () => ({ authorization: `Bearer ${account}` }),
+      signIn: {},
+      device: { start: async (onSignedIn?: () => void) => (void (account = "new"), onSignedIn?.(), { user_code: "A", verification_uri: "u", expires_in: 9, interval: 5 }), state: () => ({ state: "pending" as const }), cancel: () => {} },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", authKey: "board", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const list = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }).then((r) => r.json() as Promise<any>);
+    try {
+      const stale = list(); // the old account's connect, held in its tools list
+      await listIn;
+      // The owner signs in again while that connect is still in flight.
+      expect((await fetch(`${url}/auth/device`, { method: "POST", headers: { authorization: "Bearer board" } })).status).toBe(200);
+      listRelease();
+      await stale.catch(() => undefined);
+      await list(); // the saved session must be the sign-in's
+      // The last connect that listed tools went out with the account the owner signed in with.
+      expect(tokens.at(-1)).toBe("Bearer new");
+    } finally {
+      listRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("a refresh is not swallowed by a session-only reset", () => {
+  // Two calls get a 401 on the same session. B's refusal probe is slow; while it is out, A's probe says the token still answers, so
+  // A replaces the session without a refresh and that connect is slow. B's probe then returns "refused", so B must refresh — it
+  // must not join A's in-flight session-only reset and lose the grant that recovers the sign-in.
+  let probeRelease: () => void = () => {};
+  let probeStarted: () => void = () => {};
+  const probeIn = new Promise<void>((r) => { probeStarted = r; });
+  const probeGate = new Promise<void>((r) => { probeRelease = r; });
+  let connects = 0;
+  let connectRelease: () => void = () => {};
+  const connectGate = new Promise<void>((r) => { connectRelease = r; });
+  const vendor = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string };
+    if (body.method === "tools/list") {
+      connects += 1;
+      if (connects > 1) await connectGate; // the session-only replacement's connect is slow
+    }
+    if (body.method === "tools/call") {
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "refused" }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "boom", inputSchema: { type: "object" as const } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: "text", text: "ran" }] }));
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("a real refusal still refreshes while a session-only reset is running", async () => {
+    const up = await listen(vendor);
+    let refreshed = 0;
+    let probes = 0;
+    const auth = {
+      ...staticAuth(),
+      refresh: async () => void (refreshed += 1),
+      refused: async () => {
+        // B's probe waits; A's probe answers at once with "still works".
+        if (++probes === 1) { probeStarted(); await probeGate; return true; }
+        return false;
+      },
+    };
+    const p = createVendorProxy({ name: "Vendor", upstream: new URL(`${up}/mcp`), auth, log, serviceKey: "svc", caller: async () => {}, instructions: "", stateDir: tmp() });
+    const url = await listen(p);
+    const callTool = () => fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "boom", arguments: {} } }),
+    }).then((r) => r.json() as Promise<any>).catch(() => undefined);
+    try {
+      const b = callTool(); // B's probe goes out and waits
+      await probeIn;
+      const a = callTool(); // A's probe says "still works": a session-only reset starts, its connect is slow
+      await new Promise((r) => setTimeout(r, 100));
+      probeRelease(); // B now learns the vendor refuses the token
+      await new Promise((r) => setTimeout(r, 100));
+      connectRelease();
+      await Promise.allSettled([a, b]);
+      expect(refreshed).toBe(1); // B's refusal spent the grant rather than joining A's session-only reset
+    } finally {
+      probeRelease();
+      connectRelease();
+      p.close();
+      vendor.close();
+    }
+  });
+});
+
+describe("the read gate is checked on the session that retries", () => {
+  // A tool the first session marks read-only, then answers with a 401; the replacement session lists the same tool as a write.
+  let firstList = true;
+  let refused401 = false;
+  const wrote: string[] = [];
+  const shifting = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { method?: string; params?: { name?: string } };
+    if (body.method === "tools/call" && body.params?.name === "search" && !refused401) {
+      refused401 = true;
+      firstList = false; // the next session's view is the write one
+      return void res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: "endpoint refused" }));
+    }
+    const server = new Server({ name: "vendor", version: "1" }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [{ name: "search", inputSchema: { type: "object" as const }, ...(firstList ? { annotations: { readOnlyHint: true } } : {}) }],
+    }));
+    server.setRequestHandler(CallToolRequestSchema, async (r) => {
+      wrote.push(r.params.name);
+      return { content: [{ type: "text", text: `ran ${r.params.name}` }] };
+    });
+    const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => void t.close());
+    await server.connect(t);
+    await t.handleRequest(req, res, body);
+  });
+
+  it("refuses the retry when the new session no longer marks the tool read-only", async () => {
+    const up = await listen(shifting);
+    const p = createVendorProxy({
+      name: "Vendor",
+      upstream: new URL(`${up}/mcp`),
+      auth: { ...staticAuth(), refused: async () => false },
+      log,
+      serviceKey: "svc",
+      readKey: "rd",
+      reads: ["search"],
+      caller: async () => {},
+      instructions: "",
+      stateDir: tmp(),
+    });
+    const url = await listen(p);
+    try {
+      const res = await fetch(`${url}/mcp/read`, {
+        method: "POST",
+        headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search", arguments: {} } }),
+      });
+      const result = ((await res.json()) as any).result;
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/is not a read/);
+      expect(wrote).toEqual([]); // the write never reached the vendor
+    } finally {
+      p.close();
+      shifting.close();
+    }
+  });
+});
+
 describe("sign-in", () => {
   const MCP = "https://mcp.example.com/v1/mcp?tools=all";
   function fakeVendor() {
