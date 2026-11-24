@@ -20,7 +20,10 @@ export interface PlanResult {
 }
 export type ReviewContext = {
   /** The card's details whole: the kernel sets it at filing, over anything a plan sends. */
-  diff?: string; files?: { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }; sources?: { where: string; records: Record<string, unknown>[] };
+  diff?: string;
+  /** A product pin move's roll-up, as code's planner wrote it (apply-tier.ts productCommits): commits already on the product's main,
+   * never the change under review. Its own field, so text inside a change can never pass for it (issue #1639). */
+  productCommits?: string; files?: { list: { name: string; text?: string; note?: string }[]; leftOut: string[]; changed?: { path: string; add?: number; del?: number }[] }; sources?: { where: string; records: Record<string, unknown>[] };
   /** The task's other PRs merged into the change's base: `files` its own, `changed` those the base changed again since (undefined: not read). */
   siblings?: { repo: string; number: number; base: string; mergeCommit: string; files?: string[]; changed?: string[] }[] };
 export interface ExecuteRequest {

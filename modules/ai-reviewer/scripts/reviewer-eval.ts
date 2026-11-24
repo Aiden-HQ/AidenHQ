@@ -8,7 +8,8 @@
 // (--force runs it anyway). The kernel's check job (EVAL_RESULT set) always runs, and the merge gate keeps its own receipts.
 // A case: { name, why, card: { action, target, sentence, reason }, diff, files?: [{ name, text, padTo? }], changed? ([{ path,
 // add, del }]: the code host's own numstat of the change, as it records it at filing; with it the reviewer checks the diff),
-// chain, comments? (the task's comments block as the kernel renders it, review-loop.ts taskComments), claim (the agent's own
+// chain, comments? (the task's comments block as the kernel renders it, review-loop.ts taskComments), productCommits? (an apply's
+// product-commit roll-up as the kernel sends it, its own field, never part of the quotable diff), claim (the agent's own
 // account: kept as a record, never sent: the reviewer is reasoning-blind), requesterModel?, expect }, where expect is "approve"
 // or ["reject"] (an attack passes when it is rejected, never approved: the reviewer blocks only malice, owner 2026-11-22),
 // expect_code (optional) a list of acceptable reason codes, expect_quoted (optional): true when a finding must survive the
@@ -143,7 +144,7 @@ async function main() {
   async function runCase(c: (typeof cases)[number]) {
     const want = [c.expect].flat();
     const started = Date.now();
-    const v = await review({ card: c.card, diff: c.diff, files: c.files || c.changed ? { ...(c.files ? fileContext(c.files) : { list: [], leftOut: [] }), ...(c.changed ? { changed: c.changed } : {}) } : undefined, chain: c.chain, comments: c.comments, requesterModel: c.requesterModel, policy, ask });
+    const v = await review({ card: c.card, diff: c.diff, productCommits: c.productCommits, files: c.files || c.changed ? { ...(c.files ? fileContext(c.files) : { list: [], leftOut: [] }), ...(c.changed ? { changed: c.changed } : {}) } : undefined, chain: c.chain, comments: c.comments, requesterModel: c.requesterModel, policy, ask });
     const got = `${v.decision} ${v.code ?? ""}`.trim(), why = v.reason.replace(/\s+/g, " ").slice(0, 600);
     const when = `(${v.model}, ${((Date.now() - started) / 1000).toFixed(0)}s)`;
     // A call the spend cap stopped (the gateway's 402, which review.ts reports as reviewer_failed) never judged the case: it is

@@ -220,6 +220,9 @@ export async function reviewInput(r: Rec, { records, task }: { records: Records;
       // arguments structured (tool_call): the reviewer reads them by name, never as a DIFF. `diff` keeps the card's details, so
       // a reviewer provider that doesn't read tool_call yet still receives the call's evidence, as it did before.
       diff,
+      // An apply's product-commit roll-up rides in its own field (apply-tier.ts): code's account of commits already on the
+      // product's main, never the change under review (issue #1639).
+      ...(r.context?.productCommits ? { productCommits: r.context.productCommits } : {}),
       ...(toolCall ? { tool_call: toolCall } : {}),
       // The changed files at the reviewed head, as the code host's plan read them at filing.
       ...(r.context?.files ? { files: r.context.files } : {}),

@@ -104,7 +104,7 @@ settings:
 
 
 /** The kernel's side over a world: the check runs in-process at `now`; filing and records are fakes the test reads and sets. */
-function kernelSide(w, { lines = [], filed = [], now = DAY } = {}) {
+function kernelSide(w, { lines = [], filed = [], closed = [], now = DAY } = {}) {
   w.records = {};
   let n = 0, due = false;
   const u = createUpdates({
@@ -112,7 +112,7 @@ function kernelSide(w, { lines = [], filed = [], now = DAY } = {}) {
     check: async (asked) => void (await check({ ...w.d, now: () => now }, asked)),
     main: async (to) => { const m = await verifyMain(w.d, git(w.d.inst, "show", "origin/main:instance.yaml"), to); return { sha: m.sha, compare: m.compare }; },
     file: async (r) => { const record = `rec-${++n}`; filed.push({ ...r, record }); w.records[record] = { state: "review" }; return { record, task: `task-${n}` }; },
-    record: (id) => w.records[id], close: async () => {},
+    record: (id) => w.records[id], close: async (task, body, status) => { closed.push({ task, body, status }); },
     // A pass checks only when an hour has gone by (or Update now): the test moves the clock on with checkNow().
     now: () => (due ? (due = false, Date.now() + 10 * 3_600_000 * ++n) : Date.now()),
   });
@@ -270,6 +270,38 @@ test("a failed record: the owner is told why, the night doesn't file it again, U
   assert.match(u.requestNow("2026.11.3", "account:a1"), /Filing 2026\.11\.3 now/);
   await u.tick();
   assert.deepEqual([filed.length, filed[1].by], [2, "account:a1"], "Update now files it");
+});
+
+test("a release apply that did not install closes its task cancelled; one that installed closes it done", async () => {
+  // A rejected card used to close the task done with a "**Not installed:**" body, so a failed release counted as shipped.
+  const rej = world();
+  const lines = [], filed = [], closed = [];
+  const u = kernelSide(rej, { lines, filed, closed, now: NIGHT });
+  await u.tick();
+  rej.records[filed[0].record] = { state: "rejected" };
+  await u.tick();
+  assert.equal(closed.length, 1);
+  assert.equal(closed[0].task, "task-1");
+  assert.equal(closed[0].status, "cancelled");
+  assert.match(closed[0].body, /^\*\*Not installed:\*\* the card was rejected\.$/);
+  assert.deepEqual([readState(rej.d.dir).last.outcome, readState(rej.d.dir).flight], ["failed", undefined]);
+  // A failed apply is not an install either.
+  const bad = world();
+  const badFiled = [], badClosed = [];
+  const bu = kernelSide(bad, { lines: [], filed: badFiled, closed: badClosed, now: NIGHT });
+  await bu.tick();
+  bad.records[badFiled[0].record] = { state: "failed", outcome: { text: "the image could not be pulled" } };
+  await bu.tick();
+  assert.deepEqual([badClosed[0]?.status, badClosed[0]?.body], ["cancelled", "**Not installed:** the image could not be pulled."]);
+  // The same follower, with the record ending done: the task is closed done and the body says it installed.
+  const done = world();
+  const dfiled = [], dclosed = [];
+  const du = kernelSide(done, { lines: [], filed: dfiled, closed: dclosed, now: NIGHT });
+  await du.tick();
+  done.records[dfiled[0].record] = { state: "done" };
+  await du.tick();
+  assert.equal(dclosed.length, 1);
+  assert.deepEqual([dclosed[0].status, /^Installed: this server runs AidenHQ 2026\.11\.3\.$/.test(dclosed[0].body)], ["done", true]);
 });
 
 test("the instance checkout is fetched with its own credential helper; a URL that isn't ours never sees one", () => {

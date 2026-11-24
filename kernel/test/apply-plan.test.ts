@@ -55,7 +55,10 @@ test("a release bump files kernel.apply, planned from the code host's read: the 
   const r = await k.writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.deepEqual(r.args, { ...BUMP, files: ["instance.yaml"] });
   assert.deepEqual([r.tier, r.state, r.rule], [1, "review", null]);
-  assert.match(r.card.details, /Product upgrade aaaaaaaaa → bbbbbbbbb, adding these commits:\nbbbbbbb feat: something/);
+  assert.match(r.card.details, /<<<PRODUCT_COMMITS\nProduct commits the pin move brings, already on the product's main \(code's account, not the change under review\):\nProduct upgrade aaaaaaaaa → bbbbbbbbb, adding these commits:\nbbbbbbb feat: something \(#1\)\nPRODUCT_COMMITS>>>/);
+  // The reviewer gets the same roll-up as its own field, so it shows it apart from the diff a finding may quote (issue #1639).
+  assert.equal(r.context?.productCommits, "<<<PRODUCT_COMMITS\nProduct commits the pin move brings, already on the product's main (code's account, not the change under review):\nProduct upgrade aaaaaaaaa → bbbbbbbbb, adding these commits:\nbbbbbbb feat: something (#1)\nPRODUCT_COMMITS>>>");
+  assert.ok(r.card.details.includes(r.context!.productCommits!), "the card's copy is the same text the reviewer removes");
   assert.equal(k.h.lands.length, 0, "nothing lands before the reviewer");
   const off = await kernel({ autonomy: "off" }).writes.request(codehost, { kind: "kernel.apply", args: BUMP, task: "TASK-1" });
   assert.deepEqual([off.tier, off.rule], [2, "autonomy-off"]);

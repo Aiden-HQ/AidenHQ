@@ -46,6 +46,11 @@ export interface ReviewRequest {
    * another agent) with its text quoted line by line. The text is its author's; only the labels are code's.
    */
   comments?: string;
+  /**
+   * An apply's product-commit roll-up, as code's planner wrote it: commits already merged on the product's main, which the
+   * change cannot alter. Shown as PRODUCT_COMMITS, never as part of the diff a finding may quote.
+   */
+  productCommits?: string;
   /** The ledger's name for the model calls (the card's review, or an agent's check before filing). */
   component?: string;
 }
@@ -130,7 +135,7 @@ function walkArguments(args: unknown, parts: string[], versions: Set<string>) {
 }
 
 /** The request fields a reviewer reads; anything else in a request (a policy, a model) is dropped. */
-export const REQUEST_FIELDS = ["card", "diff", "tool_call", "files", "chain", "requesterModel", "comments"] as const;
+export const REQUEST_FIELDS = ["card", "diff", "tool_call", "files", "chain", "requesterModel", "comments", "productCommits"] as const;
 
 /**
  * The handler POST `<path>/review`, and the `/healthz` beside it: it answers with the service instance that serves now, so the
