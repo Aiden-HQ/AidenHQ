@@ -229,10 +229,11 @@ export function stripSentinels(text: string): string {
   const starts = lineStarts(text);
   // The reply's own text, past the sentinels and padding at both ends: what a quoted example has to sit beside.
   const hasOther = skipStart(text, leadingRunEnd(text), trailingRunStart(text)) < skipEnd(text, leadingRunEnd(text), trailingRunStart(text));
+  const endOf = (l: number) => l + 1 < starts.length ? starts[l + 1]! - 1 : text.length;
   let line = 0;
-  const leadLine = (at: number) => { while (line + 1 < starts.length && starts[line + 1]! <= at) line++; return starts[line]!; };
+  const leadLine = (at: number) => { while (line + 1 < starts.length && starts[line + 1]! <= at) line++; return [starts[line]!, endOf(line)] as const; };
   let back = starts.length - 1;
-  const tailLine = (at: number) => { while (back > 0 && starts[back]! > at) back--; return starts[back]!; };
+  const tailLine = (at: number) => { while (back > 0 && starts[back]! > at) back--; return [starts[back]!, endOf(back)] as const; };
   // Each edge is settled once: a removal there shortens the text and never touches the other edge, so neither end is rescanned.
   for (;;) {
     const at = skipStart(text, from, to);
@@ -240,7 +241,10 @@ export function stripSentinels(text: string): string {
     const hit = after !== undefined ? undefined : SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
     const reach = after ?? hit?.length;
     // Only what the reply still has before the marker counts as its line's prefix: a sentinel just removed is not there.
-    if (reach === undefined || quoted(text, at, at + reach, Math.max(leadLine(at), from), to, hasOther)) break;
+    const [lineStart, lineEnd] = leadLine(at);
+    // The marker must be the whole of its own line, not of the reply: an explanation on a later line is fine.
+    if (reach === undefined) break;
+    if (quoted(text, at, at + reach, Math.max(lineStart, from), Math.min(lineEnd, to), hasOther)) break;
     from = at + reach;
   }
   // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
@@ -248,12 +252,15 @@ export function stripSentinels(text: string): string {
     const end = skipEnd(text, from, to);
     const head = beforeHeader(text, from, end);
     if (head !== undefined) {
-      if (quoted(text, head, end, Math.max(tailLine(head), from), to, hasOther)) break;
+      const [lineStart] = tailLine(head);
+      if (quoted(text, head, end, Math.max(lineStart, from), to, hasOther)) break;
       to = head;
       continue;
     }
     const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length) && text[end - s.length - 1] !== "\\");
-    if (!hit || quoted(text, end - hit.length, end, Math.max(tailLine(end - hit.length), from), to, hasOther)) break;
+    if (!hit) break;
+    const [lineStart] = tailLine(end - hit.length);
+    if (quoted(text, end - hit.length, end, Math.max(lineStart, from), to, hasOther)) break;
     to = end - hit.length;
   }
   return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
