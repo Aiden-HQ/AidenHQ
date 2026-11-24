@@ -175,6 +175,25 @@ const quoted = (text: string, from: number, to: number, lineStart: number, lineE
   // A quote line shows something else too: a marker that is the whole reply is a leak, whatever its indentation.
   return i === end && (firstText < from || lastText > to);
 };
+/** Where the reply's own text begins and ends, past every padding character and sentinel: what a quote line must show beside it. */
+const contentStart = (text: string) => {
+  let i = 0;
+  for (;;) {
+    i = skipStart(text, i, text.length);
+    const hit = SENTINELS.find((s) => text.startsWith(s, i));
+    if (!hit) return i;
+    i += hit.length;
+  }
+};
+const contentEnd = (text: string) => {
+  let i = text.length;
+  for (;;) {
+    i = skipEnd(text, 0, i);
+    const hit = SENTINELS.find((s) => i - s.length >= 0 && text.startsWith(s, i - s.length));
+    if (!hit) return i;
+    i -= hit.length;
+  }
+};
 /** The index at which each line starts, so a line start costs a lookup rather than a scan. */
 const lineStarts = (text: string) => {
   const starts = [0];
@@ -191,7 +210,7 @@ const lineStarts = (text: string) => {
 export function stripSentinels(text: string): string {
   let from = 0, to = text.length;
   const starts = lineStarts(text);
-  const firstText = skipStart(text, 0, text.length), lastText = skipEnd(text, 0, text.length);
+  const firstText = contentStart(text), lastText = contentEnd(text);
   const endOf = (line: number) => line + 1 < starts.length ? starts[line + 1]! - 1 : text.length;
   let line = 0;
   // The line that holds `at`, as its start and end; both edges only move inward, so one cursor serves each.
