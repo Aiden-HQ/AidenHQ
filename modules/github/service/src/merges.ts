@@ -17,7 +17,7 @@ import { DESIGN_REVIEW_CHECK, namedChecks } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { PR_QUERY, decide, mergeMethod, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
+import { PR_QUERY, decide, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
@@ -183,12 +183,26 @@ export function createMerges(d: {
    * undefined when classic protection can't be read (403: the sign-in isn't a repo admin): every check on the head is then judged.
    */
   async function requiredOf(repo: string, branch: string) {
+    return (await rulesOf(repo, branch)).required;
+  }
+  /** The branch's required checks (undefined: classic protection unreadable) and whether it merges through a merge queue. */
+  async function rulesOf(repo: string, branch: string) {
     const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
     if (rules.status >= 300) throw new Error(`GitHub GET rules: ${rules.status}`);
+    const queue = mergePath(rules.body) === "queue";
     const classic = await d.gh("GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`);
-    if (classic.status === 403) return undefined;
+    if (classic.status === 403) return { required: undefined, queue };
     if (classic.status >= 300 && classic.status !== 404) throw new Error(`GitHub GET required_status_checks: ${classic.status}`);
-    return requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body);
+    return { required: requiredChecks(rules.body, classic.status === 404 ? undefined : classic.body), queue };
+  }
+  /** The required checks red on the PR's latest merge_group run (GitHub's `gh-readonly-queue/<base>/pr-<n>-…` branch). */
+  async function groupFailing(repo: string, number: number, base: string, required: string[]) {
+    const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);
+    if (r.status >= 300) throw new Error(`GitHub GET merge_group runs: ${r.status}`);
+    const run = (r.body?.workflow_runs ?? []).find((x: any) => String(x.head_branch ?? "").startsWith(`gh-readonly-queue/${base}/pr-${number}-`));
+    if (!run) return [];
+    const checks = await allChecks(repo, String(run.head_sha));
+    return [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
   }
   /** Rules unreadable (requiredOf undefined: no admin read of classic protection): every check on the head counts but the
    * advisory design review; with none of those reported yet (the design review alone included) the caller waits. */
@@ -600,18 +614,19 @@ export function createMerges(d: {
   return {
     /**
      * Ship's round decision for an adopted PR at `head` (its watch loop asks through /internal/ship/decision): decide with ship's
-     * context, as an adoption's merge is judged here, and the required checks red on the head. No approval or queue yet (D2, D3).
+     * context, as an adoption's merge is judged here, and the required checks red on the head. On a merge queue branch (mergePath)
+     * a ready PR is `enqueue`, with the required checks red on its latest merge_group run (a removal's cause). No approval yet (D2).
      */
     async decision(repo: string, number: number, head: string) {
       const data = await readPr(repo, number);
       const g = await d.reviewGate(repo, number, head);
       const checks = await allChecks(repo, head);
-      const rules = await requiredOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
+      const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
-      if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false };
-      const v = decide(data, head, { queue: false, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
+      if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], dirty: false, queue };
+      const v = decide(data, head, { queue, approve: false, review: g !== undefined, findings: !!(g && "findings" in g && g.findings), required, checks });
       const failing = [...new Set(checks.filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
-      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY" };
+      return { ...v, failing, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */
     enqueue(id: string, args: { prs: { repo: string; number: number; head: string; base?: string }[]; generation?: number }, task?: string, identifier?: string, tier?: number, byShip?: boolean): Promise<Outcome> {
