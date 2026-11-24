@@ -280,3 +280,19 @@ test("a test account is never adopted: an existing account's email is refused", 
   await assert.rejects(s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP }), /already an account/);
   assert.deepEqual(s.auditRows(), []);
 });
+
+// A code minted while the app was allowed may outlive the setting: redeeming it then must fail, not hand the browser a cookie
+// for a page the listener would refuse on its next request.
+test("a handoff redeems after the setting removed its app or changed its email: no cookie, and the session ends", async () => {
+  let setting: { email: string; apps: string[] } | undefined = { email: EMAIL, apps: [APP] };
+  const { s, deleted } = store({ testUser: () => setting });
+  const m = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  setting = { email: EMAIL, apps: [] };
+  await refused(s.redeem({ code: m.code, host: HOST, state: m.state }), 401, /invalid or expired handoff/);
+  assert.equal(deleted.length, 1, "the session ends rather than staying live for a page the listener refuses");
+
+  setting = { email: EMAIL, apps: [APP] };
+  const e = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  setting = { email: "someone-else@aidenhq.test", apps: [APP] };
+  await refused(s.redeem({ code: e.code, host: HOST, state: e.state }), 401, /invalid or expired handoff/);
+});

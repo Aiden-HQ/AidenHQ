@@ -168,6 +168,14 @@ export function createTestSessions(d: TestSessionsDeps) {
       if (!c || c.until < now() || c.host !== String(input.host ?? "").toLowerCase() || c.state !== input.state) throw new TestSessionError(400, "invalid or expired handoff");
       const r = byId(c.sessionId);
       if (!live(r)) throw new TestSessionError(401, "invalid or expired handoff");
+      // The setting that allowed this sign-in may have gone while the code waited: the code is bound to the app and account it
+      // was minted for, so a removed app (or a changed email) spends it without a cookie rather than signing in for a page the
+      // listener would then refuse.
+      const setting = d.testUser();
+      if (!setting || setting.email !== r!.email || !setting.apps.includes(r!.app)) {
+        await end(r!.id, "setting-removed");
+        throw new TestSessionError(401, "invalid or expired handoff");
+      }
       const s = d.db.prepare("SELECT token FROM session WHERE id = ?").get(c.sessionId) as { token: string } | undefined;
       if (!s) throw new TestSessionError(401, "invalid or expired handoff");
       return { token: d.cookie(s.token), expires: iso(r!.expires), app: r!.app };

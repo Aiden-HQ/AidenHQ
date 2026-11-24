@@ -66,11 +66,8 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     return { status: r.status, body: parsed };
   }
 
-  /** The session behind this request's cookie, a refusal (401/409), or "down" when the kernel could not answer. */
-  async function session(req: IncomingMessage, c: GateConfig, app: string, host: string): Promise<{ email: VerifiedEmail; expires: string } | "other-app" | "down" | undefined> {
-    const found = cookiesOf(req).filter((x) => cookieName(x) === CANARY_COOKIE);
-    if (found.length !== 1) return undefined;
-    const cookie = found[0]!.slice(CANARY_COOKIE.length + 1).trim();
+  /** The session behind one cookie value, a refusal (401/409), or "down" when the kernel could not answer. */
+  async function sessionOf(c: GateConfig, cookie: string, app: string, host: string): Promise<{ email: VerifiedEmail; expires: string } | "other-app" | "down" | undefined> {
     if (!cookie) return undefined;
     // A kernel that can't answer is not "signed out": fail closed, but say so with 503 so a retryable blip during a page's
     // own subresources never tells the browser to sign in again (which would throw away a live session mid-page).
@@ -80,6 +77,13 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     if (r.status >= 500 || r.status === 0) return "down";
     if (r.status !== 200 || typeof r.body?.email !== "string" || r.body?.app !== app) return undefined;
     return { email: String(r.body.email).trim().toLowerCase() as VerifiedEmail, expires: String(r.body.expires ?? "") };
+  }
+
+  /** The session behind this request's cookie, exactly one, or a refusal/"down". */
+  function session(req: IncomingMessage, c: GateConfig, app: string, host: string) {
+    const found = cookiesOf(req).filter((x) => cookieName(x) === CANARY_COOKIE);
+    if (found.length !== 1) return Promise.resolve(undefined);
+    return sessionOf(c, found[0]!.slice(CANARY_COOKIE.length + 1).trim(), app, host);
   }
 
   /** The app's own origin on this listener, exactly. */
@@ -192,8 +196,32 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     req.pipe(up);
   }
 
-  /** Open WebSocket tunnels and the app each one serves: closed when the listener is disabled or the app leaves the setting. */
-  const sockets = new Map<Duplex, string>();
+  /**
+   * Open WebSocket tunnels: the app, host and cookie each was opened with, and the timer that ends it at the session's own
+   * expiry. A tunnel is a long-lived connection, so the session that opened it is re-checked (on a timer and at expiry), not
+   * trusted for as long as the socket lives.
+   */
+  type Tunnel = { app: string; host: string; cookie: string; until?: NodeJS.Timeout };
+  const sockets = new Map<Duplex, Tunnel>();
+  const drop = (s: Duplex) => {
+    const t = sockets.get(s);
+    if (t?.until) clearTimeout(t.until);
+    sockets.delete(s);
+    s.destroy();
+  };
+  /** Re-check every open tunnel's session; one that is no longer live is dropped now, never left riding an old session. */
+  const recheck = async () => {
+    let c: GateConfig;
+    try { c = cfg(); } catch { return; }
+    for (const [s, t] of sockets) {
+      const who = await sessionOf(c, t.cookie, t.app, t.host).catch(() => "down" as const);
+      // "down" keeps it (the kernel could not answer, so nothing says the session ended); a refusal or another app's answer
+      // ends it now.
+      if (!who || who === "other-app") drop(s);
+    }
+  };
+  const RECHECK_MS = 60_000;
+  let ticker: NodeJS.Timeout | undefined;
   const server = createServer((req, res) => {
     serve(req, res).catch((e) => {
       log({ msg: "test listener request failed", err: String((e as Error).message).slice(0, 300) });
@@ -211,19 +239,27 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
     socket.on("error", () => socket.destroy());
     // A tunnel outlives the request that opened it and `server.close()` does not close it: it is tracked here so the
     // reconciler can drop every one when the test user (or the listener) goes away, rather than riding an old session.
-    sockets.set(socket, ""); // the app is known once the request's host resolves, just below
+    sockets.set(socket, { app: "", host: "", cookie: "" }); // filled once the request's host and session resolve, just below
     socket.on("close", () => sockets.delete(socket));
     const c = cfg();
     if (!c.test_user || !c.test_listener) return refuse(socket, 404, "not found");
     const t = target(c, hostOf(req));
     if (!t) return refuse(socket, 404, "not found");
-    sockets.set(socket, t.app);
+    sockets.set(socket, { app: t.app, host: t.publicHost, cookie: cookiesOf(req).find((x) => cookieName(x) === CANARY_COOKIE)?.slice(CANARY_COOKIE.length + 1).trim() ?? "" });
     // Same checks as a write: the exact origin, never a cross-site socket, and the listener's own live session.
     if (!sameOrigin(req, t.origin)) return refuse(socket, 403, "forbidden: cross-origin");
     const who = await session(req, c, t.app, t.publicHost);
     if (who === "other-app") return refuse(socket, 404, "not found");
     if (who === "down") return refuse(socket, 503, "unavailable: the session may still be valid; try again");
     if (!who) return refuse(socket, 401, "sign in first");
+    // A tunnel never outlives the session that opened it: at its expiry the socket closes, even while the listener and the
+    // app's setting are unchanged. A minute timer re-checks the rest (a revoke, a closed task), so none rides an old session.
+    const left = Date.parse(who.expires) - Date.now();
+    if (Number.isFinite(left)) {
+      if (left <= 0) return refuse(socket, 401, "sign in first");
+      sockets.get(socket)!.until = setTimeout(() => drop(socket), Math.min(left, 2 ** 31 - 1));
+    }
+    ticker ??= setInterval(() => void recheck(), RECHECK_MS).unref();
     let token: IdentityToken;
     try {
       const iat = Math.floor(Date.now() / 1000);
@@ -241,7 +277,15 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       usock.on("close", () => socket.destroy());
       socket.on("close", () => usock.destroy());
       let s2 = `HTTP/1.1 ${r.statusCode} ${r.statusMessage}\r\n`;
-      for (let i = 0; i < r.rawHeaders.length; i += 2) if (r.rawHeaders[i]!.toLowerCase() !== "set-auth-token") s2 += `${r.rawHeaders[i]}: ${r.rawHeaders[i + 1]}\r\n`;
+      // The same cookie rule as an ordinary response: no app may replace or clear the listener's own session cookie on a
+      // handshake either, so its own cookies (a CSRF token) pass and that one never lands.
+      const cookies = (r.headers["set-cookie"] ?? []).filter((x) => cookieName(x).toLowerCase() !== CANARY_COOKIE.toLowerCase());
+      for (let i = 0; i < r.rawHeaders.length; i += 2) {
+        const k = r.rawHeaders[i]!;
+        if (k.toLowerCase() === "set-auth-token" || k.toLowerCase() === "set-cookie") continue;
+        s2 += `${k}: ${r.rawHeaders[i + 1]}\r\n`;
+      }
+      for (const x of cookies) s2 += `set-cookie: ${x}\r\n`;
       socket.write(`${s2}\r\n`);
       if (uhead.length) socket.write(uhead);
       if (head.length) usock.write(head);
@@ -263,8 +307,10 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
   // The reconciler closes the tunnels with the listener: `server.close()` leaves an upgraded socket open.
   return Object.assign(server, {
     closeTunnels: (allowed?: (app: string) => boolean) => {
-      for (const [s, app] of sockets) if (!allowed || !allowed(app)) { s.destroy(); sockets.delete(s); }
+      for (const [s, t] of sockets) if (!allowed || !allowed(t.app)) drop(s);
     },
+    /** The timer's own check, for tests: the same one the minute ticker runs. */
+    recheckTunnels: recheck,
   });
 }
 

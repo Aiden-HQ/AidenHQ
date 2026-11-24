@@ -312,6 +312,46 @@ test("a live tunnel is dropped when the test user is disabled, and server.close 
   }
 });
 
+// A tunnel outlives the request that opened it: without a re-check it would keep the app talking to the test member after the
+// session is revoked or expires, long after every ordinary request would be 401.
+test("an open tunnel loses the app's attempt at the session cookie, and the re-check closes it once its session is gone", async () => {
+  const echo = createServer();
+  const planted: string[] = [];
+  echo.on("upgrade", (q, sock) => {
+    const cookie = [`${CANARY_COOKIE}=app-planted; Path=/; Secure`, "__Host-csrf=app-token; Path=/; Secure"];
+    sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSet-Cookie: ${cookie[0]}\r\nSet-Cookie: ${cookie[1]}\r\n\r\n`);
+    sock.on("data", (d) => sock.write(d));
+  });
+  const echoPort = await listen(echo);
+  const c: any = { ...cfg, hosts: { "roadmap.example.com": { app: "roadmap", port: echoPort }, [`roadmap.${CANARY_BASE}`]: { app: "roadmap", port: echoPort } } };
+  const l = createTestListener({ config: () => c, log: () => {} });
+  const port = await listen(l);
+  c.test_listener = { address: "127.0.0.1", port };
+  try {
+    const open = () => new Promise<{ status: number; socket?: any; headers?: any }>((ok) => {
+      const q = request({ host: "127.0.0.1", port, path: "/ws", headers: { host: `roadmap.${CANARY_BASE}`, connection: "Upgrade", upgrade: "websocket", origin: `http://roadmap.${CANARY_BASE}:${port}`, cookie: `${CANARY_COOKIE}=${COOKIE}` } });
+      q.on("upgrade", (r, sock) => ok({ status: r.statusCode ?? 0, socket: sock, headers: r.headers }));
+      q.on("response", (r) => ok({ status: r.statusCode ?? 0 }));
+      q.on("error", () => ok({ status: 0 }));
+      q.end();
+    });
+    const a = await open();
+    assert.equal(a.status, 101);
+    // The app's own cookie passes the handshake; its attempt at the listener's cookie does not.
+    const setCookie = [a.headers["set-cookie"] ?? []].flat();
+    assert.deepEqual(setCookie, ["__Host-csrf=app-token; Path=/; Secure"]);
+    // The kernel now says the session is gone: the next re-check closes the open tunnel instead of leaving it writing to the app.
+    kernel.state.live = false;
+    const closed = new Promise<boolean>((ok) => { a.socket!.once("close", () => ok(true)); setTimeout(() => ok(false), 1500); });
+    await (l as any).recheckTunnels?.();
+    assert.equal(await closed, true);
+  } finally {
+    kernel.state.live = true;
+    echo.close();
+    await new Promise<void>((ok) => { l.close(() => ok()); l.closeAllConnections?.(); });
+  }
+});
+
 test("a WebSocket upgrade needs the listener's own origin and a live session, and is never forwarded otherwise", async () => {
   const ask = (origin: string | undefined, cookie?: string) => new Promise<string>((ok) => {
     const headers: Record<string, string> = { host: `roadmap.${CANARY_BASE}`, connection: "Upgrade", upgrade: "websocket" };
