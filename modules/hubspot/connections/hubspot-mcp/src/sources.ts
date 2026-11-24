@@ -344,6 +344,7 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
         yield r;
       }
       attempt = 0; // a complete page: the next gets its own retries
+      idTotal = null; // the next page is a new boundary, with its own total
       // A result listed without an id can't be written on an id page either; it is returned, not missing.
       state.dropped += returned - page.length;
       tieDropped += returned - page.length;
@@ -351,21 +352,14 @@ async function* records(call: CallHubSpot, def: ObjectDef, from: { sinceIso: str
       if (Date.now() >= deadline) return void (state.ended = false);
     }
     // The range's own total, across its pages: fewer returned than it reported means one is still unindexed, so the time is not
-    // read whole and the pass keeps its starting cursor. The total is from the range's first page, so a record archived since
-    // then still counts: ask the range once more before calling it a gap.
+    // read whole and the pass keeps its starting cursor. No second, narrower search is asked to explain the total away: a lower
+    // count alone doesn't prove those rows were read (the ids at or below the boundary are excluded from it), and an extra
+    // request here could throw after rows were written. The gap stands until a pass reads the range whole.
     if (tieTotal !== null && tieRead.size + tieDropped < tieTotal) {
-      // The gap is recorded before the verification request, so a request that throws still leaves the cursor held; a fresh
-      // count that the ids read do reach disproves it.
       state.shortfall = true;
       state.partialOnly = true;
       state.partial = { total: tieTotal, fetched: tieRead.size + tieDropped };
-      const again = await bounded(searchTie(call, def, since, afterId ?? "0"), deadline);
-      const fresh = again === "budget" ? null : again.total;
-      if (fresh !== null && tieRead.size + tieDropped >= fresh) state.shortfall = false;
-      else {
-        state.partial = { total: fresh ?? tieTotal, fetched: tieRead.size + tieDropped };
-        return void (state.ended = Date.now() < deadline);
-      }
+      return void (state.ended = Date.now() < deadline);
     }
     state.tieId = undefined;
     state.doneMs = since;
@@ -435,7 +429,8 @@ export async function syncObject(store: SourceStore, call: CallHubSpot, kind: st
   // HubSpot's total for the whole pass. A gap a query measured is reported even when the pass stopped early or when the
   // whole-pass comparison alone would look complete, so the alert doesn't go quiet. A pass that stopped early without measuring
   // a gap reports nothing, as before.
-  const whole = typeof state.total === "number" ? { total: state.total, fetched: state.seen.size } : undefined;
+  // A result listed without an id was returned, not missed: count it the same way the cursor decision does.
+  const whole = typeof state.total === "number" ? { total: state.total, fetched: state.seen.size + state.dropped } : undefined;
   const wholeShort = whole !== undefined && whole.fetched < whole.total;
   if (o.pass) {
     if (state.shortfall) {
