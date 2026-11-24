@@ -276,7 +276,10 @@
         ask.disabled = true;
         const why = h("input", { type: "text", ariaLabel: "Why", placeholder: "Why: kept with the finding", autocomplete: "off" });
         const go1 = btn("Dismiss", async () => { if (!why.value.trim()) return; go1.disabled = true; try { await tool("code_review_dismiss", { repo: run.repo, number: run.number, id: f.id, reason: why.value.trim() }); say(""); loadDetail(); } catch (e) { go1.disabled = false; fail(e); } }, "primary");
-        row.append(h("form", {}, why, go1, btn("Cancel", () => { ask.disabled = false; row.querySelector("form").remove(); })));
+        const form = h("form", {}, why, go1, btn("Cancel", () => { ask.disabled = false; form.remove(); }));
+        // Enter in the reason box dismisses; the form never submits (a submit would navigate the frame).
+        form.addEventListener("submit", (e) => { e.preventDefault(); go1.click(); });
+        row.append(form);
         why.focus();
       });
       row.append(ask);
