@@ -42,7 +42,13 @@ const refuse = (msg: string): never => {
 type Dict = Record<string, any>;
 export type Change = Dict & { kind: string };
 /** `self`: the agent filing a change to itself (self_change): its key and live roles. Only it may file the self kinds. */
-type Sources = { compiled: Dict; catalog: Dict[]; self?: { key: string; roles: string[] } };
+type Sources = {
+  compiled: Dict;
+  catalog: Dict[];
+  self?: { key: string; roles: string[] };
+  /** The module other than library that ships a skill named `name` in the instance tree (a disabled module counts). */
+  skillModule?: (name: string) => string | undefined;
+};
 /** The kinds an agent files about itself (self_change). */
 export const SELF_KINDS = ["rules", "skill", "skills", "routine_def", "profile"];
 /** The agents' own local module: their skills and routines. */
@@ -113,7 +119,7 @@ const RULES_MAX = 20_000;
  * One typed change, checked against the compiled config (config/paperclip.yaml: agents, routines, mcp_servers, settings) and
  * the module catalog (config/modules.json): the shape, the values, and that what it names exists. Throws Refused.
  */
-export function checkTyped(ch: unknown, { compiled, catalog, self }: Sources): void {
+export function checkTyped(ch: unknown, { compiled, catalog, self, skillModule }: Sources): void {
   if (!isMap(ch) || typeof ch.kind !== "string") refuse("a change is { kind, ... }");
   const c = ch as Change;
   // A self kind names only its filer; the board files none but `rules`.
@@ -181,6 +187,14 @@ export function checkTyped(ch: unknown, { compiled, catalog, self }: Sources): v
       agentsOwn();
       only(c, ["kind", "name", "text"]);
       if (!NAME.test(String(c.name))) refuse(`${c.name} isn't a skill name (a-z, 0-9 and -)`);
+      // This writes the library's skills only (modules/library/skills/<name>/SKILL.md). A name a module other than library
+      // ships would be a second, unused skill: an agent's /codex-home/skills/<name>/ is copied from each skill's own module
+      // folder (sandbox.ts copySkills), so the library write never reaches it. The compiled catalog covers the enabled modules
+      // of any marketplace; skillModule reads the product's and the instance's module trees, so a disabled module refuses too.
+      const name = String(c.name);
+      const owners = Object.keys(compiled?.skills ?? {}).map((id) => id.split(".")).filter(([m, n]) => m !== "library" && n === name).map(([m]) => m!);
+      const module = owners.sort()[0] ?? skillModule?.(name);
+      if (module) refuse(`skill ${name} is module ${module}'s: modules/${module}/skills/${name}/SKILL.md is a module skill, and module skills change through an Engineer PR on the product repo (a self_change writes library skills only)`);
       text(c.text, RULES_MAX);
       return;
     }
@@ -407,10 +421,14 @@ export function planFiles(changes: Change[], { read, localOf, teamOf, moduleHand
         out.set(`agents/${ch.agent}/AGENTS.md`, ch.text.endsWith("\n") ? ch.text : `${ch.text}\n`);
         break;
       }
-      case "skill":
-        out.set(`modules/library/skills/${ch.name}/SKILL.md`, ch.text.endsWith("\n") ? ch.text : `${ch.text}\n`);
+      case "skill": {
+        const path = `modules/library/skills/${ch.name}/SKILL.md`;
+        const next = ch.text.endsWith("\n") ? ch.text : `${ch.text}\n`;
+        // The same text as the file already holds writes nothing (so the change is refused as changing nothing).
+        if (current(path) !== next) out.set(path, next);
         if (current(LIBRARY) === undefined) out.set(LIBRARY, LIBRARY_TEXT);
         break;
+      }
       case "skills": {
         // The one override shape (overrides.agents.<k>.skills): an add takes the id off remove, and a remove takes it off add.
         const at = ["overrides", "agents", ch.agent, "skills"];
@@ -523,13 +541,13 @@ export function createSettingsChanges(d: SettingsDeps) {
     count(changes);
     if (tool === "self_change") return self(requester, taskId, changes as unknown[], why);
     const src = sources();
-    // The filing module speaks only for its own agents, and only of its own settings.
-    const agent = has(src.compiled.agents, requester.key) ? src.compiled.agents[requester.key] : undefined;
-    if (!module || agent?.module !== module) refuse(`${module} files settings changes only for its own agents, and ${requester.key || requester.name} isn't one`);
+    // The filing module speaks only of its own settings, and only for an agent holding a role the setting's `writers` names
+    // (an agent of another module may hold it: the Maintainer changing ship's settings).
+    const deny = () => refuse(`${module || "this module"} files settings changes only for agents holding a role its setting names a writer, and ${requester.key || requester.name} holds none`);
     for (const ch of changes as Dict[]) {
-      if (!isMap(ch) || ch.kind !== "setting") refuse("an agent changes settings only: { kind: setting, key, value }");
+      if (!isMap(ch) || ch.kind !== "setting") return deny();
       const writers: unknown = src.catalog.find((m) => m.enabled && m.name === module && has(m.settings, ch.key))?.settings?.[ch.key]?.writers;
-      if (!Array.isArray(writers) || !writers.some((r) => requester.roles.includes(r))) refuse(`${requester.key || requester.name} may not change ${ch.key} (only a setting ${module} declares, whose settings.${ch.key}.writers names one of the agent's roles)`);
+      if (!Array.isArray(writers) || !writers.some((r) => requester.roles.includes(r))) return deny();
     }
     const issue = (await d.task(taskId)) ?? refuse("no such task");
     return write(taskId, issue, changes as unknown[], src, requester);
@@ -551,7 +569,8 @@ export function createSettingsChanges(d: SettingsDeps) {
     try {
       await d.tree(base, dir);
       const compiled = (() => { try { return compileTree(d.product, dir); } catch (e) { return refuse(`the instance doesn't compile at ${base.slice(0, 12)}: ${(e as Error).message}`); } })();
-      const src: Sources = { compiled: compiled.paperclip, catalog: compiled.catalog, self: { key, roles: requester.roles } };
+      const skillModule = moduleSkillOwner([join(d.product, "modules"), join(dir, "modules")]);
+      const src: Sources = { compiled: compiled.paperclip, catalog: compiled.catalog, self: { key, roles: requester.roles }, skillModule };
       for (const ch of changes) checkTyped(ch, src);
       const typed = (changes as Change[]).map((ch) => (ch.kind === "routine_def" ? { ...ch, agent: key } : ch));
       const localOf = localOfIn(src.compiled);
@@ -600,6 +619,11 @@ export function createSettingsChanges(d: SettingsDeps) {
     return { record: r.id, tier: r.tier, state: r.state, sha };
   }
   return Object.assign(apply, { asAgent, ownerTask });
+}
+
+/** The module other than library whose tree ships `name` as a skill (`modules/<module>/skills/<name>/SKILL.md`), if any. */
+function moduleSkillOwner(roots: string[]): (name: string) => string | undefined {
+  return (name) => roots.flatMap((root) => (existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== "library" && existsSync(join(root, e.name, "skills", name, "SKILL.md"))).map((e) => e.name) : [])).sort()[0];
 }
 
 /**

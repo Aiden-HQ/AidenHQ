@@ -1,0 +1,64 @@
+name: ship
+description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you list in maintainer_repos): per-repo settings and presets (cautious, full), who may hand a PR over, and, in later releases, rounds, repair, App approval and the merge itself. Idle until a repo is listed."
+license: MIT
+# Design: docs/superpowers/specs/2026-11-24-ship-design.md. The service (service/) holds the per-repo settings (`ship`), the
+# adoption records (data/ship/state.json, holds only: the rest is derived from the PR). Its tools
+# (ship_config, ship_configure) read and change the setting like code-review's config tool: validated whole,
+# one typed settings change filed as the calling job; a change that loosens anything is the owner's, made from the Fleet page
+# (the Fleet page).
+requires:
+  - github # the covered repos' reads and the effects ship files (later releases)
+roles:
+  # kernel.settings: the config tool's settings changes (writers below).
+  requests: [ kernel.settings ]
+  declares:
+    - { id: ship-admin, description: "Reads ship's settings and changes one repo's entry (ship_config, ship_configure) when the owner asks in words; a change that loosens anything is the owner's." }
+settings:
+  # The per-repo ship settings: { defaults: cautious | full | { preset, …fields }, repos: { owner/name: cautious | full | { preset?,
+  # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command },
+  # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads,
+  # review_rounds, rounds, usd, requeue_on_timeout: a number, or null for unlimited }, approve: off|observe|safe|all,
+  # safe: { max_lines, max_files, deny }, merge: off|ready, enabled: true|false, stop_label } }, paused: true|false (stops every adoption, push,
+  # approval and merge) }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
+  # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
+  ship:
+    type: object
+    writers: [ ship-admin ]
+    default:
+      defaults: cautious
+      repos: {}
+# The Fleet page (a module view, declared here by a later lane) calls only this module's own tools: ship_config and ship_configure
+# for settings and presets, ship_status for status.
+connections:
+  ship:
+    setup: "Built in: nothing to connect."
+    url: http://ship:8101/mcp
+    auth: ship_service_key
+    returns: untrusted
+    tools:
+      read: [ ship_config, ship_status ]
+      write: [ ship_configure ]
+services:
+  data: true
+  run:
+    ship:
+      build: ./service
+      tmp: 16m
+      port: 8101
+      egress: true # the kernel's listener is a host address
+      # github's network: its reads and effects.
+      join: [github]
+      data: ["ship:/data"]
+      env:
+        SHIP_STATE_FILE: /data/state.json
+        SHIP_SETTINGS: "${settings.ship}"
+        SHIP_FLEET_ORG: "${settings.github_fleet_org}"
+        SHIP_PRODUCT_REPO: "${settings.product_repo}"
+        SHIP_MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        SHIP_TOKEN_FILE: ${secrets.ship_token}
+        SHIP_SERVICE_KEY_FILE: ${secrets.ship_service_key}
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+generated_secrets:
+  - ship_token
+  - ship_service_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

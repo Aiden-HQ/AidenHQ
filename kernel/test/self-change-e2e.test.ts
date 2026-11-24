@@ -126,6 +126,36 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   // The reviewer reads which agents the new skill steers.
   assert.deepEqual(sRec.args.authority, ["skill library.nudge changed; enabled by agent review-chaser (review)", "agent review-chaser enables skill library.nudge (review)"]);
 
+  // A skill another module ships is refused: the library write would be a second, unused skill, since the agent reads the
+  // skill copied from its module folder.
+  const moduleSkill = readFileSync(join(product, "modules/fleet-steward/skills/fleet-check/SKILL.md"), "utf8");
+  {
+    const beforeModule = branches();
+    const r = await self("chaser", [{ kind: "skill", name: "fleet-check", text: moduleSkill }]);
+    assert.ok(r.status >= 400, "a module's skill name was accepted as a library skill");
+    assert.match(r.body.error.message, /modules\/fleet-steward\/skills\/fleet-check\/SKILL\.md/);
+    assert.match(r.body.error.message, /module skills change through an Engineer PR on the product repo/);
+    assert.deepEqual(branches(), beforeModule);
+    assert.equal(applies().length, 2);
+  }
+
+  // The same library skill text, on a main that already holds it, changes nothing: no new branch and no new apply record.
+  {
+    const w = join(dir, "landed");
+    git(dir, "clone", "-q", bare, w);
+    mkdirSync(join(w, "modules/library/skills/nudge"), { recursive: true });
+    writeFileSync(join(w, "modules/library/skills/nudge/SKILL.md"), skillText);
+    git(w, "add", "-A");
+    git(w, "commit", "-qm", "land the nudge skill");
+    git(w, "push", "-q", "origin", "main");
+    const beforeSame = branches();
+    const r = await self("chaser", [{ kind: "skill", name: "nudge", text: skillText }]);
+    assert.ok(r.status >= 400, "an identical library skill was filed again");
+    assert.match(r.body.error.message, /it changes nothing/);
+    assert.deepEqual(branches(), beforeSame);
+    assert.equal(applies().length, 2);
+  }
+
   // Main moved after the fetch: the code host's compare-and-swap answers "file again", and nothing is filed.
   moveNext = true;
   const moved = await self("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n\nYou chase reviews, once a day.\n" }]);
@@ -149,7 +179,7 @@ test("V2: memory and self changes, each filed once as the agent's own Tier 1 app
   await refused("chaser", [{ kind: "skill", name: "nudge2", text: "---\nname: other\ndescription: x\n---\n" }], /it doesn't compile: .*SKILL.md name must be its folder name/);
   await refused("chaser", [{ kind: "routine_def", key: "often", routine: { title: "Often", description: "Check, then close this task.", schedules: [{ cron: "*/5 * * * *", label: "x" }] } }], /it doesn't compile: .*at most hourly/);
   // The same change through a tool that isn't self_change is the setting path: refused.
-  await refused("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n" }], /tasks files settings changes only for its own agents/, "task_get");
+  await refused("chaser", [{ kind: "rules", agent: "review-chaser", text: "# Review Chaser\n" }], /tasks files settings changes only for agents holding a role/, "task_get");
   // Roles are the live grants row's: Aiden's row loses fleet-admin after its job started, and its profile change is refused.
   const g = JSON.parse(readFileSync(k.grantsFile, "utf8"));
   g.agents[COS].roles = [];

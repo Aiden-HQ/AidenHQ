@@ -723,7 +723,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const seen = bundleState?.seen ?? oldBundle ?? bundle;
   const adopted = new Set([...(bundleState?.adopted ?? []), ...bundle.filter((n: string) => !seen.includes(n) && !listed.has(n))].filter((n) => all.has(n)));
   const unset = (n: string) => resolveEnabled(all, [n]).flatMap((m) => Object.entries(all.get(m)!.def.settings ?? {}).filter(([k, d]: [string, any]) => d?.required && !("default" in d) && instance.settings?.[k] == null).map(([k]) => k));
-  const added = [...adopted].filter((n) => !removed.has(n) && !listed.has(n)).filter((n) => {
+  // A new bundle member whose requirements include a module the owner removed stays out (a local-only install keeps GitHub off).
+  const added = [...adopted].filter((n) => !removed.has(n) && !listed.has(n) && !resolveEnabled(all, [n]).some((m) => removed.has(m))).filter((n) => {
     const missing = unset(n);
     if (missing.length) console.warn(`module ${n} is not enabled yet: set ${missing.join(", ")} first`);
     return !missing.length;
