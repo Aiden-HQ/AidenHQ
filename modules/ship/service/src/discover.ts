@@ -35,7 +35,9 @@ export function discover(files: Record<string, string>): Discovered {
         if (!pattern || pattern.startsWith("#")) continue;
         if (!attrs.some((a) => a === "linguist-generated" || a === "linguist-generated=true")) continue;
         const p = pattern.replace(/^\//, "");
-        globs.add(at === "." ? (pattern.startsWith("/") || p.includes("/") ? p : `**/${p}`) : `${at}/${p}`);
+        // A pattern with no slash matches at any depth under its .gitattributes (git's rule), a nested one's too.
+        const rel = pattern.startsWith("/") || p.includes("/") ? p : `**/${p}`;
+        globs.add(at === "." ? rel : `${at}/${rel}`);
       }
     }
   }
