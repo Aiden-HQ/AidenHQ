@@ -244,8 +244,12 @@ function Group({ g, lane, crew, selected, go, front, searching }: { g: AgentGrou
         <button className="side-agent-btn" onClick={() => (front && !open ? setOpen(true) : setOpen(!open))} aria-expanded={open}>
           <Monogram name={g.agent.name} size={front ? 32 : 26} front={front} avatar={portraitOf(crew, g.agent.key)} />
           <span className="side-agent-name">{g.agent.name}</span>
-          {g.busy && <span className="live-dot" title="Working" />}
-          {g.needsYou && <span className="needs-dot" title="Needs you" />}
+          {g.count && (
+            <span className={`side-count ${g.count.kind}`} title={`${g.count.n} of ${g.agent.name}'s chats (and the work they handed out) ${g.count.kind === "needs" ? "need you" : "working now"}`}>
+              {g.count.kind === "needs" ? <i className="needs-dot" /> : <i className="live-dot" />}
+              {g.count.n} {g.count.kind === "needs" ? (g.count.n === 1 ? "needs you" : "need you") : "working"}
+            </span>
+          )}
           {!open && g.unread && <span className="unread-dot" title="New reply" />}
           <span className={`chev${open ? " open" : ""}`} aria-hidden>
             <Chevron />
