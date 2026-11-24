@@ -53,6 +53,16 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   let a = d.state.get(pr.repo, pr.number) as Kept | undefined;
   if (!a || !s) return "nothing";
   // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
+  // Landed: a hand-off's task ends with it (a fleet PR's task is its opener's), whatever else holds the PR.
+  if (pr.state === "merged" && v.do === "done") {
+    if (a.trigger.kind !== "fleet" && a.counters?.lastRound !== `${pr.head}:done`) {
+      await d.kernel.call("POST", `/v1/tasks/${a.task}/close`, { status: "done", body: `${pr.url} is merged.` }).catch((e) => d.log("task close failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
+      a = { ...a, counters: { ...(a.counters ?? { head: pr.head, wakes: 0, rounds: 0, ci: 0, review: 0, red: {} }), lastRound: `${pr.head}:done` } };
+      d.state.put(a);
+      await report(d, a, pr, { state: "merged", stopLabel: s.stop_label });
+    }
+    return "acted";
+  }
   const people = pr.assignees.filter((x) => !(a!.assigned ?? []).includes(x));
   if (d.paused() || a.hold || pr.state !== "open" || pr.draft || pr.labels.includes(s.stop_label) || people.length) return "stopped";
 
@@ -70,8 +80,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     await save("on hold");
     return "acted" as const;
   };
+  // A fork's branch can't be fetched into the task's computer yet: work that needs a push to it waits for its author.
+  const forkNote = pr.canModify
+    ? "it needs a change on its fork's branch, which ship can't fetch into the task's computer yet: the contributor can rebase or fix it"
+    : "it needs a change on its fork's branch, and the fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\", rebase or fix it";
   const wake = async (kind: string, text: string) => {
     if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`);
+    // The kernel keeps 2,000 characters of a wake: a longer one (a very long repair plan) would reach the task cut.
+    if (text.length > 2000) return hold(`the ${kind} wake is ${text.length} characters (over 2,000): narrow the repo's \`generated\` setting`);
     await d.kernel.call("POST", "/v1/wakes", { task: a!.task, text });
     c.wakes++;
     a = { ...a!, did: [...(a!.did ?? []), `${kind} at \`${pr.head.slice(0, 12)}\``] };
@@ -95,7 +111,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           a = { ...a!, did: [...(a!.did ?? []), `updated the branch with \`${pr.defaultBranch}\``] };
           return "acted";
         }
-        if (pr.fork && !pr.canModify) return hold("it conflicts, and its fork doesn't allow maintainer edits: the contributor can enable \"Allow edits by maintainers\" or rebase it");
+        if (pr.fork) return hold(forkNote);
         const plan = repairPlan(s, f.discovered);
         return wake("repair", [
           `${pr.url} conflicts with \`${pr.defaultBranch}\` at head ${pr.head}. Repair it as the \`ship\` skill says: first run`,
@@ -107,6 +123,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "fix_ci": {
         if (!s.fix.includes("ci")) return hold("a required check is red, and this repo's `fix` setting excludes CI");
+        if (pr.fork) return hold(forkNote);
         const failing = f.failing ?? [];
         const onBase = new Set(f.onBase ?? []);
         const own = failing.filter((n) => !onBase.has(n));
@@ -127,6 +144,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "fix_review": {
         if (!s.fix.includes("review")) return hold("review findings are open, and this repo's `fix` setting excludes review");
+        if (pr.fork) return hold(forkNote);
         if (over(c.review, caps.review_rounds)) return hold(`${c.review} review fix rounds (review_rounds)`);
         c.review++;
         return wake("fix_review", `${pr.url}: code review has open important findings (or changes requested) at head ${pr.head}. Verify each as the \`ship\` skill says: fix the real ones in one commit, decline the rest with evidence through code_review_resolve.\n${push()}`);
@@ -136,6 +154,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (a!.merge?.head === pr.head) {
           const r = await d.kernel.call("GET", `/v1/writes/${a!.merge.record}`);
           if (OPEN.includes(String(r.state))) return "nothing";
+          // A veto (the AI reviewer's or the owner's) is final for this head: never asked again.
+          if (r.state === "rejected") return hold(`the merge at \`${pr.head.slice(0, 12)}\` was rejected (${String(r.reason ?? "no reason given").slice(0, 200)})`);
           if (over(c.rounds, caps.rounds)) return hold(`${c.rounds} rounds (rounds)`);
           c.rounds++;
         }
@@ -146,10 +166,6 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       }
       case "stall":
         return hold(v.why ?? "stalled");
-      case "done":
-        // A handed-over PR's task ends once it landed; a fleet PR's task is its opener's.
-        if (a!.trigger.kind !== "fleet") await d.kernel.call("POST", `/v1/tasks/${a!.task}/close`, { status: "done", body: `${pr.url} is merged.` }).catch((e) => d.log("task close failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
-        return "acted";
       default:
         // wait; approve and enqueue are later lanes (D2, D3): the report says what it waits on.
         return "nothing";
@@ -169,7 +185,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
 async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts) {
   try {
     const id = await d.comment(pr.repo, pr.number, renderReport(a, pr, f), a.report);
-    if (id !== a.report) d.state.put({ ...a, report: id });
+    const kept: Kept = { ...a, report: id };
+    if (id !== a.report) d.state.put(kept);
   } catch (e) {
     d.log("report failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) });
   }

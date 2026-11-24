@@ -620,6 +620,9 @@ export function createService(o: Options) {
     if (!app) return { ok: false, text: `ship-no-app: ${url}: commits to an adopted PR are written as the GitHub App, which isn't installed on ${into}: nothing was pushed.` };
     const made = await apiCommits(app.rest, into, dir, String(a.expected), String(b.sha));
     if ("refused" in made) return { ok: false, text: `${made.refused.startsWith("ship-") ? "" : "GitHub refused the commit: "}${made.refused} (${url}): nothing was pushed.` };
+    // The adoption once more, right before the branch moves: a pause or a hand-back during the upload refuses it.
+    const late = await adoptionEnded(s.slug, Number(a.pr.number), a.generation);
+    if (late) return { ok: false, text: late };
     const r = await app.rest("PATCH", `/repos/${into}/git/refs/heads/${b.branch.split("/").map(encodeURIComponent).join("/")}`, { sha: made.sha, force: false });
     // Not a fast-forward from `expected`: someone pushed after the read above.
     if (r.status === 422 || r.status === 409) return { ok: false, text: `ship-head-moved: ${url} moved while writing (the update from \`${String(a.expected).slice(0, 12)}\` isn't a fast-forward any more): nothing was pushed; read it again.` };

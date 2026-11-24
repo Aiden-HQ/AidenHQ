@@ -42,7 +42,8 @@ export function discover(files: Record<string, string>): Discovered {
     for (const job of jobsOf(text)) {
       if (!GEN_JOB.test(job.id) && !GEN_JOB.test(job.name)) continue;
       const runs = job.runs.filter((r) => GEN_RUN.test(r));
-      if (runs.length === 1) put(job.dir, runs[0]!.match(GEN_RUN)![0]);
+      // The command with its own arguments, up to the next shell operator (`go generate ./...`, not `go generate`).
+      if (runs.length === 1) put(job.dir, /[^;&|]*/.exec(runs[0]!.slice(runs[0]!.search(GEN_RUN)))![0].trim());
       else if (runs.length > 1) ambiguous.push(`${path}: job ${job.id} runs ${runs.length} generate commands`);
     }
   }

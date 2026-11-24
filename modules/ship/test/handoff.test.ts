@@ -142,6 +142,10 @@ test("a conflict wakes the task with the repair command; a fork without maintain
   w.records["rec-1"] = "failed";
   await round(w.deps, w.pr({ head: H3 }), { do: "merge", why: "ready" });
   assert.equal((w.of("POST /v1/writes")[1]!.body as any).args.attempt, 2);
+  // Landed: the hand-off's task closes once.
+  await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });
+  await round(w.deps, w.pr({ head: H3, state: "merged" }), { do: "done", why: "already merged" });
+  assert.equal(w.of("POST /v1/tasks/task-ship:a/b/7:1/close").length, 1);
 
   const f = world();
   await intake(f.deps, f.pr({ fork: true, events: [on] }));
