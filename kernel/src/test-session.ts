@@ -200,9 +200,10 @@ export function createTestSessions(d: TestSessionsDeps) {
         await end(r.id, "setting-removed");
         return null;
       }
-      // A task read that fails (Paperclip briefly unreachable) is not a closure: refuse this check, keep the session.
+      // A task read that fails (Paperclip briefly unreachable) is not a closure: keep the session, but say the check could not
+      // be made (503), so the listener answers a retryable error rather than 401 "sign in first".
       const t = await d.task(r.task).catch(() => null);
-      if (t === null) return null;
+      if (t === null) throw new TestSessionError(503, "the task could not be read");
       if (!t || ["done", "cancelled"].includes(String(t.status)) || t.assigneeAgentId !== r.agent_id) {
         await end(r.id, "task-closed");
         return null;

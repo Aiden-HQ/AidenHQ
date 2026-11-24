@@ -206,9 +206,10 @@ test("a session signs in as the account it was minted for: a changed setting ema
   });
   const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
-  // A brief control-plane failure refuses this check but must not end the session: the page's next asset gets in.
+  // A brief control-plane failure refuses this check with a retryable 503 but must not end the session: the page's next
+  // asset gets in.
   read = "down";
-  assert.equal(await st.s.check({ cookie, host: HOST }), null);
+  await assert.rejects(() => st.s.check({ cookie, host: HOST }), (e: { status?: number }) => e.status === 503);
   assert.equal(st.s.auditRows().some((r) => r.event === "test_session_revoked"), false);
   assert.equal(await st.s.sweep(), 0);
   read = "ok";

@@ -111,6 +111,8 @@ describe("app_page_canary", () => {
     expect(script).toContain("document.body.innerText");
     // The feedback form is chosen by its own wording, never "the first textbox and the first button".
     expect(script).toContain("const FEEDBACK =");
+    // "message" and bare "comment" are not feedback wording: a chat composer must never be taken for the intake.
+    expect(script).not.toMatch(/const FEEDBACK = \/[^/]*message/);
     expect(script).toContain("v.role === \"textbox\" && FEEDBACK.test");
     // Evidence is only what this submission caused, from the page's own origin.
     expect(script).toContain("n.at >= submittedAt");

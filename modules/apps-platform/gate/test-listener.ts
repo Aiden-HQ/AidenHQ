@@ -114,6 +114,11 @@ export function createTestListener({ config, fetch: fetchImpl = fetch, log = (o)
       const state = url.searchParams.get("state") ?? "";
       if (!CODE.test(code) || !STATE.test(state)) return plain(res, 400, "bad request");
       const r = await kernel(c, "/.auth/api/test-session/redeem", { code, host: publicHost, state });
+      // A backend failure is not a spent code: 503 so the browser may retry, and only a real refusal says used or expired.
+      if (r.status >= 500 || r.status === 0) {
+        log({ msg: "test handoff unavailable", app, status: r.status });
+        return plain(res, 503, "unavailable: try again");
+      }
       if (r.status !== 200 || typeof r.body?.token !== "string") {
         log({ msg: "test handoff refused", app, status: r.status });
         return plain(res, 401, "this sign-in is used or expired");

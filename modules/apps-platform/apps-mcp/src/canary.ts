@@ -118,7 +118,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // The feedback form, unambiguously: a field whose own wording is about feedback. A settings page's display-name box, or a
     // header search box, is not one. The page may instead link to its form: follow its own feedback link (never any textbox),
     // and only stop once a feedback field is actually on the page.
-    const FEEDBACK = /feedback|intake|suggest|idea|comment|message|what would you|tell us/i;
+    // Feedback-specific wording only: "message" or bare "comment" also name a chat composer or a discussion box, and a
+    // canary must never send its text as a chat message. A field's own wording wins; the fallback is a page with exactly one
+    // textbox under a feedback-named control (the link walk below finds a feedback page first).
+    const FEEDBACK = /feedback|intake|suggest|what would you|tell us/i;
     const feedbackField = (refs) => Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0]
       || (Object.values(refs).filter((v) => v.role === "textbox").length === 1 && Object.values(refs).some((v) => v.role === "button" && FEEDBACK.test(v.name || ""))
         ? Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0] : undefined);
