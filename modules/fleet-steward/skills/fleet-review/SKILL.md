@@ -15,8 +15,8 @@ description: "Groups the week's recurring failures into at most 3 rule proposals
    or a shared section; `assignee: chief-of-staff` for an agent's own handbook, skills or routines (Aiden hands it to that
    agent). Your own rule you fix with `self_change`. Log `rule:<agent>:<slug>`.
 4. **Dependabot stragglers:** `task_delegate` to the Engineer (marker `dependabot:<date>`, title "Dependabot stragglers"): handle
-   the product repo's Dependabot PRs open over 3 days per its handbook, list each (the product repo's `dependabot` setting in
-   `maintainer_repos` applies: none when `off`, only those with a failing check when `failing`); `deliverable` `report`. Close last week's once answered.
+   the product repo's Dependabot PRs open over 3 days per its handbook, list each. Read the product repo's `settings.dependabot` with `github_issue_list` first: delegate nothing when it is `off`, and
+   name only the PRs with a failing check when it is `failing`; `deliverable` `report`. Close last week's once answered.
 5. **Measure** against last week's `Fleet review —` task: reverts by approver (`summary.quality.line`, `.reverted` from
    `fleet_status` 7d; name each with link and approver); revert rate (reverted over merged PRs, `warehouse_query` on
    `src_github.issues`, a revert is titled `Revert "…"`); same defect twice, each with a step-3 proposal for a deterministic check (lint rule, test or `ui-review` check).
