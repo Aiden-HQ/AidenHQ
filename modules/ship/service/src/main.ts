@@ -1,5 +1,5 @@
-// The ship service: its state (SHIP_STATE_FILE), the watch loop (loop.ts: the fleet's PRs, and every other PR's hand-off and rounds
-// through adopted.ts), the contributor-PR pass (contributor.ts), the HTTP API and the MCP connection `ship` on :8101.
+// The ship service: its state (SHIP_STATE_FILE), the watch loop (loop.ts: every PR through one engine, adopted.ts and rounds.ts,
+// after its CI recoveries, ci-recover.ts), the contributor-PR pass (contributor.ts), the HTTP API and the MCP connection `ship` on :8101.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
@@ -7,6 +7,7 @@ import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { adoptedPass } from "./adopted.ts";
+import { ciRecover } from "./ci-recover.ts";
 import { configTools } from "./config-tool.ts";
 import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
 import { shipEffects } from "./effects.ts";
@@ -78,15 +79,14 @@ for (const m of maintained) {
 }
 const dataDir = dirname(stateFile);
 startLoop({
-  repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, state, paused,
-  settings: settingsOf,
+  repos: [...repos].map(([repo, duties]) => ({ repo, duties })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, flow, paused,
   openers: () => github("GET", "openers"),
-  decide: (data, head) => github("POST", "decide", { data, head }),
-  reviewGate: async (repo, number, head) => (await github("POST", "verdict", { repo, number, head }, 20_000)) ?? undefined,
-  // Everyone else's PRs: the hand-off and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
+  recover: ciRecover({ gh, log }),
+  // Every PR but Dependabot's: the hand-off (or a task's own PR) and its rounds (handoff.ts, rounds.ts), on GitHub through the same routes.
   adopted: adoptedPass({
     gh, state, settings: settingsOf, paused, kernel, log,
-    decision: (repo, number, head) => github("POST", "decision", { repo, number, head }),
+    // The list read's node and default branch go along, so github reads neither again.
+    decision: (repo, number, head, view) => github("POST", "decision", { repo, number, head, pr: view.pr, main: view.main, ...(view.stackedOn ? { stackedOn: view.stackedOn } : {}) }),
     effects: shipEffects(kernel, { codeReview: "http://code-review:8098", key: token }),
   }),
 });

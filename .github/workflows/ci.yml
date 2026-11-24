@@ -604,11 +604,12 @@ jobs:
           # A base whose scanner predates --accepted gets no list (its scan is unchanged).
           grep -q -- '--accepted' "$RUNNER_TEMP/image-scan.ts" && accepted=(--accepted "$RUNNER_TEMP/accepted.yaml") || accepted=()
           mkdir -p "$RUNNER_TEMP/grype-db"
-          # The computer images build FROM each other (an ARG default: engineer on agent-base, agent-base on the browser
+          # The computer images build FROM each other (an ARG default: session on engineer, engineer on agent-base, agent-base on the browser
           # image): each scanned through its own Dockerfile, never pulled from a registry image of the same name. DOCKERFILES is split on spaces, never globbed (set -f); the
           # find step refused any path with whitespace or a leading -, and -- ends the options.
           set -f
           GRYPE_DB_CACHE_DIR="$RUNNER_TEMP/grype-db" node "$RUNNER_TEMP/image-scan.ts" --exceptions "$RUNNER_TEMP/exceptions.yaml" "${accepted[@]}" \
+            --local aidenhq/computer-engineer=services/computer/images/engineer/Dockerfile \
             --local aidenhq/computer-agent-base=services/computer/images/agent-base/Dockerfile \
             --local aidenhq/computer-browser=services/computer/images/browser/Dockerfile -- $DOCKERFILES
 

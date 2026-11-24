@@ -6,12 +6,12 @@
 //                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's.
 //   POST /internal/ship/flow     {fn, args} -> Flow's fact for what the loop saw (flow.ts), or `authored`'s answer
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
-//   POST /internal/ship/decision {repo, number, head} -> an adopted PR's round decision (merges.ts decision: decide with ship's context)
-//   POST /internal/ship/decide   {data, head} -> the merge gate's rule on the loop's view of a PR (merge-gate.ts decide)
+//   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
+//                                context); `pr` and `main` are the list read's node and default branch (OPEN_PRS_QUERY), so the
+//                                PR isn't read again; `stackedOn`: the open PR whose branch is its base
 //   GET  /internal/ship/openers  -> pr-tasks.json: which task opened each PR
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withBranch } from "./branch-lock.ts";
-import { decide } from "./merge-gate.ts";
 import { readPrTasks } from "./pr-tasks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
@@ -44,6 +44,12 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
   ["GET", new RegExp(`^/repos/${REPO}/collaborators/[\\w-]+/permission$`)],
   ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
   ["DELETE", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
+  // The repo's own steps and discovery (ship's actions.ts): the base branch's tree and its blobs, a workflow's dispatch on the PR's
+  // branch, and that workflow's runs.
+  ["GET", new RegExp(`^/repos/${REPO}/git/trees/[\\w.-]+\\?recursive=1$`)],
+  ["GET", new RegExp(`^/repos/${REPO}/git/blobs/[0-9a-f]{40}$`)],
+  ["POST", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/dispatches$`), (b) => typeof b?.ref === "string" && Object.keys(b).every((k) => k === "ref" || (k === "inputs" && typeof b.inputs === "object" && !Array.isArray(b.inputs)))],
+  ["GET", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/runs\\?[\\w=&%.-]*$`)],
 ];
 /** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
  * variables, so no other query runs on the owner's sign-in. */
@@ -53,14 +59,14 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision latestOpinionatedReviews(first: 30) { nodes { state } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision isInMergeQueue latestOpinionatedReviews(first: 30) { nodes { state } } reviews(last: 20) { nodes { state commit { oid } } } reviewRequests(first: 10) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } } isCrossRepository headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
 const FLOW = ["opened", "pushed", "merged", "closed", "checksStarted", "checksCompleted", "authored"] as const;
 
 export function shipRoutes(o: {
-  gh: Gh; decision?: (repo: string, number: number, head: string) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
+  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number }) => Promise<unknown>; flow: Record<(typeof FLOW)[number], (...a: any[]) => unknown>; gate: ReviewGate; cacheDir: string;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
   allowed: (repo: string) => boolean;
   /** Whether a bearer is the ship module's own token (undefined: the kernel couldn't say now). */
@@ -98,7 +104,9 @@ export function shipRoutes(o: {
         const v = b.body?.variables ?? {};
         const read = method === "POST" && path === "/graphql";
         // No `.` or `..` segment (raw or percent-encoded) and no other escape: a path that normalises elsewhere is never sent.
-        const dotted = String(path).split("?")[0]!.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(String(path));
+        // The query may carry an encoded slash (a `head=owner:feat/x` filter): it never changes which path GitHub serves.
+        const bare = String(path).split("?")[0]!;
+        const dotted = bare.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg)) || /%(2e|2f|5c)/i.test(bare) || /%(2e|5c)/i.test(String(path).slice(bare.length));
         const call = dotted ? undefined : CALLS.find(([m, re]) => m === method && re.test(String(path)));
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
         if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
@@ -111,7 +119,7 @@ export function shipRoutes(o: {
         }
         // `expectTask` is the route's own re-check of ownership, never GitHub's: it is stripped before the call goes out.
         const { expectTask, ...sent } = read ? {} : (b.body ?? {});
-        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : sent;
+        const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body === undefined ? undefined : sent;
         // A close or a branch delete runs under this service's per-branch lock (branch-lock.ts), the one the publish holds around its
         // push and its ownership write. A cleanup in the gap between them would otherwise close or delete what a successor just pushed.
         const branch = String(path).match(/\/git\/refs\/heads\/(.+)$/)?.[1] ?? (method === "PATCH" && b.body?.state === "closed" ? await prBranch(repo, Number(String(path).split("/").at(-1))) : undefined);
@@ -154,9 +162,9 @@ export function shipRoutes(o: {
       if (op === "decision" && o.decision) {
         const repo = String(b.repo);
         if (!o.allowed(repo)) return send(res, 403, { error: `ship may not read ${repo.slice(0, 200)}` }), true;
-        return send(res, 200, await o.decision(repo, Number(b.number), String(b.head))), true;
+        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup }, ...(Number.isInteger(b.stackedOn) && b.stackedOn > 0 ? { stackedOn: b.stackedOn } : {}) } : undefined;
+        return send(res, 200, await o.decision(repo, Number(b.number), String(b.head), view)), true;
       }
-      if (op === "decide") return send(res, 200, decide(b.data, String(b.head))), true;
       return send(res, 404, { error: "no such operation" }), true;
     } catch (e) {
       return send(res, 500, { error: String((e as Error).message ?? e).slice(0, 300) }), true;

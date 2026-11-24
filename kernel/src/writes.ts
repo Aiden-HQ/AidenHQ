@@ -118,7 +118,7 @@ function planPaths(p: unknown): string[] | null {
   return out.length ? out.slice(0, 500) : null;
 }
 
-export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), reviewCode = () => ({}), checks = () => ({}), filedChecks = {}, onTask, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
+export function createWrites({ records, registry, connections, secret, resolver, reviews, autonomy = () => "full", repos = () => ({}), reviewCode = () => ({}), checks = () => ({}), filedChecks = {}, onTask, taskIdentifier, replay, native = {}, planners = {}, executors = () => ({}), resume = [], log = () => {} }: {
   records: Records; registry: () => { [kind: string]: Kind }; connections: () => { [c: string]: Connection }; secret: (n: string) => string; resolver: Resolver;
   /** The bound reviewer module (reviews.ts): every record's review goes there. */
   reviews?: Reviews;
@@ -139,6 +139,13 @@ export function createWrites({ records, registry, connections, secret, resolver,
     /** A task a conn.tool call names, and why its agent may write there (cp.ts scopeOf); undefined when there is no such task. */
     scope?(task: string, agent: string): Promise<{ id: string; identifier?: string | null; scope?: "own" | "created" | "child" } | undefined>;
   };
+  /**
+   * A task's canonical identifier, as the control plane reads it (main.ts: `GET /api/issues/<id>`). A record a module or the
+   * kernel files on a named task has no job row to take it from; it is read here so the record is on the task by both ids.
+   * Undefined when the task answers with none (gone, or no identifier): the record stays without one and a code host's guard
+   * fails closed. A failed read throws (a retryable 503): an identifier-less record the queue can never land is worse.
+   */
+  taskIdentifier?: (task: string) => Promise<string | undefined>;
   /** Executes an approved conn.tool record: the stored call, through the proxy, as its requester. */
   replay: (r: Rec) => Promise<{ ok: boolean; text: string }>;
   /** The kernel's own executors, by kind (kernel.apply). */
@@ -277,7 +284,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // Cut for storage only with code's note: an open record's card is shown whole from its context (backplane GET /v1/writes).
     const card = { ...whole, details: whole.details.length > DETAILS_MAX ? `${whole.details.slice(0, DETAILS_MAX)}\n[${whole.details.length - DETAILS_MAX} characters not shown here: the card shows the whole diff while it is open]` : whole.details };
     // A job's record names its workspace (its task's identifier, from the job's row): where the code host reads its commits.
-    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(workspace ? { identifier: workspace } : {}), paths: planPaths(plan.paths) };
+    // A module's or the kernel's record that names a task has no job row to take it from (only these may name one; an agent's
+    // record is always on its own run task), so it carries that task's canonical identifier from the control plane: a job's
+    // workspace is never overwritten, and a task that answers with none leaves it unset.
+    const named = workspace || (task && (requester.kind === "module" || requester.kind === "kernel") ? await taskIdentifier?.(task) : undefined);
+    const identifier = named || undefined;
+    const base = { kind, module: k.module, args: plan.args, targets, executor, policy: policy(k), card, requester, task, ...(identifier ? { identifier } : {}), paths: planPaths(plan.paths) };
     if (plan.satisfied) return { base, satisfied: String(plan.satisfied.evidence) };
     const raise = plan.raise && (plan.raise.tier === 1 || plan.raise.tier === 2) ? plan.raise : undefined;
     // The reason and rule shown: the strictest raise, the plan's on a tie.
@@ -306,7 +318,12 @@ export function createWrites({ records, registry, connections, secret, resolver,
     // record with the owner or approved stays as it is. Another requester's record is never touched: this one is its own.
     const who = (q: Requester) => `${q.kind}|${q.agent}|${q.key}|${q.module ?? ""}`;
     const same = t.tier > 0 ? records.open(task, kind, digestOf(base)).find((r) => who(r.requester) === who(requester)) : undefined;
-    if (same && same.tier >= t.tier) return same;
+    if (same && same.tier >= t.tier) {
+      // The record is this request, so it is on the task by the identifier this call resolved: one filed before the lookup
+      // (or before it could resolve) would otherwise keep `identifier: null`, and the code host's guard stay closed on it.
+      if (base.identifier && !same.identifier) records.setIdentifier(same.id, base.identifier);
+      return records.get(same.id)!;
+    }
     if (same?.state === "review") records.close(same.id, "cancelled", "replaced by the same request at a stricter tier");
     return records.file(t);
   }

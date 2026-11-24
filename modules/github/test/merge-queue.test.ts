@@ -719,6 +719,22 @@ test("a merge card for a PR that changed owners does not merge the successor's P
   assert.match(outcomes[0].text, /now belongs to WOR-11, not WOR-9: this merge was approved for the earlier owner/);
 });
 
+test("a merge a module filed under its owner's task id lands: pr-tasks.json's identifier is resolved to that task's id", async (t) => {
+  // Ship files a task-owned PR's merge on the task's id (a module's record has no identifier); pr-tasks.json names the identifier.
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-owner-id-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "agent/WOR-9/feature" } }));
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
+  const { handle, outcomes, merge, settle } = await setup(t, {
+    prs, cacheDir,
+    // The kernel's real answer: /v1/work?task= takes the id or the identifier, and its jobs carry the task's id (not its identifier).
+    kernelReply: (m, url) => (m === "GET" && /^\/v1\/work\?task=(tsk_0000000000000w9|WOR-9)$/.test(url) ? { status: "in_progress", jobs: [{ id: "j1", task: "tsk_0000000000000w9", state: "done" }], records: [] } : undefined),
+  });
+  await merge("k-00000000000000e1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", "");
+  await handle.stepMerges();
+  await settle();
+  assert.equal(prs["acme-agents/widget"].state, "MERGED", JSON.stringify(outcomes));
+});
+
 test("a PR the merge commit's message already credits is not also read from the kernel", async (t) => {
   // The message path and the record path are two proofs of the same link: once the message answers, the kernel is not asked.
   const mergeSha = "d".repeat(40);

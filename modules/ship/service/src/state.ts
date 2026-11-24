@@ -9,6 +9,12 @@ export interface Adoption {
   repo: string; number: number; generation: number;
   trigger: { kind: "fleet" | "label" | "comment" | "tool" | "all"; event: string; actor: string };
   task?: string;
+  /**
+   * Whose PR ship works for, the one place origin shows: a task's (the code host opened it for that task: ship wakes that task,
+   * posts no comment, and closes the PR when the task is cancelled, done or superseded) or a member's (the report comment and an
+   * assignment on a hold).
+   */
+  owner?: { kind: "task"; task: string } | { kind: "member"; login: string };
   /** The one sticky state: set on a stall, a hand-back or a stop; only a fresh trusted trigger (a new generation) clears it. */
   hold: { kind: (typeof HOLDS)[number]; reason: string; at?: string } | null;
 }

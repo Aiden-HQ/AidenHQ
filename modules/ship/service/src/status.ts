@@ -15,7 +15,7 @@ export function status(raw: Dict, scope: Scope, state: State, repo?: string) {
     repos: [...new Set([...Object.keys((raw.repos as Dict) ?? {}), ...scope.fleet.filter((f) => !f.includes("*"))])].filter(same).map((r) => {
       const s = effective(raw, r, scope), entry = Object.entries((raw.repos as Dict) ?? {}).find(([k]) => k.toLowerCase() === r.toLowerCase())?.[1];
       // `over`: the fields this repo's entry sets itself, which a preset change doesn't move.
-      return { repo: r, preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, approve: s?.approve, merge: s?.merge, settings: s, own: own(entry), inherits: !(entry && typeof entry === "object" && "preset" in entry) && typeof entry !== "string", over: entry && typeof entry === "object" ? Object.keys(entry).filter((k) => k !== "preset") : [] };
+      return { repo: r, preset: presetOf(raw, r), enabled: !!s?.enabled, handoff: s?.handoff, approve: s?.approve, merge: s?.merge, actions: s?.actions ?? {}, settings: s, own: own(entry), inherits: !(entry && typeof entry === "object" && "preset" in entry) && typeof entry !== "string", over: entry && typeof entry === "object" ? Object.keys(entry).filter((k) => k !== "preset") : [] };
     }),
     // What new and fleet repos inherit (the defaults entry), for the page's Defaults drawer.
     defaults: { preset: presetOf(raw, "*/*"), own: own(raw.defaults), inherits: false, settings: effective(raw, "*/*", { fleet: ["*/*"], listed: [] }) },

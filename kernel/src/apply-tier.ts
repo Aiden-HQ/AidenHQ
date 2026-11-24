@@ -15,6 +15,7 @@ import { effective } from "../../scripts/compiler/release.ts";
 import { hostFetch, officialSides, remoteCodeText, withRemote } from "../../scripts/compiler/sources.ts";
 import { UPDATER, canonical, type Requester } from "./records.ts";
 import { DEFAULT_WEIGHTS, teamProblems } from "./team-routing.ts";
+import type { Raise } from "./tier.ts";
 
 export const parse = (text: any) => {
   try {
@@ -183,6 +184,33 @@ export function authorityArgs(st: { modules?: Record<string, ModuleInput>; marke
   return lines.length ? { authority: lines } : {};
 }
 
+/** The test user as one comparable value: the email trimmed and lower-cased, the apps sorted (compile's own normalisation). */
+const identityKey = (t: any) => t === undefined ? undefined : JSON.stringify({
+  email: typeof t?.email === "string" ? t.email.trim().toLowerCase() : null,
+  apps: (Array.isArray(t?.apps) ? t.apps : []).filter((x: unknown): x is string => typeof x === "string").map((x: string) => x.trim().toLowerCase()).sort(),
+});
+
+/**
+ * The apply that names or changes the instance's test-user sign-in identity (settings.edge.test_user): it lets an agent sign
+ * in as a named account (docs/design/access.md, "Test-user sign-in"), so the plan carries a Tier 2 raise (merit 2; tier.ts
+ * decides who sees it, as for every raise) and the lines its card reads: the identity it adds, and the host setup an apply
+ * does not do (the canary network's unit, installed once on an upgraded host). Nothing for an apply that leaves the setting
+ * alone, or removes it.
+ */
+export function testUserIdentity(baseText: string | undefined, headText: string | undefined): { raise?: Raise; line?: string } {
+  const after = parse(headText)?.settings?.edge?.test_user;
+  // No test_user in the head is a removal: no raise and no line. (Compile refuses a null one, scripts/edge.ts, so key
+  // removal is the only way to drop it.)
+  if (after === undefined) return {};
+  const email = typeof after?.email === "string" && after.email.trim() ? after.email.trim() : undefined;
+  const apps = (Array.isArray(after?.apps) ? after.apps : []).filter((x: unknown): x is string => typeof x === "string" && x.length > 0);
+  // The effective identity, by value: a rewrite that only reorders the keys or the apps changes no access, so no raise.
+  if (eq(identityKey(parse(baseText)?.settings?.edge?.test_user), identityKey(after))) return {};
+  const identity = `Adds a test sign-in identity${email ? `: ${email}` : ""}${apps.length ? ` as a member of ${apps.join(", ")}` : ""}; 15-minute sessions; every mint and revoke audited.`;
+  const host = "An apply doesn't install the canary network: on an upgraded host, install ops/vm/canary-net.sh and its aidenhq-canary-net.service once, and open the listener with ops/vm/ufw-rules.sh where ufw is active (docs/design/access.md, \"Test-user sign-in\"), or app_page_canary can't start a browser.";
+  return { raise: { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" }, line: `${identity}\n${host}` };
+}
+
 /**
  * The product commits a pin move brings, as its own labelled block: code's account of commits already merged on the product's
  * main, never the change under review. It rides in the card's details (the owner reads it) and is handed to the reviewer in
@@ -221,6 +249,8 @@ export async function productBump(from: string | undefined, to: string | undefin
 /** What an apply plan returns to writes.ts (its executor@1 plan's shape, planned by the kernel itself). */
 export type ApplyPlan = {
   args: { repo: string; branch: string; sha: string; files: string[]; authority?: string[]; release?: string };
+  /** A raise above the kind's floor (writes.ts): the owner's own card for the identity an agent signs in as. */
+  raise?: Raise;
   targets: { diff: string; content: string }; card: Record<string, string>;
   /** The reviewer's extra input (executor.ts ReviewContext): a pin move's product-commit roll-up. */
   review?: { productCommits: string };
@@ -306,9 +336,11 @@ export function createApplyPlanner(h: {
     const commits = bump ? productCommits(bump) : "";
     const details = [notes, c.diff, commits, reviewerFacts(full), st.remote, enabledText].filter(Boolean).join("\n\n");
     if (details.length > DETAILS_MAX) throw new Refused(`the change is too large to review (${details.length} characters with the commits and code it brings): split it into smaller ones`);
-    const card = applyCard(full, details);
+    const identity = testUserIdentity(baseI, headI);
+    const card = applyCard(full, details, identity.line);
     return {
       args: full, targets: { diff: createHash("sha256").update(details).digest("hex"), content: readDigest(c) }, card: card as unknown as Record<string, string>,
+      ...(identity.raise ? { raise: identity.raise } : {}),
       // The reviewer reads the roll-up as its own field, never as part of the change (issue #1639).
       ...(commits ? { review: { productCommits: commits } } : {}),
     };
