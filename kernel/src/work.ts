@@ -75,16 +75,17 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       // The task's status as the wake scan last saw it (wake_tasks): the one thing of the task itself a module reads here.
       let status: string | null = null;
       try { status = (db.prepare("SELECT status FROM wake_tasks WHERE task = ?").get(task) as { status: string | null } | undefined)?.status ?? null; } catch { /* the wake inbox is off */ }
+      // `+state` and `+type`: the task's own index, not the state or type index, which scans every record or fact of that kind.
       // What the task's work made, whole (outside the lists' limits): its PRs, the files its landed writes changed (as recorded at
       // filing, or for a record filed before that, what its card's diff names: a long diff was cut for storage, so partial) and
       // its last job's final message (the agent's words: untrusted).
       const prs = new Map<string, { repo: string; number: number; title: string }>();
-      for (const r of rows("SELECT data FROM facts WHERE task = ? AND type = 'pr.opened' ORDER BY seq", task)) {
+      for (const r of rows("SELECT data FROM facts WHERE task = ? AND +type = 'pr.opened' ORDER BY seq", task)) {
         const d = JSON.parse(r.data) as { repo?: unknown; number?: unknown; title?: unknown };
         if (typeof d.repo === "string" && Number.isInteger(d.number)) prs.set(`${d.repo}#${d.number}`, { repo: d.repo, number: d.number as number, title: String(d.title ?? "") });
       }
       const paths = new Set<string>();
-      for (const r of rows("SELECT paths, CASE WHEN paths IS NULL THEN card END AS card FROM records WHERE task = ? AND state = 'done' AND (paths IS NOT NULL OR card LIKE '%diff --git%')", task)) {
+      for (const r of rows("SELECT paths, CASE WHEN paths IS NULL THEN card END AS card FROM records WHERE task = ? AND +state = 'done' AND (paths IS NOT NULL OR card LIKE '%diff --git%')", task)) {
         try {
           if (r.paths) for (const p of JSON.parse(r.paths) as string[]) paths.add(p.slice(p.indexOf(":") + 1));
           else for (const m of String(JSON.parse(r.card)?.details ?? "").matchAll(/^diff --git a\/(\S+) b\//gm)) paths.add(m[1]!);

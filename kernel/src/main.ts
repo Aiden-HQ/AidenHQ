@@ -596,7 +596,7 @@ if (!records.db.prepare("SELECT 1 FROM kernel_once WHERE name = 'flow-backfill'"
   } catch (e) { log("WARNING: flow backfill failed", { err: String((e as Error).message) }); }
 }
 const deploys = createDeploys({ db: records.db, file: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), repo });
-const syncDeploys = () => { try { deploys(); } catch (e) { log("WARNING: deploy facts failed", { err: String((e as Error).message) }); } };
+const syncDeploys = () => deploys().catch((e) => log("WARNING: deploy facts failed", { err: String((e as Error).message) }));
 syncDeploys();
 every(syncDeploys, 60_000);
 // One live grader token per task, reused while it has time left and dropped when the task's hold resolves. Kind grader (never an
