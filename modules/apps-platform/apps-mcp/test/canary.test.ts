@@ -115,12 +115,19 @@ describe("app_page_canary", () => {
     // The submit control is the one in the form that owns the filled field, not the first submit-like button on the page.
     expect(script).toContain("a.closest && a.closest('form')");
     expect(script).toContain("data-aidenhq-canary-submit");
+    // An explicit submit wins; a type=button "Discard draft" is never clicked.
+    expect(script).toContain("(b.type || 'submit') === 'submit'");
+    // The handoff's code and state never come back in a URL or an error the tool returns.
+    expect(script).toContain("const scrub =");
+    expect(script).toContain("finalUrl: scrub(finalUrl)");
     // The intake is the POST before notify that carries the reference, not whatever the page posts last.
     expect(script).toContain("x.at <= notify.at");
     expect(script).toContain("intakeAnswer ?? (intake.length === 1 ? intake[0] : null)");
     // Service workers are bypassed: the gate's own answer is what the canary sees, never a cached or synthesized one.
     expect(script).toContain("Network.setBypassServiceWorker");
     expect(script).toContain("notify && !notify.synthetic ? (notify.hop ?? notify.status) : null");
+    // The notify's own answer is waited for, and it is the POST's first hop.
+    expect(script).toContain("notify.status == null && Date.now() - tn < 10000");
     // The intake is the POST whose reference the page shows, not any POST with an id.
     expect(script).toContain("shown.includes(String(v))");
     expect(script).toContain("intake.some((x) => x.status == null)");

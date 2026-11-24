@@ -44,6 +44,9 @@ export type CanaryResult = {
   error?: string;
 };
 
+/** The handoff's code and state are one-time credentials: a URL or message that quotes them is scrubbed before it leaves. */
+const scrub = (s: string) => s.replace(/([?&](?:code|state)=)[^&\s"'<>]+/g, "$1***");
+
 /** The page's own origin on the test listener: the host the kernel's session is bound to. */
 export const canaryOrigin = (app: string) => `http://${app}.${CANARY_BASE}:${CANARY_PORT}`;
 
@@ -62,6 +65,8 @@ export const CANARY_SCRIPT =
   browserKit(20_000) +
   String.raw`
 const NET = [];
+// The handoff URL carries the one-time code and state: nothing the renderer reports may quote them, even a diagnostic URL.
+const scrub = (s) => String(s ?? "").replace(/([?&](?:code|state)=)[^&\s"'<>]+/g, "$1***");
 setTimeout(() => out({ error: "canary timed out (55 s)" }), 55000);
 let s = "";
 process.stdin.on("data", (c) => (s += c)).on("end", async () => {
@@ -104,7 +109,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     // The handoff sets the listener's host-only cookie, then lands on the app's own page.
     await ab("open", listener + "/.auth/handoff?" + new URLSearchParams({ code: r.code, state: r.state, next: r.path }).toString());
     const landed = (await within(ab("get", "url"), 3000, {})).url || "";
-    if (!landed.startsWith(listener)) return out({ error: "the handoff didn't land on the test listener", finalUrl: landed });
+    if (!landed.startsWith(listener)) return out({ error: "the handoff didn't land on the test listener", finalUrl: scrub(landed) });
     const title = (await within(ab("get", "title"), 3000, {})).title || "";
     // The form: a textbox (or textarea) and the button that sends it. Roles from the accessibility tree, so an app's own
     // wording works as long as the control is a real form control. The page may open on a landing page and link to its
@@ -124,15 +129,21 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const box = Object.entries(refs).find(([, v]) => v.role === "textbox" && FEEDBACK.test([v.name, v.description].filter(Boolean).join(" ")))?.[0]
       || (Object.values(refs).filter((v) => v.role === "textbox").length === 1 && Object.values(refs).some((v) => v.role === "button" && FEEDBACK.test(v.name || ""))
         ? Object.entries(refs).find(([, v]) => v.role === "textbox")?.[0] : undefined);
-    if (!box) return out({ error: "no feedback field on the page", finalUrl: landed, pageTitle: title });
+    if (!box) return out({ error: "no feedback field on the page", finalUrl: scrub(landed), pageTitle: title });
     // Nothing was submitted yet: evidence is only what this action causes.
     const submittedAt = Date.now();
     await ab("fill", "@" + box, r.text);
     // The button is the one in the form that owns the filled field, never "the first submit-like button on the page" (a header
     // search form would otherwise be submitted instead). The filled field is focused, so its own form is the one to send.
+    // A real submit control only: an explicit submit button, or the form's only button when that one is worded like sending.
+    // A "Discard draft" type=button beside an implicit submit is never clicked.
     const formSubmit = await within(ab("eval", "(() => {" +
       "const a = document.activeElement, f = a && a.closest && a.closest('form');" +
-      "const b = f && (f.querySelector('button[type=submit]') || f.querySelector('button'));" +
+      "if (!f) return '';" +
+      "const buttons = [...f.querySelectorAll('button')];" +
+      "const explicit = buttons.filter((b) => (b.type || 'submit') === 'submit');" +
+      "const sendish = /send|submit|share|post|feedback/i;" +
+      "const b = explicit.find((x) => sendish.test(x.textContent || '')) || explicit[0] || (buttons.length === 1 && sendish.test(buttons[0].textContent || '') ? buttons[0] : null);" +
       "if (!b) return '';" +
       "b.setAttribute('data-aidenhq-canary-submit', '1');" +
       "return b.tagName + ':' + (b.textContent || '').trim().slice(0, 60);" +
@@ -149,7 +160,10 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     let notify = notifyOf();
     const t0 = Date.now();
     while (!notify && Date.now() - t0 < 15000) { await new Promise((ok) => setTimeout(ok, 250)); notify = notifyOf(); }
-    await new Promise((ok) => setTimeout(ok, 1200)); // the notify's own answer, and the page's "thanks" render
+    // Its own answer, from the gate, within the same budget: a request seen is not a request answered.
+    const tn = Date.now();
+    while (notify && notify.status == null && Date.now() - tn < 10000) { await new Promise((ok) => setTimeout(ok, 200)); notify = notifyOf(); }
+    await new Promise((ok) => setTimeout(ok, 800)); // the page's own "thanks" render
     const finalUrl = (await within(ab("get", "url"), 3000, {})).url || landed;
     const pageTitle = (await within(ab("get", "title"), 3000, {})).title || title;
     // The app's own intake answer: a same-origin POST other than notify, from this submission and made before the page fired
@@ -188,11 +202,11 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     const notifyStatus = notify && !notify.synthetic ? (notify.hop ?? notify.status) : null;
     const notifyState = notifyStatus === 204 ? "fired" : notifyStatus ? "not-fired" : notify ? "unknown" : "not-fired";
     out({
-      status: intakeStatus ?? 0, finalUrl, pageTitle, notify: notifyState,
+      status: intakeStatus ?? 0, finalUrl: scrub(finalUrl), pageTitle, notify: notifyState,
       notifyStatus, reference, submittedAt: new Date(submittedAt).toISOString(), png,
     });
   } catch (e) {
-    out({ error: line(e) });
+    out({ error: scrub(line(e)) });
   }
 });
 `;
@@ -220,7 +234,7 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
     const r = JSON.parse(raw) as { error?: string; status?: number; finalUrl?: string; pageTitle?: string; notify?: CanaryResult["notify"]; notifyStatus?: number | null; reference?: string | null; submittedAt?: string; png?: string };
     if (r.error) {
       // A failed run still carries whatever the browser proved before it stopped (never the code or the cookie).
-      return { ...base, ...(r.finalUrl ? { finalUrl: r.finalUrl } : {}), ...(r.pageTitle ? { pageTitle: r.pageTitle } : {}), session: session ?? base.session, error: r.error };
+      return { ...base, ...(r.finalUrl ? { finalUrl: scrub(r.finalUrl) } : {}), ...(r.pageTitle ? { pageTitle: r.pageTitle } : {}), session: session ?? base.session, error: scrub(r.error) };
     }
     // `ok` is a submission the app took: the page fired its notify (the gate's 204) and the app's own intake answered 2xx. A page
     // that made no intake call, or whose call is still unanswered, is never a success: `status` stays 0 and `ok` false.
@@ -229,7 +243,7 @@ export async function pageCanary(app: App, req: CanaryRequest, d: CanaryDeps): P
       ...base,
       ok: r.notify === "fired" && accepted,
       status: r.status ?? 200,
-      finalUrl: r.finalUrl ?? "",
+      finalUrl: scrub(r.finalUrl ?? ""),
       pageTitle: r.pageTitle ?? "",
       notify: r.notify ?? "unknown",
       notifyStatus: r.notifyStatus ?? null,
