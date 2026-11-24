@@ -69,6 +69,8 @@ export function createMerges(d: {
   taskOf?: (repo: string, n: number) => string | null;
   /** A record's task identifier as the kernel has it (GET /v1/work?record=): read once for a queue persisted before the queue kept it. */
   identifierOf?: (record: string) => Promise<string | undefined>;
+  /** A task's status (GET /v1/work?task=): a merge ship filed on a task that has since ended is never called. */
+  taskStatus?: (task: string) => Promise<string | null | undefined>;
   /** Delivers a record's outcome to the kernel (POST /v1/writes/:id/outcome). */
   report(id: string, o: Outcome): Promise<void>;
   /** Tells the kernel why a claimed record is still running (POST /v1/writes/:id/wait), so its task hears the reason. */
@@ -323,6 +325,11 @@ export function createMerges(d: {
       if (q.ship && (await d.ship?.generation(p.repo, p.number))?.generation !== q.ship.generation) return fail("its adoption ended or moved on (handed back, stopped or paused): ship files a new merge when it resumes");
       // Any merge ship filed (a fleet PR's plain one too) stops with ship: paused, or the repo switched off (one call to ship).
       if (q.byShip && !q.ship && d.ship && (await d.ship.generation(p.repo, p.number)).generation === null) return fail("ship is paused, or this repo is switched off in ship: not merged");
+      // The kernel files a module's write on any task: a fleet PR's merge ship filed stops when its task is done or cancelled.
+      if (q.byShip && !q.ship && q.task && d.taskStatus) {
+        const status = await d.taskStatus(q.task);
+        if (status === "done" || status === "cancelled") return fail(`its task is ${status}: not merged`);
+      }
       // The token this record's merge commit will carry (mergePut's commit_message), kept before the call: a PUT that times out
       // may have merged, and the next poll tells this record's commit from anyone else's by it (mergedBy). It joins the attempts
       // (earlier unanswered calls too), so a merge the first attempt made before a retry went out is still this queue's.

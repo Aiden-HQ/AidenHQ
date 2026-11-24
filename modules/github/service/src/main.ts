@@ -26,6 +26,7 @@ import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
 import { startAppMigration } from "./migrate.ts";
 import { shipRoutes } from "./ship-routes.ts";
+import { sweepLegacyDependabot } from "./legacy-dependabot.ts";
 import { isModule } from "../../connections/github-mcp/dist/src/module-caller.js";
 import { startTidy } from "./tidy.ts";
 
@@ -75,6 +76,14 @@ const ship = shipRoutes({
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
   isShip: (auth) => isModule(kernelUrl, auth, "ship"),
 });
+// The old PR watch's Dependabot tasks (its pr-watch.json): closed here, with this module's token, once their PR is gone.
+const legacyKernel = async (method: string, path: string, body: unknown) => {
+  const r = await fetch(`${kernelUrl}${path}`, { method, headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+  if (!r.ok && r.status !== 403 && r.status !== 404) throw new Error(`${path}: ${r.status}`);
+};
+const legacySweep = () => void sweepLegacyDependabot(cacheDir, (m, p) => access.rest(m, p, undefined, { background: true }), legacyKernel).catch((e) => log("legacy Dependabot sweep failed", { err: String((e as Error).message).slice(0, 200) }));
+legacySweep();
+setInterval(legacySweep, 30 * 60_000).unref();
 const server = createServer((req, res) => void ship(req, res).then((done) => done || handle(req, res)));
 server.listen(Number(env.PORT ?? 8100), "0.0.0.0");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => server.close(() => process.exit(0)));

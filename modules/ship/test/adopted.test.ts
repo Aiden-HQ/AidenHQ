@@ -63,3 +63,18 @@ test("under rebase: conflict, only the earliest hand-off among the repo's open a
   await pass.open("acme/app", main, pr(5), open);
   assert.deepEqual(updated, ["/repos/acme/app/pulls/5/update-branch"]);
 });
+
+test("a held adoption whose PR was closed is read once, then never again", async () => {
+  const state = openState(join(mkdtempSync(join(tmpdir(), "adopted-")), "state.json"));
+  state.put({ repo: "acme/app", number: 8, generation: 1, trigger: { kind: "label", event: "e8", actor: "maria", at: "2026-11-24T09:00:00Z", head: "a".repeat(40) }, task: "T8", hold: { kind: "stalled", reason: "rounds" } });
+  let reads = 0;
+  const pass = adoptedPass({
+    gh: async () => (reads++, { status: 200, body: { state: "closed", merged_at: null } }), state,
+    kernel: { call: async () => ({}) }, settings: () => PRESETS.cautious, paused: () => false, log() {},
+    decision: async () => ({ do: "wait" }), effects: { comment: async () => 1, askReview: async () => {} },
+  });
+  await pass.gone("acme/app", "main", new Set());
+  await pass.gone("acme/app", "main", new Set());
+  assert.equal(reads, 1);
+  assert.equal(state.get("acme/app", 8).hold.kind, "stalled", "its own hold is kept");
+});

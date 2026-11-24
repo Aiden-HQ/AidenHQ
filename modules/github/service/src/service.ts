@@ -1084,6 +1084,7 @@ export function createService(o: Options) {
   const merges = createMerges({
     ship: o.ship,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
+    taskStatus: async (task) => String(((await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`)) as { status?: unknown })?.status ?? "") || null,
     // A queue persisted before it kept the task's identifier: the record itself has it (kernel work read).
     identifierOf: async (record) => {
       // A record that is gone (404) has no identifier to find; any other failure is transient (the kernel restarting), and the

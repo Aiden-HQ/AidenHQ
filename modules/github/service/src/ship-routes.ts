@@ -85,6 +85,13 @@ export function shipRoutes(o: {
         const call = CALLS.find(([m, re]) => m === method && re.test(String(path)));
         const repo = read ? `${String(v.owner)}/${String(v.repo)}` : call ? String(path).match(call[1])![1]! : "";
         if ((!call && !read) || (call?.[2] && !call[2](b.body)) || !o.allowed(repo) || (read && v.after != null && typeof v.after !== "string")) return send(res, 403, { error: `ship may not call ${String(method)} ${String(path).slice(0, 200)}` }), true;
+        // A branch is deleted only as an abandoned PR's: one pr-tasks.json names as an opener's head branch on this repo, never the default.
+        if (method === "DELETE") {
+          const branch = decodeURIComponent(String(path).split("/git/refs/heads/")[1] ?? "");
+          const opened = Object.entries(readPrTasks(o.cacheDir)).some(([url, t]) => url.startsWith(`https://github.com/${repo.toLowerCase()}/pull/`) && t.branch === branch);
+          const def = opened ? (await o.gh("GET", `/repos/${repo}`, undefined, { background: true })).body?.default_branch : undefined;
+          if (!opened || !def || def === branch) return send(res, 403, { error: `ship may delete only an opener's PR branch, never the default branch` }), true;
+        }
         const body = read ? { query: OPEN_PRS_QUERY, variables: { owner: String(v.owner), repo: String(v.repo), after: v.after ?? null } } : b.body;
         try { return send(res, 200, await o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) })), true; }
         catch (e) {
@@ -94,6 +101,8 @@ export function shipRoutes(o: {
       }
       if (op === "flow") {
         if (!FLOW.includes(b.fn) || !Array.isArray(b.args)) return send(res, 400, { error: `fn: one of ${FLOW.join(", ")}; args: a list` }), true;
+        // Every fact names its repo first (`authored` third): only a repo the fleet works.
+        if (!o.allowed(String(b.args[b.fn === "authored" ? 2 : 0] ?? ""))) return send(res, 403, { error: "ship may not record facts for that repo" }), true;
         // JSON turns an omitted argument into null: it is undefined again here, so flow.ts's defaults (the time, the PR's task) apply.
         return send(res, 200, { value: (await o.flow[b.fn as (typeof FLOW)[number]](...b.args.map((x: unknown) => (x === null ? undefined : x)))) ?? null }), true;
       }

@@ -264,7 +264,7 @@ test("plan: an adopted PR's merge is refused when the generation is stale or shi
 
 test("an adoption's direct merge: no checks and none required merges at its bound target; a hand-back before the call ends it", async () => {
   const H = "a".repeat(40);
-  const run = async (adopted, plain = false) => {
+  const run = async (adopted, plain = false, taskStatus = "in_progress") => {
     const calls = [];
     const gh = async (method, path) => {
       calls.push(`${method} ${path}`);
@@ -281,8 +281,8 @@ test("an adoption's direct merge: no checks and none required merges at its boun
     };
     const outcomes = [];
     const { createMerges } = await import("../service/src/merges.ts");
-    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) } });
-    if (plain) void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H }] }, undefined, undefined, undefined, true);
+    const m = createMerges({ dir: mkdtempSync(join(tmpdir(), "ship-merge-")), gh, fleetOrg: "acme-agents", reviewGate: async () => undefined, report: async (id, o) => void outcomes.push(o), ship: { generation: async () => ({ generation: adopted ? 2 : null }) }, taskStatus: async () => taskStatus });
+    if (plain) void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H }] }, "T1", undefined, undefined, true);
     else void m.enqueue("k-1", { prs: [{ repo: REPO, number: 7, head: H, base: "main" }], generation: 2, attempt: 1 });
     await m.step();
     return { calls, outcomes };
@@ -298,6 +298,12 @@ test("an adoption's direct merge: no checks and none required merges at its boun
   const paused = await run(false, true);
   assert.equal(paused.calls.filter((c) => c.startsWith("PUT")).length, 0, paused.calls.join("\n"));
   assert.match(paused.outcomes[0]?.text ?? "", /ship is paused/);
+  // ...and when its task has ended: the kernel files a module's write on any task, so the queue reads the task at the call.
+  const cancelled = await run(true, true, "cancelled");
+  assert.equal(cancelled.calls.filter((c) => c.startsWith("PUT")).length, 0, cancelled.calls.join("\n"));
+  assert.match(cancelled.outcomes[0]?.text ?? "", /its task is cancelled/);
+  const live = await run(true, true);
+  assert.equal(live.calls.filter((c) => c.startsWith("PUT")).length, 1, "a live task's merge goes ahead");
 });
 
 test("with no App on the repo, approve is refused as needing a human; nothing is posted as the owner", async (t) => {

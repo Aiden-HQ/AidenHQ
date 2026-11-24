@@ -12,8 +12,8 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
   writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme/app/pull/1": { task: "ACME-1", branch: "b1" } }));
   const called = [], sent = [];
   const routes = shipRoutes({
-    gh: async (method, path, body) => (called.push(`${method} ${path}`), sent.push(body), { status: 200, body: { ok: true } }),
-    flow: {}, gate: async () => undefined, cacheDir,
+    gh: async (method, path, body) => (called.push(`${method} ${path}`), sent.push(body), { status: 200, body: path === "/repos/acme/app" ? { default_branch: "main" } : { ok: true } }),
+    flow: { closed: async () => {} }, gate: async () => undefined, cacheDir,
     allowed: (repo) => repo === "acme/app", isShip: async (auth) => auth === "Bearer ship",
   });
   const s = createServer((req, res) => void routes(req, res).then((done) => done || res.writeHead(404).end()));
@@ -30,6 +30,14 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
   assert.equal((await gh({ method: "POST", path: "/graphql", body: { variables: { owner: "other", repo: "repo" } } })).status, 403, "the open PRs of a repo the fleet doesn't work");
   assert.equal((await gh({ method: "POST", path: "/graphql", body: { query: "mutation { mergePullRequest }", variables: { owner: "acme", repo: "app" } } })).status, 200);
   assert.deepEqual(called, ["PUT /repos/acme/app/pulls/1/update-branch", "POST /graphql"]);
-  assert.equal(sent.at(-1).query, OPEN_PRS_QUERY, "the one fixed query, never ship's");
+  // A branch is deleted only as an opener's PR branch on that repo, never the default branch or anyone else's.
+  assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/main" })).status, 403);
+  assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/someone-else" })).status, 403);
+  assert.equal((await gh({ method: "DELETE", path: "/repos/acme/app/git/refs/heads/b1" })).status, 200);
+  // A fact names a repo the fleet works.
+  const flow = (args) => fetch(`${url}/flow`, { method: "POST", headers: { authorization: "Bearer ship" }, body: JSON.stringify({ fn: "closed", args }) });
+  assert.equal((await flow(["other/repo", 1, "h", "2026-11-24T00:00:00Z"])).status, 403);
+  assert.equal((await flow(["acme/app", 1, "h", "2026-11-24T00:00:00Z"])).status, 200);
+  assert.equal(sent[1].query, OPEN_PRS_QUERY, "the one fixed query, never ship's");
   assert.deepEqual(await (await fetch(`${url}/openers`, { headers: { authorization: "Bearer ship" } })).json(), { "https://github.com/acme/app/pull/1": { task: "ACME-1", branch: "b1" } });
 });
