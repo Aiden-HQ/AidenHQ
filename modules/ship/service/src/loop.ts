@@ -796,7 +796,7 @@ export function startLoop(o: LoopOptions) {
       // report below and the red-head rules further down share one call rather than each probing the same jobs.
       let envRed: boolean | "unknown" | undefined;
       // Only an agent's own PR is re-run (an outside author's failure is nobody's here), so only its head is probed for it.
-      const redsAreEnvironment = async () => (envRed ??= pr.mergeable === "MERGEABLE" && !!opener && opener.branch === pr.headRefName ? await neverStarted(pr) : false);
+      const redsAreEnvironment = async (): Promise<boolean | "unknown"> => (envRed ??= pr.mergeable === "MERGEABLE" && !!opener && opener.branch === pr.headRefName ? await neverStarted(pr) : false);
       // Flow: CI on any PR's head, once per head: begun at its first check run's start, over once its named checks have all
       // finished (at the last one's end). The task is the agent's that opened it, if one did.
       state.checked ??= {};
@@ -978,7 +978,7 @@ export function startLoop(o: LoopOptions) {
       // Red checks whose jobs never started are the environment's: re-run once at this head, never a rebase or a wake. A head
       // whose listing could not be read is judged next tick, not woken on a failure CI may never have run.
       const env = await redsAreEnvironment();
-      if (pr.mergeable === "MERGEABLE" && (env || env === "unknown")) continue;
+      if (pr.mergeable === "MERGEABLE" && env) continue; // true, or "unknown"
       const why = rebaseReason(pr, main.rollup);
       if (why === "conflict" || why === "red") {
         const key = `${url}:${main.oid}`;
