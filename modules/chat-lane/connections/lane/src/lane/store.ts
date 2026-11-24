@@ -36,6 +36,8 @@ export function openLaneStore(path: string) {
     pendingWakes: db.prepare(`SELECT id, agent, due_at, note, conversation IS NOT NULL AS chat, task FROM lane_wakes WHERE agent = ? AND fired_at IS NULL ORDER BY due_at`),
     dueWakes: db.prepare(`SELECT id, agent, due_at, note, conversation IS NOT NULL AS chat, task FROM lane_wakes WHERE fired_at IS NULL AND due_at <= ? ORDER BY due_at LIMIT 50`),
     fire: db.prepare(`UPDATE lane_wakes SET fired_at = ? WHERE id = ? AND fired_at IS NULL`),
+    unfire: db.prepare(`UPDATE lane_wakes SET fired_at = NULL WHERE id = ?`),
+    answered: db.prepare(`SELECT MAX(received_at) AS t FROM lane_turns WHERE agent = ? AND status != 'running'`),
     owe: db.prepare(`INSERT INTO lane_owed (agent, conversation, kind, ask, created_at, due_at) VALUES (?, 'chat', ?, ?, ?, ?)`),
     due: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = ? AND due_at <= ? ORDER BY id`),
     dueIn: db.prepare(`SELECT * FROM lane_owed WHERE done_at IS NULL AND kind = 'continue' AND agent = ? AND due_at <= ? ORDER BY id LIMIT 1`),
@@ -86,6 +88,14 @@ export function openLaneStore(path: string) {
     /** Due wakes, each taken once (missed ones, e.g. while the service was down, fire once on the next pass). */
     takeDue(now = Date.now()): Wake[] {
       return (q.dueWakes.all(now) as Wake[]).filter((w) => q.fire.run(now, w.id).changes === 1);
+    },
+    /** A taken wake that could not be delivered: due again on the next pass. */
+    unfire(id: number): void {
+      q.unfire.run(id);
+    },
+    /** The newest owner message (its time) that a finished turn was started for: later ones are unanswered. */
+    answeredAt(agent: string): number {
+      return ((q.answered.get(agent) as { t: number | null }).t) ?? 0;
     },
     /** Something the lane owes the owner in an agent's chat: `continue` (the lane finishes it) or `task` (a background run will). */
     owe(agent: string, kind: Owed["kind"], ask: string, dueAt: number, now = Date.now()): number {

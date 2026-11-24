@@ -102,7 +102,7 @@ export interface WakeDeps {
 
 /**
  * One wake pass: a lane agent's due chat wake runs a lane turn in its chat; any other goes into the kernel's wake inbox for
- * its task's agent — unless the task has finished, in which case the wake is released and nothing is filed. Due wakes are taken (marked fired) before their task is checked, so a dropped wake never returns.
+ * its task's agent — unless the task has finished, in which case the wake is released and nothing is filed. Due wakes are taken (marked fired) first so two passes never file one twice; one that fails to be delivered is released and retried next pass.
  * The same pass runs what the lane owes (lane.tick).
  */
 export async function wakePass(o: WakeDeps): Promise<void> {
@@ -113,7 +113,8 @@ export async function wakePass(o: WakeDeps): Promise<void> {
       else if (await o.taskIsClosed(w.task)) o.log.info({ wake: w.id, agent: w.agent, task: w.task }, "wake dropped: its task is done or cancelled");
       else await o.wakeTask(w.id, w.task, w.note);
     } catch (e) {
-      o.log.warn({ wake: w.id, err: (e as Error).message }, "wake failed");
+      o.store.unfire(w.id); // not delivered: due again next pass (the kernel files a wake once per id)
+      o.log.warn({ wake: w.id, err: (e as Error).message }, "wake failed; retried next pass");
     }
   }
   await o.lane.tick().catch((e: Error) => o.log.warn({ err: e.message }, "lane owed pass failed"));

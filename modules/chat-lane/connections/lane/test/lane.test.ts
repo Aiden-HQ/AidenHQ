@@ -126,4 +126,31 @@ describe("fast chat lane", () => {
     expect(m.texts()).toEqual(["hi"]);
   });
 
+  it("an owner message sent while another is being answered is answered next, not hidden behind the first reply", async () => {
+    let t = Date.now() - 60_000;
+    const m = memChat(() => (t += 10));
+    let n = 0;
+    const gw = await serve((req, res) => { let b = ""; req.on("data", (x) => (b += x)).on("end", () => { if (b.includes("You check one chat reply")) return sse(res, [{ choices: [{ delta: { content: "FINAL" } }] }]); n++; if (n === 1) m.owner("B"); sse(res, [{ choices: [{ delta: { content: `reply ${n}` } }] }]); }); });
+    const lane = makeLane({ memory: async () => "", store: openLaneStore(":memory:"), chat: m.chat, agents: () => ({ aria: agent }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async () => {} });
+    m.owner("A");
+    await lane.poke("aria");
+    await lane.poke("aria");
+    expect(m.texts()).toEqual(["A", "B", "reply 1", "reply 2"]);
+    await lane.poke("aria");
+    expect(n).toBe(2); // and then nothing new to answer
+  });
+
+  it("a Telegram delivery that fails is retried by the lane, not lost", async () => {
+    const gw = await serve((_req, res) => sse(res, [{ choices: [{ delta: { content: "Lunch is booked." } }] }]));
+    const m = memChat();
+    const store = openLaneStore(":memory:");
+    const telegram: string[] = [];
+    let fail = true;
+    const lane = makeLane({ memory: async () => "", store, chat: m.chat, agents: () => ({ aria: { ...agent, telegramToken: "tok" } }), gatewayUrl: gw, laneSecret: "s", timezone: "UTC", ownerName: "Sam", log: quiet, tools: { defs: async () => [], call: async () => "" }, telegram: async (_a, t) => { if (fail) throw new Error("telegram sendMessage 502"); telegram.push(t); } });
+    await lane.heard("aria", "tg-aria-1", "book lunch", "telegram");
+    await until(() => !lane.busy("aria"));
+    expect(telegram).toEqual([]);
+    expect(store.owesContinue("aria")).toBe(true); // owed, so it comes again
+  });
+
 });

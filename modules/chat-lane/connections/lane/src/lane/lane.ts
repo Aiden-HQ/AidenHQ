@@ -98,10 +98,10 @@ export function makeLane(d: LaneDeps) {
     else active--;
   };
 
-  /** Posts on the chat task as the agent (once per key), then to Telegram when asked. A post that fails throws. */
+  /** Posts on the chat task as the agent (once per key), then to Telegram when asked. A post that fails throws, Telegram's too: the callers retry (the task post is once per key, so a retry only resends to Telegram). */
   async function send(agent: LaneAgent, key: string, text: string, telegram: boolean): Promise<void> {
     await d.chat.reply(agent, key, text);
-    if (telegram && agent.telegramToken) await d.telegram(agent, text).catch((e: Error) => d.log.warn({ agent: agent.key, err: e.message }, "lane reply not sent to telegram"));
+    if (telegram && agent.telegramToken) await d.telegram(agent, text);
   }
 
   /** Whether a reply only promises the answer (a one-word model call; on its failure, a phrase check). */
@@ -142,14 +142,15 @@ export function makeLane(d: LaneDeps) {
     const history = await d.chat.history(agent, now() - HISTORY_MS, HISTORY);
     const lastOwner = [...history].reverse().find((m) => m.role === "owner");
     const last = [...history].reverse().find((m) => m.role !== "other");
-    if (!c && wake === undefined && last?.role !== "owner") return; // nothing new to answer
+    // An owner message newer than the last finished turn's trigger is unanswered even when a reply landed after it (it was sent mid-turn).
+    if (!c && wake === undefined && last?.role !== "owner" && !(lastOwner && lastOwner.at > d.store.answeredAt(agent.key))) return; // nothing new to answer
     const ask = c ? c.ask : wake ?? lastOwner!.text;
     // A wake or a continuation goes where the owner is most likely to read it; an answer, where the ask came in.
     const telegram = c || wake !== undefined ? true : lastOwner!.via === "telegram";
     // Tries are counted before the run, so one that a crash or restart cut off still counts toward the cap.
     if (c && c.attempts >= CONTINUE_TRIES) return await failed(agent, { ...c, attempts: CONTINUE_TRIES }, "it was cut off");
     if (c) d.store.attempt(c.id);
-    const turnId = d.store.startTurn(agent.key, agent.model, c || wake !== undefined ? now() : lastOwner!.at);
+    const turnId = d.store.startTurn(agent.key, agent.model, lastOwner?.at ?? now());
     const messages: ChatMsg[] = [
       { role: "system", content: systemPrompt(agent, d, d.store.pendingWakes(agent.key), now(), await d.memory(agent)) },
       // The lane's own "on it" is not the model's words: left in, the model copies it instead of answering.
@@ -183,7 +184,7 @@ export function makeLane(d: LaneDeps) {
         tools: await d.tools.defs(agent),
         callTool: async (name, args) => {
           const out = await d.tools.call(agent, name, args);
-          if (!out.startsWith("error:")) {
+          if (!out.startsWith("error:") && !out.startsWith('{"ok":false')) { // a refusal comes back as {"ok":false,…}, not an error
             if (name === "task_create") tasked = true;
             if (name === "wake_at") woke = true;
           }
@@ -220,11 +221,11 @@ export function makeLane(d: LaneDeps) {
       if (c) return await failed(agent, c, msg.slice(0, 160));
       if (!first) d.store.firstSent(turnId, now());
       first = true;
+      const owed = wake === undefined && !d.store.owesContinue(agent.key);
+      if (owed) d.store.owe(agent.key, "continue", ask, now() + RETRY_MS, now()); // before the notice: a notice that can't be sent still leaves the retry
       // A failed turn says so (the owner is never left in silence) but is not the answer: the ask stays owed and the lane
       // retries it after the pause, and only a turn that produces the answer settles it. A wake is not owed again.
-      const owed = wake === undefined && !d.store.owesContinue(agent.key);
       await send(agent, `t${turnId}`, `Sorry, that didn't work (${msg.slice(0, 160)}). ${owed ? "Retrying in a minute." : "Try again in a moment."}`, telegram);
-      if (owed) d.store.owe(agent.key, "continue", ask, now() + RETRY_MS, now());
       d.log.warn({ agent: agent.key, err: msg, owed }, "lane turn failed");
     } finally {
       clearTimeout(limit);
